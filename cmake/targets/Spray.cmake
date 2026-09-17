@@ -47,6 +47,7 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_eb_drift_mod.F90
       src/spray/spray_eb_impact_mod.F90
       src/spray/spray_eb_field_mod.F90
+      src/spray/spray_eb_film_step_mod.F90
       src/spray/spray_eb_step_mod.F90
       src/spray/spray_eb_reactive_mod.F90
       src/spray/spray_eb_application_mod.F90

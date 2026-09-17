@@ -12,6 +12,8 @@ module spray_eb_impact_mod
   type, public :: spray_eb_wall_options
     real(dp) :: temperature=300,contact_angle=1.0471975511965977_dp
     integer :: maximum_hits=32,maximum_films=1000000
+    logical :: evolve=.false.
+    real(dp) :: conductivity=.6_dp,minimum_height=1e-7_dp
   end type
 contains
   ! One earliest stationary EB contact; parent%position is the trial endpoint.

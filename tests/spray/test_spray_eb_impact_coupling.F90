@@ -12,6 +12,7 @@ program test_spray_eb_impact_coupling
   use spray_eb_step_mod, only: advance_eb_mixture_coupling_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_wall_impact_mod, only: spray_wall_film
+  use spray_eb_film_step_mod, only: advance_eb_film_coupling
   use, intrinsic :: iso_fortran_env, only: int64
   implicit none
   type(eb_geometry_3d) :: g
@@ -26,7 +27,8 @@ program test_spray_eb_impact_coupling
   real(dp), allocatable :: masses(:,:),film_mass(:,:)
   integer(int64) :: last_id=1
   real(dp) :: phi(0:4,0:4,0:4),t,sound,r,temperature(4,4,4),saved_t(4,4,4),saved_mass(2,1)
-  real(dp) :: ledger(5),interval=2e-5_dp
+  real(dp) :: ledger(5),interval=2e-5_dp,old_film_mass,old_film_temperature
+  real(dp), allocatable :: film_saved_gas(:,:,:,:),film_saved_t(:,:,:)
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
   logical :: ok
@@ -88,6 +90,25 @@ program test_spray_eb_impact_coupling
   call require(films(1)%temperature>350.and.films(1)%mass<1e-10_dp,'heating and evaporation before impact')
   call require(ledger(2)>0,'deposition wall impulse')
   call require(all(state(:,1,:,:)==0).and.all(temperature(1,:,:)==42),'covered cells unchanged')
+  walls%evolve=.true.;walls%temperature=400;interval=1e-6_dp
+  old_film_mass=films(1)%mass;old_film_temperature=films(1)%temperature
+  call inventory(before)
+  call advance()
+  call require(ok.and.size(drops)==0.and.size(films)==1,'film-only coupled interval')
+  call require(films(1)%mass<old_film_mass.and.films(1)%temperature>old_film_temperature,'film heat and evaporation')
+  call require(ledger(5)>0,'wall supplies film heat')
+  call inventory(after)
+  expected=0;expected(1:5)=ledger
+  call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'gas film wall heat conservation')
+  film_saved_gas=state;film_saved_t=temperature;old_film_mass=films(1)%mass
+  films(1)%normal=-films(1)%normal;ledger=42
+  call advance_eb_film_coupling(species,transport,liquids,options,walls,g,phi,state,temperature, &
+    films,film_mass,interval,steps,ledger,ok)
+  call require(.not.ok.and.steps==0.and.all(ledger==42),'reversed film normal rejected')
+  call require(all(state==film_saved_gas).and.all(temperature==film_saved_t),'film gas rollback')
+  call require(films(1)%mass==old_film_mass,'film mass rollback')
+  walls%evolve=.true.;walls%temperature=300
   state=saved;temperature=saved_t
   deallocate(drops,masses,films,film_mass)
   allocate(drops(1),masses(2,1),films(0),film_mass(2,0))

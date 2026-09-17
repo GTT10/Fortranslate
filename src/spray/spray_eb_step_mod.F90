@@ -14,6 +14,7 @@ module spray_eb_step_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_eb_impact_mod, only: advance_mixture_level_set_impacts,spray_eb_wall_options
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
+  use spray_eb_film_step_mod, only: advance_eb_film_coupling
   implicit none
   private
   public :: advance_eb_mixture_coupling,advance_eb_mixture_coupling_allocated
@@ -68,7 +69,8 @@ contains
     real(dp), allocatable :: masses(:,:),next_mass(:,:),positions(:,:),samples(:,:),primitive(:,:),tg(:),change(:,:)
     real(dp) :: elapsed,dt,sound,invtau,heat,rho,cp,e,tdot,speed,old_mass,h(3),lower(3),upper(3),exchange(5),ledger(5)
     real(dp) :: y(size(components)),rates(size(components)),hv(size(components))
-    integer :: np,nc,nvar,p,n,attempt,count_steps,hits
+    integer :: np,nc,nvar,p,n,attempt,count_steps,hits,film_steps
+    real(dp) :: film_change(5)
     logical :: valid,accepted
     ok=.false.;substeps=0
     if (.not.g%is_valid().or..not.valid_spray_options(options)) return
@@ -83,6 +85,11 @@ contains
       if (.not.all(ieee_is_finite([wall_options%temperature,wall_options%contact_angle]))) return
       if (wall_options%temperature<1.or.wall_options%temperature>1e5_dp) return
       if (wall_options%contact_angle<1e-6_dp.or.wall_options%contact_angle>acos(-1._dp)-1e-6_dp) return
+      if (wall_options%evolve) then
+        if (.not.all(ieee_is_finite([wall_options%conductivity,wall_options%minimum_height]))) return
+        if (wall_options%conductivity<=0.or.wall_options%conductivity>1e4_dp) return
+        if (wall_options%minimum_height<1e-15_dp.or.wall_options%minimum_height>1) return
+      end if
       if (wall_options%maximum_hits<0.or.wall_options%maximum_hits>1024) return
       if (wall_options%maximum_films<0.or.wall_options%maximum_films>1000000) return
       if (last_id<0.or.last_id>huge(last_id)-4_int64) return
@@ -193,11 +200,19 @@ contains
           ! Replace the source kernel's free-space trapezoidal position update.
           trial(p)%position=drops(p)%position
         end do
-        exchange=0;hits=0
+        exchange=0;hits=0;film_change=0
+        if (valid) then
+          next_gas=gas;next_temp=temp
+          call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
+        end if
         if (valid) then
           if (impacts) then
             next_patches=patches;next_patch_mass=patch_mass;next_watermark=watermark
-            call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
+            if (wall_options%evolve) then
+              call advance_eb_film_coupling(species,transport,components,options,wall_options,g,phi, &
+                next_gas,next_temp,next_patches,next_patch_mass,dt,film_steps,film_change,valid)
+            end if
+            if (valid) call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
               min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
               101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
               next_patches,next_patch_mass,next_watermark,exchange,hits,valid,primitive(5,:))
@@ -206,10 +221,7 @@ contains
             call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid)
           end if
         end if
-        if (valid) then
-          next_gas=gas;next_temp=temp
-          call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
-        end if
+        exchange=exchange+film_change
         if (valid) then
           accepted=.true.;exit
         end if
