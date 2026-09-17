@@ -399,7 +399,10 @@ class GenerateMechanismBundleTest(unittest.TestCase):
 
     @staticmethod
     def render_reactive_eb_3d(data):
+        prefix = data.get("symbol_prefix", "h2o2")
         replacements = {
+            "@PELEF_BUNDLE_ELEMENT_NAMES_SYMBOL@": f"{prefix}_element_names",
+            "@PELEF_BUNDLE_ELEMENT_ATOMS_SYMBOL@": f"{prefix}_element_atoms",
             "@PELEF_BUNDLE_MODULE_NAME@": data["module_name"],
             "@PELEF_BUNDLE_NSPECIES_SYMBOL@": (
                 f"{data.get('symbol_prefix', 'h2o2')}_nspecies"
@@ -730,7 +733,9 @@ class GenerateMechanismBundleTest(unittest.TestCase):
                 / "src/problems/reactive_entropy_wave_3d_problem_mod.F90",
                 PROJECT_ROOT / "src/io/reactive_csv_io_3d_mod.F90",
                 PROJECT_ROOT / "src/driver/reactive_3d_application_mod.F90",
+                PROJECT_ROOT / "src/eb/eb_polyhedron_clip_mod.F90",
                 PROJECT_ROOT / "src/eb/eb_geometry_3d_mod.F90",
+                PROJECT_ROOT / "src/eb/eb_reactive_reflux_3d_mod.F90",
                 PROJECT_ROOT
                 / "src/driver/simulation_config_reactive_eb_3d_mod.F90",
                 PROJECT_ROOT / "src/eb/reactive_eb_cfl_3d_mod.F90",

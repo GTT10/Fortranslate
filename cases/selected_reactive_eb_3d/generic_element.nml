@@ -1,4 +1,5 @@
 &reactive_eb_3d
+  final_time = 1.0e-9
   nx = 4
   ny = 4
   nz = 4
@@ -14,5 +15,5 @@
   composition_count = 2
   composition_species = "A", "B"
   composition_mole_fractions = 0.8, 0.2
-  output_file = "invalid_selected_reactive_eb_3d_element.csv"
+  output_file = "generic_selected_reactive_eb_3d_element.csv"
 /

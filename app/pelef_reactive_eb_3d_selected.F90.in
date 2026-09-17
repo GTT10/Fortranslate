@@ -12,8 +12,6 @@ program pelef_reactive_eb_3d_selected
     resolve_reactive_eb_3d_selected_composition
   use simulation_config_selected_reactor_mod, only: &
     selected_reactor_paths_alias_lexically
-  use reactive_eb_3d_driver_mod, only: &
-    reactive_eb_element_species_supported_3d
   use reactive_eb_3d_application_mod, only: &
     run_reactive_eb_3d_application
   use @PELEF_BUNDLE_MODULE_NAME@, only: &
@@ -26,7 +24,9 @@ program pelef_reactive_eb_3d_selected
     pelef_load_selected_thermo => &
       @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
     pelef_load_selected_transport => &
-      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+      @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@, &
+    selected_element_names => @PELEF_BUNDLE_ELEMENT_NAMES_SYMBOL@, &
+    selected_element_atoms => @PELEF_BUNDLE_ELEMENT_ATOMS_SYMBOL@
   implicit none
 
   character(len=*), parameter :: pelef_selected_bundle_sha256 = &
@@ -100,11 +100,6 @@ program pelef_reactive_eb_3d_selected
     write(*, '(a)') trim(message)
     error stop 2
   end if
-  if (config%chemistry_enabled .and. &
-      .not. reactive_eb_element_species_supported_3d(species)) then
-    error stop &
-      "Selected reactive EB 3D chemistry requires supported H/O/N species"
-  end if
 
   call resolve_reactive_eb_3d_selected_composition( &
     config, species, mole_fractions, ok, message)
@@ -142,5 +137,6 @@ program pelef_reactive_eb_3d_selected
   call run_reactive_eb_3d_application( &
     trim(input_path), "selected mechanism reactive planar EB 3D", &
     pelef_selected_bundle_sha256, config, species, reactions, transport, &
-    mole_fractions, pelef_selected_chemistry_integrator)
+    mole_fractions, pelef_selected_chemistry_integrator, &
+    selected_element_names, selected_element_atoms)
 end program pelef_reactive_eb_3d_selected

@@ -170,6 +170,7 @@ if(PELEF_TEST_EB_METHANOL_BUNDLE)
   endif()
 pelef_add_mechanism_bundle(
   NAME selected_eb_methanol_fixture
+  REACTIVE_EB_3D_NAME test_selected_methanol_eb_3d
   BUNDLE "${PELEF_TEST_EB_METHANOL_BUNDLE}"
   REACTIVE_EB_TWO_LEVEL_3D_NAME test_selected_methanol_eb_two_level_3d
 )
@@ -181,5 +182,12 @@ add_test(
     --bundle "${PELEF_TEST_EB_METHANOL_BUNDLE}"
     --species-count 21 --fuel CH3OH
     --work "${CMAKE_CURRENT_BINARY_DIR}/selected_methanol_eb_two_level_3d"
+)
+add_test(
+  NAME regression_selected_methanol_eb_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_selected_carbon_eb_3d.py"
+    --exe $<TARGET_FILE:test_selected_methanol_eb_3d>
+    --case "${PROJECT_SOURCE_DIR}/cases/selected_reactive_eb_3d/methanol.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/selected_methanol_eb_3d"
 )
 endif()

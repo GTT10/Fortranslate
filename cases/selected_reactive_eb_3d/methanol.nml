@@ -1,0 +1,11 @@
+&reactive_eb_3d
+ nx=2, ny=2, nz=2, maximum_steps=50,
+ x_upper=1.0e-4, y_upper=1.0e-4, z_upper=1.0e-4,
+ plane_axis='x', plane_position=4.0e-5,
+ final_time=1.0e-11, cfl=1.0e-4,
+ regular_density=0.31, cut_density=0.31,
+ thermo_model='selected', chemistry_enabled=.true., transport_enabled=.true.,
+ composition_count=3, composition_species='CH3OH','O2','N2',
+ composition_mole_fractions=0.10,0.19,0.71,
+ output_file='methanol_eb.csv'
+/

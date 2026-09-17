@@ -332,17 +332,13 @@ add_test(
       "${SELECTED_REACTIVE_EB_3D_INVALID_WORK_DIRECTORY}/invalid_selected_reactive_eb_3d_restart.csv"
 )
 add_test(
-  NAME regression_selected_reactive_eb_3d_unsupported_element_rejected
-  COMMAND "${Python3_EXECUTABLE}"
-    "${PROJECT_SOURCE_DIR}/tools/check_expected_failure.py"
-    --executable
-      $<TARGET_FILE:test_selected_unsupported_element_reactive_eb_3d>
-    --input
-      "${PROJECT_SOURCE_DIR}/cases/selected_reactive_eb_3d/invalid_unsupported_element.nml"
-    --expected "chemistry requires supported H/O/N species"
-    --forbidden-output
-      "${SELECTED_REACTIVE_EB_3D_INVALID_WORK_DIRECTORY}/invalid_selected_reactive_eb_3d_element.csv"
+  NAME regression_selected_reactive_eb_3d_generic_element_run
+  COMMAND $<TARGET_FILE:test_selected_unsupported_element_reactive_eb_3d>
+    "${PROJECT_SOURCE_DIR}/cases/selected_reactive_eb_3d/generic_element.nml"
 )
+set_tests_properties(regression_selected_reactive_eb_3d_generic_element_run PROPERTIES
+  WORKING_DIRECTORY "${SELECTED_REACTIVE_EB_3D_INVALID_WORK_DIRECTORY}"
+  PASS_REGULAR_EXPRESSION "Operator sequence: R-H-R")
 set_tests_properties(
   regression_selected_reactive_eb_3d_unknown_species_rejected
   regression_selected_reactive_eb_3d_duplicate_species_rejected
@@ -353,7 +349,6 @@ set_tests_properties(
   regression_selected_reactive_eb_3d_path_alias_rejected
   regression_selected_reactive_eb_3d_checkpoint_input_alias_rejected
   regression_selected_reactive_eb_3d_restart_input_alias_rejected
-  regression_selected_reactive_eb_3d_unsupported_element_rejected
   PROPERTIES
     RESOURCE_LOCK selected_reactive_eb_3d_invalid
     WORKING_DIRECTORY "${SELECTED_REACTIVE_EB_3D_INVALID_WORK_DIRECTORY}"

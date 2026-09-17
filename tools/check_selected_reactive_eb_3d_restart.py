@@ -41,7 +41,7 @@ def check_selected_checkpoint(path: Path) -> bytes:
         raise AssertionError("selected checkpoint magic is missing")
     header = tuple(int(value) for value in lines[1].split())
     expected_header = (
-        2,
+        3,
         SPECIES_COUNT,
         REACTION_COUNT,
         TRANSPORT_COUNT,
@@ -73,7 +73,14 @@ def check_selected_checkpoint(path: Path) -> bytes:
         )
     if abs(sum(composition) - 1.0) > 5.0e-15:
         raise AssertionError("selected checkpoint composition is not normalized")
-    if lines[7].strip() != "SPECIES" or lines[-1].strip() != "END_CHECKPOINT":
+    expected_atoms = {"H": (2, 1, 0, 0, 1, 2, 0), "N": (0, 0, 0, 0, 0, 0, 2),
+                      "O": (0, 0, 1, 2, 1, 1, 0)}
+    if lines[7].strip() != "ELEMENT_CONTEXT" or int(lines[8]) != 3:
+        raise AssertionError("selected checkpoint element context is missing")
+    for index, (name, atoms) in enumerate(expected_atoms.items()):
+        if lines[9 + 2 * index] != name or tuple(map(float, lines[10 + 2 * index].split())) != atoms:
+            raise AssertionError("selected checkpoint atom table differs from source composition")
+    if lines[15].strip() != "SPECIES" or lines[-1].strip() != "END_CHECKPOINT":
         raise AssertionError("selected checkpoint body markers are invalid")
     return data
 

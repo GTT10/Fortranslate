@@ -1,4 +1,5 @@
 module reactive_eb_3d_application_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use state_indices_mod, only: ncons, imx, imy, imz
@@ -20,7 +21,7 @@ module reactive_eb_3d_application_mod
     initialize_reactive_eb_density_sheet_3d, &
     advance_reactive_eb_full_3d, &
     reactive_eb_integrals_3d, reactive_eb_extrema_3d, &
-    reactive_eb_element_integrals_3d, &
+    reactive_eb_element_integrals_3d, reactive_eb_composition_integrals_3d, &
     reactive_eb_element_species_supported_3d, &
     write_reactive_eb_3d_csv
   implicit none
@@ -32,7 +33,7 @@ contains
 
   subroutine run_reactive_eb_3d_application( &
       input_path, application_label, bundle_sha256, config, species, &
-      reactions, transport, base_mole_fractions, chemistry_integrator)
+      reactions, transport, base_mole_fractions, chemistry_integrator, element_names, element_atoms)
     character(len=*), intent(in) :: input_path, application_label
     character(len=*), intent(in) :: bundle_sha256
     type(reactive_eb_3d_config), intent(in) :: config
@@ -41,13 +42,16 @@ contains
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in), optional :: base_mole_fractions(:)
     character(len=*), intent(in), optional :: chemistry_integrator
+    character(len=*), intent(in), optional :: element_names(:)
+    real(dp), intent(in), optional :: element_atoms(:,:)
 
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:, :, :, :), new_state(:, :, :, :)
     real(dp), allocatable :: temperature(:, :, :), new_temperature(:, :, :)
     real(dp), allocatable :: initial_integrals(:), final_integrals(:)
     real(dp), allocatable :: initial_l1_integrals(:), final_l1_integrals(:)
-    real(dp) :: initial_element_integrals(3), final_element_integrals(3)
+    real(dp), allocatable :: initial_element_integrals(:),final_element_integrals(:),element_roundoff(:)
+    real(dp) :: element_residual
     real(dp) :: time, dt, hydro_dt, transport_dt, minimum_dt
     real(dp) :: conservation_error
     real(dp) :: component_error, normal_momentum_change
@@ -61,7 +65,7 @@ contains
     character(len=1024) :: message
     logical :: wall_momentum(3)
     logical :: ok, restarted, stopped_after_checkpoint, selected_context
-    integer :: step, nvar, component, normal_momentum
+    integer :: step, nvar, component, normal_momentum,element_count,e
 
     if (size(species) < 2 .or. size(reactions) < 1 .or. &
         size(transport) /= size(species)) then
@@ -82,10 +86,18 @@ contains
         error stop "Reactive EB 3D composition has incompatible dimensions"
       end if
     end if
-    if (config%chemistry_enabled .and. &
-        .not. reactive_eb_element_species_supported_3d(species)) then
-      error stop "Reactive EB 3D chemistry requires supported H/O/N species"
+    if (present(element_names).neqv.present(element_atoms)) error stop 'Incomplete EB element metadata'
+    element_count=3
+    if (present(element_names)) then
+      if (.not.selected_context) error stop 'Element metadata requires selected EB context'
+      element_count=size(element_names)
+      if (element_count<1) error stop 'Empty EB element metadata'
+      if (any(shape(element_atoms)/=[element_count,size(species)])) error stop 'Invalid EB element metadata shape'
+    else if (config%chemistry_enabled) then
+      if (.not.reactive_eb_element_species_supported_3d(species)) &
+        error stop "Reactive EB 3D chemistry requires supported H/O/N species"
     end if
+    allocate(initial_element_integrals(element_count),final_element_integrals(element_count),element_roundoff(element_count))
 
     call build_configured_eb_geometry_3d(config,geometry,ok)
     if (.not. ok) error stop "Failed to build public 3D EB geometry"
@@ -104,9 +116,12 @@ contains
       state, geometry, initial_integrals, ok, initial_l1_integrals)
     if (.not. ok) error stop "Failed to integrate initial 3D EB state"
     initial_element_integrals = 0.0_dp
-    if (config%chemistry_enabled) then
-      call reactive_eb_element_integrals_3d( &
-        species, state, geometry, initial_element_integrals, ok)
+    if (config%chemistry_enabled.or.present(element_atoms)) then
+      if (present(element_atoms)) then
+        call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,initial_element_integrals,ok)
+      else
+        call reactive_eb_element_integrals_3d(species,state,geometry,initial_element_integrals,ok)
+      end if
       if (.not. ok) error stop "Failed to integrate initial EB elements"
     end if
 
@@ -126,7 +141,7 @@ contains
           maximum_transport_diffusivity, minimum_transport_theta, ok, &
           message, bundle_sha256=bundle_sha256, &
           chemistry_integrator=chemistry_integrator, &
-          base_mole_fractions=base_mole_fractions)
+          base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms)
       else
         call read_reactive_eb_3d_checkpoint( &
           trim(config%restart_file), species, reactions, transport, config, &
@@ -196,7 +211,7 @@ contains
               maximum_transport_diffusivity, minimum_transport_theta, &
               ok, message, bundle_sha256=bundle_sha256, &
               chemistry_integrator=chemistry_integrator, &
-              base_mole_fractions=base_mole_fractions)
+              base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms)
           else
             call write_reactive_eb_3d_checkpoint( &
               trim(config%checkpoint_file), species, reactions, transport, &
@@ -226,12 +241,25 @@ contains
     if (.not. ok) error stop "Failed to integrate final 3D EB state"
     element_conservation_error = 0.0_dp
     if (config%chemistry_enabled) then
-      call reactive_eb_element_integrals_3d( &
-        species, state, geometry, final_element_integrals, ok)
-      if (.not. ok) error stop "Failed to integrate final EB elements"
-      element_conservation_error = maxval(abs( &
-        final_element_integrals - initial_element_integrals) / &
-        max(1.0e-30_dp, abs(initial_element_integrals)))
+      if (present(element_atoms)) then
+        call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,final_element_integrals,ok)
+        if (.not.ok) error stop 'Failed to integrate final EB elements'
+        ! Preserve the relative gate and separately account for roundoff of
+        ! initially absent elements from species mass closure and summation.
+        do e=1,element_count
+          element_roundoff(e)=64._dp*epsilon(1._dp)*real(max(1,step),dp)*sum(abs(initial_integrals(6:)))* &
+            maxval(element_atoms(e,:)/species%molecular_weight)
+          element_residual=max(0._dp,abs(final_element_integrals(e)-initial_element_integrals(e))-element_roundoff(e))
+          element_conservation_error=max(element_conservation_error, &
+            element_residual/max(1.e-30_dp,abs(initial_element_integrals(e))))
+        end do
+        if (.not.ieee_is_finite(element_conservation_error)) error stop 'Nonfinite elemental conservation error'
+      else
+        call reactive_eb_element_integrals_3d(species,state,geometry,final_element_integrals,ok)
+        if (.not.ok) error stop 'Failed to integrate final EB elements'
+        element_conservation_error=maxval(abs(final_element_integrals-initial_element_integrals)/ &
+          max(1.e-30_dp,abs(initial_element_integrals)))
+      end if
     end if
     normal_momentum=imx
     if (config%geometry_type=='plane') then
@@ -263,6 +291,9 @@ contains
         final_integrals(component) - initial_integrals(component)) / &
         max(tiny(1.0_dp), abs(initial_integrals(component)), &
           initial_l1_integrals(component), final_l1_integrals(component))
+      if (component_error>5.e-11_dp) write(*,'(a,i0,3(1x,es24.16))') &
+        'Invariant component initial/final/error: ',component, &
+        initial_integrals(component),final_integrals(component),component_error
       conservation_error = max(conservation_error, component_error)
     end do
     normal_momentum_change = &
