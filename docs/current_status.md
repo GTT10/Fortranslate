@@ -570,7 +570,11 @@ whole-step rollback ([evidence](validation/spray-amr-reactive-20260918.md)).
 A coupled remap API now commits tree/owners, conservative gas remapping and
 finest-owner particle migration together, preserving all original state on
 failure ([evidence](validation/spray-amr-remap-20260918.md)).
-Executable setup, regrid scheduling/injection/checkpoint orchestration, AMR physical
+Fixed and selected [MPI AMR spray applications](../cases/mpi_amr_spray_3d/README.md)
+now connect owner-local gas setup, mixed-cone initial injection, coupled stepping,
+one scheduled regrid and gas/particle CSV output
+([evidence](validation/spray-amr-application-20260918.md)). AMR spray checkpoint/
+restart, timed/multiport injection, automatic adaptation/rebalancing, physical
 particle boundaries and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
