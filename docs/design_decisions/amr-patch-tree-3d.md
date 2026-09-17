@@ -789,3 +789,19 @@ and recursive level stepping remain separate integration work.
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
 The existing serial/MPI two-level application remains unchanged.
+
+## MPI tree checkpoint continuation
+
+The static fixed/selected MPI driver reuses the serial tree checkpoint schema and
+canonical physics/mechanism/topology context. Rank zero gathers owned state and
+stored temperature guesses only at requested checkpoints, writes through the
+existing validator, and synchronizes completion. On restart rank zero validates
+run limits, static geometry, initial inventory and boundary ledger in addition
+to the reader's EOS/average checks, then scatters state and temperatures to the
+current round-robin owners and broadcasts counters/diagnostics. No rank identity
+is serialized. Temporary global payloads are released before stepping resumes.
+
+The selected frontend passes its bundle SHA-256. Static serial/MPI interchange
+therefore retains mechanism identity and exact temperature guesses. Scheduled or
+automatic regridding and recursive modes remain outside this MPI entry point.
+The existing writer's partial-file-on-I/O-error limitation also applies here.

@@ -222,13 +222,20 @@ empty ranks are supported. It uses common timesteps and the full reaction/transp
 hydro composition with up to 20 timestep-halving attempts.
 
 Rank zero gathers state once for the initial inventory and gathers state/temperature
-at final output. Final CSV rows and budget format match serial. These gathers are
-initialization/output operations; time stepping does not gather full fields.
+at final output and requested checkpoints. Final CSV rows and budget format match
+serial. Numerical time stepping does not gather full fields.
 The bounded regression checks byte equality for the elementary hotspot case.
 
-Only the two required CLI arguments are accepted. The `amr_tree_checkpoint`,
-`amr_tree_adaptation` and `amr_tree_timestepping` groups are rejected by this MPI
-entry point; MPI restart, regridding and subcycling are not yet connected. Input
+Only the two required CLI arguments are accepted. The `amr_tree_adaptation` and
+`amr_tree_timestepping` groups are rejected; MPI regridding and subcycling are
+not yet connected. The `amr_tree_checkpoint` group uses the same controls and
+format as serial. Rank zero reads/writes the checkpoint, validates its context,
+static geometry, EOS, averages and ledger, then redistributes payloads according
+to the current rank count. Fixed/selected checkpoints can be exchanged with the
+corresponding serial frontend for static synchronous runs. The selected bundle
+SHA-256 remains part of checkpoint identity. A requested checkpoint stop returns
+before final CSV output; a restart resumes step counters without resaving the
+loaded step. Checkpoint files must not alias input, topology or output paths. Input
 and output lexical aliases are rejected after resolving relative paths against
 the working directory. This POSIX path check does not resolve symlinks/hard links.
 Whole-patch ownership and root output are not a production scaling claim.
@@ -236,7 +243,7 @@ Whole-patch ownership and root output are not a production scaling claim.
 ## Remaining scope
 
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
-The MPI frontend currently supports static synchronous execution; restart, regridding
+The MPI frontend currently supports static synchronous execution with restart; regridding
 and subcycling remain to be connected there. Characteristic-PLM hydro enables limited
 linear coarse donors with the configured limiter for both hydro and transport.
 PCM reconstruction retains PCM donors. Common timesteps and recursive subcycling are available; globally second-order
@@ -258,4 +265,4 @@ stepping. Its isolated MPI runtime links selected libraries without `pelef_core`
 or fixed mechanism databases. Custom bundle targets can use
 `MPI_AMR_TREE_REACTIVE_3D_NAME`; the target participates in bundle installation.
 The same static-only restrictions, output alias checks and root CSV gathers as
-the fixed MPI frontend apply. MPI checkpoint/regridding/subcycling remain open.
+the fixed MPI frontend apply. MPI regridding/subcycling remain open.

@@ -24,7 +24,7 @@ connects static, scheduled or temperature-adapted multi-level geometry,
 reaction/transport/hydro, checkpoint continuation and composite CSV output.
 The fixed-mechanism `pelef_mpi_amr_tree_reactive_3d` and configure-time selected
 `pelef_mpi_amr_tree_reactive_3d_selected` executables support static topologies
-with owner-local stepping and the same final CSV format.
+with owner-local stepping, rank-neutral checkpoint/restart and the same final CSV format.
 
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,

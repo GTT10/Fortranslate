@@ -62,9 +62,9 @@ def main() -> None:
         compare(reference, run(f'branched_mpi_{ranks}', 'branched.dat', ranks))
     reference = run('root_serial', 'root.dat')
     compare(reference, run('root_mpi_3', 'root.dat', 3))
-    run('unsupported_checkpoint', 'branched.dat', 2,
-        extra='\n&amr_tree_checkpoint\n checkpoint_interval_steps=1\n/\n',
-        fail='does not yet support checkpoint, adaptation or subcycling groups')
+    run('unsupported_adaptation', 'branched.dat', 2,
+        extra='\n&amr_tree_adaptation\n regrid_interval_steps=1\n/\n',
+        fail='does not yet support adaptation or subcycling groups')
     # Alias a topology to the output name without changing the input template.
     folder = (args.workdir / 'topology_alias').resolve()
     folder.mkdir(parents=True, exist_ok=True)

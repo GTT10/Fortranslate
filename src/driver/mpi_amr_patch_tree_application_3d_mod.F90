@@ -1,4 +1,6 @@
 module mpi_amr_patch_tree_application_3d_mod
+  use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d, build_amr_tree_checkpoint_context_3d, &
+    read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
   use mpi_f08
   use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -23,7 +25,7 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: gather_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: gather_mpi_amr_tree_3d,scatter_mpi_amr_tree_3d
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   implicit none
   private
@@ -38,9 +40,9 @@ module mpi_amr_patch_tree_application_3d_mod
   end interface
 contains
   subroutine run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
-      mole_fractions,comm,chemistry_integrator)
+      mole_fractions,comm,chemistry_integrator,mechanism_identity)
     character(len=*), intent(in) :: topology_path,input_path
-    character(len=*), optional, intent(in) :: chemistry_integrator
+    character(len=*), optional, intent(in) :: chemistry_integrator,mechanism_identity
     type(reactive_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -60,7 +62,13 @@ contains
     character(len=32) :: faces(6)
     character(len=1024) :: message
     character(len=:), allocatable :: row
+    character(len=1024) :: checkpoint_file,restart_file
+    character(len=:), allocatable :: context,identity,integrator
+    integer :: checkpoint_interval_steps
+    logical :: stop_after_checkpoint,use_implicit
     logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
+    namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
+    checkpoint_file='';restart_file='';checkpoint_interval_steps=0;stop_after_checkpoint=.false.
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI rank')
     call MPI_Comm_size(comm,nranks,status)
@@ -79,11 +87,35 @@ contains
         c=iachar(message(i:i))
         if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
       end do
-      if (index(message,'&amr_tree_')==1.or.index(message,'$amr_tree_')==1) &
-        call fatal('MPI tree application does not yet support checkpoint, adaptation or subcycling groups')
+      if (index(message,'&amr_tree_checkpoint')==1.or.index(message,'$amr_tree_checkpoint')==1) then
+        backspace(unit,iostat=status)
+        if (status/=0) call fatal('Cannot locate MPI tree checkpoint group')
+        read(unit,nml=amr_tree_checkpoint,iostat=status)
+        if (status/=0) call fatal('Invalid MPI tree checkpoint configuration')
+      else if (index(message,'&amr_tree_')==1.or.index(message,'$amr_tree_')==1) then
+        call fatal('MPI tree application does not yet support adaptation or subcycling groups')
+      end if
     end do
     close(unit)
+    if (checkpoint_interval_steps<0) call fatal('Negative MPI tree checkpoint interval')
+    if (stop_after_checkpoint.and.checkpoint_interval_steps==0) call fatal('Checkpoint stop requires positive interval')
+    if (checkpoint_interval_steps>0.and.len_trim(checkpoint_file)==0) call fatal('Missing MPI tree checkpoint path')
+    call check_checkpoint_paths(input_path)
+    call check_checkpoint_paths(topology_path)
+    call check_checkpoint_paths(config%output_file)
+    call check_checkpoint_paths(trim(config%output_file)//'.budget.csv')
     call read_topology(topology_path,tree)
+    if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
+      identity='fixed:'//trim(config%thermo_model)
+      if (present(mechanism_identity)) identity=mechanism_identity
+      call resolve_reactive_chemistry_integrator(size(species),chemistry_integrator,use_implicit,ok)
+      if (.not.ok) call fatal('Invalid MPI tree chemistry integrator')
+      integrator='explicit'
+      if (use_implicit) integrator='implicit'
+      call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
+        identity,integrator,tree_key(tree),context,ok)
+      if (.not.ok) call fatal('Cannot build MPI tree checkpoint context')
+    end if
     count=size(tree%nodes)-1
     owners=[(mod(node-1,nranks),node=1,count+1)]
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
@@ -153,11 +185,12 @@ contains
     if (rank==0) then
       call composite_integrals_amr_patch_tree_3d(tree,global_state,root_h,initial,ok)
       if (.not.ok) call fatal('Invalid initial composite inventory')
-      deallocate(global_state%fields)
     end if
     call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot distribute initial inventory')
     time=0;step=0;budget=0;max_correction=0;min_theta=1
+    if (len_trim(restart_file)>0) call restore_checkpoint()
+    if (allocated(global_state%fields)) deallocate(global_state%fields)
     if (rank==0) then
       write(*,'(a)') 'PeleF '//pelef_version//' experimental MPI regular 3D patch tree'
       write(*,'(a,i0,a,i0,a,i0)') 'Ranks: ',nranks,' Nodes: ',count+1,' Levels: ',tree%level_count()
@@ -193,6 +226,15 @@ contains
       end if
       step=step+1;budget=budget+change
       max_correction=max(max_correction,correction);min_theta=min(min_theta,theta)
+      if (checkpoint_interval_steps>0) then
+        if (mod(step,checkpoint_interval_steps)==0) then
+          call save_checkpoint()
+          if (stop_after_checkpoint) then
+            if (rank==0) write(*,'(a,i0,a,es24.16)') 'Stopped after checkpoint at step ',step,' time ',time
+            return
+          end if
+        end if
+      end if
     end do
     call gather_mpi_amr_tree_3d(tree,owners,state,global_state,comm,0,ok)
     if (.not.ok) call fatal('Cannot gather final MPI tree state')
@@ -256,6 +298,105 @@ contains
       write(*,'(a,i0,2a)') 'MPI tree rank ',rank,': ',reason
       call MPI_Abort(comm,2,ierr)
       error stop 2
+    end subroutine
+    subroutine check_checkpoint_paths(path)
+      character(len=*), intent(in) :: path
+      if (checkpoint_interval_steps>0) then
+        if (selected_reactor_paths_alias_lexically(absolute_path(checkpoint_file),absolute_path(path))) &
+          call fatal('MPI tree checkpoint aliases input/output')
+      end if
+      if (len_trim(restart_file)>0) then
+        if (selected_reactor_paths_alias_lexically(absolute_path(restart_file),absolute_path(path))) &
+          call fatal('MPI tree restart aliases input/output')
+      end if
+    end subroutine
+    function tree_key(geometry) result(key)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      character(len=:), allocatable :: key
+      character(len=512) :: line
+      integer :: peer
+      write(line,'(*(i0,1x))') size(geometry%nodes),geometry%nodes(1)%shape
+      key=trim(line)//new_line('a')
+      do peer=2,size(geometry%nodes)
+        associate(item=>geometry%nodes(peer),box=>geometry%nodes(peer)%patch)
+          write(line,'(*(i0,1x))') item%parent,box%coarse_i_lower,box%coarse_i_upper, &
+            box%coarse_j_lower,box%coarse_j_upper,box%coarse_k_lower,box%coarse_k_upper,box%refinement_ratio
+        end associate
+        key=key//trim(line)//new_line('a')
+      end do
+    end function
+    subroutine save_checkpoint()
+      type(amr_tree_checkpoint_3d) :: snapshot
+      call gather_mpi_amr_tree_3d(tree,owners,state,snapshot%state,comm,0,ok)
+      if (.not.ok) call fatal('Cannot gather MPI checkpoint state')
+      call gather_mpi_amr_tree_3d(tree,owners,temperature,snapshot%temperature,comm,0,ok)
+      if (.not.ok) call fatal('Cannot gather MPI checkpoint temperature')
+      if (rank==0) then
+        snapshot%tree=tree;snapshot%initial=initial;snapshot%boundary=budget
+        snapshot%time=time;snapshot%steps=step
+        snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
+        call write_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,ok)
+        if (.not.ok) call fatal('Cannot write MPI tree checkpoint')
+      end if
+      call MPI_Barrier(comm,status)
+      if (status/=MPI_SUCCESS) call fatal('Cannot synchronize MPI checkpoint completion')
+    end subroutine
+    subroutine restore_checkpoint()
+      type(amr_tree_checkpoint_3d) :: snapshot
+      type(amr_tree_state_3d) :: absolute_state
+      real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q)),scalars(3)
+      integer :: peer,nconserved
+      if (rank==0) then
+        call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
+          [config%nx,config%ny,config%nz],snapshot,ok)
+        if (.not.ok) call fatal('Invalid MPI tree restart checkpoint/context')
+        if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
+          call fatal('MPI tree restart exceeds run limits')
+        if (snapshot%regrids/=0.or.snapshot%maximum_remap_error/=0) call fatal('MPI tree restart is not static')
+        if (tree_key(snapshot%tree)/=tree_key(tree)) call fatal('MPI tree restart geometry mismatch')
+        if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
+          call fatal('Tree restart initial inventory mismatch')
+        ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
+        absolute_state=global_state
+        do peer=1,size(tree%nodes)
+          absolute_state%fields(peer)%values=abs(global_state%fields(peer)%values)
+        end do
+        call composite_integrals_amr_patch_tree_3d(tree,absolute_state,root_h,original_scale,ok)
+        if (.not.ok) call fatal('Invalid initial restart inventory scale')
+        absolute_state=snapshot%state
+        do peer=1,size(snapshot%tree%nodes)
+          absolute_state%fields(peer)%values=abs(snapshot%state%fields(peer)%values)
+        end do
+        call composite_integrals_amr_patch_tree_3d(snapshot%tree,absolute_state,root_h,restart_scale,ok)
+        if (.not.ok) call fatal('Invalid restart inventory scale')
+        call composite_integrals_amr_patch_tree_3d(snapshot%tree,snapshot%state,root_h,inventory,ok)
+        if (.not.ok) call fatal('Invalid restart inventory')
+        ! Momentum is a vector: a nearly zero transverse component must use
+        ! the full momentum magnitude as its roundoff scale.
+        original_scale(2:4)=maxval(original_scale(2:4))
+        restart_scale(2:4)=maxval(restart_scale(2:4))
+        nconserved=size(q)
+        if (config%chemistry_enabled) nconserved=5
+        if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)-snapshot%boundary(:nconserved))> &
+            2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
+            abs(snapshot%boundary(:nconserved))))) call fatal('Tree restart boundary ledger mismatch')
+        initial=snapshot%initial;budget=snapshot%boundary;step=snapshot%steps
+        scalars=[snapshot%time,snapshot%maximum_reflux,snapshot%minimum_theta]
+      end if
+      ! The reader validates context, EOS, averages and ledger before any owned payload changes.
+      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%state,state,comm,0,ok)
+      if (.not.ok) call fatal('Cannot distribute MPI restart state')
+      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%temperature,temperature,comm,0,ok)
+      if (.not.ok) call fatal('Cannot distribute MPI restart temperature')
+      call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
+      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart initial inventory')
+      call MPI_Bcast(budget,size(budget),MPI_DOUBLE_PRECISION,0,comm,status)
+      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart ledger')
+      call MPI_Bcast(step,1,MPI_INTEGER,0,comm,status)
+      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart step')
+      call MPI_Bcast(scalars,3,MPI_DOUBLE_PRECISION,0,comm,status)
+      if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart diagnostics')
+      time=scalars(1);max_correction=scalars(2);min_theta=scalars(3)
     end subroutine
     subroutine check_paths(path)
       character(len=*), intent(in) :: path

@@ -70,8 +70,10 @@ MPI transport/wall timestep selection and the full common-step reaction/transpor
 composition are now connected ([evidence](validation/amr-tree-mpi-split-20260917.md)).
 The fixed-mechanism MPI tree executable now connects static topology, owner-local
 initialization/stepping, timestep retries and serial-format final CSV/budget output
-([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI tree restart,
-regridding and coarse-time interpolation/subcycling remain open. The selected-mechanism
+([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI tree regridding and coarse-time interpolation/subcycling remain open.
+Fixed/selected MPI tree checkpoint/restart now reuses the serial format and validates
+context/geometry/EOS/ledger before owner redistribution
+([evidence](validation/amr-tree-mpi-restart-20260917.md)). The selected-mechanism
 MPI tree frontend now uses an isolated selected runtime and forwards the bundle
 integrator ([evidence](validation/amr-tree-selected-mpi-20260917.md)). A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested

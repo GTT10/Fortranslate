@@ -111,7 +111,7 @@ program pelef_mpi_amr_tree_reactive_3d_selected
     write(*,'(a)') 'Chemistry integrator: '//pelef_selected_chemistry_integrator
   end if
   call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions, &
-    transport,mole_fractions,MPI_COMM_WORLD,pelef_selected_chemistry_integrator)
+    transport,mole_fractions,MPI_COMM_WORLD,pelef_selected_chemistry_integrator,pelef_selected_bundle_sha256)
   call MPI_Finalize(ierr)
 contains
   subroutine fatal(reason)
