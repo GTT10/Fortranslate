@@ -78,6 +78,7 @@ pelef_add_mechanism_bundle(
   REACTIVE_3D_NAME test_selected_full_reactive_3d
   AMR_REACTIVE_3D_NAME test_selected_full_amr_reactive_3d
   REACTIVE_EB_3D_NAME test_selected_full_reactive_eb_3d
+  REACTIVE_EB_TWO_LEVEL_3D_NAME test_selected_full_reactive_eb_two_level_3d
   ${PELEF_TEST_SELECTED_FULL_MPI_OPTION}
   ADD_TEST
 )
@@ -148,3 +149,12 @@ add_test(NAME regression_amr_tree_subcycle_restart_3d
     --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_subcycle_restart_3d" --subcycling)
 set_tests_properties(regression_amr_tree_subcycle_restart_3d PROPERTIES TIMEOUT 300)
+
+add_test(
+  NAME regression_selected_eb_two_level_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_selected_eb_two_level_3d.py"
+    --exe $<TARGET_FILE:test_selected_full_reactive_eb_two_level_3d>
+    --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/selected_h2o2.nml"
+    --bundle "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_two_level_3d"
+)

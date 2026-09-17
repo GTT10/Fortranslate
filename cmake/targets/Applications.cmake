@@ -44,6 +44,7 @@ if(PELEF_MECHANISM_BUNDLE)
       AMR_REACTIVE_3D_NAME pelef_amr_reactive_3d_selected
       AMR_TREE_REACTIVE_3D_NAME pelef_amr_tree_reactive_3d_selected
       REACTIVE_EB_3D_NAME pelef_reactive_eb_3d_selected
+      REACTIVE_EB_TWO_LEVEL_3D_NAME pelef_reactive_eb_two_level_3d_selected
       ${pelef_selected_mpi_option}
       INSTALL
       ${pelef_selected_test_option}
@@ -64,6 +65,7 @@ if(PELEF_MECHANISM_BUNDLE)
       AMR_REACTIVE_3D_NAME pelef_amr_reactive_3d_selected
       AMR_TREE_REACTIVE_3D_NAME pelef_amr_tree_reactive_3d_selected
       REACTIVE_EB_3D_NAME pelef_reactive_eb_3d_selected
+      REACTIVE_EB_TWO_LEVEL_3D_NAME pelef_reactive_eb_two_level_3d_selected
       ${pelef_selected_mpi_option}
       INSTALL
       ${pelef_selected_test_option}

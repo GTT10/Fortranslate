@@ -3,10 +3,25 @@ program pelef_reactive_eb_two_level_3d
   use, intrinsic :: iso_fortran_env, only: iostat_end, iostat_eor
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+#ifndef PELEF_SELECTED_EB_TWO_LEVEL
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
-  use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
+  use transport_database_mod, only: load_h2o2_elementary_transport
+#else
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    load_selected_thermo => @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    load_selected_reactions => @PELEF_BUNDLE_LOADER_NAME@, &
+    load_selected_transport => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@, &
+    selected_nspecies => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    selected_nreactions => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    selected_integrator => @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@
+  use selected_mechanism_runtime_mod, only: prepare_selected_mechanism,validate_selected_temperature_range
+  use simulation_config_reactive_eb_3d_mod, only: resolve_reactive_eb_3d_selected_composition
+  use reactive_eb_3d_driver_mod, only: reactive_eb_element_species_supported_3d
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions,mixture_specific_gas_constant
+#endif
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
@@ -18,7 +33,19 @@ program pelef_reactive_eb_two_level_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_patch_timestep_3d
   use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_full_3d, &
     eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d
+  use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
   implicit none
+  real(dp), allocatable :: base_mole_fractions(:)
+  character(len=:), allocatable :: bundle_identity,checkpoint_integrator
+  integer :: composition_count=0
+  character(len=selected_composition_name_length) :: composition_species(selected_composition_max_species)=''
+  real(dp) :: composition_mole_fractions(selected_composition_max_species)=0._dp
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+  character(len=24) :: transport_names(selected_nspecies)
+  integer :: transport_geometries(selected_nspecies)
+  real(dp) :: transport_values(5,selected_nspecies),mass_fractions(selected_nspecies)
+  real(dp) :: common_tmin,common_tmax,gas_constant,regular_t,cut_t
+#endif
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -30,7 +57,11 @@ program pelef_reactive_eb_two_level_3d
   integer :: patch_count=1,patch_lower(3,16)=0,patch_upper(3,16)=0
   integer :: nx=8,ny=8,nz=8,refinement_ratio=2,fine_lower(3)=[2,2,2],fine_upper(3)=[3,3,3],maximum_steps=100
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z',riemann_solver='rusanov'
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+  character(len=16) :: chemistry_integrator=selected_integrator
+#else
   character(len=16) :: chemistry_integrator='explicit'
+#endif
   character(len=512) :: level_set_file='',section_file='',output_file='eb_two_level.csv'
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp,time_step=1.e-8_dp,final_time=3.e-8_dp
   character(len=512) :: checkpoint_file='',restart_file=''
@@ -46,7 +77,8 @@ program pelef_reactive_eb_two_level_3d
     rtol,atol,chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
     species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
     checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
-    automatic_timestep,hydro_cfl,transport_cfl,subcycling,patch_count,patch_lower,patch_upper
+    automatic_timestep,hydro_cfl,transport_cfl,subcycling,patch_count,patch_lower,patch_upper, &
+    composition_count,composition_species,composition_mole_fractions
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
@@ -134,17 +166,58 @@ program pelef_reactive_eb_two_level_3d
       patch_upper(:,p)*refinement_ratio,patches(p)%geometry,ok)
     if (.not.ok) error stop 'Cannot extract fine EB patch'
   end do
+#ifdef PELEF_SELECTED_EB_TWO_LEVEL
+  call load_selected_thermo(species,ok)
+  if (.not.ok) error stop 'Selected thermodynamic load failed'
+  call load_selected_reactions(reactions,ok)
+  if (.not.ok) error stop 'Selected reaction load failed'
+  call load_selected_transport(transport_names,transport_geometries,transport_values,ok)
+  if (.not.ok) error stop 'Selected transport load failed'
+  call prepare_selected_mechanism('Two-level EB',selected_nspecies,selected_nreactions,species,reactions, &
+    transport_names,transport_geometries,transport_values,transport,common_tmin,common_tmax,ok,message)
+  if (.not.ok) then
+    write(*,'(a)') trim(message)
+    error stop 'Invalid selected mechanism'
+  end if
+  if (.not.reactive_eb_element_species_supported_3d(species)) error stop 'EB budgets require supported H/O/N species'
+  config%thermo_model='selected'
+  config%composition_count=composition_count;config%composition_species=composition_species
+  config%composition_mole_fractions=composition_mole_fractions
+  allocate(base_mole_fractions(size(species)))
+  call resolve_reactive_eb_3d_selected_composition(config,species,base_mole_fractions,ok,message)
+  if (.not.ok) then
+    write(*,'(a)') trim(message)
+    error stop 'Invalid selected composition'
+  end if
+  call mass_fractions_from_mole_fractions(species,base_mole_fractions,mass_fractions,ok)
+  if (.not.ok) error stop 'Invalid selected mass fractions'
+  gas_constant=mixture_specific_gas_constant(species,mass_fractions,ok)
+  if (.not.ok) error stop 'Invalid selected gas constant'
+  regular_t=config%initial_pressure/(config%regular_density*gas_constant)
+  cut_t=config%initial_pressure/(config%cut_density*gas_constant)
+  call validate_selected_temperature_range('Two-level EB',min(regular_t,cut_t),max(regular_t,cut_t), &
+    common_tmin,common_tmax,ok,message)
+  if (.not.ok) then
+    write(*,'(a)') trim(message)
+    error stop 'Selected initial temperature outside mechanism range'
+  end if
+  bundle_identity='@PELEF_BUNDLE_BUNDLE_SHA256@'
+  checkpoint_integrator=chemistry_integrator
+#else
+  if (composition_count/=0.or.any(composition_species/='').or.any(composition_mole_fractions/=0._dp)) &
+    error stop 'Composition inputs require selected executable'
   call load_h2o2_elementary_thermo(species,ok)
   if (.not.ok) error stop 'Thermodynamic load failed'
   call load_h2o2_elementary_mechanism(reactions,ok)
   if (.not.ok) error stop 'Mechanism load failed'
   call load_h2o2_elementary_transport(transport,ok)
   if (.not.ok) error stop 'Transport load failed'
+#endif
   nvar=reactive_nvar(size(species));nf=[fine%nx,fine%ny,fine%nz]
   allocate(uc(nvar,dims(1),dims(2),dims(3)),tc(dims(1),dims(2),dims(3)), &
     refined(dims(1),dims(2),dims(3)))
   config%nx=dims(1);config%ny=dims(2);config%nz=dims(3)
-  call initialize_reactive_eb_density_sheet_3d(species,config,coarse,uc,tc,ok)
+  call initialize_reactive_eb_density_sheet_3d(species,config,coarse,uc,tc,ok,base_mole_fractions)
   if (.not.ok) error stop 'Coarse initialization failed'
   refined=.false.
   do p=1,patch_count
@@ -152,7 +225,7 @@ program pelef_reactive_eb_two_level_3d
     allocate(patches(p)%state(nvar,nf(1),nf(2),nf(3)),patches(p)%temperature(nf(1),nf(2),nf(3)))
     config%nx=nf(1);config%ny=nf(2);config%nz=nf(3)
     call initialize_reactive_eb_density_sheet_3d(species,config,patches(p)%geometry, &
-      patches(p)%state,patches(p)%temperature,ok)
+      patches(p)%state,patches(p)%temperature,ok,base_mole_fractions)
     if (.not.ok) error stop 'Fine initialization failed'
     if (any(refined(patch_lower(1,p):patch_upper(1,p),patch_lower(2,p):patch_upper(2,p), &
       patch_lower(3,p):patch_upper(3,p)))) error stop 'Overlapping patch boxes'
@@ -369,7 +442,8 @@ contains
     cfg=patch_config(geometry)
     if (reading) then
       call read_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,geometry,state,temperature, &
-        got_time,got_step,integrals,l1,elements,got_dt,diffusivity,got_theta,valid,reason,checkpoint_unit=stream)
+        got_time,got_step,integrals,l1,elements,got_dt,diffusivity,got_theta,valid,reason,bundle_sha256=bundle_identity, &
+        chemistry_integrator=checkpoint_integrator,base_mole_fractions=base_mole_fractions,checkpoint_unit=stream)
       if (.not.valid) then
         write(*,'(a)') trim(reason)
         error stop 'Invalid two-level patch record'
@@ -391,7 +465,8 @@ contains
     else
       call write_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,geometry,state,temperature, &
         record_time,record_step,expected,expected_l1,expected_elements,record_dt,0._dp,record_theta, &
-        valid,reason,checkpoint_unit=stream)
+        valid,reason,bundle_sha256=bundle_identity, &
+        chemistry_integrator=checkpoint_integrator,base_mole_fractions=base_mole_fractions,checkpoint_unit=stream)
       if (.not.valid) then
         write(*,'(a)') trim(reason)
         error stop 'Cannot serialize two-level patch'
