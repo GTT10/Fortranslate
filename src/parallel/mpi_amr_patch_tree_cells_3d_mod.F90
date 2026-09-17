@@ -10,13 +10,14 @@ module mpi_amr_patch_tree_cells_3d_mod
 contains
   ! Each request column is [node,i,j,k], with one-based cell indices.
   ! Request counts/order may differ on every rank, including zero requests.
-  subroutine fetch_mpi_amr_tree_cells_3d(tree,owners,local,nvar,requests,values,comm,ok)
+  subroutine fetch_mpi_amr_tree_cells_3d(tree,owners,local,nvar,requests,values,comm,ok,maximum_depth)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,requests(:,:)
     type(amr_tree_state_3d), intent(in) :: local
     real(dp), allocatable, intent(inout) :: values(:,:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_depth
     integer, allocatable :: send_count(:),recv_count(:),send_offset(:),recv_offset(:)
     integer, allocatable :: cursor(:),order(:),packed(:,:),received(:,:)
     real(dp), allocatable :: replies(:,:),returned(:,:),candidate(:,:)
@@ -24,7 +25,7 @@ contains
     integer(int64) :: total
     logical :: valid,ready
     ok=.false.
-    call validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ready)
+    call validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ready,maximum_depth)
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
@@ -39,6 +40,9 @@ contains
       node=requests(1,query)
       if (node<1.or.node>size(tree%nodes)) then
         valid=.false.;cycle
+      end if
+      if (present(maximum_depth)) then
+        if (tree%nodes(node)%level>maximum_depth) valid=.false.
       end if
       if (any(requests(2:4,query)<1).or.any(requests(2:4,query)>tree%nodes(node)%shape)) valid=.false.
     end do
@@ -103,23 +107,32 @@ contains
     end subroutine
   end subroutine
   ! Collective metadata and allocation/shape check; does not scan payload values.
-  subroutine validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ok)
+  subroutine validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ok,maximum_depth)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
     type(amr_tree_state_3d), intent(in) :: local
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    integer :: rank,status,node
+    integer, optional, intent(in) :: maximum_depth
+    integer :: rank,status,node,depth,low,high
     logical :: valid
     call validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,ok)
     if (.not.ok) return
     ok=.false.
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    depth=tree%level_count()-1
+    if (present(maximum_depth)) depth=maximum_depth
+    call MPI_Allreduce(depth,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(depth,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS) return
+    if (low/=high.or.depth< -1.or.depth>=tree%level_count()) return
     valid=allocated(local%fields)
     if (valid) valid=size(local%fields)==size(tree%nodes)
     if (valid) then
       do node=1,size(tree%nodes)
+        if (tree%nodes(node)%level>depth) cycle
         if (owners(node)/=rank) then
           if (allocated(local%fields(node)%values)) valid=.false.
         else if (.not.allocated(local%fields(node)%values)) then

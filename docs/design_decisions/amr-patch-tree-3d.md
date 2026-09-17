@@ -885,3 +885,28 @@ Only rank zero reads the file; validated parent/box/ratio metadata is broadcast
 and rebuilt on every rank before owner-local state/temperature scattering. The
 last completed step is recorded to prevent duplicate tagging at continuation.
 Serial/MPI checkpoint context and payloads remain compatible for common timesteps.
+
+## MPI coarse-time ghost donors
+
+`fill_mpi_amr_tree_ghosts_3d` now accepts paired `coarse_future` and
+`coarse_fractions` arguments, plus optional zero-based `depth`. Omitted depth or
+`-1` fills all owned nodes; a nonnegative depth allocates output only for owned
+nodes at that depth. Fractions contain one value per coarser depth, or
+`tree%level_count()-1` entries for all-depth filling. Each sampled node receives
+the prefix matching its depth. Presence, depth and finite [0,1] fractions must
+agree across ranks. Same-level peers continue to use current state.
+
+Planning records both cell coordinates and whether each read is current/future.
+Separate sparse exchanges populate those requests, then the serial sampler applies
+PCM/limited PLM time blending and physical-boundary transforms in the same order.
+The current state is complete on owned nodes; future fields need only exist on
+owned coarser levels. All required coarse future values must be finite even when
+fractions are zero, matching serial validation. Inactive finer endpoint fields
+are ignored. Outputs commit only after all ranks finish sampling successfully.
+
+The sparse cell fetch/local validator has an optional `maximum_depth` bound.
+It validates only fields at or below that depth and rejects requests beyond it;
+`-1` permits an empty payload/query set. All ranks agree on the effective bound.
+Default calls retain full-tree validation. This permits partial future endpoints
+without placeholder allocation or full-field communication. Numerical level
+stepping and recursive flux accumulation still need to consume these donors.

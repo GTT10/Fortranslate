@@ -124,7 +124,8 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-coarse-time endpoints/subcycling. MPI temperature-adaptation application dispatch
+MPI level stepping and recursive subcycling. Sparse coarse-time ghost endpoints
+and per-depth interpolation fractions are now connected. MPI temperature-adaptation application dispatch
 and adaptation-aware changed-rank continuation are connected.
 MPI temperature tagging now generates deterministic trees from owner-local hot
 exposed cells; fixed/selected application controls and restart policy are connected.
