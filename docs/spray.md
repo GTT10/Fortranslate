@@ -11,8 +11,9 @@ An AMR ownership library now locates parcels in the finest covering regular
 caller-supplied owner map. It handles periodic lookup and reassignment after
 regridding while preserving parcel/component state. An MPI migration API now
 uses this ownership and the shared parcel exchange to transfer particles to
-their gas patch owners. Tree gas sampling/deposition and coupled AMR particle
-stepping remain to be connected.
+their gas patch owners. A serial composite-field sampler/depositor is now
+available; owner-local MPI field exchange and coupled AMR particle stepping
+remain to be connected.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -41,6 +42,24 @@ failure leaves all ranks' original parcel/component arrays unchanged. Empty
 populations/ranks, periodic lookup, ownership changes and regrid reassignment
 are supported. This API migrates an already accepted particle population; it
 does not update gas fields, particle trajectories, checkpoint data or EB impacts.
+
+`spray_amr_tree_coupling_mod` supplies `amr_tree_spray_stencil`,
+`sample_amr_tree_spray_field` and `deposit_amr_tree_spray_field`. A rectangular
+particle cloud has the width of its finest containing cell in each axis. Its
+overlap with exposed composite cells gives positive normalized weights; covered
+parent cells receive no direct weight. On a uniform mesh this matches the
+existing trilinear cloud-in-cell interpolation. At coarse/fine interfaces the
+field is treated as piecewise constant inside each exposed cell; this is not a
+linear-exact coarse/fine reconstruction. Periodic cloud pieces wrap, while
+nonperiodic clouds clip to the domain and renormalize. At most one million
+overlap entries are accepted (the stencil API permits a smaller capacity).
+
+Sampling and deposition use the same weights. Deposition accepts integrated
+amounts, divides by each receiver's physical cell volume, and averages covered
+parents after all leaf updates succeed. Outputs commit only after success;
+empty deposits preserve the entire input field. This is a generic field API:
+the coupled gas caller must still enforce thermodynamic admissibility and
+recover temperatures. No AMR convergence or physical spray validation is claimed.
 
 ## Build and run
 
