@@ -45,8 +45,24 @@ Dead zero-mass parcels are skipped. The population, change and total hit count
 publish together; failure preserves all three. Each proposed segment, including
 its unreflected endpoint, must stay in the closed root domain. This API does not
 combine outer-domain crossings with EB events. It remains a force-free serial
-drift API; EB gas sampling/deposition, liquid impact/film models and coupled
-MPI/AMR stepping are not yet connected.
+drift API; liquid impact/film models and coupled MPI/AMR stepping are not yet
+connected.
+
+`spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
+`deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
+set together. Point queries reject solid locations. Up to eight neighboring
+cell-center weights are multiplied by fluid volume fraction, restricted to cells
+connected to the containing cell by open faces within that support, then
+normalized. The same weights sample fields and deposit integrated contributions;
+deposition divides by each cell's actual fluid volume. This is a bounded
+volume-weighted cloud-in-cell approximation, not exact cloud/polyhedron overlap
+or a linear-exact EB interpolant. Exterior support is truncated and normalized.
+The gas depositor validates incoming active states and recovers final EOS
+temperatures before publishing state and temperature together. Covered cells
+are untouched. Sampling also publishes only after every query succeeds. The
+caller must provide consistent mass/species feedback; this layer has no small-cell
+redistribution or timestep selection. These serial single-grid APIs are not yet
+connected to an EB drag/heating/evaporation interval or a distributed application.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
