@@ -260,14 +260,15 @@ program pelef_reactive_eb_tree_3d
   if (.not.ok) error stop 'Transport load failed'
 #endif
   nv=reactive_nvar(size(species));n=root_shape
-  allocate(u(nv,n(1),n(2),n(3)),t(n(1),n(2),n(3)),current(nv),boundary(nv),wall(nv),chemical(nv))
+  allocate(current(nv),boundary(nv),wall(nv),chemical(nv))
   root_config=config;root_config%nx=n(1);root_config%ny=n(2);root_config%nz=n(3)
-  call initialize_reactive_eb_density_sheet_3d(species,root_config,coarse,u,t,ok,base_mole_fractions)
-  if (.not.ok) error stop 'Initial state failed'
 #ifdef PELEF_MPI_EB_TREE
   call initialize_owned()
   call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,mpi_state,current,MPI_COMM_WORLD,ok)
 #else
+  allocate(u(nv,n(1),n(2),n(3)),t(n(1),n(2),n(3)))
+  call initialize_reactive_eb_density_sheet_3d(species,root_config,coarse,u,t,ok,base_mole_fractions)
+  if (.not.ok) error stop 'Initial state failed'
   call initialize_reactive_eb_tree_3d(species,topology,geometry_levels(topology%level_count()),u,t,tree,ok)
   if (.not.ok) error stop 'Tree initialization failed'
   call integrate_reactive_eb_tree_3d(tree,current,ok)
@@ -276,9 +277,6 @@ program pelef_reactive_eb_tree_3d
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
   if (len_trim(restart_file)>0) call restore()
-#ifdef PELEF_MPI_EB_TREE
-  deallocate(u,t)
-#endif
   do while(record%time<final_time.and.record%steps<maximum_steps)
     dt=min(time_step,final_time-record%time)
     if (automatic_timestep) then
@@ -368,11 +366,25 @@ program pelef_reactive_eb_tree_3d
 contains
 #ifdef PELEF_MPI_EB_TREE
   subroutine initialize_owned()
-    integer :: p
-    logical :: valid
+    integer :: p,ios,ierr
+    logical :: valid,all_valid
+    real(dp), allocatable :: seed_u(:,:,:,:),seed_t(:,:,:)
     call partition_amr_tree_3d(topology,mpi_size,0,mpi_owners,valid)
     if (.not.valid) error stop 'MPI tree partition failed'
-    call initialize_mpi_eb_tree_3d(species,topology,mpi_owners,geometry_levels(topology%level_count()),u,t, &
+    if (mpi_rank==mpi_owners(1)) then
+      allocate(seed_u(nv,n(1),n(2),n(3)),seed_t(n(1),n(2),n(3)),stat=ios)
+      valid=ios==0
+      if (valid) call initialize_reactive_eb_density_sheet_3d( &
+        species,root_config,coarse,seed_u,seed_t,valid,base_mole_fractions)
+    else
+      ! The collective initializer reads the seed only on the root patch owner.
+      allocate(seed_u(0,0,0,0),seed_t(0,0,0),stat=ios)
+      valid=ios==0
+    end if
+    call MPI_Allreduce(valid,all_valid,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,ierr)
+    if (ierr/=MPI_SUCCESS) error stop 'MPI seed agreement failed'
+    if (.not.all_valid) error stop 'Initial state failed'
+    call initialize_mpi_eb_tree_3d(species,topology,mpi_owners,geometry_levels(topology%level_count()),seed_u,seed_t, &
       mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
     if (.not.valid) error stop 'MPI tree initialization failed'
     tree%topology=topology

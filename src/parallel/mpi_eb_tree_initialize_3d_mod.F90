@@ -19,6 +19,7 @@ contains
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(eb_geometry_3d), intent(in) :: finest
+    ! Only owners(1) supplies a root seed; other ranks may pass zero-sized arrays.
     real(dp), intent(in) :: root_state(:,:,:,:),root_temperature(:,:,:)
     type(eb_geometry_3d), allocatable, intent(inout) :: geometry(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
