@@ -18,6 +18,7 @@ def main():
     p.add_argument('--selected', action='store_true')
     p.add_argument('--scheduled', action='store_true')
     p.add_argument('--restart', action='store_true')
+    p.add_argument('--rebalance', action='store_true')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -36,6 +37,14 @@ def main():
             spray.write_text(spray.read_text().replace('&eb_spray',
                 f'&eb_spray\n injection_events=6,injection_times={times},'
                 'injection_scales=1.,0.,1.,.5,2.,1.,', 1))
+        if a.rebalance:
+            text = text.replace('child_count=1,parent(1)=1,ratio(1)=2,lower(:,1)=1,1,1,upper(:,1)=2,4,4,',
+                'child_count=4,parent=1,1,1,1,ratio=2,2,2,2,\n'
+                'lower(:,1)=1,1,1,upper(:,1)=2,2,4,\n'
+                'lower(:,2)=1,3,1,upper(:,2)=2,4,4,\n'
+                'lower(:,3)=3,1,1,upper(:,3)=4,2,4,\n'
+                'lower(:,4)=3,3,1,upper(:,4)=4,4,4,')
+            extra += 'rebalance_interval_steps=1,rebalance_minimum_gain=0.,'
         if a.selected:
             extra += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
         (directory / 'tree.nml').write_text(text.replace('&eb_tree', '&eb_tree\n' + extra, 1))
@@ -54,6 +63,8 @@ def main():
             return list(csv.DictReader(stream))
 
     results = [run(n, f'mpi{n}') for n in (2, 4)]
+    if a.rebalance:
+        assert any('Rebalanced at step:' in (d / 'run.log').read_text() for d in results)
     gas = []
     particles = []
     for directory, ranks in zip(results, (2, 4)):

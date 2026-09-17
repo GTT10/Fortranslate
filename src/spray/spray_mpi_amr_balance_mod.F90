@@ -7,13 +7,14 @@ module spray_mpi_amr_balance_mod
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use spray_mixture_mod, only: valid_component_inventory
-  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
+  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   implicit none
   private
   public :: rebalance_mpi_amr_spray
 contains
   subroutine rebalance_mpi_amr_spray(comm,tree,owners,nvar,state,temperature,parcels,component_mass, &
-      lower,spacing,periodic,local_cost,minimum_gain,maximum_parcels,changed,ok,wall_films,film_mass,maximum_films)
+      lower,spacing,periodic,local_cost,minimum_gain,maximum_parcels,changed,ok,wall_films,film_mass,maximum_films,nodal_phi)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(inout) :: owners(:)
@@ -42,8 +43,9 @@ contains
     valid=valid.and.(present(wall_films).eqv.present(maximum_films))
     if (present(wall_films)) valid=valid.and.allocated(wall_films)
     if (present(film_mass)) valid=valid.and.allocated(film_mass)
+    if(present(nodal_phi)) valid=valid.and..not.any(periodic).and..not.present(wall_films)
     call agree();if (.not.agreed) return
-    film_flag=merge(1,0,present(wall_films))
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(nodal_phi))
     call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
@@ -66,16 +68,23 @@ contains
     gas=state;temp=temperature;assigned=owners
     call rebalance_mpi_amr_tree_3d(tree,assigned,nvar,gas,temp,local_cost,minimum_gain,comm,moved,valid)
     if (.not.valid) return
-    if (.not.moved) then
+    if (.not.moved.and..not.present(nodal_phi)) then
       ok=.true.;return
     end if
     drops=parcels;masses=component_mass
-    call migrate_amr_tree_spray_parcels(comm,tree,assigned,drops,lower,spacing,periodic,maximum_parcels,valid,masses)
+    if(present(nodal_phi)) then
+      call migrate_eb_tree_spray_parcels(comm,tree,assigned,nodal_phi,drops,lower,spacing,maximum_parcels,valid,masses)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,assigned,drops,lower,spacing,periodic,maximum_parcels,valid,masses)
+    end if
     if (.not.valid) return
     if (present(wall_films)) then
       patches=wall_films;patch_mass=film_mass
       call migrate_mpi_amr_wall_films(comm,tree,assigned,patches,patch_mass,lower,spacing,maximum_films,valid)
       if (.not.valid) return
+    end if
+    if(.not.moved) then
+      ok=.true.;return
     end if
     owners=assigned
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)

@@ -45,7 +45,7 @@ Output:
   Existing particle CSV files are protected and cause the run to fail.
 
 This first executable connection supports a fixed hierarchy and scheduled cone
-injection. Regridding, rebalancing and child creation are explicitly rejected. It inherits root-contained specular EB drift and the
+injection. Regridding and child creation are explicitly rejected. It inherits root-contained specular EB drift and the
 composite stencil approximation. It is a synthetic integration fixture, not
 nozzle, diesel ignition, convergence or physical validation.
 
@@ -73,3 +73,15 @@ both payloads have closed successfully. This provides atomic publication on the
 shared filesystem, not power-loss durability or a cross-compiler format guarantee.
 The serialized spray/nodal context is capped at 130000 characters; larger inputs
 are rejected when checkpointing is requested.
+
+## Whole-patch load redistribution
+
+`rebalance_interval_steps=N` samples the existing gas-kernel work counters every
+N accepted steps. `rebalance_minimum_gain` is the required predicted gain
+(default 0.1); zero accepts any positive gain. Gas/temperature and particles with
+their component masses move atomically to the proposed patch owners. If particle
+migration fails, the original ownership and all state remain intact. A move is
+reported as `Rebalanced at step:`; an already balanced layout may stay unchanged.
+This uses measured gas cost, not a separate model of particle work. The
+partition is not part of the restart identity, so continuation can redistribute
+again under a different rank count. The geometry and hierarchy do not change.

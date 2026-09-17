@@ -17,6 +17,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
+  use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
@@ -171,7 +172,6 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
   if(geometry_type/='level_set') error stop 'MPI EB spray requires original nodal geometry'
   if(regrid_count/=0.or.temperature_adaptive) error stop 'MPI EB spray regridding is not connected'
-  if(rebalance_interval_steps/=0) error stop 'MPI EB spray rebalancing is not connected'
   if(trim(output_file)==trim(spray_input).or.trim(output_file)//'.budget.csv'==trim(spray_input)) &
     error stop 'Spray input aliases output'
 #endif
@@ -407,8 +407,15 @@ program pelef_reactive_eb_tree_3d
     record%minimum_dt=min(record%minimum_dt,dt);record%minimum_theta=min(record%minimum_theta,theta)
 #ifdef PELEF_MPI_EB_TREE
     if (sample_work) then
+#ifdef PELEF_MPI_EB_SPRAY
+      call rebalance_mpi_amr_spray(MPI_COMM_WORLD,topology,mpi_owners,nv,mpi_state,mpi_temperature, &
+        drops,component_mass,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
+        [.false.,.false.,.false.],measured_cost,rebalance_minimum_gain,particle_options%maximum_parcels, &
+        redistributed,ok,nodal_phi=nodal_phi)
+#else
       call rebalance_mpi_amr_tree_3d(topology,mpi_owners,nv,mpi_state,mpi_temperature, &
         measured_cost,rebalance_minimum_gain,MPI_COMM_WORLD,redistributed,ok)
+#endif
       if (.not.ok) error stop 'Cannot rebalance MPI EB tree'
       if (redistributed.and.mpi_rank==0) write(*,'(a,i0)') 'Rebalanced at step: ',record%steps
     end if

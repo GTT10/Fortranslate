@@ -171,6 +171,8 @@ if(PELEF_ENABLE_SPRAY)
     target_link_libraries(test_spray_mpi_eb_reactive PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     add_executable(test_spray_mpi_eb_checkpoint spray/test_spray_mpi_eb_checkpoint.F90)
     target_link_libraries(test_spray_mpi_eb_checkpoint PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
+    add_executable(test_spray_mpi_eb_balance spray/test_spray_mpi_eb_balance.F90)
+    target_link_libraries(test_spray_mpi_eb_balance PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     add_executable(test_spray_mpi_eb_step spray/test_spray_mpi_eb_step.F90)
     target_link_libraries(test_spray_mpi_eb_step PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     add_executable(test_spray_mpi_eb_deposit spray/test_spray_mpi_eb_deposit.F90)
@@ -244,6 +246,10 @@ if(PELEF_ENABLE_SPRAY)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_mpi_eb_reactive_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
+      add_test(NAME spray_mpi_eb_balance_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_eb_balance> ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(spray_mpi_eb_balance_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_eb_step_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_step> ${MPIEXEC_POSTFLAGS})
@@ -391,6 +397,11 @@ if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
     --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
     --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_restart" --scheduled --restart)
   set_tests_properties(spray_mpi_eb_restart PROPERTIES LABELS "spray;mpi;eb;application" TIMEOUT 240 PROCESSORS 4)
+  add_test(NAME spray_mpi_eb_rebalance_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
+    --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+    --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_rebalance_application" --scheduled --restart --rebalance)
+  set_tests_properties(spray_mpi_eb_rebalance_application PROPERTIES LABELS "spray;mpi;eb;application" TIMEOUT 240 PROCESSORS 4)
 endif()
 
 if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
