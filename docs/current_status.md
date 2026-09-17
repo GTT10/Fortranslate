@@ -555,8 +555,10 @@ committing gas U/T only when every cell accepts the update
 ([evidence](validation/spray-amr-gas-20260918.md)). MPI particle-position sampling
 now requests only the composite stencil cells from their owners and matches
 serial accumulation order ([evidence](validation/spray-amr-sampling-20260918.md)).
-MPI deposition/gas feedback, coupled particle stepping and EB solid handling
-remain open.
+MPI field deposition now routes volume-scaled particle contributions to cell
+owners and refreshes covered parents without a full-field gather
+([evidence](validation/spray-amr-deposition-20260918.md)). MPI gas temperature
+recovery, coupled particle stepping and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
