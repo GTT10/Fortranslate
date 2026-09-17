@@ -754,3 +754,7 @@ add_test(NAME unit_eb_tree_hydro_3d COMMAND test_eb_tree_hydro_3d)
 add_executable(test_eb_tree_transport_3d unit/test_eb_tree_transport_3d.F90)
 target_link_libraries(test_eb_tree_transport_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_transport_3d COMMAND test_eb_tree_transport_3d)
+
+add_executable(test_eb_tree_full_3d unit/test_eb_tree_full_3d.F90)
+target_link_libraries(test_eb_tree_full_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_tree_full_3d COMMAND test_eb_tree_full_3d)

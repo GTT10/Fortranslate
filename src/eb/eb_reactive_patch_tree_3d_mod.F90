@@ -23,6 +23,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: advance_reactive_eb_tree_full_3d
   public :: advance_reactive_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
@@ -148,6 +149,64 @@ contains
     end do
     tree=candidate;ok=.true.
   end subroutine average_down_reactive_eb_tree_3d
+
+  ! R/2 T/2 H T/2 R/2 composition. Each successful stage remains private
+  ! until the complete step and its exchange vectors can be committed.
+  subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
+      rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
+      wall_change,chemical_change,minimum_theta,ok,integrator)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt,rtol,atol
+    logical, intent(in) :: chemistry_enabled,transport_enabled,viscosity,conduction,diffusion,barodiffusion
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: integrator
+    type(eb_reactive_tree_3d) :: candidate
+    real(dp), allocatable :: boundary(:),wall(:),chemical(:),exchange(:),transport_sum(:)
+    real(dp) :: theta,stage_theta
+    integer :: nv,half
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
+    if (size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(chemical_change)/=nv) return
+    if (.not.valid_tree(tree,nv)) return
+    candidate=tree
+    allocate(boundary(nv),wall(nv),chemical(nv),exchange(nv),transport_sum(nv))
+    chemical=0._dp;transport_sum=0._dp;theta=1._dp
+    do half=1,2
+      if (half==1.and.chemistry_enabled) then
+        call reaction_half(valid)
+        if (.not.valid) return
+      end if
+      if (transport_enabled) then
+        call advance_reactive_eb_tree_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
+          diffusion,barodiffusion,candidate,exchange,stage_theta,valid)
+        if (.not.valid) return
+        transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)
+      end if
+      if (half==1) then
+        call advance_reactive_eb_tree_hydro_3d(species,solver,dt,candidate,boundary,wall,valid)
+        if (.not.valid) return
+      else if (chemistry_enabled) then
+        call reaction_half(valid)
+        if (.not.valid) return
+      end if
+    end do
+    boundary=boundary+transport_sum
+    if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(chemical))) return
+    tree=candidate;boundary_change=boundary;wall_change=wall
+    chemical_change=chemical;minimum_theta=theta;ok=.true.
+  contains
+    subroutine reaction_half(good)
+      logical, intent(out) :: good
+      call react_reactive_eb_tree_3d(species,reactions,0.5_dp*dt,rtol,atol,candidate,exchange,good,integrator)
+      if (good) chemical=chemical+exchange
+    end subroutine reaction_half
+  end subroutine advance_reactive_eb_tree_full_3d
 
   ! Common-interval molecular transport with closed physical boundaries.
   subroutine advance_reactive_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
