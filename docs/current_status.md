@@ -637,8 +637,10 @@ wall and chemistry ledgers and atomic whole-step publication
 [serial EB spray applications](../cases/eb_spray_3d/README.md) now connect initial
 injection, shared nodal geometry, coupled timestep control/retries, gas/particle
 CSVs and cumulative inventories
-([evidence](validation/spray-eb-application-20260918.md)). EB spray restart,
-timed injection, distributed EB particles, liquid wall impacts, lateral film transport and
+([evidence](validation/spray-eb-application-20260918.md)). Ordered timed cone
+events now support tied times, zero dose, per-event mass scaling and an injected
+inventory ledger ([evidence](validation/spray-eb-schedule-20260918.md)). EB spray
+restart, independent ports, distributed EB particles, liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
