@@ -829,3 +829,20 @@ replicates exposed-cell geometry and scans old/new cell intersections quadratica
 it does not claim production scaling or cache remap plans. Application event/tag
 selection, geometry replacement, owner-map policy and checkpoint event metadata
 are a subsequent integration layer.
+
+## Scheduled MPI application regridding
+
+The fixed/selected MPI application accepts the serial schedule file as an optional
+third argument. It preloads all event geometries, includes the complete schedule
+in checkpoint context, and bounds reservoir timesteps for the finest scheduled
+spacing. At each event the sparse reactive remapper transfers old exposed cells
+to round-robin new owners. Conservation uses serial-order compensated inventories:
+each node owner continues the accumulated sum/correction and broadcasts only those
+vectors. The same 5e-12 scaled remap threshold applies without full-field gathers.
+
+Events run before checkpoint/output at their exact clipped times. Restart validates
+the consumed event count and expected event geometry, then reconstructs metadata
+on every rank before scattering checkpoint state to current owners. It restores
+remap diagnostics and resumes at the next event without replay. Serial/MPI formats
+and mechanism identities remain shared. Temperature-driven event generation and
+recursive timestepping are still separate, unfinished MPI integration work.

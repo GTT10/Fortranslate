@@ -33,14 +33,14 @@ program pelef_mpi_amr_tree_reactive_3d_selected
   real(dp) :: mole_fractions(pelef_selected_species_count)
   real(dp) :: common_temperature_minimum, common_temperature_maximum
   real(dp) :: requested_temperature_minimum, requested_temperature_maximum
-  character(len=1024) :: input_path,topology_path,message
+  character(len=1024) :: input_path,topology_path,message,schedule_path
   integer :: ierr,rank
   logical :: ok
 
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
-  if (command_argument_count()/=2) then
-    write(*, '(a)') "Usage: pelef_mpi_amr_tree_reactive_3d_selected <input.nml> <topology.dat>"
+  if (command_argument_count()<2.or.command_argument_count()>3) then
+    write(*, '(a)') "Usage: pelef_mpi_amr_tree_reactive_3d_selected <input.nml> <topology.dat> [schedule.dat]"
     call fatal('Invalid selected MPI tree input or mechanism')
   end if
   call get_command_argument(1, input_path)
@@ -110,8 +110,15 @@ program pelef_mpi_amr_tree_reactive_3d_selected
     write(*,'(a)') 'Bundle SHA-256: '//pelef_selected_bundle_sha256
     write(*,'(a)') 'Chemistry integrator: '//pelef_selected_chemistry_integrator
   end if
-  call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions, &
-    transport,mole_fractions,MPI_COMM_WORLD,pelef_selected_chemistry_integrator,pelef_selected_bundle_sha256)
+  if (command_argument_count()==3) then
+    call get_command_argument(3,schedule_path)
+    call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions, &
+      transport,mole_fractions,MPI_COMM_WORLD,pelef_selected_chemistry_integrator,pelef_selected_bundle_sha256, &
+      schedule_path=trim(schedule_path))
+  else
+    call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions, &
+      transport,mole_fractions,MPI_COMM_WORLD,pelef_selected_chemistry_integrator,pelef_selected_bundle_sha256)
+  end if
   call MPI_Finalize(ierr)
 contains
   subroutine fatal(reason)

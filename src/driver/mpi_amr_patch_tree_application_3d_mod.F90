@@ -1,6 +1,8 @@
 module mpi_amr_patch_tree_application_3d_mod
   use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d, build_amr_tree_checkpoint_context_3d, &
     read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
+  use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d
+  use amr_patch_tree_remap_3d_mod, only: cell_covered=>covered
   use mpi_f08
   use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -40,9 +42,9 @@ module mpi_amr_patch_tree_application_3d_mod
   end interface
 contains
   subroutine run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
-      mole_fractions,comm,chemistry_integrator,mechanism_identity)
+      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path)
     character(len=*), intent(in) :: topology_path,input_path
-    character(len=*), optional, intent(in) :: chemistry_integrator,mechanism_identity
+    character(len=*), optional, intent(in) :: chemistry_integrator,mechanism_identity,schedule_path
     type(reactive_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -51,6 +53,11 @@ contains
     type(MPI_Comm), intent(in) :: comm
     type(reactive_3d_config) :: local
     type(amr_patch_tree_3d) :: tree
+    type(amr_patch_tree_3d), allocatable :: events(:)
+    real(dp), allocatable :: event_times(:)
+    real(dp) :: max_remap_error
+    integer :: event,nevents,slash,regrids,last_checkpoint_step
+    character(len=1024) :: event_path
     type(amr_tree_state_3d) :: state,temperature,global_state,global_temperature
     integer, allocatable :: ratios(:),owners(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -63,7 +70,7 @@ contains
     character(len=1024) :: message
     character(len=:), allocatable :: row
     character(len=1024) :: checkpoint_file,restart_file
-    character(len=:), allocatable :: context,identity,integrator
+    character(len=:), allocatable :: context,identity,integrator,schedule_identity,expected_tree
     integer :: checkpoint_interval_steps
     logical :: stop_after_checkpoint,use_implicit
     logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
@@ -75,7 +82,7 @@ contains
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI size')
     call check_paths(input_path)
     call check_paths(topology_path)
-    ! Static synchronous entry point must not silently ignore serial extensions.
+    ! The synchronous entry point must not silently ignore unsupported serial extensions.
     open(newunit=unit,file=input_path,status='old',action='read',iostat=status)
     if (status/=0) call fatal('Cannot open MPI tree input')
     do
@@ -104,7 +111,41 @@ contains
     call check_checkpoint_paths(topology_path)
     call check_checkpoint_paths(config%output_file)
     call check_checkpoint_paths(trim(config%output_file)//'.budget.csv')
+    if (present(schedule_path)) then
+      call check_paths(schedule_path)
+      call check_checkpoint_paths(schedule_path)
+    end if
     call read_topology(topology_path,tree)
+    schedule_identity=tree_key(tree)
+    nevents=0
+    if (present(schedule_path)) then
+      open(newunit=unit,file=schedule_path,status='old',action='read',iostat=status)
+      if (status/=0) call fatal('Cannot open tree regrid schedule')
+      read(unit,*,iostat=status) nevents
+      if (status/=0) call fatal('Invalid tree regrid event count')
+      if (nevents<0) call fatal('Invalid tree regrid event count')
+    end if
+    allocate(events(nevents),event_times(nevents),stat=status)
+    if (status/=0) call fatal('Cannot allocate tree regrid schedule')
+    do event=1,nevents
+      read(unit,*,iostat=status) event_times(event),event_path
+      if (status/=0) call fatal('Invalid tree regrid event')
+      if (.not.ieee_is_finite(event_times(event))) call fatal('Nonfinite tree regrid time')
+      if (event_times(event)<=0.or.event_times(event)>config%final_time) call fatal('Tree regrid time outside run')
+      if (event>1) then
+        if (event_times(event)<=event_times(event-1)) call fatal('Tree regrid times must increase')
+      end if
+      if (len_trim(event_path)==0) call fatal('Empty regrid topology path')
+      if (event_path(1:1)/='/') then
+        slash=scan(schedule_path,'/',back=.true.)
+        event_path=schedule_path(:slash)//trim(event_path)
+      end if
+      call read_topology(trim(event_path),events(event))
+      write(message,'(es27.18e3)') event_times(event)
+      schedule_identity=schedule_identity//trim(message)//new_line('a')//tree_key(events(event))
+    end do
+    if (present(schedule_path)) close(unit)
+
     if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
       identity='fixed:'//trim(config%thermo_model)
       if (present(mechanism_identity)) identity=mechanism_identity
@@ -113,7 +154,7 @@ contains
       integrator='explicit'
       if (use_implicit) integrator='implicit'
       call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
-        identity,integrator,tree_key(tree),context,ok)
+        identity,integrator,schedule_identity,context,ok)
       if (.not.ok) call fatal('Cannot build MPI tree checkpoint context')
     end if
     count=size(tree%nodes)-1
@@ -149,6 +190,9 @@ contains
     diffusion=config%transport_enabled.and.config%species_diffusion_enabled
     barodiffusion=config%transport_enabled.and.config%barodiffusion_enabled
     min_h=minval(h,dim=2)
+    do event=1,nevents
+      call include_event_spacing(events(event))
+    end do
     inlet=0;inlet_t=0;inlet_dt=huge(1.0_dp)
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
       call resolve_selected_composition('Inflow',config%inflow_composition_count,config%inflow_composition_species, &
@@ -189,6 +233,7 @@ contains
     call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot distribute initial inventory')
     time=0;step=0;budget=0;max_correction=0;min_theta=1
+    event=1;regrids=0;max_remap_error=0;last_checkpoint_step=0
     if (len_trim(restart_file)>0) call restore_checkpoint()
     if (allocated(global_state%fields)) deallocate(global_state%fields)
     if (rank==0) then
@@ -196,8 +241,25 @@ contains
       write(*,'(a,i0,a,i0,a,i0)') 'Ranks: ',nranks,' Nodes: ',count+1,' Levels: ',tree%level_count()
     end if
     do
+      if (event<=nevents) then
+        if (time==event_times(event)) then
+          call apply_event(events(event))
+          regrids=regrids+1;event=event+1
+        end if
+      end if
+      if (checkpoint_interval_steps>0) then
+        if (step>last_checkpoint_step.and.mod(step,checkpoint_interval_steps)==0) then
+          call save_checkpoint()
+          last_checkpoint_step=step
+          if (stop_after_checkpoint) then
+            if (rank==0) write(*,'(a,i0,a,es24.16)') 'Stopped after checkpoint at step ',step,' time ',time
+            return
+          end if
+        end if
+      end if
       if (time>=config%final_time) exit
       stop_time=config%final_time
+      if (event<=nevents) stop_time=event_times(event)
       if (step>=config%maximum_steps) call fatal('Tree maximum_steps reached')
       call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,root_h,config%cfl,dt,comm,ok)
       if (.not.ok) call fatal('Invalid MPI tree hydro timestep')
@@ -226,15 +288,6 @@ contains
       end if
       step=step+1;budget=budget+change
       max_correction=max(max_correction,correction);min_theta=min(min_theta,theta)
-      if (checkpoint_interval_steps>0) then
-        if (mod(step,checkpoint_interval_steps)==0) then
-          call save_checkpoint()
-          if (stop_after_checkpoint) then
-            if (rank==0) write(*,'(a,i0,a,es24.16)') 'Stopped after checkpoint at step ',step,' time ',time
-            return
-          end if
-        end if
-      end if
     end do
     call gather_mpi_amr_tree_3d(tree,owners,state,global_state,comm,0,ok)
     if (.not.ok) call fatal('Cannot gather final MPI tree state')
@@ -286,6 +339,7 @@ contains
     end do
     close(unit,iostat=status)
     if (status/=0) call fatal('Cannot close tree budget CSV')
+    write(*,'(a,i0,a,es12.4)') 'Regrids: ',regrids,' Maximum remap error: ',max_remap_error
     write(*,'(a,i0,a,es24.16)') 'Steps: ',step,' Final time: ',time
     write(*,'(a,es12.4,a,es12.4)') 'Maximum reflux: ',max_correction,' Minimum transport theta: ',min_theta
     end if
@@ -333,7 +387,8 @@ contains
       if (.not.ok) call fatal('Cannot gather MPI checkpoint temperature')
       if (rank==0) then
         snapshot%tree=tree;snapshot%initial=initial;snapshot%boundary=budget
-        snapshot%time=time;snapshot%steps=step
+        snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
+        snapshot%maximum_remap_error=max_remap_error
         snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
         call write_amr_tree_checkpoint_3d(trim(checkpoint_file),species,context,snapshot,ok)
         if (.not.ok) call fatal('Cannot write MPI tree checkpoint')
@@ -344,7 +399,7 @@ contains
     subroutine restore_checkpoint()
       type(amr_tree_checkpoint_3d) :: snapshot
       type(amr_tree_state_3d) :: absolute_state
-      real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q)),scalars(3)
+      real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q)),scalars(4)
       integer :: peer,nconserved
       if (rank==0) then
         call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
@@ -352,8 +407,10 @@ contains
         if (.not.ok) call fatal('Invalid MPI tree restart checkpoint/context')
         if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
           call fatal('MPI tree restart exceeds run limits')
-        if (snapshot%regrids/=0.or.snapshot%maximum_remap_error/=0) call fatal('MPI tree restart is not static')
-        if (tree_key(snapshot%tree)/=tree_key(tree)) call fatal('MPI tree restart geometry mismatch')
+        if (snapshot%regrids/=count_events(snapshot%time)) call fatal('MPI tree restart schedule position mismatch')
+        expected_tree=tree_key(tree)
+        if (snapshot%regrids>0) expected_tree=tree_key(events(snapshot%regrids))
+        if (tree_key(snapshot%tree)/=expected_tree) call fatal('MPI tree restart geometry mismatch')
         if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
           call fatal('Tree restart initial inventory mismatch')
         ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
@@ -381,22 +438,26 @@ contains
             2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
             abs(snapshot%boundary(:nconserved))))) call fatal('Tree restart boundary ledger mismatch')
         initial=snapshot%initial;budget=snapshot%boundary;step=snapshot%steps
-        scalars=[snapshot%time,snapshot%maximum_reflux,snapshot%minimum_theta]
+        scalars=[snapshot%time,snapshot%maximum_reflux,snapshot%minimum_theta,snapshot%maximum_remap_error]
       end if
-      ! The reader validates context, EOS, averages and ledger before any owned payload changes.
-      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%state,state,comm,0,ok)
-      if (.not.ok) call fatal('Cannot distribute MPI restart state')
-      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%temperature,temperature,comm,0,ok)
-      if (.not.ok) call fatal('Cannot distribute MPI restart temperature')
       call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
       if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart initial inventory')
       call MPI_Bcast(budget,size(budget),MPI_DOUBLE_PRECISION,0,comm,status)
       if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart ledger')
       call MPI_Bcast(step,1,MPI_INTEGER,0,comm,status)
       if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart step')
-      call MPI_Bcast(scalars,3,MPI_DOUBLE_PRECISION,0,comm,status)
+      call MPI_Bcast(scalars,4,MPI_DOUBLE_PRECISION,0,comm,status)
       if (status/=MPI_SUCCESS) call fatal('Cannot distribute restart diagnostics')
-      time=scalars(1);max_correction=scalars(2);min_theta=scalars(3)
+      time=scalars(1);max_correction=scalars(2);min_theta=scalars(3);max_remap_error=scalars(4)
+      regrids=count_events(time);event=regrids+1;last_checkpoint_step=step
+      if (regrids>0) tree=events(regrids)
+      call reset_layout()
+      ! The reader validates context, EOS, averages and ledger before any owned payload changes.
+      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%state,state,comm,0,ok)
+      if (.not.ok) call fatal('Cannot distribute MPI restart state')
+      call scatter_mpi_amr_tree_3d(tree,owners,snapshot%temperature,temperature,comm,0,ok)
+      if (.not.ok) call fatal('Cannot distribute MPI restart temperature')
+
     end subroutine
     subroutine check_paths(path)
       character(len=*), intent(in) :: path
@@ -433,6 +494,7 @@ contains
       integer :: input,ios,nchild,peer,parent,dims(3),lower(3),upper(3),ratio
       logical :: valid
       call check_paths(path)
+      call check_checkpoint_paths(path)
       open(newunit=input,file=path,status='old',action='read',iostat=ios)
       if (ios/=0) call fatal('Cannot open tree topology')
       read(input,*,iostat=ios) nchild
@@ -455,6 +517,97 @@ contains
       close(input)
       call initialize_amr_patch_tree_3d(shapes(:,1),parents,patches,result,valid)
       if (.not.valid) call fatal('Invalid tree topology')
+    end subroutine
+    integer function count_events(at_time) result(applied)
+      real(dp), intent(in) :: at_time
+      integer :: peer
+      applied=0
+      do peer=1,nevents
+        if (event_times(peer)<=at_time) applied=applied+1
+      end do
+    end function
+    subroutine include_event_spacing(next_tree)
+      type(amr_patch_tree_3d), intent(in) :: next_tree
+      integer(int64), allocatable :: o(:,:),d(:,:)
+      integer, allocatable :: r(:)
+      logical :: valid
+      call amr_tree_integer_layout_3d(next_tree,o,d,r,valid)
+      if (.not.valid) call fatal('Scheduled tree coordinate overflow')
+      min_h=min(min_h,root_h*real(d(:,1),dp)/real(d(:,size(r)),dp))
+    end subroutine
+    subroutine reset_layout()
+      integer :: peer
+      call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+      if (.not.ok) call fatal('Regridded tree coordinate overflow')
+      count=size(tree%nodes)-1
+      owners=[(mod(peer-1,nranks),peer=1,count+1)]
+      if (allocated(h)) deallocate(h)
+      allocate(h(3,count+1))
+      do peer=1,count+1
+        h(:,peer)=root_h*real(domain(:,1),dp)/real(domain(:,tree%nodes(peer)%level+1),dp)
+      end do
+    end subroutine
+    subroutine distributed_inventory(geometry,assigned,fields,result,absolute)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      integer, intent(in) :: assigned(:)
+      type(amr_tree_state_3d), intent(in) :: fields
+      real(dp), intent(out) :: result(:)
+      logical, intent(in) :: absolute
+      real(dp) :: accum(size(result),2),term(size(result)),updated(size(result)),value(size(result))
+      real(dp) :: volume(size(geometry%nodes)),ratio
+      integer :: peer,parent,ii,jj,kk,dims(3),ierr
+      accum=0;volume(1)=product(root_h)
+      if (.not.ieee_is_finite(volume(1)).or.volume(1)<=0) call fatal('Invalid MPI inventory volume')
+      do peer=1,size(geometry%nodes)
+        if (peer>1) then
+          parent=geometry%nodes(peer)%parent;ratio=real(geometry%nodes(peer)%patch%refinement_ratio,dp)
+          volume(peer)=volume(parent)/ratio/ratio/ratio
+          if (volume(peer)<=0) call fatal('MPI inventory volume underflow')
+        end if
+        if (assigned(peer)==rank) then
+          dims=geometry%nodes(peer)%shape
+          do kk=1,dims(3)
+            do jj=1,dims(2)
+              do ii=1,dims(1)
+                if (cell_covered(geometry,peer,[ii,jj,kk])) cycle
+                value=fields%fields(peer)%values(:,ii,jj,kk)
+                if (absolute) value=abs(value)
+                term=volume(peer)*value-accum(:,2)
+                updated=accum(:,1)+term
+                accum(:,2)=(updated-accum(:,1))-term;accum(:,1)=updated
+              end do
+            end do
+          end do
+        end if
+        ! Pass only the compensated accumulator, preserving the serial cell order.
+        call MPI_Bcast(accum,size(accum),MPI_DOUBLE_PRECISION,assigned(peer),comm,ierr)
+        if (ierr/=MPI_SUCCESS) call fatal('Cannot transfer MPI inventory accumulator')
+      end do
+      if (.not.all(ieee_is_finite(accum))) call fatal('Invalid MPI inventory')
+      result=accum(:,1)
+    end subroutine
+    subroutine apply_event(next_tree)
+      type(amr_patch_tree_3d), intent(in) :: next_tree
+      type(amr_tree_state_3d) :: candidate,temps
+      integer, allocatable :: assigned(:)
+      real(dp) :: before(size(q)),after(size(q)),scale(size(q)),error
+      integer :: peer
+      assigned=[(mod(peer-1,nranks),peer=1,size(next_tree%nodes))]
+      call remap_mpi_amr_tree_reactive_3d(tree,owners,state,temperature,next_tree,assigned, &
+        species,candidate,temps,comm,ok)
+      if (.not.ok) call fatal('Scheduled MPI tree remap failed')
+      call distributed_inventory(tree,owners,state,before,.false.)
+      call distributed_inventory(next_tree,assigned,candidate,after,.false.)
+      call distributed_inventory(tree,owners,state,scale,.true.)
+      error=maxval(abs(after-before)/max(tiny(1.0_dp),scale))
+      if (error>5e-12_dp) call fatal('Scheduled MPI tree remap lost conservation')
+      tree=next_tree
+      call move_alloc(candidate%fields,state%fields)
+      call move_alloc(temps%fields,temperature%fields)
+      call reset_layout()
+      max_remap_error=max(max_remap_error,error)
+      if (rank==0) write(*,'(a,es24.16,a,i0,a,i0)') &
+        'Regrid time: ',time,' Nodes: ',count+1,' Levels: ',tree%level_count()
     end subroutine
     subroutine coordinates(peer)
       integer, intent(in) :: peer

@@ -124,7 +124,8 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-coarse-time endpoints/subcycling and MPI tree regridding application dispatch.
+coarse-time endpoints/subcycling and MPI temperature-adaptation dispatch.
+Scheduled MPI tree remapping and event-aware checkpoint continuation are connected.
 Sparse conservative MPI tree remapping now supports changed geometry/ratios/owners
 with collective rollback and reactive temperature recovery.
 Fixed/selected static MPI tree restart now supports changed rank counts and serial interchange.

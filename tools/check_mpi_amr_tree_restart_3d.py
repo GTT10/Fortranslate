@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check rank-neutral static tree restart, serial interchange and rejected reads."""
+"""Check rank-neutral tree restart, optional schedules and serial interchange."""
 import argparse
 import os
 from pathlib import Path
@@ -11,11 +11,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ('fixed', 'selected', 'serial-fixed', 'serial-selected', 'case-dir', 'workdir'):
         parser.add_argument('--' + option, type=Path, required=True)
+    parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--mpiexec', required=True)
     parser.add_argument('--numproc-flag', default='-n')
     args = parser.parse_args()
     case = args.case_dir.resolve()
-    template = (case / 'hotspot.nml').read_text().replace('cfl=0.2', 'cfl=0.002')
+    template = (case / 'hotspot.nml').read_text()
+    if not args.scheduled:
+        template = template.replace('cfl=0.2', 'cfl=0.002')
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
     for kind in ('fixed', 'selected'):
         config = template
@@ -31,10 +34,12 @@ def main():
         checkpoint = folder / 'tree.chk'
         outputs = [folder / name for name in ('tree_hotspot.csv', 'tree_hotspot.csv.budget.csv')]
 
-        def run(label, content, ranks=2, error=None):
+        def run(label, content, ranks=2, error=None, schedule=None):
             inputs.write_text(content)
             binary = getattr(args, kind if ranks else 'serial_' + kind).resolve()
             command = [str(binary), str(inputs), str(case / 'branched.dat')]
+            if args.scheduled:
+                command.append(str(schedule or case / 'regrid.dat'))
             if ranks:
                 command = [args.mpiexec, args.numproc_flag, str(ranks), *command]
             result = subprocess.run(command, cwd=folder, env=env, capture_output=True, text=True, timeout=180)
@@ -53,6 +58,10 @@ def main():
         steps = int(re.search(r'Steps:\s+(\d+)', log).group(1))
         assert steps > 1, 'Fixture must continue beyond saved step'
         baseline = [p.read_bytes() for p in outputs]
+        if args.scheduled:
+            assert 'Regrids: 3' in log
+            run('continuous_serial', config, 0)
+            compare()
         save = "\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true. /\n"
         restart = "\n&amr_tree_checkpoint restart_file='tree.chk' /\n"
         log = run('stop_mpi_2', config + save)
@@ -67,6 +76,17 @@ def main():
         assert checkpoint.read_bytes() == saved, 'Serial/MPI checkpoint bytes differ'
         run('restart_mpi_1', config + restart, 1)
         compare()
+        if args.scheduled:
+            # The second event has root-only geometry: two ranks own no cells on reload.
+            run('stop_root_only', config + save.replace('interval_steps=1', 'interval_steps=2'))
+            run('restart_root_only', config + restart, 3)
+            compare()
+            checkpoint.write_bytes(saved)
+            changed_schedule = folder / 'changed_schedule.dat'
+            changed_schedule.write_text("3\n2.0e-10 " + repr(str(case / 'moved_ratio3.dat')) +
+                                        "\n5e-10 " + repr(str(case / 'root.dat')) +
+                                        "\n1e-9 " + repr(str(case / 'branched.dat')) + "\n")
+            run('changed_schedule', config + restart, 3, 'Invalid MPI tree restart checkpoint/context', changed_schedule)
         run('changed_physics', config.replace('initial_temperature=1100.0', 'initial_temperature=1110.0') + restart,
             3, 'Invalid MPI tree restart checkpoint/context')
         checkpoint.write_bytes(saved[:saved.rfind(b'END_AMR_TREE_CHECKPOINT')])
@@ -86,7 +106,7 @@ def main():
         run('malformed', config + '\n&amr_tree_checkpoint checkpoint_interval_steps=1\n', 3,
             'Invalid MPI tree checkpoint configuration')
         compare()
-    print('PASS: fixed/selected MPI 2-to-3 restart, serial interchange, exact output and rejected checkpoint guards')
+    print('PASS: fixed/selected MPI restart, serial interchange, exact output and rejected checkpoint guards; scheduled=', args.scheduled)
 
 
 if __name__ == '__main__':

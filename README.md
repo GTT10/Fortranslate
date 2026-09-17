@@ -23,7 +23,7 @@ An experimental [serial 3D patch-tree application](cases/amr_tree_reactive_3d/RE
 connects static, scheduled or temperature-adapted multi-level geometry,
 reaction/transport/hydro, checkpoint continuation and composite CSV output.
 The fixed-mechanism `pelef_mpi_amr_tree_reactive_3d` and configure-time selected
-`pelef_mpi_amr_tree_reactive_3d_selected` executables support static topologies
+`pelef_mpi_amr_tree_reactive_3d_selected` executables support static or scheduled topologies
 with owner-local stepping, rank-neutral checkpoint/restart and the same final CSV format.
 
 Start with [current status and evidence](docs/current_status.md). In

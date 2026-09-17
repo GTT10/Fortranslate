@@ -28,8 +28,8 @@ program pelef_mpi_amr_tree_reactive_3d
 
   call MPI_Init(ierr)
 
-  if (command_argument_count()/=2) then
-    write(*, '(a)') "Usage: pelef_mpi_amr_tree_reactive_3d <input.nml> <topology.dat>"
+  if (command_argument_count()<2.or.command_argument_count()>3) then
+    write(*, '(a)') "Usage: pelef_mpi_amr_tree_reactive_3d <input.nml> <topology.dat> [schedule.dat]"
     call fatal('Invalid MPI tree command or input')
   end if
   call get_command_argument(1, input_path)
@@ -61,8 +61,14 @@ program pelef_mpi_amr_tree_reactive_3d
   call reactive_3d_mole_fractions( &
     config, size(species), mole_fractions, ok)
   if (.not. ok) call fatal('Failed to resolve fixed 3D AMR composition')
-  call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions,transport, &
-    mole_fractions,MPI_COMM_WORLD)
+  if (command_argument_count()==3) then
+    call get_command_argument(3,schedule_path)
+    call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions,transport, &
+      mole_fractions,MPI_COMM_WORLD,schedule_path=trim(schedule_path))
+  else
+    call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions,transport, &
+      mole_fractions,MPI_COMM_WORLD)
+  end if
   call MPI_Finalize(ierr)
 contains
   subroutine fatal(reason)
