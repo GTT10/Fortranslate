@@ -13,6 +13,7 @@ module eb_reactive_patch_tree_3d_mod
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
+  use amr_patch_tree_tagging_3d_mod, only: hot_cell,build_tagged_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d, &
@@ -25,6 +26,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d
@@ -104,6 +106,121 @@ contains
     if (.not.valid_tree(candidate,nv)) return
     tree=candidate;ok=.true.
   end subroutine initialize_reactive_eb_tree_3d
+
+  ! Exposed fluid cells vote without averaging away fine temperature peaks.
+  ! Reuse regular AMR's deterministic tile builder, then omit solid-only nodes.
+  subroutine tag_reactive_eb_tree_temperature_3d(tree,finest,thresholds,ratios,tile_shape,buffer, &
+      maximum_nodes,topology,ok)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: finest
+    real(dp), intent(in) :: thresholds(:)
+    integer, intent(in) :: ratios(:),tile_shape(3),buffer,maximum_nodes
+    type(amr_patch_tree_3d), intent(inout) :: topology
+    logical, intent(out) :: ok
+    type(hot_cell), allocatable :: cells(:)
+    type(amr_patch_tree_3d) :: candidate,pruned
+    type(eb_geometry_3d), allocatable :: levels(:)
+    type(eb_geometry_3d) :: section
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: old_ratios(:),shared(:),mapping(:)
+    integer(int64) :: common(3),factor(3),total
+    logical, allocatable :: active(:,:,:)
+    integer :: nv,node,child,level,count,pass,i,j,k,n(3),lo(3),hi(3),used
+    real(dp) :: temperature
+    logical :: valid
+    ok=.false.
+    if (.not.allocated(tree%nodes)) return
+    if (size(tree%nodes)<1) return
+    if (.not.allocated(tree%nodes(1)%state)) return
+    nv=size(tree%nodes(1)%state,1)
+    if (.not.valid_tree(tree,nv).or..not.finest%is_valid()) return
+    if (size(thresholds)/=size(ratios)) return
+    if (.not.all(ieee_is_finite(thresholds)).or.any(thresholds<=0._dp)) return
+    if (any(ratios<2).or.any(tile_shape<1).or.buffer<0.or.maximum_nodes<1) return
+    do level=2,size(thresholds)
+      if (thresholds(level)<thresholds(level-1)) return
+    end do
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,old_ratios,valid)
+    if (.not.valid) return
+    level=min(size(old_ratios)-1,size(ratios))
+    if (any(old_ratios(2:level+1)/=ratios(:level))) return
+    count=max(size(old_ratios),size(ratios)+1)
+    allocate(shared(count));shared(:size(old_ratios))=old_ratios
+    shared(2:size(ratios)+1)=ratios;common=domain(:,1)
+    do level=2,count
+      if (any(common>(huge(1_int64)/4)/int(shared(level),int64))) return
+      common=common*int(shared(level),int64)
+    end do
+    if (any(common/=int([finest%nx,finest%ny,finest%nz],int64))) return
+    allocate(levels(count));levels(count)=finest
+    do level=count,2,-1
+      call coarsen_eb_geometry_3d(levels(level),shared(level),levels(level-1),valid)
+      if (.not.valid) return
+    end do
+    do node=1,size(tree%nodes)
+      level=tree%topology%nodes(node)%level+1
+      lo=int(origin(:,node))+1;hi=lo+tree%topology%nodes(node)%shape-1
+      call extract_eb_geometry_3d(levels(level),lo,hi,section,valid)
+      if (.not.valid) return
+      if (.not.matching_eb_metrics_3d(section,tree%nodes(node)%geometry)) return
+    end do
+    total=0
+    do pass=1,2
+      used=0
+      do node=1,size(tree%nodes)
+        n=tree%topology%nodes(node)%shape;level=tree%topology%nodes(node)%level+1
+        factor=common/domain(:,level)
+        allocate(active(n(1),n(2),n(3)));active=tree%nodes(node)%geometry%volume_fraction>0._dp
+        do child=node+1,size(tree%nodes)
+          if (tree%topology%nodes(child)%parent/=node) cycle
+          call bounds(tree%topology,child,lo,hi)
+          active(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.false.
+        end do
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if (.not.active(i,j,k)) cycle
+          temperature=tree%nodes(node)%temperature(i,j,k)
+          if (.not.ieee_is_finite(temperature).or.temperature<=0._dp) return
+          if (size(thresholds)==0) cycle
+          if (temperature<thresholds(1)) cycle
+          if (pass==1) then
+            total=total+1
+            if (total>int(huge(1),int64)) return
+          else
+            used=used+1
+            cells(used)%lower=(origin(:,node)+int([i,j,k]-1,int64))*factor
+            cells(used)%upper=cells(used)%lower+factor;cells(used)%temperature=temperature
+          end if
+        end do
+        end do
+        end do
+        deallocate(active)
+      end do
+      if (pass==1) allocate(cells(int(total)))
+    end do
+    call build_tagged_tree_3d(tree%topology,cells,common,thresholds,ratios,tile_shape,buffer, &
+      maximum_nodes,[.false.,.false.,.false.],candidate,valid)
+    if (.not.valid) return
+    call amr_tree_integer_layout_3d(candidate,origin,domain,old_ratios,valid)
+    if (.not.valid) return
+    allocate(mapping(size(candidate%nodes)));mapping=0
+    pruned=candidate;used=1;mapping(1)=1
+    do node=2,size(candidate%nodes)
+      child=candidate%nodes(node)%parent
+      if (mapping(child)==0) cycle
+      level=candidate%nodes(node)%level+1
+      lo=int(origin(:,node))+1;hi=lo+candidate%nodes(node)%shape-1
+      call extract_eb_geometry_3d(levels(level),lo,hi,section,valid)
+      if (.not.valid) return
+      if (.not.any(section%volume_fraction>0._dp)) cycle
+      used=used+1;mapping(node)=used
+      pruned%nodes(used)=candidate%nodes(node);pruned%nodes(used)%parent=mapping(child)
+    end do
+    pruned%nodes=pruned%nodes(:used)
+    if (.not.pruned%is_valid()) return
+    topology=pruned;ok=.true.
+  end subroutine tag_reactive_eb_tree_temperature_3d
 
   ! Conservative remap on a shared refinement lattice. finest describes the
   ! deeper of old/new trees; ratios on shared levels and root cells must match.
