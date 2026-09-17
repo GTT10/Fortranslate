@@ -38,15 +38,23 @@ U/T during initialization and stepping; geometry is replicated. Initial children
 fetch only their parent sections and use the serial PCM kernel on their owners.
 The root patch owner constructs its seed U/T during each initialization or
 restart topology setup and releases it when initialization returns. Other ranks
-pass empty seed arrays. On restart, rank zero scans record offsets with bounded memory;
+pass empty seed arrays. MPI checkpoints use a V2 byte-length index; on restart,
 owners seek directly to their patch records and restore only local U/T.
+Legacy V1 files from serial saves remain readable through a bounded-memory root scan.
 State CSV writes use owner-local MPI-IO chunks in serial row order;
 the small budget CSV is written by rank zero. Checkpoint writes stage existing
 serial patch records on their owners and publish them directly with MPI-IO.
 Checkpoints can continue with a different rank count or the serial
 executable. State CSVs are deterministic in the focused fixture; budget ledgers
-can differ in roundoff when MPI reduction grouping changes. Avoiding the
-legacy-file scan and qualifying scaling remain future work.
+can differ in roundoff when MPI reduction grouping changes. Serial restart accepts
+both formats and checks indexed record lengths. Scaling qualification remains future work.
+
+The V2 tree record keeps the V1 topology and inventory header, followed by one
+positive byte length per node, in node order, before the first patch record.
+Writers use a 20-column decimal integer and LF for each length. Lengths include
+the complete patch record through its `END_CHECKPOINT` newline. Readers validate
+the file bounds, patch boundaries and final tree marker before publishing state;
+editing record widths or newline encoding requires regenerating the index.
 
 ## Selected mechanisms
 

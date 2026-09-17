@@ -121,7 +121,10 @@ def main():
     values = rows[-1].split()
     assert len(values) > 6, 'missing final patch state row'
     values[0] = '-1.0'
-    rows[-1] = ' '.join(values)
+    # Keep V2 offsets valid so rejection exercises the patch state validator.
+    replacement = ' '.join(values)
+    assert len(replacement) <= len(rows[-1])
+    rows[-1] = replacement.ljust(len(rows[-1]))
     damaged.write_text('\n'.join(rows) + '\nEND_CHECKPOINT' + suffix)
     failures = [
         ('corrupt', f"restart_file='{broken}',"),
@@ -131,6 +134,24 @@ def main():
         ('wrong_cfl', f"restart_file='{stopped / 'saved.chk'}',hydro_cfl=1.e-6,"),
         ('wrong_subcycle', f"restart_file='{stopped / 'saved.chk'}',subcycling={'.false.' if args.subcycling else '.true.'},"),
     ]
+    indexed_rows = (stopped / 'saved.chk').read_text().splitlines(keepends=True)
+    tree_header = indexed_rows.index('PELEF_EB_TREE_CHECKPOINT_V2\n')
+    patch_count = int(indexed_rows[tree_header + 1])
+    first_length = tree_header + patch_count + 4
+    first_patch = first_length + patch_count
+    assert indexed_rows[first_patch] == 'PELEF_REACTIVE_EB_3D_CHECKPOINT\n'
+    for name, length in [('negative_index', -1), ('oversized_index', 2**63-1),
+                         ('shifted_index', int(indexed_rows[first_length]) + 1),
+                         ('balanced_index', int(indexed_rows[first_length]) + 1)]:
+        rows = indexed_rows.copy()
+        rows[first_length] = f'{length:20d}\n'
+        if name == 'balanced_index':
+            assert patch_count > 1
+            rows[first_length + 1] = f'{int(rows[first_length + 1]) - 1:20d}\n'
+        invalid_index = work / f'{name}.chk'
+        invalid_index.write_text(''.join(rows))
+        failures.append((name, f"restart_file='{invalid_index}',"))
+        run(name + '_serial', extra=f"restart_file='{invalid_index}',", success=False)
     if args.selected:
         context = (stopped / 'saved.chk').read_text()
         assert 'ELEMENT_CONTEXT' in context

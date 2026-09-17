@@ -21,7 +21,7 @@ module mpi_eb_tree_checkpoint_read_3d_mod
   public :: read_mpi_eb_tree_checkpoint_3d
 contains
   ! Borrow a formatted stream positioned after the application policy header.
-  ! Rank zero scans record boundaries; owners seek and parse only their patches.
+  ! V2 lengths give direct patch seeks; V1 requires a root boundary scan.
   subroutine read_mpi_eb_tree_checkpoint_3d(path,unit,species,reactions,transport,config,tree,owners, &
       geometry,state,temperature,record,comm,ok,bundle_sha256,chemistry_integrator,base_mole_fractions, &
       element_names,element_atoms)
@@ -44,13 +44,13 @@ contains
     type(reactive_eb_3d_config) :: cfg
     type(eb_geometry_3d) :: g
     integer(MPI_OFFSET_KIND), allocatable :: starts(:),ends(:)
-    integer(MPI_OFFSET_KIND) :: position
+    integer(MPI_OFFSET_KIND) :: position,file_bytes,patch_bytes
     real(dp), allocatable :: current(:),integral(:),l1(:),elements(:),expected(:),expected_l1(:),expected_elements(:)
     real(dp) :: got_time,got_dt,got_theta,diffusivity
     integer :: rank,status,ios,node,nv,ne,count,descriptor(12),stored(12),got_steps
     character(len=64) :: label
     character(len=512) :: message
-    logical :: valid
+    logical :: valid,indexed
     ok=.false.;nv=reactive_nvar(size(species));ne=3
     if (present(element_names)) ne=size(element_names)
     candidate=state;ct=temperature
@@ -65,7 +65,8 @@ contains
       saved%initial(nv),saved%scale(nv),saved%boundary(nv),saved%wall(nv),saved%chemical(nv), &
       starts(size(owners)),ends(size(owners)))
     read(unit,'(a)',iostat=ios) label
-    valid=ios==0.and.label=='PELEF_EB_TREE_CHECKPOINT_V1'
+    indexed=label=='PELEF_EB_TREE_CHECKPOINT_V2'
+    valid=ios==0.and.(label=='PELEF_EB_TREE_CHECKPOINT_V1'.or.indexed)
     if (valid) then
       read(unit,*,iostat=ios) count
       valid=ios==0
@@ -93,25 +94,50 @@ contains
     call agree(valid)
     if (.not.valid) return
     if (rank==0) then
-      do node=1,size(owners)
-        inquire(unit,pos=starts(node),iostat=ios)
-        if (ios/=0) then
-          valid=.false.;exit
-        end if
-        read(unit,'(a)',iostat=ios) label
-        valid=ios==0.and.label=='PELEF_REACTIVE_EB_3D_CHECKPOINT'
-        if (.not.valid) exit
-        do
-          read(unit,'(a)',iostat=ios) label
-          if (ios/=0) exit
-          if (label=='END_CHECKPOINT') exit
+      if (indexed) then
+        do node=1,size(owners)
+          read(unit,*,iostat=ios) ends(node)
+          valid=ios==0
+          if (valid) valid=ends(node)>0
+          if (.not.valid) exit
         end do
-        valid=ios==0
-        if (.not.valid) exit
-        inquire(unit,pos=ends(node),iostat=ios)
-        valid=ios==0
-        if (.not.valid) exit
-      end do
+        if (valid) then
+          inquire(unit,pos=position,size=file_bytes,iostat=ios)
+          valid=ios==0.and.position>=1.and.file_bytes<huge(file_bytes)
+        end if
+        do node=1,size(owners)
+          if (.not.valid) exit
+          patch_bytes=ends(node)
+          valid=position<=file_bytes
+          if (valid) valid=patch_bytes<=file_bytes-position
+          if (.not.valid) exit
+          starts(node)=position;position=position+patch_bytes;ends(node)=position
+        end do
+        if (valid) then
+          read(unit,'()',pos=position,advance='no',iostat=ios)
+          valid=ios==0
+        end if
+      else
+        do node=1,size(owners)
+          inquire(unit,pos=starts(node),iostat=ios)
+          if (ios/=0) then
+            valid=.false.;exit
+          end if
+          read(unit,'(a)',iostat=ios) label
+          valid=ios==0.and.label=='PELEF_REACTIVE_EB_3D_CHECKPOINT'
+          if (.not.valid) exit
+          do
+            read(unit,'(a)',iostat=ios) label
+            if (ios/=0) exit
+            if (label=='END_CHECKPOINT') exit
+          end do
+          valid=ios==0
+          if (.not.valid) exit
+          inquire(unit,pos=ends(node),iostat=ios)
+          valid=ios==0
+          if (.not.valid) exit
+        end do
+      end if
       if (valid) then
         read(unit,'(a)',iostat=ios) label
         valid=ios==0.and.label=='END_EB_TREE_CHECKPOINT'

@@ -1,4 +1,5 @@
 module eb_reactive_tree_checkpoint_3d_mod
+  use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -44,10 +45,12 @@ contains
     real(dp), allocatable :: integral(:),l1(:),elements(:),expected(:),expected_l1(:),expected_elements(:),current(:)
     real(dp) :: got_time,got_dt,got_theta,diffusivity
     integer :: nv,ne,node,count,ios,descriptor(12),stored(12),got_step
-    logical :: valid
+    logical :: valid,indexed
+    integer(int64), allocatable :: patch_bytes(:)
+    integer(int64) :: patch_start,patch_end
     character(len=64) :: label
     character(len=*), parameter :: magic='PELEF_EB_TREE_CHECKPOINT_V1',terminator='END_EB_TREE_CHECKPOINT'
-    ok=.false.;message='Invalid EB tree checkpoint'
+    ok=.false.;message='Invalid EB tree checkpoint';indexed=.false.
     nv=reactive_nvar(size(species));ne=3
     if (present(element_names)) ne=size(element_names)
     allocate(integral(nv),l1(nv),elements(ne),expected(nv),expected_l1(nv),expected_elements(ne),current(nv))
@@ -58,7 +61,8 @@ contains
     if (reading) then
       read(unit,'(a)',iostat=ios) label
       if (ios/=0) return
-      if (label/=magic) return
+      indexed=label=='PELEF_EB_TREE_CHECKPOINT_V2'
+      if (label/=magic.and..not.indexed) return
       read(unit,*,iostat=ios) got_step
       if (ios/=0) return
       if (got_step/=count) return
@@ -100,6 +104,14 @@ contains
       write(unit,'(*(es27.18e3,1x))',iostat=ios) saved%initial,saved%scale,saved%boundary,saved%wall,saved%chemical
     end if
     if (ios/=0) return
+    if (indexed) then
+      allocate(patch_bytes(count))
+      do node=1,count
+        read(unit,*,iostat=ios) patch_bytes(node)
+        if (ios/=0) return
+        if (patch_bytes(node)<=0) return
+      end do
+    end if
     do node=1,count
       cfg=config
       associate(g=>candidate%nodes(node)%geometry,u=>candidate%nodes(node)%state,t=>candidate%nodes(node)%temperature)
@@ -108,10 +120,19 @@ contains
       cfg%y_lower=g%y_lower;cfg%y_upper=g%y_upper
       cfg%z_lower=g%z_lower;cfg%z_upper=g%z_upper
       if (reading) then
+        if (indexed) then
+          inquire(unit,pos=patch_start,iostat=ios)
+          if (ios/=0.or.patch_start<1) return
+        end if
         call read_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,g,u,t,got_time,got_step, &
           integral,l1,elements,got_dt,diffusivity,got_theta,valid,message,bundle_sha256,chemistry_integrator, &
           base_mole_fractions,unit,element_names,element_atoms)
         if (.not.valid) return
+        if (indexed) then
+          inquire(unit,pos=patch_end,iostat=ios)
+          if (ios/=0) return
+          if (patch_end-patch_start/=patch_bytes(node)) return
+        end if
         message='Inconsistent EB tree patch metadata'
         if (got_time/=saved%time.or.got_step/=saved%steps.or.got_dt/=saved%minimum_dt.or. &
           got_theta/=saved%minimum_theta.or.diffusivity/=0._dp) return

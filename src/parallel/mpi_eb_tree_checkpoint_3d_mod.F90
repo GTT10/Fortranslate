@@ -48,7 +48,8 @@ contains
     integer :: rank,status,ios,stage,patch,node,nv,ne,descriptor(12),amount,written,close_status
     character(len=4096) :: chunk
     character(len=512) :: message
-    character(len=:), allocatable :: header
+    character(len=:), allocatable :: header,index_text
+    character(len=21) :: index_line
     character(len=*), parameter :: ending='END_EB_TREE_CHECKPOINT'
     logical :: valid,opened
     ok=.false.;opened=.false.;nv=reactive_nvar(size(species));ne=3
@@ -82,7 +83,7 @@ contains
       return
     end if
     ! Caller supplied only the application policy envelope; append tree metadata.
-    write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V1'
+    write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V2'
     if (ios==0) write(prefix_unit,*,iostat=ios) size(owners)
     do node=1,size(owners)
       if (ios/=0) exit
@@ -147,6 +148,23 @@ contains
     call MPI_Allreduce(local_bytes,bytes,size(owners),MPI_OFFSET,MPI_SUM,comm,status)
     valid=status==MPI_SUCCESS
     if (.not.valid) go to 900
+    ! V2 stores byte lengths before the unchanged serial patch records.
+    valid=all(bytes>0).and.size(owners)<=(huge(1)-len(header))/21
+    call agree(valid)
+    if (.not.valid) go to 900
+    allocate(character(len=21*size(owners))::index_text,stat=ios)
+    valid=ios==0;call agree(valid)
+    if (.not.valid) go to 900
+    do node=1,size(owners)
+      write(index_line,'(i20,a)',iostat=ios) bytes(node),new_line('a')
+      if (ios/=0) then
+        valid=.false.;exit
+      end if
+      index_text(21*(node-1)+1:21*node)=index_line
+    end do
+    call agree(valid)
+    if (.not.valid) go to 900
+    header=header//index_text;header_bytes=len(header)
     total=header_bytes
     do node=1,size(owners)
       if (bytes(node)>huge(total)-total) then
