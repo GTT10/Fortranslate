@@ -32,7 +32,7 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
     gather_mpi_amr_tree_3d,scatter_mpi_amr_tree_3d,partition_amr_tree_3d
-  use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
+  use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
   implicit none
   private
   public :: run_mpi_amr_patch_tree_application_3d
@@ -62,17 +62,16 @@ contains
     real(dp) :: max_remap_error
     integer :: event,nevents,slash,regrids,last_checkpoint_step
     character(len=1024) :: event_path
-    type(amr_tree_state_3d) :: state,temperature,global_state,global_temperature
+    type(amr_tree_state_3d) :: state,temperature,global_state
     integer, allocatable :: ratios(:),owners(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     real(dp), allocatable :: x(:),y(:),z(:),root_h(:),h(:,:),mass_fractions(:),inlet_x(:)
     real(dp), allocatable :: initial(:),final(:),budget(:),change(:),inlet(:,:),q(:),inlet_cube(:,:,:,:)
     real(dp) :: time,dt,transport_dt,diffusivity,base_density,correction,theta,max_correction,min_theta,stop_time
     real(dp) :: inlet_t(6),inlet_temperature(2,2,2),inlet_dt,face_dt,sound,min_h(3)
-    integer :: count,unit,status,node,n(3),lo(3),hi(3),i,j,k,step,attempt,face,c,child,rank,nranks
+    integer :: count,unit,status,node,n(3),i,j,k,step,attempt,face,c,rank,nranks
     character(len=32) :: faces(6),partitioning
     character(len=1024) :: message
-    character(len=:), allocatable :: row
     character(len=1024) :: checkpoint_file,restart_file
     character(len=:), allocatable :: context,identity,integrator,schedule_identity,expected_tree
     integer, parameter :: maximum_tag_levels=16
@@ -82,7 +81,7 @@ contains
     logical :: periodic(3)
     integer :: checkpoint_interval_steps
     logical :: stop_after_checkpoint,use_implicit,subcycling
-    logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
+    logical :: ok,viscosity,conduction,diffusion,barodiffusion
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
@@ -386,46 +385,11 @@ contains
       step=step+1;budget=budget+change
       max_correction=max(max_correction,correction);min_theta=min(min_theta,theta)
     end do
-    call gather_mpi_amr_tree_3d(tree,owners,state,global_state,comm,0,ok)
-    if (.not.ok) call fatal('Cannot gather final MPI tree state')
-    call gather_mpi_amr_tree_3d(tree,owners,temperature,global_temperature,comm,0,ok)
-    if (.not.ok) call fatal('Cannot gather final MPI tree temperature')
+    call distributed_inventory(tree,owners,state,final,.false.)
+    call write_mpi_amr_tree_csv_3d(trim(config%output_file),tree,owners,species,state,temperature, &
+      [config%x_lower,config%y_lower,config%z_lower],root_h,time,comm,ok)
+    if (.not.ok) call fatal('Cannot write distributed MPI tree CSV')
     if (rank==0) then
-      call move_alloc(global_state%fields,state%fields)
-      call move_alloc(global_temperature%fields,temperature%fields)
-    call composite_integrals_amr_patch_tree_3d(tree,state,root_h,final,ok)
-    if (.not.ok) call fatal('Invalid final composite inventory')
-    open(newunit=unit,file=trim(config%output_file),status='replace',action='write',iostat=status)
-    if (status/=0) call fatal('Cannot open tree CSV')
-    write(unit,'(a)',iostat=status) 'node,level,dx,dy,dz,'//reactive_3d_csv_header(species)
-    if (status/=0) call fatal('Cannot write tree CSV header')
-    allocate(character(len=26*(14+2*size(species))-1)::row)
-    do node=1,count+1
-      n=tree%nodes(node)%shape;call coordinates(node)
-      do k=1,n(3)
-        do j=1,n(2)
-          do i=1,n(1)
-            covered=.false.
-            do child=node+1,count+1
-              if (tree%nodes(child)%parent/=node) cycle
-              lo=[tree%nodes(child)%patch%coarse_i_lower,tree%nodes(child)%patch%coarse_j_lower, &
-                tree%nodes(child)%patch%coarse_k_lower]
-              hi=[tree%nodes(child)%patch%coarse_i_upper,tree%nodes(child)%patch%coarse_j_upper, &
-                tree%nodes(child)%patch%coarse_k_upper]
-              if (all([i,j,k]>=lo).and.all([i,j,k]<=hi)) covered=.true.
-            end do
-            if (covered) cycle
-            call format_reactive_3d_csv_row(species,[x(i),y(j),z(k)],time,state%fields(node)%values(:,i,j,k), &
-              temperature%fields(node)%values(1,i,j,k),row,ok)
-            if (.not.ok) call fatal('Invalid tree output state')
-            write(unit,'(i0,",",i0,3(",",es25.16e3),",",a)',iostat=status) node,tree%nodes(node)%level,h(:,node),row
-            if (status/=0) call fatal('Cannot write tree CSV row')
-          end do
-        end do
-      end do
-    end do
-    close(unit,iostat=status)
-    if (status/=0) call fatal('Cannot close tree CSV')
     open(newunit=unit,file=trim(config%output_file)//'.budget.csv',status='replace',action='write',iostat=status)
     if (status/=0) call fatal('Cannot open tree budget CSV')
     write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change'

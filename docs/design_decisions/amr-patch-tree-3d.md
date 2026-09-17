@@ -1057,3 +1057,24 @@ load-triggered migration is introduced. The estimate excludes chemistry stiffnes
 halo/communication costs and covered-cell differences. Whole-patch indivisibility
 can dominate imbalance. Selection currently costs O(nodes squared + nodes*ranks),
 with no large-tree scaling claim; spatial locality is not optimized.
+
+
+## Owner-local final CSV
+
+`write_mpi_amr_tree_csv_3d` uses the existing row formatter and exposed-cell
+predicate. The first owner-local pass validates every output row and measures
+per-node byte counts without opening the destination. A small metadata reduction
+and checked MPI-offset prefix sum give each node its serial-order byte interval.
+The second pass regenerates rows into bounded chunks and uses independent
+`MPI_File_write_at` calls. The collective file size replaces any older tail;
+rank zero writes the shared header. Empty owners participate in collective
+validation/open/close without field payloads. Path, header, time and spatial
+controls must agree across ranks. Short writes are rejected through status counts.
+
+The application keeps final fields on their owners. Its existing compensated
+inventory traversal passes only sum/correction vectors in serial node/cell order;
+rank zero writes the small budget file. Initial inventory and checkpoint gathers
+remain separate work. Preflight failures preserve the destination, while actual
+I/O failure after open/truncation can leave a partial file; no rename transaction
+or parallel-filesystem performance claim is made. Formatting twice trades CPU
+work for bounded output memory and input validation before destructive I/O.

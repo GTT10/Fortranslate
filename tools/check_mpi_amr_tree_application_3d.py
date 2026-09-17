@@ -35,6 +35,9 @@ def main() -> None:
         input_path.write_text(template + extra)
         if fail:
             (folder / 'tree_hotspot.csv').write_bytes(b'preserve-existing-output\n')
+        else:
+            # A shorter replacement must not retain the tail of an older result.
+            (folder / 'tree_hotspot.csv').write_bytes(b'old-output\n' * 100000)
         command = [str(args.serial.resolve()), str(input_path), str((args.case_dir / topology).resolve())]
         if ranks:
             command = [args.mpiexec, args.numproc_flag, str(ranks), str(args.mpi.resolve()), *command[1:]]

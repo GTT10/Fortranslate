@@ -126,8 +126,9 @@ are connected. Distributed bottom-up restriction with depth limits is implemente
 MPI shared/periodic face flux synchronization is implemented. MPI application subcycling dispatch and mode-aware checkpoint identity are now connected.
 Focused hydro-only scheduled/adaptive recursive execution and changed-rank restart
 are checked. Optional deterministic cell-step-weighted whole-patch partitioning is
-connected at initialization/regrid/restart; next extend distributed output, measured-cost
-rebalancing and dynamic full-split qualification. Recursive MPI
+connected at initialization/regrid/restart. Final CSV now uses owner-local MPI-IO;
+next extend distributed checkpoint/initial inventory, measured-cost rebalancing
+and dynamic full-split qualification. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive
 hydro now connects ratio-based steps, interval reflux and scaled coarse CFL.
