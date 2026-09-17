@@ -120,6 +120,12 @@ Temperature-policy inputs now connect exposed-cell tagging, conservative
 remapping and policy-bound adaptive restart at requested evaluation times.
 High-temperature and no-hot-cell cases exercise both refinement and complete
 derefinement ([adaptive evidence](validation/eb-adaptive-application-20260917.md)).
+A core multilevel EB tree now reuses regular AMR topology for finest-lattice
+geometry extraction, recursive PCM initialization, bottom-up restriction,
+exposed-fluid inventories and transactional exposed-cell chemistry. Three-level
+tests cover nested conservation and rollback; multilevel hydro/transport and
+application integration remain open
+([tree evidence](validation/eb-patch-tree-20260918.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
