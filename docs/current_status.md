@@ -71,8 +71,10 @@ API now corrects receiver inventories and reconciles shared physical transfer
 transactionally ([evidence](validation/eb-peer-flux-20260917.md)). A common-step
 hydro library now advances multiple fine patches with deterministic face
 ownership, peer synchronization and coarse reflux
-([evidence](validation/eb-multipatch-hydro-20260917.md)); multiple-patch
-reaction/transport, subcycling, application wiring and MPI EB remain open.
+([evidence](validation/eb-multipatch-hydro-20260917.md)). Molecular transport
+now follows the same multiple-patch transaction with limited-flux reconciliation
+([evidence](validation/eb-multipatch-transport-20260917.md)); multiple-patch
+reacting composition, subcycling, application wiring and MPI EB remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
