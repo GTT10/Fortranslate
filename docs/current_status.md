@@ -140,8 +140,11 @@ and separate exposed-wall/physical-boundary budgets transactionally
 ([hydro evidence](validation/eb-tree-hydro-20260918.md)). A matching molecular
 transport API now uses limited node fluxes and globally identified closed
 physical faces with transactional synchronization
-([transport evidence](validation/eb-tree-transport-20260918.md)). Combined
-stepping, application/restart integration and MPI remain open.
+([transport evidence](validation/eb-tree-transport-20260918.md)). A common-step
+R/2 T/2 H T/2 R/2 API now combines these operators with separate boundary,
+wall and chemical ledgers and complete rollback
+([coupled evidence](validation/eb-tree-full-20260918.md)). Multilevel
+application/restart integration, subcycling and MPI remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
