@@ -83,12 +83,14 @@ composite CSV output and transactional checkpoint continuation
 subcycling now synchronizes peer halos/fluxes on every fine step and accumulates
 fluxes for final coarse reflux, with mode-bound restart
 ([evidence](validation/eb-multipatch-subcycle-20260917.md)); MPI EB remains open. A selected-mechanism executable now shares
-the application path and binds bundle/composition identity on restart, within
-the existing H/O/N species inventory support (plus inert AR)
+the application path and binds bundle/composition identity on restart
 ([evidence](validation/eb-selected-two-level-20260917.md)). Generated bundles
 now expose source element composition and a generic EB inventory API consumes
-it; carbon-fuel application/checkpoint wiring remains open
-([evidence](validation/eb-element-metadata-20260917.md)).
+it ([evidence](validation/eb-element-metadata-20260917.md)). The two-level
+selected frontend now uses generic elemental checkpoint records and chemical
+conservation checks, including a 21-species methanol fixture
+([evidence](validation/eb-carbon-checkpoint-20260917.md)); the single-level
+frontend still uses its earlier H/O/N inventory path.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement

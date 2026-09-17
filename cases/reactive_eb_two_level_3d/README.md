@@ -110,8 +110,14 @@ automatic interval selection, ten-species chemistry and molecular transport.
 Checkpoint patch records bind bundle SHA, resolved composition and integrator,
 so selected/fixed or changed-mechanism/composition restarts are rejected.
 The initial regular/cut temperatures must lie within the common species
-thermodynamic range. The inherited elemental inventory supports only
-H2, H, O, O2, OH, H2O, HO2, H2O2, N2 and AR; other species are rejected by this
-application, including when reaction is disabled. This is not a general
-carbon-fuel EB frontend or a CVODE connection.
+thermodynamic range. The two-level selected frontend now uses the bundle's source element table,
+including carbon and inert elements, for checkpoint inventories and reaction
+conservation checks. [`selected_methanol.nml`](selected_methanol.nml) uses the
+pinned 21-species FFCM1_Red bundle prepared with
+`tools/prepare_spray_reference.py`; configure `PELEF_MECHANISM_BUNDLE` to its
+imported JSON path. This does not connect CVODE or establish ignition validation.
+Selected patch records now use schema 3, including element names and atom counts;
+older selected schema-2 two-level checkpoints are rejected rather than migrated.
+Fixed schema-1 records and the single-level API's optional schema-2 path remain
+available. [Element/checkpoint evidence](../../docs/validation/eb-carbon-checkpoint-20260917.md).
 [Selected application evidence](../../docs/validation/eb-selected-two-level-20260917.md).
