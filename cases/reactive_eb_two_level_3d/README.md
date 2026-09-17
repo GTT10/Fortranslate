@@ -25,6 +25,32 @@ coarse reflux. Automatic selection includes every patch's bounds and donors
 and scales fine bounds by the corresponding substep count.
 [Multiple-patch subcycling evidence](../../docs/validation/eb-multipatch-subcycle-20260917.md).
 
+## Scheduled regridding
+
+[`scheduled.nml`](scheduled.nml) and the selected-mechanism
+[`selected_scheduled.nml`](selected_scheduled.nml) change patch counts 2→1→2.
+Set `regrid_count` (0–16), strictly increasing positive `regrid_times(event)`,
+`regrid_patch_count(event)` (1–16), and inclusive coarse-cell boxes
+`regrid_lower(:,patch,event)` / `regrid_upper(:,patch,event)`. All events are
+validated up front. Geometry and refinement ratio stay fixed; scheduled
+patches must be nonoverlapping and lie within the coarse domain.
+
+The timestep lands on each event. After that accepted step, the application
+conservatively remaps patches, checks the composite budget, then applies any
+checkpoint/stop policy. Same-resolution overlap retains its exact state;
+newly refined cells use volume-conservative coarse donors. Both common steps
+and fine subcycling support this schedule. Events beyond `final_time` remain
+part of restart identity and can be reached by extending the final time.
+
+Scheduled checkpoints use `PELEF_EB_SCHEDULED_CHECKPOINT_V1` through `V4`
+for the same fixed/automatic and common/subcycled mode combinations. They
+bind the original topology, complete schedule and completed-event index.
+Restart rebuilds the saved layout, verifies that the event index agrees with
+the saved time, and resumes without repeating a completed event. A schedule
+change is rejected. Temperature tagging, changing the refinement ratio in the
+application, zero fine patches and distributed EB regridding remain open.
+[Scheduled application evidence](../../docs/validation/eb-scheduled-application-20260917.md).
+
 `geometry_type` accepts `plane`, `extruded` or `level_set`, with the same geometry
 file formats as the existing [extruded](../reactive_eb_extruded_3d/README.md) and
 [nodal](../reactive_eb_level_set_3d/README.md) cases. Coarsening rejects shapes
@@ -83,13 +109,15 @@ or `V4` respectively. They include all fine records and require the same patch
 order, boxes and stepping mode on restart.
 
 A single file contains all grids and cumulative budgets. The reader validates
-the complete file before restoring any grid. A failed read leaves existing
+the complete file before publishing restored solution fields. For scheduled
+restart it first constructs the expected destination layout. A failed read leaves existing
 CSV outputs untouched. Checkpoint replacement is staged for validation but is
 not atomic against storage failure. Use distinct paths for inputs, outputs,
 restart source and checkpoint destination.
 [Restart evidence](../../docs/validation/eb-two-level-restart-20260917.md).
 
-Both executables are serial. Dynamic patches and MPI are not yet connected.
+Both executables are serial. Prescribed patch schedules are connected;
+temperature-adaptive patches and MPI are not yet connected.
 [Multiple-patch application evidence](../../docs/validation/eb-multipatch-application-20260917.md).
 [Application evidence](../../docs/validation/eb-two-level-application-20260917.md).
 
