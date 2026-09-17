@@ -60,6 +60,7 @@ if(PELEF_ENABLE_SPRAY)
         src/spray/spray_mpi_amr_step_mod.F90
         src/spray/spray_mpi_amr_reactive_mod.F90
         src/spray/spray_mpi_eb_reactive_mod.F90
+        src/spray/spray_mpi_eb_remap_mod.F90
         src/spray/spray_mpi_eb_particle_checkpoint_mod.F90
         src/spray/spray_mpi_amr_remap_mod.F90
         src/spray/spray_mpi_amr_application_mod.F90

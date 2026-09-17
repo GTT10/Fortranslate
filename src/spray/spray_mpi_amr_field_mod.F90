@@ -12,7 +12,7 @@ module spray_mpi_amr_field_mod
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_amr_tree_coupling_mod, only: amr_tree_spray_stencil
   use eb_geometry_3d_mod, only: eb_geometry_3d
-  use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil
+  use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil,compatible_eb_nodal_lattice
   implicit none
   private
   type :: particle_stencil
@@ -351,14 +351,14 @@ contains
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: buffer(:),local(:)
     real(dp) :: bounds(9),reference(9)
-    integer :: node,n,ios,ierr
+    integer :: node,n,ios,ierr,dims(3)
     logical :: valid,agreed
     ok=.false.
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(valid) valid=size(geometry)==size(tree%nodes)
     call agree()
     if(.not.agreed) return
-    valid=all(int(shape(phi)-1,int64)==domain(:,size(domain,2)))
+    valid=compatible_eb_nodal_lattice(shape(phi)-1,domain(:,size(domain,2)))
     valid=valid.and.all(shape(phi)<=1000001).and.all(shape(phi)>1)
     call agree()
     if(.not.agreed) return
@@ -370,6 +370,10 @@ contains
       if(valid) valid=all([geometry(node)%nx,geometry(node)%ny,geometry(node)%nz]==tree%nodes(node)%shape)
     end do
     call agree()
+    if(.not.agreed) return
+    dims=shape(phi)
+    call MPI_Bcast(dims,3,MPI_INTEGER,0,comm,ierr)
+    valid=ierr==MPI_SUCCESS.and.all(dims==shape(phi));call agree()
     if(.not.agreed) return
     allocate(buffer(size(phi)),stat=ios)
     valid=ios==0;call agree()

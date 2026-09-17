@@ -7,8 +7,19 @@ module spray_eb_tree_stencil_mod
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   implicit none
   private
-  public :: eb_tree_spray_stencil
+  public :: eb_tree_spray_stencil,compatible_eb_nodal_lattice
 contains
+  pure logical function compatible_eb_nodal_lattice(dims,finest) result(ok)
+    integer, intent(in) :: dims(3)
+    integer(int64), intent(in) :: finest(3)
+    integer(int64) :: factors(3)
+    ok=.false.
+    if(any(dims<1).or.any(dims>1000000).or.any(finest<1)) return
+    if(product(int(dims,int64))>1000000_int64) return
+    if(any(mod(int(dims,int64),finest)/=0)) return
+    factors=int(dims,int64)/finest
+    ok=all(factors>=1).and.all(factors==factors(1))
+  end function
   ! Composite cloud weights, fluid-volume weighted, with visibility to fluid
   ! centroids. Geometry/phi must originate from the same finest nodal field.
   subroutine eb_tree_spray_stencil(tree,geometry,phi,position,lower,spacing,cells,weights,volumes,ok)
@@ -29,7 +40,7 @@ contains
     if(size(geometry)/=size(tree%nodes)) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(.not.valid) return
-    if(any(int(shape(phi)-1,int64)/=domain(:,size(domain,2)))) return
+    if(.not.compatible_eb_nodal_lattice(shape(phi)-1,domain(:,size(domain,2)))) return
     call amr_tree_spray_stencil(tree,position,lower,spacing,[.false.,.false.,.false.],candidate,w,v,valid)
     if(.not.valid) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp)

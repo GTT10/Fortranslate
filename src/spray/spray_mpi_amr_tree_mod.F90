@@ -2,6 +2,7 @@ module spray_mpi_amr_tree_mod
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
+  use spray_eb_tree_stencil_mod, only: compatible_eb_nodal_lattice
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
@@ -13,7 +14,7 @@ module spray_mpi_amr_tree_mod
   public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
 contains
   ! The replicated nodal field describes the root domain at the finest tree
-  ! resolution, as used by the gas EB hierarchy builder. No periodic wrapping.
+  ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder. No periodic wrapping.
   subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing,maximum_parcels,ok,component_mass)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -50,7 +51,7 @@ contains
     end if
     if(.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
-    if(valid) valid=all(int(dims,int64)==domain(:,size(domain,2)))
+    if(valid) valid=compatible_eb_nodal_lattice(dims,domain(:,size(domain,2)))
     call agree()
     if(.not.agreed) return
     call MPI_Allreduce(dims,low,3,MPI_INTEGER,MPI_MIN,comm,ierr)
