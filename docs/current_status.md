@@ -245,8 +245,11 @@ fetches and the serial PCM kernel, removing full-tree state replication and scat
 ([owner-local initialization evidence](validation/mpi-eb-tree-initialize-20260918.md)).
 Root seed U/T is now constructed only on the root patch owner and released on
 return from initialization, including restart topology setup
-([evidence](validation/mpi-eb-tree-seed-20260918.md)). Geometry remains replicated;
-avoiding the root's legacy-file scan remains open.
+([evidence](validation/mpi-eb-tree-seed-20260918.md)). MPI checkpoints now include
+a V2 patch byte-length index, allowing direct owner reads without a full root
+scan. Serial readers also accept V2; legacy V1 saves retain the bounded-memory
+scan fallback ([evidence](validation/mpi-eb-tree-index-20260918.md)). Geometry
+remains replicated and scaling qualification remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
