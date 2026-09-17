@@ -89,8 +89,11 @@ now expose source element composition and a generic EB inventory API consumes
 it ([evidence](validation/eb-element-metadata-20260917.md)). The two-level
 selected frontend now uses generic elemental checkpoint records and chemical
 conservation checks, including a 21-species methanol fixture
-([evidence](validation/eb-carbon-checkpoint-20260917.md)); the single-level
-frontend still uses its earlier H/O/N inventory path.
+([evidence](validation/eb-carbon-checkpoint-20260917.md)). The single-level
+selected frontend now shares source-derived element inventories and schema-3
+restart, with a uniform-density implicit methanol connection fixture; its
+general external-boundary inventory ledger remains open
+([evidence](validation/eb-single-level-elements-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
