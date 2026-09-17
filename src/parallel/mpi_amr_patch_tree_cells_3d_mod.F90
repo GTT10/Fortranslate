@@ -6,7 +6,7 @@ module mpi_amr_patch_tree_cells_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   implicit none
   private
-  public :: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
+  public :: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d,validate_mpi_amr_tree_metadata_3d
 contains
   ! Each request column is [node,i,j,k], with one-based cell indices.
   ! Request counts/order may differ on every rank, including zero requests.
@@ -109,6 +109,35 @@ contains
     type(amr_tree_state_3d), intent(in) :: local
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    integer :: rank,status,node
+    logical :: valid
+    call validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,ok)
+    if (.not.ok) return
+    ok=.false.
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) return
+    valid=allocated(local%fields)
+    if (valid) valid=size(local%fields)==size(tree%nodes)
+    if (valid) then
+      do node=1,size(tree%nodes)
+        if (owners(node)/=rank) then
+          if (allocated(local%fields(node)%values)) valid=.false.
+        else if (.not.allocated(local%fields(node)%values)) then
+          valid=.false.
+        else
+          if (any(shape(local%fields(node)%values)/=[nvar,tree%nodes(node)%shape])) valid=.false.
+        end if
+      end do
+    end if
+    call MPI_Allreduce(valid,ok,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if (status/=MPI_SUCCESS) ok=.false.
+  end subroutine validate_mpi_amr_tree_local_3d
+  ! Collective agreement on topology, owners and component count.
+  subroutine validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
     integer, allocatable :: records(:,:),reference(:,:)
     integer :: rank,nranks,status,ios,node,header(2),low(2),high(2)
     logical :: valid,ready
@@ -128,10 +157,6 @@ contains
     if (any(low/=high)) return
     valid=size(owners)==size(tree%nodes).and.size(tree%nodes)<=huge(1)/13
     if (valid) valid=all(owners>=0).and.all(owners<nranks)
-    if (.not.allocated(local%fields)) valid=.false.
-    if (allocated(local%fields)) then
-      if (size(local%fields)/=size(tree%nodes)) valid=.false.
-    end if
     call agree(valid,ready)
     if (.not.ready) return
     allocate(records(13,size(tree%nodes)),reference(13,size(tree%nodes)),stat=ios)
@@ -147,13 +172,6 @@ contains
         end associate
       end if
       records(13,node)=owners(node)
-      if (owners(node)/=rank) then
-        if (allocated(local%fields(node)%values)) valid=.false.
-      else if (.not.allocated(local%fields(node)%values)) then
-        valid=.false.
-      else
-        if (any(shape(local%fields(node)%values)/=[nvar,tree%nodes(node)%shape])) valid=.false.
-      end if
     end do
     if (rank==0) reference=records
     call MPI_Bcast(reference,size(reference),MPI_INTEGER,0,comm,status)
@@ -168,5 +186,5 @@ contains
       call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if (ierr/=MPI_SUCCESS) result=.false.
     end subroutine
-  end subroutine validate_mpi_amr_tree_local_3d
+  end subroutine validate_mpi_amr_tree_metadata_3d
 end module mpi_amr_patch_tree_cells_3d_mod

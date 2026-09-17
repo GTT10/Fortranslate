@@ -12,7 +12,7 @@ module amr_patch_tree_reflux_3d_mod
     ! Time-integrated flux per unit face area; normal indices run from 1 to n+1.
     real(dp), allocatable :: x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
   end type
-  type :: face_marks
+  type, public :: face_marks
     logical, allocatable :: x(:,:,:),y(:,:,:),z(:,:,:)
   end type
   public :: reflux_amr_patch_tree_3d

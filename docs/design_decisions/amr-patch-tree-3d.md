@@ -561,6 +561,38 @@ The sequential node traversal uses per-node collective gates and is not a scalin
 claim. EOS recovery, flux reflux, level stepping and application integration are
 separate operations still to be connected.
 
+## MPI peer flux synchronization
+
+`synchronize_mpi_amr_tree_flux_peers_3d(tree,owners,nvar,depth,faces,flux,refined,comm,ok)`
+reconciles shared faces at one zero-based depth. Active flux and `face_marks`
+arrays are allocated only on each node's owner; other depths are untouched and
+may be absent. The serial reflux module now exports its mark type. A true mark
+means a value has already been replaced by finer-resolution flux.
+
+The metadata preflight is factored separately from cell allocation checks so that
+face operations need no dummy cell state. All ranks agree on topology, ownership,
+component count, active depth and periodic axes; active local shapes, masks and
+finite fluxes are validated before communication. The routine borrows its communicator.
+
+Identical metadata derives intersections of peer boundary rectangles, including
+periodic opposite faces and self-pairs. Each unordered node/face pair is processed
+once. The higher-index owner sends values and encoded marks to the lower-index
+owner (tag 28404); that owner reconciles them and returns the result (tag 28405).
+Same-owner pairs bypass payload communication. If marks agree, the values must
+match within the serial 64-epsilon tolerance and the lower-index/first-face value
+is retained. Otherwise the fine-replaced value and mark propagate to both sides.
+Physical boundary faces without peers and nonoverlapping portions remain unchanged.
+
+Only owned active fluxes and marks are copied into candidates. Allocation,
+validation or disagreement failures preserve all caller fluxes and marks; successful
+completion moves active candidates back without touching other depths. MPI runtime
+failures remain governed by the communicator error handler. Pair traversal and
+collective gates are deliberately simple and have no scaling qualification.
+
+This supplies the peer stage of distributed reflux. Parent area averaging,
+uncovered-cell divergence correction, the physical boundary ledger and EOS recovery
+still need connection; this API alone does not update conserved state.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
