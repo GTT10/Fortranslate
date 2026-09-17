@@ -587,8 +587,12 @@ adaptation now updates gas/particle topology on completed-step intervals and
 continues after changed-rank restart without repeating the saved step's check
 ([evidence](validation/spray-amr-adaptation-20260918.md)). Gas-work sampling now
 drives owner reassignment with transactional gas/particle migration and
-rank-neutral continuation ([evidence](validation/spray-amr-balance-20260918.md)). Physical
-particle boundaries and EB solid handling remain open.
+rank-neutral continuation ([evidence](validation/spray-amr-balance-20260918.md)).
+The AMR particle-interval API now handles outflow and specular reflection with
+a transactional global mass/momentum/energy/species boundary ledger
+([evidence](validation/spray-amr-boundaries-20260918.md)). Physical boundaries
+in the reacting wrapper/application/checkpoint path, wall-film coupling and EB
+solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
