@@ -43,9 +43,12 @@ def main():
     resume = source.replace('\n/', "\n restart_file='carbon.chk',\n/")
     run('resume.nml', resume)
     assert output.read_bytes() == saved
+    resumed_log = (work / 'resume.nml.log').read_text()
+    budget_lines = lambda text: [line for line in text.splitlines() if line.startswith('EB inventory')]
+    assert budget_lines(log) == budget_lines(resumed_log), 'cumulative restart budgets differ'
     checkpoint = work / 'carbon.chk'
     original = checkpoint.read_text()
-    assert original.splitlines()[1].split()[0] == '3'
+    assert original.splitlines()[1].split()[0] == '6'
     lines = original.splitlines()
     index = lines.index('ELEMENT_CONTEXT')
     assert int(lines[index + 1]) == 5
@@ -54,6 +57,17 @@ def main():
     checkpoint.write_text('\n'.join(lines) + '\n')
     run('bad_element.nml', resume, False)
     assert output.read_bytes() == saved
+    checkpoint.write_text(original)
+    lines = original.splitlines()
+    exchange = lines.index('EXCHANGES')
+    values = lines[exchange + 1].split()
+    values[0] = '1.0e-4'
+    lines[exchange + 1] = ' '.join(values)
+    corrupted = '\n'.join(lines) + '\n'
+    checkpoint.write_text(corrupted)
+    run('bad_budget.nml', resume, False)
+    assert output.read_bytes() == saved
+    assert checkpoint.read_text() == corrupted
     checkpoint.write_text(original)
     print('PASS: single-level carbon EB state, elemental checkpoint and exact continuation')
 

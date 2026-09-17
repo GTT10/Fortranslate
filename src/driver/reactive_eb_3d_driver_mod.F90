@@ -26,6 +26,7 @@ module reactive_eb_3d_driver_mod
   public :: advance_reactive_eb_strang_3d
   public :: advance_reactive_eb_full_3d
   public :: reactive_eb_integrals_3d
+  public :: reactive_eb_element_amounts_3d
   public :: reactive_eb_composition_integrals_3d
   public :: reactive_eb_element_integrals_3d
   public :: reactive_eb_element_species_supported_3d
@@ -604,6 +605,41 @@ contains
       end if
     end do
   end function reactive_eb_element_species_supported_3d
+
+  subroutine reactive_eb_element_amounts_3d(species,amounts,elements,ok,element_atoms)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: amounts(:)
+    real(dp), intent(inout) :: elements(:)
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: element_atoms(:,:)
+    real(dp) :: candidate(size(elements)),atoms(3)
+    integer :: k
+    ok=.false.
+    if (size(species)<1.or.size(elements)<1) return
+    if (size(amounts)/=reactive_nvar(size(species))) return
+    if (.not.all(ieee_is_finite(amounts))) return
+    if (.not.all(ieee_is_finite(species%molecular_weight))) return
+    if (any(species%molecular_weight<=0._dp)) return
+    if (present(element_atoms)) then
+      if (any(shape(element_atoms)/=[size(elements),size(species)])) return
+      if (.not.all(ieee_is_finite(element_atoms))) return
+      if (any(element_atoms<0._dp)) return
+      if (any(sum(element_atoms,dim=1)<=0._dp)) return
+      candidate=matmul(element_atoms,amounts(6:)/species%molecular_weight)
+    else
+      if (size(elements)/=3) return
+      candidate=0._dp
+      do k=1,size(species)
+        call element_atom_counts(species(k)%name,atoms,ok)
+        if (.not.ok) return
+        candidate=candidate+atoms*amounts(k+5)/species(k)%molecular_weight
+      end do
+    end if
+    ok=.false.
+    if (.not.all(ieee_is_finite(candidate))) return
+    elements=candidate
+    ok=.true.
+  end subroutine reactive_eb_element_amounts_3d
 
   pure subroutine element_atom_counts(name, atoms, ok)
     character(len=*), intent(in) :: name

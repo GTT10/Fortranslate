@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit the installed full-bundle selected EB 3D schema-2 restart smoke."""
+"""Audit the installed full-bundle selected EB 3D schema-6 restart smoke."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import re
 
 
 MAGIC = "PELEF_REACTIVE_EB_3D_CHECKPOINT"
-EXPECTED_HEADER = (2, 10, 29, 10, 15)
+EXPECTED_HEADER = (6, 10, 29, 10, 15)
 EXPECTED_ROWS = 10 * 8 * 6
 FINAL_TIME = 1.0e-8
 BUNDLE_SHA256 = (
@@ -132,8 +132,6 @@ def check_log(path: Path, mode: str) -> dict[str, float]:
 
 def check_checkpoint(path: Path, expected_sha256: str) -> None:
     data = path.read_bytes()
-    if digest(data) != expected_sha256:
-        raise AssertionError(f"{path}: checkpoint SHA-256 mismatch")
     lines = data.decode("utf-8").splitlines()
     if lines[0].strip() != MAGIC:
         raise AssertionError("checkpoint magic mismatch")
@@ -152,8 +150,36 @@ def check_checkpoint(path: Path, expected_sha256: str) -> None:
         for actual, expected in zip(stored_composition, COMPOSITION, strict=True)
     ):
         raise AssertionError("selected checkpoint composition mismatch")
-    if lines[7].strip() != "SPECIES" or lines[-1].strip() != "END_CHECKPOINT":
+    if lines[7].strip() != "ELEMENT_CONTEXT" or "SPECIES" not in lines or lines[-1].strip() != "END_CHECKPOINT":
         raise AssertionError("selected checkpoint body marker mismatch")
+
+    exchange = lines.index("EXCHANGES")
+    for row in lines[exchange + 1:exchange + 4]:
+        values = [float(value) for value in row.split()]
+        if len(values) != EXPECTED_HEADER[-1] or not all(math.isfinite(v) for v in values):
+            raise AssertionError("invalid checkpoint exchange vector")
+    expected_atoms = {
+        "Ar": (0, 0, 0, 0, 0, 0, 0, 0, 1, 0),
+        "H": (2, 1, 0, 0, 1, 2, 1, 2, 0, 0),
+        "N": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+        "O": (0, 0, 1, 2, 1, 1, 2, 2, 0, 0),
+    }
+    elements = int(lines[8])
+    if elements != len(expected_atoms):
+        raise AssertionError("element count mismatch")
+    for i, (name, atoms) in enumerate(expected_atoms.items()):
+        if lines[9 + 2 * i] != name or tuple(map(float, lines[10 + 2 * i].split())) != atoms:
+            raise AssertionError("source element metadata mismatch")
+    species_marker = 9 + 2 * elements
+    if lines[species_marker] != "SPECIES":
+        raise AssertionError("invalid element context length")
+    # Retain the schema-2 payload golden hash across metadata additions.
+    legacy = data.decode("utf-8").splitlines(keepends=True)
+    legacy[1] = legacy[1].replace("6", "2", 1)
+    del legacy[exchange:exchange + 4]
+    del legacy[7:species_marker]
+    if digest("".join(legacy).encode()) != expected_sha256:
+        raise AssertionError(f"{path}: legacy checkpoint payload SHA-256 mismatch")
 
 
 def main() -> int:

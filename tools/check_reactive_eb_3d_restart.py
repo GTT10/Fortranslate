@@ -203,19 +203,27 @@ def main() -> int:
 
     checkpoint_data = args.checkpoint.read_bytes()
     checkpoint_sha256 = digest(checkpoint_data)
-    if checkpoint_sha256 != args.expected_checkpoint_sha256:
-        raise AssertionError(
-            "checkpoint SHA-256 mismatch: "
-            f"{checkpoint_sha256} != {args.expected_checkpoint_sha256}"
-        )
     lines = checkpoint_data.decode("utf-8").splitlines()
     if len(lines) < 3 or lines[0].strip() != MAGIC:
         raise AssertionError("checkpoint magic is missing")
     header = lines[1].split()
-    if not header or int(header[0]) != 1:
-        raise AssertionError("checkpoint schema is not version 1")
+    if not header or int(header[0]) != 4:
+        raise AssertionError("checkpoint schema is not version 4")
     if lines[-1].strip() != "END_CHECKPOINT":
         raise AssertionError("checkpoint terminal marker is missing")
+
+    exchange = lines.index("EXCHANGES")
+    for row in lines[exchange + 1:exchange + 4]:
+        values = [float(value) for value in row.split()]
+        if len(values) != int(header[4]) or not all(math.isfinite(v) for v in values):
+            raise AssertionError("invalid checkpoint exchange vector")
+    # The new schema adds diagnostics only: retain the existing golden hash
+    # for every byte of the prior payload instead of replacing that hash.
+    legacy = checkpoint_data.decode("utf-8").splitlines(keepends=True)
+    legacy[1] = legacy[1].replace("4", "1", 1)
+    del legacy[exchange:exchange + 4]
+    if digest("".join(legacy).encode()) != args.expected_checkpoint_sha256:
+        raise AssertionError("legacy checkpoint payload SHA-256 mismatch")
 
     print(f"rows={EXPECTED_ROWS}")
     print(f"checkpoint_time={stopped_time:.16e}")

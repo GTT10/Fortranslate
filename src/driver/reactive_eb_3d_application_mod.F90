@@ -22,7 +22,7 @@ module reactive_eb_3d_application_mod
     advance_reactive_eb_full_3d, &
     reactive_eb_integrals_3d, reactive_eb_extrema_3d, &
     reactive_eb_element_integrals_3d, reactive_eb_composition_integrals_3d, &
-    reactive_eb_element_species_supported_3d, &
+    reactive_eb_element_species_supported_3d, reactive_eb_element_amounts_3d, &
     write_reactive_eb_3d_csv
   implicit none
   private
@@ -51,7 +51,9 @@ contains
     real(dp), allocatable :: initial_integrals(:), final_integrals(:)
     real(dp), allocatable :: initial_l1_integrals(:), final_l1_integrals(:)
     real(dp), allocatable :: initial_element_integrals(:),final_element_integrals(:),element_roundoff(:)
-    real(dp) :: element_residual
+    real(dp), allocatable :: boundary(:),wall(:),chemical(:),step_boundary(:),step_wall(:),step_chemical(:)
+    real(dp), allocatable :: external_elements(:)
+    real(dp) :: element_residual,component_roundoff
     real(dp) :: time, dt, hydro_dt, transport_dt, minimum_dt
     real(dp) :: conservation_error
     real(dp) :: component_error, normal_momentum_change
@@ -63,7 +65,6 @@ contains
     real(dp) :: minimum_temperature, maximum_temperature
     real(dp) :: maximum_speed, maximum_closure_error
     character(len=1024) :: message
-    logical :: wall_momentum(3)
     logical :: ok, restarted, stopped_after_checkpoint, selected_context
     integer :: step, nvar, component, normal_momentum,element_count,e
 
@@ -108,6 +109,9 @@ contains
     allocate(temperature(config%nx, config%ny, config%nz))
     allocate(new_temperature(config%nx, config%ny, config%nz))
     allocate(initial_integrals(nvar), final_integrals(nvar))
+    allocate(boundary(nvar),wall(nvar),chemical(nvar),step_boundary(nvar),step_wall(nvar),step_chemical(nvar))
+    allocate(external_elements(element_count))
+    boundary=0._dp;wall=0._dp;chemical=0._dp
     allocate(initial_l1_integrals(nvar), final_l1_integrals(nvar))
     call initialize_reactive_eb_density_sheet_3d( &
       species, config, geometry, state, temperature, ok, base_mole_fractions)
@@ -141,19 +145,21 @@ contains
           maximum_transport_diffusivity, minimum_transport_theta, ok, &
           message, bundle_sha256=bundle_sha256, &
           chemistry_integrator=chemistry_integrator, &
-          base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms)
+          base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms, &
+          boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
       else
         call read_reactive_eb_3d_checkpoint( &
           trim(config%restart_file), species, reactions, transport, config, &
           geometry, state, temperature, time, step, initial_integrals, &
           initial_l1_integrals, initial_element_integrals, minimum_dt, &
           maximum_transport_diffusivity, minimum_transport_theta, ok, &
-          message)
+          message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
       end if
       if (.not. ok) then
         write(*, '(a)') trim(message)
         error stop "Failed to restart public 3D EB state"
       end if
+      call check_inventory()
       restarted = .true.
       write(*, '(a,1x,a)') &
         "Restarted from checkpoint:", trim(config%restart_file)
@@ -191,8 +197,11 @@ contains
         config%viscosity_enabled, config%thermal_conduction_enabled, &
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         new_state, new_temperature, step_transport_theta, ok, &
-        config%state_redist_target_volume_fraction, chemistry_integrator)
+        config%state_redist_target_volume_fraction, chemistry_integrator,step_boundary,step_wall,step_chemical)
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
+      boundary=boundary+step_boundary
+      wall=wall+step_wall
+      chemical=chemical+step_chemical
       minimum_transport_theta = min( &
         minimum_transport_theta, step_transport_theta)
       state = new_state
@@ -202,6 +211,7 @@ contains
       minimum_dt = min(minimum_dt, dt)
       if (config%checkpoint_interval_steps > 0) then
         if (mod(step, config%checkpoint_interval_steps) == 0) then
+          call check_inventory()
           if (selected_context) then
             call write_reactive_eb_3d_checkpoint( &
               trim(config%checkpoint_file), species, reactions, transport, &
@@ -211,7 +221,8 @@ contains
               maximum_transport_diffusivity, minimum_transport_theta, &
               ok, message, bundle_sha256=bundle_sha256, &
               chemistry_integrator=chemistry_integrator, &
-              base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms)
+              base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms, &
+          boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
           else
             call write_reactive_eb_3d_checkpoint( &
               trim(config%checkpoint_file), species, reactions, transport, &
@@ -219,7 +230,7 @@ contains
               initial_integrals, initial_l1_integrals, &
               initial_element_integrals, minimum_dt, &
               maximum_transport_diffusivity, minimum_transport_theta, &
-              ok, message)
+              ok, message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
           end if
           if (.not. ok) then
             write(*, '(a)') trim(message)
@@ -236,88 +247,12 @@ contains
       end if
     end do
 
-    call reactive_eb_integrals_3d( &
-      state, geometry, final_integrals, ok, final_l1_integrals)
-    if (.not. ok) error stop "Failed to integrate final 3D EB state"
-    element_conservation_error = 0.0_dp
-    if (config%chemistry_enabled) then
-      if (present(element_atoms)) then
-        call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,final_element_integrals,ok)
-        if (.not.ok) error stop 'Failed to integrate final EB elements'
-        ! Preserve the relative gate and separately account for roundoff of
-        ! initially absent elements from species mass closure and summation.
-        do e=1,element_count
-          element_roundoff(e)=64._dp*epsilon(1._dp)*real(max(1,step),dp)*sum(abs(initial_integrals(6:)))* &
-            maxval(element_atoms(e,:)/species%molecular_weight)
-          element_residual=max(0._dp,abs(final_element_integrals(e)-initial_element_integrals(e))-element_roundoff(e))
-          element_conservation_error=max(element_conservation_error, &
-            element_residual/max(1.e-30_dp,abs(initial_element_integrals(e))))
-        end do
-        if (.not.ieee_is_finite(element_conservation_error)) error stop 'Nonfinite elemental conservation error'
-      else
-        call reactive_eb_element_integrals_3d(species,state,geometry,final_element_integrals,ok)
-        if (.not.ok) error stop 'Failed to integrate final EB elements'
-        element_conservation_error=maxval(abs(final_element_integrals-initial_element_integrals)/ &
-          max(1.e-30_dp,abs(initial_element_integrals)))
-      end if
-    end if
-    normal_momentum=imx
-    if (config%geometry_type=='plane') then
-    select case (trim(config%plane_axis))
-    case ("x")
-      normal_momentum = imx
-    case ("y")
-      normal_momentum = imy
-    case ("z")
-      normal_momentum = imz
-    case default
-      error stop "Unexpected public 3D EB plane axis"
-    end select
-    end if
-    wall_momentum=[any(geometry%boundary_normal_integral_x/=0._dp), &
-      any(geometry%boundary_normal_integral_y/=0._dp),any(geometry%boundary_normal_integral_z/=0._dp)]
-    conservation_error = 0.0_dp
-    do component = 1, nvar
-      select case(component)
-      case(imx)
-        if (wall_momentum(1)) cycle
-      case(imy)
-        if (wall_momentum(2)) cycle
-      case(imz)
-        if (wall_momentum(3)) cycle
-      end select
-      if (config%chemistry_enabled .and. component > ncons) cycle
-      component_error = abs( &
-        final_integrals(component) - initial_integrals(component)) / &
-        max(tiny(1.0_dp), abs(initial_integrals(component)), &
-          initial_l1_integrals(component), final_l1_integrals(component))
-      if (component_error>5.e-11_dp) write(*,'(a,i0,3(1x,es24.16))') &
-        'Invariant component initial/final/error: ',component, &
-        initial_integrals(component),final_integrals(component),component_error
-      conservation_error = max(conservation_error, component_error)
+    call check_inventory()
+    do component=1,nvar
+      write(*,'(a,i0,6(1x,es24.16))') "EB inventory initial/final/boundary/wall/chemical/residual: ",component, &
+        initial_integrals(component),final_integrals(component),boundary(component),wall(component),chemical(component), &
+        final_integrals(component)-initial_integrals(component)-boundary(component)-wall(component)-chemical(component)
     end do
-    normal_momentum_change = &
-      final_integrals(normal_momentum) - initial_integrals(normal_momentum)
-    call reactive_eb_extrema_3d( &
-      species, state, temperature, geometry, minimum_density, &
-      maximum_density, minimum_pressure, maximum_pressure, &
-      minimum_temperature, maximum_temperature, maximum_speed, &
-      maximum_closure_error, ok)
-    if (.not. ok) error stop "Final public 3D EB state is not physical"
-    if (conservation_error > 5.0e-11_dp) then
-      write(*, '(a,es24.16)') &
-        "Rejected invariant conservation error: ", conservation_error
-      error stop "Public 3D EB invariant-conservation gate failed"
-    end if
-    if (config%chemistry_enabled .and. &
-        element_conservation_error > 5.0e-10_dp) then
-      write(*, '(a,es24.16)') &
-        "Rejected elemental conservation error: ", element_conservation_error
-      error stop "Public 3D EB elemental-conservation gate failed"
-    end if
-    if (maximum_closure_error > 5.0e-11_dp) then
-      error stop "Public 3D EB species-closure gate failed"
-    end if
     call write_reactive_eb_3d_csv( &
       trim(config%output_file), species, geometry, state, temperature, &
       time, ok, message)
@@ -407,6 +342,93 @@ contains
     write(*, '(a,es24.16)') "Maximum species closure error: ", &
       maximum_closure_error
     write(*, '(a,1x,a)') "Output:", trim(config%output_file)
+  contains
+
+    subroutine check_inventory()
+      if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall)).or. &
+          .not.all(ieee_is_finite(chemical))) error stop "Nonfinite cumulative EB exchanges"
+      call reactive_eb_integrals_3d( &
+        state, geometry, final_integrals, ok, final_l1_integrals)
+      if (.not. ok) error stop "Failed to integrate final 3D EB state"
+      element_conservation_error = 0.0_dp
+      if (config%chemistry_enabled) then
+        call reactive_eb_element_amounts_3d(species,boundary+wall,external_elements,ok,element_atoms)
+        if (.not.ok) error stop "Failed to project external EB exchanges"
+        if (present(element_atoms)) then
+          call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,final_element_integrals,ok)
+          if (.not.ok) error stop 'Failed to integrate final EB elements'
+          ! Preserve the relative gate and separately account for roundoff of
+          ! initially absent elements from species mass closure and summation.
+          do e=1,element_count
+            element_roundoff(e)=64._dp*epsilon(1._dp)*real(max(1,step),dp)*sum(abs(initial_integrals(6:)))* &
+              maxval(element_atoms(e,:)/species%molecular_weight)
+            element_residual=max(0._dp,abs(final_element_integrals(e)-initial_element_integrals(e)-external_elements(e)) &
+              -element_roundoff(e))
+            element_conservation_error=max(element_conservation_error, &
+              element_residual/max(1.e-30_dp,abs(initial_element_integrals(e))))
+          end do
+          if (.not.ieee_is_finite(element_conservation_error)) error stop 'Nonfinite elemental conservation error'
+        else
+          call reactive_eb_element_integrals_3d(species,state,geometry,final_element_integrals,ok)
+          if (.not.ok) error stop 'Failed to integrate final EB elements'
+          element_conservation_error=maxval(abs(final_element_integrals-initial_element_integrals-external_elements)/ &
+            max(1.e-30_dp,abs(initial_element_integrals)))
+        end if
+      end if
+      normal_momentum=imx
+      if (config%geometry_type=='plane') then
+      select case (trim(config%plane_axis))
+      case ("x")
+        normal_momentum = imx
+      case ("y")
+        normal_momentum = imy
+      case ("z")
+        normal_momentum = imz
+      case default
+        error stop "Unexpected public 3D EB plane axis"
+      end select
+      end if
+      conservation_error = 0.0_dp
+      do component = 1, nvar
+        component_roundoff=0._dp
+        if (component>ncons) component_roundoff=64._dp*epsilon(1._dp)*real(max(1,step),dp)* &
+          sum(abs(initial_integrals(6:)))
+        component_error = max(0._dp,abs( &
+          final_integrals(component)-initial_integrals(component)-boundary(component)-wall(component)-chemical(component)) &
+          -component_roundoff) / &
+          max(tiny(1.0_dp), abs(initial_integrals(component)), &
+            initial_l1_integrals(component), final_l1_integrals(component), &
+            abs(boundary(component)),abs(wall(component)),abs(chemical(component)))
+        if (component_error>5.e-11_dp) write(*,'(a,i0,3(1x,es24.16))') &
+          'Invariant component initial/final/error: ',component, &
+          initial_integrals(component),final_integrals(component),component_error
+        conservation_error = max(conservation_error, component_error)
+      end do
+      if (.not.ieee_is_finite(conservation_error)) error stop "Nonfinite EB conservation error"
+      normal_momentum_change = &
+        final_integrals(normal_momentum) - initial_integrals(normal_momentum)
+      call reactive_eb_extrema_3d( &
+        species, state, temperature, geometry, minimum_density, &
+        maximum_density, minimum_pressure, maximum_pressure, &
+        minimum_temperature, maximum_temperature, maximum_speed, &
+        maximum_closure_error, ok)
+      if (.not. ok) error stop "Final public 3D EB state is not physical"
+      if (conservation_error > 5.0e-11_dp) then
+        write(*, '(a,es24.16)') &
+          "Rejected invariant conservation error: ", conservation_error
+        error stop "Public 3D EB invariant-conservation gate failed"
+      end if
+      if (config%chemistry_enabled .and. &
+          element_conservation_error > 5.0e-10_dp) then
+        write(*, '(a,es24.16)') &
+          "Rejected elemental conservation error: ", element_conservation_error
+        error stop "Public 3D EB elemental-conservation gate failed"
+      end if
+      if (maximum_closure_error > 5.0e-11_dp) then
+        error stop "Public 3D EB species-closure gate failed"
+      end if
+    end subroutine check_inventory
+
   end subroutine run_reactive_eb_3d_application
 
 end module reactive_eb_3d_application_mod

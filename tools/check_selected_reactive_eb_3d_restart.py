@@ -41,7 +41,7 @@ def check_selected_checkpoint(path: Path) -> bytes:
         raise AssertionError("selected checkpoint magic is missing")
     header = tuple(int(value) for value in lines[1].split())
     expected_header = (
-        3,
+        6,
         SPECIES_COUNT,
         REACTION_COUNT,
         TRANSPORT_COUNT,
