@@ -199,8 +199,22 @@ It checks collective topology/owners/domain/component count/capacity and stages
 all output until validation and exchange succeed. The one-million-per-rank
 send/receive bound matches the existing Cartesian film migration. Empty ranks
 and globally empty films are supported. This is a library ownership operation;
-AMR film creation/evolution, whole gas/particle/film remap, application controls
+AMR film creation, whole gas/particle/film remap, application controls
 and film checkpoint integration remain open.
+
+`advance_mpi_amr_film_coupling` in `spray_mpi_amr_film_step_mod` advances
+stationary planar mixed films with existing heating/evaporation kernels and
+conservative owner-local gas feedback. Film normals must select an enabled
+axis-aligned physical wall and their normal coordinate must equal that wall.
+Closed-wall positions stay exact; gas probes clip to a half finest-cell spacing
+inside the domain before using the existing composite stencil. Sampling combines
+conserved state and temperature guesses; deposition averages covered parents
+and recovers EOS temperatures. All ranks use a common minimum substep from
+component depletion and temperature change, with bounded halving on failure.
+Gas, film/component arrays and the integrated wall-energy ledger publish only
+on whole-interval success. Failed intervals preserve the incoming ledger and
+state. This advances exchange against gas, not gas transport/chemistry or impact
+creation; coupled splitting and application/restart integration remain open.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
 indexed gas payloads and a rank-zero particle archive, then publishes an immutable
