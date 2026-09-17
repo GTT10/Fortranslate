@@ -174,12 +174,17 @@ The wall ledger includes both particle impulses; exterior and chemistry ledgers
 come from the gas operator. All use change-in-system signs. Optional gas
 integrator and subcycling settings pass through to the existing gas solver.
 The particle restrictions above remain. Fixed and selected MPI EB spray
-executables now connect initial mixed-liquid cone injection, coupled evolution,
+executables now connect scheduled mixed-liquid cone injection, coupled evolution,
 combined gas/particle budgets and per-rank particle CSV output. See the
 [example and controls](../cases/mpi_eb_spray_3d/README.md) and
 [application evidence](validation/spray-mpi-eb-application-20260918.md).
-Timed events, checkpoint/restart, regridding and rebalancing remain open for
-this executable connection. See
+Scheduled events clip the common step to the next injection time; tied events,
+zero scales and final-time events are supported, with global live-population
+limits and monotonic IDs. The budget has a separate injected column and starts
+from gas before the first event. See
+[schedule evidence](validation/spray-mpi-eb-schedule-20260918.md).
+Checkpoint/restart, regridding and rebalancing remain open for this executable
+connection. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or

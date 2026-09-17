@@ -662,8 +662,10 @@ commits state and global ledgers atomically
 ([evidence](validation/spray-mpi-eb-reactive-20260918.md)). Fixed/selected MPI EB
 spray executables now connect initial mixed-liquid injection, coupled stepping,
 combined budgets and per-rank particle output
-([evidence](validation/spray-mpi-eb-application-20260918.md)). Timed injection,
-restart/regridding/rebalancing in this EB spray application, independent ports,
+([evidence](validation/spray-mpi-eb-application-20260918.md)). Scheduled injection
+now supports tied, zero-scale and final-time events with an explicit injection
+budget ([evidence](validation/spray-mpi-eb-schedule-20260918.md)).
+Restart/regridding/rebalancing in this EB spray application, independent ports,
 liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
