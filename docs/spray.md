@@ -93,8 +93,8 @@ interval carries each sampled local pressure; descendants inherit that pressure
 for their remaining flight. Wall temperature and impact properties are common.
 The coupling ledger is system change, hence the negative of the impact kernel's
 wall receipt. Gas, particles, films, component inventories and ID watermark
-commit together after the whole interval succeeds. Reactive composition,
-MPI and application wiring remain separate work. See
+commit together after the whole interval succeeds. MPI and application wiring
+remain separate work. See
 [coupling evidence](validation/spray-eb-impact-coupling-20260918.md).
 
 Set `spray_eb_wall_options%evolve` to enable stationary mixed-film heat and
@@ -114,6 +114,17 @@ film exchange, followed by impacts; new deposits begin evolving on the next
 particle substep. Film temperature/conductivity are common settings, with no
 lateral film transport, surface mesh or variable-conductivity fit in this EB API.
 See [film coupling evidence](validation/spray-eb-film-coupling-20260918.md).
+
+`advance_eb_spray_reactive_allocated` composes these allocated particle/film
+half-intervals around the existing reactive EB gas step. It accepts the same
+gas controls as `advance_eb_spray_reactive`, plus optional `wall_options`,
+`films`, `film_mass` and `last_id` supplied together. Both source halves and
+the gas update operate on private state; only a successful whole step publishes
+gas, particles, films, IDs, limiter and exterior/wall/chemistry ledgers.
+The existing fixed-population API delegates to this core in specular mode.
+New first-half deposits participate in film exchange in the second half.
+MPI and application support for these impact/film arguments is still open.
+See [reactive impact evidence](validation/spray-eb-impact-reactive-20260918.md).
 
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
