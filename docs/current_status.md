@@ -624,7 +624,10 @@ the gas EB builder's tetrahedral subdivision
 ([evidence](validation/spray-eb-intersection-20260918.md)). A force-free serial
 population drift now reflects specular EB contacts, follows the remaining
 flight time and publishes particle/wall inventories transactionally
-([evidence](validation/spray-eb-drift-20260918.md)). Coupled EB particle
+([evidence](validation/spray-eb-drift-20260918.md)). Serial single-grid EB field
+sampling and integrated gas deposition now use connected fluid-volume-weighted
+stencils and transactional EOS recovery
+([evidence](validation/spray-eb-field-20260918.md)). Coupled EB particle
 interaction, lateral film transport and physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
