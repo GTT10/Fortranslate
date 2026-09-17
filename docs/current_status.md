@@ -590,9 +590,12 @@ drives owner reassignment with transactional gas/particle migration and
 rank-neutral continuation ([evidence](validation/spray-amr-balance-20260918.md)).
 The AMR particle-interval API now handles outflow and specular reflection with
 a transactional global mass/momentum/energy/species boundary ledger
-([evidence](validation/spray-amr-boundaries-20260918.md)). Physical boundaries
-in the reacting wrapper/application/checkpoint path, wall-film coupling and EB
-solid handling remain open.
+([evidence](validation/spray-amr-boundaries-20260918.md)). The reacting wrapper
+now combines gas and particle physical-boundary inventories transactionally
+for common or recursive gas steps
+([evidence](validation/spray-amr-reactive-boundaries-20260918.md)). Application
+and checkpoint physical-boundary integration, wall-film coupling and EB solid
+handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
