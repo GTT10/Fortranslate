@@ -49,9 +49,10 @@ root scatter/gather ([evidence](validation/amr-tree-mpi-distribution-20260917.md
 Same-geometry ownership changes now move conserved state and temperature directly
 between owners with exact values and collective preflight rollback
 ([evidence](validation/amr-tree-mpi-redistribution-20260917.md)).
-A cost-driven rebalance API now combines owner-reported patch costs, a minimum
-predicted gain and transactional migration; timing collection/application cadence
-remain open ([evidence](validation/amr-tree-mpi-cost-balance-20260917.md)).
+A cost-driven rebalance API combines owner-reported patch costs, a minimum
+predicted gain and transactional migration. Fixed/selected MPI applications now
+optionally measure owner-local kernels and rebalance at a configured step cadence
+([evidence](validation/amr-tree-mpi-runtime-balance-20260917.md)).
 Sparse cell queries now fetch only requested owner payloads in caller order, including
 empty ranks and collective rollback ([evidence](validation/amr-tree-mpi-cells-20260917.md)).
 Synchronous MPI halos now share serial peer/ancestor lookup, PCM/limited PLM and

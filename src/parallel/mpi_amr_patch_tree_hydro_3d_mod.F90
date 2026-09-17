@@ -1,4 +1,5 @@
 module mpi_amr_patch_tree_hydro_3d_mod
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
@@ -137,6 +138,7 @@ contains
     subroutine euler_stage(u,t,budget,largest,success)
       type(amr_tree_state_3d), intent(inout) :: u,t
       real(dp), intent(out) :: budget(:),largest
+      real(dp) :: work_stamp
       logical, intent(out) :: success
       type(amr_tree_state_3d) :: packed,updated,ghosts
       type(amr_tree_flux_3d), allocatable :: flux(:)
@@ -165,6 +167,7 @@ contains
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
         n=tree%nodes(peer)%shape;dims=n+4
+        work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
           allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)), &
             fz(nvar,dims(1),dims(2),dims(3)),stat=allocation_status)
@@ -203,6 +206,7 @@ contains
           end if
           deallocate(fx,fy,fz)
         end associate
+        call tree_work_stop(peer,work_stamp)
       end do
       call agree(success)
       if (.not.success) return

@@ -1,4 +1,5 @@
 module mpi_amr_patch_tree_transport_level_3d_mod
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
   use gas_transport_mod, only: gas_transport_species
@@ -205,6 +206,7 @@ contains
       type(amr_tree_state_3d), intent(inout) :: u,t
       real(dp), intent(out) :: theta
       integer, intent(in) :: stage
+      real(dp) :: work_stamp
       logical, intent(out) :: success
       type(amr_tree_state_3d) :: packed,updated,ghosts
       type(amr_tree_flux_3d), allocatable, intent(out) :: flux(:)
@@ -244,6 +246,7 @@ contains
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank.or.tree%nodes(peer)%level/=depth) cycle
         n=tree%nodes(peer)%shape;dims=n+4
+        work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
           allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)), &
             fz(nvar,n(1),n(2),n(3)+1),stat=allocation_status)
@@ -284,6 +287,7 @@ contains
           end if
           deallocate(fx,fy,fz)
         end associate
+        call tree_work_stop(peer,work_stamp)
       end do
       call agree(success)
       if (.not.success) return

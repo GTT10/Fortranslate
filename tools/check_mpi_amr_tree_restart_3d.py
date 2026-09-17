@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
     parser.add_argument('--indexed', action='store_true')
+    parser.add_argument('--rebalance', action='store_true')
     parser.add_argument('--mpiexec', required=True)
     parser.add_argument('--numproc-flag', default='-n')
     args = parser.parse_args()
@@ -49,6 +50,10 @@ def main():
         outputs = [folder / name for name in ('tree_hotspot.csv', 'tree_hotspot.csv.budget.csv')]
 
         def run(label, content, ranks=2, error=None, schedule=None):
+            if args.rebalance and ranks and '&amr_tree_distribution' not in content:
+                cadence = 0 if label == 'restart_mpi_3' else 1
+                content += (f'\n&amr_tree_distribution rebalance_interval_steps={cadence}, '
+                            'rebalance_minimum_gain=0.0 /\n')
             inputs.write_text(content)
             binary = getattr(args, kind if ranks else 'serial_' + kind).resolve()
             command = [str(binary), str(inputs), str(topology)]
@@ -71,10 +76,12 @@ def main():
         log = run('continuous', config)
         steps = int(re.search(r'Steps:\s+(\d+)', log).group(1))
         assert steps > 1, 'Fixture must continue beyond saved step'
+        if args.rebalance:
+            assert log.count('Rebalance step:') == steps, log
         baseline = [p.read_bytes() for p in outputs]
         if args.scheduled:
             assert 'Regrids: 3' in log
-        if args.scheduled or args.subcycling:
+        if args.scheduled or args.subcycling or args.rebalance:
             serial_log = run('continuous_serial', config, 0)
             assert int(re.search(r'Steps:\s+(\d+)', serial_log).group(1)) == steps
             compare()
@@ -105,6 +112,11 @@ def main():
                                         "\n5e-10 " + repr(str(case / 'root.dat')) +
                                         "\n1e-9 " + repr(str(topology)) + "\n")
             run('changed_schedule', config + restart, 3, 'Invalid MPI tree restart checkpoint/context', changed_schedule)
+        if args.rebalance:
+            for option, value, error in [('rebalance_interval_steps', '-1', 'Invalid rebalance interval'),
+                                         ('rebalance_minimum_gain', '1.0', 'Invalid rebalance gain')]:
+                run('bad_' + option, config + f'\n&amr_tree_distribution {option}={value} /\n', 3, error)
+                compare()
         if args.subcycling:
             run('malformed_subcycling', config + '\n&amr_tree_timestepping subcycling=invalid /\n',
                 3, 'Invalid tree timestepping configuration')

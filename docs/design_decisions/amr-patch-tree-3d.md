@@ -1180,3 +1180,26 @@ neither collects timers nor schedules runtime calls. It assumes comparable costs
 across ranks and does not account for migration cost, topology, communication,
 rank speed differences or sampling noise. Predicted load reduction is not measured
 speedup. Planning retains quadratic patch selection complexity.
+
+
+## Runtime work sampling and rebalance cadence
+
+MPI applications accept `rebalance_interval_steps` (zero disables) and
+`rebalance_minimum_gain` in `amr_tree_distribution`. On a due step, a process-local
+sampling buffer surrounds each attempted split interval. Hydro and transport time
+owner-local flux computation, Euler updates and flux packing; chemistry times its
+owner-local solves. Recursive paths accumulate every active-depth substep. Ghost
+communication, collectives, restriction, independent EOS recovery and timestep
+selection are excluded, avoiding attribution of waiting time to patch compute.
+
+`mpi_amr_tree_work_mod` uses MPI_Wtime differences and is inactive by default.
+Only one interval may be active per process; it is not thread-safe or reentrant.
+Each attempt starts a zeroed buffer, and ending the attempt disables sampling.
+Only the successful interval's costs reach the collective rebalance API. The
+application commits time/budget, then rebalance owners/U/T before checkpoint or
+output handling. Geometry-dependent layout arrays need no rebuild after migration.
+
+Sampling cadence follows absolute completed step counts. Neither timings nor
+owner choices persist in checkpoints or physical identity; regrid and restart
+start fresh samples sized to the current tree. Timer noise may alter placement,
+with no promised speedup, scaling, smoothing or migration-cost model.

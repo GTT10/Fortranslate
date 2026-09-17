@@ -295,8 +295,30 @@ communication costs. Whole patches remain indivisible.
 The policy is applied at initialization, regridding and checkpoint reload.
 It is not part of physical checkpoint identity: rank count and assignment policy
 may change at restart, including interchange with serial. Regridding transfers
-payloads directly to the new owners through the existing sparse remap. There is
-no periodic load measurement or redistribution between geometry changes.
+payloads directly to the new owners through the existing sparse remap.
+
+Optional runtime rebalancing is configured in the same group:
+
+```fortran
+&amr_tree_distribution
+  partitioning='weighted'
+  rebalance_interval_steps=10
+  rebalance_minimum_gain=0.1
+/
+```
+
+The interval defaults to zero (disabled). On each positive multiple of the interval,
+the application measures that completed coarse step's owner-local hydro/transport
+flux and update work plus chemistry solves, including recursive substeps. Failed
+attempts are discarded. It then migrates U/T only if the predicted maximum rank
+cost falls by at least the minimum fractional gain (default 0.1, valid range [0,1)).
+Geometry is unchanged and values transfer exactly. `Rebalance step` logs each
+decision. Timings are fresh after regrid/restart, are not checkpointed, and do not
+enter physical restart identity; cadence and gain can change on continuation.
+
+Wall-clock noise can change owner choices. Costs omit communication, restriction,
+EOS recovery outside chemistry, timestep selection and migration overhead; this
+is not a demonstrated speedup. Whole-patch constraints still apply.
 
 ## Remaining scope
 

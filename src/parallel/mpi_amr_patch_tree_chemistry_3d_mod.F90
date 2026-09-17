@@ -1,4 +1,5 @@
 module mpi_amr_patch_tree_chemistry_3d_mod
+  use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
@@ -28,6 +29,7 @@ contains
     character(len=*), optional, intent(in) :: chemistry_integrator
     type(amr_tree_state_3d) :: candidate,temps
     logical, allocatable :: active(:,:,:)
+    real(dp) :: work_stamp
     real(dp) :: controls(3),low(3),high(3)
     character(len=64) :: method,reference_method
     integer :: rank,status,ios,counts(2),min_counts(2),max_counts(2)
@@ -80,8 +82,10 @@ contains
           tree%nodes(child)%patch%coarse_k_upper]
         active(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.false.
       end do
+      work_stamp=tree_work_start()
       call advance_reactive_chemistry_3d(species,reactions,candidate%fields(node)%values, &
         temps%fields(node)%values(1,:,:,:),n(1),n(2),n(3),interval,rtol,atol,valid,active,chemistry_integrator)
+      call tree_work_stop(node,work_stamp)
       if (.not.valid) exit
       deallocate(active)
     end do

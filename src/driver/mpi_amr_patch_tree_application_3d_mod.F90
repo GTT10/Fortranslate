@@ -30,10 +30,11 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
-    partition_amr_tree_3d
+    partition_amr_tree_3d,rebalance_mpi_amr_tree_3d
   use mpi_amr_patch_tree_checkpoint_3d_mod, only: &
     write_mpi_amr_tree_checkpoint_3d,read_mpi_amr_tree_checkpoint_3d
   use mpi_amr_patch_tree_csv_3d_mod, only: write_mpi_amr_tree_csv_3d
+  use mpi_amr_tree_work_mod, only: begin_tree_work,end_tree_work
   implicit none
   private
   public :: run_mpi_amr_patch_tree_application_3d
@@ -80,6 +81,10 @@ contains
     integer :: tile_shape(3),tag_buffer,maximum_nodes,last_tag_step
     real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
     logical :: periodic(3)
+    integer :: rebalance_interval_steps
+    real(dp) :: rebalance_minimum_gain
+    real(dp), allocatable :: measured_cost(:)
+    logical :: sample_work,redistributed
     integer :: checkpoint_interval_steps
     logical :: stop_after_checkpoint,use_implicit,subcycling
     logical :: ok,viscosity,conduction,diffusion,barodiffusion
@@ -87,9 +92,10 @@ contains
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,checkpoint_indexed
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
-    namelist /amr_tree_distribution/ partitioning
+    namelist /amr_tree_distribution/ partitioning,rebalance_interval_steps,rebalance_minimum_gain
     namelist /amr_tree_timestepping/ subcycling
     partitioning='round_robin'
+    rebalance_interval_steps=0;rebalance_minimum_gain=0.1_dp
     subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
@@ -145,6 +151,9 @@ contains
     end do
     close(unit)
     if (partitioning/='round_robin'.and.partitioning/='weighted') call fatal('Invalid tree partitioning')
+    if (rebalance_interval_steps<0) call fatal('Invalid rebalance interval')
+    if (.not.ieee_is_finite(rebalance_minimum_gain)) call fatal('Invalid rebalance gain')
+    if (rebalance_minimum_gain<0.or.rebalance_minimum_gain>=1) call fatal('Invalid rebalance gain')
     if (regrid_interval_steps<0) call fatal('Negative automatic tree regrid interval')
     if (regrid_interval_steps>0) then
       if (present(schedule_path)) call fatal('Automatic tree adaptation cannot use a prescribed schedule')
@@ -361,13 +370,20 @@ contains
         if (.not.ok) call fatal('Invalid MPI tree transport timestep')
         dt=min(dt,transport_dt)
       end if
+      sample_work=.false.
+      if (rebalance_interval_steps>0) sample_work=mod(step+1,rebalance_interval_steps)==0
       do attempt=1,20
         if (time+dt<=time) call fatal('Tree timestep cannot advance time')
+        if (sample_work) then
+          call begin_tree_work(size(tree%nodes),ok)
+          if (.not.ok) call fatal('Cannot allocate tree work counters')
+        end if
         call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           change,correction,theta,comm,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling)
+        if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
         dt=.5_dp*dt
       end do
@@ -378,6 +394,12 @@ contains
         time=time+dt
       end if
       step=step+1;budget=budget+change
+      if (sample_work) then
+        call rebalance_mpi_amr_tree_3d(tree,owners,reactive_nvar(size(species)),state,temperature, &
+          measured_cost,rebalance_minimum_gain,comm,redistributed,ok)
+        if (.not.ok) call fatal('Cannot rebalance MPI tree')
+        if (rank==0) write(*,'(a,i0,a,l1)') 'Rebalance step: ',step,' migrated: ',redistributed
+      end if
       max_correction=max(max_correction,correction);min_theta=min(min_theta,theta)
     end do
     call distributed_inventory(tree,owners,state,final,.false.)
