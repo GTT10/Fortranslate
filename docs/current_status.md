@@ -197,7 +197,11 @@ boundary/wall ledgers, matching serial states exactly in focused cases
 MPI common-interval molecular transport and exposed-cell reaction now wrap
 hydro in transactional R/2 T/2 H T/2 R/2 composition, with focused serial state
 parity for explicit/implicit chemistry ([MPI coupled evidence](validation/mpi-eb-tree-full-20260918.md)).
-EB tree MPI temporal halos/subcycling, selected-target wiring and application integration remain open.
+The fixed-mechanism `pelef_mpi_reactive_eb_tree_3d` application now connects
+static, fixed-common-interval stepping, root-gathered CSV/checkpoints and
+changed-rank/serial restart ([MPI application evidence](validation/mpi-eb-tree-application-20260918.md)).
+EB tree MPI automatic intervals, regridding, temporal halos/subcycling,
+selected-target wiring and distributed I/O remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
