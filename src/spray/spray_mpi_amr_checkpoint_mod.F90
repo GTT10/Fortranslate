@@ -8,6 +8,8 @@ module spray_mpi_amr_checkpoint_mod
   use spray_parcel_mod, only: spray_parcel,valid_spray_parcel
   use spray_mixture_mod, only: valid_component_inventory
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d
@@ -27,7 +29,8 @@ contains
   ! the prefix itself is published last with POSIX link. Reads publish atomically.
   ! Shared path/context/model tables are required; at most one million total parcels.
   subroutine mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature, &
-      parcels,component_mass,time,steps,event,regridded,last_id,injected,lower,spacing,maximum_parcels,ok,periodic,boundary)
+      parcels,component_mass,time,steps,event,regridded,last_id,injected,lower,spacing,maximum_parcels,ok,periodic,boundary, &
+      wall_films,film_mass,maximum_films)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
     character(len=*), intent(in) :: path,context
@@ -46,6 +49,13 @@ contains
     logical, intent(out) :: ok
     logical, optional, intent(in) :: periodic(3)
     real(dp), optional, intent(inout) :: boundary(:)
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    integer, optional, intent(in) :: maximum_films
+    type(spray_wall_film), allocatable :: films(:)
+    real(dp), allocatable :: film_components(:,:)
+    character(len=32) :: payload_header
+    integer :: nf
     logical :: wraps(3)
     real(dp), allocatable :: boundary_ledger(:),reference_boundary(:)
     character(len=3) :: boundary_key
@@ -53,7 +63,7 @@ contains
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:),ledger(:)
     integer, allocatable :: assigned(:),counts(:),offsets(:)
-    integer :: rank,nranks,ierr,unit,ios,p,nc,np,nvar,info(3),date(8),low(3),high(3),header(3)
+    integer :: rank,nranks,ierr,unit,ios,p,nc,np,nvar,info(3),date(8),low(4),high(4),header(4)
     integer(int64) :: mark,tick
     real(dp) :: at_time
     logical :: valid,agreed,exists
@@ -66,6 +76,11 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(owners).and.allocated(parcels).and.allocated(component_mass)
     valid=valid.and.tree%is_valid().and.len_trim(path)>0.and.len(context)>0
+    valid=valid.and.(present(wall_films).eqv.present(film_mass))
+    valid=valid.and.(present(wall_films).eqv.present(maximum_films))
+    if (present(wall_films)) valid=valid.and.allocated(wall_films)
+    if (present(film_mass)) valid=valid.and.allocated(film_mass)
+    if (present(maximum_films)) valid=valid.and.maximum_films>=0.and.maximum_films<=1000000
     call agree();if (.not.agreed) return
     nc=size(component_mass,1);nvar=5+size(species)
     valid=nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,size(parcels)]).and.size(injected)==nvar
@@ -75,11 +90,13 @@ contains
     if (present(periodic)) wraps=periodic
     write(boundary_key,'(3l1)') wraps
     call same_string(boundary_key,valid);if (.not.valid) return
-    header=[nc,nvar,merge(1,0,writing)]
-    call MPI_Allreduce(header,low,3,MPI_INTEGER,MPI_MIN,comm,ierr)
+    header=[nc,nvar,merge(1,0,writing),merge(1,0,present(wall_films))]
+    call MPI_Allreduce(header,low,4,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(header,high,3,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(header,high,4,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    payload_header='PELEF_AMR_PARTICLES_V1'
+    if (present(wall_films)) payload_header='PELEF_AMR_PARTICLES_V2'
     ! Verify shared strings before root performs any I/O.
     call same_string(path,valid);if (.not.valid) return
     call same_string(context,valid);if (.not.valid) return
@@ -110,6 +127,14 @@ contains
       allocate(counts(nranks),offsets(nranks));counts=0;counts(1)=size(drops);offsets=counts(1);offsets(1)=0
       call exchange_spray_parcel_bins(comm,drops,counts,offsets,1000000,valid,masses)
       if (.not.valid) return
+      if (present(wall_films)) then
+        films=wall_films;film_components=film_mass
+        valid=size(film_components,1)==nc
+        call agree();if (.not.agreed) return
+        call migrate_mpi_amr_wall_films(comm,tree,[(0,p=1,size(tree%nodes))],films,film_components, &
+          lower,spacing,1000000,valid)
+        if (.not.valid) return
+      end if
       valid=.true.
       if (rank==0) then
         do p=1,size(drops)
@@ -135,6 +160,7 @@ contains
       if (ierr/=MPI_SUCCESS) return
       bound_context=context//'SPRAY_GENERATION '//trim(token)//achar(10)
       if (.not.all(wraps)) bound_context=bound_context//'SPRAY_PERIODIC '//boundary_key//achar(10)
+      if (present(wall_films)) bound_context=bound_context//'SPRAY_FILMS_V1'//achar(10)
       snapshot%tree=tree;snapshot%time=time;snapshot%steps=steps;snapshot%regrids=info(3)
       snapshot%initial=injected;snapshot%boundary=boundary_ledger
       call write_mpi_amr_tree_checkpoint_3d(path//'.gas',species,bound_context,snapshot,owners,state,temperature, &
@@ -144,7 +170,7 @@ contains
         open(newunit=unit,file=path//'.particles',status='new',action='write',iostat=ios)
         valid=ios==0
         if (valid) then
-          write(unit,'(a)',iostat=ios) 'PELEF_AMR_PARTICLES_V1',trim(token)
+          write(unit,'(a)',iostat=ios) trim(payload_header),trim(token)
           if (ios==0) write(unit,*,iostat=ios) nc,size(drops),mark,info
           if (ios==0) write(unit,'(*(es27.18e3,1x))',iostat=ios) time,ledger
           do p=1,size(drops)
@@ -154,6 +180,14 @@ contains
               drops(p)%deformation,drops(p)%deformation_rate,drops(p)%rt_time,drops(p)%khrt_initial_count, &
               drops(p)%khrt_shed_volume,masses(:,p)
           end do
+          if (present(wall_films)) then
+            if (ios==0) write(unit,*,iostat=ios) size(films)
+            do p=1,size(films)
+              if (ios/=0) exit
+              write(unit,'(i0,1x,*(es27.18e3,1x))',iostat=ios) films(p)%material_id,films(p)%position, &
+                films(p)%normal,films(p)%mass,films(p)%temperature,films(p)%diameter,films(p)%height,film_components(:,p)
+            end do
+          end if
           if (ios==0) write(unit,'(a)',iostat=ios) 'END_AMR_PARTICLES'
           valid=ios==0;close(unit,iostat=ios);valid=valid.and.ios==0
         end if
@@ -182,12 +216,14 @@ contains
     if (ierr/=MPI_SUCCESS) return
     bound_context=context//'SPRAY_GENERATION '//trim(token)//achar(10)
     if (.not.all(wraps)) bound_context=bound_context//'SPRAY_PERIODIC '//boundary_key//achar(10)
+    if (present(wall_films)) bound_context=bound_context//'SPRAY_FILMS_V1'//achar(10)
     call read_mpi_amr_tree_checkpoint_3d(path//'.gas',species,bound_context,tree%nodes(1)%shape, &
       'round_robin',0,snapshot,assigned,comm,valid)
     if (.not.valid) return
     valid=present(boundary).or.all(snapshot%boundary==0)
     call agree();if (.not.agreed) return
     allocate(drops(0),masses(nc,0));info=0;mark=0
+    if (present(wall_films)) allocate(films(0),film_components(nc,0))
     if (rank==0) then
       open(newunit=unit,file=path//'.particles',status='old',action='read',iostat=ios)
       valid=ios==0
@@ -206,10 +242,17 @@ contains
     call migrate_amr_tree_spray_parcels(comm,snapshot%tree,assigned,drops,lower,spacing,wraps, &
       maximum_parcels,valid,masses)
     if (.not.valid) return
+    if (present(wall_films)) then
+      call migrate_mpi_amr_wall_films(comm,snapshot%tree,assigned,films,film_components,lower,spacing,maximum_films,valid)
+      if (.not.valid) return
+    end if
     tree=snapshot%tree;call move_alloc(assigned,owners)
     call move_alloc(snapshot%state%fields,state%fields);call move_alloc(snapshot%temperature%fields,temperature%fields)
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     time=snapshot%time;steps=info(1);event=info(2);regridded=info(3)==1;last_id=mark;injected=ledger
+    if (present(wall_films)) then
+      call move_alloc(films,wall_films);call move_alloc(film_components,film_mass)
+    end if
     if (present(boundary)) boundary=snapshot%boundary
     ok=.true.
   contains
@@ -217,7 +260,7 @@ contains
       integer :: file_nc
       valid=.false.
       read(unit,'(a)',iostat=ios) line
-      if (ios/=0.or.line/='PELEF_AMR_PARTICLES_V1') return
+      if (ios/=0.or.line/=payload_header) return
       read(unit,'(a)',iostat=ios) line
       if (ios/=0.or.line/=token) return
       read(unit,*,iostat=ios) file_nc,np,mark,info
@@ -242,6 +285,20 @@ contains
           if (drops(p)%id<=drops(p-1)%id) return
         end if
       end do
+      if (present(wall_films)) then
+        read(unit,*,iostat=ios) nf
+        if (ios/=0) return
+        if (nf<0.or.nf>1000000) return
+        deallocate(films,film_components)
+        allocate(films(nf),film_components(nc,nf),stat=ios)
+        if (ios/=0) return
+        do p=1,nf
+          read(unit,*,iostat=ios) films(p)%material_id,films(p)%position,films(p)%normal, &
+            films(p)%mass,films(p)%temperature,films(p)%diameter,films(p)%height,film_components(:,p)
+          if (ios/=0) return
+          if (.not.valid_wall_component_inventory(films(p),film_components(:,p))) return
+        end do
+      end if
       read(unit,'(a)',iostat=ios) line
       if (ios/=0.or.line/='END_AMR_PARTICLES') return
       read(unit,'(a)',iostat=ios) line

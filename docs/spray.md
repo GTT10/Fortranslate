@@ -177,7 +177,8 @@ reports only accepted film substeps; `particle_steps` retains its particle-only
 meaning. Failure returns zero counts and preserves films along with the other
 state and diagnostics. Existing calls without films retain the original split.
 Particle halves also create films through the existing planar impact model.
-Application/checkpoint film state remains unfinished integration.
+Application film controls remain unfinished integration; the checkpoint API can
+carry film state.
 
 The MPI tree spray library now links the existing MPI tree gas runtime instead
 of compiling separate copies of its cell-query/restriction/thermodynamic modules.
@@ -228,8 +229,8 @@ It checks collective topology/owners/domain/component count/capacity and stages
 all output until validation and exchange succeed. The one-million-per-rank
 send/receive bound matches the existing Cartesian film migration. Empty ranks
 and globally empty films are supported. This is a library ownership operation;
-Application controls and film checkpoint integration remain open; the particle
-interval creates films and the coupled remap API carries them.
+Application film controls remain open; particle intervals create films and the
+remap/checkpoint APIs carry them.
 
 `rebalance_mpi_amr_spray` also accepts the optional group `wall_films`,
 `film_mass`, `maximum_films`. When gas-work costs select new owners, films
@@ -252,8 +253,8 @@ component depletion and temperature change, with bounded halving on failure.
 Gas, film/component arrays and the integrated wall-energy ledger publish only
 on whole-interval success. Failed intervals preserve the incoming ledger and
 state. This advances exchange against gas, not gas transport/chemistry or impact
-creation; the reacting wrapper supplies coupled splitting while application/restart
-integration remains open.
+creation; the reacting wrapper supplies coupled splitting. Application film
+controls remain open.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
 indexed gas payloads and a rank-zero particle archive, then publishes an immutable
@@ -268,6 +269,20 @@ optional `boundary` publishes only after successful read. Omitting this output
 rejects a saved nonzero budget instead of silently losing it. Rank-zero particle collection is bounded
 to one million global parcels. The application exposes one checkpoint time,
 optional stop and changed-rank continuation; see the case guide for file handling.
+
+Optional checkpoint `wall_films`, `film_mass`, `maximum_films` arguments form
+one collectively agreed group. In film mode the particle payload uses
+`PELEF_AMR_PARTICLES_V2`, with a bounded film count and explicit material,
+position, normal, mass, temperature, diameter, height and component records after
+the parcel records. The numerical/generation context binds film presence. The
+manifest format and file set stay unchanged. Film-free payloads remain V1.
+Films gather privately on rank zero, with a one-million-global-film bound.
+Reads validate film records and the final footer/EOF, then migrate to finest
+owners on the reading communicator. Gas, particles, films and all metadata
+publish together only after every validation and capacity check succeeds.
+A different rank count, including one rank, is supported by the library. The
+application does not yet expose film settings or pass these checkpoint arrays.
+
 
 ## Build and run
 
