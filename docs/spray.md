@@ -101,7 +101,21 @@ context. Up to 1024 ordered injection events share
 one cone definition, with per-event mass scaling and zero-dose support. Steps
 end at event times; tied and final-time events are included. Fluid-location
 validation precedes population/ID/injected-inventory publication. Independent
-ports and distributed EB particle ownership remain open.
+ports and distributed EB particle evolution remain open.
+
+The MPI tree module now exports `migrate_eb_tree_spray_parcels`, a nonperiodic
+ownership primitive. It accepts regular tree topology/owners and the replicated
+root-domain nodal level set at the finest tree resolution. The field must be the
+same one used to build the gas EB hierarchy. Private candidates pass through
+existing AMR migration, then the routine collectively checks nodal dimensions,
+exact rank-to-rank field agreement and fluid point locations before publishing
+parcels/components. A solid point or any other rank's failure preserves all
+caller populations. It retains the regular half-open outer-domain ownership
+rule. This is nodal point classification, not validation of the gas hierarchy's
+rounded/coarsened volume metrics. It does not yet provide distributed EB
+sampling, deposition, time integration or restart. The replicated geometry is
+bounded to one million finest cells; full-field agreement is not a scalable
+geometry distribution strategy.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports

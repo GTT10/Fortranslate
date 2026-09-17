@@ -1,15 +1,90 @@
 module spray_mpi_amr_tree_mod
   use mpi_f08
   use precision_mod, only: dp
+  use, intrinsic :: iso_fortran_env, only: int64
+  use spray_eb_intersection_mod, only: intersect_spray_level_set
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_amr_tree_partition_mod, only: partition_amr_tree_spray_parcels,locate_amr_tree_spray_cells
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
   implicit none
   private
-  public :: migrate_amr_tree_spray_parcels
+  public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
 contains
+  ! The replicated nodal field describes the root domain at the finest tree
+  ! resolution, as used by the gas EB hierarchy builder. No periodic wrapping.
+  subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing,maximum_parcels,ok,component_mass)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),maximum_parcels
+    real(dp), intent(in) :: phi(0:,0:,0:),lower(3),spacing(3)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp), allocatable :: masses(:,:),reference(:,:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: dims(3),low(3),high(3),ios,ierr,p,cell(3)
+    real(dp) :: upper(3),fraction,position(3),normal(3)
+    logical :: valid,agreed,hit
+    ok=.false.;dims=shape(phi)-1
+    valid=allocated(parcels).and.all(dims>=1).and.all(dims<=1000000)
+    if(present(component_mass)) valid=valid.and.allocated(component_mass)
+    call agree()
+    if(.not.agreed) return
+    valid=product(int(dims,int64))<=1000000_int64
+    valid=valid.and.all(ieee_is_finite(phi))
+    if(valid) valid=maxval(abs(phi))<=1e100_dp
+    call agree()
+    if(.not.agreed) return
+    candidate=parcels
+    if(present(component_mass)) then
+      masses=component_mass
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
+        [.false.,.false.,.false.],maximum_parcels,valid,masses)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
+        [.false.,.false.,.false.],maximum_parcels,valid)
+    end if
+    if(.not.valid) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(valid) valid=all(int(dims,int64)==domain(:,size(domain,2)))
+    call agree()
+    if(.not.agreed) return
+    call MPI_Allreduce(dims,low,3,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(dims,high,3,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    allocate(reference(dims(1)+1,dims(2)+1,dims(3)+1),stat=ios)
+    valid=ios==0;call agree()
+    if(.not.agreed) return
+    reference=phi
+    call MPI_Bcast(reference,size(reference),MPI_DOUBLE_PRECISION,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(reference==phi)
+    upper=lower+spacing*real(tree%nodes(1)%shape,dp)
+    valid=valid.and.all((upper-lower)/real(dims,dp)>=1e-12_dp).and.maxval(abs([lower,upper]))<=1e9_dp
+    call agree()
+    if(.not.agreed) return
+    hit=.false.;fraction=0;position=0;normal=0;cell=0
+    do p=1,size(candidate)
+      call intersect_spray_level_set(phi,lower,upper,candidate(p)%position,candidate(p)%position, &
+        hit,fraction,position,normal,cell,valid)
+      if(.not.valid) exit
+    end do
+    call agree()
+    if(.not.agreed) return
+    call move_alloc(candidate,parcels)
+    if(present(component_mass)) call move_alloc(masses,component_mass)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
   subroutine migrate_amr_tree_spray_parcels(comm,tree,owners,parcels,lower,spacing,periodic, &
       maximum_parcels,ok,component_mass)
     type(MPI_Comm), intent(in) :: comm
