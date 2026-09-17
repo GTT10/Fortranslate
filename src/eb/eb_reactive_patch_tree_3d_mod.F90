@@ -31,6 +31,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d
   public :: advance_reactive_eb_tree_transport_3d
+  public :: advance_reactive_eb_tree_subcycle_transport_3d
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
   public :: advance_reactive_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
@@ -615,11 +616,40 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     logical, intent(out) :: ok
+    call advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok)
+  end subroutine advance_reactive_eb_tree_subcycle_hydro_3d
+
+  subroutine advance_reactive_eb_tree_subcycle_transport_3d(species,transport,dt,viscosity,conduction, &
+      diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: dt
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    real(dp), intent(inout) :: boundary_change(:),minimum_theta
+    logical, intent(out) :: ok
+    real(dp) :: wall(size(boundary_change))
+    call advance_reactive_eb_tree_subcycle_operator_3d(species,'',dt,tree,boundary_change,wall,ok, &
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+  end subroutine advance_reactive_eb_tree_subcycle_transport_3d
+
+  subroutine advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta)
+    type(nasa7_species), intent(in) :: species(:)
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:)
+    logical, intent(out) :: ok
+    type(gas_transport_species), optional, intent(in) :: transport(:)
+    logical, optional, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), optional, intent(inout) :: minimum_theta
     type(eb_reactive_tree_3d) :: candidate,starts,ends
     type(eb_integrated_flux_3d), allocatable :: total(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: clock_start(:),clock_dt(:),wall(:),boundary(:)
+    real(dp) :: theta
     integer :: nv,levels,c,n(3)
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
@@ -628,6 +658,12 @@ contains
     if (.not.valid_tree(tree,nv)) return
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
+    if (present(transport)) then
+      if (.not.(present(viscosity).and.present(conduction).and.present(diffusion).and. &
+        present(barodiffusion).and.present(minimum_theta))) return
+      if (any(ratios>huge(1)/ratios)) return
+    end if
+    theta=1._dp
     levels=size(ratios);candidate=tree
     call average_down_reactive_eb_tree_3d(species,candidate,valid)
     if (.not.valid) return
@@ -647,7 +683,9 @@ contains
     end do
     end associate
     if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall))) return
-    tree=candidate;boundary_change=boundary;wall_change=wall;ok=.true.
+    tree=candidate;boundary_change=boundary;wall_change=wall
+    if (present(minimum_theta)) minimum_theta=theta
+    ok=.true.
   contains
     recursive subroutine advance_level(level,time,interval,flux,good)
       integer, intent(in) :: level
@@ -658,10 +696,10 @@ contains
       type(eb_reactive_tree_3d) :: snapshot
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),source(:,:,:,:),fraction(:)
       logical, allocatable :: exposed(:,:,:)
-      real(dp) :: elapsed,sub_dt
-      integer :: node,peer,owner,receiver,axis,child,substep,d(3),lo(3),hi(3),component
+      real(dp) :: elapsed,sub_dt,stage_theta
+      integer :: node,peer,owner,receiver,axis,child,substep,d(3),lo(3),hi(3),component,substeps
       integer(int64) :: offset(3)
-      logical :: valid
+      logical :: valid,faces(6)
       good=.false.;snapshot=candidate
       clock_start(level+1)=time;clock_dt(level+1)=interval
       allocate(flux(size(tree%nodes)),fraction(level))
@@ -676,11 +714,23 @@ contains
         allocate(ghost(nv,0:d(1)+1,0:d(2)+1,0:d(3)+1),gt(0:d(1)+1,0:d(2)+1,0:d(3)+1))
         call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction)
         if (.not.valid) return
+        if (present(transport)) then
+          faces=[origin(1,node)>0,origin(1,node)+int(d(1),int64)<domain(1,level+1), &
+            origin(2,node)>0,origin(2,node)+int(d(2),int64)<domain(2,level+1), &
+            origin(3,node)>0,origin(3,node)+int(d(3),int64)<domain(3,level+1)]
+          call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
+            interval,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
+            candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)
+          if (.not.valid) return
+          theta=min(theta,stage_theta)
+        else
         call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
           snapshot%nodes(node)%geometry,solver,interval,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
           valid,ghost,gt,flux(node))
+        end if
         if (.not.valid) return
         deallocate(ghost,gt)
+        if (present(transport)) cycle
         allocate(source(nv,d(1),d(2),d(3)),exposed(d(1),d(2),d(3)));exposed=.true.
         do child=node+1,size(tree%nodes)
           if (tree%topology%nodes(child)%parent/=node) cycle
@@ -723,9 +773,11 @@ contains
       end do
       if (level+1<levels) then
         elapsed=0._dp
-        do substep=1,ratios(level+2)
-          sub_dt=interval/real(ratios(level+2),dp)
-          if (substep==ratios(level+2)) sub_dt=interval-elapsed
+        substeps=ratios(level+2)
+        if (present(transport)) substeps=substeps**2
+        do substep=1,substeps
+          sub_dt=interval/real(substeps,dp)
+          if (substep==substeps) sub_dt=interval-elapsed
           if (sub_dt<=0._dp.or.time+elapsed+sub_dt<=time+elapsed) return
           call advance_level(level+1,time+elapsed,sub_dt,fine_flux,valid)
           if (.not.valid) return
@@ -742,7 +794,7 @@ contains
       if (.not.valid) return
       good=.true.
     end subroutine advance_level
-  end subroutine advance_reactive_eb_tree_subcycle_hydro_3d
+  end subroutine advance_reactive_eb_tree_subcycle_operator_3d
 
   ! Input states have already accepted each node's raw time-integrated flux.
   ! Replace shared transfers from finest to coarsest on exposed cells only,
