@@ -19,6 +19,7 @@ def main():
     p.add_argument('--scheduled', action='store_true')
     p.add_argument('--restart', action='store_true')
     p.add_argument('--rebalance', action='store_true')
+    p.add_argument('--regrid', action='store_true')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -45,6 +46,10 @@ def main():
                 'lower(:,3)=3,1,1,upper(:,3)=4,2,4,\n'
                 'lower(:,4)=3,3,1,upper(:,4)=4,4,4,')
             extra += 'rebalance_interval_steps=1,rebalance_minimum_gain=0.,'
+        if a.regrid:
+            extra += ('regrid_count=3,regrid_times=5.e-9,1.e-8,1.5e-8,regrid_child_count=1,0,1,'
+                      'regrid_lower(:,1,1)=3,1,1,regrid_upper(:,1,1)=4,4,4,'
+                      'regrid_lower(:,1,3)=1,1,1,regrid_upper(:,1,3)=2,4,4,')
         if a.selected:
             extra += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
         (directory / 'tree.nml').write_text(text.replace('&eb_tree', '&eb_tree\n' + extra, 1))
@@ -63,6 +68,10 @@ def main():
             return list(csv.DictReader(stream))
 
     results = [run(n, f'mpi{n}') for n in (2, 4)]
+    if a.regrid:
+        for directory in results:
+            log = (directory / 'run.log').read_text()
+            assert all(f'Regrid stage: {n}' in log for n in (1, 2, 3)), log
     if a.rebalance:
         assert any('Rebalanced at step:' in (d / 'run.log').read_text() for d in results)
     gas = []

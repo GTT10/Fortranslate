@@ -17,6 +17,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
+  use spray_mpi_eb_remap_mod, only: remap_mpi_eb_spray
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
@@ -83,7 +84,7 @@ program pelef_reactive_eb_tree_3d
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
   character(len=:), allocatable :: spray_context
   character(len=1024) :: spray_input
-  integer :: particle_steps
+  integer :: particle_steps,restart_layout_stage=0
 #endif
   integer :: composition_count=0
   character(len=selected_composition_name_length) :: composition_species(selected_composition_max_species)=''
@@ -171,7 +172,6 @@ program pelef_reactive_eb_tree_3d
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
 #ifdef PELEF_MPI_EB_SPRAY
   if(geometry_type/='level_set') error stop 'MPI EB spray requires original nodal geometry'
-  if(regrid_count/=0.or.temperature_adaptive) error stop 'MPI EB spray regridding is not connected'
   if(trim(output_file)==trim(spray_input).or.trim(output_file)//'.budget.csv'==trim(spray_input)) &
     error stop 'Spray input aliases output'
 #endif
@@ -623,6 +623,10 @@ contains
   subroutine spray_checkpoint(writing)
     logical, intent(in) :: writing
     type(amr_tree_state_3d) :: candidate,ct
+    type(amr_patch_tree_3d) :: checkpoint_tree
+    type(eb_geometry_3d), allocatable :: checkpoint_geometry(:)
+    integer, allocatable :: checkpoint_owners(:)
+    integer :: p,level
     type(eb_tree_checkpoint_3d) :: gas_record,coupled
     type(spray_parcel), allocatable :: particles(:)
     real(dp), allocatable :: components(:,:)
@@ -634,6 +638,7 @@ contains
     logical :: valid,agreed,exists
     allocate(character(len=131072)::line)
     candidate=mpi_state;ct=mpi_temperature;coupled=record;gas_record=record
+    checkpoint_tree=topology;checkpoint_geometry=mpi_geometry;checkpoint_owners=mpi_owners
     particles=drops;components=component_mass
     saved_time=record%time;saved_steps=record%steps;saved_event=next_injection
     watermark=last_particle_id;source=injected
@@ -671,7 +676,7 @@ contains
       if(code/=0) error stop 'Cannot write coupled checkpoint prefix'
       ! The gas archive is a snapshot with its own zero-exchange reference.
       ! The complete coupled history is retained separately in the prefix above.
-      call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
+      call integrate_mpi_eb_tree_3d(checkpoint_tree,checkpoint_owners,checkpoint_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
       if(.not.valid) error stop 'Cannot integrate gas snapshot'
       gas_record%initial=inventory;gas_record%scale=abs(inventory)
       gas_record%boundary=0;gas_record%wall=0;gas_record%chemical=0
@@ -696,7 +701,16 @@ contains
       bound_context=spray_context//'GENERATION:'//trim(token)
       open(newunit=stream,file=path//'.gas',status='old',action='read',access='stream',form='formatted',iostat=code)
       if(code/=0) error stop 'Cannot open EB spray gas snapshot'
+      restart_layout_stage=0
       call envelope(stream,.true.,header_only=.true.)
+      checkpoint_tree=layouts(restart_layout_stage)
+      call partition_amr_tree_3d(checkpoint_tree,mpi_size,0,checkpoint_owners,valid)
+      if(.not.valid) error stop 'Restart partition failed'
+      level=max(topology%level_count(),checkpoint_tree%level_count())
+      call remap_mpi_eb_tree_3d(species,topology,checkpoint_tree,mpi_owners,checkpoint_owners,geometry_levels(level), &
+        checkpoint_geometry,candidate,ct,MPI_COMM_WORLD,valid)
+      if(.not.valid) error stop 'Cannot prepare restart hierarchy'
+
       read(stream,'(a)',iostat=code) line
       if(code/=0.or.line/=bound_context) error stop 'EB spray context mismatch'
       read(stream,*,iostat=code) expected_event,expected_mark
@@ -705,13 +719,14 @@ contains
       if(code/=0) error stop 'Missing coupled history'
       if(.not.all(ieee_is_finite([coupled%initial,coupled%scale,coupled%boundary,coupled%wall, &
         coupled%chemical,expected_source])).or.any(coupled%scale<0)) error stop 'Invalid coupled history'
-      call read_mpi_eb_tree_checkpoint_3d(path//'.gas',stream,species,reactions,transport,config,topology,mpi_owners, &
-        mpi_geometry,candidate,ct,gas_record,MPI_COMM_WORLD,valid, &
+      call read_mpi_eb_tree_checkpoint_3d(path//'.gas',stream,species,reactions,transport,config, &
+        checkpoint_tree,checkpoint_owners, &
+        checkpoint_geometry,candidate,ct,gas_record,MPI_COMM_WORLD,valid, &
         bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
       close(stream,iostat=closed)
       if(.not.valid.or.closed/=0) error stop 'Gas snapshot restore failed'
     end if
-    call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,topology,mpi_owners, &
+    call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,checkpoint_tree,checkpoint_owners, &
       nodal_phi,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
       min(125000,particle_options%maximum_parcels),particles,components,saved_time,saved_steps,saved_event, &
       watermark,source,valid)
@@ -723,6 +738,7 @@ contains
     else
       if(saved_time/=gas_record%time.or.saved_steps/=gas_record%steps.or.saved_event/=expected_event.or. &
         watermark/=expected_mark.or.any(source/=expected_source)) error stop 'Checkpoint payload mismatch'
+      if(restart_layout_stage/=count(regrid_times(:regrid_count)<=saved_time)) error stop 'Restart regrid stage mismatch'
       if(saved_time>final_time.or.saved_steps>maximum_steps) error stop 'Restart beyond requested limits'
       if(saved_event<1.or.saved_event>injection_events+1) error stop 'Invalid restart event'
       if(any(injection_times(:saved_event-1)>saved_time)) error stop 'Processed future injection'
@@ -733,13 +749,20 @@ contains
         error stop 'Invalid restart ID watermark'
       coupled%time=saved_time;coupled%steps=saved_steps
       coupled%minimum_dt=gas_record%minimum_dt;coupled%minimum_theta=gas_record%minimum_theta
-      call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
+      call integrate_mpi_eb_tree_3d(checkpoint_tree,checkpoint_owners,checkpoint_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
       if(.not.valid) error stop 'Cannot integrate restored gas'
       call add_particle_inventory(inventory,particles,components)
       if(any(abs(inventory-coupled%initial-coupled%boundary-coupled%wall-coupled%chemical-source)> &
         5e-10_dp*max(1._dp,coupled%scale,abs(inventory), &
         abs(coupled%boundary)+abs(coupled%wall)+abs(coupled%chemical)+abs(source)))) error stop 'Restored budget failed'
       mpi_state=candidate;mpi_temperature=ct;record=coupled
+      topology=checkpoint_tree;mpi_owners=checkpoint_owners;mpi_geometry=checkpoint_geometry
+      regrid_stage=restart_layout_stage;tree%topology=topology
+      if(allocated(tree%nodes)) deallocate(tree%nodes)
+      allocate(tree%nodes(size(topology%nodes)))
+      do p=1,size(tree%nodes)
+        tree%nodes(p)%geometry=mpi_geometry(p)
+      end do
       call move_alloc(particles,drops);call move_alloc(components,component_mass)
       injected=source;next_injection=saved_event;last_particle_id=watermark
     end if
@@ -838,8 +861,14 @@ contains
       level=max(topology%level_count(),layouts(stage)%level_count())
       call partition_amr_tree_3d(layouts(stage),mpi_size,0,next_owners,valid)
       if (.not.valid) error stop 'MPI regrid partition failed'
+#ifdef PELEF_MPI_EB_SPRAY
+      call remap_mpi_eb_spray(MPI_COMM_WORLD,species,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
+        drops,component_mass,layouts(stage),next_owners,geometry_levels(level),nodal_phi,domain_lower, &
+        (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid)
+#else
       call remap_mpi_eb_tree_3d(species,topology,layouts(stage),mpi_owners,next_owners,geometry_levels(level), &
         mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
+#endif
       if (.not.valid) error stop 'MPI conservative regrid failed'
       mpi_owners=next_owners;topology=layouts(stage);regrid_stage=stage
       tree%topology=topology
@@ -970,7 +999,11 @@ contains
         end do
       end if
     end do
+#ifdef PELEF_MPI_EB_SPRAY
+    if(reading) restart_layout_stage=stored_stage
+#else
     if (reading) call activate(stored_stage,.false.)
+#endif
   end subroutine
   subroutine schedule_record(stream,reading)
     integer, intent(in) :: stream
@@ -1021,7 +1054,11 @@ contains
         end if
       end do
     end do
+#ifdef PELEF_MPI_EB_SPRAY
+    if(reading) restart_layout_stage=stored_stage
+#else
     if (reading) call activate(stored_stage,.false.)
+#endif
   end subroutine
 #ifdef PELEF_SELECTED_EB_TREE
   logical function chemical_elements_valid(initial_values,changes,accepted_steps) result(valid)

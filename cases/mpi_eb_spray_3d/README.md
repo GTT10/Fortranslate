@@ -44,8 +44,8 @@ Output:
   write a header. IDs are global; concatenate and sort by ID for comparison.
   Existing particle CSV files are protected and cause the run to fail.
 
-This first executable connection supports a fixed hierarchy and scheduled cone
-injection. Regridding and child creation are explicitly rejected. It inherits root-contained specular EB drift and the
+This executable supports scheduled cone injection and the existing EB tree
+regrid controls. Particle child creation remains explicitly rejected. It inherits root-contained specular EB drift and the
 composite stencil approximation. It is a synthetic integration fixture, not
 nozzle, diesel ignition, convergence or physical validation.
 
@@ -84,4 +84,22 @@ migration fails, the original ownership and all state remain intact. A move is
 reported as `Rebalanced at step:`; an already balanced layout may stay unchanged.
 This uses measured gas cost, not a separate model of particle work. The
 partition is not part of the restart identity, so continuation can redistribute
-again under a different rank count. The geometry and hierarchy do not change.
+again under a different rank count. Rebalancing changes ownership only; the physical geometry remains fixed.
+
+## Regridding and restart stages
+
+The existing `/eb_tree/` controls `regrid_count`, `regrid_times`,
+`regrid_child_count`, `regrid_parent`, `regrid_ratio`, `regrid_lower` and
+`regrid_upper` now remap gas and particles together. Refinement may move,
+coarsen to the root or grow again on the shared refinement lattice. Supply the
+original nodal field at the maximum lattice resolution required by the complete
+schedule. Coarsening retains that field for collision/visibility queries.
+The existing `temperature_adaptive` tagger also routes through the coupled remap;
+its thresholds, depth and capacity controls are unchanged.
+
+At a step ending on a regrid time, the hierarchy changes before balance checks
+and checkpointing. Injection events due at that time run at the beginning of
+the next iteration. Restart validates the saved regrid schedule/stage and builds
+a private target hierarchy before restoring gas and particles. The remaining
+regrid and injection events then continue. The focused application evidence
+covers prescribed schedules; adaptive tagging is not newly qualified by it.
