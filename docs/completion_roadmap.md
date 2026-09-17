@@ -127,7 +127,8 @@ MPI shared/periodic face flux synchronization is implemented. MPI application su
 Focused hydro-only scheduled/adaptive recursive execution and changed-rank restart
 are checked. Optional deterministic cell-step-weighted whole-patch partitioning is
 connected at initialization/regrid/restart. Final CSV now uses owner-local MPI-IO;
-next extend distributed checkpoint/initial inventory, measured-cost rebalancing
+initial inventory and restart reference scales also avoid field gathers.
+Next extend distributed checkpoints, measured-cost rebalancing
 and dynamic full-split qualification. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive

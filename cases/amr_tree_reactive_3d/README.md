@@ -221,12 +221,14 @@ round-robin by node index. Each rank initializes and advances only owned payload
 empty ranks are supported. It uses common timesteps and the full reaction/transport/
 hydro composition with up to 20 timestep-halving attempts.
 
-Rank zero gathers state once for the initial inventory. Final CSV rows are written
+Initial and final inventories use serial-order compensated small-vector transfers.
+Restart ledger validation obtains its initial absolute-inventory scale the same
+way, without gathering initialized fields. Final CSV rows are written
 by patch owners through MPI-IO at predetermined byte offsets, preserving serial
 node/cell order and formatting. All rows are validated before opening the file;
 owner buffers hold bounded chunks. The final budget uses serial-order compensated
 accumulators with only small-vector broadcasts, and rank zero writes its CSV.
-Numerical stepping and final CSV output do not gather full fields. Checkpoint
+Initialization, numerical stepping and final CSV output do not gather full fields. Checkpoint
 save/load still uses root field payloads. I/O errors after opening may leave a
 partial output; this is not an atomic filesystem transaction.
 The bounded regression checks byte equality for the elementary hotspot case.

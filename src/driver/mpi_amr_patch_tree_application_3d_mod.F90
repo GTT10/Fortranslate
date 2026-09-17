@@ -62,7 +62,7 @@ contains
     real(dp) :: max_remap_error
     integer :: event,nevents,slash,regrids,last_checkpoint_step
     character(len=1024) :: event_path
-    type(amr_tree_state_3d) :: state,temperature,global_state
+    type(amr_tree_state_3d) :: state,temperature
     integer, allocatable :: ratios(:),owners(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     real(dp), allocatable :: x(:),y(:),z(:),root_h(:),h(:,:),mass_fractions(:),inlet_x(:)
@@ -297,18 +297,10 @@ contains
         inlet_dt=min(inlet_dt,face_dt)
       end if
     end do
-    call gather_mpi_amr_tree_3d(tree,owners,state,global_state,comm,0,ok)
-    if (.not.ok) call fatal('Cannot collect initial tree inventory')
-    if (rank==0) then
-      call composite_integrals_amr_patch_tree_3d(tree,global_state,root_h,initial,ok)
-      if (.not.ok) call fatal('Invalid initial composite inventory')
-    end if
-    call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
-    if (status/=MPI_SUCCESS) call fatal('Cannot distribute initial inventory')
+    call distributed_inventory(tree,owners,state,initial,.false.)
     time=0;step=0;budget=0;max_correction=0;min_theta=1
     event=1;regrids=0;max_remap_error=0;last_checkpoint_step=0
     if (len_trim(restart_file)>0) call restore_checkpoint()
-    if (allocated(global_state%fields)) deallocate(global_state%fields)
     if (rank==0) then
       write(*,'(a)') 'PeleF '//pelef_version//' experimental MPI regular 3D patch tree'
       write(*,'(a,l1)') 'Subcycling: ',subcycling
@@ -462,6 +454,8 @@ contains
       type(amr_tree_state_3d) :: absolute_state
       real(dp) :: original_scale(size(q)),restart_scale(size(q)),inventory(size(q)),scalars(4)
       integer :: peer,nconserved,applied
+      ! The initialized owner fields supply the cancellation-safe ledger scale.
+      call distributed_inventory(tree,owners,state,original_scale,.true.)
       if (rank==0) then
         call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
           [config%nx,config%ny,config%nz],snapshot,ok)
@@ -481,12 +475,6 @@ contains
         if (any(abs(snapshot%initial-initial)>64*epsilon(1.0_dp)*max(tiny(1.0_dp),abs(initial)))) &
           call fatal('Tree restart initial inventory mismatch')
         ! Use absolute cell inventories so cancelling momentum has a meaningful scale.
-        absolute_state=global_state
-        do peer=1,size(tree%nodes)
-          absolute_state%fields(peer)%values=abs(global_state%fields(peer)%values)
-        end do
-        call composite_integrals_amr_patch_tree_3d(tree,absolute_state,root_h,original_scale,ok)
-        if (.not.ok) call fatal('Invalid initial restart inventory scale')
         absolute_state=snapshot%state
         do peer=1,size(snapshot%tree%nodes)
           absolute_state%fields(peer)%values=abs(snapshot%state%fields(peer)%values)
