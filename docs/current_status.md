@@ -59,7 +59,9 @@ physical boundary accounting and bottom-up state restriction, including depth-li
 intervals ([evidence](validation/amr-tree-mpi-reflux-20260917.md)).
 Owner-local temperature recovery and global minimum CFL selection now reuse the
 serial thermodynamic kernels ([evidence](validation/amr-tree-mpi-thermo-20260917.md)).
-MPI coarse-time interpolation and tree evolution remain open. A transactional tree
+Synchronous MPI SSPRK2 hydro now connects these operations for owned patches,
+with PCM/PLM and physical inflow/walls ([evidence](validation/amr-tree-mpi-hydro-20260917.md)).
+MPI transport/chemistry composition, coarse-time interpolation and tree application integration remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

@@ -653,6 +653,35 @@ validates structural and finite-value inputs at all depths. MPI runtime failures
 follow the communicator error handler. These helpers do not advance time or
 connect the MPI tree application.
 
+## Synchronous MPI hydro stepping
+
+`advance_mpi_amr_tree_hydro_3d` mirrors the serial common-step SSPRK2 algorithm on
+owner-only state/temperature fields. The initial state is restricted and its
+temperature recovered. Each Euler stage packs local conserved variables plus
+temperature, fills distributed halos, evaluates the existing PCM or characteristic
+PLM face kernels, updates local cells, applies distributed reflux, and recovers
+temperature. The final half initial/half second-Euler combination is restricted
+and recovered using the first-stage temperature guess, matching the serial order.
+
+The root owner computes the original surface budget and broadcasts only that
+component vector. Each stage adds the distributed reflux boundary replacement;
+the returned RK budget averages both stages and the diagnostic takes their maximum
+correction. Full fields are never gathered for stepping. Selected donors use the
+same MC/minmod limiter and dependent species slope as serial PLM.
+
+Topology/ownership/shapes and positive temperature guesses are checked collectively.
+Ranks must agree on spacing, dt, boundary/reconstruction/limiter/solver controls and
+active inflow arrays. Thermodynamic coefficient identity remains a caller contract.
+Local allocations and flux-kernel failures are gated before the next communication.
+All work stays private until both stages and final recovery succeed; failures preserve
+state, temperature, budget and maximum correction. MPI runtime errors remain governed
+by the communicator's error handler.
+
+The caller selects dt (the common-step CFL helper is separate); there is no internal
+retry or CFL enforcement. This API is hydro only, without chemistry, molecular
+transport, level subcycling or application dispatch. Replicated metadata, duplicate
+ghost requests and whole-node ownership retain the existing scaling limitations.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.
