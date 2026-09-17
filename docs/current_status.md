@@ -608,8 +608,10 @@ now surrounds particle/gas stepping with film half-intervals and publishes
 film state and wall heat only with whole-step success
 ([evidence](validation/spray-amr-film-reactive-20260918.md)). Coupled topology
 remapping now carries stationary films transactionally with gas and particles
-([evidence](validation/spray-amr-film-remap-20260918.md)). AMR wall-film creation,
-load-balancing/application/restart integration and EB solid handling remain open.
+([evidence](validation/spray-amr-film-remap-20260918.md)). Gas-work-based
+rebalancing also carries film state atomically with gas and particles
+([evidence](validation/spray-amr-film-balance-20260918.md)). AMR wall-film creation,
+application/restart integration and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
