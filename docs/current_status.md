@@ -93,7 +93,10 @@ conservation checks, including a 21-species methanol fixture
 selected frontend now shares source-derived element inventories and schema-3
 restart, with a uniform-density implicit methanol connection fixture; its
 general external-boundary inventory ledger remains open
-([evidence](validation/eb-single-level-elements-20260917.md)).
+([evidence](validation/eb-single-level-elements-20260917.md)). Redistributed
+hydro and coupled update APIs now expose actual boundary, wall and chemical
+exchange vectors transactionally; application/checkpoint accumulation remains
+open ([evidence](validation/eb-redistributed-exchange-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
