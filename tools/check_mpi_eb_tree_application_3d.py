@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--automatic', action='store_true')
     parser.add_argument('--scheduled', action='store_true')
+    parser.add_argument('--adaptive', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -62,8 +63,9 @@ def main():
         assert (full / filename).read_bytes() == (resumed / filename).read_bytes(), filename
 
     scheduled_results = []
-    if args.scheduled:
-        for step, nodes in ((2, 1), (3, 4)):
+    if args.scheduled or args.adaptive:
+        event_nodes = ((2, 5), (3, 5)) if args.adaptive else ((2, 1), (3, 4))
+        for step, nodes in event_nodes:
             stop = run(f'stop_event_{step}', 2, stop_policy.replace('steps=1', f'steps={step}'))
             assert f'nodes: {nodes}' in (stop / 'run.log').read_text()
             resume = run(f'resume_event_{step}', 3, f"restart_file='{stop / 'saved.chk'}',")
@@ -90,15 +92,28 @@ def main():
             for key in ('initial', 'final', 'boundary', 'wall', 'chemistry'):
                 assert abs(float(row[key])-float(reference[key])) <= 3e-14*max(1, abs(initial)), (directory, key)
 
+    if args.adaptive:
+        cold = template.replace('1000,1.e9', '1.e9,1.e9')
+        assert cold != template, 'missing adaptive fixture thresholds'
+        cold_serial = run('cold_serial', text=cold)
+        cold_mpi = run('cold_mpi', 3, text=cold)
+        assert (cold_serial / 'result.csv').read_bytes() == (cold_mpi / 'result.csv').read_bytes()
+        with (cold_mpi / 'result.csv').open() as stream:
+            assert {int(row['level']) for row in csv.DictReader(stream)} == {0}
+        run('capacity', 2, text=template.replace('tag_maximum_nodes=33', 'tag_maximum_nodes=1'), success=False)
+
     broken = work / 'broken.chk'
     broken.write_text((stopped / 'saved.chk').read_text().replace('END_EB_TREE_CHECKPOINT', 'BROKEN_END'))
-    for name, extra in (
+    failures = [
         ('corrupt', f"restart_file='{broken}',"),
         ('wrong_policy', f"restart_file='{stopped / 'saved.chk'}',time_step=2.e-9,"),
         ('wrong_auto', f"restart_file='{stopped / 'saved.chk'}',automatic_timestep={'.false.' if args.automatic else '.true.'},"),
         ('wrong_cfl', f"restart_file='{stopped / 'saved.chk'}',hydro_cfl=1.e-6,"),
         ('unsupported_subcycle', 'subcycling=.true.,'),
-    ):
+    ]
+    if args.adaptive:
+        failures.append(('wrong_tag', f"restart_file='{stopped / 'saved.chk'}',tag_buffer=1,"))
+    for name, extra in failures:
         directory = work / name
         directory.mkdir(exist_ok=True)
         paths = [directory / filename for filename in ('result.csv', 'result.csv.budget.csv', 'protected.chk')]
@@ -106,6 +121,8 @@ def main():
             path.write_text('sentinel\n')
         run(name, 2, extra + "checkpoint_file='protected.chk',checkpoint_interval_steps=1,", success=False)
         assert all(path.read_text() == 'sentinel\n' for path in paths), name
+        if name == 'wrong_tag':
+            assert 'Tagging policy mismatch' in (directory / 'run.log').read_text()
         if name in ('wrong_auto', 'wrong_cfl'):
             expected_error = 'Restart interval mode mismatch' if name == 'wrong_auto' else 'Restart CFL mismatch'
             assert expected_error in (directory / 'run.log').read_text(), name

@@ -3,6 +3,7 @@ program pelef_reactive_eb_tree_3d
   use mpi_f08
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
@@ -124,8 +125,8 @@ program pelef_reactive_eb_tree_3d
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
 #ifdef PELEF_MPI_EB_TREE
-  if (subcycling.or.temperature_adaptive) &
-    error stop 'MPI EB tree currently requires prescribed topology and common intervals'
+  if (subcycling) &
+    error stop 'MPI EB tree currently requires common intervals'
 #endif
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
@@ -314,8 +315,14 @@ program pelef_reactive_eb_tree_3d
       if (record%time>=regrid_times(regrid_stage+1)) then
         if (temperature_adaptive) then
           depth=max(topology%level_count(),tag_depth+1)
+#ifdef PELEF_MPI_EB_TREE
+          call tag_mpi_eb_tree_temperature_3d(topology,mpi_owners,mpi_temperature,mpi_geometry,geometry_levels(depth), &
+            tag_thresholds(:tag_depth),tag_ratios(:tag_depth),tag_tile_shape,tag_buffer,tag_maximum_nodes, &
+            layouts(regrid_stage+1),MPI_COMM_WORLD,ok)
+#else
           call tag_reactive_eb_tree_temperature_3d(tree,geometry_levels(depth),tag_thresholds(:tag_depth), &
             tag_ratios(:tag_depth),tag_tile_shape,tag_buffer,tag_maximum_nodes,layouts(regrid_stage+1),ok)
+#endif
           if (.not.ok) error stop 'Temperature adaptation failed or exceeded capacity'
         end if
         call activate(regrid_stage+1,.true.)

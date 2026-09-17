@@ -10,6 +10,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_eb_tree_full_3d_mod.F90
     src/parallel/mpi_eb_tree_timestep_3d_mod.F90
     src/parallel/mpi_eb_tree_remap_3d_mod.F90
+    src/parallel/mpi_eb_tree_tagging_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
     src/parallel/mpi_amr_tree_work_mod.F90
     src/parallel/mpi_amr_patch_tree_csv_3d_mod.F90

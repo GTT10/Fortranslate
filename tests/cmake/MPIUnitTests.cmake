@@ -922,3 +922,22 @@ if(PELEF_ENABLE_MPI)
       --work "${CMAKE_CURRENT_BINARY_DIR}/mpi_eb_tree_scheduled_3d" --scheduled)
   set_tests_properties(regression_mpi_eb_tree_scheduled_3d PROPERTIES TIMEOUT 180 PROCESSORS 3)
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_executable(test_mpi_eb_tree_tagging_3d unit/test_mpi_eb_tree_tagging_3d.F90)
+  target_link_libraries(test_mpi_eb_tree_tagging_3d PRIVATE pelef_mpi_support)
+  foreach(tree_ranks IN ITEMS 2 3)
+    add_test(NAME unit_mpi_eb_tree_tagging_3d_${tree_ranks}
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" ${tree_ranks} ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_tagging_3d> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_mpi_eb_tree_tagging_3d_${tree_ranks} PROPERTIES
+      TIMEOUT 60 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+  add_test(NAME regression_mpi_eb_tree_adaptive_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_eb_tree_application_3d.py"
+      --serial "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/adaptive.nml"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/mpi_eb_tree_adaptive_3d" --adaptive)
+  set_tests_properties(regression_mpi_eb_tree_adaptive_3d PROPERTIES TIMEOUT 180 PROCESSORS 3)
+endif()
