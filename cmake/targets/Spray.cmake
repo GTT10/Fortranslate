@@ -45,6 +45,7 @@ if(PELEF_ENABLE_SPRAY)
   function(pelef_add_spray_tree_runtime target spray_base tree_base)
     add_library(${target} STATIC src/spray/spray_eb_intersection_mod.F90
       src/spray/spray_eb_drift_mod.F90
+      src/spray/spray_eb_impact_mod.F90
       src/spray/spray_eb_field_mod.F90
       src/spray/spray_eb_step_mod.F90
       src/spray/spray_eb_reactive_mod.F90

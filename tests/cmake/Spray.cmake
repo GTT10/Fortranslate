@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_executable(test_spray_eb_impact spray/test_spray_eb_impact.F90)
+  target_link_libraries(test_spray_eb_impact PRIVATE pelef_spray_tree_runtime)
+  add_test(NAME spray_eb_impact COMMAND test_spray_eb_impact)
+  set_tests_properties(spray_eb_impact PROPERTIES LABELS "spray;eb" TIMEOUT 30)
   add_executable(test_spray_eb_tree_stencil spray/test_spray_eb_tree_stencil.F90)
   target_link_libraries(test_spray_eb_tree_stencil PRIVATE pelef_spray_tree_runtime)
   add_test(NAME spray_eb_tree_stencil COMMAND test_spray_eb_tree_stencil)
