@@ -3,10 +3,28 @@ program pelef_reactive_eb_tree_3d
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end,iostat_eor
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+#ifndef PELEF_SELECTED_EB_TREE
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
-  use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
+  use transport_database_mod, only: load_h2o2_elementary_transport
+#else
+  use @PELEF_BUNDLE_MODULE_NAME@, only: &
+    load_selected_thermo => @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
+    load_selected_reactions => @PELEF_BUNDLE_LOADER_NAME@, &
+    load_selected_transport => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@, &
+    selected_nspecies => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
+    selected_nreactions => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
+    selected_integrator => @PELEF_BUNDLE_CHEMISTRY_INTEGRATOR_SYMBOL@, &
+    element_count => @PELEF_BUNDLE_NELEMENTS_SYMBOL@, &
+    selected_element_names => @PELEF_BUNDLE_ELEMENT_NAMES_SYMBOL@, &
+    selected_element_atoms => @PELEF_BUNDLE_ELEMENT_ATOMS_SYMBOL@
+  use selected_mechanism_runtime_mod, only: prepare_selected_mechanism,validate_selected_temperature_range
+  use simulation_config_reactive_eb_3d_mod, only: resolve_reactive_eb_3d_selected_composition
+  use reactive_eb_3d_driver_mod, only: reactive_eb_composition_integrals_3d
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions,mixture_specific_gas_constant
+#endif
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d,amr_tree_integer_layout_3d
@@ -17,7 +35,19 @@ program pelef_reactive_eb_tree_3d
     advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d, &
     remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
+  use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
   implicit none
+  character(len=:), allocatable :: element_names(:),bundle_identity,checkpoint_integrator
+  real(dp), allocatable :: element_atoms(:,:),base_mole_fractions(:)
+  integer :: composition_count=0
+  character(len=selected_composition_name_length) :: composition_species(selected_composition_max_species)=''
+  real(dp) :: composition_mole_fractions(selected_composition_max_species)=0._dp
+#ifdef PELEF_SELECTED_EB_TREE
+  character(len=24) :: transport_names(selected_nspecies)
+  integer :: transport_geometries(selected_nspecies)
+  real(dp) :: transport_values(5,selected_nspecies),mass_fractions(selected_nspecies)
+  real(dp) :: common_tmin,common_tmax,gas_constant,regular_t,cut_t
+#endif
   integer :: root_shape(3)=[4,4,4],child_count=0,parent(32)=1,ratio(32)=2,lower(3,32)=1,upper(3,32)=2
   logical :: temperature_adaptive=.false.
   integer :: tag_depth=2,tag_ratios(8)=2,tag_tile_shape(3)=[2,2,2],tag_buffer=0,tag_maximum_nodes=33
@@ -32,7 +62,12 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z'
-  character(len=16) :: riemann_solver='rusanov',chemistry_integrator='explicit'
+  character(len=16) :: riemann_solver='rusanov'
+#ifdef PELEF_SELECTED_EB_TREE
+  character(len=16) :: chemistry_integrator=selected_integrator
+#else
+  character(len=16) :: chemistry_integrator='explicit'
+#endif
   character(len=512) :: level_set_file='',section_file='',output_file='eb_tree.csv',checkpoint_file='',restart_file=''
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
@@ -40,7 +75,8 @@ program pelef_reactive_eb_tree_3d
     automatic_timestep,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
-    tag_tile_shape,tag_buffer,tag_maximum_nodes,tag_thresholds
+    tag_tile_shape,tag_buffer,tag_maximum_nodes,tag_thresholds, &
+    composition_count,composition_species,composition_mole_fractions
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -149,16 +185,57 @@ program pelef_reactive_eb_tree_3d
     if (.not.ok) error stop 'Cannot coarsen geometry'
   end do
   coarse=geometry_levels(1)
+#ifdef PELEF_SELECTED_EB_TREE
+  call load_selected_thermo(species,ok)
+  if (.not.ok) error stop 'Selected thermodynamic load failed'
+  call load_selected_reactions(reactions,ok)
+  if (.not.ok) error stop 'Selected reaction load failed'
+  call load_selected_transport(transport_names,transport_geometries,transport_values,ok)
+  if (.not.ok) error stop 'Selected transport load failed'
+  call prepare_selected_mechanism('EB tree',selected_nspecies,selected_nreactions,species,reactions, &
+    transport_names,transport_geometries,transport_values,transport,common_tmin,common_tmax,ok,message)
+  if (.not.ok) then
+    write(*,'(a)') trim(message)
+    error stop 'Invalid selected mechanism'
+  end if
+  element_names=selected_element_names; element_atoms=selected_element_atoms
+  config%thermo_model='selected'
+  config%composition_count=composition_count;config%composition_species=composition_species
+  config%composition_mole_fractions=composition_mole_fractions
+  allocate(base_mole_fractions(size(species)))
+  call resolve_reactive_eb_3d_selected_composition(config,species,base_mole_fractions,ok,message)
+  if (.not.ok) then
+    write(*,'(a)') trim(message)
+    error stop 'Invalid selected composition'
+  end if
+  call mass_fractions_from_mole_fractions(species,base_mole_fractions,mass_fractions,ok)
+  if (.not.ok) error stop 'Invalid selected mass fractions'
+  gas_constant=mixture_specific_gas_constant(species,mass_fractions,ok)
+  if (.not.ok) error stop 'Invalid selected gas constant'
+  regular_t=config%initial_pressure/(config%regular_density*gas_constant)
+  cut_t=config%initial_pressure/(config%cut_density*gas_constant)
+  call validate_selected_temperature_range('EB tree',min(regular_t,cut_t),max(regular_t,cut_t), &
+    common_tmin,common_tmax,ok,message)
+  if (.not.ok) then
+    write(*,'(a)') trim(message)
+    error stop 'Selected initial temperature outside mechanism range'
+  end if
+  bundle_identity='@PELEF_BUNDLE_BUNDLE_SHA256@'
+  checkpoint_integrator=chemistry_integrator
+#else
+  if (composition_count/=0.or.any(composition_species/='').or.any(composition_mole_fractions/=0._dp)) &
+    error stop 'Composition inputs require selected executable'
   call load_h2o2_elementary_thermo(species,ok)
-  if (.not.ok) error stop 'Thermo load failed'
+  if (.not.ok) error stop 'Thermodynamic load failed'
   call load_h2o2_elementary_mechanism(reactions,ok)
-  if (.not.ok) error stop 'Reaction load failed'
+  if (.not.ok) error stop 'Mechanism load failed'
   call load_h2o2_elementary_transport(transport,ok)
   if (.not.ok) error stop 'Transport load failed'
+#endif
   nv=reactive_nvar(size(species));n=root_shape
   allocate(u(nv,n(1),n(2),n(3)),t(n(1),n(2),n(3)),current(nv),boundary(nv),wall(nv),chemical(nv))
   root_config=config;root_config%nx=n(1);root_config%ny=n(2);root_config%nz=n(3)
-  call initialize_reactive_eb_density_sheet_3d(species,root_config,coarse,u,t,ok)
+  call initialize_reactive_eb_density_sheet_3d(species,root_config,coarse,u,t,ok,base_mole_fractions)
   if (.not.ok) error stop 'Initial state failed'
   call initialize_reactive_eb_tree_3d(species,topology,geometry_levels(topology%level_count()),u,t,tree,ok)
   if (.not.ok) error stop 'Tree initialization failed'
@@ -419,7 +496,36 @@ contains
     end do
     if (reading) call activate(stored_stage,.false.)
   end subroutine
+#ifdef PELEF_SELECTED_EB_TREE
+  logical function chemical_elements_valid(initial_values,changes,accepted_steps) result(valid)
+    real(dp), intent(in) :: initial_values(:),changes(:)
+    integer, intent(in) :: accepted_steps
+    real(dp) :: element_scale(element_count),element_change(element_count),roundoff(element_count)
+    integer :: e
+    element_scale=matmul(element_atoms,abs(initial_values(6:))/species%molecular_weight)
+    element_change=matmul(element_atoms,changes(6:)/species%molecular_weight)
+    ! A zero initial element still sees floating-point species mass closure.
+    ! Bound that absolute error by total species mass and atoms per unit mass;
+    ! retain the relative tolerance for each populated elemental inventory.
+    do e=1,element_count
+      roundoff(e)=64._dp*epsilon(1._dp)*real(max(1,accepted_steps),dp)*sum(abs(initial_values(6:)))* &
+        maxval(element_atoms(e,:)/species%molecular_weight)
+    end do
+    valid=all(ieee_is_finite(element_change)).and.all(ieee_is_finite(element_scale)).and.all(ieee_is_finite(roundoff))
+    if (valid) valid=all(abs(element_change)<=2.e-10_dp*element_scale+roundoff)
+    if (.not.valid) then
+      do e=1,element_count
+        write(*,'(a,1x,2(es24.16,1x))') trim(element_names(e)),element_change(e),element_scale(e)
+      end do
+    end if
+  end function chemical_elements_valid
+#endif
+
   subroutine balance()
+#ifdef PELEF_SELECTED_EB_TREE
+    if (.not.chemical_elements_valid(record%initial,record%chemical,record%steps)) &
+      error stop 'Chemical element conservation failed'
+#endif
     call integrate_reactive_eb_tree_3d(tree,current,ok)
     if (.not.ok) error stop 'Inventory failed'
     error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical)/ &
@@ -467,7 +573,8 @@ contains
     else if (regrid_count/=0) then
       error stop 'Restart schedule missing'
     end if
-    call reactive_eb_tree_checkpoint_record_3d(stream,reading,species,reactions,transport,config,tree,record,ok,message)
+    call reactive_eb_tree_checkpoint_record_3d(stream,reading,species,reactions,transport,config,tree,record,ok,message, &
+      bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
     if (.not.ok) then
       print *,trim(message)
       error stop 'Invalid tree checkpoint record'

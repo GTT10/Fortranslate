@@ -100,7 +100,7 @@ function(pelef_add_mechanism_bundle)
     AMR_REACTIVE_1D_NAME REACTIVE_2D_NAME REACTIVE_EB_2D_NAME
     REACTIVE_EB_AMR_2D_NAME SPRAY_3D_NAME MPI_SPRAY_3D_NAME
       REACTIVE_3D_NAME AMR_REACTIVE_3D_NAME AMR_TREE_REACTIVE_3D_NAME MPI_AMR_TREE_REACTIVE_3D_NAME
-    REACTIVE_EB_3D_NAME REACTIVE_EB_TWO_LEVEL_3D_NAME
+    REACTIVE_EB_3D_NAME REACTIVE_EB_TWO_LEVEL_3D_NAME REACTIVE_EB_TREE_3D_NAME
     MPI_REACTIVE_1D_NAME MPI_AMR_REACTIVE_1D_NAME
     MPI_AMR_REACTIVE_3D_NAME
     MPI_REACTIVE_EB_PATCH_TREE_2D_NAME
@@ -1027,6 +1027,25 @@ function(pelef_add_mechanism_bundle)
     target_link_libraries("${PELEF_BUNDLE_REACTIVE_EB_TWO_LEVEL_3D_NAME}"
       PRIVATE "${mechanism_target}" pelef_selected_reactive_eb_3d_runtime)
     list(APPEND install_targets "${PELEF_BUNDLE_REACTIVE_EB_TWO_LEVEL_3D_NAME}")
+  endif()
+
+  if(PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME)
+    if(NOT PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME MATCHES "^[A-Za-z_][A-Za-z0-9_]*$"
+        OR TARGET "${PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME}")
+      message(FATAL_ERROR "Invalid or duplicate selected tree EB target")
+    endif()
+    if(bundle_nspecies LESS 2 OR bundle_nspecies GREATER 128
+        OR NOT TARGET pelef_selected_reactive_eb_3d_runtime)
+      message(FATAL_ERROR "Selected tree EB requires runtime and 2--128 species")
+    endif()
+    set(configured_eb_tree "${bundle_directory}/${PELEF_BUNDLE_NAME}_eb_tree_3d.F90")
+    configure_file("${PROJECT_SOURCE_DIR}/app/pelef_reactive_eb_tree_3d.F90"
+      "${configured_eb_tree}" @ONLY)
+    add_executable("${PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME}" "${configured_eb_tree}")
+    target_compile_definitions("${PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME}" PRIVATE PELEF_SELECTED_EB_TREE)
+    target_link_libraries("${PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME}"
+      PRIVATE "${mechanism_target}" pelef_selected_reactive_eb_3d_runtime)
+    list(APPEND install_targets "${PELEF_BUNDLE_REACTIVE_EB_TREE_3D_NAME}")
   endif()
 
   if(PELEF_BUNDLE_ADD_TEST)

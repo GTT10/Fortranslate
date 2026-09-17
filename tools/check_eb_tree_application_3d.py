@@ -109,6 +109,22 @@ def main():
         wrong_policy = template.replace('tag_buffer=0', 'tag_buffer=1')
         directory = run('bad_tag_policy', f"restart_file='{stopped / 'saved.chk'}',", wrong_policy, success=False)
         assert not (directory / 'result.csv').exists()
+    checkpoint_text = (stopped / 'saved.chk').read_text()
+    if 'SELECTED_CONTEXT' in checkpoint_text:
+        assert 'ELEMENT_CONTEXT' in checkpoint_text
+        match = re.search(r'SELECTED_CONTEXT\n([0-9a-f]{64})', checkpoint_text)
+        assert match
+        sha = match[1]
+        altered = ('0' if sha[0] != '0' else '1') + sha[1:]
+        bad_identity = work / 'bad_identity.chk'
+        bad_identity.write_text(checkpoint_text.replace(sha, altered))
+        directory = run('bad_identity', f"restart_file='{bad_identity}',", success=False)
+        assert not (directory / 'result.csv').exists()
+        changed_composition = template.replace('0.29572,0.14785,0.55643', '0.30,0.15,0.55')
+        assert changed_composition != template
+        directory = run('bad_composition', f"restart_file='{stopped / 'saved.chk'}',",
+                        changed_composition, success=False)
+        assert not (directory / 'result.csv').exists()
     print(f'PASS: {len(cells)} exposed cells, exact restart CSV/budget, residual={worst:.17e}; rejection preserves files')
 
 

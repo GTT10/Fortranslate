@@ -79,6 +79,7 @@ pelef_add_mechanism_bundle(
   AMR_REACTIVE_3D_NAME test_selected_full_amr_reactive_3d
   REACTIVE_EB_3D_NAME test_selected_full_reactive_eb_3d
   REACTIVE_EB_TWO_LEVEL_3D_NAME test_selected_full_reactive_eb_two_level_3d
+  REACTIVE_EB_TREE_3D_NAME test_selected_full_reactive_eb_tree_3d
   ${PELEF_TEST_SELECTED_FULL_MPI_OPTION}
   ADD_TEST
 )
@@ -212,3 +213,10 @@ add_test(NAME regression_selected_adaptive_eb_two_level_3d
     --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/selected_adaptive.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/selected_adaptive_eb_two_level_3d")
 set_tests_properties(regression_selected_adaptive_eb_two_level_3d PROPERTIES TIMEOUT 180)
+
+add_test(NAME regression_selected_eb_tree_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_application_3d.py"
+    --exe "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+    --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/selected.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_3d")
+set_tests_properties(regression_selected_eb_tree_3d PROPERTIES TIMEOUT 180)
