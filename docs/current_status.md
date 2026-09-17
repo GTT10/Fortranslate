@@ -236,7 +236,12 @@ Checkpoint saving now stages serial patch records on their owners and writes
 them directly with MPI-IO; fixed/selected patch bytes and changed-rank/serial
 restart match focused references
 ([distributed save evidence](validation/mpi-eb-tree-save-20260918.md)).
-Distributed checkpoint loading remains open.
+Checkpoint loading now scans record offsets on rank zero and restores each patch
+only on its owner, with collective state/ledger publication and focused
+changed-rank/serial parity
+([distributed load evidence](validation/mpi-eb-tree-load-20260918.md)).
+Initial-state construction still temporarily replicates the full initial tree;
+removing this replication and avoiding the root's legacy-file scan remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
