@@ -3,7 +3,8 @@ program test_mpi_amr_patch_tree_distribution_3d
   use precision_mod, only: dp
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: &
+    scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d
   implicit none
   type(amr_patch_tree_3d) :: tree,different_tree
   type(amr_patch_3d) :: patches(2)
@@ -21,6 +22,28 @@ program test_mpi_amr_patch_tree_distribution_3d
   call require(ok,'grandchild geometry')
   call initialize_amr_patch_tree_3d([4,4,4],[1,2],patches,tree,ok)
   call require(ok,'tree')
+  block
+    integer, allocatable :: balanced(:),previous(:)
+    type(amr_patch_tree_3d) :: oversized
+    call partition_amr_tree_3d(tree,2,0,balanced,ok)
+    call require(ok,'common partition')
+    call require(all(balanced==[0,1,0]),'stable cell-weight ties')
+    call partition_amr_tree_3d(tree,2,2,balanced,ok)
+    call require(ok,'recursive transport partition')
+    call require(all(balanced==[1,1,0]),'largest subcycled workload first')
+    call partition_amr_tree_3d(tree,4,1,balanced,ok)
+    call require(ok,'empty-rank partition')
+    call require(all(balanced==[2,1,0]),'hydro weights and rank ties')
+    previous=balanced
+    call partition_amr_tree_3d(tree,0,0,balanced,ok)
+    call require(.not.ok,'invalid rank count rejected')
+    call require(all(balanced==previous),'partition rollback')
+    call initialize_amr_patch_tree_3d([huge(1),huge(1),huge(1)],[integer::],patches(:0),oversized,ok)
+    call require(ok,'metadata-only oversized tree')
+    call partition_amr_tree_3d(oversized,2,0,balanced,ok)
+    call require(.not.ok,'cell-work overflow rejected')
+    call require(all(balanced==previous),'overflow rollback')
+  end block
   if (rank==root) then
     allocate(global%fields(3))
     do node=1,3

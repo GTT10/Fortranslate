@@ -248,6 +248,29 @@ and output lexical aliases are rejected after resolving relative paths against
 the working directory. This POSIX path check does not resolve symlinks/hard links.
 Whole-patch ownership and root output are not a production scaling claim.
 
+## MPI work-weighted patch ownership
+
+The MPI frontends accept this optional group:
+
+```fortran
+&amr_tree_distribution
+  partitioning='weighted'
+/
+```
+
+The default is `round_robin`. Weighted assignment places the largest estimated
+patch workload on the least-loaded rank, breaking ties by node/rank index.
+Weights are cell counts for common stepping, cell counts times cumulative
+refinement ratios for recursive hydro, and times squared ratios when recursive
+transport is enabled. These are cell-step estimates, not measured chemistry or
+communication costs. Whole patches remain indivisible.
+
+The policy is applied at initialization, regridding and checkpoint reload.
+It is not part of physical checkpoint identity: rank count and assignment policy
+may change at restart, including interchange with serial. Regridding transfers
+payloads directly to the new owners through the existing sparse remap. There is
+no periodic load measurement or redistribution between geometry changes.
+
 ## Remaining scope
 
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.

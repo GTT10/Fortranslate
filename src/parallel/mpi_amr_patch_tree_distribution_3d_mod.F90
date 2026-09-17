@@ -6,8 +6,51 @@ module mpi_amr_patch_tree_distribution_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   implicit none
   private
-  public :: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  public :: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d
 contains
+  ! Deterministic largest-work-first whole-patch assignment. Work is a cell-step
+  ! proxy, not a measured runtime: exponent 0=common, 1=hydro, 2=transport subcycling.
+  ! Replicated geometry/controls are a caller contract; no field payload is read.
+  subroutine partition_amr_tree_3d(tree,nranks,exponent,owners,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: nranks,exponent
+    integer, allocatable, intent(inout) :: owners(:)
+    logical, intent(out) :: ok
+    integer(int64), allocatable :: work(:),counts(:),load(:)
+    integer, allocatable :: candidate(:)
+    integer(int64) :: factor,cells
+    integer :: node,axis,parent,rank,next,ios,iteration
+    ok=.false.
+    if (.not.tree%is_valid().or.nranks<1.or.exponent<0.or.exponent>2) return
+    allocate(work(size(tree%nodes)),counts(size(tree%nodes)),load(nranks), &
+      candidate(size(tree%nodes)),stat=ios)
+    if (ios/=0) return
+    counts(1)=1;load=0
+    do node=1,size(tree%nodes)
+      if (node>1) then
+        parent=tree%nodes(node)%parent
+        factor=int(tree%nodes(node)%patch%refinement_ratio,int64)**exponent
+        if (counts(parent)>huge(1_int64)/factor) return
+        counts(node)=counts(parent)*factor
+      end if
+      cells=1
+      do axis=1,3
+        if (cells>huge(1_int64)/int(tree%nodes(node)%shape(axis),int64)) return
+        cells=cells*int(tree%nodes(node)%shape(axis),int64)
+      end do
+      if (cells>huge(1_int64)/counts(node)) return
+      work(node)=cells*counts(node)
+    end do
+    ! MAXLOC/MINLOC break ties by lower node/rank index, independent of MPI size history.
+    do iteration=1,size(tree%nodes)
+      next=maxloc(work,dim=1);rank=minloc(load,dim=1)
+      if (load(rank)>huge(1_int64)-work(next)) return
+      candidate(next)=rank-1
+      load(rank)=load(rank)+work(next);work(next)=-1
+    end do
+    call move_alloc(candidate,owners)
+    ok=.true.
+  end subroutine
   subroutine scatter_mpi_amr_tree_3d(tree,owners,global,local,comm,root,ok)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),root

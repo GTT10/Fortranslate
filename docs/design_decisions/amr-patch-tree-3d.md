@@ -1035,3 +1035,25 @@ and a different mode is rejected before payload publication. Rank zero logs the
 selected mode. Unknown tree groups and malformed timestepping inputs fail explicitly.
 The focused application test covers a static two-level tree; dynamic recursive
 application qualification remains separate.
+
+
+## Work-weighted MPI whole-patch ownership
+
+`partition_amr_tree_3d` assigns decreasing estimated patch work to the rank with
+the smallest accumulated work. Equal weights prefer the lower node index and
+equal rank loads prefer the lower rank. Work is cell count times cumulative
+refinement ratio to exponent 0, 1 or 2 for common, recursive hydro or recursive
+transport stepping. Counts, products and rank sums are checked int64 operations;
+invalid input, allocation failure and overflow leave the prior owner vector intact.
+No field payload is inspected. Replicated input geometry and controls are a caller
+contract; existing transfer/step routines collectively validate ownership.
+
+The MPI application accepts `amr_tree_distribution partitioning='weighted'`;
+default `round_robin` preserves prior ordering. A single assignment helper serves
+initialization, remap destinations and restored geometry. The policy is excluded
+from physical checkpoint identity, permitting policy and rank changes on restart.
+Existing sparse remap migrates data when geometry changes; no independent measured
+load-triggered migration is introduced. The estimate excludes chemistry stiffness,
+halo/communication costs and covered-cell differences. Whole-patch indivisibility
+can dominate imbalance. Selection currently costs O(nodes squared + nodes*ranks),
+with no large-tree scaling claim; spatial locality is not optimized.

@@ -50,6 +50,9 @@ Sparse cell queries now fetch only requested owner payloads in caller order, inc
 empty ranks and collective rollback ([evidence](validation/amr-tree-mpi-cells-20260917.md)).
 Synchronous MPI halos now share serial peer/ancestor lookup, PCM/limited PLM and
 physical boundary transforms ([evidence](validation/amr-tree-mpi-ghost-20260917.md)).
+MPI applications now optionally assign whole patches by estimated cell-step work
+at initialization, regridding and restart
+([evidence](validation/amr-tree-mpi-partition-20260917.md)).
 MPI bottom-up restriction now sends restricted child boxes directly to parent
 owners, with optional depth limits ([evidence](validation/amr-tree-mpi-restriction-20260917.md)).
 MPI shared-face flux synchronization now exchanges overlapping face rectangles

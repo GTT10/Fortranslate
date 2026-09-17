@@ -11,6 +11,7 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--subcycling', action='store_true')
+    parser.add_argument('--weighted', action='store_true')
     parser.add_argument('--fixed', type=Path, required=True)
     parser.add_argument('--selected', type=Path, required=True)
     parser.add_argument('--serial-fixed', type=Path, required=True)
@@ -53,6 +54,10 @@ def main():
         budget = directory / 'tree_hotspot.csv.budget.csv'
 
         def run(label, content, success=True, ranks=2):
+            if args.weighted and ranks:
+                # Save with weighted owners, then explicitly resume with round-robin owners.
+                policy = 'round_robin' if label == 'restart' else 'weighted'
+                content += f"\n&amr_tree_distribution partitioning='{policy}' /\n"
             inputs.write_text(content)
             executable = binary if ranks else getattr(args, 'serial_' + kind)
             command = [str(executable.resolve()), str(inputs), str(case / 'root.dat')]

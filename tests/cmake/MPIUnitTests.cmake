@@ -709,3 +709,16 @@ if(PELEF_ENABLE_MPI)
       --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_tree_subcycle_adaptation_3d")
   set_tests_properties(regression_mpi_amr_tree_subcycle_adaptation_3d PROPERTIES TIMEOUT 600 PROCESSORS 3)
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_test(NAME regression_mpi_amr_tree_weighted_adaptation_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_amr_tree_adaptation_3d.py"
+      --weighted --subcycling --fixed $<TARGET_FILE:pelef_mpi_amr_tree_reactive_3d>
+      --selected $<TARGET_FILE:test_selected_elementary_mpi_amr_tree_3d>
+      --serial-fixed $<TARGET_FILE:pelef_amr_tree_reactive_3d>
+      --serial-selected $<TARGET_FILE:test_selected_elementary_amr_tree_3d>
+      --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+      --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_tree_weighted_adaptation_3d")
+  set_tests_properties(regression_mpi_amr_tree_weighted_adaptation_3d PROPERTIES TIMEOUT 600 PROCESSORS 3)
+endif()

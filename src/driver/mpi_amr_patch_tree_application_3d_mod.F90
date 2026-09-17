@@ -30,7 +30,8 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_transport_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_transport_timestep_3d
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: gather_mpi_amr_tree_3d,scatter_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: &
+    gather_mpi_amr_tree_3d,scatter_mpi_amr_tree_3d,partition_amr_tree_3d
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   implicit none
   private
@@ -69,7 +70,7 @@ contains
     real(dp) :: time,dt,transport_dt,diffusivity,base_density,correction,theta,max_correction,min_theta,stop_time
     real(dp) :: inlet_t(6),inlet_temperature(2,2,2),inlet_dt,face_dt,sound,min_h(3)
     integer :: count,unit,status,node,n(3),lo(3),hi(3),i,j,k,step,attempt,face,c,child,rank,nranks
-    character(len=32) :: faces(6)
+    character(len=32) :: faces(6),partitioning
     character(len=1024) :: message
     character(len=:), allocatable :: row
     character(len=1024) :: checkpoint_file,restart_file
@@ -85,7 +86,9 @@ contains
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
+    namelist /amr_tree_distribution/ partitioning
     namelist /amr_tree_timestepping/ subcycling
+    partitioning='round_robin'
     subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
@@ -108,6 +111,13 @@ contains
         c=iachar(message(i:i))
         if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
       end do
+      if (index(message,'&amr_tree_distribution')==1.or.index(message,'$amr_tree_distribution')==1) then
+        backspace(unit,iostat=status)
+        if (status/=0) call fatal('Cannot locate tree distribution configuration')
+        read(unit,nml=amr_tree_distribution,iostat=status)
+        if (status/=0) call fatal('Invalid tree distribution configuration')
+        cycle
+      end if
       if (index(message,'&amr_tree_timestepping')==1.or.index(message,'$amr_tree_timestepping')==1) then
         backspace(unit,iostat=status)
         if (status/=0) call fatal('Cannot locate tree timestepping configuration')
@@ -132,6 +142,7 @@ contains
       end if
     end do
     close(unit)
+    if (partitioning/='round_robin'.and.partitioning/='weighted') call fatal('Invalid tree partitioning')
     if (regrid_interval_steps<0) call fatal('Negative automatic tree regrid interval')
     if (regrid_interval_steps>0) then
       if (present(schedule_path)) call fatal('Automatic tree adaptation cannot use a prescribed schedule')
@@ -207,7 +218,7 @@ contains
       if (.not.ok) call fatal('Cannot build MPI tree checkpoint context')
     end if
     count=size(tree%nodes)-1
-    owners=[(mod(node-1,nranks),node=1,count+1)]
+    call assign_owners(tree,owners)
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) call fatal('Tree coordinate overflow')
     root_h=[(config%x_upper-config%x_lower)/config%nx,(config%y_upper-config%y_lower)/config%ny, &
@@ -302,6 +313,7 @@ contains
     if (rank==0) then
       write(*,'(a)') 'PeleF '//pelef_version//' experimental MPI regular 3D patch tree'
       write(*,'(a,l1)') 'Subcycling: ',subcycling
+      write(*,'(a,a)') 'Partitioning: ',trim(partitioning)
       write(*,'(a,i0,a,i0,a,i0)') 'Ranks: ',nranks,' Nodes: ',count+1,' Levels: ',tree%level_count()
     end if
     do
@@ -685,12 +697,29 @@ contains
       if (.not.valid) call fatal('Scheduled tree coordinate overflow')
       min_h=min(min_h,root_h*real(d(:,1),dp)/real(d(:,size(r)),dp))
     end subroutine
+    subroutine assign_owners(geometry,assigned)
+      type(amr_patch_tree_3d), intent(in) :: geometry
+      integer, allocatable, intent(inout) :: assigned(:)
+      integer :: peer,exponent
+      logical :: valid
+      if (partitioning=='round_robin') then
+        assigned=[(mod(peer-1,nranks),peer=1,size(geometry%nodes))]
+        return
+      end if
+      exponent=0
+      if (subcycling) then
+        exponent=1
+        if (config%transport_enabled) exponent=2
+      end if
+      call partition_amr_tree_3d(geometry,nranks,exponent,assigned,valid)
+      if (.not.valid) call fatal('Cannot partition MPI tree')
+    end subroutine
     subroutine reset_layout()
       integer :: peer
       call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
       if (.not.ok) call fatal('Regridded tree coordinate overflow')
       count=size(tree%nodes)-1
-      owners=[(mod(peer-1,nranks),peer=1,count+1)]
+      call assign_owners(tree,owners)
       if (allocated(h)) deallocate(h)
       allocate(h(3,count+1))
       do peer=1,count+1
@@ -741,8 +770,7 @@ contains
       type(amr_tree_state_3d) :: candidate,temps
       integer, allocatable :: assigned(:)
       real(dp) :: before(size(q)),after(size(q)),scale(size(q)),error
-      integer :: peer
-      assigned=[(mod(peer-1,nranks),peer=1,size(next_tree%nodes))]
+      call assign_owners(next_tree,assigned)
       call remap_mpi_amr_tree_reactive_3d(tree,owners,state,temperature,next_tree,assigned, &
         species,candidate,temps,comm,ok)
       if (.not.ok) call fatal('Scheduled MPI tree remap failed')
