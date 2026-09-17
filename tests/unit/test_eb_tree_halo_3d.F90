@@ -15,10 +15,11 @@ program test_eb_tree_halo_3d
   type(amr_patch_3d) :: boxes(4)
   type(amr_patch_tree_3d) :: topology
   type(eb_geometry_3d) :: finest,middle,coarse
-  type(eb_reactive_tree_3d) :: tree,saved
+  type(eb_reactive_tree_3d) :: tree,saved,start,finish
   type(reactive_eb_3d_config) :: config
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),ghost(:,:,:,:),gt(:,:,:)
-  integer :: nv,node
+  real(dp) :: expected_fraction
+  integer :: nv,node,endpoint
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
@@ -72,6 +73,33 @@ program test_eb_tree_halo_3d
     call require(all(tree%nodes(node)%state==saved%nodes(node)%state).and. &
       all(tree%nodes(node)%temperature==saved%nodes(node)%temperature),'halo leaves source snapshot unchanged')
   end do
+  start=tree;finish=tree
+  do node=1,5
+    finish%nodes(node)%state=2._dp*start%nodes(node)%state
+  end do
+  do endpoint=0,2
+    expected_fraction=.5_dp*real(endpoint,dp)
+    call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok,start,finish, &
+      [expected_fraction,expected_fraction])
+    call require(ok,'time-interpolated halo')
+    call require(all(abs(ghost(:,2,5,2)-(1._dp+expected_fraction)*start%nodes(1)%state(:,2,3,2))<= &
+      4._dp*epsilon(1._dp)*max(1._dp,abs(ghost(:,2,5,2)))),'root time donor')
+    call require(all(abs(ghost(:,2,2,0)-(1._dp+expected_fraction)*start%nodes(2)%state(:,3,3,1))<= &
+      4._dp*epsilon(1._dp)*max(1._dp,abs(ghost(:,2,2,0)))),'parent time donor')
+    call require(all(ghost(:,5,2,2)==tree%nodes(5)%state(:,1,2,2)),'peer stays at fine time')
+  end do
+  call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok,start,finish,[0._dp,1._dp])
+  call require(ok,'independent ancestor intervals')
+  call require(all(ghost(:,2,5,2)==start%nodes(1)%state(:,2,3,2)),'root left endpoint exact')
+  call require(all(ghost(:,2,2,0)==finish%nodes(2)%state(:,3,3,1)),'parent right endpoint exact')
+  ghost=17._dp;gt=19._dp
+  call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok,start,finish,[0._dp,1.1_dp])
+  call require(.not.ok.and.all(ghost==17._dp).and.all(gt==19._dp),'invalid fraction rollback')
+  call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok,ancestor_start=start)
+  call require(.not.ok.and.all(ghost==17._dp).and.all(gt==19._dp),'incomplete time context rollback')
+  finish%nodes(2)%state(1,3,3,1)=-1._dp
+  call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok,start,finish,[0._dp,1._dp])
+  call require(.not.ok.and.all(ghost==17._dp).and.all(gt==19._dp),'invalid time donor rollback')
   tree%nodes(5)%state(1,1,2,2)=-1._dp
   ghost=17._dp;gt=19._dp
   call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok)

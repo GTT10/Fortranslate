@@ -694,18 +694,21 @@ contains
     tree=candidate;flux=effective;ok=.true.
   end subroutine synchronize_reactive_eb_tree_flux_3d
 
-  subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok)
+  subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
+      ancestor_start,ancestor_end,ancestor_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
     real(dp), intent(inout) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     logical, intent(out) :: ok
+    type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
     type(eb_reactive_tree_3d) :: snapshot
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: global(3),mapped(3),local(3),offset(3)
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:)
-    real(dp) :: area,guess,recovered,speed
+    real(dp) :: area,guess,recovered,speed,fraction,value(reactive_nvar(size(species)))
     integer :: n(3),nv,level,depth,node,donor,index(3),inside(3),source(3),first(3),last(3),axis,side,i,j,k
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
@@ -715,6 +718,13 @@ contains
     if (any(shape(ghost)/=[nv,n+2]).or.any(shape(ghost_temperature)/=n+2)) return
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
+    if (present(ancestor_start).or.present(ancestor_end).or.present(ancestor_fraction)) then
+      if (.not.(present(ancestor_start).and.present(ancestor_end).and.present(ancestor_fraction))) return
+      if (size(ancestor_fraction)/=level-1) return
+      if (.not.all(ieee_is_finite(ancestor_fraction))) return
+      if (any(ancestor_fraction<0._dp).or.any(ancestor_fraction>1._dp)) return
+      if (.not.matching_snapshot(ancestor_start).or..not.matching_snapshot(ancestor_end)) return
+    end if
     snapshot=tree
     call average_down_reactive_eb_tree_3d(species,snapshot,valid)
     if (.not.valid) return
@@ -754,12 +764,33 @@ contains
         if (donor==0) return
         if (snapshot%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))<=0._dp) return
         guess=snapshot%nodes(donor)%temperature(source(1),source(2),source(3))
+        value=snapshot%nodes(donor)%state(:,source(1),source(2),source(3))
+        depth=tree%topology%nodes(donor)%level+1
+        if (present(ancestor_fraction)) then
+          if (depth<level) then
+            fraction=ancestor_fraction(depth)
+            ! Endpoint states are provisional level updates. Do not average
+            ! them down from descendants that may be at a different time.
+            if (fraction==0._dp) then
+              value=ancestor_start%nodes(donor)%state(:,source(1),source(2),source(3))
+              guess=ancestor_start%nodes(donor)%temperature(source(1),source(2),source(3))
+            else if (fraction==1._dp) then
+              value=ancestor_end%nodes(donor)%state(:,source(1),source(2),source(3))
+              guess=ancestor_end%nodes(donor)%temperature(source(1),source(2),source(3))
+            else
+              value=(1._dp-fraction)*ancestor_start%nodes(donor)%state(:,source(1),source(2),source(3))+ &
+                fraction*ancestor_end%nodes(donor)%state(:,source(1),source(2),source(3))
+              guess=(1._dp-fraction)*ancestor_start%nodes(donor)%temperature(source(1),source(2),source(3))+ &
+                fraction*ancestor_end%nodes(donor)%temperature(source(1),source(2),source(3))
+            end if
+          end if
+        end if
         if (.not.ieee_is_finite(guess)) return
         if (guess<=0._dp) return
-        call reactive_conserved_to_primitive(species,snapshot%nodes(donor)%state(:,source(1),source(2),source(3)), &
+        call reactive_conserved_to_primitive(species,value, &
           guess,primitive,recovered,speed,valid)
         if (.not.valid) return
-        candidate(:,i,j,k)=snapshot%nodes(donor)%state(:,source(1),source(2),source(3))
+        candidate(:,i,j,k)=value
         temps(i,j,k)=recovered
       end do
       end do
@@ -777,6 +808,27 @@ contains
       if (.not.valid) return
     end do
     ghost=candidate;ghost_temperature=temps;ok=.true.
+  contains
+    logical function matching_snapshot(other) result(matches)
+      type(eb_reactive_tree_3d), intent(in) :: other
+      integer(int64), allocatable :: other_origin(:,:),other_domain(:,:)
+      integer, allocatable :: other_ratios(:)
+      integer :: p
+      logical :: good
+      matches=.false.
+      if (.not.valid_tree(other,nv)) return
+      if (size(other%nodes)/=size(tree%nodes)) return
+      call amr_tree_integer_layout_3d(other%topology,other_origin,other_domain,other_ratios,good)
+      if (.not.good) return
+      if (size(other_ratios)/=size(ratios)) return
+      if (any(other_ratios/=ratios).or.any(other_domain/=domain).or.any(other_origin/=origin)) return
+      do p=1,size(tree%nodes)
+        if (other%topology%nodes(p)%parent/=tree%topology%nodes(p)%parent.or. &
+          other%topology%nodes(p)%level/=tree%topology%nodes(p)%level) return
+        if (.not.matching_eb_metrics_3d(other%nodes(p)%geometry,tree%nodes(p)%geometry)) return
+      end do
+      matches=.true.
+    end function matching_snapshot
   end subroutine fill_reactive_eb_tree_halo_3d
 
   subroutine react_reactive_eb_tree_3d(species,reactions,dt,rtol,atol,tree,chemical_change,ok,integrator)
