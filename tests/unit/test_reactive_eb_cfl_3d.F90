@@ -1,4 +1,5 @@
 program test_reactive_eb_cfl_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use state_indices_mod, only: irho
   use nasa7_thermo_mod, only: nasa7_species
@@ -10,7 +11,8 @@ program test_reactive_eb_cfl_3d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, build_axis_plane_eb_geometry_3d
   use reactive_eb_cfl_3d_mod, only: &
-    compute_reactive_eb_cfl_timestep_3d
+    compute_reactive_eb_cfl_timestep_3d,compute_reactive_eb_euler_cfl_timestep_3d, &
+    reactive_eb_signal_speeds_3d
   implicit none
 
   integer, parameter :: nx = 8
@@ -89,9 +91,69 @@ program test_reactive_eb_cfl_3d
   call require(.not. ok .and. dt == 0.0_dp, &
     "fully covered CFL transaction")
 
+  call check_plain_euler()
+
   write(*, '(a)') "test_reactive_eb_cfl_3d: PASS"
 
 contains
+
+  subroutine check_plain_euler()
+    real(dp) :: speeds(4),donors(4),regular_dt,cut_dt,kappa,analytic_rate
+    integer :: axis,q
+    character(len=1), parameter :: axes(3)=['x','y','z']
+    real(dp) :: spacing(3),bounds(3),position
+    state=spread(spread(spread(conserved,2,nx),3,ny),4,nz)
+    temperature=recovered_temperature
+    call build_axis_plane_eb_geometry_3d(nx,ny,nz,0._dp,2._dp,0._dp,1._dp,0._dp,.5_dp, &
+      'x',-1._dp,geometry,ok)
+    call require(ok,'regular Euler geometry')
+    call reactive_eb_signal_speeds_3d(species,state,temperature,geometry,speeds,ok)
+    call require(ok,'Euler signal speeds')
+    donors=[11._dp+sound_speed,7._dp+sound_speed,3._dp+sound_speed,21._dp+sound_speed]
+    call require(all(abs(speeds-donors)<2.e-12_dp*donors),'axis and arbitrary wall signal bounds')
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,regular_dt,ok)
+    call require(ok,'regular Euler CFL')
+    call assert_close(regular_dt,expected_dt/2._dp,2.e-14_dp*expected_dt,'regular full-face analytical rate')
+    spacing=[geometry%dx,geometry%dy,geometry%dz];bounds=[2._dp,1._dp,.5_dp]
+    do axis=1,3
+      do q=1,2
+        kappa=.1_dp**q
+        position=(2._dp-kappa)*spacing(axis)
+        call build_axis_plane_eb_geometry_3d(nx,ny,nz,0._dp,bounds(1),0._dp,bounds(2), &
+          0._dp,bounds(3),axes(axis),position,geometry,ok)
+        call require(ok,'thin planar cell geometry')
+        ! Two tangential apertures scale with kappa. One open normal face and
+        ! the equal-area embedded wall do not; their rate grows as 1/kappa.
+        analytic_rate=2._dp*sum(speeds(1:3)/spacing)-2._dp*speeds(axis)/spacing(axis) &
+          +(speeds(axis)+speeds(4))/(kappa*spacing(axis))
+        call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,cut_dt,ok)
+        call require(ok.and.cut_dt<regular_dt,'small-cell rate limits timestep')
+        call assert_close(cut_dt,.5_dp/analytic_rate,3.e-13_dp*cut_dt,'planar cut-cell analytical rate')
+        call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,dt,ok,2._dp*speeds)
+        call require(ok,'faster external donors')
+        call assert_close(dt,cut_dt/2._dp,3.e-14_dp*cut_dt,'external donor bound halves timestep')
+      end do
+    end do
+    state(:,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+    temperature(1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,dt,ok)
+    call require(ok,'covered NaN storage ignored')
+    call assert_close(dt,cut_dt,3.e-14_dp*cut_dt,'covered storage does not change bound')
+    state(irho,nx,ny,nz)=-1._dp
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,dt,ok)
+    call require(.not.ok.and.dt==0._dp,'invalid active Euler state rejected')
+    state(:,nx,ny,nz)=conserved
+    donors=-1._dp
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,dt,ok,donors)
+    call require(.not.ok.and.dt==0._dp,'invalid external signal bound rejected')
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,0._dp,dt,ok)
+    call require(.not.ok.and.dt==0._dp,'invalid Euler CFL rejected')
+    call build_axis_plane_eb_geometry_3d(nx,ny,nz,0._dp,2._dp,0._dp,1._dp,0._dp,.5_dp, &
+      'x',3._dp,geometry,ok)
+    call require(ok,'covered Euler geometry')
+    call compute_reactive_eb_euler_cfl_timestep_3d(species,state,temperature,geometry,.5_dp,dt,ok)
+    call require(.not.ok.and.dt==0._dp,'empty Euler domain rejected')
+  end subroutine check_plain_euler
 
   subroutine assert_close(actual, expected, tolerance, message)
     real(dp), intent(in) :: actual, expected, tolerance
