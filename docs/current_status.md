@@ -64,7 +64,9 @@ The transport library now uses ratio-squared fine steps and accumulates
 accepted limited fluxes ([evidence](validation/eb-subcycle-transport-20260917.md)).
 Reaction halves now wrap both subcycled operators, and the application connects
 scaled interval selection and mode-aware restart
-([evidence](validation/eb-subcycle-full-20260917.md)); multi-patch and MPI EB
+([evidence](validation/eb-subcycle-full-20260917.md)). Same-level peer face
+halos now have a transactional overlay API with shared-metric checks
+([evidence](validation/eb-peer-halo-20260917.md)); multi-patch and MPI EB
 stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
