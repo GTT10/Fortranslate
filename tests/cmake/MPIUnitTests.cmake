@@ -953,3 +953,22 @@ if(PELEF_ENABLE_MPI)
       TIMEOUT 120 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
+
+if(PELEF_ENABLE_MPI)
+  foreach(operator IN ITEMS transport full)
+    add_executable(test_mpi_eb_tree_subcycle_${operator}_3d unit/test_mpi_eb_tree_subcycle_${operator}_3d.F90)
+    target_link_libraries(test_mpi_eb_tree_subcycle_${operator}_3d PRIVATE pelef_mpi_support)
+  endforeach()
+  foreach(tree_ranks IN ITEMS 2 3)
+    add_test(NAME unit_mpi_eb_tree_subcycle_transport_3d_${tree_ranks}
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" ${tree_ranks} ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_subcycle_transport_3d> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_mpi_eb_tree_subcycle_transport_3d_${tree_ranks} PROPERTIES
+      TIMEOUT 120 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+  add_test(NAME unit_mpi_eb_tree_subcycle_full_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_subcycle_full_3d> ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_eb_tree_subcycle_full_3d_2 PROPERTIES
+    TIMEOUT 180 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()

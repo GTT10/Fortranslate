@@ -13,6 +13,8 @@ module mpi_eb_tree_full_3d_mod
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d
   use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d
   use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d
+  use mpi_eb_tree_subcycle_hydro_3d_mod, only: advance_mpi_eb_tree_subcycle_hydro_3d
+  use mpi_eb_tree_subcycle_transport_3d_mod, only: advance_mpi_eb_tree_subcycle_transport_3d
   implicit none
   private
   public :: react_mpi_eb_tree_3d,advance_mpi_eb_tree_full_3d
@@ -104,10 +106,10 @@ contains
     chemical_change=after-before;ok=.true.
   end subroutine
 
-  ! Transactional R/2 T/2 H T/2 R/2 with common intervals and owner-local fields.
+  ! Transactional R/2 T/2 H T/2 R/2, common or recursive H/T, owner-local fields.
   subroutine advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
-      state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator)
+      state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator,subcycling)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -122,20 +124,24 @@ contains
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
+    logical, optional, intent(in) :: subcycling
+    logical :: recursive_steps
     type(amr_tree_state_3d) :: candidate,ct
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: exchange(size(boundary_change)),transport_sum(size(boundary_change)),theta,stage_theta
-    integer :: flags(2),low(2),high(2),status,nv,half
+    integer :: flags(3),low(3),high(3),status,nv,half
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
     valid=ieee_is_finite(dt)
     if (valid) valid=dt>0._dp
     call agree(valid.and.size(boundary_change)==nv.and.size(wall_change)==nv.and.size(chemical_change)==nv,comm,ready)
     if (.not.ready) return
-    flags=merge(1,0,[chemistry_enabled,transport_enabled])
-    call MPI_Allreduce(flags,low,2,MPI_INTEGER,MPI_MIN,comm,status)
+    recursive_steps=.false.
+    if (present(subcycling)) recursive_steps=subcycling
+    flags=merge(1,0,[chemistry_enabled,transport_enabled,recursive_steps])
+    call MPI_Allreduce(flags,low,3,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,2,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,3,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS.or.any(low/=high)) return
     candidate=state;ct=temperature
     chemical=0._dp;transport_sum=0._dp;theta=1._dp
@@ -145,13 +151,23 @@ contains
         if (.not.valid) return
       end if
       if (transport_enabled) then
-        call advance_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
-          viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid)
+        if (recursive_steps) then
+          call advance_mpi_eb_tree_subcycle_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
+            viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid)
+        else
+          call advance_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
+            viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid)
+        end if
         if (.not.valid) return
         transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)
       end if
       if (half==1) then
-        call advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct,boundary,wall,comm,valid)
+        if (recursive_steps) then
+          call advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct, &
+            boundary,wall,comm,valid)
+        else
+          call advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct,boundary,wall,comm,valid)
+        end if
         if (.not.valid) return
       else if (chemistry_enabled) then
         call reaction_half(valid)
