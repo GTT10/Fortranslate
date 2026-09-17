@@ -16,13 +16,18 @@ program pelef_reactive_eb_two_level_3d
   use eb_reactive_transfer_3d_mod, only: restrict_reactive_eb_state_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_patch_timestep_3d
-  use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_full_3d
+  use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_full_3d, &
+    eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(reactive_eb_3d_config) :: config
-  type(eb_geometry_3d) :: full,coarse,fine
+  type(eb_geometry_3d) :: full,coarse
+  type(eb_geometry_3d), pointer :: fine
+  type(eb_reactive_patch_3d), allocatable, target :: patches(:)
+  real(dp), pointer :: uf(:,:,:,:),tf(:,:,:)
+  integer :: patch_count=1,patch_lower(3,16)=0,patch_upper(3,16)=0
   integer :: nx=8,ny=8,nz=8,refinement_ratio=2,fine_lower(3)=[2,2,2],fine_upper(3)=[3,3,3],maximum_steps=100
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z',riemann_solver='rusanov'
   character(len=16) :: chemistry_integrator='explicit'
@@ -41,12 +46,12 @@ program pelef_reactive_eb_two_level_3d
     rtol,atol,chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
     species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
     checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
-    automatic_timestep,hydro_cfl,transport_cfl,subcycling
-  real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),uf(:,:,:,:),tf(:,:,:),initial(:),current(:),scale(:), &
+    automatic_timestep,hydro_cfl,transport_cfl,subcycling,patch_count,patch_lower,patch_upper
+  real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
   real(dp) :: time,dt,theta,error,minimum_theta,minimum_dt
-  integer :: unit,status,close_status,nvar,step,dims(3),nf(3),c,retry,rejected_steps
+  integer :: unit,status,close_status,nvar,step,dims(3),nf(3),c,p,retry,rejected_steps
   character(len=1024) :: input_path,message,budget_path
   logical :: ok
   if (command_argument_count()/=1) error stop 'Usage: pelef_reactive_eb_two_level_3d <input.nml>'
@@ -63,6 +68,19 @@ program pelef_reactive_eb_two_level_3d
   if (min(nx,ny,nz)<2.or.refinement_ratio<2.or.maximum_steps<1) error stop 'Invalid grid or step count'
   if (any(mod([nx,ny,nz],refinement_ratio)/=0)) error stop 'Finest dimensions must divide by refinement ratio'
   dims=[nx,ny,nz]/refinement_ratio
+  if (patch_count<1.or.patch_count>16) error stop 'Invalid patch count (1:16)'
+  if (patch_count>1.and.subcycling) error stop 'Multiple-patch subcycling is not connected'
+  if (patch_count==1) then
+    patch_lower(:,1)=fine_lower;patch_upper(:,1)=fine_upper
+  else
+    fine_lower=patch_lower(:,1);fine_upper=patch_upper(:,1)
+  end if
+  do p=1,patch_count
+    if (any(patch_lower(:,p)<1).or.any(patch_upper(:,p)<patch_lower(:,p)).or.any(patch_upper(:,p)>dims)) &
+      error stop 'Invalid patch box'
+  end do
+  allocate(patches(patch_count))
+  fine=>patches(1)%geometry
   if (any(fine_lower<1).or.any(fine_upper<fine_lower).or.any(fine_upper>dims)) error stop 'Invalid fine patch box'
   if (.not.all(ieee_is_finite([domain_lower,domain_upper,time_step,final_time,rtol,atol]))) &
     error stop 'Nonfinite two-level controls'
@@ -111,8 +129,11 @@ program pelef_reactive_eb_two_level_3d
   if (.not.ok) error stop 'Cannot construct finest EB geometry'
   call coarsen_eb_geometry_3d(full,refinement_ratio,coarse,ok)
   if (.not.ok) error stop 'Cannot represent coarse EB geometry'
-  call extract_eb_geometry_3d(full,(fine_lower-1)*refinement_ratio+1,fine_upper*refinement_ratio,fine,ok)
-  if (.not.ok) error stop 'Cannot extract fine EB patch'
+  do p=1,patch_count
+    call extract_eb_geometry_3d(full,(patch_lower(:,p)-1)*refinement_ratio+1, &
+      patch_upper(:,p)*refinement_ratio,patches(p)%geometry,ok)
+    if (.not.ok) error stop 'Cannot extract fine EB patch'
+  end do
   call load_h2o2_elementary_thermo(species,ok)
   if (.not.ok) error stop 'Thermodynamic load failed'
   call load_h2o2_elementary_mechanism(reactions,ok)
@@ -121,20 +142,34 @@ program pelef_reactive_eb_two_level_3d
   if (.not.ok) error stop 'Transport load failed'
   nvar=reactive_nvar(size(species));nf=[fine%nx,fine%ny,fine%nz]
   allocate(uc(nvar,dims(1),dims(2),dims(3)),tc(dims(1),dims(2),dims(3)), &
-    uf(nvar,nf(1),nf(2),nf(3)),tf(nf(1),nf(2),nf(3)),refined(dims(1),dims(2),dims(3)))
+    refined(dims(1),dims(2),dims(3)))
   config%nx=dims(1);config%ny=dims(2);config%nz=dims(3)
   call initialize_reactive_eb_density_sheet_3d(species,config,coarse,uc,tc,ok)
   if (.not.ok) error stop 'Coarse initialization failed'
-  config%nx=nf(1);config%ny=nf(2);config%nz=nf(3)
-  call initialize_reactive_eb_density_sheet_3d(species,config,fine,uf,tf,ok)
-  if (.not.ok) error stop 'Fine initialization failed'
-  refined=.false.;refined(fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3))=.true.
+  refined=.false.
+  do p=1,patch_count
+    nf=[patches(p)%geometry%nx,patches(p)%geometry%ny,patches(p)%geometry%nz]
+    allocate(patches(p)%state(nvar,nf(1),nf(2),nf(3)),patches(p)%temperature(nf(1),nf(2),nf(3)))
+    config%nx=nf(1);config%ny=nf(2);config%nz=nf(3)
+    call initialize_reactive_eb_density_sheet_3d(species,config,patches(p)%geometry, &
+      patches(p)%state,patches(p)%temperature,ok)
+    if (.not.ok) error stop 'Fine initialization failed'
+    if (any(refined(patch_lower(1,p):patch_upper(1,p),patch_lower(2,p):patch_upper(2,p), &
+      patch_lower(3,p):patch_upper(3,p)))) error stop 'Overlapping patch boxes'
+    refined(patch_lower(1,p):patch_upper(1,p),patch_lower(2,p):patch_upper(2,p), &
+      patch_lower(3,p):patch_upper(3,p))=.true.
+  end do
+  uf=>patches(1)%state;tf=>patches(1)%temperature
   allocate(initial(nvar),current(nvar),scale(nvar),boundary(nvar),wall(nvar),chemical(nvar), &
     total_boundary(nvar),total_wall(nvar),total_chemical(nvar))
   call inventory(initial)
   do c=1,nvar
     scale(c)=max(1.e-30_dp,coarse%dx*coarse%dy*coarse%dz*sum(abs(uc(c,:,:,:))*coarse%volume_fraction, &
       mask=.not.refined)+fine%dx*fine%dy*fine%dz*sum(abs(uf(c,:,:,:))*fine%volume_fraction))
+    do p=2,patch_count
+      scale(c)=scale(c)+patches(p)%geometry%dx*patches(p)%geometry%dy*patches(p)%geometry%dz* &
+        sum(abs(patches(p)%state(c,:,:,:))*patches(p)%geometry%volume_fraction)
+    end do
   end do
   total_boundary=0._dp;total_wall=0._dp;total_chemical=0._dp
   time=0._dp;step=0;minimum_theta=1._dp;minimum_dt=0._dp;rejected_steps=0
@@ -147,9 +182,17 @@ program pelef_reactive_eb_two_level_3d
       if (time+dt<=time) error stop 'Time step cannot advance time'
       ! The full update is transactional: a rejected trial leaves both grids,
       ! per-step ledgers and the limiter untouched. Count only accepted steps.
+      if (patch_count==1) then
       call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,fine_lower,refinement_ratio, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
         species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling)
+      else
+        call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,patch_lower(:,1:patch_count), &
+          refinement_ratio,riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled, &
+          thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled,uc,tc,patches, &
+          boundary,wall,chemical,theta,ok,chemistry_integrator)
+        uf=>patches(1)%state;tf=>patches(1)%temperature
+      end if
       if (ok) exit
       rejected_steps=rejected_steps+1
       if (retry==maximum_step_retries) error stop 'Two-level EB step retry limit exhausted'
@@ -176,7 +219,7 @@ program pelef_reactive_eb_two_level_3d
   write(*,'(a,es24.16)') 'Minimum accepted dt: ',minimum_dt
 contains
   function checkpoint_magic() result(magic)
-    character(len=32) :: magic
+    character(len=64) :: magic
     ! V1/V2 retain common-step fixed/automatic compatibility. V3/V4 select
     ! subcycling with the same layout; patch configs bind the CFL controls.
     magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V1'
@@ -185,6 +228,10 @@ contains
       magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V3'
       if (automatic_timestep) magic='PELEF_EB_TWO_LEVEL_CHECKPOINT_V4'
     end if
+    if (patch_count>1) then
+      magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V1'
+      if (automatic_timestep) magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V2'
+    end if
   end function checkpoint_magic
 
   subroutine limit_timestep(interval)
@@ -192,6 +239,8 @@ contains
     real(dp), allocatable :: parent(:,:,:,:),parent_t(:,:,:)
     real(dp) :: coarse_speeds(4),fine_speeds(4),donors(4),coarse_dt,fine_dt,coarse_d,fine_d,donor_d,unused_d,factor
     logical :: valid,fine_active
+    integer :: patch_index
+    real(dp) :: extra_speeds(4),extra_dt,extra_d
     ! Match the parent averaging used at the start of the coupled update;
     ! estimation must not publish state changes of its own.
     parent=uc;parent_t=tc
@@ -199,6 +248,15 @@ contains
       parent(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3)), &
       parent_t(fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3)),valid)
     if (.not.valid) error stop 'Cannot average parents for timestep selection'
+    do patch_index=2,patch_count
+      call restrict_reactive_eb_state_3d(species,patches(patch_index)%geometry,refinement_ratio, &
+        patches(patch_index)%state,patches(patch_index)%temperature, &
+        parent(:,patch_lower(1,patch_index):patch_upper(1,patch_index), &
+          patch_lower(2,patch_index):patch_upper(2,patch_index),patch_lower(3,patch_index):patch_upper(3,patch_index)), &
+        parent_t(patch_lower(1,patch_index):patch_upper(1,patch_index), &
+          patch_lower(2,patch_index):patch_upper(2,patch_index),patch_lower(3,patch_index):patch_upper(3,patch_index)),valid)
+      if (.not.valid) error stop 'Cannot average additional timestep parent'
+    end do
     call reactive_eb_signal_speeds_3d(species,parent,parent_t,coarse,coarse_speeds,valid)
     if (.not.valid) error stop 'Invalid coarse timestep state'
     fine_active=any(fine%volume_fraction>0._dp)
@@ -208,6 +266,13 @@ contains
       if (.not.valid) error stop 'Invalid fine timestep state'
     end if
     donors=max(coarse_speeds,fine_speeds)
+    do patch_index=2,patch_count
+      if (.not.any(patches(patch_index)%geometry%volume_fraction>0._dp)) cycle
+      call reactive_eb_signal_speeds_3d(species,patches(patch_index)%state,patches(patch_index)%temperature, &
+        patches(patch_index)%geometry,extra_speeds,valid)
+      if (.not.valid) error stop 'Invalid additional timestep donor'
+      donors=max(donors,extra_speeds)
+    end do
     call compute_reactive_eb_euler_cfl_timestep_3d(species,parent,parent_t,coarse,hydro_cfl,coarse_dt,valid,donors)
     if (.not.valid) error stop 'Cannot select coarse hydro interval'
     fine_dt=huge(1._dp)
@@ -215,6 +280,13 @@ contains
       call compute_reactive_eb_euler_cfl_timestep_3d(species,uf,tf,fine,hydro_cfl,fine_dt,valid,donors)
       if (.not.valid) error stop 'Cannot select fine hydro interval'
     end if
+    do patch_index=2,patch_count
+      if (.not.any(patches(patch_index)%geometry%volume_fraction>0._dp)) cycle
+      call compute_reactive_eb_euler_cfl_timestep_3d(species,patches(patch_index)%state, &
+        patches(patch_index)%temperature,patches(patch_index)%geometry,hydro_cfl,extra_dt,valid,donors)
+      if (.not.valid) error stop 'Cannot select additional hydro interval'
+      fine_dt=min(fine_dt,extra_dt)
+    end do
     interval=min(interval,coarse_dt)
     factor=1._dp
     if (subcycling) factor=real(refinement_ratio,dp)
@@ -230,6 +302,14 @@ contains
       if (.not.valid) error stop 'Cannot evaluate fine diffusivity'
     end if
     donor_d=max(coarse_d,fine_d)
+    do patch_index=2,patch_count
+      if (.not.any(patches(patch_index)%geometry%volume_fraction>0._dp)) cycle
+      call reactive_eb_transport_patch_timestep_3d(species,transport,patches(patch_index)%state, &
+        patches(patch_index)%temperature,patches(patch_index)%geometry,transport_cfl, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,extra_dt,extra_d,valid)
+      if (.not.valid) error stop 'Cannot evaluate additional diffusivity'
+      donor_d=max(donor_d,extra_d)
+    end do
     call reactive_eb_transport_patch_timestep_3d(species,transport,parent,parent_t,coarse,transport_cfl, &
       viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,coarse_dt,unused_d,valid,donor_d)
     if (.not.valid) error stop 'Cannot select coarse diffusion interval'
@@ -239,6 +319,14 @@ contains
         viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,fine_dt,unused_d,valid,donor_d)
       if (.not.valid) error stop 'Cannot select fine diffusion interval'
     end if
+    do patch_index=2,patch_count
+      if (.not.any(patches(patch_index)%geometry%volume_fraction>0._dp)) cycle
+      call reactive_eb_transport_patch_timestep_3d(species,transport,patches(patch_index)%state, &
+        patches(patch_index)%temperature,patches(patch_index)%geometry,transport_cfl, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,extra_dt,extra_d,valid,donor_d)
+      if (.not.valid) error stop 'Cannot select additional diffusion interval'
+      fine_dt=min(fine_dt,extra_dt)
+    end do
     ! Bound the full interval, conservatively also bounding each transport half.
     interval=min(interval,coarse_dt)
     factor=1._dp
@@ -317,10 +405,14 @@ contains
     call check_balance()
     open(newunit=scratch,status='scratch',form='formatted',action='readwrite',iostat=ios)
     if (ios/=0) error stop 'Cannot stage two-level checkpoint'
-    write(scratch,'(a)',iostat=ios) checkpoint_magic()
+    write(scratch,'(a)',iostat=ios) trim(checkpoint_magic())
     if (ios/=0) error stop 'Checkpoint magic write failed'
     write(scratch,*,iostat=ios) refinement_ratio,fine_lower,fine_upper
     if (ios/=0) error stop 'Checkpoint topology write failed'
+    if (patch_count>1) then
+      write(scratch,*,iostat=ios) patch_count,patch_lower(:,2:patch_count),patch_upper(:,2:patch_count)
+      if (ios/=0) error stop 'Additional checkpoint topology write failed'
+    end if
     write(scratch,'(a)',iostat=ios) trim(chemistry_integrator)
     if (ios/=0) error stop 'Checkpoint integrator write failed'
     write(scratch,'(4(es26.17e3,1x),i0)',iostat=ios) time_step,time,minimum_dt,minimum_theta,step
@@ -329,6 +421,10 @@ contains
     if (ios/=0) error stop 'Checkpoint inventory write failed'
     call patch_record(scratch,.false.,coarse,uc,tc,time,step,minimum_dt,minimum_theta)
     call patch_record(scratch,.false.,fine,uf,tf,time,step,minimum_dt,minimum_theta)
+    do p=2,patch_count
+      call patch_record(scratch,.false.,patches(p)%geometry,patches(p)%state,patches(p)%temperature, &
+        time,step,minimum_dt,minimum_theta)
+    end do
     write(scratch,'(a)',iostat=ios) 'END_TWO_LEVEL_CHECKPOINT'
     if (ios/=0) error stop 'Checkpoint terminator write failed'
     rewind(scratch,iostat=ios)
@@ -355,7 +451,9 @@ contains
   end subroutine save_checkpoint
 
   subroutine restore_checkpoint()
-    integer :: stream,ios,ratio,lower(3),upper(3),saved_step,component
+    integer :: stream,ios,ratio,lower(3),upper(3),saved_step,component,patch_index,saved_count
+    integer :: stored_lower(3,patch_count-1),stored_upper(3,patch_count-1)
+    type(eb_reactive_patch_3d), allocatable :: extras(:)
     real(dp) :: saved_time,saved_dt,saved_theta,saved_time_step
     real(dp) :: saved_initial(nvar),saved_scale(nvar),saved_boundary(nvar),saved_wall(nvar),saved_chemical(nvar)
     real(dp) :: values(nvar),residual
@@ -374,6 +472,13 @@ contains
     if (ios/=0) error stop 'Missing checkpoint topology'
     if (ratio/=refinement_ratio.or.any(lower/=fine_lower).or.any(upper/=fine_upper)) &
       error stop 'Checkpoint topology mismatch'
+    if (patch_count>1) then
+      saved_count=-1;stored_lower=-1;stored_upper=-1
+      read(stream,*,iostat=ios) saved_count,stored_lower,stored_upper
+      if (ios/=0) error stop 'Missing additional checkpoint topology'
+      if (saved_count/=patch_count.or.any(stored_lower/=patch_lower(:,2:patch_count)).or. &
+        any(stored_upper/=patch_upper(:,2:patch_count))) error stop 'Additional checkpoint topology mismatch'
+    end if
     read(stream,'(a)',iostat=ios) integrator
     if (ios/=0) error stop 'Missing checkpoint integrator'
     if (integrator/=chemistry_integrator) error stop 'Checkpoint integrator mismatch'
@@ -397,6 +502,11 @@ contains
     geometry_c=coarse;geometry_f=fine
     call patch_record(stream,.true.,geometry_c,candidate_c,candidate_tc,saved_time,saved_step,saved_dt,saved_theta)
     call patch_record(stream,.true.,geometry_f,candidate_f,candidate_tf,saved_time,saved_step,saved_dt,saved_theta)
+    extras=patches
+    do patch_index=2,patch_count
+      call patch_record(stream,.true.,extras(patch_index)%geometry,extras(patch_index)%state, &
+        extras(patch_index)%temperature,saved_time,saved_step,saved_dt,saved_theta)
+    end do
     read(stream,'(a)',iostat=ios) marker
     if (ios/=0) error stop 'Missing composite checkpoint terminator'
     if (marker/='END_TWO_LEVEL_CHECKPOINT') error stop 'Invalid composite checkpoint terminator'
@@ -408,6 +518,11 @@ contains
       values(component)=coarse%dx*coarse%dy*coarse%dz* &
         sum(candidate_c(component,:,:,:)*coarse%volume_fraction,mask=.not.refined) &
         +fine%dx*fine%dy*fine%dz*sum(candidate_f(component,:,:,:)*fine%volume_fraction)
+      do patch_index=2,patch_count
+        values(component)=values(component)+patches(patch_index)%geometry%dx*patches(patch_index)%geometry%dy* &
+          patches(patch_index)%geometry%dz*sum(extras(patch_index)%state(component,:,:,:)* &
+            patches(patch_index)%geometry%volume_fraction)
+      end do
     end do
     residual=maxval(abs(values-saved_initial-saved_boundary-saved_wall-saved_chemical)/ &
       max(1._dp,saved_scale,abs(values),abs(saved_boundary)+abs(saved_wall)+abs(saved_chemical)))
@@ -420,9 +535,23 @@ contains
     if (any(abs(averaged-candidate_c(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2), &
       fine_lower(3):fine_upper(3)))>2.e-12_dp*max(1._dp,abs(averaged)))) &
       error stop 'Checkpoint parent averages mismatch'
+    do patch_index=2,patch_count
+      lower=patch_lower(:,patch_index);upper=patch_upper(:,patch_index)
+      averaged=candidate_c(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      averaged_t=candidate_tc(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      call restrict_reactive_eb_state_3d(species,patches(patch_index)%geometry,refinement_ratio, &
+        extras(patch_index)%state,extras(patch_index)%temperature,averaged,averaged_t,valid)
+      if (.not.valid) error stop 'Additional checkpoint restriction failed'
+      if (any(abs(averaged-candidate_c(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3)))> &
+        2.e-12_dp*max(1._dp,abs(averaged)))) error stop 'Additional checkpoint parent mismatch'
+    end do
     ! Publish both patches and the outer diagnostics only after the complete
     ! file, physics, geometry, EOS and budget have passed validation.
     uc=candidate_c;tc=candidate_tc;uf=candidate_f;tf=candidate_tf
+    do patch_index=2,patch_count
+      patches(patch_index)%state=extras(patch_index)%state
+      patches(patch_index)%temperature=extras(patch_index)%temperature
+    end do
     initial=saved_initial;scale=saved_scale
     total_boundary=saved_boundary;total_wall=saved_wall;total_chemical=saved_chemical
     time=saved_time;step=saved_step;minimum_dt=saved_dt;minimum_theta=saved_theta
@@ -430,17 +559,26 @@ contains
 
   subroutine inventory(values)
     real(dp), intent(out) :: values(:)
-    integer :: component
+    integer :: component,patch_index
     do component=1,size(values)
       values(component)=coarse%dx*coarse%dy*coarse%dz*sum(uc(component,:,:,:)*coarse%volume_fraction,mask=.not.refined) &
         +fine%dx*fine%dy*fine%dz*sum(uf(component,:,:,:)*fine%volume_fraction)
+      do patch_index=2,patch_count
+        values(component)=values(component)+patches(patch_index)%geometry%dx*patches(patch_index)%geometry%dy* &
+          patches(patch_index)%geometry%dz*sum(patches(patch_index)%state(component,:,:,:)* &
+          patches(patch_index)%geometry%volume_fraction)
+      end do
     end do
   end subroutine inventory
 
   subroutine write_output()
-    integer :: stream,ios,component,level,i,j,k
+    integer :: stream,ios,component,level,i,j,k,patch_index
     open(newunit=stream,file=trim(output_file),status='replace',action='write',iostat=ios)
     if (ios/=0) error stop 'Cannot open composite CSV'
+    if (patch_count>1) then
+      write(stream,'(a)',advance='no',iostat=ios) 'patch,'
+      if (ios/=0) error stop 'CSV patch header failure'
+    end if
     write(stream,'(a)',advance='no',iostat=ios) 'level,i,j,k,x,y,z,kappa,temperature,rho,rhou,rhov,rhow,rhoE'
     if (ios/=0) error stop 'CSV header failure'
     do component=1,size(species)
@@ -455,7 +593,7 @@ contains
           do j=1,coarse%ny
             do i=1,coarse%nx
               if (refined(i,j,k).or.coarse%volume_fraction(i,j,k)<=0._dp) cycle
-              call row(stream,level,i,j,k,coarse,uc(:,i,j,k),tc(i,j,k))
+              call row(stream,level,i,j,k,coarse,uc(:,i,j,k),tc(i,j,k),0)
             end do
           end do
         end do
@@ -464,7 +602,18 @@ contains
           do j=1,fine%ny
             do i=1,fine%nx
               if (fine%volume_fraction(i,j,k)<=0._dp) cycle
-              call row(stream,level,i,j,k,fine,uf(:,i,j,k),tf(i,j,k))
+              call row(stream,level,i,j,k,fine,uf(:,i,j,k),tf(i,j,k),1)
+            end do
+          end do
+        end do
+        do patch_index=2,patch_count
+          do k=1,patches(patch_index)%geometry%nz
+            do j=1,patches(patch_index)%geometry%ny
+              do i=1,patches(patch_index)%geometry%nx
+                if (patches(patch_index)%geometry%volume_fraction(i,j,k)<=0._dp) cycle
+                call row(stream,level,i,j,k,patches(patch_index)%geometry,patches(patch_index)%state(:,i,j,k), &
+                  patches(patch_index)%temperature(i,j,k),patch_index)
+              end do
             end do
           end do
         end do
@@ -486,11 +635,15 @@ contains
     if (ios/=0) error stop 'Budget close failure'
   end subroutine write_output
 
-    subroutine row(stream,level,i,j,k,geometry,state,temperature)
-      integer, intent(in) :: stream,level,i,j,k
+    subroutine row(stream,level,i,j,k,geometry,state,temperature,patch_index)
+      integer, intent(in) :: stream,level,i,j,k,patch_index
       integer :: ios
       type(eb_geometry_3d), intent(in) :: geometry
       real(dp), intent(in) :: state(:),temperature
+      if (patch_count>1) then
+        write(stream,'(i0,a)',advance='no',iostat=ios) patch_index,','
+        if (ios/=0) error stop 'CSV patch index failure'
+      end if
       write(stream,'(i0,3(",",i0),*(:,",",es26.17e3))',iostat=ios) level,i,j,k, &
         geometry%x_lower+(real(i,dp)-.5_dp+geometry%cell_centroid_x(i,j,k))*geometry%dx, &
         geometry%y_lower+(real(j,dp)-.5_dp+geometry%cell_centroid_y(i,j,k))*geometry%dy, &

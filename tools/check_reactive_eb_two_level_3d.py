@@ -204,7 +204,50 @@ def main():
     run('subcycle_diffusion_stop.nml', subcycle_diffusion, True)
     subcycle_diffusion_dt = float((work / 'diffusion.chk').read_text().splitlines()[3].split()[1])
     assert diffusion_dt < subcycle_diffusion_dt <= 4 * diffusion_dt * (1 + 1e-12)
-    print('PASS: two-level EB application, budgets, restart, retries, automatic intervals and subcycled coupling')
+    multi_case = options(patch_count=2, automatic_timestep='.true.',
+                         patch_lower='2,2,2,3,2,2', patch_upper='2,3,3,3,3,3')
+    run('multipatch.nml', multi_case, True)
+    multi_saved = output.read_bytes(), budget_path.read_bytes()
+    with output.open() as stream:
+        multi_rows = list(csv.DictReader(stream))
+    assert len(multi_rows) == 104
+    assert {int(row['patch']) for row in multi_rows} == {0, 1, 2}
+    coordinates = set()
+    multi_totals = [0.0] * len(fields)
+    for row in multi_rows:
+        assert all(math.isfinite(float(value)) for value in row.values())
+        key = tuple(float(row[key]) for key in ('x', 'y', 'z'))
+        assert key not in coordinates, 'duplicate composite cell'
+        coordinates.add(key)
+        assert float(row['rho']) > 0 and float(row['temperature']) > 0
+        assert math.isclose(sum(float(row[key]) for key in row if key.startswith('rhoY_')),
+                            float(row['rho']), rel_tol=1e-10, abs_tol=1e-12)
+        volume = float(row['kappa']) / (4 if int(row['level']) == 0 else 8) ** 3
+        for c, field in enumerate(fields):
+            multi_totals[c] += volume * float(row[field])
+    with budget_path.open() as stream:
+        multi_budgets = list(csv.DictReader(stream))
+    for c, row in enumerate(multi_budgets):
+        assert math.isclose(multi_totals[c], float(row['final']), rel_tol=3e-12, abs_tol=3e-12)
+        assert abs(float(row['residual'])) <= 5e-10 * max(1.0, abs(float(row['initial'])), abs(float(row['final'])))
+    multi_stop = multi_case.replace('\n/', "\n checkpoint_file='multi.chk', checkpoint_interval_steps=1, "
+                                    "stop_after_checkpoint=.true.,\n/")
+    run('multi_stop.nml', multi_stop, True)
+    multi_checkpoint = (work / 'multi.chk').read_text()
+    assert multi_checkpoint.splitlines()[0].strip() == 'PELEF_EB_MULTIPATCH_CHECKPOINT_V2'
+    multi_resume = multi_case.replace('\n/', "\n restart_file='multi.chk',\n/")
+    run('multi_resume.nml', multi_resume, True)
+    assert multi_saved == (output.read_bytes(), budget_path.read_bytes()), 'multipatch restart mismatch'
+    last_record = multi_checkpoint.rindex('PELEF_REACTIVE_EB_3D_CHECKPOINT')
+    (work / 'multi_truncated.chk').write_text(multi_checkpoint[:last_record + 80])
+    run('multi_truncated.nml', multi_resume.replace("'multi.chk'", "'multi_truncated.chk'"), False)
+    changed_box = multi_resume.replace('patch_lower=2,2,2,3,2,2', 'patch_lower=2,2,2,3,2,1').replace(
+        'patch_upper=2,3,3,3,3,3', 'patch_upper=2,3,3,3,3,2')
+    run('multi_changed_box.nml', changed_box, False)
+    overlap = multi_case.replace('patch_lower=2,2,2,3,2,2', 'patch_lower=2,2,2,2,2,2')
+    run('multi_overlap.nml', overlap, False)
+    assert multi_saved == (output.read_bytes(), budget_path.read_bytes())
+    print('PASS: two-level EB application, multipatch inventories, restart, retries and interval modes')
 
 
 if __name__ == '__main__':
