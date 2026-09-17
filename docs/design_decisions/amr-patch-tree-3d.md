@@ -957,3 +957,26 @@ state, temperature, flux and minimum factor publish together. The API performs
 no reflux, averaging down, CFL enforcement or dt retry. Recursive ratio-squared
 transport intervals and interval flux synchronization remain to be connected.
 Species/transport coefficient identity across ranks remains a caller contract.
+
+## MPI recursive hydro intervals
+
+`advance_mpi_amr_tree_subcycle_hydro_3d` now follows the serial recursive interval
+schedule. It snapshots old/new packed endpoints on the owner of each advanced
+node, computes ancestor fractions from normalized interval times, performs one
+MPI level step and then advances the next depth by the refinement ratio. Child
+integrated fluxes accumulate on their node owners in substep order. Each completed
+interval runs depth-limited distributed reflux and temperature recovery before
+returning synchronized effective fluxes to its parent interval.
+
+Only the root owner integrates physical root face budgets; that small vector is
+broadcast before the final root reflux correction. State, temperature, boundary
+budget, maximum correction and optional per-depth counters publish together after
+the complete coarse interval succeeds. Temporary endpoints and face fluxes stay
+owner-local. No global field gather is introduced.
+
+`compute_mpi_amr_tree_subcycle_cfl_3d` computes owner-local CFL bounds using
+spacing divided by the cumulative refinement ratio and scales local dt back to
+the coarse interval before a global minimum. Empty owners contribute huge dt.
+Counts use checked int64 products. The advance API does not enforce this bound;
+the caller selects dt/retry policy. Runtime coefficient identity remains a caller
+contract. Recursive transport and application dispatch remain separate work.

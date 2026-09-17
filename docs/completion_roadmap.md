@@ -124,7 +124,8 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-MPI recursive hydro/transport subcycling and coupled application dispatch.
+MPI recursive transport subcycling and coupled application dispatch. MPI recursive
+hydro now connects ratio-based steps, interval reflux and scaled coarse CFL.
 MPI transport level stepping with temporal donors, physical walls and integrated
 fluxes is now connected. MPI hydro level stepping
 with coarse-time donors and integrated face fluxes is connected. Sparse coarse-time ghost endpoints
