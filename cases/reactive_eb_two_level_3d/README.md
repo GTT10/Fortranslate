@@ -26,7 +26,12 @@ both grids' cut-cell hydro and diffusion estimates. `hydro_cfl` defaults to
 Coarse parents are averaged privately before estimation; signal speeds and
 diffusivity bounds include donors from both grids. Automatic selection is off
 by default, retaining fixed-cap behavior. The selected interval bounds each
-transport half-step conservatively. These pre-step estimates do not control
+transport half-step conservatively. Set `subcycling=.true.` (default false)
+to use `refinement_ratio` fine hydro steps and its square in each transport
+half. Automatic selection scales fine-grid limits by those step counts while
+retaining the coarse-grid limits. Reaction halves operate on composite active
+cells around the complete transport/hydro sequence.
+[Coupled subcycling evidence](../../docs/validation/eb-subcycle-full-20260917.md). These pre-step estimates do not control
 chemistry error or guarantee coupled stability.
 [Selection evidence](../../docs/validation/eb-two-level-auto-dt-20260917.md).
 Rejected updates halve the trial interval
@@ -53,8 +58,9 @@ accepted steps. `stop_after_checkpoint=.true.` stops after the first scheduled
 save and writes the current CSV outputs. Restart by setting `restart_file`;
 `final_time` and `maximum_steps` may increase. Geometry, patch topology, physics,
 chemical integrator, `time_step`, automatic-selection mode and CFL controls
-must match the saved run. Fixed mode retains V1 checkpoints; automatic mode
-writes V2 with the same record layout and mode-specific magic.
+and `subcycling` must match the saved run. Common stepping uses V1/V2
+checkpoints for fixed/automatic selection; subcycling uses V3/V4 respectively.
+These share a record layout with mode-specific magic.
 
 A single file contains both grids and cumulative budgets. The reader validates
 the complete file before restoring either grid. A failed read leaves existing

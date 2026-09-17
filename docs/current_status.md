@@ -61,9 +61,11 @@ with donor bounds and mode-aware restart
 now advances ratio-based fine substeps with coarse-time face donors, accumulated
 fluxes and final reflux ([evidence](validation/eb-subcycle-hydro-20260917.md)).
 The transport library now uses ratio-squared fine steps and accumulates
-accepted limited fluxes ([evidence](validation/eb-subcycle-transport-20260917.md));
-coupled composition, application subcycling, multi-patch and MPI EB stepping
-remain open.
+accepted limited fluxes ([evidence](validation/eb-subcycle-transport-20260917.md)).
+Reaction halves now wrap both subcycled operators, and the application connects
+scaled interval selection and mode-aware restart
+([evidence](validation/eb-subcycle-full-20260917.md)); multi-patch and MPI EB
+stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
