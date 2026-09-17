@@ -6,7 +6,8 @@ module mpi_amr_patch_tree_transport_3d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
-  use reactive_transport_3d_mod, only: physical_transport_ghosted_fluxes_3d
+  use reactive_transport_3d_mod, only: physical_transport_ghosted_fluxes_3d, &
+    reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
@@ -17,8 +18,134 @@ module mpi_amr_patch_tree_transport_3d_mod
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
   private
-  public :: advance_mpi_amr_tree_transport_3d
+  public :: advance_mpi_amr_tree_transport_3d,compute_mpi_amr_tree_transport_timestep_3d
 contains
+  subroutine compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature, &
+      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,comm,ok,faces,wall_temperature)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: root_spacing(3),cfl
+    type(gas_transport_species), intent(in) :: transport(:)
+    logical, intent(in) :: viscosity,conduction,diffusion
+    real(dp), intent(inout) :: dt,maximum_diffusivity
+    logical, intent(out) :: ok
+    real(dp), allocatable :: h(:,:)
+    character(len=*), optional, intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(:)
+    real(dp) :: candidate,local_dt,local_diffusivity,diffusivity,wall_dt
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    character(len=32) :: local_faces(6)
+    integer :: node,n(3),axis,level,rank,status,ios,parent
+    integer :: flags(5),min_flags(5),max_flags(5)
+    real(dp) :: controls(10),low(10),high(10),global_dt,global_diffusivity
+    character(len=64) :: options(6),reference_options(6)
+    logical :: valid
+    ok=.false.
+    call validate_mpi_amr_tree_local_3d(tree,owners,state,reactive_nvar(size(species)),comm,valid)
+    if (.not.valid) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
+    if (.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) return
+    controls=0;controls(:4)=[root_spacing,cfl]
+    valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0).and.size(transport)==size(species)
+    if (present(faces)) then
+      if (.not.valid_reactive_boundaries_3d(faces)) valid=.false.
+      if (any(faces=='isothermal_wall')) then
+        if (.not.conduction.or..not.present(wall_temperature)) valid=.false.
+      end if
+    end if
+    if (present(wall_temperature)) then
+      if (size(wall_temperature)/=6.or..not.all(ieee_is_finite(wall_temperature))) then
+        valid=.false.
+      else
+        controls(5:)=wall_temperature
+      end if
+    end if
+    do node=1,size(tree%nodes)
+      if (owners(node)/=rank) cycle
+      if (.not.all(ieee_is_finite(state%fields(node)%values))) valid=.false.
+      if (.not.all(ieee_is_finite(temperature%fields(node)%values))) valid=.false.
+      if (any(temperature%fields(node)%values<=0)) valid=.false.
+    end do
+    call agree_dt(valid)
+    if (.not.valid) return
+    flags=[merge(1,0,viscosity),merge(1,0,conduction),merge(1,0,diffusion), &
+      merge(1,0,present(faces)),merge(1,0,present(wall_temperature))]
+    call MPI_Allreduce(flags,min_flags,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,max_flags,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS) return
+    if (any(min_flags/=max_flags)) return
+    call MPI_Allreduce(controls,low,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS) return
+    if (any(low/=high)) return
+    options='outflow'
+    if (present(faces)) options=faces
+    reference_options=options
+    call MPI_Bcast(reference_options,64*6,MPI_CHARACTER,0,comm,status)
+    if (status/=MPI_SUCCESS) return
+    valid=all(options==reference_options);call agree_dt(valid)
+    if (.not.valid) return
+    allocate(h(3,size(tree%nodes)),stat=ios)
+    valid=ios==0;call agree_dt(valid)
+    if (.not.valid) return
+    h(:,1)=root_spacing
+    do node=2,size(tree%nodes)
+      parent=tree%nodes(node)%parent
+      h(:,node)=h(:,parent)/real(tree%nodes(node)%patch%refinement_ratio,dp)
+      if (any(h(:,node)<=0)) return
+    end do
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    call agree_dt(valid)
+    if (.not.valid) return
+    candidate=huge(1.0_dp);diffusivity=0
+    do node=1,size(tree%nodes)
+      if (owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      call reactive_transport_timestep_3d(species,transport,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
+        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid)
+      if (.not.valid) exit
+      candidate=min(candidate,local_dt);diffusivity=max(diffusivity,local_diffusivity)
+      if (present(faces)) then
+        if (any(faces=='isothermal_wall')) then
+          local_faces='outflow';level=tree%nodes(node)%level+1
+          do axis=1,3
+            if (origin(axis,node)==0.and.faces(2*axis-1)=='isothermal_wall') &
+              local_faces(2*axis-1)='isothermal_wall'
+            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and.faces(2*axis)=='isothermal_wall') &
+              local_faces(2*axis)='isothermal_wall'
+          end do
+          call reactive_isothermal_timestep_3d(species,transport,state%fields(node)%values, &
+            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid)
+          if (.not.valid) exit
+          candidate=min(candidate,wall_dt)
+        end if
+      end if
+    end do
+    call agree_dt(valid)
+    if (.not.valid) return
+    call MPI_Allreduce(candidate,global_dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(diffusivity,global_diffusivity,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS) return
+    dt=global_dt;maximum_diffusivity=global_diffusivity;ok=.true.
+  contains
+    subroutine agree_dt(condition)
+      logical, intent(inout) :: condition
+      logical :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      condition=.false.
+      if (ierr==MPI_SUCCESS) condition=result
+    end subroutine
+  end subroutine
   subroutine advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,state,temperature,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter)

@@ -9,8 +9,10 @@ program test_mpi_amr_patch_tree_transport_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
-  use amr_patch_tree_transport_3d_mod, only: advance_amr_patch_tree_transport_3d
-  use mpi_amr_patch_tree_transport_3d_mod, only: advance_mpi_amr_tree_transport_3d
+  use amr_patch_tree_transport_3d_mod, only: advance_amr_patch_tree_transport_3d, &
+    compute_amr_patch_tree_transport_timestep_3d
+  use mpi_amr_patch_tree_transport_3d_mod, only: advance_mpi_amr_tree_transport_3d, &
+    compute_mpi_amr_tree_transport_timestep_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:),bad(:)
@@ -23,6 +25,7 @@ program test_mpi_amr_patch_tree_transport_3d
   character(len=:), allocatable :: coarse_limiter
   real(dp) :: theta,serial_theta,wall_t(6),wall_v(3,6)
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
+  real(dp) :: transport_dt,serial_dt,diffusivity,serial_diffusivity
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -80,6 +83,12 @@ program test_mpi_amr_patch_tree_transport_3d
       local%fields(node)=global%fields(node)
       temperature%fields(node)=reference%fields(node)
     end do
+    call compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,global,reference,spacing,.15_dp, &
+      .true.,.true.,.true.,serial_dt,serial_diffusivity,ok,faces,wall_t)
+    call require(ok,'serial diffusion and wall timestep')
+    call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,local,temperature,spacing,.15_dp, &
+      .true.,.true.,.true.,transport_dt,diffusivity,MPI_COMM_WORLD,ok,faces,wall_t)
+    call require(ok.and.transport_dt==serial_dt.and.diffusivity==serial_diffusivity,'exact transport timestep bounds')
     oracle=global;oracle_t=reference;dt=1e-9_dp
     call advance_amr_patch_tree_transport_3d(tree,species,transport,oracle,oracle_t,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,serial_budget,serial_largest,serial_theta,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter)
@@ -102,6 +111,9 @@ program test_mpi_amr_patch_tree_transport_3d
     call advance_mpi_amr_tree_transport_3d(tree,owners,species,bad,local,temperature,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter)
     call require(.not.ok,'one owner transport flux failure rejects collectively')
+    call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,bad,local,temperature,spacing,.15_dp, &
+      .true.,.true.,.true.,transport_dt,diffusivity,MPI_COMM_WORLD,ok,faces,wall_t)
+    call require(.not.ok.and.transport_dt==serial_dt.and.diffusivity==serial_diffusivity,'timestep rollback')
     call unchanged()
     if (rank==nranks-1) dt=2*dt
     call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &

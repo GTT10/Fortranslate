@@ -66,8 +66,9 @@ explicit/implicit integration ([evidence](validation/amr-tree-mpi-chemistry-2026
 Synchronous MPI molecular-transport RK2 now connects viscosity, conduction, species
 and pressure diffusion with physical/moving isothermal walls
 ([evidence](validation/amr-tree-mpi-transport-20260917.md)).
-MPI transport timestep selection, full operator composition, coarse-time interpolation
-and tree application integration remain open. A transactional tree
+MPI transport/wall timestep selection and the full common-step reaction/transport/hydro
+composition are now connected ([evidence](validation/amr-tree-mpi-split-20260917.md)).
+Coarse-time interpolation/subcycling and MPI tree application integration remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous

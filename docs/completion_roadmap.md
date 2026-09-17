@@ -124,8 +124,9 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-distributed transport timestep selection, full operator composition and coarse-time
-endpoints. Synchronous molecular-transport RK2 is connected with moving/isothermal
+coarse-time endpoints/subcycling and MPI tree application dispatch. Distributed
+transport/wall timestep selection and the full common-step operator composition
+are connected. Synchronous molecular-transport RK2 is connected with moving/isothermal
 physical walls and serial PCM/PLM donor parity. Exposed-cell
 MPI chemistry and reaction/hydro Strang composition are connected. Synchronous
 distributed SSPRK2 hydro is connected with serial PCM/PLM parity. Owner-local EOS recovery

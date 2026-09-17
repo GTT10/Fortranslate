@@ -733,6 +733,32 @@ stability bound, full reaction/transport/hydro composition, temporal coarse dono
 and application dispatch remain to be connected. Whole-node ownership, repeated
 ghost planning and per-interface collective gates retain existing scaling limits.
 
+## MPI transport bounds and full common-step composition
+
+`compute_mpi_amr_tree_transport_timestep_3d` evaluates the serial diffusion bound
+on each owned patch and the isothermal-wall bound only for the physical faces
+that patch touches. It reduces dt by minimum and maximum diffusivity by maximum;
+empty ranks contribute the largest finite dt and zero diffusivity. Geometry,
+controls, enabled terms and optional boundary/wall inputs agree collectively.
+On invalid input or local kernel failure both output scalars remain unchanged.
+This is a common-step bound, without ratio-squared subcycle scaling.
+
+`advance_mpi_amr_tree_split_3d` composes R/2-T/2-H-T/2-R/2. Disabled chemistry or
+transport terms are skipped; enabled flags must agree before branching into
+collective operators. Characteristic PLM selects the same limited coarse donor
+for transport as for hydro. The wrapper holds local candidates across all stages,
+sums the three flow/transport boundary budgets, takes maximum reflux correction
+and minimum transport theta, and commits only after the final active stage succeeds.
+A later hydro failure therefore discards preceding successful reaction/transport
+work and leaves every caller diagnostic unchanged.
+
+The chemistry module's existing validated owner-local clone helper is now shared
+with the full composition; its numerical behavior is unchanged. Coefficient record
+identity remains a caller contract. This API does not choose or enforce dt; the
+caller combines hydro/transport/wall/inflow limits and handles retries. It exposes
+synchronous operators, not recursive level subcycling, rebalancing or an MPI tree
+application. Existing MPI runtime error-handler and scaling boundaries apply.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.

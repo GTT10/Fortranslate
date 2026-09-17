@@ -13,7 +13,7 @@ module mpi_amr_patch_tree_chemistry_3d_mod
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   implicit none
   private
-  public :: advance_mpi_amr_tree_chemistry_3d,advance_mpi_amr_tree_strang_3d
+  public :: advance_mpi_amr_tree_chemistry_3d,advance_mpi_amr_tree_strang_3d,clone_mpi_amr_tree_inputs_3d
 contains
   subroutine advance_mpi_amr_tree_chemistry_3d(tree,owners,species,reactions,state,temperature,interval,rtol,atol, &
       comm,ok,chemistry_integrator)
@@ -60,7 +60,7 @@ contains
     if (status/=MPI_SUCCESS) return
     valid=method==reference_method;call agree(comm,valid)
     if (.not.valid) return
-    call clone_inputs(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
+    call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
     if (.not.valid) return
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
@@ -119,7 +119,7 @@ contains
     valid=ieee_is_finite(dt).and.dt>0
     call agree(comm,valid)
     if (.not.valid) return
-    call clone_inputs(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
+    call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
     if (.not.valid) return
     call advance_mpi_amr_tree_chemistry_3d(tree,owners,species,reactions,candidate,temps,.5_dp*dt,rtol,atol, &
       comm,valid,chemistry_integrator)
@@ -135,7 +135,7 @@ contains
     call move_alloc(temps%fields,temperature%fields)
     boundary_change=budget;maximum_correction=largest;ok=.true.
   end subroutine advance_mpi_amr_tree_strang_3d
-  subroutine clone_inputs(tree,owners,nspecies,state,temperature,candidate,temps,comm,rank,ok)
+  subroutine clone_mpi_amr_tree_inputs_3d(tree,owners,nspecies,state,temperature,candidate,temps,comm,rank,ok)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nspecies
     type(amr_tree_state_3d), intent(in) :: state,temperature
