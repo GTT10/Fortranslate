@@ -671,7 +671,10 @@ injection metadata across MPI rank-count changes, with rollback on rejection
 Combined gas/particle application checkpoints now restore on a changed MPI
 rank count with pending injection events and cumulative ledgers preserved
 ([evidence](validation/spray-mpi-eb-restart-20260918.md)).
-Regridding/rebalancing in this EB spray application, independent ports,
+The application also redistributes whole patches using measured gas work and
+commits gas/particle ownership together
+([evidence](validation/spray-mpi-eb-balance-20260918.md)).
+Regridding in this EB spray application, independent ports,
 liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant

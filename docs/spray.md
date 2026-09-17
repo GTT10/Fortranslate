@@ -197,7 +197,13 @@ states and verifies the complete coupled budget and injection position before
 publication. Immutable step-suffixed checkpoints support changed-rank continuation;
 see the [case guide](../cases/mpi_eb_spray_3d/README.md) and
 [restart evidence](validation/spray-mpi-eb-restart-20260918.md).
-Regridding and rebalancing remain open for this executable connection. See
+Whole-patch rebalancing now uses the existing measured gas work and moves
+owner-local gas/temperature and particles atomically. `rebalance_mpi_amr_spray`
+accepts optional `nodal_phi` for EB owner migration; this mode requires
+nonperiodic coordinates and rejects film arguments. A rejected particle move
+preserves the proposed gas/owner changes privately. See
+[rebalancing evidence](validation/spray-mpi-eb-balance-20260918.md).
+Regridding remains open for this executable connection. See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
