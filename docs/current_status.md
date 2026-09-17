@@ -189,7 +189,12 @@ exposed-cell composite reductions ([MPI transfer evidence](validation/mpi-eb-tre
 MPI spatial face halos now fetch only requested owner-local U/T cells, using
 same-level peers, ancestor PCM donors and physical outflow, with exact focused
 serial parity ([halo evidence](validation/mpi-eb-tree-halo-20260918.md)).
-EB tree MPI temporal halos, coupled stepping and application integration remain open.
+MPI EB flux synchronization now reconciles peer faces, restricts and mirrors fine
+transfers into parent peers, and refluxes exposed owner-local cells. A common
+Euler hydro API connects these operations with face exchange and separate
+boundary/wall ledgers, matching serial states exactly in focused cases
+([MPI hydro evidence](validation/mpi-eb-tree-hydro-20260918.md)).
+EB tree MPI temporal halos, reaction/transport composition and application integration remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
