@@ -680,8 +680,10 @@ geometry ([evidence](validation/spray-mpi-eb-remap-20260918.md)).
 Prescribed EB spray regrids now connect to the application and changed-rank
 checkpoint continuation across stored hierarchy stages
 ([evidence](validation/spray-mpi-eb-regrid-application-20260918.md)).
-Independent ports,
-liquid wall impacts, lateral film transport and
+MPI EB injection now supports independent port geometry, count, mass, diameter,
+temperature and composition selected per event, with restart-bound inputs
+([evidence](validation/spray-mpi-eb-ports-20260918.md)). Separate rate-curve
+files, liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.

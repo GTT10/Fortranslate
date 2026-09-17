@@ -218,7 +218,17 @@ restore prepares the stored hierarchy privately, checks the saved stage/time,
 then publishes hierarchy, gas and particles together. Original nodal values
 remain fixed across coarsening/refinement. See
 [application regrid evidence](validation/spray-mpi-eb-regrid-application-20260918.md)
-for prescribed schedules; adaptive tagging is not newly qualified there. See
+for prescribed schedules; adaptive tagging is not newly qualified there.
+
+The MPI EB spray application now accepts up to 16 independent cone ports and an
+`event_ports` selector in the shared ordered event table. Ports may differ in
+count, base mass, position, direction, angle, diameter, temperature and liquid
+composition. Omitted port entries inherit the existing single-port settings.
+Component property tables remain shared; per-particle component masses determine
+subsequent mixture evolution. The particle material ID records its injection
+port, including across remap, migration and restart. See the
+[port input guide](../cases/mpi_eb_spray_3d/README.md) and
+[port evidence](validation/spray-mpi-eb-ports-20260918.md). See
 [coupled-step evidence](validation/spray-mpi-eb-reactive-20260918.md).
 
 The `pelef_spray_tree_runtime` library (or
