@@ -633,8 +633,12 @@ drift and conservative gas feedback with whole-interval rollback
 ([evidence](validation/spray-eb-step-20260918.md)). Particle half-intervals now
 wrap the existing serial reactive EB gas update, preserving separate exterior,
 wall and chemistry ledgers and atomic whole-step publication
-([evidence](validation/spray-eb-reactive-20260918.md)). EB spray application
-integration, distributed EB particles, liquid wall impacts, lateral film transport and
+([evidence](validation/spray-eb-reactive-20260918.md)). Fixed/selected
+[serial EB spray applications](../cases/eb_spray_3d/README.md) now connect initial
+injection, shared nodal geometry, coupled timestep control/retries, gas/particle
+CSVs and cumulative inventories
+([evidence](validation/spray-eb-application-20260918.md)). EB spray restart,
+timed injection, distributed EB particles, liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
