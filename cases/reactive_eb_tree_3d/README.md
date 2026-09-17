@@ -56,6 +56,24 @@ completed stage. Restart reconstructs that stage's geometry before loading
 node records, then checks stage/time consistency. Future schedule edits reject
 restart. Events beyond the current final time may remain pending.
 
+## Temperature adaptation
+
+`adaptive.nml` evaluates exposed fluid temperatures at the scheduled
+`regrid_times`. Set `temperature_adaptive=.true.` and leave prescribed event
+boxes/counts at their defaults. `tag_depth` (1:8), `tag_ratios` and
+nondecreasing positive `tag_thresholds` define requested refinement levels;
+`tag_tile_shape`, `tag_buffer` and `tag_maximum_nodes` (1:33, root included)
+control deterministic tiling. The capacity applies before solid-only tiles
+are pruned. Exceeding it rejects the adaptation; hot regions are not dropped.
+
+Geometry covers the deepest initial/requested level. Fine hot peaks vote
+directly; child-covered parents and solid temperatures do not. Cold states
+may coarsen to the root. V4 checkpoints store the complete tagging policy,
+evaluation times and all completed generated layouts. Future layouts remain
+absent. Restart validates node bounds, parent order, refinement ratios, tile
+alignment/extents/order and saved stage/time before continuing. Completed
+layouts are restored, without rerunning past temperature decisions.
+
 ## Output and restart
 
 `output_file` contains exposed fluid cells only: node, level, local indices,
@@ -77,10 +95,10 @@ Replacement is not filesystem-atomic if an I/O error occurs during copying.
 
 ## Scope
 
-This is a serial static or scheduled-tree, fixed-mechanism application using common-interval
+This is a serial static, scheduled or temperature-adapted, fixed-mechanism application using common-interval
 Euler operators, spatial PCM donors, hydro outflow and closed diffusion
 boundaries. It is not a convergence or physical validation case. Selected
-mechanisms, temperature-driven adaptation, recursive subcycling, MPI and
+mechanisms, recursive subcycling, MPI and
 large-tree scaling remain open for this EB tree application. Plain Euler
 retains the small-cell interval restriction; retries do not replace an
 accuracy/convergence study.
