@@ -243,8 +243,10 @@ changed-rank/serial parity
 Initial tree fields now allocate only on patch owners, with sparse parent-section
 fetches and the serial PCM kernel, removing full-tree state replication and scatter
 ([owner-local initialization evidence](validation/mpi-eb-tree-initialize-20260918.md)).
-Root seed U/T and geometry remain replicated during setup; removing that seed
-replication and avoiding the root's legacy-file scan remain open.
+Root seed U/T is now constructed only on the root patch owner and released on
+return from initialization, including restart topology setup
+([evidence](validation/mpi-eb-tree-seed-20260918.md)). Geometry remains replicated;
+avoiding the root's legacy-file scan remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
