@@ -90,15 +90,15 @@ it ([evidence](validation/eb-element-metadata-20260917.md)). The two-level
 selected frontend now uses generic elemental checkpoint records and chemical
 conservation checks, including a 21-species methanol fixture
 ([evidence](validation/eb-carbon-checkpoint-20260917.md)). The single-level
-selected frontend now shares source-derived element inventories and schema-3
-restart, with a uniform-density implicit methanol connection fixture; its
-general external-boundary inventory ledger remains open
-([evidence](validation/eb-single-level-elements-20260917.md)). Redistributed
-hydro and coupled update APIs now expose actual boundary, wall and chemical
-exchange vectors transactionally ([evidence](validation/eb-redistributed-exchange-20260917.md)).
-Checkpoint APIs can persist all three vectors with transactional reads in
-optional schemas 4/5/6; application accumulation and corrected conservation
-gates remain open ([evidence](validation/eb-exchange-checkpoint-20260917.md)).
+selected frontend now shares source-derived element inventories and uses
+schema-6 restart (fixed applications use schema 4). Redistributed hydro and
+coupled APIs expose actual boundary, wall and chemical exchange vectors;
+single-level applications accumulate and persist them, check all component
+budgets and external-exchange-corrected elemental inventories. A density-contrast
+methanol fixture passes exact state/budget restart
+([application evidence](validation/eb-application-exchange-20260917.md),
+[API evidence](validation/eb-redistributed-exchange-20260917.md),
+[checkpoint evidence](validation/eb-exchange-checkpoint-20260917.md)).
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
