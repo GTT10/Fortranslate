@@ -241,7 +241,8 @@ contains
     real(dp), intent(inout) :: values(:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    real(dp) :: local(size(values)),candidate(size(values)),volume
+    real(dp) :: candidate(size(values)),volume
+    real(dp), allocatable :: local(:,:),by_node(:,:)
     logical, allocatable :: exposed(:,:,:)
     integer :: rank,status,node,child,n(3),lo(3),hi(3),i,j,k,ios
     logical :: valid,ready
@@ -252,6 +253,9 @@ contains
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    allocate(local(size(values),size(owners)),by_node(size(values),size(owners)),stat=ios)
+    call agree(ios==0,comm,ready)
+    if(.not.ready) return
     local=0._dp;valid=.true.
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
@@ -274,7 +278,7 @@ contains
         if (.not.all(ieee_is_finite(state%fields(node)%values(:,i,j,k)))) then
           valid=.false.;cycle
         end if
-        local=local+volume*geometry(node)%volume_fraction(i,j,k)*state%fields(node)%values(:,i,j,k)
+        local(:,node)=local(:,node)+volume*geometry(node)%volume_fraction(i,j,k)*state%fields(node)%values(:,i,j,k)
       end do
       end do
       end do
@@ -282,7 +286,14 @@ contains
     end do
     call agree(valid.and.all(ieee_is_finite(local)),comm,ready)
     if (.not.ready) return
-    call MPI_Allreduce(local,candidate,size(values),MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+    ! One contributor per column; then sum in tree order, independent of owners.
+    call MPI_Allreduce(local,by_node,size(local),MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+    candidate=0
+    if(status==MPI_SUCCESS) then
+      do node=1,size(owners)
+        candidate=candidate+by_node(:,node)
+      end do
+    end if
     call agree(status==MPI_SUCCESS.and.all(ieee_is_finite(candidate)),comm,ready)
     if (.not.ready) return
     values=candidate;ok=.true.
