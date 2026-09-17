@@ -3,19 +3,21 @@ module eb_reactive_patch_tree_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
-  use reactive_1d_mod, only: reactive_nvar
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
-  use eb_reactive_transfer_3d_mod, only: prolong_reactive_eb_state_pcm_3d,restrict_reactive_eb_state_3d
+  use eb_reactive_transfer_3d_mod, only: prolong_reactive_eb_state_pcm_3d,restrict_reactive_eb_state_3d, &
+    overlay_reactive_eb_peer_halo_3d
   implicit none
   private
   type, public :: eb_reactive_tree_3d
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: fill_reactive_eb_tree_halo_3d
   public :: react_reactive_eb_tree_3d
   public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
 contains
@@ -137,6 +139,91 @@ contains
     end do
     tree=candidate;ok=.true.
   end subroutine average_down_reactive_eb_tree_3d
+
+  subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    integer, intent(in) :: target
+    real(dp), intent(inout) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: snapshot
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer(int64) :: global(3),mapped(3),local(3),offset(3)
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:)
+    real(dp) :: area,guess,recovered,speed
+    integer :: n(3),nv,level,depth,node,donor,index(3),inside(3),source(3),first(3),last(3),axis,side,i,j,k
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if (.not.valid_tree(tree,nv)) return
+    if (target<1.or.target>size(tree%nodes)) return
+    n=tree%topology%nodes(target)%shape;level=tree%topology%nodes(target)%level+1
+    if (any(shape(ghost)/=[nv,n+2]).or.any(shape(ghost_temperature)/=n+2)) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if (.not.valid) return
+    snapshot=tree
+    call average_down_reactive_eb_tree_3d(species,snapshot,valid)
+    if (.not.valid) return
+    allocate(candidate(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+      primitive(reactive_nprim(size(species))))
+    candidate=0._dp;temps=0._dp
+    do axis=1,3
+    do side=0,1
+      first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
+      do k=first(3),last(3)
+      do j=first(2),last(2)
+      do i=first(1),last(1)
+        index=[i,j,k];inside=max(1,min(n,index))
+        select case(axis)
+        case(1);area=tree%nodes(target)%geometry%x_face_fraction(side*n(1),j,k)
+        case(2);area=tree%nodes(target)%geometry%y_face_fraction(i,side*n(2),k)
+        case(3);area=tree%nodes(target)%geometry%z_face_fraction(i,j,side*n(3))
+        end select
+        if (area<=0._dp) cycle
+        global=origin(:,target)+int(index-1,int64)
+        donor=0
+        if (any(global<0_int64).or.any(global>=domain(:,level))) then
+          ! Physical outflow uses the target's adjacent interior cell.
+          donor=target;source=inside
+        else
+          do depth=level,1,-1
+            mapped=global/(domain(:,level)/domain(:,depth))
+            do node=1,size(tree%nodes)
+              if (tree%topology%nodes(node)%level+1/=depth) cycle
+              local=mapped-origin(:,node)
+              if (any(local<0_int64).or.any(local>=int(tree%topology%nodes(node)%shape,int64))) cycle
+              donor=node;source=int(local)+1;exit
+            end do
+            if (donor/=0) exit
+          end do
+        end if
+        if (donor==0) return
+        if (snapshot%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))<=0._dp) return
+        guess=snapshot%nodes(donor)%temperature(source(1),source(2),source(3))
+        if (.not.ieee_is_finite(guess)) return
+        if (guess<=0._dp) return
+        call reactive_conserved_to_primitive(species,snapshot%nodes(donor)%state(:,source(1),source(2),source(3)), &
+          guess,primitive,recovered,speed,valid)
+        if (.not.valid) return
+        candidate(:,i,j,k)=snapshot%nodes(donor)%state(:,source(1),source(2),source(3))
+        temps(i,j,k)=recovered
+      end do
+      end do
+      end do
+    end do
+    end do
+    ! The peer overlay also verifies open-face aperture and centroid agreement,
+    ! including peers that belong to different parent patches.
+    do node=1,size(tree%nodes)
+      if (node==target.or.tree%topology%nodes(node)%level+1/=level) cycle
+      offset=origin(:,node)-origin(:,target)
+      if (any(offset < -int(tree%topology%nodes(node)%shape,int64)).or.any(offset>int(n,int64))) cycle
+      call overlay_reactive_eb_peer_halo_3d(species,snapshot%nodes(target)%geometry,snapshot%nodes(node)%geometry, &
+        int(offset),snapshot%nodes(node)%state,snapshot%nodes(node)%temperature,candidate,temps,valid)
+      if (.not.valid) return
+    end do
+    ghost=candidate;ghost_temperature=temps;ok=.true.
+  end subroutine fill_reactive_eb_tree_halo_3d
 
   subroutine react_reactive_eb_tree_3d(species,reactions,dt,rtol,atol,tree,chemical_change,ok,integrator)
     type(nasa7_species), intent(in) :: species(:)

@@ -738,3 +738,7 @@ set_tests_properties(regression_adaptive_eb_two_level_3d PROPERTIES TIMEOUT 180)
 add_executable(test_eb_patch_tree_3d unit/test_eb_patch_tree_3d.F90)
 target_link_libraries(test_eb_patch_tree_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_patch_tree_3d COMMAND test_eb_patch_tree_3d)
+
+add_executable(test_eb_tree_halo_3d unit/test_eb_tree_halo_3d.F90)
+target_link_libraries(test_eb_tree_halo_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_tree_halo_3d COMMAND test_eb_tree_halo_3d)
