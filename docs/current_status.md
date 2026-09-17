@@ -232,7 +232,11 @@ changed-rank/serial restart parity
 EB tree state CSV now uses owner-local MPI-IO chunks in serial row order,
 with fixed/selected byte parity and preflight output protection
 ([distributed CSV evidence](validation/mpi-eb-tree-csv-20260918.md)).
-Distributed checkpoint I/O remains open.
+Checkpoint saving now stages serial patch records on their owners and writes
+them directly with MPI-IO; fixed/selected patch bytes and changed-rank/serial
+restart match focused references
+([distributed save evidence](validation/mpi-eb-tree-save-20260918.md)).
+Distributed checkpoint loading remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
