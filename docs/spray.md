@@ -157,6 +157,22 @@ receive ordering remains source rank then local order. This adds migration only;
 distributed EB impact, film exchange and checkpoint integration remain open.
 See [MPI film ownership evidence](validation/spray-mpi-eb-film-20260918.md).
 
+`advance_mpi_amr_film_coupling` now accepts optional `eb_geometry` and
+`nodal_phi` together. It uses EB film migration, fluid-side sampling and the
+volume-weighted composite EB gas depositor with common adaptive film substeps.
+The whole interval retains transactional owner-local gas, temperature, films,
+component inventories and global wall heat. EB mode requires nonperiodic outer
+faces and one spatially uniform wall temperature (all six entries of the
+existing `spray_wall_options%temperature` must match). The existing wall option
+validator is applied with slip-wall face types; enabled flags must satisfy its
+evolution contract but do not select EB facets. Material-specific conductivity
+models remain available. Geometry/EB option presence is agreed collectively;
+model/property tables remain identical across ranks by caller contract.
+Gas feedback preserves covered cells and restricts hidden parent fluid state.
+This source API does not yet connect distributed particle impacts, reactive
+composition or the MPI application/checkpoint path. See
+[MPI EB film exchange evidence](validation/spray-mpi-eb-film-step-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
