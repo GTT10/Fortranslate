@@ -15,6 +15,8 @@ program pelef_reactive_eb_tree_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
 #endif
 #ifdef PELEF_MPI_EB_SPRAY
+  use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
+  use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
@@ -58,6 +60,15 @@ program pelef_reactive_eb_tree_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
   implicit none
+#ifdef PELEF_MPI_EB_SPRAY
+  interface
+    function publish_link(old,new) bind(C,name='link') result(code)
+      import c_int,c_char
+      character(c_char), intent(in) :: old(*),new(*)
+      integer(c_int) :: code
+    end function
+  end interface
+#endif
   character(len=:), allocatable :: element_names(:),bundle_identity,checkpoint_integrator
   real(dp), allocatable :: element_atoms(:,:),base_mole_fractions(:)
 #ifdef PELEF_MPI_EB_SPRAY
@@ -69,6 +80,7 @@ program pelef_reactive_eb_tree_3d
   type(spray_liquid), allocatable :: liquids(:)
   type(spray_options) :: particle_options
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
+  character(len=:), allocatable :: spray_context
   character(len=1024) :: spray_input
   integer :: particle_steps
 #endif
@@ -158,8 +170,7 @@ program pelef_reactive_eb_tree_3d
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
 #ifdef PELEF_MPI_EB_SPRAY
   if(geometry_type/='level_set') error stop 'MPI EB spray requires original nodal geometry'
-  if(checkpoint_interval_steps/=0.or.len_trim(restart_file)>0.or.regrid_count/=0.or.temperature_adaptive) &
-    error stop 'MPI EB spray checkpoint and regridding are not connected'
+  if(regrid_count/=0.or.temperature_adaptive) error stop 'MPI EB spray regridding is not connected'
   if(rebalance_interval_steps/=0) error stop 'MPI EB spray rebalancing is not connected'
   if(trim(output_file)==trim(spray_input).or.trim(output_file)//'.budget.csv'==trim(spray_input)) &
     error stop 'Spray input aliases output'
@@ -323,11 +334,15 @@ program pelef_reactive_eb_tree_3d
   if (.not.ok) error stop 'Initial inventory failed'
 #ifdef PELEF_MPI_EB_SPRAY
   call initialize_particles()
-  call add_particle_inventory(current)
+  call add_particle_inventory(current,drops,component_mass)
 #endif
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
+#ifdef PELEF_MPI_EB_SPRAY
+  if(len_trim(restart_file)>0) call spray_checkpoint(.false.)
+#else
   if (len_trim(restart_file)>0) call restore()
+#endif
   do
 #ifdef PELEF_MPI_EB_SPRAY
     call inject_due_events()
@@ -425,7 +440,11 @@ program pelef_reactive_eb_tree_3d
     call balance()
     if (checkpoint_interval_steps>0) then
       if (mod(record%steps,checkpoint_interval_steps)==0) then
+#ifdef PELEF_MPI_EB_SPRAY
+        call spray_checkpoint(.true.)
+#else
         call save()
+#endif
         if (stop_after_checkpoint) then
           stopped=.true.
           exit
@@ -454,6 +473,7 @@ contains
 #ifdef PELEF_MPI_EB_SPRAY
   subroutine initialize_particles()
     integer :: nc,number,q,c,stream,code,closed
+    character(len=4096) :: context_line
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
     real(dp) :: reference_pressures(16),latent_heats(16),fractions(16)
@@ -500,6 +520,23 @@ contains
     if(.not.ok) error stop 'Invalid injection template'
     injection_fractions=fractions(:nc)
     allocate(drops(0),component_mass(nc,0))
+    if(checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
+      open(newunit=stream,status='scratch',form='formatted',iostat=code)
+      if(code/=0) error stop 'Cannot stage spray context'
+      write(stream,nml=eb_spray,iostat=code)
+      if(code==0) write(stream,'(es27.18e3)',iostat=code) nodal_phi
+      if(code/=0) error stop 'Cannot serialize spray context'
+      rewind(stream)
+      spray_context=''
+      do
+        read(stream,'(a)',iostat=code) context_line
+        if(code==iostat_end) exit
+        if(code/=0) error stop 'Cannot read spray context'
+        if(len(spray_context)+len_trim(context_line)+1>130000) error stop 'Spray context capacity exceeded'
+        spray_context=spray_context//trim(context_line)//'|'
+      end do
+      close(stream)
+    end if
   end subroutine
 
   subroutine inject_due_events()
@@ -553,25 +590,152 @@ contains
     end do
   end subroutine
 
-  subroutine add_particle_inventory(inventory)
+  subroutine add_particle_inventory(inventory,particles,components)
     real(dp), intent(inout) :: inventory(:)
+    type(spray_parcel), intent(in) :: particles(:)
+    real(dp), intent(in) :: components(:,:)
     real(dp) :: local(size(inventory)),global(size(inventory)),rho,cp,e,amount
     integer :: q,c
     local=0
-    do q=1,size(drops)
-      if(drops(q)%mass<=0) cycle
-      call liquid_mixture_properties(liquids,component_mass(:,q)/drops(q)%mass,drops(q)%temperature,rho,cp,e,ok)
+    do q=1,size(particles)
+      if(particles(q)%mass<=0) cycle
+      call liquid_mixture_properties(liquids,components(:,q)/particles(q)%mass,particles(q)%temperature,rho,cp,e,ok)
       if(.not.ok) error stop 'Invalid particle inventory'
-      amount=drops(q)%mass*drops(q)%multiplicity
-      local(1)=local(1)+amount;local(2:4)=local(2:4)+amount*drops(q)%velocity
-      local(5)=local(5)+amount*(e+.5_dp*sum(drops(q)%velocity**2))
+      amount=particles(q)%mass*particles(q)%multiplicity
+      local(1)=local(1)+amount;local(2:4)=local(2:4)+amount*particles(q)%velocity
+      local(5)=local(5)+amount*(e+.5_dp*sum(particles(q)%velocity**2))
       do c=1,size(liquids)
-        local(5+liquids(c)%vapor_index)=local(5+liquids(c)%vapor_index)+component_mass(c,q)*drops(q)%multiplicity
+        local(5+liquids(c)%vapor_index)=local(5+liquids(c)%vapor_index)+components(c,q)*particles(q)%multiplicity
       end do
     end do
     call MPI_Allreduce(local,global,size(local),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,mpi_ierr)
     if(mpi_ierr/=MPI_SUCCESS) error stop 'Particle inventory reduction failed'
     inventory=inventory+global
+  end subroutine
+
+  subroutine spray_checkpoint(writing)
+    logical, intent(in) :: writing
+    type(amr_tree_state_3d) :: candidate,ct
+    type(eb_tree_checkpoint_3d) :: gas_record,coupled
+    type(spray_parcel), allocatable :: particles(:)
+    real(dp), allocatable :: components(:,:)
+    real(dp) :: source(nv),expected_source(nv),inventory(nv),saved_time
+    integer :: stream,code,closed,saved_steps,saved_event,expected_event,date(8)
+    integer(int64) :: watermark,expected_mark,tick
+    character(len=256) :: token,step_label
+    character(len=:), allocatable :: path,bound_context,line
+    logical :: valid,agreed,exists
+    allocate(character(len=131072)::line)
+    candidate=mpi_state;ct=mpi_temperature;coupled=record;gas_record=record
+    particles=drops;components=component_mass
+    saved_time=record%time;saved_steps=record%steps;saved_event=next_injection
+    watermark=last_particle_id;source=injected
+    if(writing) then
+      write(step_label,'(i0)') record%steps
+      path=trim(checkpoint_file)//'.step'//trim(step_label)
+      valid=.true.;token=''
+      if(mpi_rank==0) then
+        inquire(file=path,exist=exists);valid=.not.exists
+        inquire(file=path//'.gas',exist=exists);valid=valid.and..not.exists
+        inquire(file=path//'.particles',exist=exists);valid=valid.and..not.exists
+        inquire(file=path//'.particles.pending',exist=exists);valid=valid.and..not.exists
+        code=1
+        if(valid) open(newunit=stream,file=path//'.pending',status='new',action='write',iostat=code)
+        valid=code==0
+        if(valid) then
+          call date_and_time(values=date);call system_clock(tick)
+          write(token,'(8(i0,":"),i0)') date,tick
+          write(stream,'(a)',iostat=code) 'PELEF_MPI_EB_SPRAY_V1',trim(token),'END_EB_SPRAY_MANIFEST'
+          close(stream,iostat=closed);valid=code==0.and.closed==0
+        end if
+      end if
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,mpi_ierr)
+      if(mpi_ierr/=MPI_SUCCESS.or..not.agreed) error stop 'Cannot reserve EB spray checkpoint'
+      call MPI_Bcast(token,len(token),MPI_CHARACTER,0,MPI_COMM_WORLD,mpi_ierr)
+      if(mpi_ierr/=MPI_SUCCESS) error stop 'Checkpoint generation broadcast failed'
+      bound_context=spray_context//'GENERATION:'//trim(token)
+      open(newunit=stream,status='scratch',form='formatted',iostat=code)
+      if(code/=0) error stop 'Cannot stage coupled checkpoint'
+      call envelope(stream,.false.,header_only=.true.)
+      write(stream,'(a)',iostat=code) bound_context
+      if(code==0) write(stream,*,iostat=code) next_injection,last_particle_id
+      if(code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) &
+        record%initial,record%scale,record%boundary,record%wall,record%chemical,injected
+      if(code/=0) error stop 'Cannot write coupled checkpoint prefix'
+      ! The gas archive is a snapshot with its own zero-exchange reference.
+      ! The complete coupled history is retained separately in the prefix above.
+      call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
+      if(.not.valid) error stop 'Cannot integrate gas snapshot'
+      gas_record%initial=inventory;gas_record%scale=abs(inventory)
+      gas_record%boundary=0;gas_record%wall=0;gas_record%chemical=0
+      call write_mpi_eb_tree_checkpoint_3d(path//'.gas',stream,species,reactions,transport,config,topology, &
+        mpi_owners,mpi_geometry,candidate,ct,gas_record,MPI_COMM_WORLD,valid, &
+        bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
+      close(stream,iostat=closed)
+      if(.not.valid.or.closed/=0) error stop 'Gas snapshot write failed'
+    else
+      path=trim(restart_file)
+      open(newunit=stream,file=path,status='old',action='read',iostat=code)
+      if(code/=0) error stop 'Cannot open EB spray manifest'
+      read(stream,'(a)',iostat=code) line
+      if(code/=0.or.line/='PELEF_MPI_EB_SPRAY_V1') error stop 'Invalid EB spray manifest'
+      read(stream,'(a)',iostat=code) token
+      if(code/=0.or.len_trim(token)==0) error stop 'Missing checkpoint generation'
+      read(stream,'(a)',iostat=code) line
+      if(code/=0.or.line/='END_EB_SPRAY_MANIFEST') error stop 'Invalid manifest footer'
+      read(stream,'(a)',iostat=code) line
+      if(code/=iostat_end) error stop 'Trailing manifest data'
+      close(stream)
+      bound_context=spray_context//'GENERATION:'//trim(token)
+      open(newunit=stream,file=path//'.gas',status='old',action='read',access='stream',form='formatted',iostat=code)
+      if(code/=0) error stop 'Cannot open EB spray gas snapshot'
+      call envelope(stream,.true.,header_only=.true.)
+      read(stream,'(a)',iostat=code) line
+      if(code/=0.or.line/=bound_context) error stop 'EB spray context mismatch'
+      read(stream,*,iostat=code) expected_event,expected_mark
+      if(code/=0) error stop 'Missing injection metadata'
+      read(stream,*,iostat=code) coupled%initial,coupled%scale,coupled%boundary,coupled%wall,coupled%chemical,expected_source
+      if(code/=0) error stop 'Missing coupled history'
+      if(.not.all(ieee_is_finite([coupled%initial,coupled%scale,coupled%boundary,coupled%wall, &
+        coupled%chemical,expected_source])).or.any(coupled%scale<0)) error stop 'Invalid coupled history'
+      call read_mpi_eb_tree_checkpoint_3d(path//'.gas',stream,species,reactions,transport,config,topology,mpi_owners, &
+        mpi_geometry,candidate,ct,gas_record,MPI_COMM_WORLD,valid, &
+        bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
+      close(stream,iostat=closed)
+      if(.not.valid.or.closed/=0) error stop 'Gas snapshot restore failed'
+    end if
+    call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,topology,mpi_owners, &
+      nodal_phi,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
+      min(125000,particle_options%maximum_parcels),particles,components,saved_time,saved_steps,saved_event, &
+      watermark,source,valid)
+    if(.not.valid) error stop 'Particle snapshot failed'
+    if(writing) then
+      if(mpi_rank==0) valid=publish_link(path//'.pending'//c_null_char,path//c_null_char)==0
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,mpi_ierr)
+      if(mpi_ierr/=MPI_SUCCESS.or..not.agreed) error stop 'Checkpoint manifest publication failed'
+    else
+      if(saved_time/=gas_record%time.or.saved_steps/=gas_record%steps.or.saved_event/=expected_event.or. &
+        watermark/=expected_mark.or.any(source/=expected_source)) error stop 'Checkpoint payload mismatch'
+      if(saved_time>final_time.or.saved_steps>maximum_steps) error stop 'Restart beyond requested limits'
+      if(saved_event<1.or.saved_event>injection_events+1) error stop 'Invalid restart event'
+      if(any(injection_times(:saved_event-1)>saved_time)) error stop 'Processed future injection'
+      if(saved_event<=injection_events) then
+        if(injection_times(saved_event)<saved_time) error stop 'Missed restart injection'
+      end if
+      if(watermark/=int(count(injection_scales(:saved_event-1)>0),int64)*size(injection_template)) &
+        error stop 'Invalid restart ID watermark'
+      coupled%time=saved_time;coupled%steps=saved_steps
+      coupled%minimum_dt=gas_record%minimum_dt;coupled%minimum_theta=gas_record%minimum_theta
+      call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
+      if(.not.valid) error stop 'Cannot integrate restored gas'
+      call add_particle_inventory(inventory,particles,components)
+      if(any(abs(inventory-coupled%initial-coupled%boundary-coupled%wall-coupled%chemical-source)> &
+        5e-10_dp*max(1._dp,coupled%scale,abs(inventory), &
+        abs(coupled%boundary)+abs(coupled%wall)+abs(coupled%chemical)+abs(source)))) error stop 'Restored budget failed'
+      mpi_state=candidate;mpi_temperature=ct;record=coupled
+      call move_alloc(particles,drops);call move_alloc(components,component_mass)
+      injected=source;next_injection=saved_event;last_particle_id=watermark
+    end if
   end subroutine
 
   subroutine output_particles()
@@ -893,7 +1057,7 @@ contains
 #endif
     if (.not.ok) error stop 'Inventory failed'
 #ifdef PELEF_MPI_EB_SPRAY
-    call add_particle_inventory(current)
+    call add_particle_inventory(current,drops,component_mass)
 #endif
     error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical-injected)/ &
       max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)+abs(injected)))

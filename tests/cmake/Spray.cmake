@@ -386,6 +386,11 @@ if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
     --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
     --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_schedule" --scheduled)
   set_tests_properties(spray_mpi_eb_schedule PROPERTIES LABELS "spray;mpi;eb;application" TIMEOUT 180 PROCESSORS 4)
+  add_test(NAME spray_mpi_eb_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
+    --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+    --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_restart" --scheduled --restart)
+  set_tests_properties(spray_mpi_eb_restart PROPERTIES LABELS "spray;mpi;eb;application" TIMEOUT 240 PROCESSORS 4)
 endif()
 
 if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)

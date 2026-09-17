@@ -45,7 +45,31 @@ Output:
   Existing particle CSV files are protected and cause the run to fail.
 
 This first executable connection supports a fixed hierarchy and scheduled cone
-injection. Checkpoint/restart, regridding, rebalancing and child creation are
-explicitly rejected. It inherits root-contained specular EB drift and the
+injection. Regridding, rebalancing and child creation are explicitly rejected. It inherits root-contained specular EB drift and the
 composite stencil approximation. It is a synthetic integration fixture, not
 nozzle, diesel ignition, convergence or physical validation.
+
+## Checkpoint and continuation
+
+Set `checkpoint_file='saved'`, `checkpoint_interval_steps=2` and optionally
+`stop_after_checkpoint=.true.` in `/eb_tree/`. Each accepted checkpoint step
+publishes an immutable `saved.step<N>` manifest, plus `.gas` and `.particles`
+payloads. `.pending` files reserve the names and remain beside successful
+archives. Existing files are never replaced. Retain the complete set together.
+
+Resume with `restart_file='/absolute/path/saved.step2'`, a fresh output path,
+and the same tree/spray model inputs. The MPI rank count may change. Final time,
+step limit and output/checkpoint controls may change within the existing gas
+restart contract. A checkpoint is taken after the accepted step and before
+injections due at its new time; resuming processes those events exactly once.
+All particle fields, event position, ID watermark, injected inventory, gas state
+and cumulative coupled ledgers continue together.
+
+The context binds normalized spray namelist values and original nodal values;
+the existing gas archive validates its mechanism/configuration and geometry.
+A mismatched context, incomplete payload or inconsistent metadata rejects the
+restart before publishing the staged state. The manifest appears only after
+both payloads have closed successfully. This provides atomic publication on the
+shared filesystem, not power-loss durability or a cross-compiler format guarantee.
+The serialized spray/nodal context is capped at 130000 characters; larger inputs
+are rejected when checkpointing is requested.
