@@ -61,7 +61,10 @@ contains
     integer :: rank,nranks,ierr,unit,ios,node,n(3),i,p,nv,step,attempt,particle_steps,number
     integer :: component_count,parcel_count,maximum_parcels
     integer, parameter :: maximum_events=1024
-    integer :: injection_events,event,event_parcels(maximum_events)
+    integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
+    real(dp) :: port_centers(3,16),port_axes(3,16),port_speeds(16),port_half_angles(16), &
+      port_diameters(16),port_temperatures(16),port_fractions(16,16),port_radii(16)
+    type(spray_nozzle_model) :: port_nozzles(16)
     real(dp) :: injection_times(maximum_events),event_mass(maximum_events)
     character(len=24) :: vapor_names(16)
     real(dp) :: fractions(16),liquid_density(16),liquid_cp(16),reference_temperature(16), &
@@ -79,7 +82,8 @@ contains
     namelist /amr_spray/ component_count,vapor_names,fractions,liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,parcel_count,total_mass,center,axis,speed,half_angle,diameter,drop_temperature, &
       maximum_parcels,options,subcycling,regrid_time,regrid_topology, &
-      injection_events,injection_times,event_parcels,event_mass
+      injection_events,injection_times,event_parcels,event_mass,event_ports,port_count,port_centers,port_axes, &
+      port_speeds,port_half_angles,port_diameters,port_temperatures,port_fractions,port_radii,port_nozzles
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
     faces=resolved_reactive_boundaries_3d(config)
@@ -91,7 +95,9 @@ contains
     parcel_count=1;total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp]
     speed=10;half_angle=0;diameter=1e-5_dp;drop_temperature=350;maximum_parcels=100000
     subcycling=.false.;regrid_time=-1;regrid_topology='';regridded=.false.
-    injection_events=0;injection_times=0;event_parcels=0;event_mass=0
+    injection_events=0;injection_times=0;event_parcels=0;event_mass=0;event_ports=1
+    port_count=0;port_centers=0;port_axes=0;port_axes(1,:)=1;port_speeds=10;port_half_angles=0
+    port_diameters=1e-5_dp;port_temperatures=350;port_fractions=-1;port_radii=0
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
     read(unit,nml=amr_spray,iostat=ios)
@@ -119,6 +125,17 @@ contains
     if (component_count<1.or.component_count>16) call fatal('Invalid liquid component count')
     if (.not.ieee_is_finite(regrid_time)) call fatal('Invalid regrid time')
     if ((regrid_time>=0).neqv.(len_trim(regrid_topology)>0)) call fatal('Regrid needs time and topology')
+    if (port_count<0.or.port_count>16) call fatal('Invalid port count')
+    if (port_count==0) then
+      port_count=1;port_centers(:,1)=center;port_axes(:,1)=axis;port_speeds(1)=speed
+      port_half_angles(1)=half_angle;port_diameters(1)=diameter;port_temperatures(1)=drop_temperature
+    end if
+    do i=1,port_count
+      if (all(port_fractions(:,i)==-1)) port_fractions(:,i)=fractions
+      if (.not.all(ieee_is_finite(port_fractions(:component_count,i)))) call fatal('Nonfinite port composition')
+      if (any(port_fractions(:component_count,i)<0).or. &
+          abs(sum(port_fractions(:component_count,i))-1._dp)>1e-12_dp) call fatal('Invalid port composition')
+    end do
     if (injection_events<0.or.injection_events>maximum_events) call fatal('Invalid injection event count')
     if (injection_events==0) then
       injection_events=1;injection_times(1)=0;event_parcels(1)=parcel_count;event_mass(1)=total_mass
@@ -128,10 +145,12 @@ contains
     if (any(injection_times(:injection_events)<0).or.any(event_mass(:injection_events)<0).or. &
         any(event_parcels(:injection_events)<0).or.any(event_parcels(:injection_events)>maximum_parcels)) &
       call fatal('Invalid injection schedule values')
+    if (any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
+      call fatal('Invalid event port')
     do i=1,injection_events
       if ((event_parcels(i)==0).neqv.(event_mass(i)==0)) call fatal('Injection count/mass mismatch')
       if (i>1) then
-        if (injection_times(i)<=injection_times(i-1)) call fatal('Injection times must strictly increase')
+        if (injection_times(i)<injection_times(i-1)) call fatal('Injection times must not decrease')
       end if
     end do
     call check_output(trim(config%output_file))
@@ -212,12 +231,11 @@ contains
           regridded=.true.
         end if
       end if
-      if (event<=injection_events) then
-        if (time==injection_times(event)) then
-          call inject_event()
-          event=event+1
-        end if
-      end if
+      do while (event<=injection_events)
+        if (time/=injection_times(event)) exit
+        call inject_event()
+        event=event+1
+      end do
       if (.not.checkpoint_written.and.checkpoint_time>=0) then
         if (time==checkpoint_time) then
           call checkpoint(.true.,trim(checkpoint_file))
@@ -322,14 +340,21 @@ contains
       real(dp), allocatable :: candidate_mass(:,:)
       real(dp) :: added(nv),next_ledger(nv)
       integer(int64) :: next_id
+      integer :: outlet,old_count,born
+      outlet=event_ports(event);old_count=size(parcels)
       candidate=parcels;candidate_mass=masses;next_id=last_id
       number=0;local_mass=0
       if (rank==0) then
         number=event_parcels(event);local_mass=event_mass(event)
       end if
-      call inject_mpi_cone_parcels(comm,liquids(1),local_mass,number,center,axis,speed,half_angle,diameter, &
-        drop_temperature,maximum_parcels,next_id,candidate,ledger,ok,liquids,fractions(:component_count),candidate_mass)
+      call inject_mpi_cone_parcels(comm,liquids(1),local_mass,number,port_centers(:,outlet),port_axes(:,outlet), &
+        port_speeds(outlet),port_half_angles(outlet),port_diameters(outlet),port_temperatures(outlet), &
+        maximum_parcels,next_id,candidate,ledger,ok,liquids,port_fractions(:component_count,outlet),candidate_mass, &
+        nozzle_radius=port_radii(outlet),nozzle_model=port_nozzles(outlet))
       if (.not.ok) call fatal('Scheduled injection failed')
+      do born=old_count+1,size(candidate)
+        candidate(born)%material_id=outlet
+      end do
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,[.true.,.true.,.true.], &
         maximum_parcels,ok,candidate_mass)
       if (.not.ok) call fatal('Scheduled particle migration failed')

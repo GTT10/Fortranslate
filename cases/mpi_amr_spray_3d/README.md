@@ -27,9 +27,9 @@ fields can be set as namelist components, e.g. `options%breakup_model='etab'`,
 with the required liquid viscosity/surface tension. `subcycling=.true.` selects
 recursive gas steps; the driver retains a conservative finest-grid CFL bound.
 
-For timed injection, set `injection_events` (1 through 1024), strictly increasing
+For timed injection, set `injection_events` (1 through 1024), nondecreasing
 nonnegative `injection_times`, and matching `event_parcels` and `event_mass`
-arrays. Each event uses the same liquid composition and cone settings. This
+arrays. `event_ports` selects the port for each event (default 1). This
 explicit schedule replaces the default time-zero injection; when
 `injection_events=0` (default), `parcel_count` and `total_mass` retain their
 original time-zero meaning. A zero-mass event must also have zero parcels.
@@ -41,10 +41,37 @@ For example:
 ```
 
 The solver lands exactly on each event. If regridding and injection coincide,
-the new grid is established first. Events at final time are applied before
+the new grid is established first. Equal-time events execute in array order.
+Events at final time are applied before
 output; later events remain unapplied. New parcels, component masses, IDs and
 the cumulative injection ledger publish only after injection and migration
 succeed. The summary reports the number of applied events.
+
+Set `port_count` (1 through 16) to configure multiple outlets. `port_centers`
+ and `port_axes` have shape `(3,16)`; `port_speeds`, `port_half_angles`,
+`port_diameters`, `port_temperatures` and `port_radii` have one entry per port.
+`port_fractions(1:component_count,port)` selects its composition from the shared
+liquid table; omitted columns inherit `fractions`. For example:
+
+```fortran
+ port_count=2, event_ports=1,2
+ port_centers(:,1)=.00075,.00075,.00075
+ port_centers(:,2)=.00325,.00325,.00325
+ port_axes(:,1)=1.,0.,0., port_axes(:,2)=-1.,0.,0.
+ port_speeds=20.,30., port_diameters=1.e-5,2.e-5
+ port_temperatures=350.,340.
+ port_fractions(1:2,1)=.25,.75, port_fractions(1:2,2)=.75,.25
+```
+
+The existing nozzle model is selectable per port using
+`port_nozzles(port)%profile` (`legacy`, `solid`, `hollow`), `%swirl` and `%spread`.
+Positions on a finite outlet use `port_radii`. Explicit ports default to origin,
+x direction, 10 m/s, zero cone angle/radius, 10 micrometer diameter and 350 K;
+set their geometry explicitly. With `port_count=0` (default), the original
+scalar cone controls populate port 1. Each newborn parcel stores its port in
+`material_id`, which survives migration and restart; mixture properties continue
+to use the component inventory and shared component tables. Port settings bind
+the checkpoint context.
 
 An optional single scheduled regrid is specified by `regrid_time` and
 `regrid_topology` in `amr_spray`. The latter path is relative to the run directory
@@ -67,8 +94,8 @@ integrator are printed by the selected frontend.
 
 The fixture uses synthetic water/peroxide properties to exercise implementation.
 It is not physical spray validation. This initial executable supports periodic
-boundaries, initial or scheduled single-cone injection and one optional prescribed
-regrid. Multiport injection, automatic tagging/rebalancing, wall
+boundaries, initial or scheduled multiport injection and one optional prescribed
+regrid. Automatic tagging/rebalancing, wall
 films and EB handling are not connected here. Gas-only AMR checkpoint/adaptation
 namelists are not controls for this executable. Use the `amr_spray` controls above.
 

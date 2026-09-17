@@ -159,11 +159,11 @@ schedule one caller-prescribed topology file.
 
 `pelef_mpi_amr_spray_3d` and `pelef_mpi_amr_spray_3d_selected` share
 `spray_mpi_amr_application_mod`. They take gas, topology and spray input paths,
-initialize owner-local gas, inject a mixed-liquid cone at one or more specified times with collective IDs,
+initialize owner-local gas, inject mixed-liquid cones from up to 16 ports at specified times with collective IDs,
 advance coupled steps with whole-step retries and optionally remap at one
 specified time. Gas CSV contains only exposed cells; separate per-rank particle
 CSVs are analysis outputs. See the [case guide](../cases/mpi_amr_spray_3d/README.md)
-for controls and limitations. Multiport injection, automatic tagging and AMR
+for controls and limitations. Automatic tagging and AMR
 physical-boundary/EB particle handling remain open.
 
 `mpi_amr_spray_checkpoint` in `spray_mpi_amr_checkpoint_mod` writes distributed
