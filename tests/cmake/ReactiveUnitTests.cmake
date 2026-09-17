@@ -727,3 +727,10 @@ add_test(NAME regression_coarse_gap_eb_two_level_3d
     --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/scheduled.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/coarse_gap_eb_two_level_3d" --coarse-gap)
 set_tests_properties(regression_coarse_gap_eb_two_level_3d PROPERTIES TIMEOUT 180)
+
+add_test(NAME regression_adaptive_eb_two_level_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_adaptive_eb_two_level_3d.py"
+    --exe $<TARGET_FILE:pelef_reactive_eb_two_level_3d>
+    --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/adaptive.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/adaptive_eb_two_level_3d")
+set_tests_properties(regression_adaptive_eb_two_level_3d PROPERTIES TIMEOUT 180)

@@ -148,7 +148,7 @@ contains
     type(eb_reactive_patch_3d), allocatable :: candidate(:)
     type(eb_geometry_3d) :: old_overlap,new_overlap
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),checked(:,:,:,:),checked_t(:,:,:)
-    integer :: n(3),nv,p,q,lo(3),hi(3),ol(3),oh(3),nl(3),nh(3),dims(3)
+    integer :: n(3),nv,p,q,i,j,k,parent(3),lo(3),hi(3),ol(3),oh(3),nl(3),nh(3),dims(3)
     integer :: old_upper(3,size(old_patches)),new_upper(3,size(new_patches))
     logical :: valid
     ok=.false.
@@ -181,7 +181,18 @@ contains
       if (allocated(candidate(p)%temperature)) deallocate(candidate(p)%temperature)
       allocate(candidate(p)%state(nv,dims(1),dims(2),dims(3)), &
         candidate(p)%temperature(dims(1),dims(2),dims(3)))
-      candidate(p)%state=0._dp;candidate(p)%temperature=0._dp
+      ! Preserve meaningful covered-cell payload as well as fluid state.
+      ! Prolongation updates fluid children only; checkpoints also retain the
+      ! opaque solid-cell values and require finite, positive storage there.
+      do k=1,dims(3)
+      do j=1,dims(2)
+      do i=1,dims(1)
+        parent=new_lower(:,p)+([i,j,k]-1)/new_ratio
+        candidate(p)%state(:,i,j,k)=u(:,parent(1),parent(2),parent(3))
+        candidate(p)%temperature(i,j,k)=t(parent(1),parent(2),parent(3))
+      end do
+      end do
+      end do
       lo=new_lower(:,p);hi=new_upper(:,p)
       call prolong_reactive_eb_state_pcm_3d(species,candidate(p)%geometry,new_ratio, &
         u(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),t(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &

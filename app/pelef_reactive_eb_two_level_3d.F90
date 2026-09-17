@@ -35,7 +35,8 @@ program pelef_reactive_eb_two_level_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_patch_timestep_3d
   use eb_reactive_two_level_3d_mod, only: advance_reactive_eb_two_level_full_3d, &
-    eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d,remap_reactive_eb_multipatch_3d
+    eb_reactive_patch_3d,advance_reactive_eb_multipatch_full_3d,remap_reactive_eb_multipatch_3d, &
+    tag_reactive_eb_temperature_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
   implicit none
 #ifndef PELEF_SELECTED_EB_TWO_LEVEL
@@ -62,6 +63,9 @@ program pelef_reactive_eb_two_level_3d
   type(eb_geometry_3d), pointer :: fine
   type(eb_reactive_patch_3d), allocatable, target :: patches(:)
   real(dp), pointer :: uf(:,:,:,:),tf(:,:,:)
+  logical :: temperature_adaptive=.false.
+  real(dp) :: tag_temperature=1000._dp
+  integer :: tag_tile_shape(3)=[2,2,2],tag_buffer=1,tag_maximum_patches=16
   integer :: regrid_count=0,regrid_stage=0,regrid_patch_count(16)=0
   integer :: regrid_lower(3,16,16)=0,regrid_upper(3,16,16)=0
   integer :: original_count,original_lower(3,16),original_upper(3,16)
@@ -91,7 +95,8 @@ program pelef_reactive_eb_two_level_3d
     checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
     automatic_timestep,hydro_cfl,transport_cfl,subcycling,patch_count,patch_lower,patch_upper, &
     composition_count,composition_species,composition_mole_fractions, &
-    regrid_count,regrid_times,regrid_patch_count,regrid_lower,regrid_upper
+    regrid_count,regrid_times,regrid_patch_count,regrid_lower,regrid_upper, &
+    temperature_adaptive,tag_temperature,tag_tile_shape,tag_buffer,tag_maximum_patches
   real(dp), allocatable :: uc(:,:,:,:),tc(:,:,:),initial(:),current(:),scale(:), &
     boundary(:),wall(:),chemical(:),total_boundary(:),total_wall(:),total_chemical(:)
   logical, allocatable :: refined(:,:,:)
@@ -126,6 +131,10 @@ program pelef_reactive_eb_two_level_3d
       error stop 'Invalid patch box'
   end do
   original_count=patch_count;original_lower=patch_lower;original_upper=patch_upper
+  if (temperature_adaptive) then
+    if (any(regrid_patch_count/=0).or.any(regrid_lower/=0).or.any(regrid_upper/=0)) &
+      error stop "Temperature adaptation cannot use prescribed boxes"
+  end if
   call validate_schedule()
   allocate(patches(patch_count))
   nullify(fine,uf,tf)
@@ -298,6 +307,7 @@ program pelef_reactive_eb_two_level_3d
     minimum_dt=min(minimum_dt,dt)
     if (regrid_stage<regrid_count) then
       if (time>=regrid_times(regrid_stage+1)) then
+        if (temperature_adaptive) call select_temperature_layout(regrid_stage+1)
         call activate_layout(regrid_stage+1,.true.)
         regrid_stage=regrid_stage+1
         call check_balance()
@@ -330,6 +340,12 @@ contains
   subroutine validate_schedule()
     integer :: event,a,b,n
     if (regrid_count<0.or.regrid_count>16) error stop 'Invalid regrid_count (0:16)'
+    if (temperature_adaptive) then
+      if (regrid_count==0) error stop 'Temperature adaptation needs event times'
+      if (.not.ieee_is_finite(tag_temperature)) error stop 'Nonfinite tag temperature'
+      if (tag_temperature<=0._dp.or.any(tag_tile_shape<1).or.tag_buffer<0.or. &
+        tag_maximum_patches<1.or.tag_maximum_patches>16) error stop 'Invalid temperature tagging controls'
+    end if
     do event=1,regrid_count
       if (.not.ieee_is_finite(regrid_times(event))) error stop 'Nonfinite regrid time'
       if (regrid_times(event)<=0._dp) error stop 'Nonpositive regrid time'
@@ -348,6 +364,39 @@ contains
       end do
     end do
   end subroutine validate_schedule
+
+  subroutine select_temperature_layout(event)
+    integer, intent(in) :: event
+    integer, allocatable :: lower(:,:),upper(:,:)
+    integer :: n
+    logical :: valid
+    call tag_reactive_eb_temperature_3d(coarse,tc,patch_lower(:,1:patch_count),refinement_ratio,patches, &
+      tag_temperature,tag_tile_shape,tag_buffer,tag_maximum_patches,lower,upper,valid)
+    if (.not.valid) error stop 'Temperature tagging failed or exceeded patch capacity'
+    n=size(lower,2)
+    regrid_patch_count(event)=n;regrid_lower(:,:,event)=0;regrid_upper(:,:,event)=0
+    regrid_lower(:,1:n,event)=lower;regrid_upper(:,1:n,event)=upper
+    write(*,'(a,i0,a,i0)') 'Temperature regrid event ',event,': patches=',n
+  end subroutine select_temperature_layout
+
+  subroutine validate_tagged_layout(lower,upper)
+    integer, intent(in) :: lower(:,:),upper(:,:)
+    integer :: a,axis,tile(3)
+    tile=min(tag_tile_shape,dims)
+    do a=1,size(lower,2)
+      if (any(lower(:,a)<1).or.any(lower(:,a)>dims)) error stop 'Tagged checkpoint box outside domain'
+      if (any(mod(lower(:,a)-1,tile)/=0)) error stop 'Tagged checkpoint box is not tile aligned'
+      if (any(upper(:,a)/=lower(:,a)+min(tile-1,dims-lower(:,a)))) error stop 'Tagged checkpoint extent mismatch'
+      if (a>1) then
+        do axis=3,1,-1
+          if (lower(axis,a)==lower(axis,a-1)) cycle
+          if (lower(axis,a)<lower(axis,a-1)) error stop 'Tagged checkpoint order mismatch'
+          exit
+        end do
+        if (all(lower(:,a)==lower(:,a-1))) error stop 'Duplicate tagged checkpoint tile'
+      end if
+    end do
+  end subroutine validate_tagged_layout
 
   subroutine activate_layout(event,remapping)
     integer, intent(in) :: event
@@ -386,13 +435,18 @@ contains
     integer, intent(in) :: stream
     logical, intent(in) :: reading
     integer :: ios,n,stage,a,count_saved,lower_saved(3,16),upper_saved(3,16)
-    real(dp) :: times(16)
+    real(dp) :: times(16),stored_threshold
+    integer :: stored_tile(3),stored_buffer,stored_capacity
     character(len=64) :: marker
     if (.not.reading) then
       write(stream,'(a)',iostat=ios) 'REGRID_SCHEDULE'
       if (ios/=0) error stop 'Schedule marker write failed'
       write(stream,*,iostat=ios) regrid_count,regrid_stage,original_count
       if (ios/=0) error stop 'Schedule header write failed'
+      if (temperature_adaptive) then
+        write(stream,'(es26.17e3,5(1x,i0))',iostat=ios) tag_temperature,tag_tile_shape,tag_buffer,tag_maximum_patches
+        if (ios/=0) error stop 'Tag policy write failed'
+      end if
       write(stream,*,iostat=ios) original_lower(:,1:original_count),original_upper(:,1:original_count)
       if (ios/=0) error stop 'Initial topology write failed'
       write(stream,'(*(es26.17e3,1x))',iostat=ios) regrid_times(1:regrid_count)
@@ -409,6 +463,13 @@ contains
     read(stream,*,iostat=ios) n,stage,count_saved
     if (ios/=0) error stop 'Missing schedule header'
     if (n/=regrid_count.or.stage<0.or.stage>n.or.count_saved/=original_count) error stop 'Schedule header mismatch'
+    if (temperature_adaptive) then
+      read(stream,*,iostat=ios) stored_threshold,stored_tile,stored_buffer,stored_capacity
+      if (ios/=0) error stop 'Missing tag policy'
+      if (.not.ieee_is_finite(stored_threshold)) error stop 'Nonfinite stored tag threshold'
+      if (stored_threshold/=tag_temperature.or.any(stored_tile/=tag_tile_shape).or. &
+        stored_buffer/=tag_buffer.or.stored_capacity/=tag_maximum_patches) error stop 'Temperature tag policy mismatch'
+    end if
     read(stream,*,iostat=ios) lower_saved(:,1:count_saved),upper_saved(:,1:count_saved)
     if (ios/=0) error stop 'Missing initial topology'
     if (any(lower_saved(:,1:count_saved)/=original_lower(:,1:count_saved)).or. &
@@ -420,14 +481,27 @@ contains
       ! Read the count first without letting an untrusted value set bounds.
       read(stream,*,iostat=ios) count_saved
       if (ios/=0) error stop 'Missing scheduled topology'
-      if (count_saved/=regrid_patch_count(a)) error stop 'Scheduled patch count mismatch'
+      if (temperature_adaptive) then
+        if (count_saved<0.or.count_saved>tag_maximum_patches) error stop 'Tagged checkpoint capacity mismatch'
+        if (a>stage.and.count_saved/=0) error stop 'Future tagged topology must be empty'
+      else
+        if (count_saved/=regrid_patch_count(a)) error stop 'Scheduled patch count mismatch'
+      end if
       backspace(stream,iostat=ios)
       if (ios/=0) error stop 'Cannot reread scheduled topology'
       read(stream,*,iostat=ios) count_saved,lower_saved(:,1:count_saved),upper_saved(:,1:count_saved)
       if (ios/=0) error stop 'Invalid scheduled topology'
-      if (any(lower_saved(:,1:count_saved)/=regrid_lower(:,1:count_saved,a)).or. &
-        any(upper_saved(:,1:count_saved)/=regrid_upper(:,1:count_saved,a))) error stop 'Scheduled topology mismatch'
+      if (temperature_adaptive) then
+        call validate_tagged_layout(lower_saved(:,1:count_saved),upper_saved(:,1:count_saved))
+        regrid_patch_count(a)=count_saved
+        regrid_lower(:,1:count_saved,a)=lower_saved(:,1:count_saved)
+        regrid_upper(:,1:count_saved,a)=upper_saved(:,1:count_saved)
+      else
+        if (any(lower_saved(:,1:count_saved)/=regrid_lower(:,1:count_saved,a)).or. &
+          any(upper_saved(:,1:count_saved)/=regrid_upper(:,1:count_saved,a))) error stop 'Scheduled topology mismatch'
+      end if
     end do
+    call validate_schedule()
     regrid_stage=stage
     if (stage>0) call activate_layout(stage,.false.)
   end subroutine schedule_record
@@ -464,6 +538,14 @@ contains
       if (subcycling) then
         magic='PELEF_EB_SCHEDULED_CHECKPOINT_V3'
         if (automatic_timestep) magic='PELEF_EB_SCHEDULED_CHECKPOINT_V4'
+      end if
+    end if
+    if (temperature_adaptive) then
+      magic='PELEF_EB_TEMPERATURE_CHECKPOINT_V1'
+      if (automatic_timestep) magic='PELEF_EB_TEMPERATURE_CHECKPOINT_V2'
+      if (subcycling) then
+        magic='PELEF_EB_TEMPERATURE_CHECKPOINT_V3'
+        if (automatic_timestep) magic='PELEF_EB_TEMPERATURE_CHECKPOINT_V4'
       end if
     end if
   end function checkpoint_magic
