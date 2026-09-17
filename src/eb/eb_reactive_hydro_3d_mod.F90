@@ -11,7 +11,7 @@ module eb_reactive_hydro_3d_mod
     eb_geometry_3d, eb_covered_cell_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_wall_flux_3d_mod, only: &
-    reactive_eb_flux_divergence_3d
+    reactive_eb_flux_divergence_3d,reactive_eb_slip_wall_source_3d
   use eb_reactive_redistribution_3d_mod, only: &
     advance_reactive_eb_redistributed_3d, &
     advance_reactive_eb_state_redistributed_3d
@@ -306,7 +306,7 @@ contains
 
   subroutine advance_reactive_eb_redistributed_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok)
+      new_temperature, ok, boundary_change, wall_change)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -315,6 +315,9 @@ contains
     real(dp), intent(out) :: new_state(:, :, :, :)
     real(dp), intent(out) :: new_temperature(:, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    type(eb_integrated_flux_3d) :: flux
+    real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
 
     real(dp), allocatable :: rhs(:, :, :, :)
     logical :: local_ok
@@ -332,21 +335,37 @@ contains
     new_temperature = temperature
     if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) return
 
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=nvar) return
+    end if
+    if (present(wall_change)) then
+      if (size(wall_change)/=nvar) return
+    end if
     allocate(rhs(nvar, geometry%nx, geometry%ny, geometry%nz))
-    call build_reactive_eb_conservative_rhs_3d( &
-      species, state, temperature, geometry, solver, rhs, local_ok)
-    if (.not. local_ok) return
+    if (present(boundary_change).or.present(wall_change)) then
+      call build_reactive_eb_conservative_rhs_3d( &
+        species,state,temperature,geometry,solver,rhs,local_ok,flux=flux)
+      if (.not.local_ok) return
+      call hydro_inventory_changes(species,state,temperature,geometry,dt,flux,boundary,wall,local_ok)
+      if (.not.local_ok) return
+    else
+      call build_reactive_eb_conservative_rhs_3d( &
+        species,state,temperature,geometry,solver,rhs,local_ok)
+      if (.not.local_ok) return
+    end if
 
     call advance_reactive_eb_redistributed_3d( &
       species, state, temperature, geometry, rhs, dt, new_state, &
       new_temperature, local_ok)
     if (.not. local_ok) return
+    if (present(boundary_change)) boundary_change=boundary
+    if (present(wall_change)) wall_change=wall
     ok = .true.
   end subroutine advance_reactive_eb_redistributed_euler_3d
 
   subroutine advance_reactive_eb_state_redistributed_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok, target_volume_fraction)
+      new_temperature, ok, target_volume_fraction, boundary_change, wall_change)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -355,6 +374,9 @@ contains
     real(dp), intent(out) :: new_state(:, :, :, :)
     real(dp), intent(out) :: new_temperature(:, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    type(eb_integrated_flux_3d) :: flux
+    real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
     real(dp), intent(in), optional :: target_volume_fraction
 
     real(dp), allocatable :: rhs(:, :, :, :)
@@ -374,10 +396,24 @@ contains
     new_temperature = temperature
     if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) return
 
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=nvar) return
+    end if
+    if (present(wall_change)) then
+      if (size(wall_change)/=nvar) return
+    end if
     allocate(rhs(nvar, geometry%nx, geometry%ny, geometry%nz))
-    call build_reactive_eb_conservative_rhs_3d( &
-      species, state, temperature, geometry, solver, rhs, local_ok)
-    if (.not. local_ok) return
+    if (present(boundary_change).or.present(wall_change)) then
+      call build_reactive_eb_conservative_rhs_3d( &
+        species,state,temperature,geometry,solver,rhs,local_ok,flux=flux)
+      if (.not.local_ok) return
+      call hydro_inventory_changes(species,state,temperature,geometry,dt,flux,boundary,wall,local_ok)
+      if (.not.local_ok) return
+    else
+      call build_reactive_eb_conservative_rhs_3d( &
+        species,state,temperature,geometry,solver,rhs,local_ok)
+      if (.not.local_ok) return
+    end if
 
     target = 0.5_dp
     if (present(target_volume_fraction)) target = target_volume_fraction
@@ -385,8 +421,37 @@ contains
       species, state, temperature, geometry, rhs, dt, new_state, &
       new_temperature, local_ok, target)
     if (.not. local_ok) return
+    if (present(boundary_change)) boundary_change=boundary
+    if (present(wall_change)) wall_change=wall
     ok = .true.
   end subroutine advance_reactive_eb_state_redistributed_euler_3d
+
+  subroutine hydro_inventory_changes(species,state,temperature,geometry,dt,flux,boundary,wall,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
+    type(eb_geometry_3d), intent(in) :: geometry
+    type(eb_integrated_flux_3d), intent(in) :: flux
+    real(dp), intent(out) :: boundary(:),wall(:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: source(:,:,:,:)
+    integer :: c,n(3)
+    n=[geometry%nx,geometry%ny,geometry%nz]
+    allocate(source(size(state,1),n(1),n(2),n(3)))
+    call reactive_eb_slip_wall_source_3d(species,state,temperature,geometry,source,ok)
+    if (.not.ok) return
+    ! These are the actual Riemann faces used in the conservative RHS.
+    ! Redistribution transfers inventory internally, leaving this exchange unchanged.
+    do c=1,size(boundary)
+      boundary(c)=dt*(geometry%dy*geometry%dz*sum( &
+        geometry%x_face_fraction(0,:,:)*flux%x(c,0,:,:)-geometry%x_face_fraction(n(1),:,:)*flux%x(c,n(1),:,:)) &
+        +geometry%dx*geometry%dz*sum( &
+        geometry%y_face_fraction(:,0,:)*flux%y(c,:,0,:)-geometry%y_face_fraction(:,n(2),:)*flux%y(c,:,n(2),:)) &
+        +geometry%dx*geometry%dy*sum( &
+        geometry%z_face_fraction(:,:,0)*flux%z(c,:,:,0)-geometry%z_face_fraction(:,:,n(3))*flux%z(c,:,:,n(3))))
+      wall(c)=dt*geometry%dx*geometry%dy*geometry%dz*sum(source(c,:,:,:)*geometry%volume_fraction)
+    end do
+    ok=all(ieee_is_finite(boundary)).and.all(ieee_is_finite(wall))
+  end subroutine hydro_inventory_changes
 
   pure logical function valid_state_shapes( &
       state, temperature, geometry, nvar) result(valid)

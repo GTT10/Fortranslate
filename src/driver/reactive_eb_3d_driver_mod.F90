@@ -117,7 +117,7 @@ contains
   subroutine advance_reactive_eb_strang_3d( &
       species, reactions, state, temperature, geometry, solver, redistribution, &
       dt, chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction, chemistry_integrator)
+      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -129,6 +129,8 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
+    real(dp), allocatable :: exchange_boundary(:),exchange_wall(:),exchange_chemistry(:),before(:),after(:)
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
@@ -150,6 +152,19 @@ contains
         any(shape(new_temperature) /= shape(temperature))) return
     new_state = state
     new_temperature = temperature
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=nvar) return
+    end if
+    if (present(wall_change)) then
+      if (size(wall_change)/=nvar) return
+    end if
+    if (present(chemistry_change)) then
+      if (size(chemistry_change)/=nvar) return
+    end if
+    if (present(boundary_change).or.present(wall_change).or.present(chemistry_change)) then
+      allocate(exchange_boundary(nvar),exchange_wall(nvar),exchange_chemistry(nvar),before(nvar),after(nvar))
+      exchange_chemistry=0._dp
+    end if
     if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
         .not. ieee_is_finite(rtol) .or. .not. ieee_is_finite(atol) .or. &
         rtol <= 0.0_dp .or. atol <= 0.0_dp) return
@@ -172,6 +187,10 @@ contains
     active_mask = geometry%cell_type /= eb_covered_cell_3d
 
     if (chemistry_enabled) then
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,before,local_ok)
+        if (.not.local_ok) return
+      end if
       call advance_reactive_chemistry_3d( &
         species, reactions, candidate_state, candidate_temperature, &
         geometry%nx, geometry%ny, geometry%nz, 0.5_dp * dt, rtol, atol, &
@@ -181,17 +200,22 @@ contains
         state, temperature, candidate_state, candidate_temperature, geometry, &
         local_ok)
       if (.not. local_ok) return
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,after,local_ok)
+        if (.not.local_ok) return
+        exchange_chemistry=exchange_chemistry+after-before
+      end if
     end if
 
     select case (trim(redistribution))
     case ("flux_redist")
       call advance_reactive_eb_redistributed_euler_3d( &
         species, candidate_state, candidate_temperature, geometry, solver, dt, &
-        hydro_state, hydro_temperature, local_ok)
+        hydro_state, hydro_temperature, local_ok,exchange_boundary,exchange_wall)
     case ("state_redist")
       call advance_reactive_eb_state_redistributed_euler_3d( &
         species, candidate_state, candidate_temperature, geometry, solver, dt, &
-        hydro_state, hydro_temperature, local_ok, target)
+        hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall)
     end select
     if (.not. local_ok) return
     call covered_cells_match_3d( &
@@ -201,6 +225,10 @@ contains
     candidate_temperature = hydro_temperature
 
     if (chemistry_enabled) then
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,before,local_ok)
+        if (.not.local_ok) return
+      end if
       call advance_reactive_chemistry_3d( &
         species, reactions, candidate_state, candidate_temperature, &
         geometry%nx, geometry%ny, geometry%nz, 0.5_dp * dt, rtol, atol, &
@@ -210,9 +238,20 @@ contains
         state, temperature, candidate_state, candidate_temperature, geometry, &
         local_ok)
       if (.not. local_ok) return
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,after,local_ok)
+        if (.not.local_ok) return
+        exchange_chemistry=exchange_chemistry+after-before
+      end if
     end if
     if (any(.not. ieee_is_finite(candidate_state)) .or. &
         any(.not. ieee_is_finite(candidate_temperature))) return
+    if (allocated(exchange_chemistry)) then
+      if (.not.all(ieee_is_finite(exchange_chemistry))) return
+    end if
+    if (present(boundary_change)) boundary_change=exchange_boundary
+    if (present(wall_change)) wall_change=exchange_wall
+    if (present(chemistry_change)) chemistry_change=exchange_chemistry
     new_state = candidate_state
     new_temperature = candidate_temperature
     ok = .true.
@@ -224,7 +263,7 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, new_state, &
       new_temperature, minimum_transport_theta, ok, target_volume_fraction, &
-      chemistry_integrator)
+      chemistry_integrator, boundary_change, wall_change, chemistry_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -240,6 +279,8 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: chemistry_integrator
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
+    real(dp), allocatable :: exchange_boundary(:),exchange_wall(:),exchange_chemistry(:),before(:),after(:)
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
@@ -264,11 +305,24 @@ contains
         any(shape(new_temperature) /= shape(temperature))) return
     new_state = state
     new_temperature = temperature
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=nvar) return
+    end if
+    if (present(wall_change)) then
+      if (size(wall_change)/=nvar) return
+    end if
+    if (present(chemistry_change)) then
+      if (size(chemistry_change)/=nvar) return
+    end if
+    if (present(boundary_change).or.present(wall_change).or.present(chemistry_change)) then
+      allocate(exchange_boundary(nvar),exchange_wall(nvar),exchange_chemistry(nvar),before(nvar),after(nvar))
+      exchange_chemistry=0._dp
+    end if
     if (.not. transport_enabled) then
       call advance_reactive_eb_strang_3d( &
         species, reactions, state, temperature, geometry, solver, &
         redistribution, dt, chemistry_enabled, rtol, atol, new_state, &
-        new_temperature, ok, target_volume_fraction, chemistry_integrator)
+        new_temperature, ok, target_volume_fraction, chemistry_integrator,boundary_change,wall_change,chemistry_change)
       return
     end if
 
@@ -294,6 +348,10 @@ contains
     active_mask = geometry%cell_type /= eb_covered_cell_3d
 
     if (chemistry_enabled) then
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,before,local_ok)
+        if (.not.local_ok) return
+      end if
       call advance_reactive_chemistry_3d( &
         species, reactions, candidate_state, candidate_temperature, &
         geometry%nx, geometry%ny, geometry%nz, 0.5_dp * dt, rtol, atol, &
@@ -303,6 +361,11 @@ contains
         state, temperature, candidate_state, candidate_temperature, &
         geometry, local_ok)
       if (.not. local_ok) return
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,after,local_ok)
+        if (.not.local_ok) return
+        exchange_chemistry=exchange_chemistry+after-before
+      end if
     end if
 
     call advance_reactive_eb_transport_3d( &
@@ -318,7 +381,7 @@ contains
 
     call advance_reactive_eb_state_redistributed_euler_3d( &
       species, candidate_state, candidate_temperature, geometry, solver, &
-      dt, hydro_state, hydro_temperature, local_ok, target)
+      dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall)
     if (.not. local_ok) return
     call covered_cells_match_3d( &
       state, temperature, hydro_state, hydro_temperature, geometry, &
@@ -339,6 +402,10 @@ contains
     if (.not. local_ok) return
 
     if (chemistry_enabled) then
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,before,local_ok)
+        if (.not.local_ok) return
+      end if
       call advance_reactive_chemistry_3d( &
         species, reactions, candidate_state, candidate_temperature, &
         geometry%nx, geometry%ny, geometry%nz, 0.5_dp * dt, rtol, atol, &
@@ -348,10 +415,21 @@ contains
         state, temperature, candidate_state, candidate_temperature, &
         geometry, local_ok)
       if (.not. local_ok) return
+      if (allocated(exchange_chemistry)) then
+        call reactive_eb_integrals_3d(candidate_state,geometry,after,local_ok)
+        if (.not.local_ok) return
+        exchange_chemistry=exchange_chemistry+after-before
+      end if
     end if
     if (any(.not. ieee_is_finite(candidate_state)) .or. &
         any(.not. ieee_is_finite(candidate_temperature))) return
 
+    if (allocated(exchange_chemistry)) then
+      if (.not.all(ieee_is_finite(exchange_chemistry))) return
+    end if
+    if (present(boundary_change)) boundary_change=exchange_boundary
+    if (present(wall_change)) wall_change=exchange_wall
+    if (present(chemistry_change)) chemistry_change=exchange_chemistry
     new_state = candidate_state
     new_temperature = candidate_temperature
     minimum_transport_theta = min(theta_one, theta_two)
