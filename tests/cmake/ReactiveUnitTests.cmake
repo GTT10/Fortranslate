@@ -665,3 +665,7 @@ add_test(NAME unit_eb_two_level_3d COMMAND test_eb_two_level_3d)
 add_executable(test_eb_two_level_chemistry_3d unit/test_eb_two_level_chemistry_3d.F90)
 target_link_libraries(test_eb_two_level_chemistry_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_two_level_chemistry_3d COMMAND test_eb_two_level_chemistry_3d)
+
+add_executable(test_eb_transport_halo_3d unit/test_eb_transport_halo_3d.F90)
+target_link_libraries(test_eb_transport_halo_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_transport_halo_3d COMMAND test_eb_transport_halo_3d)

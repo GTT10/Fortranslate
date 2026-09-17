@@ -402,7 +402,7 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      x_flux, y_flux, z_flux, minimum_theta, ok)
+      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -416,6 +416,14 @@ contains
     real(dp), intent(out) :: z_flux(:, :, :, 0:)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, optional, intent(in) :: boundary_faces(6)
+    logical :: enabled_faces(6)
+    real(dp), allocatable :: donor_primitive(:)
+    real(dp) :: donor_temperature,sound_speed,spacing(3),face_area,species_energy
+    integer :: axis,side,start(3),finish(3),inside(3),outside(3),v,d
+    real(dp), allocatable :: left(:),right(:),boundary_flux(:)
+    real(dp) :: left_t,right_t
 
     real(dp), allocatable :: primitive(:, :, :, :)
     real(dp), allocatable :: checked_temperature(:, :, :)
@@ -453,6 +461,14 @@ contains
         .not. ieee_is_finite(dt) .or. dt < 0.0_dp .or. &
         (barodiffusion_enabled .and. &
           .not. species_diffusion_enabled)) return
+    if (present(ghost_state).neqv.present(ghost_temperature)) return
+    enabled_faces=present(ghost_state)
+    if (present(boundary_faces)) enabled_faces=boundary_faces
+    if (any(enabled_faces).and..not.present(ghost_state)) return
+    if (present(ghost_state)) then
+      if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+      if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+    end if
     if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &
         species_diffusion_enabled)) then
       ok = .true.
@@ -532,6 +548,68 @@ contains
         end do
       end do
     end do
+    ! Parent-provided face donors. Normal gradients use the ghost-center
+    ! spacing; tangential velocity gradients use the adjacent interior stencil.
+    ! Disabled physical faces retain the existing zero transport flux.
+    if (any(enabled_faces)) then
+      allocate(donor_primitive(nprim),left(nprim),right(nprim),boundary_flux(nvar))
+      spacing=[geometry%dx,geometry%dy,geometry%dz]
+      do axis=1,3
+        do side=0,1
+          if (.not.enabled_faces(2*axis-1+side)) cycle
+          start=1;finish=[geometry%nx,geometry%ny,geometry%nz]
+          start(axis)=side*finish(axis);finish(axis)=start(axis)
+          do k=start(3),finish(3)
+            do j=start(2),finish(2)
+              do i=start(1),finish(1)
+                inside=max(1,[i,j,k]);outside=inside;outside(axis)=inside(axis)+2*side-1
+                select case(axis)
+                case(1)
+                  face_area=geometry%x_face_fraction(i,j,k)
+                case(2)
+                  face_area=geometry%y_face_fraction(i,j,k)
+                case(3)
+                  face_area=geometry%z_face_fraction(i,j,k)
+                end select
+                if (face_area<=0._dp) cycle
+                if (geometry%cell_type(inside(1),inside(2),inside(3))==eb_covered_cell_3d) return
+                call reactive_conserved_to_primitive(species,ghost_state(:,outside(1),outside(2),outside(3)), &
+                  ghost_temperature(outside(1),outside(2),outside(3)),donor_primitive,donor_temperature, &
+                  sound_speed,local_ok)
+                if (.not.local_ok) return
+                left=primitive(:,inside(1),inside(2),inside(3));right=left
+                left_t=checked_temperature(inside(1),inside(2),inside(3));right_t=left_t
+                if (side==0) then
+                  left=donor_primitive;left_t=donor_temperature
+                else
+                  right=donor_primitive;right_t=donor_temperature
+                end if
+                gradient=0._dp
+                do v=1,3
+                  gradient(v,axis)=(right(v+1)-left(v+1))/spacing(axis)
+                  do d=1,3
+                    if (d==axis) cycle
+                    gradient(v,d)=active_velocity_derivative(primitive,geometry,inside(1),inside(2),inside(3),v,d)
+                  end do
+                end do
+                call reactive_transport_face_flux_3d(species,transport,left,right,left_t,right_t,spacing(axis),axis, &
+                  gradient,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled, &
+                  barodiffusion_enabled,boundary_flux,species_energy,local_ok)
+                if (.not.local_ok) return
+                select case(axis)
+                case(1)
+                  x_flux(:,i,j,k)=boundary_flux;species_energy_x(i,j,k)=species_energy
+                case(2)
+                  y_flux(:,i,j,k)=boundary_flux;species_energy_y(i,j,k)=species_energy
+                case(3)
+                  z_flux(:,i,j,k)=boundary_flux;species_energy_z(i,j,k)=species_energy
+                end select
+              end do
+            end do
+          end do
+        end do
+      end do
+    end if
     call limit_reactive_eb_transport_fluxes_3d( &
       species, state, geometry, dt, x_flux, y_flux, z_flux, &
       species_energy_x, species_energy_y, species_energy_z, &
