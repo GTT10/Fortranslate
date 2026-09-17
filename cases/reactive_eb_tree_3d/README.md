@@ -1,4 +1,4 @@
-# Serial multilevel EB reacting tree
+# Multilevel EB reacting tree
 
 Build and run the fixed H2/O2 application:
 
@@ -10,6 +10,28 @@ cmake --build build/debug --target pelef_reactive_eb_tree_3d
 The supplied case has a 4-cubed root, two children, and grandchildren with
 separate parents (three levels, ratios two). A planar wall cuts z=0.31.
 Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
+
+## MPI execution
+
+With `PELEF_ENABLE_MPI=ON`, the fixed-mechanism executable
+`pelef_mpi_reactive_eb_tree_3d` accepts the same `input.nml` and output/checkpoint
+paths:
+
+```sh
+cmake --build build/mpi-debug --target pelef_mpi_reactive_eb_tree_3d
+mpiexec -n 2 ./build/mpi-debug/pelef_mpi_reactive_eb_tree_3d cases/reactive_eb_tree_3d/input.nml
+```
+
+This entry point currently accepts static topology, fixed common intervals and
+explicit/implicit chemistry. Automatic intervals, regridding/adaptation and
+subcycling are rejected before output. Each rank holds only its assigned patch
+U/T during stepping; geometry is replicated. Initialization/restart temporarily
+loads the full tree on each rank, then scatters from rank zero and releases full
+state arrays. CSV/checkpoint writes gather to rank zero and share the serial
+format. Checkpoints can continue with a different rank count or the serial
+executable. State CSVs are deterministic in the focused fixture; budget ledgers
+can differ in roundoff when MPI reduction grouping changes. Parallel I/O,
+selected-mechanism MPI wiring and the remaining stepping modes are future work.
 
 ## Selected mechanisms
 

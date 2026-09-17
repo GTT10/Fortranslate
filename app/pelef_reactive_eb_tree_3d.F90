@@ -1,4 +1,11 @@
 program pelef_reactive_eb_tree_3d
+#ifdef PELEF_MPI_EB_TREE
+  use mpi_f08
+  use amr_patch_tree_3d_mod, only: amr_tree_state_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
+  use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
+#endif
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end,iostat_eor
   use precision_mod, only: dp
@@ -94,6 +101,19 @@ program pelef_reactive_eb_tree_3d
   integer :: unit,ios,status,node,n(3),nv,retry,depth,event,common
   logical :: ok,stopped=.false.
   character(len=1024) :: input_path,message,budget_path
+#ifdef PELEF_MPI_EB_TREE
+  type(amr_tree_state_3d) :: mpi_state,mpi_temperature
+  type(eb_geometry_3d), allocatable :: mpi_geometry(:)
+  integer, allocatable :: mpi_owners(:)
+  integer :: mpi_rank,mpi_size,mpi_ierr
+  logical :: distributed=.false.
+  call MPI_Init(mpi_ierr)
+  if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI initialization failed'
+  call MPI_Comm_rank(MPI_COMM_WORLD,mpi_rank,mpi_ierr)
+  if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI rank failed'
+  call MPI_Comm_size(MPI_COMM_WORLD,mpi_size,mpi_ierr)
+  if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI size failed'
+#endif
   if (command_argument_count()/=1) error stop 'Usage: pelef_reactive_eb_tree_3d input.nml'
   call get_command_argument(1,input_path)
   open(newunit=unit,file=trim(input_path),status='old',action='read',iostat=ios)
@@ -101,6 +121,10 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+#ifdef PELEF_MPI_EB_TREE
+  if (subcycling.or.automatic_timestep.or.regrid_count/=0.or.temperature_adaptive) &
+    error stop 'MPI EB tree currently requires static topology and fixed common intervals'
+#endif
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
   if (.not.all(ieee_is_finite([domain_lower,domain_upper,plane_position,time_step,final_time,rtol,atol,hydro_cfl,transport_cfl]))) &
@@ -244,6 +268,9 @@ program pelef_reactive_eb_tree_3d
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
   if (len_trim(restart_file)>0) call restore()
+#ifdef PELEF_MPI_EB_TREE
+  call distribute_initial()
+#endif
   do while(record%time<final_time.and.record%steps<maximum_steps)
     dt=min(time_step,final_time-record%time)
     if (automatic_timestep) then
@@ -255,9 +282,15 @@ program pelef_reactive_eb_tree_3d
     if (regrid_stage<regrid_count) dt=min(dt,regrid_times(regrid_stage+1)-record%time)
     do retry=0,maximum_step_retries
       if (record%time+dt<=record%time) error stop 'Time increment underflow'
+#ifdef PELEF_MPI_EB_TREE
+      call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
+        riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
+        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator)
+#else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
         chemistry_integrator,subcycling)
+#endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
       dt=.5_dp*dt
@@ -296,10 +329,68 @@ program pelef_reactive_eb_tree_3d
   if (record%time<final_time.and..not.stopped) error stop 'Maximum steps reached before final time'
   call balance()
   call output()
+#ifdef PELEF_MPI_EB_TREE
+  if (mpi_rank==0) then
+#endif
   write(*,'(a,i0,a,es24.16)') 'Completed steps: ',record%steps,' time: ',record%time
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
   write(*,'(a,es24.16)') 'Minimum accepted interval: ',record%minimum_dt
+#ifdef PELEF_MPI_EB_TREE
+  end if
+  call MPI_Finalize(mpi_ierr)
+  if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI finalize failed'
+#endif
 contains
+#ifdef PELEF_MPI_EB_TREE
+  subroutine distribute_initial()
+    type(amr_tree_state_3d) :: global,gt
+    integer :: p,dims(3)
+    logical :: valid
+    call partition_amr_tree_3d(topology,mpi_size,0,mpi_owners,valid)
+    if (.not.valid) error stop 'MPI tree partition failed'
+    allocate(mpi_geometry(size(tree%nodes)))
+    do p=1,size(tree%nodes)
+      mpi_geometry(p)=tree%nodes(p)%geometry
+    end do
+    if (mpi_rank==0) then
+      allocate(global%fields(size(tree%nodes)),gt%fields(size(tree%nodes)))
+      do p=1,size(tree%nodes)
+        dims=topology%nodes(p)%shape
+        global%fields(p)%values=tree%nodes(p)%state
+        allocate(gt%fields(p)%values(1,dims(1),dims(2),dims(3)))
+        gt%fields(p)%values(1,:,:,:)=tree%nodes(p)%temperature
+      end do
+    end if
+    call scatter_mpi_amr_tree_3d(topology,mpi_owners,global,mpi_state,MPI_COMM_WORLD,0,valid)
+    if (.not.valid) error stop 'MPI state scatter failed'
+    call scatter_mpi_amr_tree_3d(topology,mpi_owners,gt,mpi_temperature,MPI_COMM_WORLD,0,valid)
+    if (.not.valid) error stop 'MPI temperature scatter failed'
+    call release_tree_values()
+    deallocate(u,t)
+    distributed=.true.
+  end subroutine
+  subroutine collect_root()
+    type(amr_tree_state_3d) :: global,gt
+    integer :: p
+    logical :: valid
+    call gather_mpi_amr_tree_3d(topology,mpi_owners,mpi_state,global,MPI_COMM_WORLD,0,valid)
+    if (.not.valid) error stop 'MPI state gather failed'
+    call gather_mpi_amr_tree_3d(topology,mpi_owners,mpi_temperature,gt,MPI_COMM_WORLD,0,valid)
+    if (.not.valid) error stop 'MPI temperature gather failed'
+    if (mpi_rank/=0) return
+    do p=1,size(tree%nodes)
+      call move_alloc(global%fields(p)%values,tree%nodes(p)%state)
+      tree%nodes(p)%temperature=gt%fields(p)%values(1,:,:,:)
+    end do
+  end subroutine
+  subroutine release_tree_values()
+    integer :: p
+    do p=1,size(tree%nodes)
+      if (allocated(tree%nodes(p)%state)) deallocate(tree%nodes(p)%state)
+      if (allocated(tree%nodes(p)%temperature)) deallocate(tree%nodes(p)%temperature)
+    end do
+  end subroutine
+#endif
   subroutine make_layout(number,parents,refinement,lo,hi,result)
     integer, intent(in) :: number,parents(:),refinement(:),lo(:,:),hi(:,:)
     type(amr_patch_tree_3d), intent(out) :: result
@@ -527,7 +618,15 @@ contains
     if (.not.chemical_elements_valid(record%initial,record%chemical,record%steps)) &
       error stop 'Chemical element conservation failed'
 #endif
+#ifdef PELEF_MPI_EB_TREE
+    if (distributed) then
+      call integrate_mpi_eb_tree_3d(topology,mpi_owners,mpi_geometry,mpi_state,current,MPI_COMM_WORLD,ok)
+    else
+      call integrate_reactive_eb_tree_3d(tree,current,ok)
+    end if
+#else
     call integrate_reactive_eb_tree_3d(tree,current,ok)
+#endif
     if (.not.ok) error stop 'Inventory failed'
     error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical)/ &
       max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)))
@@ -610,6 +709,10 @@ contains
   subroutine save()
     integer :: scratch,destination,amount
     character(len=4096) :: chunk
+#ifdef PELEF_MPI_EB_TREE
+    call collect_root()
+    if (mpi_rank/=0) return
+#endif
     open(newunit=scratch,status='scratch',form='formatted',action='readwrite',iostat=ios)
     if (ios/=0) error stop 'Cannot stage checkpoint'
     call envelope(scratch,.false.)
@@ -632,10 +735,17 @@ contains
     if (ios/=0) error stop 'Checkpoint close failed'
     close(scratch,iostat=ios)
     if (ios/=0) error stop 'Checkpoint staging close failed'
+#ifdef PELEF_MPI_EB_TREE
+    call release_tree_values()
+#endif
   end subroutine
   subroutine output()
     integer :: i,j,k,c,child,lo(3),hi(3)
     logical, allocatable :: exposed(:,:,:)
+#ifdef PELEF_MPI_EB_TREE
+    call collect_root()
+    if (mpi_rank/=0) return
+#endif
     open(newunit=unit,file=trim(output_file),status='replace',action='write',iostat=ios)
     if (ios/=0) error stop 'Cannot open CSV'
     write(unit,'(a)',advance='no') 'node,level,i,j,k,fluid_volume,temperature,rho,rhou,rhov,rhow,rhoE'
