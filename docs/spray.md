@@ -32,8 +32,21 @@ Both endpoints must lie inside the closed domain and the start must be fluid
 or on the surface. Surface-inward motion hits at fraction zero. A valid miss
 returns fraction one, the endpoint, and zero normal/cell. Invalid input preserves
 all result arguments. Geometry is bounded to one million cells, and the query
-scans the segment's cell bounding box. This serial geometry primitive does not
-yet connect EB impact response, gas sampling/deposition, MPI or AMR stepping.
+scans the segment's cell bounding box.
+
+`spray_eb_drift_mod` adds
+`drift_spray_level_set(phi,lower,upper,dt,maximum_hits,parcels,change,hits,ok)`.
+It advances a population at constant velocity between stationary specular EB
+contacts, reflects the normal velocity and continues the remaining time, with
+a per-parcel contact limit (0 through 1024). `change(1:5)` is the represented
+particle mass/momentum/energy difference; the wall receives its negative.
+Liquid mass, temperature, multiplicity and component identity are unchanged.
+Dead zero-mass parcels are skipped. The population, change and total hit count
+publish together; failure preserves all three. Each proposed segment, including
+its unreflected endpoint, must stay in the closed root domain. This API does not
+combine outer-domain crossings with EB events. It remains a force-free serial
+drift API; EB gas sampling/deposition, liquid impact/film models and coupled
+MPI/AMR stepping are not yet connected.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports

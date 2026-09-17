@@ -44,6 +44,7 @@ if(PELEF_ENABLE_SPRAY)
   pelef_add_spray_runtime(pelef_spray_runtime pelef_core)
   function(pelef_add_spray_tree_runtime target spray_base tree_base)
     add_library(${target} STATIC src/spray/spray_eb_intersection_mod.F90
+      src/spray/spray_eb_drift_mod.F90
       src/spray/spray_amr_tree_partition_mod.F90
       src/spray/spray_amr_tree_coupling_mod.F90)
     if(PELEF_ENABLE_MPI)
