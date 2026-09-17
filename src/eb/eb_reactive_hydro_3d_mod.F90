@@ -9,6 +9,7 @@ module eb_reactive_hydro_3d_mod
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_flux_divergence_3d
   use eb_reactive_redistribution_3d_mod, only: &
@@ -17,16 +18,20 @@ module eb_reactive_hydro_3d_mod
   implicit none
   private
 
-  public :: reactive_eb_outflow_riemann_fluxes_3d
+  public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
   public :: advance_reactive_eb_redistributed_euler_3d
   public :: advance_reactive_eb_state_redistributed_euler_3d
+
+  interface reactive_eb_riemann_fluxes_3d
+    module procedure reactive_eb_outflow_riemann_fluxes_3d
+  end interface
 
 contains
 
   subroutine reactive_eb_outflow_riemann_fluxes_3d( &
       species, state, temperature, geometry, solver, x_flux, y_flux, &
-      z_flux, ok)
+      z_flux, ok, ghost_state, ghost_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -35,6 +40,12 @@ contains
     real(dp), intent(out) :: y_flux(:, :, 0:, :)
     real(dp), intent(out) :: z_flux(:, :, :, 0:)
     logical, intent(out) :: ok
+    ! Optional face halo, indexed 0:n+1 in each spatial direction. Only open
+    ! boundary-face donors are read; interior, edge and corner slots are unused.
+    ! With no halo, retain the historical extrapolated-outflow boundary states.
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), allocatable :: left_state(:),right_state(:)
+    real(dp) :: left_temperature,right_temperature
 
     real(dp), allocatable :: candidate_x(:, :, :, :)
     real(dp), allocatable :: candidate_y(:, :, :, :)
@@ -64,6 +75,13 @@ contains
         size(z_flux, 3) /= geometry%ny .or. &
         size(z_flux, 4) /= geometry%nz + 1) return
 
+    if (present(ghost_state).neqv.present(ghost_temperature)) return
+    if (present(ghost_state)) then
+      if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+      if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+    end if
+    allocate(left_state(nvar),right_state(nvar))
+
     allocate(candidate_x(nvar, 0:geometry%nx, geometry%ny, geometry%nz))
     allocate(candidate_y(nvar, geometry%nx, 0:geometry%ny, geometry%nz))
     allocate(candidate_z(nvar, geometry%nx, geometry%ny, 0:geometry%nz))
@@ -80,9 +98,19 @@ contains
           if (geometry%cell_type(lower_i, j, k) == eb_covered_cell_3d &
               .or. geometry%cell_type(upper_i, j, k) == &
                 eb_covered_cell_3d) return
+          left_state=state(:,lower_i, j, k);right_state=state(:,upper_i, j, k)
+          left_temperature=temperature(lower_i, j, k);right_temperature=temperature(upper_i, j, k)
+          if (present(ghost_state)) then
+            if (i==0) then
+              left_state=ghost_state(:,0,j,k);left_temperature=ghost_temperature(0,j,k)
+            end if
+            if (i==geometry%nx) then
+              right_state=ghost_state(:,geometry%nx+1,j,k);right_temperature=ghost_temperature(geometry%nx+1,j,k)
+            end if
+          end if
           call reactive_riemann_flux_x( &
-            species, state(:, lower_i, j, k), state(:, upper_i, j, k), &
-            temperature(lower_i, j, k), temperature(upper_i, j, k), &
+            species, left_state, right_state, &
+            left_temperature, right_temperature, &
             solver, candidate_x(:, i, j, k), face_ok)
           if (.not. face_ok) return
         end do
@@ -98,9 +126,19 @@ contains
           if (geometry%cell_type(i, lower_j, k) == eb_covered_cell_3d &
               .or. geometry%cell_type(i, upper_j, k) == &
                 eb_covered_cell_3d) return
+          left_state=state(:,i, lower_j, k);right_state=state(:,i, upper_j, k)
+          left_temperature=temperature(i, lower_j, k);right_temperature=temperature(i, upper_j, k)
+          if (present(ghost_state)) then
+            if (j==0) then
+              left_state=ghost_state(:,i,0,k);left_temperature=ghost_temperature(i,0,k)
+            end if
+            if (j==geometry%ny) then
+              right_state=ghost_state(:,i,geometry%ny+1,k);right_temperature=ghost_temperature(i,geometry%ny+1,k)
+            end if
+          end if
           call reactive_riemann_flux_y( &
-            species, state(:, i, lower_j, k), state(:, i, upper_j, k), &
-            temperature(i, lower_j, k), temperature(i, upper_j, k), &
+            species, left_state, right_state, &
+            left_temperature, right_temperature, &
             solver, candidate_y(:, i, j, k), face_ok)
           if (.not. face_ok) return
         end do
@@ -116,9 +154,19 @@ contains
           if (geometry%cell_type(i, j, lower_k) == eb_covered_cell_3d &
               .or. geometry%cell_type(i, j, upper_k) == &
                 eb_covered_cell_3d) return
+          left_state=state(:,i, j, lower_k);right_state=state(:,i, j, upper_k)
+          left_temperature=temperature(i, j, lower_k);right_temperature=temperature(i, j, upper_k)
+          if (present(ghost_state)) then
+            if (k==0) then
+              left_state=ghost_state(:,i,j,0);left_temperature=ghost_temperature(i,j,0)
+            end if
+            if (k==geometry%nz) then
+              right_state=ghost_state(:,i,j,geometry%nz+1);right_temperature=ghost_temperature(i,j,geometry%nz+1)
+            end if
+          end if
           call reactive_riemann_flux_z( &
-            species, state(:, i, j, lower_k), state(:, i, j, upper_k), &
-            temperature(i, j, lower_k), temperature(i, j, upper_k), &
+            species, left_state, right_state, &
+            left_temperature, right_temperature, &
             solver, candidate_z(:, i, j, k), face_ok)
           if (.not. face_ok) return
         end do
@@ -135,13 +183,15 @@ contains
   end subroutine reactive_eb_outflow_riemann_fluxes_3d
 
   subroutine build_reactive_eb_conservative_rhs_3d( &
-      species, state, temperature, geometry, solver, rhs, ok)
+      species, state, temperature, geometry, solver, rhs, ok, ghost_state, ghost_temperature, flux)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
     character(len=*), intent(in) :: solver
     real(dp), intent(out) :: rhs(:, :, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: flux
 
     real(dp), allocatable :: x_flux(:, :, :, :), y_flux(:, :, :, :)
     real(dp), allocatable :: z_flux(:, :, :, :)
@@ -163,7 +213,7 @@ contains
     allocate(z_flux(nvar, geometry%nx, geometry%ny, 0:geometry%nz))
     call reactive_eb_outflow_riemann_fluxes_3d( &
       species, state, temperature, geometry, solver, x_flux, y_flux, &
-      z_flux, local_ok)
+      z_flux, local_ok, ghost_state, ghost_temperature)
     if (.not. local_ok) return
     call reactive_eb_flux_divergence_3d( &
       species, state, temperature, geometry, x_flux, y_flux, z_flux, &
@@ -172,12 +222,15 @@ contains
       rhs = 0.0_dp
       return
     end if
+    if (present(flux)) then
+      flux%x=x_flux;flux%y=y_flux;flux%z=z_flux
+    end if
     ok = .true.
   end subroutine build_reactive_eb_conservative_rhs_3d
 
   subroutine advance_reactive_eb_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok)
+      new_temperature, ok, ghost_state, ghost_temperature, integrated_flux)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -186,6 +239,9 @@ contains
     real(dp), intent(out) :: new_state(:, :, :, :)
     real(dp), intent(out) :: new_temperature(:, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
+    type(eb_integrated_flux_3d) :: flux
 
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
@@ -208,8 +264,13 @@ contains
     if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp) return
 
     allocate(rhs(nvar, geometry%nx, geometry%ny, geometry%nz))
-    call build_reactive_eb_conservative_rhs_3d( &
-      species, state, temperature, geometry, solver, rhs, local_ok)
+    if (present(integrated_flux)) then
+      call build_reactive_eb_conservative_rhs_3d( &
+        species,state,temperature,geometry,solver,rhs,local_ok,ghost_state,ghost_temperature,flux)
+    else
+      call build_reactive_eb_conservative_rhs_3d( &
+        species,state,temperature,geometry,solver,rhs,local_ok,ghost_state,ghost_temperature)
+    end if
     if (.not. local_ok) return
 
     allocate(candidate_state, source=state)
@@ -232,6 +293,12 @@ contains
     if (any(.not. ieee_is_finite(candidate_state)) .or. &
         any(.not. ieee_is_finite(candidate_temperature))) return
 
+    if (present(integrated_flux)) then
+      flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
+      if (.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+        .not.all(ieee_is_finite(flux%z))) return
+      integrated_flux=flux
+    end if
     new_state = candidate_state
     new_temperature = candidate_temperature
     ok = .true.
