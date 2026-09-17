@@ -37,6 +37,7 @@ add_library(
   src/eb/eb_reactive_redistribution_2d_mod.F90
   src/eb/eb_reactive_redistribution_3d_mod.F90
   src/eb/eb_reactive_transfer_3d_mod.F90
+  src/eb/eb_reactive_reflux_3d_mod.F90
   src/amr/amr_reactive_1d_mod.F90
   src/amr/amr_eb_hierarchy_2d_mod.F90
   src/amr/amr_eb_patch_tree_2d_mod.F90

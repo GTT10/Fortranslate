@@ -645,3 +645,7 @@ set_tests_properties(
 add_executable(test_eb_reactive_transfer_3d unit/test_eb_reactive_transfer_3d.F90)
 target_link_libraries(test_eb_reactive_transfer_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_reactive_transfer_3d COMMAND test_eb_reactive_transfer_3d)
+
+add_executable(test_eb_reactive_reflux_3d unit/test_eb_reactive_reflux_3d.F90)
+target_link_libraries(test_eb_reactive_reflux_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_reactive_reflux_3d COMMAND test_eb_reactive_reflux_3d)
