@@ -579,8 +579,11 @@ cumulative injection inventories after successful migration
 ([evidence](validation/spray-amr-events-20260918.md)). AMR spray checkpoints now
 bind gas/particle state, topology, IDs and event position, with immutable
 publication and changed-rank continuation in fixed/selected executables
-([evidence](validation/spray-amr-checkpoint-20260918.md)). Multiport injection,
-automatic adaptation/rebalancing, physical
+([evidence](validation/spray-amr-checkpoint-20260918.md)). Up to 16 AMR spray
+ports now support per-port geometry, mixture fractions, nozzle profile/swirl and
+equal-time injection events with preserved port IDs across restart
+([evidence](validation/spray-amr-ports-20260918.md)). Automatic
+adaptation/rebalancing, physical
 particle boundaries and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
