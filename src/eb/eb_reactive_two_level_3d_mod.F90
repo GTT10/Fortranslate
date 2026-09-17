@@ -20,6 +20,7 @@ module eb_reactive_two_level_3d_mod
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:)
   end type eb_reactive_patch_3d
+  public :: matching_eb_metrics_3d
   public :: tag_reactive_eb_temperature_3d
   public :: remap_reactive_eb_multipatch_3d
   ! Multipatch stepping accepts empty patch arrays: only the coarse grid
@@ -69,7 +70,7 @@ contains
       if (.not.valid) return
       call extract_eb_geometry_3d(coarse,lower(:,p),upper,section,valid)
       if (.not.valid) return
-      if (.not.matching_metrics(section,restricted)) return
+      if (.not.matching_eb_metrics_3d(section,restricted)) return
       refined(lower(1,p):upper(1),lower(2,p):upper(2),lower(3,p):upper(3))=.true.
       do k=1,d(3)
       do j=1,d(2)
@@ -208,7 +209,7 @@ contains
         if (.not.valid) return
         call extract_eb_geometry_3d(old_patches(q)%geometry,ol,oh,old_overlap,valid)
         if (.not.valid) return
-        if (.not.matching_metrics(old_overlap,new_overlap)) return
+        if (.not.matching_eb_metrics_3d(old_overlap,new_overlap)) return
         candidate(p)%state(:,nl(1):nh(1),nl(2):nh(2),nl(3):nh(3))= &
           old_patches(q)%state(:,ol(1):oh(1),ol(2):oh(2),ol(3):oh(3))
         candidate(p)%temperature(nl(1):nh(1),nl(2):nh(2),nl(3):nh(3))= &
@@ -241,7 +242,7 @@ contains
         if (.not.good) return
         call extract_eb_geometry_3d(coarse,lower(:,a),upper(:,a),section,good)
         if (.not.good) return
-        if (.not.matching_metrics(section,restricted)) return
+        if (.not.matching_eb_metrics_3d(section,restricted)) return
       end do
       valid=.true.
     end subroutine validate_layout
@@ -494,7 +495,7 @@ contains
       if (.not.valid) return
       call extract_eb_geometry_3d(coarse,lower(:,p),upper(:,p),section,valid)
       if (.not.valid) return
-      if (.not.matching_metrics(section,restricted)) return
+      if (.not.matching_eb_metrics_3d(section,restricted)) return
       order(p)=p
     end do
     ! Lexicographic box origins define face ownership and summation order,
@@ -969,7 +970,7 @@ contains
     if (.not.valid) return
     call extract_eb_geometry_3d(coarse,lower,upper,section,valid)
     if (.not.valid) return
-    if (.not.matching_metrics(section,restricted)) return
+    if (.not.matching_eb_metrics_3d(section,restricted)) return
     allocate(initial,source=coarse_state);allocate(initial_t,source=coarse_temperature)
     call restrict_reactive_eb_state_3d(species,fine,ratio,fine_state,fine_temperature, &
       initial(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3)), &
@@ -1098,7 +1099,7 @@ contains
     ok=.true.
   end subroutine advance_two_level_euler
 
-  logical function matching_metrics(a,b) result(valid)
+  logical function matching_eb_metrics_3d(a,b) result(valid)
     type(eb_geometry_3d), intent(in) :: a,b
     real(dp), parameter :: tol=2048._dp*epsilon(1._dp)
     real(dp) :: length_scale,area_scale
@@ -1138,5 +1139,5 @@ contains
     if (any(abs(a%boundary_normal_integral_z-b%boundary_normal_integral_z)>tol*area_scale)) return
     if (any(a%cell_type/=b%cell_type)) return
     valid=.true.
-  end function matching_metrics
+  end function matching_eb_metrics_3d
 end module eb_reactive_two_level_3d_mod

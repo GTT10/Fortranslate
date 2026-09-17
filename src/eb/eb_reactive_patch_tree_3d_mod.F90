@@ -1,0 +1,219 @@
+module eb_reactive_patch_tree_3d_mod
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: iso_fortran_env, only: int64
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: reactive_nvar
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use elementary_kinetics_mod, only: elementary_reaction
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
+  use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
+  use eb_reactive_transfer_3d_mod, only: prolong_reactive_eb_state_pcm_3d,restrict_reactive_eb_state_3d
+  implicit none
+  private
+  type, public :: eb_reactive_tree_3d
+    type(amr_patch_tree_3d) :: topology
+    type(eb_reactive_patch_3d), allocatable :: nodes(:)
+  end type
+  public :: react_reactive_eb_tree_3d
+  public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
+contains
+  subroutine bounds(tree,node,lo,hi)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: node
+    integer, intent(out) :: lo(3),hi(3)
+    lo=[tree%nodes(node)%patch%coarse_i_lower,tree%nodes(node)%patch%coarse_j_lower, &
+      tree%nodes(node)%patch%coarse_k_lower]
+    hi=[tree%nodes(node)%patch%coarse_i_upper,tree%nodes(node)%patch%coarse_j_upper, &
+      tree%nodes(node)%patch%coarse_k_upper]
+  end subroutine bounds
+
+  subroutine initialize_reactive_eb_tree_3d(species,topology,finest,root_state,root_temperature,tree,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: topology
+    type(eb_geometry_3d), intent(in) :: finest
+    real(dp), intent(in) :: root_state(:,:,:,:),root_temperature(:,:,:)
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: candidate
+    type(eb_geometry_3d), allocatable :: levels(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: count,level,node,parent,ratio,lo(3),hi(3),d(3),i,j,k,index(3),nv
+    logical :: valid
+    ok=.false.
+    call amr_tree_integer_layout_3d(topology,origin,domain,ratios,valid)
+    if (.not.valid.or..not.finest%is_valid()) return
+    count=size(ratios);nv=reactive_nvar(size(species))
+    if (any(int([finest%nx,finest%ny,finest%nz],int64)/=domain(:,count))) return
+    if (any(shape(root_state)/=[nv,topology%nodes(1)%shape])) return
+    if (any(shape(root_temperature)/=topology%nodes(1)%shape)) return
+    allocate(levels(count));levels(count)=finest
+    do level=count,2,-1
+      call coarsen_eb_geometry_3d(levels(level),ratios(level),levels(level-1),valid)
+      if (.not.valid) return
+    end do
+    candidate%topology=topology
+    allocate(candidate%nodes(size(topology%nodes)))
+    do node=1,size(topology%nodes)
+      level=topology%nodes(node)%level+1;d=topology%nodes(node)%shape
+      lo=int(origin(:,node))+1;hi=lo+d-1
+      call extract_eb_geometry_3d(levels(level),lo,hi,candidate%nodes(node)%geometry,valid)
+      if (.not.valid) return
+      allocate(candidate%nodes(node)%state(nv,d(1),d(2),d(3)),candidate%nodes(node)%temperature(d(1),d(2),d(3)))
+      if (node==1) then
+        candidate%nodes(node)%state=root_state;candidate%nodes(node)%temperature=root_temperature
+        call prolong_reactive_eb_state_pcm_3d(species,levels(1),1,root_state,root_temperature, &
+          candidate%nodes(1)%state,candidate%nodes(1)%temperature,valid)
+      else
+        parent=topology%nodes(node)%parent;ratio=topology%nodes(node)%patch%refinement_ratio
+        call bounds(topology,node,lo,hi)
+        do k=1,d(3)
+        do j=1,d(2)
+        do i=1,d(1)
+          index=lo+([i,j,k]-1)/ratio
+          candidate%nodes(node)%state(:,i,j,k)=candidate%nodes(parent)%state(:,index(1),index(2),index(3))
+          candidate%nodes(node)%temperature(i,j,k)=candidate%nodes(parent)%temperature(index(1),index(2),index(3))
+        end do
+        end do
+        end do
+        call prolong_reactive_eb_state_pcm_3d(species,candidate%nodes(node)%geometry,ratio, &
+          candidate%nodes(parent)%state(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+          candidate%nodes(parent)%temperature(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+          candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid)
+      end if
+      if (.not.valid) return
+    end do
+    if (.not.valid_tree(candidate,nv)) return
+    tree=candidate;ok=.true.
+  end subroutine initialize_reactive_eb_tree_3d
+
+  logical function valid_tree(tree,nv) result(valid)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    integer, intent(in) :: nv
+    type(eb_geometry_3d) :: section,restricted
+    integer :: node,parent,lo(3),hi(3),d(3)
+    logical :: good
+    valid=.false.
+    if (.not.tree%topology%is_valid().or..not.allocated(tree%nodes)) return
+    if (size(tree%nodes)/=size(tree%topology%nodes)) return
+    do node=1,size(tree%nodes)
+      if (.not.tree%nodes(node)%geometry%is_valid()) return
+      if (.not.allocated(tree%nodes(node)%state).or..not.allocated(tree%nodes(node)%temperature)) return
+      d=tree%topology%nodes(node)%shape
+      if (any([tree%nodes(node)%geometry%nx,tree%nodes(node)%geometry%ny,tree%nodes(node)%geometry%nz]/=d)) return
+      if (any(shape(tree%nodes(node)%state)/=[nv,d]).or.any(shape(tree%nodes(node)%temperature)/=d)) return
+      if (node==1) cycle
+      parent=tree%topology%nodes(node)%parent
+      call bounds(tree%topology,node,lo,hi)
+      call coarsen_eb_geometry_3d(tree%nodes(node)%geometry,tree%topology%nodes(node)%patch%refinement_ratio,restricted,good)
+      if (.not.good) return
+      call extract_eb_geometry_3d(tree%nodes(parent)%geometry,lo,hi,section,good)
+      if (.not.good) return
+      if (.not.matching_eb_metrics_3d(section,restricted)) return
+    end do
+    valid=.true.
+  end function valid_tree
+
+  subroutine average_down_reactive_eb_tree_3d(species,tree,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: candidate
+    integer :: node,parent,lo(3),hi(3)
+    logical :: valid
+    ok=.false.
+    if (.not.valid_tree(tree,reactive_nvar(size(species)))) return
+    candidate=tree
+    do node=size(tree%nodes),2,-1
+      parent=tree%topology%nodes(node)%parent
+      call bounds(tree%topology,node,lo,hi)
+      call restrict_reactive_eb_state_3d(species,candidate%nodes(node)%geometry, &
+        tree%topology%nodes(node)%patch%refinement_ratio,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
+        candidate%nodes(parent)%state(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        candidate%nodes(parent)%temperature(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),valid)
+      if (.not.valid) return
+    end do
+    tree=candidate;ok=.true.
+  end subroutine average_down_reactive_eb_tree_3d
+
+  subroutine react_reactive_eb_tree_3d(species,reactions,dt,rtol,atol,tree,chemical_change,ok,integrator)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: dt,rtol,atol
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    real(dp), intent(inout) :: chemical_change(:)
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: integrator
+    type(eb_reactive_tree_3d) :: candidate
+    logical, allocatable :: active(:,:,:)
+    real(dp) :: before(size(chemical_change)),after(size(chemical_change))
+    integer :: node,child,d(3),lo(3),hi(3)
+    logical :: valid
+    ok=.false.
+    if (size(chemical_change)/=reactive_nvar(size(species))) return
+    if (.not.all(ieee_is_finite([dt,rtol,atol]))) return
+    if (min(dt,rtol,atol)<=0._dp.or.size(reactions)<1) return
+    call integrate_reactive_eb_tree_3d(tree,before,valid)
+    if (.not.valid) return
+    candidate=tree
+    do node=1,size(tree%nodes)
+      d=tree%topology%nodes(node)%shape
+      allocate(active(d(1),d(2),d(3)))
+      active=tree%nodes(node)%geometry%volume_fraction>0._dp
+      do child=node+1,size(tree%nodes)
+        if (tree%topology%nodes(child)%parent/=node) cycle
+        call bounds(tree%topology,child,lo,hi)
+        active(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.false.
+      end do
+      if (any(active)) then
+        call advance_reactive_chemistry_3d(species,reactions,candidate%nodes(node)%state, &
+          candidate%nodes(node)%temperature,d(1),d(2),d(3),dt,rtol,atol,valid,active,integrator)
+        if (.not.valid) return
+      end if
+      deallocate(active)
+    end do
+    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    if (.not.valid) return
+    call integrate_reactive_eb_tree_3d(candidate,after,valid)
+    if (.not.valid) return
+    if (.not.all(ieee_is_finite(after-before))) return
+    tree=candidate;chemical_change=after-before;ok=.true.
+  end subroutine react_reactive_eb_tree_3d
+
+  subroutine integrate_reactive_eb_tree_3d(tree,values,ok)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    real(dp), intent(inout) :: values(:)
+    logical, intent(out) :: ok
+    real(dp) :: candidate(size(values)),volume
+    logical, allocatable :: exposed(:,:,:)
+    integer :: node,child,d(3),lo(3),hi(3),i,j,k
+    ok=.false.
+    if (.not.valid_tree(tree,size(values))) return
+    candidate=0._dp
+    do node=1,size(tree%nodes)
+      d=tree%topology%nodes(node)%shape
+      allocate(exposed(d(1),d(2),d(3)))
+      exposed=tree%nodes(node)%geometry%volume_fraction>0._dp
+      do child=node+1,size(tree%nodes)
+        if (tree%topology%nodes(child)%parent/=node) cycle
+        call bounds(tree%topology,child,lo,hi)
+        exposed(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.false.
+      end do
+      volume=tree%nodes(node)%geometry%dx*tree%nodes(node)%geometry%dy*tree%nodes(node)%geometry%dz
+      do k=1,d(3)
+      do j=1,d(2)
+      do i=1,d(1)
+        if (.not.exposed(i,j,k)) cycle
+        if (.not.all(ieee_is_finite(tree%nodes(node)%state(:,i,j,k)))) return
+        candidate=candidate+volume*tree%nodes(node)%geometry%volume_fraction(i,j,k)*tree%nodes(node)%state(:,i,j,k)
+      end do
+      end do
+      end do
+      deallocate(exposed)
+    end do
+    if (.not.all(ieee_is_finite(candidate))) return
+    values=candidate;ok=.true.
+  end subroutine integrate_reactive_eb_tree_3d
+end module eb_reactive_patch_tree_3d_mod
