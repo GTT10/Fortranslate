@@ -211,7 +211,10 @@ MPI temperature adaptation now gathers exposed fluid-cell votes, preserves fine
 hot spots and removes solid-only tiles. Adaptive application events and changed-rank
 restart match the focused serial case
 ([adaptive MPI evidence](validation/mpi-eb-tree-adaptive-20260918.md)).
-EB tree MPI temporal halos/subcycling, selected-target
+MPI ancestor halo donors now support independent time fractions at each depth,
+with exact focused serial parity and collective rollback
+([temporal MPI evidence](validation/mpi-eb-tree-time-halo-20260918.md)).
+EB tree MPI subcycling, selected-target
 wiring and distributed I/O remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
