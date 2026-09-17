@@ -479,8 +479,8 @@ The communicator is borrowed, and calls must follow collective ordering. Root an
 owner buffers must be distinct actual objects. MPI runtime/communicator failure
 is governed by the MPI error handler, not a recoverable application transaction.
 These transfers support initialization/output and verification; they are not a
-root-gather stepping algorithm. Ownership planning, evolution, restriction/reflux, rebalancing and application
-integration remain open; synchronous distributed halos are described below. Whole-node
+root-gather stepping algorithm. Ownership planning, evolution, reflux, rebalancing and application integration
+remain open; distributed halos and restriction are described below. Whole-node
 ownership does not split a large root patch or establish scaling.
 
 ## Sparse MPI cell requests
@@ -532,6 +532,34 @@ The planning walks and MPI self-requests are an optimization opportunity, not a
 scaling result. Existing MPI runtime error-handler limits apply. The shared
 sampler supports serial temporal endpoints, but this MPI wrapper is synchronous;
 level-specific endpoint exchange and distributed evolution/reflux remain open.
+
+## MPI bottom-up restriction
+
+`average_down_mpi_amr_tree_3d(tree,owners,local,nvar,comm,ok,minimum_depth)`
+updates covered parent cells without gathering full fields. The optional zero-based
+minimum depth defaults to zero; only parents at that depth or deeper are changed.
+The deepest level is a valid no-op limit. All ranks must agree on the depth.
+
+The cell-exchange module now exposes its metadata/allocation preflight as
+`validate_mpi_amr_tree_local_3d`; cell fetch and restriction both use it. Restriction
+additionally checks all local values for finiteness, restricted-box MPI counts and
+the shared kernel's default-integer `ratio**3` bound. This validation does not
+claim that partial MPI states satisfy the serial full-tree validity contract.
+
+Each rank privately copies only its owned payloads. Reverse node traversal updates
+descendants before ancestors. The fine owner applies the existing
+`restrict_average_3d` kernel to its current candidate and sends just the averaged
+box to the parent owner (tag 28403). Same-owner pairs need no payload message;
+other ranks allocate no box. Collective success gates each allocation, calculation
+and transfer before the parent candidate is updated. Original local fields are
+replaced only after the whole traversal succeeds.
+
+This preserves the serial summation order and parent injection exactly, including
+uncovered cells and parents above the selected depth. Calls borrow the communicator
+and must obey collective ordering; MPI runtime failures follow its error handler.
+The sequential node traversal uses per-node collective gates and is not a scaling
+claim. EOS recovery, flux reflux, level stepping and application integration are
+separate operations still to be connected.
 
 ## Remaining integration
 

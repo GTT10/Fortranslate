@@ -122,8 +122,8 @@ and scaled diffusion/wall bounds. Coupled/application dispatch and mode-aware
 checkpoint continuation are now connected. MPI patch-owner scatter/gather is
 implemented, and sparse owner-cell queries provide the payload exchange primitive;
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
-are connected. Next connect distributed level stepping, restriction/reflux and
-coarse-time endpoints. Broader qualification remains. Exposed-cell chemistry and reaction/hydro splitting are connected;
+are connected. Distributed bottom-up restriction with depth limits is implemented.
+Next connect distributed level stepping, reflux and coarse-time endpoints. Broader qualification remains. Exposed-cell chemistry and reaction/hydro splitting are connected;
 synchronous molecular transport now also connects nested reflux and physical
 walls. The transactional reaction/transport/hydro split API is connected.
 Conservative overlap remapping now handles topology/refinement-ratio changes.
