@@ -642,8 +642,10 @@ events now support tied times, zero dose, per-event mass scaling and an injected
 inventory ledger ([evidence](validation/spray-eb-schedule-20260918.md)). Immutable
 serial EB spray snapshots now resume gas, particles, scheduled injection and
 cumulative inventories with numerical/geometry context checks
-([evidence](validation/spray-eb-restart-20260918.md)). Independent ports,
-distributed EB particles, liquid wall impacts, lateral film transport and
+([evidence](validation/spray-eb-restart-20260918.md)). A bounded MPI ownership
+primitive now migrates AMR particles with collective nodal EB fluid checks
+([evidence](validation/spray-mpi-eb-tree-20260918.md)). Independent ports,
+distributed EB particle evolution, liquid wall impacts, lateral film transport and
 physical qualification remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
