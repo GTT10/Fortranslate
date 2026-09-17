@@ -1,0 +1,9 @@
+&eb_tree
+ root_shape=4,4,4,
+ child_count=1,parent(1)=1,ratio(1)=2,lower(:,1)=1,1,1,upper(:,1)=2,4,4,
+ domain_lower=0,0,0,domain_upper=.004,.004,.004,
+ geometry_type='level_set',level_set_file='level_set.dat',
+ time_step=1.e-8,final_time=2.e-8,maximum_steps=100,
+ chemistry_enabled=.true.,chemistry_integrator='implicit',transport_enabled=.true.,
+ riemann_solver='hllc',output_file='result.csv'
+/

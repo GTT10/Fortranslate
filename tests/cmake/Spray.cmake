@@ -372,3 +372,11 @@ if(PELEF_ENABLE_SPRAY)
     endif()
   endif()
 endif()
+
+if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
+  add_test(NAME spray_mpi_eb_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
+    --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+    --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_application")
+  set_tests_properties(spray_mpi_eb_application PROPERTIES LABELS "spray;mpi;eb;application" TIMEOUT 180 PROCESSORS 4)
+endif()

@@ -14,6 +14,12 @@ program pelef_reactive_eb_tree_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
 #endif
+#ifdef PELEF_MPI_EB_SPRAY
+  use spray_parcel_mod
+  use spray_mixture_mod, only: liquid_mixture_properties
+  use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
+  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
+#endif
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end,iostat_eor
   use precision_mod, only: dp
@@ -54,6 +60,14 @@ program pelef_reactive_eb_tree_3d
   implicit none
   character(len=:), allocatable :: element_names(:),bundle_identity,checkpoint_integrator
   real(dp), allocatable :: element_atoms(:,:),base_mole_fractions(:)
+#ifdef PELEF_MPI_EB_SPRAY
+  type(spray_parcel), allocatable :: drops(:)
+  type(spray_liquid), allocatable :: liquids(:)
+  type(spray_options) :: particle_options
+  real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
+  character(len=1024) :: spray_input
+  integer :: particle_steps
+#endif
   integer :: composition_count=0
   character(len=selected_composition_name_length) :: composition_species(selected_composition_max_species)=''
   real(dp) :: composition_mole_fractions(selected_composition_max_species)=0._dp
@@ -126,13 +140,26 @@ program pelef_reactive_eb_tree_3d
   call MPI_Comm_size(MPI_COMM_WORLD,mpi_size,mpi_ierr)
   if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI size failed'
 #endif
+#ifdef PELEF_MPI_EB_SPRAY
+  if(command_argument_count()/=2) error stop 'Usage: MPI EB spray <tree.nml> <spray.nml>'
+  call get_command_argument(2,spray_input)
+#else
   if (command_argument_count()/=1) error stop 'Usage: pelef_reactive_eb_tree_3d input.nml'
+#endif
   call get_command_argument(1,input_path)
   open(newunit=unit,file=trim(input_path),status='old',action='read',iostat=ios)
   if (ios/=0) error stop 'Cannot open input'
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+#ifdef PELEF_MPI_EB_SPRAY
+  if(geometry_type/='level_set') error stop 'MPI EB spray requires original nodal geometry'
+  if(checkpoint_interval_steps/=0.or.len_trim(restart_file)>0.or.regrid_count/=0.or.temperature_adaptive) &
+    error stop 'MPI EB spray checkpoint and regridding are not connected'
+  if(rebalance_interval_steps/=0) error stop 'MPI EB spray rebalancing is not connected'
+  if(trim(output_file)==trim(spray_input).or.trim(output_file)//'.budget.csv'==trim(spray_input)) &
+    error stop 'Spray input aliases output'
+#endif
   if (rebalance_interval_steps<0) error stop 'Invalid rebalance interval'
   if (.not.ieee_is_finite(rebalance_minimum_gain)) error stop 'Invalid rebalance gain'
   if (rebalance_minimum_gain<0._dp.or.rebalance_minimum_gain>=1._dp) error stop 'Invalid rebalance gain'
@@ -215,7 +242,11 @@ program pelef_reactive_eb_tree_3d
   config%viscosity_enabled=.true.;config%thermal_conduction_enabled=.true.
   config%species_diffusion_enabled=.true.;config%barodiffusion_enabled=.true.
   config%final_time=final_time;config%maximum_steps=maximum_steps
+#ifdef PELEF_MPI_EB_SPRAY
+  call build_configured_eb_geometry_3d(config,finest,ok,nodal_phi)
+#else
   call build_configured_eb_geometry_3d(config,finest,ok)
+#endif
   if (.not.ok) error stop 'Cannot build finest geometry'
   allocate(geometry_levels(size(shared_ratios)));geometry_levels(size(shared_ratios))=finest
   do depth=size(shared_ratios),2,-1
@@ -285,6 +316,10 @@ program pelef_reactive_eb_tree_3d
   call integrate_reactive_eb_tree_3d(tree,current,ok)
 #endif
   if (.not.ok) error stop 'Initial inventory failed'
+#ifdef PELEF_MPI_EB_SPRAY
+  call initialize_particles()
+  call add_particle_inventory(current)
+#endif
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
   if (len_trim(restart_file)>0) call restore()
@@ -314,9 +349,17 @@ program pelef_reactive_eb_tree_3d
         call MPI_Allreduce(ok,work_ready,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,mpi_ierr)
         if (mpi_ierr/=MPI_SUCCESS.or..not.work_ready) error stop 'Cannot allocate tree work counters'
       end if
+#ifdef PELEF_MPI_EB_SPRAY
+      call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
+        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
+        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling)
+#else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling)
+#endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
@@ -380,6 +423,9 @@ program pelef_reactive_eb_tree_3d
   end do
   if (record%time<final_time.and..not.stopped) error stop 'Maximum steps reached before final time'
   call balance()
+#ifdef PELEF_MPI_EB_SPRAY
+  call output_particles()
+#endif
   call output()
 #ifdef PELEF_MPI_EB_TREE
   if (mpi_rank==0) then
@@ -393,6 +439,105 @@ program pelef_reactive_eb_tree_3d
   if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI finalize failed'
 #endif
 contains
+#ifdef PELEF_MPI_EB_SPRAY
+  subroutine initialize_particles()
+    integer :: nc,number,q,c,stream,code,closed
+    character(len=24) :: vapor_names(16)
+    real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
+    real(dp) :: reference_pressures(16),latent_heats(16),fractions(16)
+    real(dp) :: total_mass,center(3),axis(3),speed,half_angle,diameter,liquid_temperature,rho,cp,e
+    type(spray_liquid) :: effective
+    namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
+      reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
+      liquid_temperature,particle_options
+    nc=1;number=1;vapor_names='H2O';densities=1000;heat_capacities=4184;reference_temperatures=373.15_dp
+    reference_pressures=101325;latent_heats=2.257e6_dp;fractions=0;fractions(1)=1
+    total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0
+    diameter=1e-5_dp;liquid_temperature=350;particle_options=spray_options()
+    open(newunit=stream,file=trim(spray_input),status='old',action='read',iostat=code)
+    if(code/=0) error stop 'Cannot read MPI EB spray input'
+    read(stream,nml=eb_spray,iostat=code)
+    close(stream,iostat=closed)
+    if(code/=0.or.closed/=0) error stop 'Invalid MPI EB spray input'
+    if(nc<1.or.nc>16.or.number<1.or.number>125000) error stop 'Invalid MPI EB spray dimensions'
+    if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
+    if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Invalid fraction sum'
+    if(.not.valid_spray_options(particle_options).or.particle_options%khrt_children) &
+      error stop 'Unsupported particle options'
+    if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
+    allocate(liquids(nc))
+    do c=1,nc
+      call initialize_spray_liquid(species,vapor_names(c),densities(c),heat_capacities(c),reference_temperatures(c), &
+        reference_pressures(c),latent_heats(c),liquids(c),ok)
+      if(.not.ok) error stop 'Invalid liquid properties'
+    end do
+    call liquid_mixture_properties(liquids,fractions(:nc),liquid_temperature,rho,cp,e,ok)
+    if(.not.ok) error stop 'Invalid liquid mixture'
+    effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
+    effective%reference_temperature=liquid_temperature;effective%reference_energy=e
+    ! Generate deterministically on every rank to validate identical input semantics;
+    ! rank zero retains the initial population for the collective owner migration.
+    call inject_cone_parcels(effective,total_mass,number,1_int64,center,axis,speed,half_angle, &
+      diameter,liquid_temperature,drops,ok)
+    if(.not.ok) error stop 'Invalid initial injection'
+    if(mpi_rank/=0) then
+      deallocate(drops)
+      allocate(drops(0))
+    end if
+    allocate(component_mass(nc,size(drops)))
+    do q=1,size(drops)
+      component_mass(:,q)=fractions(:nc)*drops(q)%mass
+    end do
+    call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,topology,mpi_owners,nodal_phi,drops, &
+      domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,ok,component_mass)
+    if(.not.ok) error stop 'Initial EB particle ownership failed'
+  end subroutine
+
+  subroutine add_particle_inventory(inventory)
+    real(dp), intent(inout) :: inventory(:)
+    real(dp) :: local(size(inventory)),global(size(inventory)),rho,cp,e,amount
+    integer :: q,c
+    local=0
+    do q=1,size(drops)
+      if(drops(q)%mass<=0) cycle
+      call liquid_mixture_properties(liquids,component_mass(:,q)/drops(q)%mass,drops(q)%temperature,rho,cp,e,ok)
+      if(.not.ok) error stop 'Invalid particle inventory'
+      amount=drops(q)%mass*drops(q)%multiplicity
+      local(1)=local(1)+amount;local(2:4)=local(2:4)+amount*drops(q)%velocity
+      local(5)=local(5)+amount*(e+.5_dp*sum(drops(q)%velocity**2))
+      do c=1,size(liquids)
+        local(5+liquids(c)%vapor_index)=local(5+liquids(c)%vapor_index)+component_mass(c,q)*drops(q)%multiplicity
+      end do
+    end do
+    call MPI_Allreduce(local,global,size(local),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,mpi_ierr)
+    if(mpi_ierr/=MPI_SUCCESS) error stop 'Particle inventory reduction failed'
+    inventory=inventory+global
+  end subroutine
+
+  subroutine output_particles()
+    integer :: stream,code,closed,q,c
+    character(len=32) :: rank_label,label
+    character(len=:), allocatable :: path
+    write(rank_label,'(i0)') mpi_rank
+    path=trim(output_file)//'.particles.rank'//trim(rank_label)//'.csv'
+    open(newunit=stream,file=path,status='new',action='write',iostat=code)
+    if(code/=0) error stop 'Cannot create particle CSV (existing files are protected)'
+    write(stream,'(a)',advance='no') 'id,x,y,z,u,v,w,mass,temperature,multiplicity'
+    do c=1,size(liquids)
+      write(label,'(i0)') c
+      write(stream,'(a)',advance='no') ',component_mass_'//trim(label)
+    end do
+    write(stream,*)
+    do q=1,size(drops)
+      write(stream,'(i0,",",*(es25.16,:,","))',iostat=code) drops(q)%id,drops(q)%position,drops(q)%velocity, &
+        drops(q)%mass,drops(q)%temperature,drops(q)%multiplicity,component_mass(:,q)
+      if(code/=0) error stop 'Cannot write particle CSV'
+    end do
+    close(stream,iostat=closed)
+    if(closed/=0) error stop 'Cannot close particle CSV'
+  end subroutine
+#endif
+
 #ifdef PELEF_MPI_EB_TREE
   subroutine initialize_owned()
     integer :: p,ios,ierr
@@ -687,6 +832,9 @@ contains
     call integrate_reactive_eb_tree_3d(tree,current,ok)
 #endif
     if (.not.ok) error stop 'Inventory failed'
+#ifdef PELEF_MPI_EB_SPRAY
+    call add_particle_inventory(current)
+#endif
     error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical)/ &
       max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)))
     if (.not.ieee_is_finite(error).or.error>5.e-10_dp) error stop 'Composite budget failed'
