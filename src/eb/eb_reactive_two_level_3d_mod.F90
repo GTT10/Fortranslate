@@ -2,6 +2,8 @@ module eb_reactive_two_level_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_transfer_3d_mod, only: restrict_reactive_eb_state_3d,fill_reactive_eb_patch_halo_3d
@@ -10,8 +12,91 @@ module eb_reactive_two_level_3d_mod
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   implicit none
   private
-  public :: advance_reactive_eb_two_level_euler_3d
+  public :: advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_two_level_strang_3d
 contains
+  ! Symmetric reaction/hydro composition; the Euler hydro stage remains first
+  ! order. Only exposed coarse cells and active fine cells own chemical solves.
+  subroutine advance_reactive_eb_two_level_strang_3d(species,reactions,coarse,fine,lower,ratio,solver,dt, &
+      chemistry_enabled,rtol,atol,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+      boundary_change,wall_change,chemistry_change,ok,chemistry_integrator)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(eb_geometry_3d), intent(in) :: coarse,fine
+    integer, intent(in) :: lower(3),ratio
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt,rtol,atol
+    logical, intent(in) :: chemistry_enabled
+    real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
+    real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: chemistry_integrator
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),child(:,:,:,:),child_t(:,:,:)
+    real(dp), allocatable :: boundary(:),wall(:),chemical(:),before(:)
+    logical, allocatable :: active_coarse(:,:,:),active_fine(:,:,:)
+    integer :: nvar,n(3),nf(3),upper(3)
+    logical :: valid
+    ok=.false.;nvar=reactive_nvar(size(species))
+    if (size(chemistry_change)/=nvar) return
+    if (.not.chemistry_enabled) then
+      call advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
+        coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
+      if (ok) chemistry_change=0._dp
+      return
+    end if
+    if (.not.all(ieee_is_finite([dt,rtol,atol]))) return
+    if (min(dt,rtol,atol)<=0._dp.or.ratio<1.or.size(reactions)<1) return
+    if (.not.coarse%is_valid().or..not.fine%is_valid()) return
+    n=[coarse%nx,coarse%ny,coarse%nz];nf=[fine%nx,fine%ny,fine%nz]
+    if (any(mod(nf,ratio)/=0).or.any(lower<1).or.any(lower>n)) return
+    if (any(nf/ratio>n-lower+1)) return
+    upper=lower+nf/ratio-1
+    if (any(shape(coarse_state)/=[nvar,n]).or.any(shape(coarse_temperature)/=n).or. &
+      any(shape(fine_state)/=[nvar,nf]).or.any(shape(fine_temperature)/=nf)) return
+    if (size(boundary_change)/=nvar.or.size(wall_change)/=nvar) return
+    allocate(candidate,source=coarse_state);allocate(temps,source=coarse_temperature)
+    allocate(child,source=fine_state);allocate(child_t,source=fine_temperature)
+    allocate(active_coarse(n(1),n(2),n(3)),active_fine(nf(1),nf(2),nf(3)))
+    active_coarse=coarse%volume_fraction>0._dp;active_fine=fine%volume_fraction>0._dp
+    active_coarse(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))=.false.
+    allocate(boundary(nvar),wall(nvar),chemical(nvar),before(nvar));chemical=0._dp
+    call reaction_half(valid)
+    if (.not.valid) return
+    call advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
+      candidate,temps,child,child_t,boundary,wall,valid)
+    if (.not.valid) return
+    call reaction_half(valid)
+    if (.not.valid) return
+    if (.not.all(ieee_is_finite(chemical))) return
+    coarse_state=candidate;coarse_temperature=temps;fine_state=child;fine_temperature=child_t
+    boundary_change=boundary;wall_change=wall;chemistry_change=chemical;ok=.true.
+  contains
+    subroutine reaction_half(success)
+      logical, intent(out) :: success
+      integer :: c
+      real(dp) :: after
+      success=.false.
+      do c=1,nvar
+        before(c)=coarse%dx*coarse%dy*coarse%dz*sum(candidate(c,:,:,:)*coarse%volume_fraction,mask=active_coarse)+ &
+          fine%dx*fine%dy*fine%dz*sum(child(c,:,:,:)*fine%volume_fraction,mask=active_fine)
+      end do
+      call advance_reactive_chemistry_3d(species,reactions,candidate,temps,n(1),n(2),n(3), &
+        .5_dp*dt,rtol,atol,success,active_coarse,chemistry_integrator)
+      if (.not.success) return
+      call advance_reactive_chemistry_3d(species,reactions,child,child_t,nf(1),nf(2),nf(3), &
+        .5_dp*dt,rtol,atol,success,active_fine,chemistry_integrator)
+      if (.not.success) return
+      do c=1,nvar
+        after=coarse%dx*coarse%dy*coarse%dz*sum(candidate(c,:,:,:)*coarse%volume_fraction,mask=active_coarse)+ &
+          fine%dx*fine%dy*fine%dz*sum(child(c,:,:,:)*fine%volume_fraction,mask=active_fine)
+        chemical(c)=chemical(c)+after-before(c)
+      end do
+      call restrict_reactive_eb_state_3d(species,fine,ratio,child,child_t, &
+        candidate(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3)), &
+        temps(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3)),success)
+    end subroutine reaction_half
+  end subroutine advance_reactive_eb_two_level_strang_3d
+
   ! One static fine patch, a common Euler interval and physical outflow faces.
   ! All four state arrays and both per-step inventories form one transaction.
   subroutine advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
