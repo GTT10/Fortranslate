@@ -169,6 +169,10 @@ A selected-mechanism executable now shares the tree application, validates
 composition and initial temperature range, checks chemical element conservation,
 and binds bundle/composition identity on restart
 ([selected evidence](validation/eb-tree-selected-20260918.md)).
+Tree face halos now optionally interpolate provisional ancestor endpoints
+with independent per-level fractions while preserving current peer donors
+([time-halo evidence](validation/eb-tree-time-halo-20260918.md)); recursive
+substep advancement remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
