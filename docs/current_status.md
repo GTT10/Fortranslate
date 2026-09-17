@@ -597,8 +597,11 @@ for common or recursive gas steps
 applications now connect physical gas/particle boundaries, reservoir timestep
 bounds, boundary-aware migration/regridding and cumulative boundary inventory
 through changed-rank checkpoint continuation
-([evidence](validation/spray-amr-open-application-20260918.md)). Wall-film coupling
-and EB solid handling remain open.
+([evidence](validation/spray-amr-open-application-20260918.md)). A stationary
+wall-film migration API now preserves mixed-film payloads across finest-cell
+ownership changes and regridding, including exact upper-wall positions
+([evidence](validation/spray-amr-film-migration-20260918.md)). AMR wall-film
+creation/evolution and application/restart coupling, and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
