@@ -6,6 +6,29 @@ single-component point parcels, molecular transport, a deviatoric Smagorinsky
 closure and native or CVODE cell chemistry. It does not replace the existing
 AMR/EB/MPI applications or claim those features are connected to particles.
 
+An AMR ownership library now locates parcels in the finest covering regular
+3D patch-tree cell and constructs stable rank-grouped send buffers using a
+caller-supplied owner map. It handles periodic lookup and reassignment after
+regridding while preserving parcel/component state. This is the ownership and
+partition stage; tree MPI migration, gas sampling/deposition and coupled AMR
+particle stepping remain to be connected.
+
+The `pelef_spray_tree_runtime` library (or
+`pelef_selected_spray_tree_runtime` for a configured bundle) exports
+`locate_amr_tree_spray_cells` and `partition_amr_tree_spray_parcels` from
+`spray_amr_tree_partition_mod`. Inputs use the physical root lower corner and
+root cell spacing, a periodic flag per axis and zero-based node owners. Lookup
+returns `(node,i,j,k)` with one-based local cell indices. Cells and patches
+include their lower faces and exclude upper faces; periodic coordinates wrap
+for lookup without changing parcel positions. Nonperiodic exterior points fail.
+The partitioner requires strictly increasing input IDs and preserves that order
+within each destination rank, returning counts and zero-based offsets. Its
+location array follows the reordered parcels. All outputs retain their previous
+values on validation failure. Empty populations/ranks are supported. Coordinates
+follow the existing spray bound of magnitude at most 1e9 m; root spacings are
+between 1e-12 and 1e9 m, and integer level domains are limited to 2^52 cells per
+axis for floating coordinate lookup. This API does not classify EB solids.
+
 ## Build and run
 
 A fixed H2/O2 gas mechanism with water droplets requires no new dependencies:
