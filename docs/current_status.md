@@ -147,7 +147,12 @@ wall and chemical ledgers and complete rollback
 stream envelope now validates topology, all embedded node records and composite
 budgets before transactional restoration; fixed-mechanism continuation is exact
 in the focused fixture ([checkpoint evidence](validation/eb-tree-checkpoint-20260918.md)).
-Multilevel application/file-publication integration, subcycling and MPI remain open.
+A serial fixed-mechanism
+[tree application](../cases/reactive_eb_tree_3d/README.md) now connects static
+input, coupled steps, exposed-cell/budget CSVs and staged checkpoint saving
+with exact focused continuation ([application evidence](validation/eb-tree-application-20260918.md)).
+Selected frontend, dynamic regridding, automatic intervals, subcycling and MPI
+remain open for the EB tree application.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement

@@ -31,6 +31,8 @@ Experimental [extruded](cases/reactive_eb_extruded_3d/README.md) and
 faceted geometry to fixed/selected reaction, transport and restart.
 A [two-level EB case](cases/reactive_eb_two_level_3d/README.md) also connects
 serial reaction/transport/hydro, coarse/fine synchronization and composite CSV output.
+A [serial multilevel EB tree application](cases/reactive_eb_tree_3d/README.md)
+connects static nested topology, coupled common steps, composite CSVs and restart.
 
 Start with [current status and evidence](docs/current_status.md). In
 particular, static periodic two-level 3D AMR is not dynamic general 3D AMR,
