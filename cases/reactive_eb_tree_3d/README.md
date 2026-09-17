@@ -23,7 +23,7 @@ mpiexec -n 2 ./build/mpi-debug/pelef_mpi_reactive_eb_tree_3d cases/reactive_eb_t
 ```
 
 This entry point accepts static, prescribed scheduled or temperature-adapted
-topology, fixed or automatic common intervals and explicit/implicit chemistry. Automatic estimates use collective
+topology, fixed or automatic root intervals and explicit/implicit chemistry. Automatic estimates use collective
 remote-donor maxima and the minimum patch hydro/diffusion bound, including hidden
 parent cells. Scheduled regridding uses sparse requests to old owners, conservative
 coarsening/PCM refinement and new whole-patch ownership. It preserves the root
@@ -31,14 +31,16 @@ lattice and immutable geometry, as in serial. `scheduled.nml` exercises full
 coarsening and renewed refinement. `adaptive.nml` uses distributed exposed-fluid
 temperature votes and deterministic tiling with solid-only patches removed.
 Completed adaptive layouts are restored from the same V4 checkpoint envelope.
-Subcycling is rejected before output. Each rank holds only its assigned patch
+`subcycling=.true.` selects recursive hydro/transport and scales automatic
+root intervals by cumulative refinement ratios (squared for diffusion).
+Checkpoint stepping mode must match on restart. Each rank holds only its assigned patch
 U/T during stepping; geometry is replicated. Initialization/restart temporarily
 loads the full tree on each rank, then scatters from rank zero and releases full
 state arrays. CSV/checkpoint writes gather to rank zero and share the serial
 format. Checkpoints can continue with a different rank count or the serial
 executable. State CSVs are deterministic in the focused fixture; budget ledgers
 can differ in roundoff when MPI reduction grouping changes. Parallel I/O,
-selected-mechanism MPI wiring and the remaining stepping modes are future work.
+selected-mechanism MPI wiring and scaling qualification are future work.
 
 ## Selected mechanisms
 

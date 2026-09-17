@@ -34,7 +34,7 @@ serial reaction/transport/hydro, coarse/fine synchronization and composite CSV o
 A [serial multilevel EB tree application](cases/reactive_eb_tree_3d/README.md)
 connects static nested topology, coupled common steps, composite CSVs and restart.
 Its fixed-mechanism MPI executable `pelef_mpi_reactive_eb_tree_3d` now supports
-static, scheduled or temperature-adapted trees with owner-local common steps
+static, scheduled or temperature-adapted trees with owner-local common or recursive steps
 and rank-changing/serial restart.
 
 Start with [current status and evidence](docs/current_status.md). In

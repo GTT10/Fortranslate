@@ -972,3 +972,20 @@ if(PELEF_ENABLE_MPI)
   set_tests_properties(unit_mpi_eb_tree_subcycle_full_3d_2 PROPERTIES
     TIMEOUT 180 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(PELEF_ENABLE_MPI)
+  foreach(mode IN ITEMS scheduled automatic)
+    if(mode STREQUAL "scheduled")
+      set(subcycle_input scheduled.nml)
+    else()
+      set(subcycle_input input.nml)
+    endif()
+    add_test(NAME regression_mpi_eb_tree_subcycle_${mode}_3d
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_eb_tree_application_3d.py"
+        --serial "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/${subcycle_input}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/mpi_eb_tree_subcycle_${mode}_3d" --subcycling --${mode})
+    set_tests_properties(regression_mpi_eb_tree_subcycle_${mode}_3d PROPERTIES TIMEOUT 180 PROCESSORS 3)
+  endforeach()
+endif()

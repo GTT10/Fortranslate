@@ -124,10 +124,6 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
-#ifdef PELEF_MPI_EB_TREE
-  if (subcycling) &
-    error stop 'MPI EB tree currently requires common intervals'
-#endif
   if (child_count<0.or.child_count>32.or.any(root_shape<2)) error stop 'Invalid tree dimensions'
   if (maximum_steps<1.or.maximum_step_retries<0.or.maximum_step_retries>60) error stop 'Invalid step limits'
   if (.not.all(ieee_is_finite([domain_lower,domain_upper,plane_position,time_step,final_time,rtol,atol,hydro_cfl,transport_cfl]))) &
@@ -279,7 +275,7 @@ program pelef_reactive_eb_tree_3d
     if (automatic_timestep) then
 #ifdef PELEF_MPI_EB_TREE
       call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
-        hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok)
+        hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok,subcycling)
 #else
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
         .true.,.true.,.true.,estimated_dt,ok,subcycling)
@@ -293,7 +289,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
-        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator)
+        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling)
 #else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &

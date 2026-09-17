@@ -109,7 +109,7 @@ contains
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)
     real(dp) :: b(nv),limiter,inventory(nv),error,dt,expected_dt,actual_dt,hcfl,tcfl
-    integer :: owners(count),p,mode,failure,estimate_mode
+    integer :: owners(count),p,mode,failure,estimate_mode,recursive_mode
     logical :: good,visc
     do p=1,count
       geometry(p)=saved%nodes(p)%geometry
@@ -125,21 +125,26 @@ contains
         lt%fields(p)%values(1,:,:,:)=saved%nodes(p)%temperature
       end do
       initial=local;it=lt;b=17._dp;limiter=19._dp
+      do recursive_mode=0,1
       do estimate_mode=1,3
         hcfl=.5_dp;tcfl=.35_dp
         if (estimate_mode==3) tcfl=1.e-10_dp
         call reactive_eb_tree_timestep_3d(species,transport,saved,hcfl,tcfl,estimate_mode/=1, &
-          .true.,.true.,.true.,expected_dt,good)
+          .true.,.true.,.true.,expected_dt,good,subcycling=recursive_mode==1)
         call require(good,'serial estimate')
         call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,estimate_mode/=1, &
-          .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good)
+          .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good,subcycling=recursive_mode==1)
         call require(good.and.actual_dt==expected_dt,'exact MPI hydro/diffusion bound')
+      end do
       end do
       actual_dt=17._dp
       if (rank==0) hcfl=.25_dp
       call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,.true., &
         .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good)
       call require(.not.good.and.actual_dt==17._dp,'inconsistent CFL preserves estimate')
+      call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,.5_dp,tcfl,.true., &
+        .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good,subcycling=rank==0)
+      call require(.not.good.and.actual_dt==17._dp,'inconsistent subcycling preserves estimate')
       do p=1,count
         if (owners(p)/=rank) cycle
         call require(all(local%fields(p)%values==initial%fields(p)%values),'estimate preserves U')

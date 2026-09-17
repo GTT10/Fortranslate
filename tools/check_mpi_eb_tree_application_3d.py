@@ -19,12 +19,17 @@ def main():
     parser.add_argument('--automatic', action='store_true')
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--adaptive', action='store_true')
+    parser.add_argument('--subcycling', action='store_true')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     template = args.input.read_text().replace("output_file='eb_tree.csv'", "output_file='result.csv'")
+    if args.subcycling:
+        template = template.replace('&eb_tree', '&eb_tree\n subcycling=.true.,', 1)
     if args.automatic:
         template = template.replace('&eb_tree', '&eb_tree\n automatic_timestep=.true.,hydro_cfl=5.e-5,', 1)
+    if args.subcycling and args.automatic:
+        template = template.replace('hydro_cfl=5.e-5', 'hydro_cfl=1.e-5')
     env = os.environ.copy()
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
 
@@ -109,7 +114,7 @@ def main():
         ('wrong_policy', f"restart_file='{stopped / 'saved.chk'}',time_step=2.e-9,"),
         ('wrong_auto', f"restart_file='{stopped / 'saved.chk'}',automatic_timestep={'.false.' if args.automatic else '.true.'},"),
         ('wrong_cfl', f"restart_file='{stopped / 'saved.chk'}',hydro_cfl=1.e-6,"),
-        ('unsupported_subcycle', 'subcycling=.true.,'),
+        ('wrong_subcycle', f"restart_file='{stopped / 'saved.chk'}',subcycling={'.false.' if args.subcycling else '.true.'},"),
     ]
     if args.adaptive:
         failures.append(('wrong_tag', f"restart_file='{stopped / 'saved.chk'}',tag_buffer=1,"))
@@ -121,6 +126,8 @@ def main():
             path.write_text('sentinel\n')
         run(name, 2, extra + "checkpoint_file='protected.chk',checkpoint_interval_steps=1,", success=False)
         assert all(path.read_text() == 'sentinel\n' for path in paths), name
+        if name == 'wrong_subcycle':
+            assert 'Restart subcycling mode mismatch' in (directory / 'run.log').read_text()
         if name == 'wrong_tag':
             assert 'Tagging policy mismatch' in (directory / 'run.log').read_text()
         if name in ('wrong_auto', 'wrong_cfl'):
