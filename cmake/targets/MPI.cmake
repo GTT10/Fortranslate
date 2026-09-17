@@ -22,6 +22,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_amr_eb_patch_tree_2d_mod.F90
     src/parallel/mpi_amr_eb_patch_tree_io_2d_mod.F90
     src/driver/mpi_reactive_eb_patch_tree_2d_application_mod.F90
+    src/driver/mpi_amr_patch_tree_application_3d_mod.F90
     src/parallel/mpi_amr_eb_patch_2d_mod.F90
     src/parallel/mpi_amr_eb_io_2d_mod.F90
     src/parallel/mpi_reactive_transport_1d_mod.F90
@@ -935,3 +936,10 @@ if(PELEF_ENABLE_MPI)
   )
 endif()
 
+
+if(PELEF_ENABLE_MPI)
+  add_executable(pelef_mpi_amr_tree_reactive_3d app/pelef_mpi_amr_tree_reactive_3d.F90)
+  target_link_libraries(pelef_mpi_amr_tree_reactive_3d PRIVATE pelef_mpi_support)
+  pelef_require_coherent_mpi_runtime(pelef_mpi_amr_tree_reactive_3d)
+  install(TARGETS pelef_mpi_amr_tree_reactive_3d RUNTIME DESTINATION bin)
+endif()

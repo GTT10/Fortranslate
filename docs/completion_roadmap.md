@@ -124,7 +124,8 @@ implemented, and sparse owner-cell queries provide the payload exchange primitiv
 synchronous halo donor selection, PCM/PLM interpolation and physical transforms
 are connected. Distributed bottom-up restriction with depth limits is implemented.
 MPI shared/periodic face flux synchronization is implemented. Next connect
-coarse-time endpoints/subcycling and MPI tree application dispatch. Distributed
+coarse-time endpoints/subcycling, MPI tree restart/regridding and selected runtime.
+Fixed-mechanism static MPI tree application dispatch and final CSV output are connected. Distributed
 transport/wall timestep selection and the full common-step operator composition
 are connected. Synchronous molecular-transport RK2 is connected with moving/isothermal
 physical walls and serial PCM/PLM donor parity. Exposed-cell

@@ -205,10 +205,39 @@ The small case produces 127 exposed cells and is an implementation regression,
 not physical validation. Output write failure may leave a partial CSV; the
 files are not checkpoints.
 
+## Static MPI execution
+
+With an MPI-enabled build:
+
+```sh
+cmake --build build/tree-distribution-mpi-debug --target pelef_mpi_amr_tree_reactive_3d
+mpiexec -n 3 build/tree-distribution-mpi-debug/pelef_mpi_amr_tree_reactive_3d \
+  cases/amr_tree_reactive_3d/hotspot.nml cases/amr_tree_reactive_3d/branched.dat
+```
+
+This fixed-mechanism executable uses the same `reactive_3d` input and topology
+format, supports `elementary` and `full_h2o2` loading, and assigns whole nodes
+round-robin by node index. Each rank initializes and advances only owned payloads;
+empty ranks are supported. It uses common timesteps and the full reaction/transport/
+hydro composition with up to 20 timestep-halving attempts.
+
+Rank zero gathers state once for the initial inventory and gathers state/temperature
+at final output. Final CSV rows and budget format match serial. These gathers are
+initialization/output operations; time stepping does not gather full fields.
+The bounded regression checks byte equality for the elementary hotspot case.
+
+Only the two required CLI arguments are accepted. The `amr_tree_checkpoint`,
+`amr_tree_adaptation` and `amr_tree_timestepping` groups are rejected by this MPI
+entry point; MPI restart, regridding and subcycling are not yet connected. Input
+and output lexical aliases are rejected after resolving relative paths against
+the working directory. This POSIX path check does not resolve symlinks/hard links.
+Whole-patch ownership and root output are not a production scaling claim.
+
 ## Remaining scope
 
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
-MPI execution remains to be connected. Characteristic-PLM hydro enables limited
+The MPI frontend currently supports static synchronous execution; restart, regridding
+and subcycling remain to be connected there. Characteristic-PLM hydro enables limited
 linear coarse donors with the configured limiter for both hydro and transport.
 PCM reconstruction retains PCM donors. Common timesteps and recursive subcycling are available; globally second-order
 AMR convergence and large-tree scaling remain unqualified.

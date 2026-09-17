@@ -1,0 +1,329 @@
+module mpi_amr_patch_tree_application_3d_mod
+  use mpi_f08
+  use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: iso_fortran_env, only: int64
+  use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
+  use precision_mod, only: dp
+  use constants_mod, only: pelef_version
+  use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use gas_transport_mod, only: gas_transport_species
+  use mixture_thermo_mod, only: mixture_density,mass_fractions_from_mole_fractions
+  use selected_composition_mod, only: resolve_selected_composition
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved, &
+    resolve_reactive_chemistry_integrator
+  use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
+  use reactive_entropy_wave_3d_problem_mod, only: initialize_reactive_problem_3d
+  use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
+    amr_tree_integer_layout_3d,composite_integrals_amr_patch_tree_3d
+  use mpi_amr_patch_tree_thermo_3d_mod, only: compute_mpi_amr_tree_cfl_3d,recover_mpi_amr_tree_temperatures_3d
+  use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
+  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
+  use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: gather_mpi_amr_tree_3d
+  use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
+  implicit none
+  private
+  public :: run_mpi_amr_patch_tree_application_3d
+  interface
+    function system_getcwd(buffer,length) bind(C,name='getcwd') result(pointer)
+      import c_char,c_size_t,c_ptr
+      character(kind=c_char), intent(out) :: buffer(*)
+      integer(c_size_t), value :: length
+      type(c_ptr) :: pointer
+    end function
+  end interface
+contains
+  subroutine run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
+      mole_fractions,comm,chemistry_integrator)
+    character(len=*), intent(in) :: topology_path,input_path
+    character(len=*), optional, intent(in) :: chemistry_integrator
+    type(reactive_3d_config), intent(in) :: config
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: mole_fractions(:)
+    type(MPI_Comm), intent(in) :: comm
+    type(reactive_3d_config) :: local
+    type(amr_patch_tree_3d) :: tree
+    type(amr_tree_state_3d) :: state,temperature,global_state,global_temperature
+    integer, allocatable :: ratios(:),owners(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    real(dp), allocatable :: x(:),y(:),z(:),root_h(:),h(:,:),mass_fractions(:),inlet_x(:)
+    real(dp), allocatable :: initial(:),final(:),budget(:),change(:),inlet(:,:),q(:),inlet_cube(:,:,:,:)
+    real(dp) :: time,dt,transport_dt,diffusivity,base_density,correction,theta,max_correction,min_theta,stop_time
+    real(dp) :: inlet_t(6),inlet_temperature(2,2,2),inlet_dt,face_dt,sound,min_h(3)
+    integer :: count,unit,status,node,n(3),lo(3),hi(3),i,j,k,step,attempt,face,c,child,rank,nranks
+    character(len=32) :: faces(6)
+    character(len=1024) :: message
+    character(len=:), allocatable :: row
+    logical :: ok,covered,viscosity,conduction,diffusion,barodiffusion
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) call fatal('Cannot read MPI rank')
+    call MPI_Comm_size(comm,nranks,status)
+    if (status/=MPI_SUCCESS) call fatal('Cannot read MPI size')
+    call check_paths(input_path)
+    call check_paths(topology_path)
+    ! Static synchronous entry point must not silently ignore serial extensions.
+    open(newunit=unit,file=input_path,status='old',action='read',iostat=status)
+    if (status/=0) call fatal('Cannot open MPI tree input')
+    do
+      read(unit,'(a)',iostat=status) message
+      if (status<0) exit
+      if (status/=0) call fatal('Cannot scan MPI tree input')
+      message=adjustl(message)
+      do i=1,len_trim(message)
+        c=iachar(message(i:i))
+        if (c>=iachar('A').and.c<=iachar('Z')) message(i:i)=achar(c+32)
+      end do
+      if (index(message,'&amr_tree_')==1.or.index(message,'$amr_tree_')==1) &
+        call fatal('MPI tree application does not yet support checkpoint, adaptation or subcycling groups')
+    end do
+    close(unit)
+    call read_topology(topology_path,tree)
+    count=size(tree%nodes)-1
+    owners=[(mod(node-1,nranks),node=1,count+1)]
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    if (.not.ok) call fatal('Tree coordinate overflow')
+    root_h=[(config%x_upper-config%x_lower)/config%nx,(config%y_upper-config%y_lower)/config%ny, &
+      (config%z_upper-config%z_lower)/config%nz]
+    allocate(h(3,count+1),state%fields(count+1),temperature%fields(count+1))
+    allocate(mass_fractions(size(species)),inlet_x(size(species)),q(reactive_nvar(size(species))))
+    allocate(initial(size(q)),final(size(q)),budget(size(q)),change(size(q)),inlet(size(q),6),inlet_cube(size(q),2,2,2))
+    do node=1,count+1
+      h(:,node)=root_h*real(domain(:,1),dp)/real(domain(:,tree%nodes(node)%level+1),dp)
+      if (owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      call coordinates(node)
+      allocate(state%fields(node)%values(size(q),n(1),n(2),n(3)),temperature%fields(node)%values(1,n(1),n(2),n(3)))
+      local=config;local%nx=n(1);local%ny=n(2);local%nz=n(3)
+      call initialize_reactive_problem_3d(species,local,x,y,z,state%fields(node)%values, &
+        temperature%fields(node)%values(1,:,:,:),base_density,mass_fractions,ok,mole_fractions)
+      if (.not.ok) call fatal('Cannot initialize tree node')
+    end do
+    call average_down_mpi_amr_tree_3d(tree,owners,state,size(q),comm,ok)
+    if (.not.ok) call fatal('Cannot synchronize initial MPI tree')
+    call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok)
+    if (.not.ok) call fatal('Invalid initial MPI tree temperature')
+    ! Empty owners still need the default reservoir composition.
+    call mass_fractions_from_mole_fractions(species,mole_fractions,mass_fractions,ok)
+    if (.not.ok) call fatal('Invalid initial mass fractions')
+    faces=resolved_reactive_boundaries_3d(config)
+    viscosity=config%transport_enabled.and.config%viscosity_enabled
+    conduction=config%transport_enabled.and.config%thermal_conduction_enabled
+    diffusion=config%transport_enabled.and.config%species_diffusion_enabled
+    barodiffusion=config%transport_enabled.and.config%barodiffusion_enabled
+    min_h=minval(h,dim=2)
+    inlet=0;inlet_t=0;inlet_dt=huge(1.0_dp)
+    if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
+      call resolve_selected_composition('Inflow',config%inflow_composition_count,config%inflow_composition_species, &
+        config%inflow_composition_mole_fractions,species,inlet_x,ok,message)
+      if (.not.ok) call fatal('Invalid inflow composition')
+      call mass_fractions_from_mole_fractions(species,inlet_x,mass_fractions,ok)
+      if (.not.ok) call fatal('Invalid inflow mass fractions')
+    end if
+    do face=1,6
+      if (faces(face)/='inflow') cycle
+      q=0;q(1)=mixture_density(species,mass_fractions,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      if (.not.ok) call fatal('Invalid inflow density')
+      q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mass_fractions
+      call reactive_primitive_to_conserved(species,q,inlet(:,face),inlet_t(face),sound,ok)
+      if (.not.ok) call fatal('Invalid inflow state')
+      inlet_dt=min(inlet_dt,config%cfl/sum((abs(q(2:4))+sound)/min_h))
+      if (config%transport_enabled) then
+        do k=1,2
+          do j=1,2
+            do i=1,2
+              inlet_cube(:,i,j,k)=inlet(:,face)
+            end do
+          end do
+        end do
+        inlet_temperature=inlet_t(face)
+        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2, &
+          min_h(1),min_h(2),min_h(3),config%transport_cfl,viscosity,conduction,diffusion,face_dt,diffusivity,ok)
+        if (.not.ok) call fatal('Invalid inflow transport bound')
+        inlet_dt=min(inlet_dt,face_dt)
+      end if
+    end do
+    call gather_mpi_amr_tree_3d(tree,owners,state,global_state,comm,0,ok)
+    if (.not.ok) call fatal('Cannot collect initial tree inventory')
+    if (rank==0) then
+      call composite_integrals_amr_patch_tree_3d(tree,global_state,root_h,initial,ok)
+      if (.not.ok) call fatal('Invalid initial composite inventory')
+      deallocate(global_state%fields)
+    end if
+    call MPI_Bcast(initial,size(initial),MPI_DOUBLE_PRECISION,0,comm,status)
+    if (status/=MPI_SUCCESS) call fatal('Cannot distribute initial inventory')
+    time=0;step=0;budget=0;max_correction=0;min_theta=1
+    if (rank==0) then
+      write(*,'(a)') 'PeleF '//pelef_version//' experimental MPI regular 3D patch tree'
+      write(*,'(a,i0,a,i0,a,i0)') 'Ranks: ',nranks,' Nodes: ',count+1,' Levels: ',tree%level_count()
+    end if
+    do
+      if (time>=config%final_time) exit
+      stop_time=config%final_time
+      if (step>=config%maximum_steps) call fatal('Tree maximum_steps reached')
+      call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,root_h,config%cfl,dt,comm,ok)
+      if (.not.ok) call fatal('Invalid MPI tree hydro timestep')
+      dt=min(dt,inlet_dt,stop_time-time)
+      if (config%transport_enabled) then
+        call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature,root_h, &
+          config%transport_cfl,viscosity,conduction,diffusion,transport_dt,diffusivity,comm,ok,faces,config%wall_temperature)
+        if (.not.ok) call fatal('Invalid MPI tree transport timestep')
+        dt=min(dt,transport_dt)
+      end if
+      do attempt=1,20
+        if (time+dt<=time) call fatal('Tree timestep cannot advance time')
+        call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
+          config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
+          viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+          change,correction,theta,comm,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity)
+        if (ok) exit
+        dt=.5_dp*dt
+      end do
+      if (.not.ok) call fatal('Tree step failed after 20 attempts')
+      if (dt==stop_time-time) then
+        time=stop_time
+      else
+        time=time+dt
+      end if
+      step=step+1;budget=budget+change
+      max_correction=max(max_correction,correction);min_theta=min(min_theta,theta)
+    end do
+    call gather_mpi_amr_tree_3d(tree,owners,state,global_state,comm,0,ok)
+    if (.not.ok) call fatal('Cannot gather final MPI tree state')
+    call gather_mpi_amr_tree_3d(tree,owners,temperature,global_temperature,comm,0,ok)
+    if (.not.ok) call fatal('Cannot gather final MPI tree temperature')
+    if (rank==0) then
+      call move_alloc(global_state%fields,state%fields)
+      call move_alloc(global_temperature%fields,temperature%fields)
+    call composite_integrals_amr_patch_tree_3d(tree,state,root_h,final,ok)
+    if (.not.ok) call fatal('Invalid final composite inventory')
+    open(newunit=unit,file=trim(config%output_file),status='replace',action='write',iostat=status)
+    if (status/=0) call fatal('Cannot open tree CSV')
+    write(unit,'(a)',iostat=status) 'node,level,dx,dy,dz,'//reactive_3d_csv_header(species)
+    if (status/=0) call fatal('Cannot write tree CSV header')
+    allocate(character(len=26*(14+2*size(species))-1)::row)
+    do node=1,count+1
+      n=tree%nodes(node)%shape;call coordinates(node)
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            covered=.false.
+            do child=node+1,count+1
+              if (tree%nodes(child)%parent/=node) cycle
+              lo=[tree%nodes(child)%patch%coarse_i_lower,tree%nodes(child)%patch%coarse_j_lower, &
+                tree%nodes(child)%patch%coarse_k_lower]
+              hi=[tree%nodes(child)%patch%coarse_i_upper,tree%nodes(child)%patch%coarse_j_upper, &
+                tree%nodes(child)%patch%coarse_k_upper]
+              if (all([i,j,k]>=lo).and.all([i,j,k]<=hi)) covered=.true.
+            end do
+            if (covered) cycle
+            call format_reactive_3d_csv_row(species,[x(i),y(j),z(k)],time,state%fields(node)%values(:,i,j,k), &
+              temperature%fields(node)%values(1,i,j,k),row,ok)
+            if (.not.ok) call fatal('Invalid tree output state')
+            write(unit,'(i0,",",i0,3(",",es25.16e3),",",a)',iostat=status) node,tree%nodes(node)%level,h(:,node),row
+            if (status/=0) call fatal('Cannot write tree CSV row')
+          end do
+        end do
+      end do
+    end do
+    close(unit,iostat=status)
+    if (status/=0) call fatal('Cannot close tree CSV')
+    open(newunit=unit,file=trim(config%output_file)//'.budget.csv',status='replace',action='write',iostat=status)
+    if (status/=0) call fatal('Cannot open tree budget CSV')
+    write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change'
+    if (status/=0) call fatal('Cannot write tree budget header')
+    do c=1,size(q)
+      write(unit,'(i0,3(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c)
+      if (status/=0) call fatal('Cannot write tree budget row')
+    end do
+    close(unit,iostat=status)
+    if (status/=0) call fatal('Cannot close tree budget CSV')
+    write(*,'(a,i0,a,es24.16)') 'Steps: ',step,' Final time: ',time
+    write(*,'(a,es12.4,a,es12.4)') 'Maximum reflux: ',max_correction,' Minimum transport theta: ',min_theta
+    end if
+    call MPI_Barrier(comm,status)
+    if (status/=MPI_SUCCESS) call fatal('Cannot complete MPI tree output')
+  contains
+    subroutine fatal(reason)
+      character(len=*), intent(in) :: reason
+      integer :: ierr
+      write(*,'(a,i0,2a)') 'MPI tree rank ',rank,': ',reason
+      call MPI_Abort(comm,2,ierr)
+      error stop 2
+    end subroutine
+    subroutine check_paths(path)
+      character(len=*), intent(in) :: path
+      if (selected_reactor_paths_alias_lexically(absolute_path(path),absolute_path(config%output_file)).or. &
+          selected_reactor_paths_alias_lexically(absolute_path(path),absolute_path(trim(config%output_file)//'.budget.csv'))) &
+        call fatal('MPI tree output aliases an input')
+    end subroutine
+    function absolute_path(path) result(value)
+      character(len=*), intent(in) :: path
+      character(len=:), allocatable :: value
+      character(kind=c_char) :: buffer(4096)
+      type(c_ptr) :: pointer
+      integer :: index
+      if (len_trim(path)==0) call fatal('Empty MPI tree path')
+      if (path(1:1)=='/') then
+        value=trim(path)
+      else
+        pointer=system_getcwd(buffer,int(size(buffer),c_size_t))
+        if (.not.c_associated(pointer)) call fatal('Cannot resolve MPI tree working directory')
+        value=''
+        do index=1,size(buffer)
+          if (buffer(index)==c_null_char) exit
+          value=value//buffer(index)
+        end do
+        value=value//'/'//trim(path)
+      end if
+      if (len(value)>1024) call fatal('MPI tree path exceeds lexical comparison capacity')
+    end function
+    subroutine read_topology(path,result)
+      character(len=*), intent(in) :: path
+      type(amr_patch_tree_3d), intent(out) :: result
+      type(amr_patch_3d), allocatable :: patches(:)
+      integer, allocatable :: parents(:),shapes(:,:)
+      integer :: input,ios,nchild,peer,parent,dims(3),lower(3),upper(3),ratio
+      logical :: valid
+      call check_paths(path)
+      open(newunit=input,file=path,status='old',action='read',iostat=ios)
+      if (ios/=0) call fatal('Cannot open tree topology')
+      read(input,*,iostat=ios) nchild
+      if (ios/=0) call fatal('Invalid tree child count')
+      if (nchild<0.or.nchild==huge(nchild)) call fatal('Invalid tree child count')
+      allocate(patches(nchild),parents(nchild),shapes(3,nchild+1),stat=ios)
+      if (ios/=0) call fatal('Cannot allocate tree topology')
+      shapes(:,1)=[config%nx,config%ny,config%nz]
+      do peer=1,nchild
+        read(input,*,iostat=ios) parent,lower(1),upper(1),lower(2),upper(2),lower(3),upper(3),ratio
+        if (ios/=0) call fatal('Invalid tree patch record')
+        if (parent<1.or.parent>peer) call fatal('Tree parents must precede children')
+        parents(peer)=parent;dims=shapes(:,parent)
+        call initialize_amr_patch_3d(dims(1),dims(2),dims(3),lower(1),upper(1),lower(2),upper(2), &
+          lower(3),upper(3),ratio,patches(peer),valid)
+        if (.not.valid) call fatal('Invalid tree patch geometry')
+        if (any(int(upper-lower+1,int64)*int(ratio,int64)>int(huge(1),int64))) call fatal('Tree patch extent overflow')
+        shapes(:,peer+1)=[patches(peer)%fine_nx(),patches(peer)%fine_ny(),patches(peer)%fine_nz()]
+      end do
+      close(input)
+      call initialize_amr_patch_tree_3d(shapes(:,1),parents,patches,result,valid)
+      if (.not.valid) call fatal('Invalid tree topology')
+    end subroutine
+    subroutine coordinates(peer)
+      integer, intent(in) :: peer
+      integer :: a,dims(3)
+      dims=tree%nodes(peer)%shape
+      if (allocated(x)) deallocate(x,y,z)
+      allocate(x(dims(1)),y(dims(2)),z(dims(3)))
+      x=[(config%x_lower+(real(origin(1,peer),dp)+real(a,dp)-.5_dp)*h(1,peer),a=1,dims(1))]
+      y=[(config%y_lower+(real(origin(2,peer),dp)+real(a,dp)-.5_dp)*h(2,peer),a=1,dims(2))]
+      z=[(config%z_lower+(real(origin(3,peer),dp)+real(a,dp)-.5_dp)*h(3,peer),a=1,dims(3))]
+    end subroutine
+  end subroutine
+end module mpi_amr_patch_tree_application_3d_mod

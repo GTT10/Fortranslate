@@ -759,6 +759,32 @@ caller combines hydro/transport/wall/inflow limits and handles retries. It expos
 synchronous operators, not recursive level subcycling, rebalancing or an MPI tree
 application. Existing MPI runtime error-handler and scaling boundaries apply.
 
+## Static fixed-mechanism MPI application
+
+`pelef_mpi_amr_tree_reactive_3d <input.nml> <topology.dat>` uses a dedicated MPI
+application driver. Metadata and configuration are replicated; whole node owners
+are `mod(node-1,nranks)`. Analytic initialization samples each owned node's physical
+coordinates directly, then distributed restriction and EOS recovery synchronize it.
+Empty ranks still resolve reservoir composition and participate in collectives.
+
+The driver combines global hydro/transport/wall bounds with reservoir bounds and
+final-time clipping, then uses the common-step full split with up to 20 halvings
+on failure. State is never gathered during evolution. Initial inventory and final
+CSV/budget output deliberately gather to rank zero, preserving serial summation and
+row order. This is a bounded output path, not distributed I/O or scalable partitioning.
+
+Configuration/topology read errors and terminal step/I/O failures abort the supplied
+communicator so another rank cannot remain waiting. The fixed frontend loads the
+same elementary/full-H2O2 records as serial. The driver rejects tree extension
+namelist headers rather than silently dropping checkpoint, adaptation or subcycling
+requests. Schedule arguments are not accepted yet. Relative output/input alias
+checks use POSIX getcwd before lexical normalization (1024-character capacity);
+symlink/hard-link identity is not checked. Failed output writes can leave partial
+CSVs, which are not restart files.
+
+MPI tree checkpoint/restart, scheduled/automatic regridding, selected-runtime linkage
+and recursive level stepping remain separate integration work.
+
 ## Remaining integration
 
 MPI decomposition must be connected before claiming a general multi-level solver. EB geometry is separate.

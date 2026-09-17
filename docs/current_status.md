@@ -68,7 +68,10 @@ and pressure diffusion with physical/moving isothermal walls
 ([evidence](validation/amr-tree-mpi-transport-20260917.md)).
 MPI transport/wall timestep selection and the full common-step reaction/transport/hydro
 composition are now connected ([evidence](validation/amr-tree-mpi-split-20260917.md)).
-Coarse-time interpolation/subcycling and MPI tree application integration remain open. A transactional tree
+The fixed-mechanism MPI tree executable now connects static topology, owner-local
+initialization/stepping, timestep retries and serial-format final CSV/budget output
+([evidence](validation/amr-tree-mpi-application-20260917.md)). MPI tree restart,
+regridding, selected runtime and coarse-time interpolation/subcycling remain open. A transactional tree
 flux-correction API now reconciles shared and periodic faces, propagates nested
 fine fluxes, corrects uncovered cells and returns the physical boundary-ledger
 replacement ([evidence](validation/amr-tree-reflux-3d-20260917.md)). Synchronous
