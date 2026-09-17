@@ -22,6 +22,8 @@ module eb_reactive_two_level_3d_mod
   end type eb_reactive_patch_3d
   public :: tag_reactive_eb_temperature_3d
   public :: remap_reactive_eb_multipatch_3d
+  ! Multipatch stepping accepts empty patch arrays: only the coarse grid
+  ! advances, with its physical boundary/wall and chemistry ledgers retained.
   public :: advance_reactive_eb_multipatch_full_3d
   public :: advance_reactive_eb_multipatch_euler_3d,advance_reactive_eb_multipatch_transport_3d
   public :: advance_reactive_eb_two_level_subcycled_transport_3d
@@ -270,7 +272,7 @@ contains
       end if
       return
     end if
-    if (np<1.or.ratio<1.or..not.ieee_is_finite(dt)) return
+    if (ratio<1.or..not.ieee_is_finite(dt)) return
     if (dt<=0._dp.or..not.coarse%is_valid()) return
     if (chemistry_enabled) then
       if (.not.all(ieee_is_finite([rtol,atol]))) return
@@ -448,10 +450,10 @@ contains
     integer :: n(3),np,nvar,p,q,a,b,c,idx,offset(3)
     logical :: valid
     ok=.false.;np=size(patches);nvar=reactive_nvar(size(species))
-    if (np<1.or.ratio<1.or..not.ieee_is_finite(dt)) return
+    if (ratio<1.or..not.ieee_is_finite(dt)) return
     substeps=1
     if (present(subcycle)) then
-      if (subcycle) then
+      if (subcycle.and.np>0) then
         substeps=ratio
         if (present(transport)) then
           if (ratio>huge(ratio)/ratio) return
@@ -615,8 +617,10 @@ contains
       effective%y(:,lower(1,p):upper(1,p),lower(2,p)-1:upper(2,p),lower(3,p):upper(3,p))=restricted_flux%y
       effective%z(:,lower(1,p):upper(1,p),lower(2,p):upper(2,p),lower(3,p)-1:upper(3,p))=restricted_flux%z
     end do
-    call reflux_reactive_eb_state_3d(species,coarse,refined,coarse_flux,effective,candidate,temps,valid)
-    if (.not.valid) return
+    if (np>0) then
+      call reflux_reactive_eb_state_3d(species,coarse,refined,coarse_flux,effective,candidate,temps,valid)
+      if (.not.valid) return
+    end if
     do a=1,np
       p=order(a)
       call restrict_reactive_eb_state_3d(species,patches(p)%geometry,ratio, &
