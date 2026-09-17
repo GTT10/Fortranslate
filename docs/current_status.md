@@ -224,7 +224,12 @@ The MPI application now dispatches recursive steps and mode-bound restart.
 Automatic root intervals scale hydro bounds by cumulative refinement and diffusion
 bounds by its square, with focused scheduled and automatic restart parity
 ([MPI subcycled application evidence](validation/mpi-eb-tree-subcycle-application-20260918.md)).
-EB tree selected-target MPI wiring and distributed I/O remain open.
+The selected-mechanism MPI EB executable now shares composition/element checks,
+stepping controls and identity-bound checkpoints with serial. Its dedicated
+runtime excludes fixed mechanism libraries, with focused H2/O2 implicit
+changed-rank/serial restart parity
+([selected MPI evidence](validation/mpi-eb-tree-selected-20260918.md)).
+EB tree distributed I/O remains open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children
 and arbitrary depth, with parent-before-child indexing and a common refinement
