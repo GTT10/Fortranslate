@@ -49,9 +49,12 @@ if(PELEF_ENABLE_SPRAY)
       target_sources(${target} PRIVATE src/spray/spray_mpi_amr_tree_mod.F90
         src/spray/spray_mpi_amr_field_mod.F90
         src/spray/spray_mpi_amr_step_mod.F90
-        src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
-        src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
-        src/parallel/mpi_amr_patch_tree_thermo_3d_mod.F90)
+        src/spray/spray_mpi_amr_reactive_mod.F90)
+      if(target STREQUAL "pelef_selected_spray_tree_runtime")
+        target_link_libraries(${target} PUBLIC pelef_selected_mpi_amr_tree_reactive_3d_runtime)
+      else()
+        target_link_libraries(${target} PUBLIC pelef_mpi_support)
+      endif()
       target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
     endif()
     set_target_properties(${target} PROPERTIES

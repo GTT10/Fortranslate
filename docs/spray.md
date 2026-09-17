@@ -16,7 +16,8 @@ available, and owner-local MPI sampling now queries only the required composite
 cells. MPI deposition now routes conservative contributions to those owners;
 MPI gas temperature recovery now commits with the feedback. A periodic MPI AMR
 mixed-particle interval now connects sampling, particle evolution, feedback and
-final migration; application orchestration remains open.
+final migration. A reacting-step wrapper also connects the existing AMR gas
+solver; executable, injection/regrid and checkpoint orchestration remains open.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -122,6 +123,23 @@ component count are checked collectively; local particle populations may be
 empty. This API advances particle exchange against the gas, without gas
 hydrodynamics/chemistry, regridding, injection or checkpoint orchestration.
 AMR physical-boundary/wall-film coupling and EB collisions remain open.
+
+`advance_mpi_amr_spray_reactive` in `spray_mpi_amr_reactive_mod` composes a
+particle half-interval, the existing AMR reaction/transport/hydro split, and a
+second particle half-interval. The gas step accepts its existing reconstruction,
+limiter, Riemann solver, chemistry integrator, transport switches and optional
+recursive subcycling. The wrapper uses periodic faces and keeps all stage
+outputs private: gas, temperatures, particles, component masses, ID watermark
+and gas correction/limiter diagnostics publish only after both particle halves
+and the gas step succeed. Failure returns zero particle substeps and leaves
+caller state and diagnostics unchanged. The caller chooses/retries the overall
+gas timestep; particle halves select their own common substeps.
+
+The MPI tree spray library now links the existing MPI tree gas runtime instead
+of compiling separate copies of its cell-query/restriction/thermodynamic modules.
+The selected library links the selected MPI tree runtime; it does not acquire
+the fixed-mechanism core. This API still needs executable-level setup,
+injection, regridding and checkpoint orchestration.
 
 ## Build and run
 
