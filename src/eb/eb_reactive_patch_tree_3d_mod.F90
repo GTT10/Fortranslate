@@ -25,6 +25,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: remap_reactive_eb_tree_3d
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d
   public :: advance_reactive_eb_tree_transport_3d
@@ -103,6 +104,93 @@ contains
     if (.not.valid_tree(candidate,nv)) return
     tree=candidate;ok=.true.
   end subroutine initialize_reactive_eb_tree_3d
+
+  ! Conservative remap on a shared refinement lattice. finest describes the
+  ! deeper of old/new trees; ratios on shared levels and root cells must match.
+  ! Averaged old cells supply coarsening, exact same-level overlap or ancestor
+  ! PCM supplies new refinement. Geometry is immutable wherever old nodes exist.
+  subroutine remap_reactive_eb_tree_3d(species,topology,finest,tree,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: topology
+    type(eb_geometry_3d), intent(in) :: finest
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: snapshot,candidate,expected
+    type(eb_geometry_3d), allocatable :: levels(:)
+    integer(int64), allocatable :: old_origin(:,:),old_domain(:,:),new_origin(:,:),new_domain(:,:)
+    integer, allocatable :: old_ratios(:),new_ratios(:),ratios(:)
+    integer(int64) :: global(3),mapped(3),local(3)
+    integer :: nv,nlevels,old_levels,new_levels,level,node,donor,depth,i,j,k,d(3),index(3)
+    real(dp) :: primitive(reactive_nprim(size(species))),temperature,speed
+    logical :: valid,found
+    ok=.false.;nv=reactive_nvar(size(species))
+    if (.not.valid_tree(tree,nv).or..not.finest%is_valid()) return
+    call amr_tree_integer_layout_3d(tree%topology,old_origin,old_domain,old_ratios,valid)
+    if (.not.valid) return
+    call amr_tree_integer_layout_3d(topology,new_origin,new_domain,new_ratios,valid)
+    if (.not.valid) return
+    old_levels=size(old_ratios);new_levels=size(new_ratios);nlevels=max(old_levels,new_levels)
+    if (any(old_domain(:,1)/=new_domain(:,1))) return
+    level=min(old_levels,new_levels)
+    if (any(old_ratios(:level)/=new_ratios(:level))) return
+    if (old_levels>=new_levels) then
+      ratios=old_ratios
+      if (any(int([finest%nx,finest%ny,finest%nz],int64)/=old_domain(:,nlevels))) return
+    else
+      ratios=new_ratios
+      if (any(int([finest%nx,finest%ny,finest%nz],int64)/=new_domain(:,nlevels))) return
+    end if
+    allocate(levels(nlevels));levels(nlevels)=finest
+    do level=nlevels,2,-1
+      call coarsen_eb_geometry_3d(levels(level),ratios(level),levels(level-1),valid)
+      if (.not.valid) return
+    end do
+    snapshot=tree
+    call average_down_reactive_eb_tree_3d(species,snapshot,valid)
+    if (.not.valid) return
+    call initialize_reactive_eb_tree_3d(species,tree%topology,levels(old_levels),snapshot%nodes(1)%state, &
+      snapshot%nodes(1)%temperature,expected,valid)
+    if (.not.valid) return
+    do node=1,size(tree%nodes)
+      if (.not.matching_eb_metrics_3d(tree%nodes(node)%geometry,expected%nodes(node)%geometry)) return
+    end do
+    call initialize_reactive_eb_tree_3d(species,topology,levels(new_levels),snapshot%nodes(1)%state, &
+      snapshot%nodes(1)%temperature,candidate,valid)
+    if (.not.valid) return
+    do node=1,size(candidate%nodes)
+      level=topology%nodes(node)%level+1;d=topology%nodes(node)%shape
+      do k=1,d(3)
+      do j=1,d(2)
+      do i=1,d(1)
+        global=new_origin(:,node)+int([i,j,k]-1,int64);found=.false.
+        do depth=min(level,old_levels),1,-1
+          mapped=global/(new_domain(:,level)/old_domain(:,depth))
+          do donor=1,size(snapshot%nodes)
+            if (snapshot%topology%nodes(donor)%level+1/=depth) cycle
+            local=mapped-old_origin(:,donor)+1_int64
+            if (any(local<1_int64).or.any(local>int(snapshot%topology%nodes(donor)%shape,int64))) cycle
+            index=int(local)
+            if (candidate%nodes(node)%geometry%volume_fraction(i,j,k)>0._dp) then
+              if (snapshot%nodes(donor)%geometry%volume_fraction(index(1),index(2),index(3))<=0._dp) return
+              call reactive_conserved_to_primitive(species,snapshot%nodes(donor)%state(:,index(1),index(2),index(3)), &
+                snapshot%nodes(donor)%temperature(index(1),index(2),index(3)),primitive,temperature,speed,valid)
+              if (.not.valid) return
+            end if
+            candidate%nodes(node)%state(:,i,j,k)=snapshot%nodes(donor)%state(:,index(1),index(2),index(3))
+            candidate%nodes(node)%temperature(i,j,k)=snapshot%nodes(donor)%temperature(index(1),index(2),index(3))
+            found=.true.;exit
+          end do
+          if (found) exit
+        end do
+        if (.not.found) return
+      end do
+      end do
+      end do
+    end do
+    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    if (.not.valid) return
+    tree=candidate;ok=.true.
+  end subroutine remap_reactive_eb_tree_3d
 
   logical function valid_tree(tree,nv) result(valid)
     type(eb_reactive_tree_3d), intent(in) :: tree
