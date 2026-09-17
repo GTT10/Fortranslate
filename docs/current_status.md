@@ -47,7 +47,9 @@ EB checkpoint records can now share a caller-owned formatted stream
 ([evidence](validation/eb-embedded-checkpoint-records-20260917.md)). The two-level
 application now saves both patches and cumulative budgets together, with staged
 restore and exact focused continuation
-([evidence](validation/eb-two-level-restart-20260917.md)); multi-patch, subcycled
+([evidence](validation/eb-two-level-restart-20260917.md)). Rejected application
+steps now retry with bounded halving and transactional state/budget preservation
+([evidence](validation/eb-two-level-retry-20260917.md)); multi-patch, subcycled
 and MPI EB stepping remain open.
 
 A new regular 3D patch-tree library represents multiple nonoverlapping children

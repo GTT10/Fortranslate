@@ -21,7 +21,14 @@ composition use the existing elementary density-sheet defaults.
 
 `time_step` is a user-supplied fixed maximum interval, clipped at `final_time`.
 Choose it to satisfy the explicit small-cell hydro and diffusion limits; there
-is no automatic CFL selector or retry loop. This application uses plain Euler
+is no automatic CFL selector. Rejected updates now halve the trial interval
+without changing either grid or accumulated budgets. `maximum_step_retries`
+(default 12, range 0–60) limits halvings per accepted step; zero disables retry.
+The next step starts again from the user maximum, clipped by remaining time.
+Exhaustion stops before CSV output. Rejection-based retry does not establish
+CFL stability, temporal error control or physical accuracy.
+[Retry evidence](../../docs/validation/eb-two-level-retry-20260917.md).
+This application uses plain Euler
 components, with reaction/transport half-steps around hydro. Physical boundaries
 are outflow for hydro and zero flux for molecular transport.
 
