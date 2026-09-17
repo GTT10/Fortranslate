@@ -552,8 +552,11 @@ cells, with volume-scaled deposition and covered-parent averaging
 ([evidence](validation/spray-amr-coupling-20260918.md)). A serial gas-feedback
 wrapper now recovers EOS temperatures after deposition and parent averaging,
 committing gas U/T only when every cell accepts the update
-([evidence](validation/spray-amr-gas-20260918.md)). MPI field exchange/feedback,
-coupled particle stepping and EB solid handling remain open.
+([evidence](validation/spray-amr-gas-20260918.md)). MPI particle-position sampling
+now requests only the composite stencil cells from their owners and matches
+serial accumulation order ([evidence](validation/spray-amr-sampling-20260918.md)).
+MPI deposition/gas feedback, coupled particle stepping and EB solid handling
+remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
