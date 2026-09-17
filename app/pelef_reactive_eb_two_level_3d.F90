@@ -101,7 +101,6 @@ program pelef_reactive_eb_two_level_3d
   if (any(mod([nx,ny,nz],refinement_ratio)/=0)) error stop 'Finest dimensions must divide by refinement ratio'
   dims=[nx,ny,nz]/refinement_ratio
   if (patch_count<1.or.patch_count>16) error stop 'Invalid patch count (1:16)'
-  if (patch_count>1.and.subcycling) error stop 'Multiple-patch subcycling is not connected'
   if (patch_count==1) then
     patch_lower(:,1)=fine_lower;patch_upper(:,1)=fine_upper
   else
@@ -263,7 +262,7 @@ program pelef_reactive_eb_two_level_3d
         call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,patch_lower(:,1:patch_count), &
           refinement_ratio,riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled, &
           thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled,uc,tc,patches, &
-          boundary,wall,chemical,theta,ok,chemistry_integrator)
+          boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling)
         uf=>patches(1)%state;tf=>patches(1)%temperature
       end if
       if (ok) exit
@@ -304,6 +303,10 @@ contains
     if (patch_count>1) then
       magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V1'
       if (automatic_timestep) magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V2'
+      if (subcycling) then
+        magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V3'
+        if (automatic_timestep) magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V4'
+      end if
     end if
   end function checkpoint_magic
 

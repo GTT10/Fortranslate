@@ -9,7 +9,8 @@ program test_eb_multipatch_3d
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,advance_reactive_eb_multipatch_euler_3d, &
     advance_reactive_eb_two_level_euler_3d,advance_reactive_eb_multipatch_transport_3d, &
-    advance_reactive_eb_two_level_transport_3d
+    advance_reactive_eb_two_level_transport_3d,advance_reactive_eb_two_level_subcycled_euler_3d, &
+    advance_reactive_eb_two_level_subcycled_transport_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -24,6 +25,10 @@ program test_eb_multipatch_3d
   real(dp), allocatable :: boundary(:),wall(:),before(:),after(:),rb(:),rw(:),sb(:),sw(:)
   integer :: lower(3,2),extent(3,2),upper(3,2),bad_lower(3,2),operation,ratio,mode,p,nvar,nf(3),i,j,k,c,step,lo(3),hi(3)
   real(dp) :: amount,reference_amount,interval,theta,accepted_theta,saved_theta,reference_theta,recovered,speed
+  integer :: time_mode
+  logical :: subcycling
+  procedure(advance_reactive_eb_two_level_euler_3d), pointer :: hydro_reference
+  procedure(advance_reactive_eb_two_level_transport_3d), pointer :: transport_reference
   logical :: valid,refined(4,4,4)
   call load_h2o2_elementary_thermo(species,valid)
   call require(valid,'thermo')
@@ -32,6 +37,14 @@ program test_eb_multipatch_3d
   nvar=reactive_nvar(size(species))
   allocate(primitive(reactive_nprim(size(species))))
   allocate(uc(nvar,4,4,4),tc(4,4,4),boundary(nvar),wall(nvar),before(nvar),after(nvar),rb(nvar),rw(nvar))
+  do time_mode=1,2
+  subcycling=time_mode==2
+  hydro_reference=>advance_reactive_eb_two_level_euler_3d
+  transport_reference=>advance_reactive_eb_two_level_transport_3d
+  if (subcycling) then
+    hydro_reference=>advance_reactive_eb_two_level_subcycled_euler_3d
+    transport_reference=>advance_reactive_eb_two_level_subcycled_transport_3d
+  end if
   do operation=1,2
   interval=1.e-8_dp
   if (operation==2) interval=1.e-5_dp
@@ -136,10 +149,10 @@ program test_eb_multipatch_3d
           joined_t(1:ratio,:,:)=saved(1)%temperature;joined_t(ratio+1:,:,:)=saved(2)%temperature
           rc=sc;rt=st
           if (operation==1) then
-            call advance_reactive_eb_two_level_euler_3d(species,coarse,joined,[2,2,2],ratio,'rusanov',interval, &
+            call hydro_reference(species,coarse,joined,[2,2,2],ratio,'rusanov',interval, &
               rc,rt,joined_u,joined_t,rb,rw,valid)
           else
-            call advance_reactive_eb_two_level_transport_3d(species,transport,coarse,joined,[2,2,2],ratio,interval, &
+            call transport_reference(species,transport,coarse,joined,[2,2,2],ratio,interval, &
               .true.,.true.,.true.,.true.,rc,rt,joined_u,joined_t,rb,reference_theta,valid)
             rw=0._dp
           end if
@@ -168,6 +181,7 @@ program test_eb_multipatch_3d
     end do
   end do
   end do
+  end do
   write(*,'(a)') 'test_eb_multipatch_3d: PASS'
 contains
   subroutine advance(gas,geometry,boxes,refinement,solver,dt,u,t,children,b,w,success)
@@ -180,11 +194,11 @@ contains
     type(eb_reactive_patch_3d), intent(inout) :: children(:)
     logical, intent(out) :: success
     if (operation==1) then
-      call advance_reactive_eb_multipatch_euler_3d(gas,geometry,boxes,refinement,solver,dt,u,t,children,b,w,success)
+      call advance_reactive_eb_multipatch_euler_3d(gas,geometry,boxes,refinement,solver,dt,u,t,children,b,w,success,subcycling)
       if (success) theta=1._dp
     else
       call advance_reactive_eb_multipatch_transport_3d(gas,transport,geometry,boxes,refinement,dt, &
-        .true.,.true.,.true.,.true.,u,t,children,b,theta,success)
+        .true.,.true.,.true.,.true.,u,t,children,b,theta,success,subcycling)
       if (success) w=0._dp
     end if
   end subroutine advance

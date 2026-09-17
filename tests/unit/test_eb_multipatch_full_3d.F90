@@ -23,6 +23,8 @@ program test_eb_multipatch_full_3d
   real(dp), allocatable :: b(:),w(:),chem(:),rb(:),rw(:),rchem(:),before(:),after(:)
   real(dp) :: theta,rtheta,atoms(3),elements(3),scale(3)
   integer :: lower(3,2),upper(3,2),p,nvar,mode,s,component
+  integer :: time_mode
+  logical :: subcycling
   logical :: valid,active(4,4,4)
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
   call load_h2o2_elementary_thermo(species,valid)
@@ -55,10 +57,12 @@ program test_eb_multipatch_full_3d
   uc(:,2:3,2:3,2:3)=-99._dp;tc(2:3,2:3,2:3)=-99._dp
   ic=uc;it=tc;initial=patches
   call inventory(before)
+  do time_mode=1,2
+  subcycling=time_mode==2
   do mode=1,2
     call reset()
     call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower,2,'rusanov',1.e-8_dp, &
-      .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,patches,b,w,chem,theta,valid,integrators(mode))
+      .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,patches,b,w,chem,theta,valid,integrators(mode),subcycling)
     call require(valid,'reacting transport multiple-patch composition')
     call inventory(after)
     call require(all(abs(after-before-b-w-chem)<=3.e-12_dp*max(1._dp,abs(before))),'full composite inventories')
@@ -86,7 +90,7 @@ program test_eb_multipatch_full_3d
     call reset()
     swapped(1)=patches(2);swapped(2)=patches(1)
     call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower(:,2:1:-1),2,'rusanov',1.e-8_dp, &
-      .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,swapped,b,w,chem,theta,valid,integrators(mode))
+      .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,swapped,b,w,chem,theta,valid,integrators(mode),subcycling)
     call require(valid.and.all(uc==rc).and.all(tc==rt).and.all(b==rb).and.all(w==rw).and. &
       all(chem==rchem).and.theta==rtheta,'full composition permutation invariance')
     do p=1,2
@@ -95,12 +99,12 @@ program test_eb_multipatch_full_3d
     end do
   end do
   call reset()
-  call advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,2,'rusanov',1.e-8_dp,uc,tc,patches,rb,rw,valid)
+  call advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,2,'rusanov',1.e-8_dp,uc,tc,patches,rb,rw,valid,subcycling)
   call require(valid,'hydro reference')
   rc=uc;rt=tc;reference=patches
   call reset()
   call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower,2,'rusanov',1.e-8_dp, &
-    .false.,0._dp,0._dp,.false.,.true.,.true.,.true.,.true.,uc,tc,patches,b,w,chem,theta,valid)
+    .false.,0._dp,0._dp,.false.,.true.,.true.,.true.,.true.,uc,tc,patches,b,w,chem,theta,valid,subcycle=subcycling)
   call require(valid.and.all(uc==rc).and.all(tc==rt).and.all(b==rb).and.all(w==rw).and. &
     all(chem==0._dp).and.theta==1._dp,'disabled operators exact hydro parity')
   do p=1,2
@@ -108,13 +112,14 @@ program test_eb_multipatch_full_3d
   end do
   call reset()
   call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower,2,'invalid',1.e-8_dp, &
-    .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,patches,b,w,chem,theta,valid,'explicit')
+    .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,uc,tc,patches,b,w,chem,theta,valid,'explicit',subcycling)
   call require(.not.valid,'hydro failure after accepted reaction and transport halves')
   call require(all(uc==ic).and.all(tc==it).and.all(b==17._dp).and.all(w==19._dp).and. &
     all(chem==23._dp).and.theta==29._dp,'all coarse and diagnostic outputs roll back')
   do p=1,2
     call require(all(patches(p)%state==initial(p)%state).and.all(patches(p)%temperature==initial(p)%temperature), &
       'all fine patches roll back')
+  end do
   end do
   write(*,'(a)') 'test_eb_multipatch_full_3d: PASS'
 contains

@@ -28,8 +28,9 @@ def main():
     def options(content, extra):
         return content.replace('\n/', '\n ' + extra + '\n/')
 
-    for count in (2, 1):
-        case = source if count == 2 else source.replace('patch_count=2', 'patch_count=1, subcycling=.true.')
+    for count, subcycle in ((2, False), (1, True), (2, True)):
+        case = source.replace('patch_count=2', f'patch_count={count}, subcycling={".true." if subcycle else ".false."}')
+        count = f'{count}_{int(subcycle)}'
         run(f'full{count}.nml', case)
         saved = output.read_bytes(), budget.read_bytes()
         rows = list(csv.DictReader(output.read_text().splitlines()))
@@ -59,6 +60,10 @@ def main():
         assert sha in original
         resumed = options(case, "restart_file='selected.chk',")
         run(f'resume{count}.nml', resumed)
+        assert saved == (output.read_bytes(), budget.read_bytes())
+        wrong_mode = resumed.replace('subcycling=.true.' if subcycle else 'subcycling=.false.',
+                                     'subcycling=.false.' if subcycle else 'subcycling=.true.')
+        run(f'wrong_mode{count}.nml', wrong_mode, False)
         assert saved == (output.read_bytes(), budget.read_bytes())
         checkpoint.write_text(original.replace(sha, '0' * 64))
         run(f'wrong_sha{count}.nml', resumed, False)
