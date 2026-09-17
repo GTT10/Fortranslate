@@ -14,8 +14,9 @@ uses this ownership and the shared parcel exchange to transfer particles to
 their gas patch owners. A serial composite-field sampler/depositor is now
 available, and owner-local MPI sampling now queries only the required composite
 cells. MPI deposition now routes conservative contributions to those owners;
-MPI gas temperature recovery now commits with the feedback; coupled AMR particle
-stepping remains to be connected.
+MPI gas temperature recovery now commits with the feedback. A periodic MPI AMR
+mixed-particle interval now connects sampling, particle evolution, feedback and
+final migration; application orchestration remains open.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -67,8 +68,8 @@ temperature fields commit together only if every cell accepts the update.
 Invalid density, species composition or internal energy reject the entire
 feedback. Empty gas feedback validates inputs and preserves both fields. This
 is the serial tree API; its owner-local MPI counterpart is described below.
-The particle time integrator remains to be connected. No AMR convergence or
-physical spray validation is claimed.
+The MPI particle interval described below uses this feedback design. No AMR
+convergence or physical spray validation is claimed.
 
 `sample_mpi_amr_tree_spray_field` in `spray_mpi_amr_field_mod` applies the same
 stencil to owner-local fields. The caller supplies the common component count,
@@ -101,7 +102,26 @@ when every owner accepts every cell. A failure on any rank preserves all ranks'
 original U/T, and globally empty feedback validates without changing either
 field. The caller supplies an identical ordered species table on every rank;
 the wrapper retains the request/receive-capacity controls of field deposition.
-This connects MPI gas feedback, not the coupled particle time integrator.
+`advance_mpi_amr_mixture_coupling` in `spray_mpi_amr_step_mod` connects periodic
+mixed-liquid particle intervals. It samples conserved fields and temperature
+guesses together, then uses the existing drag/heating/evaporation and breakup
+kernels. Every rank takes a common minimum substep; the finest spacing anywhere
+in the tree bounds particle CFL, including approaches to refined regions.
+Failed particle updates or thermodynamic feedback halve the trial interval, up
+to 30 attempts. ETAB/KH-RT representative breakup and optional KH children use
+the existing component inventories, collective IDs and gas-energy debit.
+Feedback is deposited at the pre-step particle positions. Accepted trajectories
+wrap periodically and final survivors migrate to their finest-patch owners.
+Gas, temperatures, parcels, component masses and optional ID watermark publish
+only after the entire interval and final migration succeed. Substep exhaustion
+or receive-capacity failure therefore rolls back the whole interval.
+
+All ranks must supply the same species, transport, liquid tables and options.
+Particle IDs must be globally unique and locally increasing. The interval and
+component count are checked collectively; local particle populations may be
+empty. This API advances particle exchange against the gas, without gas
+hydrodynamics/chemistry, regridding, injection or checkpoint orchestration.
+AMR physical-boundary/wall-film coupling and EB collisions remain open.
 
 ## Build and run
 

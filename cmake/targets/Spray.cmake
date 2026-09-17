@@ -48,6 +48,7 @@ if(PELEF_ENABLE_SPRAY)
     if(PELEF_ENABLE_MPI)
       target_sources(${target} PRIVATE src/spray/spray_mpi_amr_tree_mod.F90
         src/spray/spray_mpi_amr_field_mod.F90
+        src/spray/spray_mpi_amr_step_mod.F90
         src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
         src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
         src/parallel/mpi_amr_patch_tree_thermo_3d_mod.F90)
