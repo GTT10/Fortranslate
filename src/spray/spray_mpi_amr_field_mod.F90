@@ -3,9 +3,12 @@ module spray_mpi_amr_field_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,fetch_mpi_amr_tree_cells_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_amr_tree_coupling_mod, only: amr_tree_spray_stencil
   implicit none
@@ -15,7 +18,45 @@ module spray_mpi_amr_field_mod
     real(dp), allocatable :: weights(:),volumes(:)
   end type
   public :: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
+  public :: deposit_mpi_amr_tree_spray_gas
 contains
+  ! Borrow the identical ordered species table on every rank. U/T publish only
+  ! after owner-routed deposition, parent restriction and collective EOS success.
+  subroutine deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,state,temperature,positions,contributions, &
+      lower,spacing,periodic,ok,maximum_requests,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_requests,maximum_received
+    type(amr_tree_state_3d) :: candidate,recovered
+    integer :: ierr
+    logical :: valid,has_particles,any_particles
+    ok=.false.;recovered=temperature
+    call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,recovered,comm,valid)
+    if (.not.valid) return
+    candidate=state
+    call deposit_mpi_amr_tree_spray_field(comm,tree,owners,candidate,reactive_nvar(size(species)), &
+      positions,contributions,lower,spacing,periodic,valid,maximum_requests,maximum_received)
+    if (.not.valid) return
+    has_particles=size(positions,2)>0
+    call MPI_Allreduce(has_particles,any_particles,1,MPI_LOGICAL,MPI_LOR,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (.not.any_particles) then
+      ok=.true.;return
+    end if
+    recovered=temperature
+    call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,candidate,recovered,comm,valid)
+    if (.not.valid) return
+    call move_alloc(candidate%fields,state%fields)
+    call move_alloc(recovered%fields,temperature%fields)
+    ok=.true.
+  end subroutine
+
   ! Each rank supplies its own particle positions, possibly empty. Only requested
   ! exposed-cell values are exchanged; the owner-local field is never gathered.
   subroutine sample_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &

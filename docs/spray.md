@@ -14,7 +14,8 @@ uses this ownership and the shared parcel exchange to transfer particles to
 their gas patch owners. A serial composite-field sampler/depositor is now
 available, and owner-local MPI sampling now queries only the required composite
 cells. MPI deposition now routes conservative contributions to those owners;
-MPI gas temperature recovery and coupled AMR particle stepping remain to be connected.
+MPI gas temperature recovery now commits with the feedback; coupled AMR particle
+stepping remains to be connected.
 
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
@@ -65,8 +66,9 @@ temperatures on every patch, including averaged parents. Conserved fields and
 temperature fields commit together only if every cell accepts the update.
 Invalid density, species composition or internal energy reject the entire
 feedback. Empty gas feedback validates inputs and preserves both fields. This
-is a serial tree API; owner-local MPI feedback and the particle time integrator
-remain to be connected. No AMR convergence or physical spray validation is claimed.
+is the serial tree API; its owner-local MPI counterpart is described below.
+The particle time integrator remains to be connected. No AMR convergence or
+physical spray validation is claimed.
 
 `sample_mpi_amr_tree_spray_field` in `spray_mpi_amr_field_mod` applies the same
 stencil to owner-local fields. The caller supplies the common component count,
@@ -92,7 +94,14 @@ capacity or arithmetic failure preserve the original distributed field.
 Globally empty deposition validates inputs and leaves the field unchanged.
 For a fixed source ordering, deposition matches serial accumulation; changing
 particle ownership can change summation roundoff. This is a generic density-field
-operation and does not yet enforce gas thermodynamics or recover MPI temperatures.
+operation without thermodynamic constraints. Its `deposit_mpi_amr_tree_spray_gas`
+wrapper validates the initial gas, deposits into private owner-local fields and
+recovers temperatures collectively after parent restriction. U/T publish only
+when every owner accepts every cell. A failure on any rank preserves all ranks'
+original U/T, and globally empty feedback validates without changing either
+field. The caller supplies an identical ordered species table on every rank;
+the wrapper retains the request/receive-capacity controls of field deposition.
+This connects MPI gas feedback, not the coupled particle time integrator.
 
 ## Build and run
 
