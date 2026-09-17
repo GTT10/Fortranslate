@@ -113,8 +113,10 @@ program pelef_reactive_eb_two_level_3d
   if (min(nx,ny,nz)<2.or.refinement_ratio<2.or.maximum_steps<1) error stop 'Invalid grid or step count'
   if (any(mod([nx,ny,nz],refinement_ratio)/=0)) error stop 'Finest dimensions must divide by refinement ratio'
   dims=[nx,ny,nz]/refinement_ratio
-  if (patch_count<1.or.patch_count>16) error stop 'Invalid patch count (1:16)'
-  if (patch_count==1) then
+  if (patch_count<0.or.patch_count>16) error stop 'Invalid patch count (0:16)'
+  if (patch_count==0) then
+    fine_lower=0;fine_upper=0;patch_lower=0;patch_upper=0
+  else if (patch_count==1) then
     patch_lower(:,1)=fine_lower;patch_upper(:,1)=fine_upper
   else
     fine_lower=patch_lower(:,1);fine_upper=patch_upper(:,1)
@@ -126,8 +128,8 @@ program pelef_reactive_eb_two_level_3d
   original_count=patch_count;original_lower=patch_lower;original_upper=patch_upper
   call validate_schedule()
   allocate(patches(patch_count))
-  fine=>patches(1)%geometry
-  if (any(fine_lower<1).or.any(fine_upper<fine_lower).or.any(fine_upper>dims)) error stop 'Invalid fine patch box'
+  nullify(fine,uf,tf)
+  if (patch_count>0) fine=>patches(1)%geometry
   if (.not.all(ieee_is_finite([domain_lower,domain_upper,time_step,final_time,rtol,atol]))) &
     error stop 'Nonfinite two-level controls'
   if (any(domain_upper<=domain_lower).or.min(time_step,final_time,rtol,atol)<=0._dp) &
@@ -227,7 +229,7 @@ program pelef_reactive_eb_two_level_3d
   call load_h2o2_elementary_transport(transport,ok)
   if (.not.ok) error stop 'Transport load failed'
 #endif
-  nvar=reactive_nvar(size(species));nf=[fine%nx,fine%ny,fine%nz]
+  nvar=reactive_nvar(size(species))
   allocate(uc(nvar,dims(1),dims(2),dims(3)),tc(dims(1),dims(2),dims(3)), &
     refined(dims(1),dims(2),dims(3)))
   config%nx=dims(1);config%ny=dims(2);config%nz=dims(3)
@@ -246,17 +248,17 @@ program pelef_reactive_eb_two_level_3d
     refined(patch_lower(1,p):patch_upper(1,p),patch_lower(2,p):patch_upper(2,p), &
       patch_lower(3,p):patch_upper(3,p))=.true.
   end do
-  uf=>patches(1)%state;tf=>patches(1)%temperature
+  call bind_first_patch()
   allocate(initial(nvar),current(nvar),scale(nvar),boundary(nvar),wall(nvar),chemical(nvar), &
     total_boundary(nvar),total_wall(nvar),total_chemical(nvar))
   call inventory(initial)
   do c=1,nvar
-    scale(c)=max(1.e-30_dp,coarse%dx*coarse%dy*coarse%dz*sum(abs(uc(c,:,:,:))*coarse%volume_fraction, &
-      mask=.not.refined)+fine%dx*fine%dy*fine%dz*sum(abs(uf(c,:,:,:))*fine%volume_fraction))
-    do p=2,patch_count
+    scale(c)=coarse%dx*coarse%dy*coarse%dz*sum(abs(uc(c,:,:,:))*coarse%volume_fraction,mask=.not.refined)
+    do p=1,patch_count
       scale(c)=scale(c)+patches(p)%geometry%dx*patches(p)%geometry%dy*patches(p)%geometry%dz* &
         sum(abs(patches(p)%state(c,:,:,:))*patches(p)%geometry%volume_fraction)
     end do
+    scale(c)=max(1.e-30_dp,scale(c))
   end do
   total_boundary=0._dp;total_wall=0._dp;total_chemical=0._dp
   time=0._dp;step=0;minimum_theta=1._dp;minimum_dt=0._dp;rejected_steps=0
@@ -279,7 +281,7 @@ program pelef_reactive_eb_two_level_3d
           refinement_ratio,riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled, &
           thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled,uc,tc,patches, &
           boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling)
-        uf=>patches(1)%state;tf=>patches(1)%temperature
+        call bind_first_patch()
       end if
       if (ok) exit
       rejected_steps=rejected_steps+1
@@ -318,6 +320,13 @@ program pelef_reactive_eb_two_level_3d
   write(*,'(a,es24.16)') 'Minimum transport theta: ',minimum_theta
   write(*,'(a,es24.16)') 'Minimum accepted dt: ',minimum_dt
 contains
+  subroutine bind_first_patch()
+    nullify(fine,uf,tf)
+    if (patch_count>0) then
+      fine=>patches(1)%geometry;uf=>patches(1)%state;tf=>patches(1)%temperature
+    end if
+  end subroutine bind_first_patch
+
   subroutine validate_schedule()
     integer :: event,a,b,n
     if (regrid_count<0.or.regrid_count>16) error stop 'Invalid regrid_count (0:16)'
@@ -328,7 +337,7 @@ contains
         if (regrid_times(event)<=regrid_times(event-1)) error stop 'Regrid times must increase'
       end if
       n=regrid_patch_count(event)
-      if (n<1.or.n>16) error stop 'Invalid scheduled patch count (1:16)'
+      if (n<0.or.n>16) error stop 'Invalid scheduled patch count (0:16)'
       do a=1,n
         if (any(regrid_lower(:,a,event)<1).or.any(regrid_upper(:,a,event)>dims).or. &
           any(regrid_upper(:,a,event)<regrid_lower(:,a,event))) error stop 'Invalid scheduled patch box'
@@ -365,7 +374,7 @@ contains
     patch_count=n;patch_lower=0;patch_upper=0
     patch_lower(:,1:n)=regrid_lower(:,1:n,event);patch_upper(:,1:n)=regrid_upper(:,1:n,event)
     fine_lower=patch_lower(:,1);fine_upper=patch_upper(:,1)
-    fine=>patches(1)%geometry;uf=>patches(1)%state;tf=>patches(1)%temperature
+    call bind_first_patch()
     refined=.false.
     do a=1,n
       refined(patch_lower(1,a):patch_upper(1,a),patch_lower(2,a):patch_upper(2,a), &
@@ -441,6 +450,14 @@ contains
         if (automatic_timestep) magic='PELEF_EB_MULTIPATCH_CHECKPOINT_V4'
       end if
     end if
+    if (patch_count==0) then
+      magic='PELEF_EB_COARSE_CHECKPOINT_V1'
+      if (automatic_timestep) magic='PELEF_EB_COARSE_CHECKPOINT_V2'
+      if (subcycling) then
+        magic='PELEF_EB_COARSE_CHECKPOINT_V3'
+        if (automatic_timestep) magic='PELEF_EB_COARSE_CHECKPOINT_V4'
+      end if
+    end if
     if (regrid_count>0) then
       magic='PELEF_EB_SCHEDULED_CHECKPOINT_V1'
       if (automatic_timestep) magic='PELEF_EB_SCHEDULED_CHECKPOINT_V2'
@@ -461,10 +478,12 @@ contains
     ! Match the parent averaging used at the start of the coupled update;
     ! estimation must not publish state changes of its own.
     parent=uc;parent_t=tc
+    if (patch_count>0) then
     call restrict_reactive_eb_state_3d(species,fine,refinement_ratio,uf,tf, &
       parent(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3)), &
       parent_t(fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3)),valid)
     if (.not.valid) error stop 'Cannot average parents for timestep selection'
+    end if
     do patch_index=2,patch_count
       call restrict_reactive_eb_state_3d(species,patches(patch_index)%geometry,refinement_ratio, &
         patches(patch_index)%state,patches(patch_index)%temperature, &
@@ -476,7 +495,8 @@ contains
     end do
     call reactive_eb_signal_speeds_3d(species,parent,parent_t,coarse,coarse_speeds,valid)
     if (.not.valid) error stop 'Invalid coarse timestep state'
-    fine_active=any(fine%volume_fraction>0._dp)
+    fine_active=.false.
+    if (patch_count>0) fine_active=any(fine%volume_fraction>0._dp)
     fine_speeds=0._dp
     if (fine_active) then
       call reactive_eb_signal_speeds_3d(species,uf,tf,fine,fine_speeds,valid)
@@ -674,7 +694,7 @@ contains
     write(scratch,'(*(es26.17e3,1x))',iostat=ios) initial,scale,total_boundary,total_wall,total_chemical
     if (ios/=0) error stop 'Checkpoint inventory write failed'
     call patch_record(scratch,.false.,coarse,uc,tc,time,step,minimum_dt,minimum_theta)
-    call patch_record(scratch,.false.,fine,uf,tf,time,step,minimum_dt,minimum_theta)
+    if (patch_count>0) call patch_record(scratch,.false.,fine,uf,tf,time,step,minimum_dt,minimum_theta)
     do p=2,patch_count
       call patch_record(scratch,.false.,patches(p)%geometry,patches(p)%state,patches(p)%temperature, &
         time,step,minimum_dt,minimum_theta)
@@ -722,7 +742,7 @@ contains
     if (ios/=0) error stop 'Missing checkpoint magic'
     if (marker/=checkpoint_magic()) error stop 'Invalid checkpoint magic or timestep mode'
     if (regrid_count>0) call schedule_record(stream,.true.)
-    allocate(stored_lower(3,patch_count-1),stored_upper(3,patch_count-1))
+    allocate(stored_lower(3,max(0,patch_count-1)),stored_upper(3,max(0,patch_count-1)))
     ratio=-1;lower=-1;upper=-1
     read(stream,*,iostat=ios) ratio,lower,upper
     if (ios/=0) error stop 'Missing checkpoint topology'
@@ -758,10 +778,13 @@ contains
       error stop 'Nonfinite checkpoint inventories'
     if (any(saved_scale<0._dp).or.any(abs(saved_initial-initial)>2.e-12_dp*max(1._dp,scale)).or. &
       any(abs(saved_scale-scale)>2.e-12_dp*max(1._dp,scale))) error stop 'Checkpoint initial inventory mismatch'
-    candidate_c=uc;candidate_tc=tc;candidate_f=uf;candidate_tf=tf
-    geometry_c=coarse;geometry_f=fine
+    candidate_c=uc;candidate_tc=tc
+    geometry_c=coarse
     call patch_record(stream,.true.,geometry_c,candidate_c,candidate_tc,saved_time,saved_step,saved_dt,saved_theta)
-    call patch_record(stream,.true.,geometry_f,candidate_f,candidate_tf,saved_time,saved_step,saved_dt,saved_theta)
+    if (patch_count>0) then
+      candidate_f=uf;candidate_tf=tf;geometry_f=fine
+      call patch_record(stream,.true.,geometry_f,candidate_f,candidate_tf,saved_time,saved_step,saved_dt,saved_theta)
+    end if
     extras=patches
     do patch_index=2,patch_count
       call patch_record(stream,.true.,extras(patch_index)%geometry,extras(patch_index)%state, &
@@ -776,8 +799,9 @@ contains
     if (ios/=0) error stop 'Checkpoint read close failed'
     do component=1,nvar
       values(component)=coarse%dx*coarse%dy*coarse%dz* &
-        sum(candidate_c(component,:,:,:)*coarse%volume_fraction,mask=.not.refined) &
-        +fine%dx*fine%dy*fine%dz*sum(candidate_f(component,:,:,:)*fine%volume_fraction)
+        sum(candidate_c(component,:,:,:)*coarse%volume_fraction,mask=.not.refined)
+      if (patch_count>0) values(component)=values(component)+ &
+        fine%dx*fine%dy*fine%dz*sum(candidate_f(component,:,:,:)*fine%volume_fraction)
       do patch_index=2,patch_count
         values(component)=values(component)+patches(patch_index)%geometry%dx*patches(patch_index)%geometry%dy* &
           patches(patch_index)%geometry%dz*sum(extras(patch_index)%state(component,:,:,:)* &
@@ -791,6 +815,7 @@ contains
 #ifdef PELEF_SELECTED_EB_TWO_LEVEL
     if (.not.chemical_elements_valid(saved_initial,saved_chemical,saved_step)) error stop 'Checkpoint chemical element imbalance'
 #endif
+    if (patch_count>0) then
     averaged=candidate_c(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3))
     averaged_t=candidate_tc(fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2),fine_lower(3):fine_upper(3))
     call restrict_reactive_eb_state_3d(species,fine,refinement_ratio,candidate_f,candidate_tf,averaged,averaged_t,valid)
@@ -798,6 +823,7 @@ contains
     if (any(abs(averaged-candidate_c(:,fine_lower(1):fine_upper(1),fine_lower(2):fine_upper(2), &
       fine_lower(3):fine_upper(3)))>2.e-12_dp*max(1._dp,abs(averaged)))) &
       error stop 'Checkpoint parent averages mismatch'
+    end if
     do patch_index=2,patch_count
       lower=patch_lower(:,patch_index);upper=patch_upper(:,patch_index)
       averaged=candidate_c(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
@@ -810,7 +836,10 @@ contains
     end do
     ! Publish both patches and the outer diagnostics only after the complete
     ! file, physics, geometry, EOS and budget have passed validation.
-    uc=candidate_c;tc=candidate_tc;uf=candidate_f;tf=candidate_tf
+    uc=candidate_c;tc=candidate_tc
+    if (patch_count>0) then
+      uf=candidate_f;tf=candidate_tf
+    end if
     do patch_index=2,patch_count
       patches(patch_index)%state=extras(patch_index)%state
       patches(patch_index)%temperature=extras(patch_index)%temperature
@@ -824,9 +853,8 @@ contains
     real(dp), intent(out) :: values(:)
     integer :: component,patch_index
     do component=1,size(values)
-      values(component)=coarse%dx*coarse%dy*coarse%dz*sum(uc(component,:,:,:)*coarse%volume_fraction,mask=.not.refined) &
-        +fine%dx*fine%dy*fine%dz*sum(uf(component,:,:,:)*fine%volume_fraction)
-      do patch_index=2,patch_count
+      values(component)=coarse%dx*coarse%dy*coarse%dz*sum(uc(component,:,:,:)*coarse%volume_fraction,mask=.not.refined)
+      do patch_index=1,patch_count
         values(component)=values(component)+patches(patch_index)%geometry%dx*patches(patch_index)%geometry%dy* &
           patches(patch_index)%geometry%dz*sum(patches(patch_index)%state(component,:,:,:)* &
           patches(patch_index)%geometry%volume_fraction)
@@ -861,15 +889,7 @@ contains
           end do
         end do
       else
-        do k=1,fine%nz
-          do j=1,fine%ny
-            do i=1,fine%nx
-              if (fine%volume_fraction(i,j,k)<=0._dp) cycle
-              call row(stream,level,i,j,k,fine,uf(:,i,j,k),tf(i,j,k),1)
-            end do
-          end do
-        end do
-        do patch_index=2,patch_count
+        do patch_index=1,patch_count
           do k=1,patches(patch_index)%geometry%nz
             do j=1,patches(patch_index)%geometry%ny
               do i=1,patches(patch_index)%geometry%nx

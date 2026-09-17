@@ -11,11 +11,14 @@ def main():
     parser = argparse.ArgumentParser()
     for key in ('exe', 'case', 'work'):
         parser.add_argument('--' + key, type=Path, required=True)
+    parser.add_argument("--coarse-gap", action="store_true")
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     exe = args.exe.resolve()
     source = args.case.read_text()
+    if args.coarse_gap:
+        source = source.replace("regrid_patch_count=1,2", "regrid_patch_count=0,2")
     output = work / 'eb_scheduled.csv'
     budget = work / 'eb_scheduled.csv.budget.csv'
 
@@ -52,6 +55,9 @@ def main():
         for interval in (1, 2, 3):
             name = prefix + str(interval)
             run(name + 'stop.nml', options(case, f"checkpoint_file='schedule.chk', checkpoint_interval_steps={interval}, stop_after_checkpoint=.true.,"))
+            if args.coarse_gap and interval == 2:
+                coarse_rows = list(csv.DictReader(output.read_text().splitlines()))
+                assert len(coarse_rows) == 48 and all(int(row['level']) == 0 for row in coarse_rows)
             checkpoint = work / 'schedule.chk'
             original = checkpoint.read_text()
             lines = original.splitlines()
@@ -71,6 +77,25 @@ def main():
                 run(name + 'wrong_stage.nml', resume, False)
                 assert saved == (output.read_bytes(), budget.read_bytes())
                 checkpoint.write_text(original)
+    if args.coarse_gap:
+        # Static coarse-only initialization and its separate checkpoint schema.
+        case = source.replace('patch_count=2,', 'patch_count=0,', 1).replace('regrid_count=2,', 'regrid_count=0,', 1)
+        case = options(case, 'automatic_timestep=.true., subcycling=.true.,')
+        run('coarse_full.nml', case)
+        saved = output.read_bytes(), budget.read_bytes()
+        rows = list(csv.DictReader(output.read_text().splitlines()))
+        assert len(rows) == 48 and all(int(row['level']) == 0 for row in rows)
+        run('coarse_stop.nml', options(case, "checkpoint_file='coarse.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true.,"))
+        assert (work / 'coarse.chk').read_text().startswith('PELEF_EB_COARSE_CHECKPOINT_V4')
+        run('coarse_resume.nml', options(case, "restart_file='coarse.chk',"))
+        assert saved == (output.read_bytes(), budget.read_bytes())
+        # Initial coarse-only state can also acquire scheduled fine patches.
+        case = source.replace('patch_count=2,', 'patch_count=0,', 1)
+        run('initial_coarse_full.nml', case)
+        saved = output.read_bytes(), budget.read_bytes()
+        run('initial_coarse_stop.nml', options(case, "checkpoint_file='initial_coarse.chk', checkpoint_interval_steps=2, stop_after_checkpoint=.true.,"))
+        run('initial_coarse_resume.nml', options(case, "restart_file='initial_coarse.chk',"))
+        assert saved == (output.read_bytes(), budget.read_bytes())
     print('PASS: scheduled EB remap, budget, event restart and policy rejection')
 
 

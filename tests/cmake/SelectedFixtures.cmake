@@ -198,3 +198,10 @@ add_test(NAME regression_selected_scheduled_eb_two_level_3d
     --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/selected_scheduled.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/selected_scheduled_eb_two_level_3d")
 set_tests_properties(regression_selected_scheduled_eb_two_level_3d PROPERTIES TIMEOUT 180)
+
+add_test(NAME regression_selected_coarse_gap_eb_two_level_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_scheduled_eb_two_level_3d.py"
+    --exe $<TARGET_FILE:test_selected_full_reactive_eb_two_level_3d>
+    --case "${PROJECT_SOURCE_DIR}/cases/reactive_eb_two_level_3d/selected_scheduled.nml"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/selected_coarse_gap_eb_two_level_3d" --coarse-gap)
+set_tests_properties(regression_selected_coarse_gap_eb_two_level_3d PROPERTIES TIMEOUT 180)
