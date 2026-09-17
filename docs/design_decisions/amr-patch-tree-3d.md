@@ -980,3 +980,22 @@ the coarse interval before a global minimum. Empty owners contribute huge dt.
 Counts use checked int64 products. The advance API does not enforce this bound;
 the caller selects dt/retry policy. Runtime coefficient identity remains a caller
 contract. Recursive transport and application dispatch remain separate work.
+
+
+## MPI recursive transport intervals
+
+`advance_mpi_amr_tree_subcycle_transport_3d` follows the serial ratio-squared
+schedule and transport level RK2 arithmetic. It retains owner-local packed
+coarse endpoints, accumulates child face integrals in substep order and runs
+depth-limited distributed reflux and EOS recovery at each completed interval.
+The global minimum transport limiter joins the boundary budget, maximum reflux
+correction, state, temperature and counters in the whole-interval transaction.
+No field gather is introduced. Refinement-count products use checked int64.
+
+`compute_mpi_amr_tree_subcycle_transport_timestep_3d` evaluates owner-local
+transport and touching-isothermal-wall bounds at serial integer-layout spacings,
+rescales by cumulative squared ratios, then reduces the minimum timestep and
+maximum diffusivity. Controls, optional wall inputs and face choices must agree
+across ranks. Empty owners contribute huge dt and zero diffusivity. Coefficient
+identity remains the caller's contract; advance does not enforce dt or retry.
+Recursive split composition and application mode dispatch remain to be connected.
