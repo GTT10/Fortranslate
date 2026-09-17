@@ -141,6 +141,18 @@ The selected library links the selected MPI tree runtime; it does not acquire
 the fixed-mechanism core. This API still needs executable-level setup,
 injection, regridding and checkpoint orchestration.
 
+`remap_mpi_amr_spray` in `spray_mpi_amr_remap_mod` connects conservative gas
+remapping and particle migration for a changed regular tree or owner map. It
+validates the original gas thermodynamics, migrates private particle/component
+arrays to the target finest owners, then remaps gas and recovers temperatures.
+Tree, owner map, gas, temperatures, parcels and component inventories publish
+together only after every stage succeeds. The root resolution and physical
+domain must remain fixed; refinements may move, appear or disappear. Particle
+positions and breakup/lineage payloads remain unchanged. Periodic flags control
+lookup; nonperiodic exterior parcels reject. The caller retains the unchanged
+ID watermark and chooses the new topology/owners and per-rank receive capacity.
+This API does not perform tagging or schedule regrids in an executable.
+
 ## Build and run
 
 A fixed H2/O2 gas mechanism with water droplets requires no new dependencies:
