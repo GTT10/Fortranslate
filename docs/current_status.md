@@ -603,8 +603,11 @@ ownership changes and regridding, including exact upper-wall positions
 ([evidence](validation/spray-amr-film-migration-20260918.md)). A planar mixed-film
 interval API now couples heating/evaporation to owner-local AMR gas with a
 transactional wall-energy ledger
-([evidence](validation/spray-amr-film-step-20260918.md)). AMR wall-film creation,
-reacting split/application/restart integration and EB solid handling remain open.
+([evidence](validation/spray-amr-film-step-20260918.md)). The reacting wrapper
+now surrounds particle/gas stepping with film half-intervals and publishes
+film state and wall heat only with whole-step success
+([evidence](validation/spray-amr-film-reactive-20260918.md)). AMR wall-film
+creation, application/restart integration and EB solid handling remain open.
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 
