@@ -1158,3 +1158,25 @@ This primitive supports future runtime rebalancing but does not schedule it or
 measure work. It temporarily holds old and candidate owner-local fields and uses
 blocking, ordered whole-patch transfers. MPI runtime failures follow the caller's
 error handler; process-loss recovery and production scalability are not claimed.
+
+
+## Cost-driven MPI rebalance decision
+
+`rebalance_mpi_amr_tree_3d` receives patch costs for a common completed sampling
+interval, plus a replicated minimum fractional gain in [0,1). It only inspects
+entries owned by the caller rank, requiring finite nonnegative values. An allreduce
+collects these uniquely contributed costs. Dividing by the largest cost before
+rank accumulation avoids overflow for large finite timings; all-zero cost is a
+successful no-op. Largest-cost-first placement uses lower node/rank indices for
+ties; zero-cost nodes retain their owners. The candidate is accepted only when
+its maximum rank cost is strictly lower and the fractional decrease reaches the
+threshold. Otherwise owners and fields remain unchanged.
+
+The accepted plan calls direct U/T migration, then publishes the owner vector.
+Invalid metadata, cost/threshold disagreement, allocation or migration preflight
+failure leaves caller owners and fields intact. Shape validation occurs even on
+no-op calls; thermodynamic consistency remains the caller's contract. This API
+neither collects timers nor schedules runtime calls. It assumes comparable costs
+across ranks and does not account for migration cost, topology, communication,
+rank speed differences or sampling noise. Predicted load reduction is not measured
+speedup. Planning retains quadratic patch selection complexity.

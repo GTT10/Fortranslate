@@ -4,7 +4,8 @@ program test_mpi_amr_patch_tree_distribution_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
-    scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d,redistribute_mpi_amr_tree_3d
+    scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d,redistribute_mpi_amr_tree_3d, &
+    rebalance_mpi_amr_tree_3d
   implicit none
   type(amr_patch_tree_3d) :: tree,different_tree
   type(amr_patch_3d) :: patches(2)
@@ -113,6 +114,8 @@ program test_mpi_amr_patch_tree_distribution_3d
     block
       type(amr_tree_state_3d) :: moving,moving_t,backup,backup_t
       integer :: destinations(3),invalid(3),peer
+      real(dp) :: costs(3),threshold
+      logical :: changed
       moving=local
       allocate(moving_t%fields(3))
       do peer=1,3
@@ -160,6 +163,53 @@ program test_mpi_amr_patch_tree_distribution_3d
       end do
       call redistribute_mpi_amr_tree_3d(tree,owners,owners,2,moving,moving_t,MPI_COMM_WORLD,ok)
       call require(ok,'identity owner migration')
+      destinations=0
+      call redistribute_mpi_amr_tree_3d(tree,owners,destinations,2,moving,moving_t,MPI_COMM_WORLD,ok)
+      call require(ok,'concentrate before cost balancing')
+      costs=-1._dp ! Nonowner entries are deliberately invalid and must be ignored.
+      if (rank==0) costs=[9._dp,6._dp,3._dp]
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,0.75_dp,MPI_COMM_WORLD,changed,ok)
+      call require(ok.and..not.changed.and.all(destinations==0),'gain threshold retains owners')
+      if (rank==0) costs(1)=-1._dp
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,0.25_dp,MPI_COMM_WORLD,changed,ok)
+      call require(.not.ok.and..not.changed.and.all(destinations==0),'negative owner cost rejected')
+      if (rank==0) costs(1)=9._dp
+      threshold=0.25_dp
+      if (rank==0) threshold=0.5_dp
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,threshold,MPI_COMM_WORLD,changed,ok)
+      call require(.not.ok.and..not.changed,'rank-dependent gain rejected')
+      if (rank==0) moving_t%fields(1)%values(1,1,1,1)=-1._dp
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,0.25_dp,MPI_COMM_WORLD,changed,ok)
+      call require(.not.ok.and..not.changed.and.all(destinations==0),'migration failure preserves owners')
+      if (rank==0) then
+        call require(moving_t%fields(1)%values(1,1,1,1)==-1._dp,'failed balance preserves temperature')
+        moving_t%fields(1)%values(1,1,1,1)=801._dp
+      end if
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,0.25_dp,MPI_COMM_WORLD,changed,ok)
+      call require(ok.and.changed,'cost balancing migrates fields')
+      invalid=[0,1,1]
+      if (nranks>=3) invalid=[0,1,2]
+      call require(all(destinations==invalid),'largest-cost-first owners')
+      do peer=1,3
+        call require(allocated(moving%fields(peer)%values).eqv.(destinations(peer)==rank),'balanced owner only')
+        if (destinations(peer)/=rank) cycle
+        n=tree%nodes(peer)%shape
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              call require(all(moving%fields(peer)%values(:,i,j,k)==values(peer,i,j,k)+10*owners(peer)), &
+                'cost balance exact conserved values')
+            end do
+          end do
+        end do
+        call require(all(moving_t%fields(peer)%values==800._dp+peer),'cost balance exact temperature')
+      end do
+      costs=[9._dp,6._dp,3._dp]
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,0._dp,MPI_COMM_WORLD,changed,ok)
+      call require(ok.and..not.changed.and.all(destinations==invalid),'no improvement retains owners')
+      costs=0._dp
+      call rebalance_mpi_amr_tree_3d(tree,destinations,2,moving,moving_t,costs,0._dp,MPI_COMM_WORLD,changed,ok)
+      call require(ok.and..not.changed.and.all(destinations==invalid),'zero measured work retains owners')
     end block
     call MPI_Barrier(MPI_COMM_WORLD,ierr)
   end do

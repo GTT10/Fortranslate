@@ -7,9 +7,89 @@ module mpi_amr_patch_tree_distribution_3d_mod
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,validate_mpi_amr_tree_metadata_3d
   implicit none
   private
-  public :: redistribute_mpi_amr_tree_3d
+  public :: redistribute_mpi_amr_tree_3d,rebalance_mpi_amr_tree_3d
   public :: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d
 contains
+  ! Owner-local costs must describe the same completed sampling interval. Only
+  ! owner entries are inspected; this API neither times kernels nor schedules calls.
+  subroutine rebalance_mpi_amr_tree_3d(tree,owners,nvar,state,temperature,local_cost,minimum_gain,comm,changed,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(inout) :: owners(:)
+    integer, intent(in) :: nvar
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    real(dp), intent(in) :: local_cost(:),minimum_gain
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: changed,ok
+    real(dp), allocatable :: contribution(:),cost(:),work(:),old_load(:),new_load(:)
+    integer, allocatable :: candidate(:)
+    real(dp) :: lower,upper,scale,peak,gain
+    integer :: rank,nranks,ierr,ios,node,next,destination,iteration
+    logical :: valid,agreed
+    changed=.false.;ok=.false.
+    call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
+    if (.not.valid) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
+    if (.not.valid) return
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=size(local_cost)==size(owners).and.ieee_is_finite(minimum_gain)
+    if (valid) valid=minimum_gain>=0._dp.and.minimum_gain<1._dp
+    if (valid) then
+      do node=1,size(owners)
+        if (owners(node)/=rank) cycle
+        if (.not.ieee_is_finite(local_cost(node))) valid=.false.
+        if (local_cost(node)<0._dp) valid=.false.
+      end do
+    end if
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(minimum_gain,lower,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(minimum_gain,upper,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (lower/=upper) return
+    allocate(contribution(size(owners)),cost(size(owners)),work(size(owners)), &
+      candidate(size(owners)),old_load(nranks),new_load(nranks),stat=ios)
+    valid=ios==0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    contribution=0._dp
+    do node=1,size(owners)
+      if (owners(node)==rank) contribution(node)=local_cost(node)
+    end do
+    call MPI_Allreduce(contribution,cost,size(cost),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    scale=maxval(cost)
+    if (scale==0._dp) then
+      ok=.true.;return
+    end if
+    ! Normalize before summation so finite large timings cannot overflow rank loads.
+    cost=cost/scale;work=cost;old_load=0._dp;new_load=0._dp
+    candidate=owners
+    do node=1,size(owners)
+      old_load(owners(node)+1)=old_load(owners(node)+1)+cost(node)
+    end do
+    do iteration=1,size(owners)
+      next=maxloc(work,dim=1)
+      if (work(next)<=0._dp) exit
+      destination=minloc(new_load,dim=1)
+      candidate(next)=destination-1
+      new_load(destination)=new_load(destination)+work(next)
+      work(next)=-1._dp
+    end do
+    peak=maxval(old_load)
+    gain=(peak-maxval(new_load))/peak
+    if (gain<=0._dp.or.gain<minimum_gain) then
+      ok=.true.;return
+    end if
+    call redistribute_mpi_amr_tree_3d(tree,owners,candidate,nvar,state,temperature,comm,valid)
+    if (.not.valid) return
+    owners=candidate
+    changed=.true.;ok=.true.
+  end subroutine
+
   ! Move U/T together between whole-patch owners, without interpolation or a root gather.
   ! Geometry and both owner maps must agree across the borrowed communicator.
   subroutine redistribute_mpi_amr_tree_3d(tree,old_owners,new_owners,nvar,state,temperature,comm,ok)
