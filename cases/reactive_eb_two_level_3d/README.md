@@ -17,9 +17,13 @@ For multiple static, nonoverlapping fine patches, use
 `patch_lower(:,p)` / `patch_upper(:,p)` as inclusive coarse-cell boxes.
 Namelist values run through the three coordinates of each patch in order.
 These boxes replace `fine_lower` / `fine_upper` in multiple-patch mode.
-All patches share the refinement ratio and advance with a common interval;
-`subcycling=.true.` is currently rejected for multiple patches. Automatic
-selection includes every patch's hydro and diffusion bounds and donors.
+All patches share the refinement ratio. `subcycling=.true.` advances every
+fine patch together through `refinement_ratio` hydro substeps and its square
+in each transport half. Peer halos use the same fine-time snapshot, shared
+fluxes reconcile after every substep, and accumulated fluxes drive the final
+coarse reflux. Automatic selection includes every patch's bounds and donors
+and scales fine bounds by the corresponding substep count.
+[Multiple-patch subcycling evidence](../../docs/validation/eb-multipatch-subcycle-20260917.md).
 
 `geometry_type` accepts `plane`, `extruded` or `level_set`, with the same geometry
 file formats as the existing [extruded](../reactive_eb_extruded_3d/README.md) and
@@ -74,8 +78,9 @@ and `subcycling` must match the saved run. Common stepping uses V1/V2
 checkpoints for fixed/automatic selection; subcycling uses V3/V4 respectively.
 These share a record layout with mode-specific magic.
 Multiple-patch checkpoints use separate `PELEF_EB_MULTIPATCH_CHECKPOINT_V1`
-(fixed) or `V2` (automatic) headers, include all fine records, and require the
-same patch order and boxes on restart.
+(fixed) or `V2` (automatic) headers for common stepping; subcycling uses `V3`
+or `V4` respectively. They include all fine records and require the same patch
+order, boxes and stepping mode on restart.
 
 A single file contains all grids and cumulative budgets. The reader validates
 the complete file before restoring any grid. A failed read leaves existing
@@ -84,8 +89,7 @@ not atomic against storage failure. Use distinct paths for inputs, outputs,
 restart source and checkpoint destination.
 [Restart evidence](../../docs/validation/eb-two-level-restart-20260917.md).
 
-Both executables are serial. Dynamic patches, multiple-patch subcycling and
-MPI are not yet connected.
+Both executables are serial. Dynamic patches and MPI are not yet connected.
 [Multiple-patch application evidence](../../docs/validation/eb-multipatch-application-20260917.md).
 [Application evidence](../../docs/validation/eb-two-level-application-20260917.md).
 

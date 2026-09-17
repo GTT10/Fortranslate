@@ -79,8 +79,10 @@ chemical inventories and a single state/diagnostic transaction
 ([evidence](validation/eb-multipatch-full-20260917.md)). The serial fixed-mechanism
 application now connects static multiple patches, common-interval selection,
 composite CSV output and transactional checkpoint continuation
-([evidence](validation/eb-multipatch-application-20260917.md)); multiple-patch
-subcycling and MPI EB remain open. A selected-mechanism executable now shares
+([evidence](validation/eb-multipatch-application-20260917.md)). Multiple-patch
+subcycling now synchronizes peer halos/fluxes on every fine step and accumulates
+fluxes for final coarse reflux, with mode-bound restart
+([evidence](validation/eb-multipatch-subcycle-20260917.md)); MPI EB remains open. A selected-mechanism executable now shares
 the application path and binds bundle/composition identity on restart, within
 the existing H/O/N species inventory support (plus inert AR)
 ([evidence](validation/eb-selected-two-level-20260917.md)).
