@@ -130,6 +130,17 @@ intersection or a linear-exact coarse/fine interpolant. The field and node
 metrics must come from the same EB hierarchy. The stencil alone does not sample,
 deposit, redistribute small-cell sources or perform MPI field exchange.
 
+`sample_mpi_amr_tree_spray_field` accepts paired optional `eb_geometry` and
+`nodal_phi` arguments to use these EB stencils in the existing owner-routed
+request exchange. Both must be present on every rank and all axes nonperiodic.
+Replicated nodal values, node bounds, fluid fractions and fluid centroids are
+checked for exact rank agreement, including ranks without queries. Gas fields
+remain owner-local; only requested cell values travel. All local sample arrays
+publish after collective success. Request-capacity, geometry and solid-point
+failures preserve existing samples. The deposition routines still implement
+regular AMR: EB source accumulation, restriction and masked EOS recovery remain
+to be connected separately.
+
 The `pelef_spray_tree_runtime` library (or
 `pelef_selected_spray_tree_runtime` for a configured bundle) exports
 `locate_amr_tree_spray_cells` and `partition_amr_tree_spray_parcels` from

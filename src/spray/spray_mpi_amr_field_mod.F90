@@ -5,12 +5,14 @@ module spray_mpi_amr_field_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,fetch_mpi_amr_tree_cells_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_amr_tree_coupling_mod, only: amr_tree_spray_stencil
+  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil
   implicit none
   private
   type :: particle_stencil
@@ -60,7 +62,7 @@ contains
   ! Each rank supplies its own particle positions, possibly empty. Only requested
   ! exposed-cell values are exchanged; the owner-local field is never gathered.
   subroutine sample_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      samples,ok,maximum_requests)
+      samples,ok,maximum_requests,eb_geometry,nodal_phi)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -70,6 +72,8 @@ contains
     real(dp), allocatable, intent(inout) :: samples(:,:)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: maximum_requests
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(particle_stencil), allocatable :: stencils(:)
     integer, allocatable :: requests(:,:)
     real(dp), allocatable :: values(:,:),candidate(:,:),term(:)
@@ -77,7 +81,7 @@ contains
     logical :: valid,agreed
     ok=.false.
     call prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,valid,maximum_requests)
+      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi)
     if (.not.valid) return
     allocate(candidate(nvar,size(positions,2)),term(nvar),stat=ios)
     valid=ios==0;call agree()
@@ -224,7 +228,7 @@ contains
   end subroutine
 
   subroutine prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,ok,maximum_requests)
+      stencils,requests,ok,maximum_requests,eb_geometry,nodal_phi)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -235,9 +239,11 @@ contains
     integer, allocatable, intent(out) :: requests(:,:)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: maximum_requests
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     integer, allocatable :: lookup(:,:)
     real(dp) :: bounds(6),reference_bounds(6)
-    integer :: flags(3),reference_flags(3),ierr,limit,p,total,n,ios
+    integer :: flags(5),reference_flags(5),ierr,limit,p,total,n,ios
     logical :: valid,agreed
     ok=.false.;limit=1000000
     if (present(maximum_requests)) limit=maximum_requests
@@ -245,18 +251,24 @@ contains
     if (.not.valid) return
     valid=size(positions,1)==3.and.limit>=0.and.limit<=1000000
     valid=valid.and.all(ieee_is_finite([lower,spacing]))
+    valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
+    if(present(eb_geometry)) valid=valid.and..not.any(periodic)
     if (valid) valid=size(positions,2)<=limit
     call agree()
     if (.not.agreed) return
     bounds=[lower,spacing];reference_bounds=bounds
     call MPI_Bcast(reference_bounds,6,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    flags=merge(1,0,periodic);reference_flags=flags
-    call MPI_Bcast(reference_flags,3,MPI_INTEGER,0,comm,ierr)
+    flags=[merge(1,0,periodic),merge(1,0,present(eb_geometry)),merge(1,0,present(nodal_phi))];reference_flags=flags
+    call MPI_Bcast(reference_flags,5,MPI_INTEGER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=all(bounds==reference_bounds).and.all(flags==reference_flags)
     call agree()
     if (.not.agreed) return
+    if(present(eb_geometry)) then
+      call validate_eb_sampling_geometry(comm,tree,eb_geometry,nodal_phi,valid)
+      if(.not.valid) return
+    end if
     call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,lookup,valid)
     call agree()
     if (.not.agreed) return
@@ -268,8 +280,14 @@ contains
       if (total==limit) then
         valid=.false.;exit
       end if
-      call amr_tree_spray_stencil(tree,positions(:,p),lower,spacing,periodic, &
-        stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,maximum_cells=limit-total)
+      if(present(eb_geometry)) then
+        call eb_tree_spray_stencil(tree,eb_geometry,nodal_phi,positions(:,p),lower,spacing, &
+          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid)
+        if(valid) valid=size(stencils(p)%weights)<=limit-total
+      else
+        call amr_tree_spray_stencil(tree,positions(:,p),lower,spacing,periodic, &
+          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,maximum_cells=limit-total)
+      end if
       if (.not.valid) exit
       total=total+size(stencils(p)%weights)
     end do
@@ -291,4 +309,78 @@ contains
       if (ierr/=MPI_SUCCESS) agreed=.false.
     end subroutine
   end subroutine
+  ! Compare the replicated geometry actually used by the EB sampler, including
+  ! ranks with no queries. Gas field values remain owner-local.
+  subroutine validate_eb_sampling_geometry(comm,tree,geometry,phi,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    real(dp), intent(in) :: phi(0:,0:,0:)
+    logical, intent(out) :: ok
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: buffer(:),local(:)
+    real(dp) :: bounds(9),reference(9)
+    integer :: node,n,ios,ierr
+    logical :: valid,agreed
+    ok=.false.
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(valid) valid=size(geometry)==size(tree%nodes)
+    call agree()
+    if(.not.agreed) return
+    valid=all(int(shape(phi)-1,int64)==domain(:,size(domain,2)))
+    valid=valid.and.all(shape(phi)<=1000001).and.all(shape(phi)>1)
+    call agree()
+    if(.not.agreed) return
+    valid=product(int(shape(phi)-1,int64))<=1000000_int64.and.all(ieee_is_finite(phi))
+    if(valid) valid=maxval(abs(phi))<=1e100_dp
+    do node=1,size(geometry)
+      if(.not.valid) exit
+      valid=geometry(node)%is_valid()
+      if(valid) valid=all([geometry(node)%nx,geometry(node)%ny,geometry(node)%nz]==tree%nodes(node)%shape)
+    end do
+    call agree()
+    if(.not.agreed) return
+    allocate(buffer(size(phi)),stat=ios)
+    valid=ios==0;call agree()
+    if(.not.agreed) return
+    buffer=reshape(phi,[size(phi)])
+    call MPI_Bcast(buffer,size(buffer),MPI_DOUBLE_PRECISION,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(buffer==reshape(phi,[size(phi)]))
+    call agree()
+    if(.not.agreed) return
+    deallocate(buffer)
+    do node=1,size(geometry)
+      associate(g=>geometry(node))
+        bounds=[g%x_lower,g%x_upper,g%y_lower,g%y_upper,g%z_lower,g%z_upper,g%dx,g%dy,g%dz]
+        reference=bounds
+        call MPI_Bcast(reference,9,MPI_DOUBLE_PRECISION,0,comm,ierr)
+        if(ierr/=MPI_SUCCESS) return
+        valid=all(reference==bounds);call agree()
+        if(.not.agreed) return
+        n=size(g%volume_fraction)
+        allocate(buffer(4*n),local(4*n),stat=ios)
+        valid=ios==0;call agree()
+        if(.not.agreed) return
+        local(:n)=reshape(g%volume_fraction,[n])
+        local(n+1:2*n)=reshape(g%cell_centroid_x,[n])
+        local(2*n+1:3*n)=reshape(g%cell_centroid_y,[n])
+        local(3*n+1:)=reshape(g%cell_centroid_z,[n])
+        buffer=local
+        call MPI_Bcast(buffer,size(buffer),MPI_DOUBLE_PRECISION,0,comm,ierr)
+        if(ierr/=MPI_SUCCESS) return
+        valid=all(buffer==local);call agree()
+        if(.not.agreed) return
+        deallocate(buffer,local)
+      end associate
+    end do
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
+
 end module
