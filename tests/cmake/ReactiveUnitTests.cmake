@@ -798,3 +798,7 @@ add_test(NAME regression_eb_tree_adaptive_3d
     --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/adaptive.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_adaptive_3d" --adaptive)
 set_tests_properties(regression_eb_tree_adaptive_3d PROPERTIES TIMEOUT 180)
+
+add_executable(test_eb_tree_subcycle_hydro_3d unit/test_eb_tree_subcycle_hydro_3d.F90)
+target_link_libraries(test_eb_tree_subcycle_hydro_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_tree_subcycle_hydro_3d COMMAND test_eb_tree_subcycle_hydro_3d)

@@ -31,6 +31,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d
   public :: advance_reactive_eb_tree_transport_3d
+  public :: advance_reactive_eb_tree_subcycle_hydro_3d
   public :: advance_reactive_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
   public :: fill_reactive_eb_tree_halo_3d
@@ -605,14 +606,153 @@ contains
     tree=candidate;boundary_change=boundary;wall_change=wall;ok=.true.
   end subroutine advance_reactive_eb_tree_hydro_3d
 
+  ! Each level advances together, with ratio fine substeps, time-interpolated
+  ! ancestor donors, per-substep peer fluxes and interval-local reflux.
+  subroutine advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    character(len=*), intent(in) :: solver
+    real(dp), intent(in) :: dt
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:)
+    logical, intent(out) :: ok
+    type(eb_reactive_tree_3d) :: candidate,starts,ends
+    type(eb_integrated_flux_3d), allocatable :: total(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: clock_start(:),clock_dt(:),wall(:),boundary(:)
+    integer :: nv,levels,c,n(3)
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
+    if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
+    if (.not.valid_tree(tree,nv)) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if (.not.valid) return
+    levels=size(ratios);candidate=tree
+    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    if (.not.valid) return
+    starts=candidate;ends=candidate
+    allocate(clock_start(levels),clock_dt(levels),wall(nv),boundary(nv));wall=0._dp
+    call advance_level(0,0._dp,dt,total,valid)
+    if (.not.valid) return
+    n=tree%topology%nodes(1)%shape
+    associate(g=>tree%nodes(1)%geometry,f=>total(1))
+    do c=1,nv
+      boundary(c)=g%dy*g%dz*sum(g%x_face_fraction(0,:,:)*f%x(c,0,:,:)- &
+        g%x_face_fraction(n(1),:,:)*f%x(c,n(1),:,:))+ &
+        g%dx*g%dz*sum(g%y_face_fraction(:,0,:)*f%y(c,:,0,:)- &
+        g%y_face_fraction(:,n(2),:)*f%y(c,:,n(2),:))+ &
+        g%dx*g%dy*sum(g%z_face_fraction(:,:,0)*f%z(c,:,:,0)- &
+        g%z_face_fraction(:,:,n(3))*f%z(c,:,:,n(3)))
+    end do
+    end associate
+    if (.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall))) return
+    tree=candidate;boundary_change=boundary;wall_change=wall;ok=.true.
+  contains
+    recursive subroutine advance_level(level,time,interval,flux,good)
+      integer, intent(in) :: level
+      real(dp), intent(in) :: time,interval
+      type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
+      logical, intent(out) :: good
+      type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
+      type(eb_reactive_tree_3d) :: snapshot
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),source(:,:,:,:),fraction(:)
+      logical, allocatable :: exposed(:,:,:)
+      real(dp) :: elapsed,sub_dt
+      integer :: node,peer,owner,receiver,axis,child,substep,d(3),lo(3),hi(3),component
+      integer(int64) :: offset(3)
+      logical :: valid
+      good=.false.;snapshot=candidate
+      clock_start(level+1)=time;clock_dt(level+1)=interval
+      allocate(flux(size(tree%nodes)),fraction(level))
+      do node=1,size(tree%nodes)
+        d=tree%topology%nodes(node)%shape
+        allocate(flux(node)%x(nv,0:d(1),d(2),d(3)),flux(node)%y(nv,d(1),0:d(2),d(3)), &
+          flux(node)%z(nv,d(1),d(2),0:d(3)))
+        flux(node)%x=0._dp;flux(node)%y=0._dp;flux(node)%z=0._dp
+        if (tree%topology%nodes(node)%level/=level) cycle
+        starts%nodes(node)=snapshot%nodes(node)
+        fraction=max(0._dp,min(1._dp,(time-clock_start(:level))/clock_dt(:level)))
+        allocate(ghost(nv,0:d(1)+1,0:d(2)+1,0:d(3)+1),gt(0:d(1)+1,0:d(2)+1,0:d(3)+1))
+        call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction)
+        if (.not.valid) return
+        call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
+          snapshot%nodes(node)%geometry,solver,interval,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
+          valid,ghost,gt,flux(node))
+        if (.not.valid) return
+        deallocate(ghost,gt)
+        allocate(source(nv,d(1),d(2),d(3)),exposed(d(1),d(2),d(3)));exposed=.true.
+        do child=node+1,size(tree%nodes)
+          if (tree%topology%nodes(child)%parent/=node) cycle
+          call bounds(tree%topology,child,lo,hi)
+          exposed(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.false.
+        end do
+        call reactive_eb_slip_wall_source_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
+          snapshot%nodes(node)%geometry,source,valid)
+        if (.not.valid) return
+        associate(g=>snapshot%nodes(node)%geometry)
+        do component=1,nv
+          wall(component)=wall(component)+interval*g%dx*g%dy*g%dz* &
+            sum(source(component,:,:,:)*g%volume_fraction,mask=exposed)
+        end do
+        end associate
+        deallocate(source,exposed)
+      end do
+      do node=1,size(tree%nodes)
+      do peer=node+1,size(tree%nodes)
+        if (tree%topology%nodes(node)%level/=level.or.tree%topology%nodes(peer)%level/=level) cycle
+        owner=node;receiver=peer
+        do axis=1,3
+          if (origin(axis,node)==origin(axis,peer)) cycle
+          if (origin(axis,node)>origin(axis,peer)) then
+            owner=peer;receiver=node
+          end if
+          exit
+        end do
+        offset=origin(:,receiver)-origin(:,owner)
+        if (any(offset < -int(tree%topology%nodes(receiver)%shape,int64)).or. &
+          any(offset>int(tree%topology%nodes(owner)%shape,int64))) cycle
+        call reconcile_reactive_eb_peer_flux_3d(species,tree%nodes(owner)%geometry,tree%nodes(receiver)%geometry, &
+          int(offset),flux(owner),flux(receiver),candidate%nodes(receiver)%state, &
+          candidate%nodes(receiver)%temperature,valid)
+        if (.not.valid) return
+      end do
+      end do
+      do node=1,size(tree%nodes)
+        if (tree%topology%nodes(node)%level==level) ends%nodes(node)=candidate%nodes(node)
+      end do
+      if (level+1<levels) then
+        elapsed=0._dp
+        do substep=1,ratios(level+2)
+          sub_dt=interval/real(ratios(level+2),dp)
+          if (substep==ratios(level+2)) sub_dt=interval-elapsed
+          if (sub_dt<=0._dp.or.time+elapsed+sub_dt<=time+elapsed) return
+          call advance_level(level+1,time+elapsed,sub_dt,fine_flux,valid)
+          if (.not.valid) return
+          do node=1,size(tree%nodes)
+            if (tree%topology%nodes(node)%level/=level+1) cycle
+            flux(node)%x=flux(node)%x+fine_flux(node)%x
+            flux(node)%y=flux(node)%y+fine_flux(node)%y
+            flux(node)%z=flux(node)%z+fine_flux(node)%z
+          end do
+          elapsed=elapsed+sub_dt
+        end do
+      end if
+      call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid,level,min(level+1,levels-1))
+      if (.not.valid) return
+      good=.true.
+    end subroutine advance_level
+  end subroutine advance_reactive_eb_tree_subcycle_hydro_3d
+
   ! Input states have already accepted each node's raw time-integrated flux.
   ! Replace shared transfers from finest to coarsest on exposed cells only,
   ! then average down. Publish corrected states and effective fluxes together.
-  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok)
+  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,minimum_level,maximum_level)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(inout) :: tree
     type(eb_integrated_flux_3d), intent(inout) :: flux(:)
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: minimum_level,maximum_level
     type(eb_reactive_tree_3d) :: candidate
     type(eb_integrated_flux_3d), allocatable :: effective(:)
     type(eb_integrated_flux_3d) :: restricted
@@ -620,11 +760,15 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: offset(3),section_origin(3)
-    integer :: nv,node,peer,owner,receiver,axis,depth,parent,child,lo(3),hi(3),d(3),ratio
+    integer :: nv,node,peer,owner,receiver,axis,depth,parent,child,lo(3),hi(3),d(3),ratio,first_level,last_level
     logical, allocatable :: refined(:,:,:)
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
     if (.not.valid_tree(tree,nv)) return
+    first_level=0;last_level=tree%topology%level_count()-1
+    if (present(minimum_level)) first_level=minimum_level
+    if (present(maximum_level)) last_level=maximum_level
+    if (first_level<0.or.last_level<first_level.or.last_level>=tree%topology%level_count()) return
     if (size(flux)/=size(tree%nodes)) return
     do node=1,size(flux)
       if (.not.valid_eb_integrated_flux_3d(flux(node),tree%nodes(node)%geometry,nv)) return
@@ -637,6 +781,7 @@ contains
     ! overwritten later by a coarser owner decision.
     do node=1,size(flux)
     do peer=node+1,size(flux)
+      if (tree%topology%nodes(node)%level<first_level.or.tree%topology%nodes(node)%level>last_level) cycle
       if (tree%topology%nodes(peer)%level/=tree%topology%nodes(node)%level) cycle
       owner=node;receiver=peer
       do axis=1,3
@@ -654,7 +799,7 @@ contains
       if (.not.valid) return
     end do
     end do
-    do depth=tree%topology%level_count()-1,0,-1
+    do depth=last_level,first_level,-1
     do node=1,size(flux)
       if (tree%topology%nodes(node)%level/=depth) cycle
       d=tree%topology%nodes(node)%shape
@@ -668,7 +813,7 @@ contains
         candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid,all_faces=.true.)
       if (.not.valid) return
       deallocate(refined)
-      if (node==1) cycle
+      if (depth==first_level) cycle
       parent=tree%topology%nodes(node)%parent;ratio=tree%topology%nodes(node)%patch%refinement_ratio
       call bounds(tree%topology,node,lo,hi)
       call restrict_eb_integrated_flux_3d(tree%nodes(node)%geometry,ratio,effective(node),restricted,valid)
