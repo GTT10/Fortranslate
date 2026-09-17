@@ -136,3 +136,25 @@ checkpoint context. CSV `material_id` records the port number. The old single
 port input remains valid; checkpoints produced before this input/context extension
 are rejected by the strict context comparison. Events are specified in one
 ordered table; separate per-port rate-curve files are not connected here.
+
+## Port mass-flow tables
+
+Set `port_profile_points(p)` to 2--64 and provide
+`port_profile_times(:,p)` (seconds) and `port_profile_rates(:,p)` (kg/s).
+Times must strictly increase; rates are finite and within 0--1 kg/s, matching
+the existing profile integrator. Zero points retains prescribed base-mass events.
+
+For each event using a profile, supply `injection_end_times(e)`. The code
+integrates the linear profile from `injection_times(e)` through that end time,
+then multiplies by `injection_scales(e)`. Both endpoints must lie within the
+profile, with end >= start. This replaces the port's base event mass; its base
+mass remains the template normalization. Integrated mass is bounded to 1e6 kg
+and at most 1e6 times that normalization. Drop size/composition stay fixed and
+multiplicity changes. Zero integrated mass consumes an event but no particle IDs.
+
+The entire interval's mass is injected at its start time, including an event
+starting at final time. This is discrete packet injection; choose event spacing
+for the desired temporal resolution. Intervals may overlap if explicitly
+specified. A profile does not create events automatically. Profiles and interval
+ends are part of the restart context. The arrays are supplied in the namelist;
+external rate-curve file loading is not provided here.

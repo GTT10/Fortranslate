@@ -17,6 +17,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile
   use spray_mpi_eb_remap_mod, only: remap_mpi_eb_spray
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
@@ -83,7 +84,7 @@ program pelef_reactive_eb_tree_3d
   integer :: port_count=1,event_ports(1024)=1
   integer :: injection_events=1,next_injection=1
   integer(int64) :: last_particle_id=0
-  real(dp) :: injection_times(1024)=0,injection_scales(1024)=1
+  real(dp) :: injection_times(1024)=0,injection_scales(1024)=1,event_factors(1024)=1
   type(spray_liquid), allocatable :: liquids(:)
   type(spray_options) :: particle_options
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
@@ -484,7 +485,8 @@ program pelef_reactive_eb_tree_3d
 contains
 #ifdef PELEF_MPI_EB_SPRAY
   subroutine initialize_particles()
-    integer :: nc,number,q,c,stream,code,closed,port,port_numbers(16)
+    integer :: nc,number,q,c,stream,code,closed,port,port_numbers(16),port_profile_points(16)
+    real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),injection_end_times(1024),profile_mass
     real(dp) :: port_centers(3,16),port_axes(3,16),port_masses(16),port_speeds(16)
     real(dp) :: port_angles(16),port_diameters(16),port_temperatures(16),port_fractions(16,16)
     character(len=4096) :: context_line
@@ -496,7 +498,9 @@ contains
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
-      port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions
+      port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
+      port_profile_points,port_profile_times,port_profile_rates,injection_end_times
+    port_profile_points=0;port_profile_times=0;port_profile_rates=0;injection_end_times=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp)
     port_masses=-1;port_speeds=-1;port_angles=-1;port_diameters=-1;port_temperatures=-1;port_fractions=-1
@@ -560,6 +564,25 @@ contains
       injection_ports(port)%fractions=port_fractions(:nc,port)
       injection_ports(port)%parcels%material_id=port
     end do
+    event_factors=injection_scales
+    do port=1,port_count
+      q=port_profile_points(port)
+      if(q/=0.and.(q<2.or.q>64)) error stop 'Invalid port profile size'
+      if(q==0) cycle
+      call integrate_spray_injection_profile(port_profile_times(:q,port),port_profile_rates(:q,port), &
+        port_profile_times(1,port),port_profile_times(q,port),profile_mass,ok)
+      if(.not.ok) error stop 'Invalid port rate profile'
+    end do
+    do c=1,injection_events
+      port=event_ports(c);q=port_profile_points(port)
+      if(q==0) cycle
+      call integrate_spray_injection_profile(port_profile_times(:q,port),port_profile_rates(:q,port), &
+        injection_times(c),injection_end_times(c),profile_mass,ok)
+      if(.not.ok) error stop 'Invalid injection integration interval'
+      profile_mass=profile_mass*injection_scales(c)
+      if(profile_mass>1e6_dp.or.profile_mass>1e6_dp*port_masses(port)) error stop 'Integrated injection exceeds bounds'
+      event_factors(c)=profile_mass/port_masses(port)
+    end do
     allocate(drops(0),component_mass(nc,0))
     if(checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
       open(newunit=stream,status='scratch',form='formatted',iostat=code)
@@ -588,7 +611,7 @@ contains
     integer :: q,c,number,old_count,local_count,global_count
     do while(next_injection<=injection_events)
       if(injection_times(next_injection)>record%time) exit
-      scale=injection_scales(next_injection)
+      scale=event_factors(next_injection)
       if(scale>0) then
         associate(injection_template=>injection_ports(event_ports(next_injection))%parcels, &
           injection_fractions=>injection_ports(event_ports(next_injection))%fractions)
@@ -784,7 +807,7 @@ contains
       end if
       expected_ids=0
       do p=1,saved_event-1
-        if(injection_scales(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
+        if(event_factors(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
       end do
       if(watermark/=expected_ids) error stop 'Invalid restart ID watermark'
       do p=1,size(particles)

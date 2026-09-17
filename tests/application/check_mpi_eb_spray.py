@@ -21,6 +21,7 @@ def main():
     p.add_argument('--rebalance', action='store_true')
     p.add_argument('--regrid', action='store_true')
     p.add_argument('--ports', action='store_true')
+    p.add_argument('--profiles', action='store_true')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -62,6 +63,17 @@ def main():
                 'port_masses(2)=2.e-10,port_speeds(2)=30.,port_diameters(2)=2.e-5,'
                 'port_temperatures(2)=360.,port_fractions(:,2)=.25,.75,14*0.,', 1)
             spray.write_text(values)
+        if a.profiles:
+            spray = directory / 'spray.nml'
+            values = spray.read_text().replace('&eb_spray', '&eb_spray\n'
+                'port_profile_points=2,3,port_profile_times(:,1)=0.,4.e-8,62*0.,'
+                'port_profile_rates(:,1)=.02,.02,62*0.,'
+                'port_profile_times(:,2)=0.,2.e-8,4.e-8,61*0.,'
+                'port_profile_rates(:,2)=0.,.08,0.,61*0.,'
+                'injection_end_times=1.e-8,5.e-9,1.e-8,1.5e-8,2.5e-8,3.5e-8,', 1)
+            values = values.replace('injection_scales=1.,0.,1.,.5,2.,1.,',
+                                    'injection_scales=1.,1.,1.,.5,2.,1.,')
+            spray.write_text(values)
         if altered:
             spray = directory / 'spray.nml'
             spray.write_text(spray.read_text().replace('liquid_temperature=350.', 'liquid_temperature=351.'))
@@ -94,7 +106,7 @@ def main():
         if a.scheduled:
             assert 'Processed injection events: 5' in (directory / 'run.log').read_text()
             budget = rows(directory / 'result.csv.budget.csv')
-            expected_mass = 7.5e-10 if a.ports else 4.5e-10
+            expected_mass = 1.e-9 if a.profiles else 7.5e-10 if a.ports else 4.5e-10
             assert abs(float(budget[0]['injected']) - expected_mass) < expected_mass * 1e-14
             for first, second in ([] if a.ports else zip(drops[:2], drops[2:4])):
                 assert {k: v for k, v in first.items() if k != 'id'} == {
