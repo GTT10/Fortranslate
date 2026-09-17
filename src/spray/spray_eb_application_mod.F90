@@ -16,7 +16,11 @@ module spray_eb_application_mod
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
-  use spray_eb_reactive_mod, only: advance_eb_spray_reactive
+  use spray_eb_reactive_mod, only: advance_eb_spray_reactive,advance_eb_spray_reactive_allocated
+  use spray_eb_impact_mod, only: spray_eb_wall_options
+  use spray_wall_impact_mod, only: spray_wall_film
+  use spray_eb_film_step_mod, only: advance_eb_film_coupling
+  use spray_eb_step_mod, only: advance_eb_mixture_coupling_allocated
   use spray_eb_field_mod, only: eb_spray_stencil
   use spray_checkpoint_mod, only: write_spray_checkpoint,read_spray_checkpoint,spray_checkpoint_context_capacity
   use amr_reactive_3d_checkpoint_mod, only: write_selected_checkpoint_context
@@ -48,9 +52,13 @@ contains
     real(dp) :: total_mass=1e-10_dp,center(3)=0,axis(3)=[1._dp,0._dp,0._dp],speed=1,half_angle=0
     real(dp) :: diameter=1e-5_dp,liquid_temperature=350,maximum_dt=1e-8_dp
     type(spray_options) :: options
+    type(spray_eb_wall_options) :: walls
+    logical :: wall_impacts=.false.
+    type(spray_wall_film), allocatable :: films(:)
+    real(dp), allocatable :: film_mass(:,:)
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
-      liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales
+      liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales,wall_impacts,walls
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -72,10 +80,11 @@ contains
     vapor_names='H2O';densities=1000;heat_capacities=4184;reference_temperatures=373.15_dp
     reference_pressures=101325;latent_heats=2.257e6_dp;total_mass=1e-10_dp;center=0
     axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0;diameter=1e-5_dp;liquid_temperature=350
-    maximum_dt=1e-8_dp;options=spray_options()
+    maximum_dt=1e-8_dp;options=spray_options();walls=spray_eb_wall_options();wall_impacts=.false.
     injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
+    call check_output(trim(config%output_file)//'.films.csv')
     if (config%geometry_type/='level_set') error stop 'EB spray requires nodal level-set geometry'
     if(len_trim(config%restart_file)>0) call check_checkpoint_path(config%restart_file)
     if(config%checkpoint_interval_steps>0) call check_checkpoint_path(config%checkpoint_file)
@@ -110,12 +119,20 @@ contains
     if(.not.ok) error stop 'Invalid injected liquid mixture'
     effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
     effective%reference_temperature=liquid_temperature;effective%reference_energy=e
-    allocate(drops(0),masses(nc,0))
+    allocate(drops(0),masses(nc,0),films(0),film_mass(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
     allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv),initial(nv))
     call initialize_reactive_eb_density_sheet_3d(species,config,g,state,temperature,ok,mole_fractions)
     if(.not.ok) error stop 'Invalid EB initial gas'
+    if (walls%evolve.and..not.wall_impacts) error stop 'Film evolution requires wall_impacts'
+    if (wall_impacts) then
+      if (options%surface_tension<1e-8_dp.or.liquid_viscosity_at_temperature(options,liquid_temperature)<=0) &
+        error stop 'EB wall impacts require positive surface tension and viscosity'
+      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
+        drops,masses,0._dp,particle_steps,sw(:5),ok,walls,films,film_mass,last_id)
+      if (.not.ok) error stop 'Invalid EB impact configuration'
+    end if
     call reactive_eb_integrals_3d(state,g,initial,ok)
     if(.not.ok) error stop 'Invalid initial EB gas inventory'
     time=0;step=0;boundary=0;wall=0;chemical=0;injected=0;last_checkpoint_step=0
@@ -124,7 +141,8 @@ contains
       call read_spray_checkpoint(config%restart_file,context,species,state,temperature,drops,time,step,next_event, &
         initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
         breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
-        component_mass=masses,last_id=last_id)
+        component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
+        retired_parent_state=wall_impacts)
       if(.not.ok) then
         write(*,'(a)') trim(message)
         error stop 'EB spray restart rejected'
@@ -146,7 +164,8 @@ contains
           call write_spray_checkpoint(checkpoint_path,context,species,state,temperature,drops,time,step,next_event, &
             initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
             breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
-            component_mass=masses,last_id=last_id)
+            component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
+        retired_parent_state=wall_impacts)
           if(.not.ok) then
             write(*,'(a)') trim(message)
             error stop 'EB spray checkpoint rejected'
@@ -172,11 +191,20 @@ contains
         ok=.false.
         if(dt<=0.or.time+dt<=time) exit
         theta=1;sb=0;sw=0;sc=0
+        if (wall_impacts) then
+        call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+          drops,masses,dt,config%riemann_solver,config%redistribution,config%chemistry_enabled,config%transport_enabled, &
+          config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
+          config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+          particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
+          walls,films,film_mass,last_id)
+        else
         call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
           drops,masses,dt,config%riemann_solver,config%redistribution,config%chemistry_enabled,config%transport_enabled, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator)
+        end if
         if(ok) exit
         dt=.5_dp*dt
       end do
@@ -200,6 +228,21 @@ contains
     end do
     close(unit,iostat=close_status)
     if(status/=0.or.close_status/=0) error stop 'EB particle CSV write failed'
+    open(newunit=unit,file=trim(config%output_file)//'.films.csv',status='replace',action='write',iostat=status)
+    if(status/=0) error stop 'Cannot write EB film CSV'
+    header='material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height'
+    do n=1,nc
+      write(component_label,'(i0)') n
+      header=header//',component_mass_'//trim(component_label)
+    end do
+    write(unit,'(a)',iostat=status) header
+    do p=1,size(films)
+      if(status/=0) exit
+      write(unit,'(i0,*(",",es25.16,:))',iostat=status) films(p)%material_id,films(p)%position,films(p)%normal, &
+        films(p)%mass,films(p)%temperature,films(p)%diameter,films(p)%height,film_mass(:,p)
+    end do
+    close(unit,iostat=close_status)
+    if(status/=0.or.close_status/=0) error stop 'EB film CSV write failed'
     write(*,'(a,i0,a,es25.16)') 'EB spray steps: ',step,' time: ',time
     write(*,'(a,i0)') 'Injection events processed: ',next_event-1
     write(*,'(a,*(es25.16,1x))') 'Injected inventory: ',injected
@@ -221,7 +264,7 @@ contains
       if(present(mole_fractions)) composition=mole_fractions
       open(newunit=scratch,status='scratch',form='formatted',delim='quote',iostat=ios)
       if(ios/=0) error stop 'Cannot prepare EB checkpoint context'
-      write(scratch,'(a)',iostat=ios) 'EB_SPRAY_CONTEXT_V1'
+      write(scratch,'(a)',iostat=ios) 'EB_SPRAY_CONTEXT_V2'
       if(ios==0) write(scratch,*,iostat=ios) canonical
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)
@@ -262,22 +305,42 @@ contains
         if(injection_times(next_event-1)>time) error stop 'Restart injection ahead of time'
       end if
       expected_count=count(injection_scales(:next_event-1)>0)*number
-      if(size(drops)/=expected_count.or.last_id/=int(expected_count,int64)) error stop 'Invalid restart injection IDs'
+      if (wall_impacts) then
+        if(last_id<int(expected_count,int64)) error stop 'Invalid restart impact watermark'
+        if(modulo(last_id-int(expected_count,int64),4_int64)/=0) error stop 'Invalid restart splash IDs'
+      else
+        if(size(films)/=0) error stop 'Unexpected restart films'
+        if(size(drops)/=expected_count.or.last_id/=int(expected_count,int64)) error stop 'Invalid restart injection IDs'
+      end if
       if(size(drops)>min(125000,options%maximum_parcels)) error stop 'Restart exceeds population capacity'
       if(any(shape(masses)/=[nc,size(drops)])) error stop 'Restart component shape mismatch'
       cells=0;weights=0;volumes=0
       do q=1,size(drops)
-        if(drops(q)%id/=int(q,int64)) error stop 'Restart parcel ID sequence mismatch'
+        if (wall_impacts) then
+          if(drops(q)%id>last_id) error stop 'Restart ID exceeds watermark'
+          if(q>1) then
+            if(drops(q)%id<=drops(q-1)%id) error stop 'Restart IDs not ordered'
+          end if
+        else
+          if(drops(q)%id/=int(q,int64)) error stop 'Restart parcel ID sequence mismatch'
+        end if
         call eb_spray_stencil(g,phi,drops(q)%position,cells,weights,volumes,valid)
         if(.not.valid) error stop 'Restart parcel outside fluid'
       end do
+      if (wall_impacts) then
+        call advance_eb_film_coupling(species,transport,liquids,options,walls,g,phi,state,temperature, &
+          films,film_mass,0._dp,particle_steps,sw(:5),valid)
+        if(.not.valid) error stop 'Invalid restart EB films'
+      end if
     end subroutine
     subroutine check_checkpoint_path(path)
       character(len=*), intent(in) :: path
       call check_output(path)
       if(selected_reactor_paths_alias_lexically(absolute_path(path),absolute_path(config%output_file)).or. &
          selected_reactor_paths_alias_lexically(absolute_path(path), &
-           absolute_path(trim(config%output_file)//'.particles.csv'))) error stop 'Checkpoint aliases CSV output'
+           absolute_path(trim(config%output_file)//'.particles.csv')).or. &
+         selected_reactor_paths_alias_lexically(absolute_path(path), &
+           absolute_path(trim(config%output_file)//'.films.csv'))) error stop 'Checkpoint aliases CSV output'
     end subroutine
     subroutine inject_event()
       type(spray_parcel), allocatable :: added(:),candidate(:)
