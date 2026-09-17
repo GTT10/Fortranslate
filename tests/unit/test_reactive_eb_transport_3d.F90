@@ -1,6 +1,7 @@
 program test_reactive_eb_transport_3d
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use state_indices_mod, only: irho, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -15,7 +16,7 @@ program test_reactive_eb_transport_3d
     reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    build_axis_plane_eb_geometry_3d
+    build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: &
     initialize_reactive_eb_density_sheet_3d, reactive_eb_integrals_3d, &
@@ -42,9 +43,66 @@ program test_reactive_eb_transport_3d
   call check_axis(species, transport, "y")
   call check_axis(species, transport, "z")
   call check_full_driver(species, reactions, transport)
+  call check_curved_driver(species,reactions,transport)
   write(*, '(a)') "test_reactive_eb_transport_3d: PASS"
 
 contains
+
+  subroutine check_curved_driver(species,reactions,transport)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_2d) :: section
+    type(eb_geometry_3d) :: geometry
+    type(reactive_eb_3d_config) :: config
+    real(dp) :: phi(0:10,0:8),theta,initial_elements(3),final_elements(3),error
+    real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),result(:,:,:,:),temps(:,:,:)
+    real(dp), allocatable :: hydro(:,:,:,:),diffused(:,:,:,:),before(:),after(:)
+    integer :: i,j,nvar,mode
+    logical :: valid
+    do j=0,8
+      do i=0,10
+        phi(i,j)=(real(i,dp)/10-.5_dp)**2+(real(j,dp)/8-.5_dp)**2-.29_dp**2
+      end do
+    end do
+    call build_eb_geometry_2d(phi,0._dp,1._dp,0._dp,1._dp,section,valid)
+    call require(valid,'curved full-driver section')
+    call extrude_eb_geometry_3d(section,3,3,0._dp,1._dp,geometry,valid)
+    call require(valid,'curved full-driver geometry')
+    config%nx=10;config%ny=8;config%nz=3
+    nvar=reactive_nvar(size(species))
+    allocate(state(nvar,10,8,3),temperature(10,8,3),result(nvar,10,8,3),temps(10,8,3))
+    allocate(hydro(nvar,10,8,3),diffused(nvar,10,8,3),before(nvar),after(nvar))
+    call initialize_reactive_eb_density_sheet_3d(species,config,geometry,state,temperature,valid)
+    call require(valid,'curved full-driver initial state')
+    call reactive_eb_integrals_3d(state,geometry,before,valid)
+    call require(valid,'curved initial inventories')
+    call reactive_eb_element_integrals_3d(species,state,geometry,initial_elements,valid)
+    call require(valid,'curved initial elements')
+    do mode=1,3
+      call advance_reactive_eb_full_3d(species,reactions,transport,state,temperature,geometry, &
+        'rusanov','state_redist',1.e-8_dp,mode==3,2.e-7_dp,1.e-12_dp, &
+        mode>=2,.true.,.true.,.true.,.true.,result,temps,theta,valid,.5_dp)
+      call require(valid,'curved hydro/transport/reaction full driver')
+      call require(all(temps>0._dp).and.all(result(irho,:,:,:)>0._dp),'curved positive state')
+      call require(all(same_real_bits(result,state).or.spread(geometry%volume_fraction>0,1,nvar)), &
+        'curved covered storage unchanged')
+      call reactive_eb_integrals_3d(result,geometry,after,valid)
+      call require(valid,'curved final inventories')
+      error=maxval(abs(after([irho,iet])-before([irho,iet]))/max(1.e-20_dp,abs(before([irho,iet]))))
+      call require(error<=2.e-9_dp,'curved mass and energy conservation')
+      call reactive_eb_element_integrals_3d(species,result,geometry,final_elements,valid)
+      call require(valid,'curved final elements')
+      call require(maxval(abs(final_elements-initial_elements)/max(1.e-30_dp,abs(initial_elements)))<=2.e-9_dp, &
+        'curved element conservation')
+      if (mode==1) hydro=result
+      if (mode==2) then
+        diffused=result
+        call require(maxval(abs(diffused-hydro))>1.e-12_dp,'curved transport response')
+      end if
+      if (mode==3) call require(maxval(abs(result-diffused))>1.e-12_dp,'curved chemistry response')
+    end do
+  end subroutine check_curved_driver
 
   subroutine check_axis(species, transport, axis)
     type(nasa7_species), intent(in) :: species(:)

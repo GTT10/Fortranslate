@@ -331,8 +331,9 @@ contains
     alpha_neighbor = 0.0_dp
     neighborhood_volume = 0.0_dp
 
-    ! The qualified geometry has one axis-normal regular receiver for every
-    ! small cut cell. Keep the weighting general enough for shared receivers.
+    ! Choose an open, outward neighbor that meets the target by itself.
+    ! Such receivers do not need their own merge; shared receivers retain the
+    ! existing conservative neighborhood weights.
     do k = 1, geometry%nz
       do j = 1, geometry%ny
         do i = 1, geometry%nx
@@ -340,8 +341,8 @@ contains
           alpha_self(i, j, k) = 1.0_dp
           kappa = geometry%volume_fraction(i, j, k)
           if (kappa >= target) cycle
-          call select_axis_plane_state_receiver( &
-            geometry, i, j, k, ni, nj, nk, local_ok)
+          call select_outward_state_receiver( &
+            geometry, i, j, k, target, ni, nj, nk, local_ok)
           if (.not. local_ok) return
           receiving_kappa = geometry%volume_fraction(ni, nj, nk)
           if (kappa + receiving_kappa + weight_tolerance < target) return
@@ -462,67 +463,41 @@ contains
     ok = .true.
   end subroutine reactive_eb_weighted_state_redistribute_3d
 
-  subroutine select_axis_plane_state_receiver( &
-      geometry, i, j, k, neighbor_i, neighbor_j, neighbor_k, ok)
+  subroutine select_outward_state_receiver( &
+      geometry,i,j,k,target,neighbor_i,neighbor_j,neighbor_k,ok)
     type(eb_geometry_3d), intent(in) :: geometry
-    integer, intent(in) :: i, j, k
-    integer, intent(out) :: neighbor_i, neighbor_j, neighbor_k
+    integer, intent(in) :: i,j,k
+    real(dp), intent(in) :: target
+    integer, intent(out) :: neighbor_i,neighbor_j,neighbor_k
     logical, intent(out) :: ok
-
-    real(dp), parameter :: axis_tolerance = &
-      512.0_dp * epsilon(1.0_dp)
-    real(dp) :: normal(3), normal_norm
-    integer :: axis, offset
-
-    neighbor_i = i
-    neighbor_j = j
-    neighbor_k = k
-    ok = .false.
-    normal = [ &
-      geometry%x_face_fraction(i, j, k) - &
-        geometry%x_face_fraction(i - 1, j, k), &
-      geometry%y_face_fraction(i, j, k) - &
-        geometry%y_face_fraction(i, j - 1, k), &
-      geometry%z_face_fraction(i, j, k) - &
-        geometry%z_face_fraction(i, j, k - 1)]
-    normal_norm = sqrt(sum(normal**2))
-    if (.not. ieee_is_finite(normal_norm) .or. &
-        normal_norm <= tiny(1.0_dp)) return
-    if (count(abs(normal) > axis_tolerance * normal_norm) /= 1) return
-    axis = maxloc(abs(normal), dim=1)
-    offset = merge(1, -1, normal(axis) > 0.0_dp)
-    select case (axis)
-    case (1)
-      neighbor_i = i + offset
-      if (neighbor_i < 1 .or. neighbor_i > geometry%nx) return
-      if (offset > 0) then
-        if (geometry%x_face_fraction(i, j, k) <= 0.0_dp) return
-      else
-        if (geometry%x_face_fraction(i - 1, j, k) <= 0.0_dp) return
-      end if
-    case (2)
-      neighbor_j = j + offset
-      if (neighbor_j < 1 .or. neighbor_j > geometry%ny) return
-      if (offset > 0) then
-        if (geometry%y_face_fraction(i, j, k) <= 0.0_dp) return
-      else
-        if (geometry%y_face_fraction(i, j - 1, k) <= 0.0_dp) return
-      end if
-    case (3)
-      neighbor_k = k + offset
-      if (neighbor_k < 1 .or. neighbor_k > geometry%nz) return
-      if (offset > 0) then
-        if (geometry%z_face_fraction(i, j, k) <= 0.0_dp) return
-      else
-        if (geometry%z_face_fraction(i, j, k - 1) <= 0.0_dp) return
-      end if
-    case default
-      return
-    end select
-    if (geometry%cell_type(neighbor_i, neighbor_j, neighbor_k) /= &
-        eb_regular_cell_3d) return
-    ok = .true.
-  end subroutine select_axis_plane_state_receiver
+    real(dp) :: normal(3),aperture,score,best
+    integer :: axis,offset,index(3),dims(3)
+    neighbor_i=i;neighbor_j=j;neighbor_k=k;ok=.false.;best=-1._dp
+    normal=[geometry%boundary_normal_x(i,j,k),geometry%boundary_normal_y(i,j,k), &
+      geometry%boundary_normal_z(i,j,k)]
+    dims=[geometry%nx,geometry%ny,geometry%nz]
+    ! Largest outward normal component wins; equal scores prefer x, then y, z.
+    ! Axis-plane geometries keep their original single receiver and weights.
+    do axis=1,3
+      score=abs(normal(axis))
+      if (score<=512._dp*epsilon(1._dp).or.score<=best) cycle
+      offset=merge(1,-1,normal(axis)>0._dp)
+      index=[i,j,k];index(axis)=index(axis)+offset
+      if (any(index<1).or.any(index>dims)) cycle
+      if (geometry%volume_fraction(index(1),index(2),index(3))<target) cycle
+      select case(axis)
+      case(1)
+        aperture=geometry%x_face_fraction(i+min(offset,0),j,k)
+      case(2)
+        aperture=geometry%y_face_fraction(i,j+min(offset,0),k)
+      case(3)
+        aperture=geometry%z_face_fraction(i,j,k+min(offset,0))
+      end select
+      if (aperture<=0._dp) cycle
+      neighbor_i=index(1);neighbor_j=index(2);neighbor_k=index(3)
+      best=score;ok=.true.
+    end do
+  end subroutine select_outward_state_receiver
 
   subroutine advance_reactive_eb_state_redistributed_3d( &
       species, state, temperature, geometry, conservative_rhs, dt, &

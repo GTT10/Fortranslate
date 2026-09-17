@@ -2,6 +2,7 @@ program test_eb_reactive_redistribution_3d
   use, intrinsic :: ieee_arithmetic, only: &
     ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use state_indices_mod, only: irho
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -11,7 +12,7 @@ program test_eb_reactive_redistribution_3d
     reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    build_axis_plane_eb_geometry_3d
+    build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
   use eb_reactive_redistribution_3d_mod, only: &
     reactive_eb_flux_redistribute_3d, &
     advance_reactive_eb_redistributed_3d, &
@@ -28,10 +29,61 @@ program test_eb_reactive_redistribution_3d
   call check_state_axis("z", 1, 1, 8, [1, 1, 3], [1, 1, 4])
   call check_transverse_neighbors()
   call check_reactive_advance()
+  call check_curved_state()
 
   write(*, '(a)') "test_eb_reactive_redistribution_3d: PASS"
 
 contains
+
+  subroutine check_curved_state()
+    type(eb_geometry_2d) :: section
+    type(eb_geometry_3d) :: geometry
+    real(dp) :: phi(0:10,0:8),before,after
+    real(dp), allocatable :: state(:,:,:,:),result(:,:,:,:)
+    integer :: i,j,k,axis,component
+    logical :: ok
+    do j=0,8
+      do i=0,10
+        phi(i,j)=(real(i,dp)/10-.5_dp)**2+(real(j,dp)/8-.5_dp)**2-.29_dp**2
+      end do
+    end do
+    call build_eb_geometry_2d(phi,0._dp,1._dp,0._dp,1._dp,section,ok)
+    call require(ok,'curved section for StateRedist')
+    do axis=1,3
+      call extrude_eb_geometry_3d(section,axis,3,0._dp,1._dp,geometry,ok)
+      call require(ok,'curved StateRedist geometry')
+      allocate(state(2,geometry%nx,geometry%ny,geometry%nz),result(2,geometry%nx,geometry%ny,geometry%nz))
+      do k=1,geometry%nz
+        do j=1,geometry%ny
+          do i=1,geometry%nx
+            state(:,i,j,k)=[real(i+3*j+7*k,dp),real(2*i-j+k,dp)]
+          end do
+        end do
+      end do
+      call reactive_eb_weighted_state_redistribute_3d(geometry,state,result,ok)
+      call require(ok,'nonplanar StateRedist')
+      do component=1,2
+        before=sum(state(component,:,:,:)*geometry%volume_fraction)
+        after=sum(result(component,:,:,:)*geometry%volume_fraction)
+        call assert_close(after,before,2.e-12_dp*max(1._dp,abs(before)),'curved weighted conservation')
+        call require(minval(result(component,:,:,:),mask=geometry%volume_fraction>0)>= &
+          minval(state(component,:,:,:),mask=geometry%volume_fraction>0)-1.e-12_dp,'curved convex lower bound')
+        call require(maxval(result(component,:,:,:))<=maxval(state(component,:,:,:))+1.e-12_dp, &
+          'curved convex upper bound')
+      end do
+      call require(maxval(abs(result-state),mask=spread(geometry%volume_fraction>0,1,2))>1.e-4_dp, &
+        'curved cells actually redistribute')
+      state=7._dp
+      call reactive_eb_weighted_state_redistribute_3d(geometry,state,result,ok)
+      call require(ok,'curved uniform StateRedist')
+      call require(maxval(abs(result-7._dp),mask=spread(geometry%volume_fraction>0,1,2))<1.e-12_dp, &
+        'curved uniform state preserved')
+      call require(maxval(abs(result),mask=spread(geometry%volume_fraction==0,1,2))==0._dp, &
+        'curved covered output zero')
+      deallocate(state,result)
+    end do
+  end subroutine check_curved_state
+
 
   subroutine check_regular_and_covered()
     integer, parameter :: nx = 3

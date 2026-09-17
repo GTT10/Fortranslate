@@ -99,7 +99,8 @@ Characteristic inflow and moving geometry, general EB and AMR-particle boundary 
 remain part of the completion work. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
 normal integrals and uniform-pressure balance. Next connect nonplanar geometry
-to application inputs and supported redistribution/transport paths; arbitrary
+to application inputs and restart. Outward-neighbor StateRedist now connects
+nonplanar hydro/transport/reaction updates in a focused extruded-section case; arbitrary
 fully 3D surfaces and EB-AMR-MPI coupling remain open.
 
 Serial/MPI 3D temperature-tagged patch movement/resizing is implemented with conservative

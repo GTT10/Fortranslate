@@ -27,3 +27,22 @@ coordinate. It does not construct arbitrary 3D surfaces or resolve geometry
 missing from the supplied 2D node samples. Existing 2D ambiguity/degeneracy checks
 remain authoritative. CLI/restart geometry selection, general state redistribution,
 curved-wall transport qualification, AMR and MPI EB integration are separate work.
+
+
+## Outward-neighbor weighted StateRedist
+
+The single-receiver weighted StateRedist no longer requires an axis-aligned wall.
+For a small cell, it considers each nonzero solid-to-fluid normal component,
+requiring an in-domain neighbor connected by a positive face aperture and with
+fluid volume fraction at least the requested target. The largest eligible normal
+component wins, with x/y/z tie order. This uses the physical unit normal, including
+anisotropic cells. A receiver can be a regular cell or a sufficiently large cut
+cell. It does not require its own merge at that target.
+
+The original overlap counts, self/neighbor weights and component-wise conservative
+averaging remain unchanged. An axis plane therefore retains its original receiver
+and arithmetic. If no eligible single neighbor exists, the existing failure result
+is retained; no chain, multi-neighbor region or traversal through solid is added.
+This is a bounded extension, not general small-cell agglomeration. The coupled
+library driver now has a faceted-cylinder test through hydro, transport and reaction;
+application geometry/restart configuration is still separate work.
