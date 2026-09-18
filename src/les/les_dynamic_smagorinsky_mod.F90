@@ -2,12 +2,107 @@ module les_dynamic_smagorinsky_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use les_smagorinsky_3d_mod, only: smagorinsky_stress
+  use les_filter_3d_mod, only: les_filter_weights,filter_les_field_3d
+  use nasa7_thermo_mod, only: nasa7_species
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   implicit none
   private
+  public :: compute_dynamic_les_coefficients_3d
   public :: dynamic_smagorinsky_quantities,dynamic_smagorinsky_coefficients
   ! Pinned PeleC Constants.H small_num(), including its coefficient floor.
   real(dp), parameter :: regularizer=1e-8_dp
 contains
+  ! Periodic regular grid. Filter conserved state before EOS recovery, not T or u.
+  ! Coefficients are smoothed with the pinned box filter of ratio six.
+  subroutine compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
+      coefficients,ok,grid_ratio)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
+    character(len=*), intent(in) :: test_model
+    integer, intent(in) :: test_ratio
+    real(dp), intent(inout) :: coefficients(:,:,:,:)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: grid_ratio
+    real(dp), allocatable :: weights(:),smooth(:),filtered_state(:,:,:,:),q(:,:,:,:),qt(:,:,:,:)
+    real(dp), allocatable :: quantities(:,:,:,:),filtered_quantities(:,:,:,:),test_quantities(:,:,:,:),raw(:,:,:,:)
+    real(dp) :: primitive(reactive_nprim(size(species))),t,sound,g(3,3),gt(3),kij(3,3),aij(3,3),rut(3),a,ft(3)
+    integer :: n(3),i,j,k,d,lo(3),hi(3),cell(3),ratio,level
+    logical :: local_ok
+    ok=.false.;n=shape(temperature);ratio=1
+    if (present(grid_ratio)) ratio=grid_ratio
+    if (any(n<2).or.ratio<1.or.ratio>64) return
+    if (size(state,1)/=reactive_nvar(size(species)).or.size(species)<1) return
+    if (any([size(state,2),size(state,3),size(state,4)]/=n)) return
+    if (any(shape(coefficients)/=[3,n])) return
+    if (.not.all(ieee_is_finite(spacing))) return
+    if (any(spacing<1e-12_dp).or.any(spacing>1e9_dp)) return
+    call les_filter_weights(test_model,test_ratio,weights,local_ok)
+    if (.not.local_ok) return
+    call les_filter_weights('box',6,smooth,local_ok)
+    if (.not.local_ok) return
+    allocate(filtered_state,mold=state)
+    call filter_les_field_3d(state,weights,filtered_state,local_ok)
+    if (.not.local_ok) return
+    allocate(q(5,n(1),n(2),n(3)),qt(5,n(1),n(2),n(3)))
+    allocate(quantities(25,n(1),n(2),n(3)),filtered_quantities(25,n(1),n(2),n(3)))
+    allocate(test_quantities(25,n(1),n(2),n(3)),raw(3,n(1),n(2),n(3)))
+    do k=1,n(3)
+      do j=1,n(2)
+        do i=1,n(1)
+          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound,local_ok)
+          if (.not.local_ok) return
+          if (maxval(abs(primitive(2:4)))>1e30_dp.or.primitive(1)>1e8_dp.or.t>1e8_dp) return
+          q(:,i,j,k)=[primitive(1:4),t]
+          call reactive_conserved_to_primitive(species,filtered_state(:,i,j,k),temperature(i,j,k), &
+            primitive,t,sound,local_ok)
+          if (.not.local_ok) return
+          if (maxval(abs(primitive(2:4)))>1e30_dp.or.primitive(1)>1e8_dp.or.t>1e8_dp) return
+          qt(:,i,j,k)=[primitive(1:4),t]
+        end do
+      end do
+    end do
+    do level=1,2
+      if (level==2) then
+        q=qt;ratio=test_ratio
+      end if
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            cell=[i,j,k]
+            do d=1,3
+              lo=cell;hi=cell;lo(d)=modulo(cell(d)-2,n(d))+1;hi(d)=modulo(cell(d),n(d))+1
+              g(:,d)=(q(2:4,hi(1),hi(2),hi(3))-q(2:4,lo(1),lo(2),lo(3)))/ (2*spacing(d))
+              gt(d)=(q(5,hi(1),hi(2),hi(3))-q(5,lo(1),lo(2),lo(3)))/(2*spacing(d))
+            end do
+            call dynamic_smagorinsky_quantities(g,gt,q(1,i,j,k),q(2:4,i,j,k),q(5,i,j,k),spacing,ratio, &
+              kij,rut,aij,a,ft,local_ok)
+            if (.not.local_ok) return
+            if (level==1) then
+              quantities(:,i,j,k)=[reshape(kij,[9]),rut,reshape(aij,[9]),a,ft]
+            else
+              test_quantities(:,i,j,k)=[reshape(kij,[9]),rut,reshape(aij,[9]),a,ft]
+            end if
+          end do
+        end do
+      end do
+    end do
+    call filter_les_field_3d(quantities,weights,filtered_quantities,local_ok)
+    if (.not.local_ok) return
+    do k=1,n(3)
+      do j=1,n(2)
+        do i=1,n(1)
+          call dynamic_smagorinsky_coefficients(qt(1,i,j,k),qt(2:4,i,j,k),qt(5,i,j,k), &
+            reshape(filtered_quantities(1:9,i,j,k),[3,3]),filtered_quantities(10:12,i,j,k), &
+            reshape(filtered_quantities(13:21,i,j,k),[3,3]),filtered_quantities(22,i,j,k), &
+            filtered_quantities(23:25,i,j,k),reshape(test_quantities(13:21,i,j,k),[3,3]), &
+            test_quantities(22,i,j,k),test_quantities(23:25,i,j,k),raw(:,i,j,k),local_ok)
+          if (.not.local_ok) return
+        end do
+      end do
+    end do
+    call filter_les_field_3d(raw,smooth,coefficients,ok)
+  end subroutine
+
   ! Supplied cell-centered derivatives: gradient(velocity component, derivative).
   ! Filter Kij, RUT, alphaij, alpha and flux_T before coefficient evaluation.
   subroutine dynamic_smagorinsky_quantities(gradient,temperature_gradient,density,velocity,temperature, &

@@ -1154,6 +1154,44 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
+  case('les_dynamic_field')
+    block
+      real(dp) :: coeff(3,4,4,4),other(3,4,4,4),reference(3,4,4,4),sound
+      integer :: i,j,k
+      call make_gas(.false.)
+      call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'box',2,coeff,ok)
+      call require(ok.and.maxval(abs(coeff-1e-8_dp))<1e-20_dp,'uniform dynamic field floor')
+      do k=1,4
+        do j=1,4
+          do i=1,4
+            primitive=0;primitive(1)=.3_dp*(1+.1_dp*sin(2*pi*(i-1)/4))
+            primitive(2)=20*sin(2*pi*(j-1)/4);primitive(3)=15*cos(2*pi*(i-1)/4)
+            primitive(4)=5*sin(2*pi*(k-1)/4);primitive(5)=101325*(1+.05_dp*cos(2*pi*(j-1)/4))
+            primitive(15)=1
+            call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),temp(i,j,k),sound,ok)
+            call require(ok,'dynamic variable-density fixture')
+          end do
+        end do
+      end do
+      saved=state;saved_t=temp
+      call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'box',2,coeff,ok)
+      call require(ok.and.all(ieee_is_finite(coeff)),'dynamic nonuniform field')
+      call require(minval(coeff)>0.and.maxval(coeff(2,:,:,:))<=1,'dynamic coefficient bounds')
+      call require(maxval(coeff)>1e-6_dp,'dynamic nontrivial coefficients')
+      call require(all(state==saved).and.all(temp==saved_t),'dynamic field inputs preserved')
+      state=cshift(saved,1,dim=2);temp=cshift(saved_t,1,dim=1)
+      call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'box',2,other,ok)
+      call require(ok.and.all(other==cshift(coeff,1,dim=2)),'dynamic periodic translation')
+      state=saved;temp=saved_t
+      call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'gaussian',2,other,ok)
+      call require(ok.and.maxval(abs(other-coeff))>1e-8_dp,'dynamic filter selection changes coefficients')
+      reference=coeff;state(1,1,1,1)=-1
+      call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'box',2,coeff,ok)
+      call require(.not.ok.and.all(coeff==reference),'dynamic invalid state rollback')
+      state=saved
+      call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'box',3,coeff,ok)
+      call require(.not.ok.and.all(coeff==reference),'dynamic invalid filter rollback')
+    end block
   case('les_filter')
     block
       real(dp), allocatable :: w(:)
