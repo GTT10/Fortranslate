@@ -80,6 +80,18 @@ reservation or application connection in this API. Proposed flight endpoints
 must remain inside the closed root domain. See
 [interval evidence](validation/spray-eb-impact-interval-20260918.md).
 
+The interval API also accepts `outflow_change(5+nc)`. Its presence enables
+exterior outflow on every root face: each trajectory is clipped at its first
+root crossing before EB impact dispatch. A prior EB impact retains the correct
+remaining time for both parent and splash children. Escaped records are removed
+alongside consumed parents, without recycling IDs. The output is negative system
+change in mass, momentum, total energy and component masses (component order,
+not gas-species indices); the existing `wall` output remains wall receipt.
+The depth limit includes exterior events, and failures preserve all populations,
+films, IDs and both ledgers. Source/reactive/application wiring for this combined
+mode remains pending. See
+[impact/outflow evidence](validation/spray-eb-impact-outflow-20260918.md).
+
 `advance_eb_mixture_coupling_allocated` now exposes the serial EB source interval
 with allocated parcel/component arrays. Supply `wall_options` (the
 `spray_eb_wall_options` type), allocated `films` and `film_mass`, and `last_id`
