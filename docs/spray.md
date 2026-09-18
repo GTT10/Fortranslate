@@ -200,7 +200,7 @@ Bounds, nodal dimensions and every nodal value must agree across ranks;
 model/property tables are identical by caller contract. This is a batched
 contact API: newly deposited films do not affect other contacts in the same
 batch. The caller owns remaining flight, dead-parent removal, final particle/film
-migration and binding the nodal field to the gas geometry. Distributed source
+migration and binding the nodal field to the gas geometry. The source integration is described below; reactive
 and application integration remain open. See
 [MPI EB contact evidence](validation/spray-mpi-eb-impact-20260918.md).
 
@@ -229,6 +229,27 @@ and wall options. This wrapper adds final migration, not gas feedback or film
 evolution; callers must resample pressures after repartitioning for the next
 source interval. See
 [impact/migration evidence](validation/spray-mpi-eb-impact-migration-20260918.md).
+
+`advance_mpi_amr_mixture_coupling` also accepts its existing film arguments and
+shared `last_id` with `eb_geometry`/`nodal_phi`. It advances gas/parcel drag,
+heating and evaporation, then collective EB impact and remaining child flight
+on each accepted source substep. Existing films are validated/migrated initially;
+live parcels and deposited films migrate to final finest fluid-side owners.
+The global impact receipt enters `boundary_change` once with the system-gain
+sign. Gas, temperature, particles, films, both component matrices, IDs and the
+ledger publish together after the full interval succeeds. Optional
+`model_rejected` reports inadmissible empirical output collectively without
+repeated timestep halving.
+
+EB impact mode requires one uniform wall temperature across the six existing
+wall-option entries; enabled face flags do not select EB facets. Contact depth
+is limited to 32 per source substep, and KH child shedding remains unsupported
+in EB mode. Properties/settings must match across ranks. Film thermal evolution
+is still supplied by the separate film source API; these source arguments alone
+do not evolve films. The MPI reactive wrapper still uses specular particle
+halves, so impact-enabled reactive/application/restart integration remains open.
+See [source coupling evidence](validation/spray-mpi-eb-impact-source-20260918.md).
+
 
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
