@@ -204,6 +204,20 @@ migration and binding the nodal field to the gas geometry. Distributed source
 and application integration remain open. See
 [MPI EB contact evidence](validation/spray-mpi-eb-impact-20260918.md).
 
+`advance_mpi_level_set_impacts` now wraps collective contacts in a force-free
+remaining-flight interval. It inherits frozen pressure, remaining time and
+contact depth from each parent to its children, repeats collective batches
+until every live trajectory finishes, and compacts consumed parents only after
+success. Empty/inactive ranks participate until global completion. ID allocation,
+film patches, parcel/component arrays, global wall receipt and global hit count
+publish together; any failure retains their input values. The contact limit
+applies along parent/child trajectories, including consumed intermediate parents.
+Film thickness is frozen within a batch and updated for subsequent batches;
+contacts are not globally sorted by physical time. Parcels/films retain their
+source-rank ownership during this interval. Gas feedback, film evolution and
+final finest-owner migration are the caller's responsibility. See
+[remaining-flight evidence](validation/spray-mpi-eb-impact-interval-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
