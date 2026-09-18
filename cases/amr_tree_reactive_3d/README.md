@@ -17,6 +17,22 @@ PCM/characteristic-PLM face reconstruction, physical boundaries, chemistry and
 molecular transport. Existing validation requires at least four root cells in
 each direction. The application is also registered for installation.
 
+## Pressure outlets
+
+The serial fixed/selected frontends accept `outlet_pressure(6)` in `reactive_3d`.
+For example, `outlet_pressure(2)=102325` sets a 102325 Pa target on an `outflow`
+x-high face; zero retains extrapolation. Targets must be finite, positive only
+on outflow faces, and at most 1e15 Pa. The pressure ghost extrapolation feeds
+both hydro and molecular transport with common or recursive timesteps.
+Nonphysical ghost states reject the candidate step and trigger the existing
+bounded timestep retry. This does not specify a backflow reservoir or prove
+nonreflection.
+
+Targets are part of checkpoint context: changing or removing them at restart
+is rejected. Scheduled/automatic remapping preserves volume inventories and
+does not sample physical ghost states. MPI tree input remains unconnected and
+rejects nonzero targets.
+
 ## Configure-time selected mechanisms
 
 When `PELEF_MECHANISM_BUNDLE` is configured, the bundle generator also provides

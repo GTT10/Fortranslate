@@ -2817,3 +2817,10 @@ checks cover 1/4/36 transport substeps, common/recursive reacting updates,
 composite budgets and rollback; see
 [tree split evidence](validation/pressure-outlet-tree-split-20260918.md).
 MPI tree and application input connections remain pending.
+
+Serial fixed/selected patch-tree applications now accept pressure targets and
+forward them through common or recursive coupled stepping. Checkpoint context
+already includes the targets. Scheduled-regrid continuation reproduces state
+and budget CSVs exactly, while changed/removed targets reject restart; see
+[tree application evidence](validation/pressure-outlet-tree-application-20260918.md).
+MPI patch-tree pressure input remains unconnected.
