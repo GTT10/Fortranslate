@@ -17,6 +17,7 @@ p.add_argument('--scheduled', action='store_true')
 p.add_argument('--restart', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--khrt', action='store_true')
+p.add_argument('--outflow', action='store_true')
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
@@ -58,13 +59,24 @@ if a.khrt:
     spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0', 'center=.002,.0015,.0015, axis=1,0,0')
     spray = spray.replace('speed=20', 'speed=1000').replace('total_mass=1e-10', 'total_mass=1e-14')
     (work / 'spray.nml').write_text(spray)
+if a.outflow:
+    assert not a.impacts and not a.scheduled and not a.khrt and not a.split
+    spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,')
+    spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
+                          'center=.003999999,.0015,.0015, axis=1,0,0')
+    (work / 'spray.nml').write_text(spray)
 exe = str(a.exe.resolve())
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
 (work / 'run.log').write_text(result.stdout + result.stderr)
 assert result.returncode == 0, (work, result.stderr)
 with (work / 'gas.csv.particles.csv').open() as stream:
     rows = list(csv.DictReader(stream))
-if a.khrt:
+if a.outflow:
+    assert [int(row['id']) for row in rows] == [1, 2]
+    assert all(float(row['mass']) == 0 and float(row['component_mass_1']) == 0 for row in rows)
+    boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
+    assert float(boundary_line.split(':', 1)[1].split()[0]) < 0
+elif a.khrt:
     assert len(rows)>2 and (len(rows)-2)%4==0
     assert [int(row['id']) for row in rows] == list(range(1,len(rows)+1))
     assert all(float(row['u'])>0 and float(row['x'])>.002 for row in rows)

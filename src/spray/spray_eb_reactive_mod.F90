@@ -54,7 +54,8 @@ contains
   subroutine advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected,split_created)
+      ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected, &
+      split_created,particle_outflow)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -75,7 +76,10 @@ contains
     real(dp), allocatable :: patch_mass(:,:)
     integer(int64), optional, intent(out) :: split_created
     integer(int64) :: watermark,before_split
-    logical :: impacts,rejected
+    logical, optional, intent(in) :: particle_outflow
+    logical :: impacts,rejected,outflow
+    character(len=16) :: outer_faces(6)
+    real(dp) :: first_exterior(reactive_nvar(size(species))),second_exterior(reactive_nvar(size(species)))
     logical, optional, intent(out) :: model_rejected
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemistry_change(:)
     integer, intent(out) :: particle_steps
@@ -95,12 +99,16 @@ contains
     if (dt<=0.or.dt>1e6_dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(chemistry_change)/=nv) return
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
-    impacts=present(wall_options)
+    impacts=present(wall_options);outflow=.false.
+    if(present(particle_outflow)) outflow=particle_outflow
+    if(outflow.and.impacts) return
+    outer_faces='outflow';first_exterior=0;second_exterior=0
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
     if (impacts.and..not.present(last_id)) return
     if ((options%maximum_multiplicity>0.or.options%khrt_children).and..not.present(last_id)) return
     watermark=0
+    if(outflow) watermark=max(0_int64,maxval(parcels%id))
     if (present(last_id)) watermark=last_id
     if (impacts) then
       if (.not.allocated(films).or..not.allocated(film_mass)) return
@@ -108,7 +116,10 @@ contains
     end if
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     first_wall=0;second_wall=0;boundary=0;wall=0;chemical=0
-    if (impacts) then
+    if(outflow) then
+      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
+        .5_dp*dt,first_steps,first_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=first_exterior)
+    else if (impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
         .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
       if (rejected) then
@@ -128,7 +139,10 @@ contains
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,next_gas,next_temp, &
       theta,valid,target_volume_fraction,chemistry_integrator,boundary,wall,chemical)
     if (.not.valid) return
-    if (impacts) then
+    if(outflow) then
+      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
+        .5_dp*dt,second_steps,second_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=second_exterior)
+    else if (impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
         .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
       if (rejected) then
@@ -149,6 +163,7 @@ contains
         valid,watermark,masses)
       if (.not.valid) return
     end if
+    boundary=boundary+first_exterior+second_exterior
     wall(1:5)=wall(1:5)+first_wall+second_wall
     state=next_gas;temperature=next_temp;parcels=drops;component_mass=masses
     if (impacts) then

@@ -74,7 +74,7 @@ contains
     real(dp) :: discharge_coefficient=1,event_masses(1024),event_speeds(1024),profile_mass,denominator
     type(spray_options) :: options
     type(spray_eb_wall_options) :: walls
-    logical :: wall_impacts=.false.
+    logical :: wall_impacts=.false.,particle_outflow=.false.
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: film_mass(:,:)
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
@@ -87,7 +87,7 @@ contains
       injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient, &
       port_count,event_ports,port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles, &
       port_diameters,port_temperatures,port_fractions,port_profile_points,port_profile_times,port_profile_rates, &
-      port_radii,port_discharge_coefficients,port_nozzles,port_sizes
+      port_radii,port_discharge_coefficients,port_nozzles,port_sizes,particle_outflow
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -125,7 +125,7 @@ contains
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     nozzle_radius=0;nozzle=spray_nozzle_model();sizes=spray_size_options()
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0;injection_end_times=-1
-    velocity_from_rate=.false.;discharge_coefficient=1
+    velocity_from_rate=.false.;discharge_coefficient=1;particle_outflow=.false.
     injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
@@ -144,6 +144,7 @@ contains
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Liquid fractions must sum to one'
     if(.not.valid_spray_options(options)) error stop 'Unsupported EB spray options'
+    if(particle_outflow.and.wall_impacts) error stop 'Particle outflow with impact films is not connected'
     if(options%maximum_multiplicity>0) then
       allocate(split_created_total);split_created_total=0
     end if
@@ -363,7 +364,7 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          last_id=last_id,split_created=step_split_created)
+          last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow)
         end if
         if(ok) exit
         dt=.5_dp*dt

@@ -36,7 +36,7 @@ program test_spray_eb_impact_reactive
   real(dp) :: ledger(5),interval=1e-8_dp
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
-  logical :: ok,rejected
+  logical :: ok,rejected,outflow=.false.
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
   end do
@@ -191,12 +191,31 @@ program test_spray_eb_impact_reactive
   call inventory(after)
   call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'KH reactive composite conservation')
-  print *, 'PASS: reactive EB impacts, films, KH children, splitting and rollback'
+  ! Outflow in the first source half remains private until gas success.
+  state=saved;temperature=saved_t
+  deallocate(drops,masses);allocate(drops(1),masses(2,1))
+  drops(1)=saved_drop;drops(1)%position(1)=.0039999_dp;drops(1)%velocity=[1000._dp,0._dp,0._dp]
+  masses=saved_mass;last_id=100;outflow=.true.;solver='invalid'
+  boundary=42;wall=42;chemical=42;theta=42
+  call kh_advance()
+  call require(.not.ok.and.last_id==100.and.size(drops)==1,'reactive outflow ID rollback')
+  call require(drops(1)%mass==saved_drop%mass.and.all(masses==saved_mass),'reactive outflow population rollback')
+  call require(all(state==saved).and.all(temperature==saved_t),'reactive outflow gas rollback')
+  call require(all(boundary==42).and.all(wall==42).and.all(chemical==42).and.theta==42,'outflow diagnostics rollback')
+  solver='rusanov'
+  call inventory(before)
+  call kh_advance()
+  call require(ok.and.all(drops%mass==0).and.all(masses==0),'reactive escaped KH inventory')
+  call inventory(after)
+  call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'reactive outflow gas particle conservation')
+  print *, 'PASS: reactive EB impacts, KH, splitting and exterior budgets'
 contains
   subroutine kh_advance()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
-      2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit',last_id=last_id)
+      2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
+      last_id=last_id,particle_outflow=outflow)
   end subroutine
   subroutine advance()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
@@ -217,6 +236,7 @@ contains
     end do
     end do
     do p=1,size(drops)
+      if(drops(p)%mass<=0) cycle
       call liquid_mixture_properties(liquids,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,ok)
       call require(ok,'liquid inventory')
       amount=drops(p)%mass*drops(p)%multiplicity
