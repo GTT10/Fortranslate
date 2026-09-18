@@ -2784,3 +2784,10 @@ forward pressure targets through all stages. Focused 2/4-rank corner-patch
 results match serial updates exactly; see
 [transport/full-split evidence](validation/pressure-outlet-mpi-transport-20260918.md).
 MPI application/restart/regrid and patch-tree connections remain pending.
+
+MPI two-level fixed/selected applications now accept pressure input and forward
+it through stepping and distributed regridding. Shared checkpoint identity
+rejects changed/removed targets. A 4-rank checkpoint resumed at 2 ranks matches
+serial coarse/fine CSVs exactly after regridding; see
+[MPI application evidence](validation/pressure-outlet-mpi-application-20260918.md).
+Patch-tree pressure connections remain pending.
