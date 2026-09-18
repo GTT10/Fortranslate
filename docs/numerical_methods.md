@@ -2766,3 +2766,10 @@ builds. Its focused PCM/characteristic-PLM states, temperatures and face fluxes
 match serial results exactly at 2 and 4 ranks. Fine hierarchy and transport
 forwarding remain pending; see
 [coarse hydro evidence](validation/pressure-outlet-mpi-coarse-hydro-20260918.md).
+
+The sparse MPI two-level hydro wrapper also forwards targets through coarse
+interpolation halos and fine subcycles. Physical fine ghosts use adjacent fine
+states with the serial face-order convention. Focused 2/4-rank coarse/fine
+states, temperatures and reflux diagnostics match serial two-level results
+exactly; [hierarchy evidence](validation/pressure-outlet-mpi-hierarchy-20260918.md).
+MPI reaction/full wrappers, transport and application input remain pending.
