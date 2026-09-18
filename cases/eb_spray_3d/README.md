@@ -101,7 +101,7 @@ without timestep retries for that model rejection. This remains an open model li
 qualified general wet-wall impact support. See
 [application evidence](../../docs/validation/spray-eb-impact-application-20260918.md).
 
-Independent nozzle ports, physical outer-boundary particle events and distributed
+Physical outer-boundary particle events and distributed
 EB impact/film ownership remain open. Trial trajectories must stay in the root domain. The
 particle source/drift split is first order; this synthetic implementation case
 is not calibrated spray validation or a convergence study.
@@ -212,3 +212,22 @@ Example:
 Unused profile slots remain zero; without a profile, end times remain -1. Profile
 and velocity controls enter restart context, so older snapshots lacking those
 fields are rejected. See [focused evidence](../../docs/validation/spray-eb-rate-20260918.md).
+
+### Multiple nozzle ports
+
+Set `port_count` to 1–16 and choose `event_ports(i)` for each scheduled event.
+Unspecified ports inherit the shared injection settings. Per-port overrides are:
+`port_numbers`, `port_centers(3,16)`, `port_axes(3,16)`, `port_masses`,
+`port_speeds`, `port_angles`, `port_diameters`, `port_temperatures` and
+`port_fractions(16,16)`. Fractions use the shared component table and must sum to
+one for each active port. Defaults use -1 for unspecified counts/scalars/fractions
+and the internal large-value sentinel for position/direction vectors.
+
+The shared nozzle shape, radius, size distribution, rate profile and discharge
+coefficient apply to every port. With a rate profile, its integrated dose replaces
+`port_masses`; rate-driven velocity uses each selected port's mixed density.
+Every parcel carries its port in `material_id`, now also included in particle CSV.
+Children and films retain that identity. Checkpoint restore validates port IDs
+and counts only positive-dose events using the selected port's population.
+All resolved port settings enter restart context; earlier contexts are rejected.
+See [focused evidence](../../docs/validation/spray-eb-ports-20260918.md).

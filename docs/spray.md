@@ -345,10 +345,11 @@ particle CSVs and cumulative boundary/wall/chemistry ledgers. Immutable serial
 checkpoints now preserve gas, particle/component state, event/ID counters and all
 cumulative ledgers; restart checks the complete numerical and nodal geometry
 context. Up to 1024 ordered injection events share
-one cone definition, with per-event mass scaling and zero-dose support. Steps
+up to 16 cone ports with per-port geometry, population and composition, per-event
+mass scaling and zero-dose support. Nozzle models and rate profiles remain shared. Steps
 end at event times; tied and final-time events are included. Fluid-location
-validation precedes population/ID/injected-inventory publication. Independent
-ports and distributed EB particle evolution remain open.
+validation precedes population/ID/injected-inventory publication. See
+[serial port evidence](validation/spray-eb-ports-20260918.md).
 
 The MPI tree module now exports `migrate_eb_tree_spray_parcels`, a nonperiodic
 ownership primitive. It accepts regular tree topology/owners and the replicated
