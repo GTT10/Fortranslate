@@ -2,12 +2,15 @@ module amr_patch_tree_ghost_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
   use slope_limiter_mod, only: limited_slope
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d, &
+    fill_pressure_outlet_ghosts_3d
   implicit none
   private
   public :: fill_amr_patch_tree_ghosts_3d,sample_amr_patch_tree_ghosts_3d
+  public :: apply_amr_tree_pressure_ghosts_3d
   public :: amr_tree_cell_source_3d
   type, abstract :: amr_tree_cell_source_3d
   contains
@@ -29,6 +32,40 @@ module amr_patch_tree_ghost_3d_mod
     end subroutine
   end interface
 contains
+  ! Packed ghosts hold conserved components followed by one temperature guess.
+  ! Call on a private buffer after ordinary tree ghost sampling.
+  subroutine apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    integer, intent(in) :: node
+    character(len=*), intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: pressure(6)
+    real(dp), intent(inout) :: ghost(:,:,:,:)
+    logical, intent(out) :: ok
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: n(3),nv,axis,level
+    real(dp) :: local_pressure(6)
+    ok=.true.
+    if (.not.present(pressure)) return
+    ok=.false.
+    if (.not.all(ieee_is_finite(pressure))) return
+    if (any(pressure<0).or.any(pressure>1e15_dp)) return
+    if (any(pressure>0.and.faces/='outflow')) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    if (.not.ok) return
+    ok=.false.
+    if (node<1.or.node>size(tree%nodes)) return
+    n=tree%nodes(node)%shape;nv=5+size(species)
+    if (any(shape(ghost)/=[nv+1,n+4])) return
+    level=tree%nodes(node)%level+1;local_pressure=0
+    do axis=1,3
+      if (origin(axis,node)==0) local_pressure(2*axis-1)=pressure(2*axis-1)
+      if (origin(axis,node)+int(n(axis),int64)==domain(axis,level)) local_pressure(2*axis)=pressure(2*axis)
+    end do
+    call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),ok)
+  end subroutine
+
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
       coarse_future,coarse_fractions,coarse_limiter,species_count)
     type(amr_patch_tree_3d), intent(in) :: tree

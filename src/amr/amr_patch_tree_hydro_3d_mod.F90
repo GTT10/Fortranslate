@@ -6,7 +6,7 @@ module amr_patch_tree_hydro_3d_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_cfl_timestep_3d, &
     compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,average_down_amr_patch_tree_3d
-  use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d
+  use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d,apply_amr_tree_pressure_ghosts_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
@@ -39,13 +39,14 @@ contains
     dt=candidate;ok=.true.
   end subroutine
   subroutine advance_amr_patch_tree_hydro_3d(tree,species,state,temperature,root_spacing,dt,faces, &
-      reconstruction,limiter,solver,boundary_change,maximum_correction,ok,inflow_state,inflow_temperature)
+      reconstruction,limiter,solver,boundary_change,maximum_correction,ok,inflow_state,inflow_temperature,outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     real(dp), intent(in) :: root_spacing(3),dt
     character(len=*), intent(in) :: faces(6),reconstruction,limiter,solver
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     type(amr_tree_state_3d) :: initial,candidate,temps,stage_temperature
@@ -134,6 +135,8 @@ contains
             coarse_limiter=limiter,species_count=size(species))
         end if
         if (.not.success) return
+        call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
+        if (.not.success) return
         allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)),fz(nvar,dims(1),dims(2),dims(3)))
         if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
@@ -186,7 +189,7 @@ contains
   ! without restriction/reflux; the subcycle owner must synchronize levels.
   subroutine advance_amr_patch_tree_hydro_level_3d(tree,species,state,temperature,depth,root_spacing,dt,faces, &
       reconstruction,limiter,solver,integrated_flux,ok,coarse_start,coarse_end,fractions_start,fractions_end, &
-      inflow_state,inflow_temperature)
+      inflow_state,inflow_temperature,outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -194,6 +197,7 @@ contains
     real(dp), intent(in) :: root_spacing(3),dt
     character(len=*), intent(in) :: faces(6),reconstruction,limiter,solver
     type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     ! Endpoints pack conserved components followed by a temperature guess.
     type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
@@ -328,6 +332,8 @@ contains
       end if
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
         coarse_future=coarse_end,coarse_fractions=fractions,coarse_limiter=donor_limiter,species_count=size(species))
+      if (.not.success) return
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
     end subroutine
   end subroutine advance_amr_patch_tree_hydro_level_3d
 

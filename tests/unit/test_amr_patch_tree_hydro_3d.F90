@@ -15,6 +15,7 @@ program test_amr_patch_tree_hydro_3d
   type(amr_patch_3d) :: patches(5)
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),serial(12,4,4,4),st(4,4,4),q(12),sound
   real(dp) :: spacing(3),dt,root_dt,expected_dt,local_dt,h(3),budget(12),serial_budget(12),largest,initial(12),final(12)
+  real(dp) :: outlet(6)
   integer :: i,j,k,mode,geometry,node,n(3)
   logical :: ok
   character(len=32) :: faces(6),reconstruction
@@ -44,7 +45,11 @@ program test_amr_patch_tree_hydro_3d
       call initialize_amr_patch_tree_3d([4,4,4],[1,1,2,3,4],patches,tree,ok)
     end if
     call require(ok,'topology')
-    do mode=1,4
+    do mode=1,6
+      outlet=0
+      if (mode>4) then
+        outlet(2)=102325;outlet(6)=102325
+      end if
       faces='periodic'
       if (mode>2) then
         faces='outflow';faces(3:4)='slip_wall'
@@ -71,12 +76,12 @@ program test_amr_patch_tree_hydro_3d
       call composite_integrals_amr_patch_tree_3d(tree,state,spacing,initial,ok)
       call require(ok,'initial inventory')
       call advance_amr_patch_tree_hydro_3d(tree,species,state,temperature,spacing,dt,faces, &
-        reconstruction,'mc','hllc',budget,largest,ok)
+        reconstruction,'mc','hllc',budget,largest,ok,outlet_pressure=outlet)
       call require(ok,'hydro step')
       if (geometry==1) then
         serial=root;st=rt(1,:,:,:)
         call advance_reactive_boundary_hydro_3d(species,serial,st,spacing,dt,faces, &
-          reconstruction,'mc','hllc',serial_budget,ok)
+          reconstruction,'mc','hllc',serial_budget,ok,outlet_pressure=outlet)
         call require(ok,'serial oracle')
         call require(maxval(abs(state%fields(1)%values-serial)/max(1.0_dp,abs(serial)))<2e-13_dp,'serial state')
         call require(maxval(abs(temperature%fields(1)%values(1,:,:,:)-st))<1e-9_dp,'serial temperature')
@@ -92,7 +97,7 @@ program test_amr_patch_tree_hydro_3d
       end do
       saved=state;saved_t=temperature;budget=-17;largest=-19
       call advance_amr_patch_tree_hydro_3d(tree,species,state,temperature,spacing,1.0_dp,faces, &
-        reconstruction,'mc','hllc',budget,largest,ok)
+        reconstruction,'mc','hllc',budget,largest,ok,outlet_pressure=outlet)
       call require(.not.ok,'nonphysical candidate rejection')
       do node=1,size(tree%nodes)
         call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')
