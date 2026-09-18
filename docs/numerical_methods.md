@@ -2857,3 +2857,8 @@ regression verifies byte-exact serial/MPI output and checkpoint interchange,
 rank-changing restart and rejection of changed/removed pressure; see
 [MPI tree application evidence](validation/pressure-outlet-mpi-tree-application-20260918.md).
 Standalone reaction/hydro Strang API forwarding remains separate pending work.
+
+Standalone serial/MPI tree reaction/hydro Strang APIs now forward pressure
+targets as well. A focused two-rank reacting test reproduces serial state,
+temperature and diagnostics exactly and retains transactional failure behavior;
+see [tree Strang evidence](validation/pressure-outlet-tree-strang-20260918.md).
