@@ -6,7 +6,7 @@ module les_mpi_dynamic_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
-  use les_filter_3d_mod, only: les_filter_weights
+  use les_filter_3d_mod, only: les_filter_weights,les_filter_code
   use les_mpi_filter_mod, only: filter_mpi_les_field_3d
   use les_dynamic_smagorinsky_mod, only: dynamic_smagorinsky_quantities,dynamic_smagorinsky_coefficients, &
     compute_dynamic_les_rhs_3d
@@ -159,11 +159,7 @@ contains
     logical :: valid,global_valid
     ok=.false.;n=shape(temperature);ratio=1;model_id=0
     if (present(grid_ratio)) ratio=grid_ratio
-    select case(test_model)
-    case('none');model_id=1
-    case('box');model_id=2
-    case('gaussian');model_id=3
-    end select
+    model_id=les_filter_code(test_model)
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)

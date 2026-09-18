@@ -12,7 +12,7 @@ module spray_mpi_mod
   use reactive_transport_3d_mod, only: reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use les_mpi_dynamic_mod, only: advance_mpi_dynamic_les_ssprk2_3d
-  use les_filter_3d_mod, only: les_filter_weights
+  use les_filter_3d_mod, only: les_filter_weights,les_filter_code
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d, &
@@ -1233,12 +1233,7 @@ contains
       if (present(les_test_filter)) selected_filter=les_test_filter
       if (present(les_test_ratio)) test_ratio=les_test_ratio
       if (present(les_grid_ratio)) grid_ratio=les_grid_ratio
-      filter_code=0
-      select case(selected_filter)
-      case('none');filter_code=1
-      case('box');filter_code=2
-      case('gaussian');filter_code=3
-      end select
+      filter_code=les_filter_code(selected_filter)
       call les_filter_weights(selected_filter,test_ratio,filter_weights,filter_valid)
       filter_valid=filter_valid.and.grid_ratio>=1.and.grid_ratio<=64
       if (present(boundary_faces)) filter_valid=filter_valid.and.all(boundary_faces=='periodic')

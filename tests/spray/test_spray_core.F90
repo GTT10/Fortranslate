@@ -1270,6 +1270,63 @@ program test_spray_core
       call compute_dynamic_les_coefficients_3d(species,state,temp,spacing,'box',3,coeff,ok)
       call require(.not.ok.and.all(coeff==reference),'dynamic invalid filter rollback')
     end block
+  case('les_filter_approximations')
+    block
+      character(len=16), parameter :: models(8)=[character(len=16)::'box3','box5','gaussian3','gaussian5', &
+        'box3opt','box5opt','gaussian3opt','gaussian5opt']
+      real(dp), allocatable :: w(:),fallback(:)
+      real(dp) :: moment2,moment4,field(1,5,3,2),filtered(1,5,3,2)
+      integer :: m,ratio,i,radius
+      do m=1,8
+        do ratio=1,10
+          call les_filter_weights(models(m),ratio,w,ok)
+          call require(ok,'approximation weights')
+          call require(all(w==w(size(w):1:-1)),'approximation symmetry')
+          call near(sum(w),1._dp,1e-12_dp,'approximation normalization')
+        end do
+        call les_filter_weights(models(m),2,w,ok)
+        field=0;field(1,2,2,1)=1
+        call filter_les_field_3d(field,w,filtered,ok)
+        call require(ok,'signed approximation application')
+        call near(sum(filtered),1._dp,1e-12_dp,'signed periodic filter total')
+      end do
+      do m=1,4
+        call les_filter_weights(models(m),3,w,ok)
+        moment2=0;moment4=0;radius=size(w)/2
+        do i=-radius,radius
+          moment2=moment2+w(i+radius+1)*i**2
+          moment4=moment4+w(i+radius+1)*i**4
+        end do
+        call near(moment2,9._dp/12,1e-13_dp,'polynomial second moment')
+        if (m==2) call near(moment4,81._dp/80,1e-13_dp,'box fourth moment')
+        if (m==4) call near(moment4,81._dp/48,1e-13_dp,'Gaussian fourth moment')
+      end do
+      call les_filter_weights('box3opt',4,w,ok)
+      call near(w(1)/w(2),-2.375_dp,1e-13_dp,'box optimized table ratio')
+      call require(w(2)<0,'negative optimized weight retained')
+      call les_filter_weights('gaussian3opt',10,w,ok)
+      call near(w(1)/w(2),-.581_dp,1e-13_dp,'Gaussian optimized table ratio')
+      call les_filter_weights('box5opt',2,w,ok)
+      call near(w(1)/w(3),-.013_dp,1e-13_dp,'box optimized outer ratio')
+      call near(w(2)/w(3),.3178_dp,1e-13_dp,'box optimized inner ratio')
+      call les_filter_weights('gaussian5opt',1,w,ok)
+      call near(w(1)/w(3),-.0175_dp,1e-13_dp,'Gaussian optimized outer ratio')
+      call near(w(2)/w(3),.0871_dp,1e-13_dp,'Gaussian optimized inner ratio')
+      call les_filter_weights('box5opt',12,w,ok)
+      call require(ok,'box optimized fallback')
+      call les_filter_weights('box',12,fallback,ok)
+      call require(all(w==fallback),'box fallback equals standard kernel')
+      call les_filter_weights('gaussian3opt',11,w,ok)
+      call require(ok,'Gaussian three point fallback')
+      call les_filter_weights('gaussian3',11,fallback,ok)
+      call require(all(w==fallback),'Gaussian three point fallback equality')
+      call les_filter_weights('gaussian5opt',11,w,ok)
+      call require(ok,'Gaussian five point fallback')
+      call les_filter_weights('gaussian5',11,fallback,ok)
+      call require(all(w==fallback),'Gaussian five point fallback equality')
+      call les_filter_weights('box3opt',11,w,ok)
+      call require(.not.ok,'odd standard box fallback rejected')
+    end block
   case('les_filter')
     block
       real(dp), allocatable :: w(:)

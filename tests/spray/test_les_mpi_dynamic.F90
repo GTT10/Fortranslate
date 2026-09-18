@@ -19,7 +19,7 @@ program test_les_mpi_dynamic
   real(dp), allocatable :: rhs(:,:,:,:),saved_rhs(:,:,:,:)
   real(dp) :: reference_state(15,5,3,2),reference_t(5,3,2),dt
   integer :: rank,nranks,ierr,i,j,k,first(3),extent(3),lo,hi,m,ratio,grid
-  character(len=8) :: model
+  character(len=16) :: model
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -41,11 +41,13 @@ program test_les_mpi_dynamic
   end do
   state=full(:,lo:hi,:,:);temperature=temps(lo:hi,:,:)
   allocate(coeff(3,extent(1),3,2),rhs(15,extent(1),3,2))
-  do m=1,2
+  do m=1,4
     model='box';ratio=2;grid=1
     if (m==2) then
       model='gaussian';ratio=4;grid=2
     end if
+    if (m==3) model='box5opt'
+    if (m==4) model='gaussian3opt'
     call compute_dynamic_les_coefficients_3d(species,full,temps,spacing,model,ratio,reference,ok,grid)
     call require(ok,'serial dynamic coefficient field')
     call compute_mpi_dynamic_les_coefficients_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &

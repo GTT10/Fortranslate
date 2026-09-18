@@ -12,11 +12,12 @@
       "sha256": "38e4a7698687dbe30e50beb58a4d706f63881cfb0740af174dfa2f2714f42a2f"
     }
   ],
-  "implemented_scope": "Standard box, normalized truncated Gaussian and identity weights; tensor-product filtering of periodic fields or supplied halos. Dynamic LES field/flux integration remains pending.",
+  "implemented_scope": "Identity, standard box/Gaussian, three/five point polynomial and optimized approximation weights; periodic or supplied-halo tensor-product filters; shared serial/MPI dynamic LES model IDs.",
   "numerical_changes": [
     "Three separable passes rather than a triple stencil sum; roundoff ordering differs",
     "Gaussian common prefactor cancels before normalization",
     "Invalid input preserves caller output; filter ratio bounded to 1..64"
   ],
-  "remaining_filters": "Polynomial and optimized approximations are not implemented."
+  "remaining_filters": [],
+  "input_limits": "Ratio 1..64; standard box requires one or even, standard Gaussian even; optimized tables cover 1..10 with pinned fallbacks. Existing normalization, finite-state and EOS guards can reject wide signed approximations."
 }
