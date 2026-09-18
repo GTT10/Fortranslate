@@ -5,7 +5,8 @@ module mpi_amr_sparse_reactive_3d_mod
   use constants_mod, only: mechanism_species_capacity
   use elementary_kinetics_mod, only: plog_capacity, chebyshev_capacity
   use simulation_config_reactive_3d_mod, only: &
-    fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d,valid_wall_velocity_3d
+    fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d,valid_wall_velocity_3d, &
+    fill_pressure_outlet_ghosts_3d
   use precision_mod, only: dp
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   use constants_mod, only: density_floor, pressure_floor
@@ -4273,7 +4274,7 @@ contains
   ! then replace only columns outside the global domain, including on a rank
   ! one column inward from a wall. No full-level gather is required.
   subroutine build_mpi_amr_sparse_boundary_halos_3d(distribution,state,temperature,faces, &
-      halo_state,halo_temperature,ok,viscous_wall,inflow_state,inflow_temperature,wall_velocity)
+      halo_state,halo_temperature,ok,viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
     character(len=*), intent(in) :: faces(6)
@@ -4283,17 +4284,21 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
     real(dp), allocatable :: raw(:,:,:,:),rt(:,:,:),extended(:,:,:,:),et(:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),edge(:,:,:,:),edge_t(:,:,:),values(:),reference(:)
+    type(nasa7_species), optional, intent(in) :: species(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: pressure(6),local_pressure(6)
     real(dp) :: velocities(3,6),edge_velocities(3,6)
     character(len=32) :: canonical(6),local_faces(6),edge_faces(6)
-    integer :: options(4),low(4),high(4),ierr,n,ny,nz,nv,total,first,g,i,start,offset,count
+    integer :: options(6),low(6),high(6),ierr,n,ny,nz,nv,total,first,g,i,start,offset,count
     logical :: local_ok,global_ok,viscous
     ok=.false.;viscous=.false.
     if (present(viscous_wall)) viscous=viscous_wall
     options=[merge(1,0,viscous),merge(1,0,present(inflow_state)), &
-      merge(1,0,present(inflow_temperature)),merge(1,0,present(wall_velocity))]
-    call MPI_Allreduce(options,low,4,MPI_INTEGER,MPI_MIN,distribution%comm,ierr)
+      merge(1,0,present(inflow_temperature)),merge(1,0,present(wall_velocity)), &
+      merge(1,0,present(species)),merge(1,0,present(outlet_pressure))]
+    call MPI_Allreduce(options,low,6,MPI_INTEGER,MPI_MIN,distribution%comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(options,high,4,MPI_INTEGER,MPI_MAX,distribution%comm,ierr)
+    call MPI_Allreduce(options,high,6,MPI_INTEGER,MPI_MAX,distribution%comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
     canonical=faces
     call MPI_Bcast(canonical,192,MPI_CHARACTER,0,distribution%comm,ierr)
@@ -4312,6 +4317,14 @@ contains
     if (present(wall_velocity)) then
       if (local_ok) local_ok=valid_wall_velocity_3d(faces,wall_velocity)
     end if
+    pressure=0
+    if (present(outlet_pressure)) then
+      pressure=outlet_pressure
+      local_ok=local_ok.and.present(species).and.all(ieee_is_finite(pressure))
+      local_ok=local_ok.and.all(pressure>=0).and.all(pressure<=1e15_dp)
+      local_ok=local_ok.and..not.any(pressure>0.and.faces/='outflow')
+      if (present(species)) local_ok=local_ok.and.size(species)==nv-5
+    end if
     call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
     if (.not.global_ok) return
     ! Validate transverse shapes and exchange before allocating replicated metadata.
@@ -4319,7 +4332,7 @@ contains
     if (.not.global_ok) return
     total=sum(distribution%coarse_counts);first=distribution%coarse_first
     local_ok=total>=2
-    count=nv*6*options(2)+6*options(3)+18*options(4)
+    count=nv*6*options(2)+6*options(3)+18*options(4)+6*options(6)
     allocate(values(count),reference(count));offset=0
     if (present(inflow_state)) then
       values(1:nv*6)=reshape(inflow_state,[nv*6]);offset=nv*6
@@ -4327,7 +4340,10 @@ contains
     if (present(inflow_temperature)) then
       values(offset+1:offset+6)=inflow_temperature;offset=offset+6
     end if
-    if (present(wall_velocity)) values(offset+1:offset+18)=reshape(wall_velocity,[18])
+    if (present(wall_velocity)) then
+      values(offset+1:offset+18)=reshape(wall_velocity,[18]);offset=offset+18
+    end if
+    if (present(outlet_pressure)) values(offset+1:offset+6)=outlet_pressure
     reference=values
     call MPI_Bcast(reference,count,MPI_DOUBLE_PRECISION,0,distribution%comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -4342,6 +4358,12 @@ contains
       inflow_state,inflow_temperature,edge_velocities)
     call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
     if (.not.global_ok) return
+    if (present(outlet_pressure)) then
+      local_pressure=pressure;local_pressure(1:2)=0
+      call fill_pressure_outlet_ghosts_3d(species,[n+4,ny,nz],local_faces,local_pressure,extended,et,local_ok)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+    end if
     allocate(candidate,source=extended(:,3:n+6,:,:));allocate(ct,source=et(3:n+6,:,:))
     allocate(edge(nv,6,ny+4,nz+4),edge_t(6,ny+4,nz+4))
     if (first<=2.and.faces(1)/='periodic') then
@@ -4349,6 +4371,10 @@ contains
       edge_faces=faces;edge_faces(2)='outflow';edge_velocities=velocities;edge_velocities(:,2)=0
       call fill_reactive_boundary_ghosts_3d(raw(:,start:start+1,:,:),rt(start:start+1,:,:),edge_faces, &
         edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities)
+      if (local_ok.and.present(outlet_pressure)) then
+        local_pressure=pressure;local_pressure(2)=0
+        call fill_pressure_outlet_ghosts_3d(species,[2,ny,nz],edge_faces,local_pressure,edge,edge_t,local_ok)
+      end if
       if (local_ok) then
         do i=1,2
           g=first+i-3
@@ -4364,6 +4390,10 @@ contains
       edge_faces=faces;edge_faces(1)='outflow';edge_velocities=velocities;edge_velocities(:,1)=0
       call fill_reactive_boundary_ghosts_3d(raw(:,start:start+1,:,:),rt(start:start+1,:,:),edge_faces, &
         edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities)
+      if (local_ok.and.present(outlet_pressure)) then
+        local_pressure=pressure;local_pressure(1)=0
+        call fill_pressure_outlet_ghosts_3d(species,[2,ny,nz],edge_faces,local_pressure,edge,edge_t,local_ok)
+      end if
       if (local_ok) then
         do i=n+3,n+4
           g=first+i-3

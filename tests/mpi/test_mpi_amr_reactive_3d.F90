@@ -14,7 +14,8 @@ program test_mpi_amr_reactive_3d
   use mesh_3d_mod, only: uniform_cell_centers_3d
   use reactive_1d_mod, only: reactive_nvar, reactive_species_component
   use state_indices_mod, only: irho
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config,fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,fill_reactive_boundary_ghosts_3d, &
+    fill_pressure_outlet_ghosts_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
   use reactive_3d_mod, only: &
@@ -111,6 +112,7 @@ program test_mpi_amr_reactive_3d
   integer :: mismatched_fine_nx, global_sparse_value_count
   integer :: candidate_rank, expected_previous_fine_rank
   integer :: expected_next_fine_rank
+  character(len=32) :: halo_test_mode
   character(len=32) :: sparse_reconstruction
 
   call MPI_Init(ierr)
@@ -236,6 +238,16 @@ program test_mpi_amr_reactive_3d
     coarse_temperature, fine_state, fine_temperature, sparse_hierarchy, ok)
   call require(ok .and. sparse_hierarchy%is_valid( &
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
+  if (command_argument_count()==1) then
+    call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--halos-only') then
+      call check_physical_halos()
+      if (distribution%rank==0) print *, 'PASS: sparse physical and pressure halos'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
+  end if
   call require(size(sparse_hierarchy%coarse_state, 2) == &
       sparse_distribution%coarse_count .and. &
     size(sparse_hierarchy%fine_state, 2) == &
@@ -387,6 +399,7 @@ program test_mpi_amr_reactive_3d
       sparse_halo_state, sparse_halo_temperature), &
     "two-plane sparse periodic halo bit parity")
   call check_physical_halos()
+
   call check_physical_coarse_hydro()
   call check_physical_hierarchy()
   call check_physical_hierarchy(1)
@@ -956,7 +969,7 @@ contains
   subroutine check_physical_halos()
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),reference(:,:,:,:),rt(:,:,:),saved(:,:,:,:),st(:,:,:)
     real(dp), allocatable :: inlet(:,:),it(:)
-    real(dp) :: velocity(3,6)
+    real(dp) :: velocity(3,6),pressure(6)
     character(len=32) :: faces(6)
     integer :: mode,lo,hi
     allocate(reference(size(coarse_state,1),n+4,n+4,n+4),rt(n+4,n+4,n+4))
@@ -981,7 +994,20 @@ contains
       call require(ok,'sparse physical halo fill')
       call require(all(ghost==reference(:,lo:hi,:,:)).and.all(gt==rt(lo:hi,:,:)), &
         'sparse physical ghost faces and corners exactly match serial')
+      pressure=0
+      where(faces=='outflow') pressure=102325
+      call fill_pressure_outlet_ghosts_3d(species,[n,n,n],faces,pressure,reference,rt,ok)
+      call require(ok,'serial pressure halo reference')
+      call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,species,pressure)
+      call require(ok,'MPI pressure halos accepted')
+      call require(all(ghost==reference(:,lo:hi,:,:)).and.all(gt==rt(lo:hi,:,:)), &
+        'MPI pressure halos exactly equal serial')
       saved=ghost;st=gt
+      if (sparse_distribution%rank==0) pressure=pressure+1
+      call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,species,pressure)
+      call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'rank-local pressure rejection preserves halos')
       if (sparse_distribution%rank==0) it(1)=ieee_value(0.0_dp,ieee_quiet_nan)
       call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
         sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity)
