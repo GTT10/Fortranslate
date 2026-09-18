@@ -1153,6 +1153,89 @@ program test_spray_core
     call near(les_face_mean(-2._dp,6._dp,.false.),2._dp,1e-13_dp,'arithmetic default')
     call near(les_face_mean(1e300_dp,1e300_dp,.true.)/1e300_dp,1._dp,1e-13_dp,'large harmonic mean')
     call near(les_face_mean(1e-300_dp,1e-300_dp,.true.)/1e-300_dp,1._dp,1e-13_dp,'small harmonic mean')
+  case('les_isotropic')
+    block
+      real(dp) :: base(3,3),base_mu,sound,other(15,4,4,4),base_diff
+      integer :: i,j,k,c,m
+      do m=1,3
+        select case(m)
+        case(1)
+          les_model='smagorinsky'
+        case(2)
+          les_model='wale'
+        case(3)
+          les_model='vreman'
+        end select
+        grad=0;grad(1,2)=3
+        select case(m)
+        case(1)
+          call smagorinsky_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,base_mu,base,ok)
+          call smagorinsky_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,mu,stress,ok,ci=.1_dp)
+        case(2)
+          call wale_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,base_mu,base,ok)
+          call wale_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,mu,stress,ok,ci=.1_dp)
+        case(3)
+          call vreman_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,base_mu,base,ok)
+          call vreman_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,mu,stress,ok,ci=.1_dp)
+        end select
+        call require(ok.and.mu==base_mu,'CI does not change eddy viscosity')
+        expected=2._dp/3*.1_dp*2*.2_dp**2*9
+        do i=1,3
+          call near(stress(i,i)-base(i,i),-expected,1e-13_dp,'reference isotropic diagonal')
+          stress(i,i)=base(i,i)
+        end do
+        call require(all(stress==base),'CI does not change shear stress')
+        do k=1,4
+          do j=1,4
+            do i=1,4
+              primitive=0;primitive(1)=.3_dp;primitive(5)=101325;primitive(15)=1
+              primitive(2)=20*sin(2*pi*(i-1)/4+.3_dp)
+              primitive(3)=10*cos(2*pi*(j-1)/4+.2_dp)
+              call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),temp(i,j,k),sound,ok)
+              call require(ok,'isotropic fixture')
+            end do
+          end do
+        end do
+        saved=state;saved_t=temp
+        call compute_les_rhs_3d(species,state,temp,spacing,.2_dp,.7_dp,.7_dp,other,base_diff,ok,model=les_model)
+        call require(ok,'default CI flux')
+        call compute_les_rhs_3d(species,state,temp,spacing,.2_dp,.7_dp,.7_dp,rhs,diff,ok,model=les_model,ci=0._dp)
+        call require(ok.and.all(rhs==other).and.diff==base_diff,'zero CI exact default')
+        call compute_les_rhs_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,rhs,diff,ok,model=les_model,ci=.1_dp)
+        call require(ok.and.diff>0.and.maxval(abs(rhs(2:5,:,:,:)))>0,'CI active with zero eddy coefficient')
+        call require(all(rhs(1,:,:,:)==0).and.all(rhs(6:,:,:,:)==0),'CI does not diffuse mass')
+        dt=.01_dp/(diff*sum(1/spacing**2))
+        call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,dt,ok,model=les_model,ci=.1_dp)
+        call require(ok.and.any(state/=saved),'CI SSPRK2 active')
+        do c=1,15
+          call require(abs(sum(state(c,:,:,:))-sum(saved(c,:,:,:))) &
+            <=1e-12_dp*max(1._dp,sum(abs(saved(c,:,:,:)))),'CI periodic conservation')
+        end do
+        state=saved;temp=saved_t;faces='outflow'
+        call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,dt,ok, &
+          boundary_faces=faces,boundary_change=totals0,model=les_model,ci=.1_dp)
+        call require(ok,'CI physical boundary step')
+        do c=1,15
+          expected=(sum(state(c,:,:,:))-sum(saved(c,:,:,:)))*product(spacing)
+          call require(abs(expected-totals0(c))<=1e-12_dp* &
+            max(1._dp,sum(abs(saved(c,:,:,:)))*product(spacing)),'CI boundary flux ledger')
+        end do
+        state=saved;temp=saved_t
+        call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,100*dt,ok, &
+          model=les_model,ci=.1_dp)
+        call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'CI timestep rollback')
+        call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,0._dp,ok, &
+          model=les_model,ci=ieee_value(0._dp,ieee_quiet_nan))
+        call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'invalid CI rollback at zero dt')
+      end do
+      grad=0;grad(1,2)=3;grad(2,1)=-3
+      call smagorinsky_stress(grad,2._dp,spacing,.2_dp,mu,stress,ok,ci=.1_dp)
+      call require(ok.and.all(stress==0),'rigid rotation has no isotropic stress')
+      call wale_stress(grad,2._dp,spacing,.2_dp,mu,stress,ok,ci=-.1_dp)
+      call require(.not.ok.and.mu==0.and.all(stress==0),'negative CI rejected')
+      call vreman_stress(grad,2._dp,spacing,.2_dp,mu,stress,ok,ci=1.1_dp)
+      call require(.not.ok.and.mu==0.and.all(stress==0),'excess CI rejected')
+    end block
   case('les_algebra')
     grad=0.0_dp; grad(1,2)=3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)

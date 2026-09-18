@@ -13,9 +13,10 @@ module les_smagorinsky_3d_mod
   public :: compute_les_ghosted_rhs_3d
   public :: smagorinsky_stress, compute_les_rhs_3d, advance_les_ssprk2_3d
 contains
-  subroutine smagorinsky_stress(gradient, density, spacing, cs, viscosity, stress, ok)
+  subroutine smagorinsky_stress(gradient, density, spacing, cs, viscosity, stress, ok,ci)
     real(dp), intent(in) :: gradient(3,3), density, spacing(3), cs
     real(dp), intent(out) :: viscosity, stress(3,3)
+    real(dp), optional, intent(in) :: ci
     logical, intent(out) :: ok
     real(dp) :: strain(3,3), delta, trace
     integer :: d
@@ -33,25 +34,56 @@ contains
     do d=1,3
       strain(d,d)=strain(d,d)-trace
     end do
-    ! Deviatoric compressible Smagorinsky only: no modeled isotropic SGS energy.
+    ! Isotropic stress is added separately, without changing eddy viscosity.
     stress=2.0_dp*viscosity*strain
     ok=.true.
+    if (ok) call add_isotropic_stress(gradient,density,spacing,ci,viscosity,stress,ok)
   end subroutine
 
-  ! Pinned PeleC LES.H deviatoric WALE/Vreman closures (CI=0).
+  ! Pinned PeleC LES.H WALE/Vreman closures; CI defaults to zero.
   ! Gradient rows are velocity components, columns are spatial derivatives.
-  subroutine wale_stress(gradient,density,spacing,cw,viscosity,stress,ok)
+  subroutine wale_stress(gradient,density,spacing,cw,viscosity,stress,ok,ci)
     real(dp), intent(in) :: gradient(3,3),density,spacing(3),cw
     real(dp), intent(out) :: viscosity,stress(3,3)
+    real(dp), optional, intent(in) :: ci
     logical, intent(out) :: ok
     call algebraic_stress(gradient,density,spacing,cw,.true.,viscosity,stress,ok)
+    if (ok) call add_isotropic_stress(gradient,density,spacing,ci,viscosity,stress,ok)
   end subroutine
 
-  subroutine vreman_stress(gradient,density,spacing,cs,viscosity,stress,ok)
+  subroutine vreman_stress(gradient,density,spacing,cs,viscosity,stress,ok,ci)
     real(dp), intent(in) :: gradient(3,3),density,spacing(3),cs
     real(dp), intent(out) :: viscosity,stress(3,3)
+    real(dp), optional, intent(in) :: ci
     logical, intent(out) :: ok
     call algebraic_stress(gradient,density,spacing,cs,.false.,viscosity,stress,ok)
+    if (ok) call add_isotropic_stress(gradient,density,spacing,ci,viscosity,stress,ok)
+  end subroutine
+
+  ! All three pinned static closures use alpha=2*rho*delta**2*|S|**2.
+  subroutine add_isotropic_stress(gradient,density,spacing,ci,viscosity,stress,ok)
+    real(dp), intent(in) :: gradient(3,3),density,spacing(3)
+    real(dp), optional, intent(in) :: ci
+    real(dp), intent(inout) :: viscosity,stress(3,3)
+    logical, intent(out) :: ok
+    real(dp) :: pressure
+    integer :: d
+    ok=.true.
+    if (.not.present(ci)) return
+    ok=.false.
+    if (.not.ieee_is_finite(ci)) then
+      viscosity=0;stress=0;return
+    end if
+    if (ci<0.or.ci>1) then
+      viscosity=0;stress=0;return
+    end if
+    ok=.true.
+    if (ci==0) return
+    pressure=(4._dp/3._dp)*ci*density*product(spacing)**(2._dp/3._dp)* &
+      sum((.5_dp*(gradient+transpose(gradient)))**2)
+    do d=1,3
+      stress(d,d)=stress(d,d)-pressure
+    end do
   end subroutine
 
   subroutine algebraic_stress(gradient,density,spacing,coefficient,wale,viscosity,stress,ok)
@@ -106,7 +138,8 @@ contains
   end subroutine
 
   subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+      boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci)
+    real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
@@ -146,7 +179,7 @@ contains
       end do
     end if
     if (all(faces=='periodic')) then
-      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok,model=model)
+      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok,model=model,ci=ci)
       return
     end if
     n=shape(temperature); dims=n+4
@@ -157,7 +190,7 @@ contains
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
     if (.not.ok) return
     call compute_les_face_rhs_3d(species,ghost,gt,spacing,cs,prt,sct,grhs,maximum_diffusivity,ok,n,rate, &
-      faces,wall_temperature,model=model)
+      faces,wall_temperature,model=model,ci=ci)
     if (.not.ok) return
     rhs=grhs(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
     if (present(boundary_rate)) boundary_rate=rate
@@ -165,7 +198,8 @@ contains
 
   ! Two supplied halo layers on every face; return only the active-cell RHS.
   subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok, &
-      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model)
+      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model,ci)
+    real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
@@ -198,12 +232,13 @@ contains
     if (any(shape(temperature)/=cells+4).or.any(shape(rhs)/=[size(state,1),cells])) return
     allocate(full_rhs,mold=state)
     call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells, &
-      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model)
+      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci)
     if (ok) rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
   end subroutine
 
   subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model)
+      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci)
+    real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
@@ -221,10 +256,14 @@ contains
     real(dp), allocatable :: primitive(:,:,:,:), temps(:,:,:), cp(:,:,:), cv(:,:,:), enthalpies(:,:,:,:)
     real(dp) :: q(reactive_nprim(size(species))), y(size(species)), grad(3,3), tau(3,3), flux(size(state,1))
     real(dp) :: jflux(size(species)),hav(size(species)),r,mw,gamma,h,e,s,cpg,cvg,sound,t,mu,rho,heat_flux
-    real(dp) :: face_y(size(species)),uface(3),cpface,cvface,diffusivity,cellvolume
+    real(dp) :: face_y(size(species)),uface(3),cpface,cvface,diffusivity,cellvolume,isotropic,iso_diff
     integer :: dims(3),l(3),ridx(3),lo(3),hi(3),lo2(3),hi2(3),i,j,k,n,a,b,wall_face
     logical :: local_ok
     rhs=0.0_dp; maximum_diffusivity=0.0_dp; ok=.false.; rate=0
+    isotropic=0
+    if (present(ci)) isotropic=ci
+    if (.not.ieee_is_finite(isotropic)) return
+    if (isotropic<0.or.isotropic>1) return
     selected_model='smagorinsky'
     if (present(model)) then
       select case(model)
@@ -265,7 +304,7 @@ contains
         end do
       end do
     end do
-    if (cs == 0.0_dp) then
+    if (cs == 0.0_dp.and.isotropic==0) then
       ok=.true.; return
     end if
     cellvolume=product(spacing)
@@ -295,11 +334,11 @@ contains
             rho=0.5_dp*(primitive(1,i,j,k)+primitive(1,ridx(1),ridx(2),ridx(3)))
             select case(selected_model)
             case('smagorinsky')
-              call smagorinsky_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+              call smagorinsky_stress(grad,rho,spacing,cs,mu,tau,local_ok,ci)
             case('wale')
-              call wale_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+              call wale_stress(grad,rho,spacing,cs,mu,tau,local_ok,ci)
             case('vreman')
-              call vreman_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+              call vreman_stress(grad,rho,spacing,cs,mu,tau,local_ok,ci)
             end select
             if (.not. local_ok) then
               rhs=0.0_dp; maximum_diffusivity=0.0_dp; return
@@ -341,6 +380,13 @@ contains
             rhs(:,ridx(1),ridx(2),ridx(3))=rhs(:,ridx(1),ridx(2),ridx(3))+flux/spacing(a)
             diffusivity=mu*max(4.0_dp/3.0_dp,cpface/(cvface*prt),1.0_dp/sct) / &
               min(primitive(1,i,j,k),primitive(1,ridx(1),ridx(2),ridx(3)))
+            if (isotropic>0) then
+              ! Additional frozen-gradient estimate; not a nonlinear stability proof.
+              iso_diff=4*isotropic*rho*product(spacing)**(2._dp/3._dp)* &
+                sqrt(2*sum((.5_dp*(grad+transpose(grad)))**2))/ &
+                min(primitive(1,i,j,k),primitive(1,ridx(1),ridx(2),ridx(3)))
+              diffusivity=diffusivity+iso_diff
+            end if
             if (wall_face>0) diffusivity=2*diffusivity
             maximum_diffusivity=max(maximum_diffusivity,diffusivity)
           end do
@@ -355,7 +401,8 @@ contains
   end subroutine
 
   subroutine advance_les_ssprk2_3d(species,state,temperature,spacing,cs,prt,sct,dt,ok, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci)
+    real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -366,9 +413,11 @@ contains
     real(dp), intent(out), optional :: boundary_change(:)
     real(dp) :: rate1(size(state,1)),rate2(size(state,1))
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
-    real(dp) :: diffusivity
+    real(dp) :: diffusivity,isotropic
     integer :: dims(3)
     logical :: local_ok
+    isotropic=0
+    if (present(ci)) isotropic=ci
     ok=.false.; dims=shape(temperature)
     if (present(boundary_change)) then
       boundary_change=0
@@ -379,17 +428,17 @@ contains
     allocate(rhs,mold=state); allocate(stage,mold=state); allocate(candidate,mold=state)
     allocate(t1,mold=temperature); allocate(t2,mold=temperature)
     call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate1, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
-    if (cs == 0.0_dp .or. dt == 0.0_dp) then
+    if ((cs==0.and.isotropic==0).or.dt==0) then
       ok=.true.; return
     end if
     stage=state+dt*rhs
     call recover_reactive_temperatures_3d(species,stage,temperature,dims(1),dims(2),dims(3),t1,local_ok)
     if (.not. local_ok) return
     call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate2, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     candidate=0.5_dp*(state+stage+dt*rhs)
