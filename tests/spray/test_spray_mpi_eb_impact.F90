@@ -23,7 +23,7 @@ program test_spray_mpi_eb_impact
   type(spray_wall_film), allocatable :: films(:),saved_films(:)
   real(dp), allocatable :: masses(:,:),film_mass(:,:),fractions(:),previous(:,:),pressure(:)
   logical, allocatable :: hit(:)
-  real(dp) :: phi(0:2,0:2,0:2),normal(3),mw(1),wall(5),before(5),after(5),d
+  real(dp) :: phi(0:2,0:2,0:2),normal(3),mw(1),wall(5),before(5),after(5),d,exterior(6)
   integer(int64) :: last_id
   integer :: rank,nranks,ierr,i,j,k,p,hits,mode
   logical :: ok,rejected
@@ -117,6 +117,42 @@ program test_spray_mpi_eb_impact
       call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'interval inventory')
     end if
   end do settings_loop
+  ! Only the final rank owns particles; all ranks receive the same exterior budget.
+  deallocate(drops,masses,films,film_mass)
+  allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)),films(0),film_mass(1,0))
+  if(rank==nranks-1) then
+    drops=saved;drops(1)%position=[.6_dp,.6_dp,.5_dp];masses=1e-12_dp
+  end if
+  last_id=nranks;wall=42;hits=43;exterior=44
+  if(rank==0) then
+    call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.1_dp, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+  else
+    call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.1_dp, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior)
+  end if
+  call require(.not.ok.and.last_id==nranks.and.all(exterior==44),'mismatched outflow presence rejected collectively')
+  call inventory(before)
+  do mode=1,2
+    walls%maximum_hits=mode
+    call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.1_dp, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior)
+    if(mode==1) then
+      call require(.not.ok.and.last_id==nranks.and.hits==43,'exterior event limit rollback')
+      call require(all(wall==42).and.all(exterior==44).and.size(films)==0,'exterior ledger rollback')
+      if(rank==nranks-1) call require(all(drops(1)%position==[.6_dp,.6_dp,.5_dp]),'exterior position rollback')
+    else
+      call require(ok.and.hits==5.and.last_id==nranks+4,'splash and four exterior events')
+      call require(size(drops)==0,'escaped children removed on every rank')
+      call require(exterior(1)<0.and.exterior(6)==exterior(1),'global component loss')
+      call inventory(after)
+      call require(all(abs(after+wall-before-exterior(:5))<=3e-12_dp*max(abs(before),1e-20_dp)), &
+        'MPI wall film exterior inventory')
+    end if
+  end do
   deallocate(drops,masses,films,film_mass)
   allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)),films(0),film_mass(1,0))
   do i=0,2

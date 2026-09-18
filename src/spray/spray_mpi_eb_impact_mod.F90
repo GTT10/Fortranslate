@@ -169,7 +169,7 @@ contains
   ! Collective batches of remaining flight. Film thickness is frozen per batch.
   ! Keep source-rank ownership until the caller performs final migration.
   subroutine advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
-      lower,upper,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected)
+      lower,upper,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected, outflow_change)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: properties
@@ -182,11 +182,16 @@ contains
     real(dp), intent(inout) :: wall_change(5)
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: outflow_change(:)
     logical, optional, intent(out) :: model_rejected
     type(spray_parcel), allocatable :: drops(:),kept(:)
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: masses(:,:),patch_mass(:,:),remaining(:),pressures(:),previous(:,:),fractions(:)
     real(dp), allocatable :: next_remaining(:),next_pressure(:),kept_mass(:,:)
+    real(dp), allocatable :: exit_fraction(:),exterior(:),global_exterior(:)
+    logical, allocatable :: exits(:)
+    real(dp) :: delta(3),finish(3),rho,cp,e,amount
+    integer :: axis,mode,lowmode,highmode
     integer, allocatable :: depth(:),next_depth(:)
     logical, allocatable :: crossed(:)
     real(dp) :: ledger(5),budget(5),lowdt,highdt
@@ -202,6 +207,13 @@ contains
     call agree();if(.not.agreed) return
     valid=size(pressure)==size(parcels)
     call agree();if(.not.agreed) return
+    mode=merge(1,0,present(outflow_change))
+    call MPI_Allreduce(mode,lowmode,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(mode,highmode,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.lowmode/=highmode) return
+    if(present(outflow_change)) valid=size(outflow_change)==5+size(components)
+    call agree();if(.not.agreed) return
     limits=[settings%maximum_hits,properties%maximum_parcels]
     call MPI_Allreduce(limits,lowlimits,2,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
@@ -214,13 +226,27 @@ contains
     drops=parcels;masses=component_mass;patches=films;patch_mass=film_mass;watermark=last_id
     allocate(remaining(size(drops)),depth(size(drops)));remaining=dt;depth=0;pressures=pressure
     ledger=0;local_hits=0;nc=size(components)
+    allocate(exterior(5+nc),global_exterior(5+nc));exterior=0
     do
       np=size(drops)
       if(allocated(previous)) deallocate(previous)
-      allocate(previous(3,np))
+      if(allocated(exit_fraction)) deallocate(exit_fraction,exits)
+      allocate(previous(3,np),exit_fraction(np),exits(np));exit_fraction=1;exits=.false.
       do p=1,np
         previous(:,p)=drops(p)%position
-        if(drops(p)%mass>0) drops(p)%position=previous(:,p)+remaining(p)*drops(p)%velocity
+        if(drops(p)%mass<=0) cycle
+        delta=remaining(p)*drops(p)%velocity;finish=previous(:,p)+delta
+        if(present(outflow_change)) then
+          do axis=1,3
+            if(delta(axis)>0.and.finish(axis)>=upper(axis)) then
+              exits(p)=.true.;exit_fraction(p)=min(exit_fraction(p),(upper(axis)-previous(axis,p))/delta(axis))
+            else if(delta(axis)<0.and.finish(axis)<=lower(axis)) then
+              exits(p)=.true.;exit_fraction(p)=min(exit_fraction(p),(lower(axis)-previous(axis,p))/delta(axis))
+            end if
+          end do
+          if(exits(p)) finish=max(lower,min(upper,previous(:,p)+exit_fraction(p)*delta))
+        end if
+        drops(p)%position=finish
       end do
       call impact_mpi_level_set(comm,components,properties,settings,phi,molecular_weights,pressures,previous, &
         lower,upper,drops,masses,patches,patch_mass,watermark,crossed,fractions,budget,valid,rejected)
@@ -231,12 +257,24 @@ contains
       if(.not.valid) return
       allocate(next_remaining(size(drops)),next_pressure(size(drops)),next_depth(size(drops)))
       next_remaining=0;next_pressure(:np)=pressures;next_depth(:np)=depth
+      valid=.true.
       do p=1,np
+        if(exits(p).and..not.crossed(p).and.drops(p)%mass>0) then
+          call liquid_mixture_properties(components,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,valid)
+          if(.not.valid) exit
+          amount=drops(p)%mass*drops(p)%multiplicity
+          exterior(1)=exterior(1)-amount
+          exterior(2:4)=exterior(2:4)-amount*drops(p)%velocity
+          exterior(5)=exterior(5)-amount*(e+.5_dp*sum(drops(p)%velocity**2))
+          exterior(6:)=exterior(6:)-masses(:,p)*drops(p)%multiplicity
+          drops(p)%mass=0;masses(:,p)=0
+          next_depth(p)=depth(p)+1;local_hits=local_hits+1_int64
+        end if
         if(.not.crossed(p)) cycle
         local_hits=local_hits+1_int64
-        next_remaining(p)=remaining(p)*(1-fractions(p));next_depth(p)=depth(p)+1
+        next_remaining(p)=remaining(p)*(1-exit_fraction(p)*fractions(p));next_depth(p)=depth(p)+1
       end do
-      valid=.true.
+      call agree();if(.not.agreed) return
       do p=np+1,size(drops)
         ! Original local IDs are strictly increasing; child ancestry stays local until migration.
         lo=1;hi=np;q=0
@@ -266,6 +304,9 @@ contains
     end do
     call MPI_Allreduce(local_hits,total_hits,1,MPI_INTEGER8,MPI_SUM,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.total_hits>int(huge(hits),int64)) return
+    call MPI_Allreduce(exterior,global_exterior,5+nc,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    if(present(outflow_change)) outflow_change=global_exterior
     kept=pack(drops,drops%mass>0);allocate(kept_mass(nc,size(kept)))
     do p=1,nc
       kept_mass(p,:)=pack(masses(p,:),drops%mass>0)
