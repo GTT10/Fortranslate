@@ -402,6 +402,19 @@ fluid owners transactionally. The caller must bind its single-line context to
 the gas checkpoint generation, geometry, model and schedule; this payload does
 not itself contain or verify gas state. See
 [payload evidence](validation/spray-mpi-eb-particle-checkpoint-20260918.md).
+Its optional `wall_films`, `film_mass`, `maximum_films` group now stores stationary
+EB films in `PELEF_EB_PARTICLES_V2`. Calls without that group retain the original
+V1 format. Readers require the format corresponding to their argument group;
+film-mode presence must agree across ranks. Film gathering reuses the physical
+EB tree with every node temporarily assigned to the archive writer; the film
+capacity therefore also bounds the gathered archive. Reads parse and validate
+private film payloads, then migrate them to current fluid-side owners before
+publishing particles, films or metadata. Invalid film geometry after particle
+redistribution rolls back the whole restore. Film ordering follows migration
+source order; films have no global IDs. See
+[film payload evidence](validation/spray-mpi-eb-film-checkpoint-20260918.md).
+This library extension is not yet connected to MPI application film persistence.
+
 The fixed/selected MPI EB spray applications now connect this payload with the
 existing gas snapshot using a generation-bound manifest. Restore stages both
 states and verifies the complete coupled budget and injection position before
