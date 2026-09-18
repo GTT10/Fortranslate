@@ -6,8 +6,10 @@ program test_les_mpi_dynamic
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use spray_partition_mod, only: spray_cartesian_block
-  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_coefficients_3d,compute_dynamic_les_rhs_3d
-  use les_mpi_dynamic_mod, only: compute_mpi_dynamic_les_coefficients_3d,compute_mpi_dynamic_les_rhs_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_coefficients_3d,compute_dynamic_les_rhs_3d, &
+    advance_dynamic_les_ssprk2_3d
+  use les_mpi_dynamic_mod, only: compute_mpi_dynamic_les_coefficients_3d,compute_mpi_dynamic_les_rhs_3d, &
+    advance_mpi_dynamic_les_ssprk2_3d
   implicit none
   integer, parameter :: cells(3)=[5,3,2]
   type(nasa7_species), allocatable :: species(:)
@@ -15,6 +17,7 @@ program test_les_mpi_dynamic
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),coeff(:,:,:,:),saved(:,:,:,:)
   real(dp) :: serial_rhs(15,5,3,2),diffusion,serial_diffusion,local_budget(15),budget(15)
   real(dp), allocatable :: rhs(:,:,:,:),saved_rhs(:,:,:,:)
+  real(dp) :: reference_state(15,5,3,2),reference_t(5,3,2),dt
   integer :: rank,nranks,ierr,i,j,k,first(3),extent(3),lo,hi,m,ratio,grid
   character(len=8) :: model
   logical :: ok
@@ -62,6 +65,34 @@ program test_les_mpi_dynamic
     do i=1,15
       call require(abs(budget(i))<=1e-12_dp*max(1._dp,sum(abs(serial_rhs(i,:,:,:)))),'global flux balance')
     end do
+    dt=.025_dp/(diffusion*sum(1/spacing**2))
+    reference_state=full;reference_t=temps
+    call advance_dynamic_les_ssprk2_3d(species,reference_state,reference_t,spacing,model,ratio,dt,ok,grid)
+    call require(ok,'serial dynamic step')
+    call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
+      model,ratio,dt,ok,grid)
+    call require(ok.and.all(state==reference_state(:,lo:hi,:,:)).and.all(temperature==reference_t(lo:hi,:,:)), &
+      'exact serial dynamic step parity')
+    do i=1,15
+      local_budget(i)=sum(state(i,:,:,:))-sum(full(i,lo:hi,:,:))
+    end do
+    call MPI_Allreduce(local_budget,budget,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    do i=1,15
+      call require(abs(budget(i))<=1e-12_dp*max(1._dp,sum(abs(full(i,:,:,:)))),'global step conservation')
+    end do
+    state=full(:,lo:hi,:,:);temperature=temps(lo:hi,:,:)
+    call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
+      model,ratio,0._dp,ok,grid)
+    call require(ok.and.all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)),'zero step unchanged')
+    call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
+      model,ratio,20*dt,ok,grid)
+    call require(.not.ok.and.all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)), &
+      'oversized step collective rollback')
+    if (rank==nranks-1) dt=dt/2
+    call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
+      model,ratio,dt,ok,grid)
+    call require(.not.ok.and.all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)), &
+      'inconsistent step collective rollback')
   end do
   call require(all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)),'inputs preserved')
   saved=coeff;saved_rhs=rhs

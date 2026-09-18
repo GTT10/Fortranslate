@@ -5,6 +5,7 @@ module les_mpi_dynamic_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use les_filter_3d_mod, only: les_filter_weights
   use les_mpi_filter_mod, only: filter_mpi_les_field_3d
   use les_dynamic_smagorinsky_mod, only: dynamic_smagorinsky_quantities,dynamic_smagorinsky_coefficients, &
@@ -12,7 +13,64 @@ module les_mpi_dynamic_mod
   implicit none
   private
   public :: compute_mpi_dynamic_les_coefficients_3d,compute_mpi_dynamic_les_rhs_3d
+  public :: advance_mpi_dynamic_les_ssprk2_3d
 contains
+  subroutine advance_mpi_dynamic_les_ssprk2_3d(comm,species,state,temperature,spacing,cells,test_model, &
+      test_ratio,dt,ok,grid_ratio)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: spacing(3),dt
+    integer, intent(in) :: cells(3),test_ratio
+    character(len=*), intent(in) :: test_model
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: grid_ratio
+    real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
+    real(dp) :: diffusion,dt_min,dt_max
+    integer :: n(3),nv,ios,ierr
+    logical :: valid,global_valid
+    ok=.false.;n=shape(temperature);nv=size(state,1)
+    valid=ieee_is_finite(dt)
+    call agree()
+    if (.not.global_valid) return
+    call MPI_Allreduce(dt,dt_min,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(dt,dt_max,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (dt_min/=dt_max.or.dt<0.or.dt>1e6_dp) return
+    allocate(rhs(nv,size(state,2),size(state,3),size(state,4)),stage(nv,n(1),n(2),n(3)), &
+      candidate(nv,n(1),n(2),n(3)),t1(n(1),n(2),n(3)),t2(n(1),n(2),n(3)),stat=ios)
+    valid=ios==0;call agree()
+    if (.not.global_valid) return
+    call compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
+      rhs,valid,grid_ratio,diffusion)
+    call agree()
+    if (.not.global_valid) return
+    if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
+    if (dt==0) then
+      ok=.true.;return
+    end if
+    stage=state+dt*rhs
+    call recover_reactive_temperatures_3d(species,stage,temperature,n(1),n(2),n(3),t1,valid)
+    call agree()
+    if (.not.global_valid) return
+    call compute_mpi_dynamic_les_rhs_3d(comm,species,stage,t1,spacing,cells,test_model,test_ratio,rhs,valid, &
+      grid_ratio,diffusion)
+    call agree()
+    if (.not.global_valid) return
+    if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
+    candidate=.5_dp*state+.5_dp*stage+.5_dp*dt*rhs
+    call recover_reactive_temperatures_3d(species,candidate,t1,n(1),n(2),n(3),t2,valid)
+    call agree()
+    if (.not.global_valid) return
+    state=candidate;temperature=t2;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,global_valid,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) global_valid=.false.
+    end subroutine
+  end subroutine
+
   subroutine compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
       rhs,ok,grid_ratio,maximum_diffusivity)
     type(MPI_Comm), intent(in) :: comm
