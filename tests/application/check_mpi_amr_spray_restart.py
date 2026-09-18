@@ -21,6 +21,7 @@ p.add_argument('--inflow', action='store_true')
 p.add_argument('--films', action='store_true')
 p.add_argument('--les', action='store_true')
 p.add_argument('--pressure', action='store_true')
+p.add_argument('--force', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -86,7 +87,11 @@ if a.les:
     spray += "\n&amr_spray_les les_cs=.17,les_ci=.1,les_model='vreman' /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False):
+if a.force:
+    spray += '\n&amr_spray_force acceleration=100.,-200.,300. /\n'
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -99,6 +104,8 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
                        else spray.replace('speed=20.', 'speed=21.'))
     if changed_les:
         local_spray = local_spray.replace('les_ci=.1', 'les_ci=.2')
+    if changed_force:
+        local_spray = local_spray.replace('acceleration=100.', 'acceleration=101.')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -183,6 +190,15 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.force:
+    def force_inventory(folder):
+        line = next(x for x in (folder / 'run.log').read_text().splitlines() if x.startswith('Source inventory:'))
+        return [float(x) for x in line.split(':', 1)[1].split()]
+    left, right = force_inventory(full), force_inventory(continued)
+    assert left[1] > 0 and left[2] < 0 and left[3] > 0
+    assert all(math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25) for x, y in zip(left, right))
+    assert 'SPRAY_SOURCE_V1' in (split / 'state.particles').read_text()
+    run('changed_force', 2, f"restart_file='{checkpoint}'", good=False, changed_force=True)
 if a.pressure:
     run('changed_pressure', 2, f"restart_file='{checkpoint}'", good=False, changed_pressure=True)
 if a.les:

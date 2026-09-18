@@ -67,6 +67,9 @@ contains
     real(dp) :: les_cs,les_prt,les_sct,les_ci,les_cfl,les_dt
     character(len=16) :: les_model
     namelist /amr_spray_les/ les_cs,les_prt,les_sct,les_ci,les_cfl,les_model
+    real(dp) :: acceleration(3)
+    real(dp), allocatable :: force_total(:),force_change(:)
+    namelist /amr_spray_force/ acceleration
     logical :: wall_active
     real(dp), allocatable :: masses(:,:),x(:),y(:),z(:),mf(:),ledger(:),global_ledger(:)
     integer, allocatable :: owners(:),assigned(:),ratios(:)
@@ -128,6 +131,7 @@ contains
     injection_events=0;injection_times=0;event_parcels=0;event_mass=0;event_ports=1
     port_count=0;port_centers=0;port_axes=0;port_axes(1,:)=1;port_speeds=10;port_half_angles=0
     port_diameters=1e-5_dp;port_temperatures=350;port_fractions=-1;port_radii=0
+    acceleration=0
     les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
@@ -139,8 +143,13 @@ contains
     if (ios>0) call fatal('Invalid amr_spray_checkpoint namelist')
     rewind(unit)
     read(unit,nml=amr_spray_les,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_les namelist')
+    rewind(unit)
+    read(unit,nml=amr_spray_force,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_force namelist')
+    if (.not.all(ieee_is_finite(acceleration))) call fatal('Nonfinite acceleration')
+    if (any(abs(acceleration)>1e6_dp)) call fatal('Invalid acceleration')
     if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
     if (les_cs<0.or.les_cs>2.or.les_ci<0.or.les_ci>1) call fatal('Invalid LES coefficients')
     if (min(les_prt,les_sct)<1e-6_dp.or.max(les_prt,les_sct)>1e6_dp) call fatal('Invalid LES PrT/ScT')
@@ -241,6 +250,10 @@ contains
       write(unit,nml=amr_spray_les,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize LES context')
     end if
+    if (any(acceleration/=0)) then
+      write(unit,nml=amr_spray_force,iostat=ios)
+      if (ios/=0) call fatal('Cannot serialize force context')
+    end if
     rewind(unit);spray_context=''
     do
       read(unit,'(a)',iostat=ios) context_line
@@ -262,6 +275,10 @@ contains
     lower=[config%x_lower,config%y_lower,config%z_lower]
     spacing=([config%x_upper,config%y_upper,config%z_upper]-lower)/real(tree%nodes(1)%shape,dp)
     nv=reactive_nvar(size(species))
+    allocate(force_change(nv));force_change=0
+    if (any(acceleration/=0)) then
+      allocate(force_total(nv));force_total=0
+    end if
     allocate(state%fields(size(tree%nodes)),temperature%fields(size(tree%nodes)),mf(size(species)))
     allocate(ledger(nv),global_ledger(nv),boundary(nv),change(nv),inlet(nv,6),inlet_x(size(species)), &
       q(nv),inlet_cube(nv,2,2,2))
@@ -422,7 +439,8 @@ contains
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
             config%wall_temperature,config%wall_velocity, &
             wall_films=films,film_mass=film_mass,film_settings=walls, &
-            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure)
+            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure, &
+            acceleration=acceleration,source_change=force_change)
         else
           call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -433,7 +451,8 @@ contains
             config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
             config%wall_temperature,config%wall_velocity, &
-            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure)
+            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure, &
+            acceleration=acceleration,source_change=force_change)
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
@@ -441,6 +460,10 @@ contains
       end do
       if (.not.ok) call fatal('Coupled step failed after retries')
       if (any(abs(boundary)>huge(1._dp)-abs(change))) call fatal('Boundary ledger overflow')
+      if (allocated(force_total)) then
+        if (any(abs(force_total)>huge(1._dp)-abs(force_change))) call fatal('Source ledger overflow')
+        force_total=force_total+force_change
+      end if
       boundary=boundary+change
       if (dt==stop_time-time) then
         time=stop_time
@@ -489,6 +512,7 @@ contains
       write(*,'(a,i0)') 'Injection events applied: ',event-1
       write(*,'(a,*(es24.16,1x))') 'Injected inventory: ',global_ledger
       write(*,'(a,*(es24.16,1x))') 'Boundary inventory: ',boundary
+      if (allocated(force_total)) write(*,'(a,*(es24.16,1x))') 'Source inventory: ',force_total
     end if
   contains
     subroutine write_films()
@@ -550,10 +574,10 @@ contains
       if (wall_active) then
         call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
           time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary, &
-          wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+          wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,source=force_total)
       else
         call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
-          time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary)
+          time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary,source=force_total)
       end if
       if (.not.ok) call fatal('AMR spray checkpoint operation failed')
     end subroutine
