@@ -2724,3 +2724,13 @@ keeps ranks with no fine planes in all contract and success collectives. The
 qualified boundary is periodic, static, strictly interior, and single-patch;
 transport persistence, dynamic topology, physical coarse boundaries, and 3D
 EB AMR are not implied.
+
+## Characteristic pressure outlet state
+
+`characteristic_pressure_ghost_3d` implements the frozen-composition acoustic
+pressure extrapolation used by the pinned PeleC EB-ConvergingNozzle case.
+It supports all six outward normals and a caller-supplied ghost-distance ratio.
+The helper returns a consistent NASA7 conserved state and temperature or preserves
+outputs on rejection. Solver boundary dispatch is not connected yet. This is
+separate from GC-NSCBC, which the pinned reference guide marks unported.
+See [equations, reference identity and focused checks](validation/characteristic-pressure-ghost-20260918.md).
