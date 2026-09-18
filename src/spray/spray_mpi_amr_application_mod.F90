@@ -70,6 +70,17 @@ contains
     real(dp) :: acceleration(3)
     real(dp), allocatable :: force_total(:),force_change(:)
     namelist /amr_spray_force/ acceleration
+    character(len=16) :: mixture_density_models(16),mixture_cp_models(16)
+    character(len=16) :: mixture_vapor_pressure_models(16),mixture_boiling_models(16)
+    real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
+    real(dp) :: mixture_cp_coefficients(4,16),mixture_cp_temperature_ranges(2,16)
+    real(dp) :: mixture_antoine_coefficients(4,16),mixture_antoine_temperature_ranges(2,16)
+    real(dp) :: mixture_critical_temperatures(16)
+    logical :: properties_present
+    namelist /amr_spray_properties/ mixture_density_models,mixture_cp_models,mixture_vapor_pressure_models, &
+      mixture_boiling_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
+      mixture_cp_coefficients,mixture_cp_temperature_ranges,mixture_antoine_coefficients, &
+      mixture_antoine_temperature_ranges,mixture_critical_temperatures
     logical :: wall_active
     real(dp), allocatable :: masses(:,:),x(:),y(:),z(:),mf(:),ledger(:),global_ledger(:)
     integer, allocatable :: owners(:),assigned(:),ratios(:)
@@ -131,6 +142,11 @@ contains
     injection_events=0;injection_times=0;event_parcels=0;event_mass=0;event_ports=1
     port_count=0;port_centers=0;port_axes=0;port_axes(1,:)=1;port_speeds=10;port_half_angles=0
     port_diameters=1e-5_dp;port_temperatures=350;port_fractions=-1;port_radii=0
+    mixture_density_models='constant';mixture_cp_models='constant'
+    mixture_vapor_pressure_models='clausius';mixture_boiling_models='reject'
+    mixture_density_coefficients=0;mixture_density_temperature_ranges=0
+    mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
+    mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     acceleration=0
     les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
@@ -146,8 +162,12 @@ contains
     if (ios>0) call fatal('Invalid amr_spray_les namelist')
     rewind(unit)
     read(unit,nml=amr_spray_force,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_force namelist')
+    rewind(unit)
+    read(unit,nml=amr_spray_properties,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_properties namelist')
+    properties_present=ios==0
     if (.not.all(ieee_is_finite(acceleration))) call fatal('Nonfinite acceleration')
     if (any(abs(acceleration)>1e6_dp)) call fatal('Invalid acceleration')
     if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
@@ -233,11 +253,32 @@ contains
       write(suffix,'(i0)') rank
       call check_output(trim(config%output_file)//'.films.'//trim(suffix)//'.csv')
     end if
+    if(any(mixture_density_models(component_count+1:)/='constant')) call fatal('Unused mixture property entries')
+    if(any(mixture_cp_models(component_count+1:)/='constant')) call fatal('Unused mixture property entries')
+    if(any(mixture_vapor_pressure_models(component_count+1:)/='clausius')) call fatal('Unused mixture property entries')
+    if(any(mixture_boiling_models(component_count+1:)/='reject')) call fatal('Unused mixture property entries')
+    if(any(mixture_critical_temperatures(component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_density_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_density_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_cp_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_cp_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_antoine_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_antoine_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
     allocate(liquids(component_count),parcels(0),masses(component_count,0))
     do i=1,component_count
       call initialize_spray_liquid(species,trim(vapor_names(i)),liquid_density(i),liquid_cp(i), &
-        reference_temperature(i),reference_pressure(i),latent_heat(i),liquids(i),ok)
+        reference_temperature(i),reference_pressure(i),latent_heat(i),liquids(i),ok,mixture_vapor_pressure_models(i), &
+        mixture_antoine_coefficients(:,i),mixture_antoine_temperature_ranges(:,i))
       if (.not.ok) call fatal('Invalid liquid properties/species')
+      liquids(i)%density_model=mixture_density_models(i)
+      liquids(i)%density_coefficients=mixture_density_coefficients(:,i)
+      liquids(i)%density_temperature_range=mixture_density_temperature_ranges(:,i)
+      liquids(i)%heat_capacity_model=mixture_cp_models(i)
+      liquids(i)%heat_capacity_coefficients=mixture_cp_coefficients(:,i)
+      liquids(i)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,i)
+      liquids(i)%boiling_model=mixture_boiling_models(i)
+      liquids(i)%critical_temperature=mixture_critical_temperatures(i)
+      if(.not.valid_spray_liquid(liquids(i))) call fatal('Invalid mixture component property model')
     end do
     call read_topology(topology_path,tree)
     if (regrid_time>=0) call read_topology(trim(regrid_topology),target)
@@ -253,6 +294,10 @@ contains
     if (any(acceleration/=0)) then
       write(unit,nml=amr_spray_force,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize force context')
+    end if
+    if (properties_present) then
+      write(unit,nml=amr_spray_properties,iostat=ios)
+      if (ios/=0) call fatal('Cannot serialize liquid properties context')
     end if
     rewind(unit);spray_context=''
     do

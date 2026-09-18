@@ -22,6 +22,7 @@ p.add_argument('--films', action='store_true')
 p.add_argument('--les', action='store_true')
 p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
+p.add_argument('--properties', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -91,7 +92,22 @@ if a.force:
     spray += '\n&amr_spray_force acceleration=100.,-200.,300. /\n'
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False):
+if a.properties:
+    spray += ("\n&amr_spray_properties\n"
+              " mixture_density_models=2*'polynomial',\n"
+              " mixture_density_coefficients(:,1)=1100.,-.2,0.,0.,\n"
+              " mixture_density_coefficients(:,2)=900.,-.1,0.,0.,\n"
+              " mixture_density_temperature_ranges(:,1)=300.,450.,\n"
+              " mixture_density_temperature_ranges(:,2)=300.,450.,\n"
+              " mixture_cp_models=2*'polynomial',mixture_cp_coefficients(:,1)=3800.,1.,0.,0.,\n"
+              " mixture_cp_coefficients(:,2)=1800.,.5,0.,0.,\n"
+              " mixture_cp_temperature_ranges(:,1)=300.,450.,mixture_cp_temperature_ranges(:,2)=300.,450.,\n"
+              " mixture_vapor_pressure_models(1)='antoine',\n"
+              " mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,\n"
+              " mixture_antoine_temperature_ranges(:,1)=300.,450.\n/\n")
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -106,6 +122,10 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('les_ci=.1', 'les_ci=.2')
     if changed_force:
         local_spray = local_spray.replace('acceleration=100.', 'acceleration=101.')
+    if changed_properties:
+        local_spray = local_spray.replace('1100.,-.2', '1101.,-.2')
+    if invalid_properties:
+        local_spray = local_spray.replace('1100.,-.2', '-1100.,0.')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -190,6 +210,9 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.properties:
+    run('changed_properties', 2, f"restart_file='{checkpoint}'", good=False, changed_properties=True)
+    run('invalid_properties', 2, '', good=False, invalid_properties=True)
 if a.force:
     def force_inventory(folder):
         line = next(x for x in (folder / 'run.log').read_text().splitlines() if x.startswith('Source inventory:'))
