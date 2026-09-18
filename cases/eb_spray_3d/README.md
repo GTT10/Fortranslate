@@ -105,3 +105,21 @@ Independent nozzle ports, physical outer-boundary particle events and distribute
 EB impact/film ownership remain open. Trial trajectories must stay in the root domain. The
 particle source/drift split is first order; this synthetic implementation case
 is not calibrated spray validation or a convergence study.
+
+### Computational parcel splitting
+
+With ETAB or representative-drop KH-RT, set `options%maximum_multiplicity` to a
+positive cap. The application splits parcels after each complete reactive update;
+zero disables splitting. `options%maximum_parcels` bounds the resulting population
+(also limited to 125000 here). Children copy per-drop component masses and retain
+parent lineage; represented mass, momentum, energy and extensive KH state are
+partitioned conservatively. IDs start above the shared watermark, including IDs
+of retired impact parents. Capacity or ID overflow rejects the whole step.
+
+Splitting-enabled checkpoints append `_SCOUNT_V1` to their format identifier and
+store cumulative split IDs immediately after the ID watermark. Restore subtracts
+that count before checking injection and four-child splash groups. Disabled-mode
+checkpoint layout is unchanged. Older splitting-enabled snapshots without this
+counter are rejected. Final-time injections are retained unsplit until the next
+reactive update. KH shed-mass child creation remains unsupported in this serial
+application. See [focused evidence](../../docs/validation/spray-eb-split-20260918.md).

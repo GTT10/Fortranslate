@@ -315,6 +315,13 @@ together only after both particle halves and the gas step succeed. Returned
 ledgers separate exterior boundary exchange, combined gas/particle EB wall
 exchange, and gas chemistry; each uses the change-in-system sign convention.
 `particle_steps` counts both accepted particle halves and is zero on failure.
+The allocated interface additionally applies computational splitting after the
+last half, with a shared ID watermark and optional `split_created` output. The
+fixed-population interface rejects an enabled multiplicity cap. The serial
+application uses the allocated interface on both wall paths and persists cumulative
+split IDs for restart accounting. The shared `split_spray_parcels` helper accepts
+optional `watermark` and `component_mass` arguments and publishes them atomically
+with descendants. See [serial splitting evidence](validation/spray-eb-split-20260918.md).
 The caller must select a stable gas timestep; this wrapper does not retry or
 adapt gas timesteps. An experimental fixed/selected
 [serial EB spray application](../cases/eb_spray_3d/README.md) now connects nodal
