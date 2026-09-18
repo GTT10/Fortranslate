@@ -21,6 +21,7 @@ program pelef_reactive_eb_tree_3d
   use spray_mpi_eb_remap_mod, only: remap_mpi_eb_spray
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
   use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
@@ -87,6 +88,10 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: injection_times(1024)=0,injection_scales(1024)=1,event_factors(1024)=1
   type(spray_liquid), allocatable :: liquids(:)
   type(spray_options) :: particle_options
+  type(spray_wall_options) :: walls
+  type(spray_wall_film), allocatable :: films(:)
+  real(dp), allocatable :: film_mass(:,:)
+  logical :: wall_impacts=.false.,model_rejected
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
   character(len=:), allocatable :: spray_context
   character(len=1024) :: spray_input
@@ -383,11 +388,21 @@ program pelef_reactive_eb_tree_3d
         if (mpi_ierr/=MPI_SUCCESS.or..not.work_ready) error stop 'Cannot allocate tree work counters'
       end if
 #ifdef PELEF_MPI_EB_SPRAY
+      if(wall_impacts) then
+      call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
+        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
+        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
+        films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected)
+      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+      else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling)
+      end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
@@ -417,7 +432,7 @@ program pelef_reactive_eb_tree_3d
       call rebalance_mpi_amr_spray(MPI_COMM_WORLD,topology,mpi_owners,nv,mpi_state,mpi_temperature, &
         drops,component_mass,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
         [.false.,.false.,.false.],measured_cost,rebalance_minimum_gain,particle_options%maximum_parcels, &
-        redistributed,ok,nodal_phi=nodal_phi)
+        redistributed,ok,wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,nodal_phi=nodal_phi)
 #else
       call rebalance_mpi_amr_tree_3d(topology,mpi_owners,nv,mpi_state,mpi_temperature, &
         measured_cost,rebalance_minimum_gain,MPI_COMM_WORLD,redistributed,ok)
@@ -499,7 +514,7 @@ contains
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
       port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
-      port_profile_points,port_profile_times,port_profile_rates,injection_end_times
+      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls
     port_profile_points=0;port_profile_times=0;port_profile_rates=0;injection_end_times=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp)
@@ -519,6 +534,15 @@ contains
     if(.not.valid_spray_options(particle_options).or.particle_options%khrt_children) &
       error stop 'Unsupported particle options'
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
+    if(wall_impacts) then
+      if(.not.valid_wall_options(walls,[character(len=16)::'slip_wall','slip_wall','slip_wall', &
+        'slip_wall','slip_wall','slip_wall'])) error stop 'Invalid EB wall options'
+      if(any(walls%temperature/=walls%temperature(1))) error stop 'EB wall temperature must be uniform'
+      if(particle_options%liquid_viscosity<=0.or.particle_options%surface_tension<=0) &
+        error stop 'EB impacts require viscosity and surface tension'
+    else if(walls%evolve) then
+      error stop 'EB film evolution requires wall impacts'
+    end if
     if(injection_events<1.or.injection_events>1024) error stop 'Invalid injection event count'
     if(.not.all(ieee_is_finite(injection_times)).or..not.all(ieee_is_finite(injection_scales))) &
       error stop 'Nonfinite injection schedule'
@@ -583,7 +607,7 @@ contains
       if(profile_mass>1e6_dp.or.profile_mass>1e6_dp*port_masses(port)) error stop 'Integrated injection exceeds bounds'
       event_factors(c)=profile_mass/port_masses(port)
     end do
-    allocate(drops(0),component_mass(nc,0))
+    allocate(drops(0),component_mass(nc,0),films(0),film_mass(nc,0))
     if(checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
       open(newunit=stream,status='scratch',form='formatted',iostat=code)
       if(code/=0) error stop 'Cannot stage spray context'
@@ -680,6 +704,26 @@ contains
     inventory=inventory+global
   end subroutine
 
+  subroutine add_film_inventory(inventory,patches,components)
+    real(dp), intent(inout) :: inventory(:)
+    type(spray_wall_film), intent(in) :: patches(:)
+    real(dp), intent(in) :: components(:,:)
+    real(dp) :: local(size(inventory)),rho,cp,e
+    integer :: q,c
+    local=0
+    do q=1,size(patches)
+      call liquid_mixture_properties(liquids,components(:,q)/patches(q)%mass,patches(q)%temperature,rho,cp,e,ok)
+      if(.not.ok) error stop 'Invalid film inventory'
+      local(1)=local(1)+patches(q)%mass;local(5)=local(5)+patches(q)%mass*e
+      do c=1,size(liquids)
+        local(5+liquids(c)%vapor_index)=local(5+liquids(c)%vapor_index)+components(c,q)
+      end do
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,local,size(local),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,mpi_ierr)
+    if(mpi_ierr/=MPI_SUCCESS) error stop 'Film inventory reduction failed'
+    inventory=inventory+local
+  end subroutine
+
   subroutine spray_checkpoint(writing)
     logical, intent(in) :: writing
     type(amr_tree_state_3d) :: candidate,ct
@@ -689,7 +733,8 @@ contains
     integer :: p,level
     type(eb_tree_checkpoint_3d) :: gas_record,coupled
     type(spray_parcel), allocatable :: particles(:)
-    real(dp), allocatable :: components(:,:)
+    real(dp), allocatable :: components(:,:),patch_mass(:,:)
+    type(spray_wall_film), allocatable :: patches(:)
     real(dp) :: source(nv),expected_source(nv),inventory(nv),saved_time
     integer :: stream,code,closed,saved_steps,saved_event,expected_event,date(8)
     integer(int64) :: watermark,expected_mark,tick,expected_ids
@@ -699,7 +744,7 @@ contains
     allocate(character(len=131072)::line)
     candidate=mpi_state;ct=mpi_temperature;coupled=record;gas_record=record
     checkpoint_tree=topology;checkpoint_geometry=mpi_geometry;checkpoint_owners=mpi_owners
-    particles=drops;components=component_mass
+    particles=drops;components=component_mass;patches=films;patch_mass=film_mass
     saved_time=record%time;saved_steps=record%steps;saved_event=next_injection
     watermark=last_particle_id;source=injected
     if(writing) then
@@ -786,10 +831,17 @@ contains
       close(stream,iostat=closed)
       if(.not.valid.or.closed/=0) error stop 'Gas snapshot restore failed'
     end if
+    if(wall_impacts) then
+    call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,checkpoint_tree,checkpoint_owners, &
+      nodal_phi,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
+      min(125000,particle_options%maximum_parcels),particles,components,saved_time,saved_steps,saved_event, &
+      watermark,source,valid,patches,patch_mass,walls%maximum_films)
+    else
     call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,checkpoint_tree,checkpoint_owners, &
       nodal_phi,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
       min(125000,particle_options%maximum_parcels),particles,components,saved_time,saved_steps,saved_event, &
       watermark,source,valid)
+    end if
     if(.not.valid) error stop 'Particle snapshot failed'
     if(writing) then
       if(mpi_rank==0) valid=publish_link(path//'.pending'//c_null_char,path//c_null_char)==0
@@ -809,7 +861,15 @@ contains
       do p=1,saved_event-1
         if(event_factors(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
       end do
-      if(watermark/=expected_ids) error stop 'Invalid restart ID watermark'
+      if(wall_impacts) then
+        if(watermark<expected_ids) error stop 'Invalid restart ID watermark'
+        if(modulo(watermark-expected_ids,4_int64)/=0) error stop 'Invalid restart splash ID watermark'
+      else
+        if(watermark/=expected_ids) error stop 'Invalid restart ID watermark'
+      end if
+      do p=1,size(patches)
+        if(patches(p)%material_id>port_count) error stop 'Invalid restart film port'
+      end do
       do p=1,size(particles)
         if(particles(p)%material_id>port_count) error stop 'Invalid restart particle port'
       end do
@@ -818,6 +878,7 @@ contains
       call integrate_mpi_eb_tree_3d(checkpoint_tree,checkpoint_owners,checkpoint_geometry,candidate,inventory,MPI_COMM_WORLD,valid)
       if(.not.valid) error stop 'Cannot integrate restored gas'
       call add_particle_inventory(inventory,particles,components)
+      call add_film_inventory(inventory,patches,patch_mass)
       if(any(abs(inventory-coupled%initial-coupled%boundary-coupled%wall-coupled%chemical-source)> &
         5e-10_dp*max(1._dp,coupled%scale,abs(inventory), &
         abs(coupled%boundary)+abs(coupled%wall)+abs(coupled%chemical)+abs(source)))) error stop 'Restored budget failed'
@@ -830,6 +891,7 @@ contains
         tree%nodes(p)%geometry=mpi_geometry(p)
       end do
       call move_alloc(particles,drops);call move_alloc(components,component_mass)
+      call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
       injected=source;next_injection=saved_event;last_particle_id=watermark
     end if
   end subroutine
@@ -856,6 +918,23 @@ contains
     end do
     close(stream,iostat=closed)
     if(closed/=0) error stop 'Cannot close particle CSV'
+    path=trim(output_file)//'.films.rank'//trim(rank_label)//'.csv'
+    open(newunit=stream,file=path,status='new',action='write',iostat=code)
+    if(code/=0) error stop 'Cannot create film CSV (existing files are protected)'
+    write(stream,'(a)',advance='no') 'material_id,x,y,z,nx,ny,nz,mass,temperature,diameter,height'
+    do c=1,size(liquids)
+      write(label,'(i0)') c
+      write(stream,'(a)',advance='no') ',component_mass_'//trim(label)
+    end do
+    write(stream,*)
+    do q=1,size(films)
+      write(stream,'(i0,",",*(es25.16,:,","))',iostat=code) films(q)%material_id, &
+        films(q)%position,films(q)%normal,films(q)%mass,films(q)%temperature, &
+        films(q)%diameter,films(q)%height,film_mass(:,q)
+      if(code/=0) error stop 'Cannot write film CSV'
+    end do
+    close(stream,iostat=closed)
+    if(closed/=0) error stop 'Cannot close film CSV'
   end subroutine
 #endif
 
@@ -931,7 +1010,7 @@ contains
 #ifdef PELEF_MPI_EB_SPRAY
       call remap_mpi_eb_spray(MPI_COMM_WORLD,species,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
         drops,component_mass,layouts(stage),next_owners,geometry_levels(level),nodal_phi,domain_lower, &
-        (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid)
+        (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid,films,film_mass,walls%maximum_films)
 #else
       call remap_mpi_eb_tree_3d(species,topology,layouts(stage),mpi_owners,next_owners,geometry_levels(level), &
         mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
@@ -1169,6 +1248,7 @@ contains
     if (.not.ok) error stop 'Inventory failed'
 #ifdef PELEF_MPI_EB_SPRAY
     call add_particle_inventory(current,drops,component_mass)
+    call add_film_inventory(current,films,film_mass)
 #endif
     error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical-injected)/ &
       max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)+abs(injected)))
