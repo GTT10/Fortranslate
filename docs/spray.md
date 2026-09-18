@@ -186,6 +186,24 @@ still reflect specularly: films must be supplied by the caller, and distributed
 impact generation and application persistence remain open. See
 [reactive MPI film evidence](validation/spray-mpi-eb-film-reactive-20260918.md).
 
+`spray_mpi_eb_impact_mod` exports `impact_mpi_level_set` for one earliest contact
+per supplied trial trajectory. It uses original nodal geometry, sampled parcel
+pressures and common EB wall settings, queries pre-event film thickness across
+ranks without collecting the films, and calls the existing collective impact
+resolver/ID allocator. Child IDs use rank-prefix reservation above the shared
+watermark. `hit` and `fractions` refer to the original population; the resulting
+population includes appended children and retained zero-mass parents. `wall_change`
+is the globally summed inventory received by the wall. All payloads, IDs and
+diagnostics are unchanged on failure except `ok`/`model_rejected`. Invalid
+empirical output is reported collectively before publication.
+Bounds, nodal dimensions and every nodal value must agree across ranks;
+model/property tables are identical by caller contract. This is a batched
+contact API: newly deposited films do not affect other contacts in the same
+batch. The caller owns remaining flight, dead-parent removal, final particle/film
+migration and binding the nodal field to the gas geometry. Distributed source
+and application integration remain open. See
+[MPI EB contact evidence](validation/spray-mpi-eb-impact-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
