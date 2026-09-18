@@ -105,7 +105,7 @@ contains
   ! IDs must be sorted on input. Capacities bound all intermediate births/deposits.
   subroutine advance_mixture_level_set_impacts(phi,lower,upper,dt,maximum_hits,capacity,film_capacity, &
       components,properties,molecular_weights,pressure,wall_temperature,contact_angle, &
-      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures,model_rejected)
+      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures,model_rejected,outflow_change)
     use spray_eb_drift_mod, only: drift_spray_level_set
     use spray_wall_impact_mod, only: valid_wall_component_inventory
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),dt,molecular_weights(:)
@@ -118,6 +118,10 @@ contains
     real(dp), allocatable, intent(inout) :: masses(:,:),film_masses(:,:)
     type(spray_wall_film), allocatable, intent(inout) :: films(:)
     integer(int64), intent(inout) :: last_id
+    real(dp), optional, intent(inout) :: outflow_change(:)
+    real(dp) :: exterior(5+size(components)),exit_fraction,axis_fraction,rho,cp,e,amount
+    integer :: axis
+    logical :: exits
     real(dp), intent(inout) :: wall(5)
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
@@ -137,6 +141,10 @@ contains
     if (.not.allocated(parcels).or..not.allocated(masses)) return
     if (.not.allocated(films).or..not.allocated(film_masses)) return
     n=size(parcels);nf=size(films);nc=size(components)
+    if(present(outflow_change)) then
+      if(size(outflow_change)/=5+nc) return
+    end if
+    exterior=0
     if (nc<1.or.nc>16.or.capacity<n.or.capacity>1000000.or.capacity<0) return
     if (film_capacity<nf.or.film_capacity>1000000.or.film_capacity<0) return
     if (any(shape(masses)/=[nc,n]).or.any(shape(film_masses)/=[nc,nf])) return
@@ -174,11 +182,40 @@ contains
       do while(queue(p)%mass>0)
         previous=queue(p)%position
         queue(p)%position=previous+remaining(p)*queue(p)%velocity
+        exits=.false.;exit_fraction=1
+        if(present(outflow_change)) then
+          if(any(previous<lower).or.any(previous>upper)) return
+          do axis=1,3
+            if(remaining(p)*queue(p)%velocity(axis)==0) cycle
+            if(queue(p)%velocity(axis)>0.and.queue(p)%position(axis)>=upper(axis)) then
+              axis_fraction=(upper(axis)-previous(axis))/(remaining(p)*queue(p)%velocity(axis))
+            else if(queue(p)%velocity(axis)<0.and.queue(p)%position(axis)<=lower(axis)) then
+              axis_fraction=(lower(axis)-previous(axis))/(remaining(p)*queue(p)%velocity(axis))
+            else
+              cycle
+            end if
+            exits=.true.;exit_fraction=min(exit_fraction,axis_fraction)
+          end do
+          if(exits) queue(p)%position=max(lower,min(upper,previous+exit_fraction*remaining(p)*queue(p)%velocity))
+        end if
         hit=.false.;fraction=0;location=0;normal=0;cell=0
         call intersect_spray_level_set(phi,lower,upper,previous,queue(p)%position, &
           hit,fraction,location,normal,cell,valid)
         if (.not.valid) return
-        if (.not.hit) exit
+        if (.not.hit) then
+          if(exits) then
+            if(depth(p)>=maximum_hits) return
+            call liquid_mixture_properties(components,inventory(:,p)/queue(p)%mass,queue(p)%temperature,rho,cp,e,valid)
+            if(.not.valid) return
+            amount=queue(p)%mass*queue(p)%multiplicity
+            exterior(1)=exterior(1)-amount
+            exterior(2:4)=exterior(2:4)-amount*queue(p)%velocity
+            exterior(5)=exterior(5)-amount*(e+.5_dp*sum(queue(p)%velocity**2))
+            exterior(6:)=exterior(6:)-inventory(:,p)*queue(p)%multiplicity
+            queue(p)%mass=0;inventory(:,p)=0;count=count+1
+          end if
+          exit
+        end if
         if (depth(p)>=maximum_hits) return
         thickness=0
         do f=1,nf
@@ -201,7 +238,7 @@ contains
           if (nf==film_capacity) return
           nf=nf+1;patches(nf)=patch;deposits(:,nf)=film_mass
         end if
-        time_left=remaining(p)*(1-fraction);depth(p)=depth(p)+1
+        time_left=remaining(p)*(1-exit_fraction*fraction);depth(p)=depth(p)+1
         do j=1,size(children)
           n=n+1;queue(n)=children(j);inventory(:,n)=child_mass(:,j)
           remaining(n)=time_left;depth(n)=depth(p);local_pressure(n)=local_pressure(p)
@@ -226,6 +263,7 @@ contains
     end do
     call move_alloc(result,parcels);call move_alloc(result_mass,masses)
     films=patches(:nf);film_masses=deposits(:,:nf)
+    if(present(outflow_change)) outflow_change=exterior
     last_id=watermark;wall=total;hits=count;ok=.true.
   end subroutine
 end module

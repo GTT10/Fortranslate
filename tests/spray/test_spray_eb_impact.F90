@@ -17,6 +17,7 @@ program test_spray_eb_impact
   type(spray_wall_film), allocatable :: patches(:)
   real(dp), allocatable :: population_mass(:,:),patch_mass(:,:)
   integer(int64) :: watermark
+  real(dp) :: exterior(7)
   integer :: hits
   type(spray_wall_film) :: film
   real(dp), allocatable :: child_mass(:,:)
@@ -136,8 +137,46 @@ program test_spray_eb_impact
       call require(population(1)%position(1)>.4_dp.and.population(1)%position(1)<.6_dp,'two-wall endpoint')
     end if
   end do
-  print *, 'PASS: oblique EB mixture impact and bounded remaining flight'
+  ! Splash children may leave the root domain during their remaining flight.
+  do k=0,2
+  do j=0,2
+  do i=0,2
+    phi(i,j,k)=.5_dp*(i+j)-1
+  end do
+  end do
+  end do
+  deallocate(population,population_mass,patches,patch_mass)
+  allocate(population(1),population_mass(2,1),patches(0),patch_mass(2,0))
+  population(1)=original;population(1)%position=previous
+  population_mass(:,1)=original%mass*y;watermark=1;wall=42;exterior=43;hits=17
+  call escaping_splash(1)
+  call require(.not.ok.and.watermark==1.and.hits==17,'splash outflow depth rollback')
+  call require(size(population)==1.and.size(patches)==0.and.all(wall==42).and.all(exterior==43), &
+    'splash outflow allocation ledger rollback')
+  call require(all(population(1)%position==previous).and.all(population_mass(:,1)==original%mass*y), &
+    'splash outflow particle rollback')
+  amount=original%mass*original%multiplicity
+  before=[amount,amount*original%velocity,amount*(e+.5_dp*sum(original%velocity**2))]
+  call escaping_splash(4)
+  call require(ok.and.size(population)==0.and.size(patches)==1.and.watermark==5,'splash children escape')
+  call require(hits==5,'impact and four exterior events counted')
+  after=0;inventory=0
+  do p=1,size(patches)
+    after(1)=after(1)+patches(p)%mass;after(5)=after(5)+patches(p)%mass*e
+    inventory=inventory+patch_mass(:,p)
+  end do
+  call require(all(abs(after+wall-before-exterior(:5))<=1e-12_dp*max(abs(before),1e-20_dp)), &
+    'splash exterior mass momentum energy conservation')
+  call require(all(abs(inventory-original%mass*original%multiplicity*y-exterior(6:))<1e-23_dp), &
+    'splash exterior component conservation')
+  print *, 'PASS: EB impact remaining flight and exterior loss'
 contains
+  subroutine escaping_splash(limit)
+    integer, intent(in) :: limit
+    call advance_mixture_level_set_impacts(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp], &
+      .1_dp,limit,5,1,liquids,options,mw,101325._dp,300._dp,acos(-1._dp)/3, &
+      population,population_mass,patches,patch_mass,watermark,wall,hits,ok,outflow_change=exterior)
+  end subroutine
   subroutine advance_interval(capacity,film_capacity)
     integer, intent(in) :: capacity,film_capacity
     call advance_mixture_level_set_impacts(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp], &
