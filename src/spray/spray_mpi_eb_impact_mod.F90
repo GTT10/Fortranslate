@@ -323,7 +323,8 @@ contains
   ! Keep pressures attached to their input parcels; migrate only after flight.
   ! Initial and final film migration use private payloads within this transaction.
   subroutine advance_mpi_eb_tree_impacts(comm,tree,owners,components,properties,settings,phi,molecular_weights, &
-      pressure,lower,spacing,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected)
+      pressure,lower,spacing,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected, &
+      outflow_change)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -338,10 +339,11 @@ contains
     real(dp), intent(inout) :: wall_change(5)
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: outflow_change(:)
     logical, optional, intent(out) :: model_rejected
     type(spray_parcel), allocatable :: drops(:)
     type(spray_wall_film), allocatable :: patches(:)
-    real(dp), allocatable :: masses(:,:),patch_mass(:,:)
+    real(dp), allocatable :: masses(:,:),patch_mass(:,:),exterior(:)
     real(dp) :: upper(3),budget(5)
     integer(int64) :: watermark
     integer :: count,ierr
@@ -350,15 +352,17 @@ contains
     if(present(model_rejected)) model_rejected=.false.
     valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
     valid=valid.and.tree%is_valid()
+    if(present(outflow_change)) valid=valid.and.size(outflow_change)==5+size(components)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    if(present(outflow_change)) allocate(exterior(size(outflow_change)))
     drops=parcels;masses=component_mass;patches=films;patch_mass=film_mass;watermark=last_id
     call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
       settings%maximum_films,valid,phi)
     if(.not.valid) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp);budget=0;count=0
     call advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
-      lower,upper,dt,drops,masses,patches,patch_mass,watermark,budget,count,valid,rejected)
+      lower,upper,dt,drops,masses,patches,patch_mass,watermark,budget,count,valid,rejected,exterior)
     if(rejected) then
       if(present(model_rejected)) model_rejected=.true.
       return
@@ -372,6 +376,7 @@ contains
     if(.not.valid) return
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
+    if(present(outflow_change)) outflow_change=exterior
     last_id=watermark;wall_change=budget;hits=count;ok=.true.
   end subroutine
 end module
