@@ -11,6 +11,7 @@ module spray_eb_step_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_field_mod, only: sample_eb_spray_field,deposit_eb_spray_gas
   use spray_eb_intersection_mod, only: intersect_spray_level_set
+  use spray_coupling_3d_mod, only: valid_spray_boundary_faces
   use spray_eb_drift_mod, only: drift_spray_level_set
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_eb_impact_mod, only: advance_mixture_level_set_impacts,spray_eb_wall_options
@@ -42,7 +43,8 @@ contains
     parcels=drops;component_mass=masses
   end subroutine
   subroutine advance_eb_mixture_coupling_allocated(species,transport,components,options,g,phi,state,temperature, &
-      parcels,component_mass,interval,substeps,boundary_change,ok,wall_options,films,film_mass,last_id,model_rejected)
+      parcels,component_mass,interval,substeps,boundary_change,ok,wall_options,films,film_mass,last_id,model_rejected, &
+      outer_faces,outer_change)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
@@ -52,6 +54,12 @@ contains
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),boundary_change(5)
     real(dp), allocatable, intent(inout) :: component_mass(:,:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    character(len=*), optional, intent(in) :: outer_faces(6)
+    real(dp), optional, intent(inout) :: outer_change(:)
+    real(dp) :: exterior(reactive_nvar(size(species))),trial_exterior(reactive_nvar(size(species)))
+    real(dp), allocatable :: liquid_energies(:)
+    real(dp) :: clipped_finish(3),flight_fraction,axis_fraction
+    integer :: axis
     type(spray_eb_wall_options), optional, intent(in) :: wall_options
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
@@ -85,6 +93,13 @@ contains
     if (interval<0.or.interval>1e6_dp) return
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
     impacts=present(wall_options)
+    if(present(outer_faces).neqv.present(outer_change)) return
+    if(present(outer_faces)) then
+      if(impacts) return
+      if(.not.valid_spray_boundary_faces(outer_faces)) return
+      if(size(outer_change)/=reactive_nvar(size(species))) return
+    end if
+    exterior=0
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
     if ((impacts.or.options%khrt_children).and..not.present(last_id)) return
@@ -229,8 +244,22 @@ contains
           eligible=.true.
           do p=1,np
             if(trial(p)%mass<=0) cycle
+            clipped_finish=trial(p)%position+dt*trial(p)%velocity
+            if(present(outer_faces)) then
+              flight_fraction=1
+              do axis=1,3
+                if(clipped_finish(axis)>upper(axis)) then
+                  axis_fraction=(upper(axis)-trial(p)%position(axis))/(dt*trial(p)%velocity(axis))
+                  flight_fraction=min(flight_fraction,axis_fraction)
+                else if(clipped_finish(axis)<lower(axis)) then
+                  axis_fraction=(lower(axis)-trial(p)%position(axis))/(dt*trial(p)%velocity(axis))
+                  flight_fraction=min(flight_fraction,axis_fraction)
+                end if
+              end do
+              clipped_finish=max(lower,min(upper,trial(p)%position+flight_fraction*dt*trial(p)%velocity))
+            end if
             call intersect_spray_level_set(phi,lower,upper,trial(p)%position, &
-              trial(p)%position+dt*trial(p)%velocity,crossing,crossing_fraction, &
+              clipped_finish,crossing,crossing_fraction, &
               crossing_position,crossing_normal,crossing_cell,valid)
             if(.not.valid) exit
             eligible(p)=.not.crossing
@@ -240,7 +269,7 @@ contains
           if(valid) valid=size(trial)<=125000
           if(valid) change(5,:)=change(5,:)+child_energy
         end if
-        exchange=0;hits=0;film_change=0
+        exchange=0;hits=0;film_change=0;trial_exterior=0
         if (valid) then
           next_gas=gas;next_temp=temp
           call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
@@ -273,6 +302,27 @@ contains
               return
             end if
             exchange=-exchange
+          else if(present(outer_faces)) then
+            if(allocated(liquid_energies)) deallocate(liquid_energies)
+            allocate(liquid_energies(size(trial)));liquid_energies=0
+            do p=1,size(trial)
+              if(trial(p)%mass<=0) cycle
+              call liquid_mixture_properties(components,next_mass(:,p)/trial(p)%mass,trial(p)%temperature,rho,cp,e,valid)
+              if(.not.valid) exit
+              liquid_energies(p)=e
+            end do
+            if(valid) call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid, &
+              outer_faces,liquid_energies,trial_exterior(:5))
+            if(valid) then
+              do p=1,size(trial)
+                if(trial(p)%mass>0) cycle
+                do n=1,nc
+                  trial_exterior(5+components(n)%vapor_index)=trial_exterior(5+components(n)%vapor_index)- &
+                    next_mass(n,p)*trial(p)%multiplicity
+                end do
+                next_mass(:,p)=0
+              end do
+            end if
           else
             call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid)
           end if
@@ -285,6 +335,7 @@ contains
       end do
       if (.not.accepted) return
       gas=next_gas;temp=next_temp;drops=trial;masses=next_mass;ledger=ledger+exchange
+      exterior=exterior+trial_exterior
       watermark=next_watermark
       if (impacts) then
         patches=next_patches;patch_mass=next_patch_mass
@@ -296,6 +347,7 @@ contains
       films=patches;film_mass=patch_mass
     end if
     if(present(last_id)) last_id=watermark
+    if(present(outer_change)) outer_change=exterior
     boundary_change=ledger;substeps=count_steps;ok=.true.
   end subroutine
 end module

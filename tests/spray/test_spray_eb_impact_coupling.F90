@@ -31,6 +31,8 @@ program test_spray_eb_impact_coupling
   real(dp), allocatable :: film_saved_gas(:,:,:,:),film_saved_t(:,:,:)
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps,mode
+  real(dp), allocatable :: exterior(:)
+  character(len=16) :: faces(6)
   logical :: ok
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
@@ -168,8 +170,44 @@ program test_spray_eb_impact_coupling
     call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
       'KH gas particle film wall conservation')
   end do
-  print *, 'PASS: EB mixture coupling with impacts, KH children and rollback'
+  allocate(exterior(nv));faces='outflow'
+  do mode=1,2
+    state=saved;temperature=saved_t
+    deallocate(drops,masses,films,film_mass)
+    allocate(drops(1),masses(2,1),films(0),film_mass(2,0))
+    drops(1)=saved_drop;drops(1)%position=[.0039999_dp,.0015_dp,.0015_dp]
+    drops(1)%velocity=[1000._dp,0._dp,0._dp];masses=saved_mass;last_id=100
+    if(mode==1) then
+      options%breakup_model='none';options%khrt_children=.false.;options%khrt_reference_diameter_cubed=0
+      interval=1e-6_dp;options%maximum_substeps=1;ledger=42;exterior=43
+      call exterior_advance()
+      call require(.not.ok.and.steps==0.and.last_id==100,'outflow whole interval rollback')
+      call require(size(drops)==1.and.all(masses==saved_mass).and.drops(1)%mass==saved_drop%mass,'outflow parcel rollback')
+      call require(all(state==saved).and.all(temperature==saved_t),'outflow gas rollback')
+      call require(all(ledger==42).and.all(exterior==43),'separate boundary ledger rollback')
+      options%maximum_substeps=100000
+    else
+      options%breakup_model='khrt';options%khrt_children=.true.;options%khrt_reference_diameter_cubed=1e-25_dp
+    end if
+    interval=1e-8_dp
+    call inventory(before)
+    call exterior_advance()
+    call require(ok.and.all(drops%mass==0).and.all(masses==0),'outflow clears represented components')
+    call require(last_id==merge(104_int64,100_int64,mode==2),'escaped KH children keep ID watermark')
+    call require(abs(exterior(1)+1e-10_dp)<1e-23_dp,'outflow represented mass')
+    call require(abs(exterior(5+liquids(1)%vapor_index)+.25e-10_dp)<1e-23_dp,'outflow first species')
+    call require(abs(exterior(5+liquids(2)%vapor_index)+.75e-10_dp)<1e-23_dp,'outflow second species')
+    call inventory(after)
+    expected=exterior;expected(1:5)=expected(1:5)+ledger
+    call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+      'gas particle exterior component conservation')
+  end do
+  print *, 'PASS: EB source coupling, KH and exterior inventories'
 contains
+  subroutine exterior_advance()
+    call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
+      drops,masses,interval,steps,ledger,ok,last_id=last_id,outer_faces=faces,outer_change=exterior)
+  end subroutine
   subroutine advance()
     call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,steps,ledger,ok,walls,films,film_mass,last_id)
@@ -187,6 +225,7 @@ contains
     end do
     end do
     do p=1,size(drops)
+      if(drops(p)%mass<=0) cycle
       call liquid_mixture_properties(liquids,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,ok)
       call require(ok,'liquid inventory')
       amount=drops(p)%mass*drops(p)%multiplicity
