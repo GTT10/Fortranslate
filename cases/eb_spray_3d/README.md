@@ -158,3 +158,28 @@ Every generated point must lie in fluid; validation precedes population and
 budget publication. All controls enter normalized restart context, so checkpoints
 from before these added fields fail context comparison. This does not add
 independent nozzle ports. See [focused evidence](../../docs/validation/spray-eb-nozzle-20260918.md).
+
+### Component property models
+
+The component table accepts the same property controls as the MPI EB application:
+
+| Model | Inputs |
+| --- | --- |
+| Density | `mixture_density_models`, `mixture_density_coefficients(4,16)`, `mixture_density_temperature_ranges(2,16)` |
+| Heat capacity | `mixture_cp_models`, `mixture_cp_coefficients(4,16)`, `mixture_cp_temperature_ranges(2,16)` |
+| Vapor pressure | `mixture_vapor_pressure_models`, `mixture_antoine_coefficients(4,16)`, `mixture_antoine_temperature_ranges(2,16)` |
+| Vapor surface cap | `mixture_boiling_models`, `mixture_critical_temperatures` |
+
+Density and heat capacity default to `constant`; `polynomial` uses coefficients
+in ascending powers of temperature in kelvin and requires a valid temperature
+interval. Vapor pressure defaults to `clausius`; `antoine` uses A, B, C, D for
+`p_sat = D * 10**(A - B/(T+C))`, with pressure in pascals. The existing
+`surface-cap` boiling option requires a critical temperature and represents a
+bounded vapor-state cap, not general mixture boiling.
+
+Unused component entries must retain defaults. Injection uses the mixture's
+density, heat capacity and energy at its specified temperature; evolving parcels
+and films use the component models. All property inputs enter restart context.
+Older checkpoints lacking these fields are rejected. The supplied coefficients
+must describe the intended liquid; illustrative test fits are not calibrated
+material data. See [focused evidence](../../docs/validation/spray-eb-properties-20260918.md).
