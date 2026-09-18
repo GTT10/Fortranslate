@@ -5,6 +5,8 @@ module spray_mpi_eb_particle_checkpoint_mod
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_parcel_mod, only: spray_parcel,valid_spray_parcel
+  use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use spray_mixture_mod, only: valid_component_inventory
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
@@ -20,10 +22,10 @@ module spray_mpi_eb_particle_checkpoint_mod
     end function
   end interface
 contains
-  ! Particle payload only. Caller binds context to the gas generation and model.
+  ! Particle and optional film payload. Caller binds context to gas generation/model.
   ! A closed .pending file is linked to an immutable final path. Reads are atomic.
   subroutine mpi_eb_particle_checkpoint(comm,writing,path,context,tree,owners,phi,lower,spacing,capacity, &
-      parcels,components,time,steps,event,last_id,injected,ok)
+      parcels,components,time,steps,event,last_id,injected,ok,wall_films,film_mass,maximum_films)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
     character(len=*), intent(in) :: path,context
@@ -36,6 +38,13 @@ contains
     integer, intent(inout) :: steps,event
     integer(int64), intent(inout) :: last_id
     logical, intent(out) :: ok
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    integer, optional, intent(in) :: maximum_films
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:)
+    integer :: film_flag,nf
+    character(len=21) :: magic
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:),ledger(:)
     integer, allocatable :: counts(:),offsets(:)
@@ -45,18 +54,30 @@ contains
     logical :: valid,agreed
     character(len=:), allocatable :: line
     ok=.false.
+    magic='PELEF_EB_PARTICLES_V1'
+    if(present(wall_films)) magic='PELEF_EB_PARTICLES_V2'
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(maximum_films))
+    call MPI_Allreduce(film_flag,lo,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,hi,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.lo/=hi) return
+    if(film_flag/=0.and.film_flag/=7) return
     allocate(character(len=131072)::line)
     call MPI_Comm_rank(comm,rank,ierr)
     if(ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if(ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(components)
+    if(present(wall_films)) valid=valid.and.allocated(wall_films).and.allocated(film_mass)
+    if(present(maximum_films)) valid=valid.and.maximum_films>=0.and.maximum_films<=1000000
     valid=valid.and.len_trim(path)>0.and.len(context)>0.and.len(context)<=len(line)
     valid=valid.and.index(context,achar(10))==0.and.index(context,achar(13))==0
     valid=valid.and.capacity>=0.and.capacity<=1000000.and.size(injected)>=6.and.size(injected)<=133
     call agree();if(.not.agreed) return
     nc=size(components,1);nv=size(injected)
     valid=nc>=1.and.nc<=16.and.size(components,2)==size(parcels)
+    call agree();if(.not.agreed) return
+    if(present(film_mass)) valid=valid.and.size(film_mass,1)==nc.and.size(film_mass,2)==size(wall_films)
     call agree();if(.not.agreed) return
     call same_string(path);if(.not.agreed) return
     call same_string(context);if(.not.agreed) return
@@ -83,14 +104,26 @@ contains
       counts=0;counts(1)=size(drops);offsets=counts(1);offsets(1)=0
       call exchange_spray_parcel_bins(comm,drops,counts,offsets,capacity,valid,masses)
       if(.not.valid) return
+      if(present(wall_films)) then
+        patches=wall_films;patch_mass=film_mass
+        ! Retain the physical tree but assign every node to the archive writer.
+        call migrate_mpi_amr_wall_films(comm,tree,0*owners,patches,patch_mass,lower,spacing,maximum_films,valid,phi)
+        if(.not.valid) return
+      end if
       if(rank==0) then
         valid=all(drops%id<=mark)
         if(valid) then
           open(newunit=unit,file=path//'.pending',status='new',action='write',iostat=ios)
           valid=ios==0
           if(valid) then
-            write(unit,'(a)',iostat=ios) 'PELEF_EB_PARTICLES_V1',context
-            if(ios==0) write(unit,*,iostat=ios) nc,nv,size(drops),mark,info
+            write(unit,'(a)',iostat=ios) trim(magic),context
+            if(ios==0) then
+              if(present(wall_films)) then
+                write(unit,*,iostat=ios) nc,nv,size(drops),size(patches),mark,info
+              else
+                write(unit,*,iostat=ios) nc,nv,size(drops),mark,info
+              end if
+            end if
             if(ios==0) write(unit,'(*(es27.18e3,1x))',iostat=ios) at_time,ledger
             do p=1,size(drops)
               if(ios/=0) exit
@@ -99,6 +132,14 @@ contains
                 drops(p)%deformation,drops(p)%deformation_rate,drops(p)%rt_time,drops(p)%khrt_initial_count, &
                 drops(p)%khrt_shed_volume,masses(:,p)
             end do
+            if(present(wall_films)) then
+              do p=1,size(patches)
+                if(ios/=0) exit
+                write(unit,'(i0,1x,*(es27.18e3,1x))',iostat=ios) patches(p)%material_id, &
+                  patches(p)%position,patches(p)%normal,patches(p)%mass,patches(p)%temperature, &
+                  patches(p)%diameter,patches(p)%height,patch_mass(:,p)
+              end do
+            end if
             if(ios==0) write(unit,'(a)',iostat=ios) 'END_EB_PARTICLES'
             close(unit,iostat=closed);valid=ios==0.and.closed==0
             if(valid) valid=link_file(path//'.pending'//c_null_char,path//c_null_char)==0
@@ -108,6 +149,7 @@ contains
       call agree();ok=agreed;return
     end if
     allocate(drops(0),masses(nc,0))
+    if(present(wall_films)) allocate(patches(0),patch_mass(nc,0))
     valid=.true.
     if(rank==0) then
       open(newunit=unit,file=path,status='old',action='read',iostat=ios)
@@ -122,7 +164,14 @@ contains
     call agree();if(.not.agreed) return
     call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing,capacity,valid,masses)
     if(.not.valid) return
+    if(present(wall_films)) then
+      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,maximum_films,valid,phi)
+      if(.not.valid) return
+    end if
     call move_alloc(drops,parcels);call move_alloc(masses,components)
+    if(present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
     time=at_time;steps=info(1);event=info(2);last_id=mark;injected=ledger;ok=.true.
   contains
     subroutine agree()
@@ -157,12 +206,20 @@ contains
     subroutine read_payload()
       valid=.false.
       read(unit,'(a)',iostat=ios) line
-      if(ios/=0.or.line/='PELEF_EB_PARTICLES_V1') return
+      if(ios/=0.or.line/=trim(magic)) return
       read(unit,'(a)',iostat=ios) line
       if(ios/=0.or.line/=context) return
-      read(unit,*,iostat=ios) dims,np,mark,info
+      nf=0
+      if(present(wall_films)) then
+        read(unit,*,iostat=ios) dims,np,nf,mark,info
+      else
+        read(unit,*,iostat=ios) dims,np,mark,info
+      end if
       if(ios/=0) return
       if(any(dims/=[nc,nv]).or.np<0.or.np>capacity.or.mark<0.or.info(1)<0.or.info(2)<1) return
+      if(present(wall_films)) then
+        if(nf<0.or.nf>maximum_films) return
+      end if
       read(unit,*,iostat=ios) at_time,ledger
       if(ios/=0) return
       if(.not.ieee_is_finite(at_time).or..not.all(ieee_is_finite(ledger))) return
@@ -181,6 +238,16 @@ contains
           if(drops(p)%id<=drops(p-1)%id) return
         end if
       end do
+      if(present(wall_films)) then
+        deallocate(patches,patch_mass);allocate(patches(nf),patch_mass(nc,nf),stat=ios)
+        if(ios/=0) return
+        do p=1,nf
+          read(unit,*,iostat=ios) patches(p)%material_id,patches(p)%position,patches(p)%normal, &
+            patches(p)%mass,patches(p)%temperature,patches(p)%diameter,patches(p)%height,patch_mass(:,p)
+          if(ios/=0) return
+          if(.not.valid_wall_component_inventory(patches(p),patch_mass(:,p))) return
+        end do
+      end if
       read(unit,'(a)',iostat=ios) line
       if(ios/=0.or.line/='END_EB_PARTICLES') return
       read(unit,'(a)',iostat=ios) line

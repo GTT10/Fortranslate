@@ -9,6 +9,7 @@ program test_spray_mpi_eb_checkpoint
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use gas_transport_mod, only: gas_transport_species
@@ -16,6 +17,10 @@ program test_spray_mpi_eb_checkpoint
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
   implicit none
+  type(spray_wall_film), allocatable :: films(:)
+  real(dp), allocatable :: film_mass(:,:)
+  character(len=16) :: film_mode
+  logical :: with_films
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -102,6 +107,15 @@ program test_spray_mpi_eb_checkpoint
   end if
   call get_command_argument(1,mode)
   call get_command_argument(2,path)
+  call get_command_argument(3,film_mode)
+  with_films=film_mode=='films'
+  allocate(films(merge(2,0,rank==nranks-1)),film_mass(2,merge(2,0,rank==nranks-1)))
+  do p=1,size(films)
+    films(p)=spray_wall_film([.001_dp,.00125_dp,.0015_dp],[0._dp,1._dp,0._dp], &
+      1e-10_dp*p,330._dp+p,.0001_dp*p,1e-6_dp*p,p)
+    if(p==2) films(p)%position(1)=.003_dp
+    film_mass(:,p)=films(p)%mass*[.25_dp,.75_dp]
+  end do
   time=1e-8_dp;steps=2;events=3;mark=7;ledger=5
   if(mode=='write') then
     call checkpoint(.true.,'test generation')
@@ -110,15 +124,28 @@ program test_spray_mpi_eb_checkpoint
     call require(.not.ok,'immutable archive')
   else
     deallocate(drops,masses);allocate(drops(0),masses(2,0))
+    deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
     time=42;steps=43;events=44;mark=45;ledger=46
     call checkpoint(.false.,'wrong generation')
-    call require(.not.ok.and.size(drops)==0.and.time==42,'context rollback')
+    call require(.not.ok.and.size(drops)==0.and.time==42.and.size(films)==0,'context rollback')
     call checkpoint(.false.,'test generation')
     if(mode=='reject') then
       call require(.not.ok.and.size(drops)==0.and.time==42.and.steps==43.and.events==44, 'truncated rollback')
-      call require(mark==45.and.all(ledger==46),'metadata rollback')
+      call require(mark==45.and.all(ledger==46).and.size(films)==0,'metadata and film rollback')
     else
       call require(ok,'changed-rank restore')
+      if(with_films) then
+        call require(size(films)==merge(1,0,rank==0.or.rank==nranks-1),'film new finest owners')
+        if(size(films)>0) then
+          p=merge(2,1,rank==0)
+          call require(films(1)%material_id==p.and.films(1)%mass==1e-10_dp*p,'film material and mass')
+          call require(films(1)%temperature==330._dp+p.and.films(1)%diameter==.0001_dp*p.and. &
+            films(1)%height==1e-6_dp*p,'film thermal and geometric state')
+          call require(all(films(1)%normal==[0._dp,1._dp,0._dp]),'film normal')
+          call require(all(films(1)%position==[merge(.003_dp,.001_dp,p==2),.00125_dp,.0015_dp]),'film position')
+          call require(all(film_mass(:,1)==films(1)%mass*[.25_dp,.75_dp]),'film composition')
+        end if
+      end if
       call require(time==1e-8_dp.and.steps==2.and.events==3.and.mark==7.and.all(ledger==5),'metadata')
       call require(size(drops)==merge(1,0,rank==nranks-1),'new owner')
       if(rank==nranks-1) then
@@ -139,8 +166,13 @@ contains
   subroutine checkpoint(writing,context)
     logical, intent(in) :: writing
     character(len=*), intent(in) :: context
+    if(with_films) then
+      call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,trim(path),context,tree,owners,phi,zero,spacing, &
+        100,drops,masses,time,steps,events,mark,ledger,ok,films,film_mass,100)
+    else
     call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,trim(path),context,tree,owners,phi,zero,spacing, &
       100,drops,masses,time,steps,events,mark,ledger,ok)
+    end if
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition
