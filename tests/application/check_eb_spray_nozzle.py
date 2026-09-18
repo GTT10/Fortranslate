@@ -14,6 +14,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--properties', action='store_true')
 p.add_argument('--rate', action='store_true')
 p.add_argument('--ports', action='store_true')
+p.add_argument('--models', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
@@ -68,7 +69,19 @@ def run(profile, label, extra='', invalid=False):
                      "mixture_vapor_pressure_models(1)='antoine',"
                      "mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,"
                      "mixture_antoine_temperature_ranges(:,1)=300.,450.,")
-    if invalid and a.properties:
+    if a.models:
+        assert a.ports
+        if profile == 'solid':
+            controls += ("port_nozzles(2)%profile='hollow',port_nozzles(2)%spread=.02,"
+                         "port_sizes(2)%distribution='lognormal',port_sizes(2)%weighting='number',"
+                         "port_sizes(2)%std=2.e-6,port_sizes(2)%shape=0.,")
+        else:
+            controls += ("port_nozzles(2)%profile='solid',port_nozzles(2)%spread=0.,"
+                         "port_sizes(2)%distribution='weibull',port_sizes(2)%weighting='mass',"
+                         "port_sizes(2)%shape=3.,port_sizes(2)%std=0.,")
+    if invalid and a.models:
+        controls += "port_nozzles(2)%profile='invalid',"
+    elif invalid and a.properties:
         controls = controls.replace('1100.,-.2,0.,0.', '-1100.,0.,0.,0.')
     elif invalid:
         controls = controls.replace('nozzle_radius=.0001', 'nozzle_radius=-.0001')
@@ -95,7 +108,8 @@ for profile in ('solid', 'hollow'):
         second = a.ports and int(row['material_id']) == 2
         outlet_radius = .0002 if second and a.rate else .0001
         assert float(row['x']) == (.003 if second else .002) and radius > 0
-        if profile == 'hollow':
+        hollow = (profile == 'hollow') != (a.models and second)
+        if hollow:
             assert math.isclose(radius, outlet_radius, rel_tol=1e-13)
         else:
             assert radius < outlet_radius
@@ -130,7 +144,10 @@ for profile in ('solid', 'hollow'):
     else:
         assert math.isclose(sum(doses), dose, rel_tol=1e-13)
     weights = doses if profile == 'solid' else counts
-    groups = (weights[:8], weights[8:]) if a.ports else (weights,)
+    if a.models:
+        groups = (weights[:8], (counts if profile == 'solid' else doses)[8:])
+    else:
+        groups = (weights[:8], weights[8:]) if a.ports else (weights,)
     for group in groups:
         assert max(group)-min(group) <= 1e-13*max(group)
     stopped = run(profile, 'stopped', "checkpoint_interval_steps=1,stop_after_checkpoint=.true.,checkpoint_file='saved',")
@@ -143,6 +160,6 @@ for profile in ('solid', 'hollow'):
         after = next(x for x in (resumed / 'run.log').read_text().splitlines() if x.startswith(label))
         assert before == after
     bad = run(profile, 'invalid', invalid=True)
-    assert ('Invalid injected liquid mixture' if a.properties else 'Invalid rate-driven outlet radius' if a.rate else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
+    assert ('Invalid scheduled EB injection' if a.models else 'Invalid injected liquid mixture' if a.properties else 'Invalid rate-driven outlet radius' if a.rate else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
     assert not (bad / 'gas.csv').exists()
 print(f'PASS: serial EB finite nozzles, size weights and restart: {work}')

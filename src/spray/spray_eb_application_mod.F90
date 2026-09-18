@@ -58,7 +58,8 @@ contains
     real(dp) :: diameter=1e-5_dp,liquid_temperature=350,maximum_dt=1e-8_dp
     real(dp) :: nozzle_radius=0
     type(spray_nozzle_model) :: nozzle
-    type(spray_size_options) :: sizes
+    type(spray_size_options) :: sizes,port_sizes(16)
+    type(spray_nozzle_model) :: port_nozzles(16)
     character(len=16) :: mixture_density_models(16)='constant',mixture_cp_models(16)='constant'
     character(len=16) :: mixture_vapor_pressure_models(16)='clausius',mixture_boiling_models(16)='reject'
     real(dp) :: mixture_density_coefficients(4,16)=0,mixture_density_temperature_ranges(2,16)=0
@@ -86,7 +87,7 @@ contains
       injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient, &
       port_count,event_ports,port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles, &
       port_diameters,port_temperatures,port_fractions,port_profile_points,port_profile_times,port_profile_rates, &
-      port_radii,port_discharge_coefficients
+      port_radii,port_discharge_coefficients,port_nozzles,port_sizes
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -106,6 +107,9 @@ contains
     character(len=:), allocatable :: header
     ! Configuration and namelist objects are local to one invocation.
     port_profile_points=-1;port_profile_times=0;port_profile_rates=0;port_radii=-1;port_discharge_coefficients=-1
+    port_nozzles=spray_nozzle_model(profile='inherit',swirl=huge(1._dp),spread=-1._dp)
+    port_sizes=spray_size_options(distribution='inherit',weighting='inherit',std=-1._dp, &
+      shape=-1._dp,minimum=-1._dp,maximum=-1._dp)
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp);port_masses=-1;port_speeds=-1
     port_angles=-1;port_diameters=-1;port_temperatures=-1;port_fractions=-1
@@ -184,6 +188,15 @@ contains
     if(any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
       error stop 'Invalid injection event port'
     do port=1,port_count
+      if(port_nozzles(port)%profile=='inherit') port_nozzles(port)%profile=nozzle%profile
+      if(port_nozzles(port)%swirl==huge(1._dp)) port_nozzles(port)%swirl=nozzle%swirl
+      if(port_nozzles(port)%spread==-1) port_nozzles(port)%spread=nozzle%spread
+      if(port_sizes(port)%distribution=='inherit') port_sizes(port)%distribution=sizes%distribution
+      if(port_sizes(port)%weighting=='inherit') port_sizes(port)%weighting=sizes%weighting
+      if(port_sizes(port)%std==-1) port_sizes(port)%std=sizes%std
+      if(port_sizes(port)%shape==-1) port_sizes(port)%shape=sizes%shape
+      if(port_sizes(port)%minimum==-1) port_sizes(port)%minimum=sizes%minimum
+      if(port_sizes(port)%maximum==-1) port_sizes(port)%maximum=sizes%maximum
       if(port_numbers(port)==-1) port_numbers(port)=number
       if(all(port_centers(:,port)==huge(1._dp))) port_centers(:,port)=center
       if(all(port_axes(:,port)==huge(1._dp))) port_axes(:,port)=axis
@@ -518,9 +531,10 @@ contains
       call inject_cone_parcels(effective,event_masses(next_event),nadd,last_id+1_int64, &
         port_centers(:,port),port_axes(:,port),event_speeds(next_event),port_angles(port), &
         port_diameters(port),port_temperatures(port),added,valid, &
-        diameter_shape=sizes%shape,diameter_min=sizes%minimum,diameter_max=sizes%maximum, &
-        diameter_weighting=sizes%weighting,diameter_distribution=sizes%distribution,diameter_std=sizes%std, &
-        nozzle_radius=port_radii(port),nozzle_model=nozzle)
+        diameter_shape=port_sizes(port)%shape,diameter_min=port_sizes(port)%minimum,diameter_max=port_sizes(port)%maximum, &
+        diameter_weighting=port_sizes(port)%weighting,diameter_distribution=port_sizes(port)%distribution, &
+        diameter_std=port_sizes(port)%std, &
+        nozzle_radius=port_radii(port),nozzle_model=port_nozzles(port))
       if(.not.valid) error stop 'Invalid scheduled EB injection'
       change=0;cells=0;weights=0;volumes=0
       allocate(candidate(old_count+nadd),candidate_mass(nc,old_count+nadd),stat=ios)
