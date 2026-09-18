@@ -3131,3 +3131,16 @@ application dispatch remain open. See
 See [timestep evidence](validation/les-amr-timestep-20260918.md).
 Dynamic LES and EB grids are outside this API.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
+
+### MPI AMR reacting-spray LES coupling
+
+`advance_mpi_amr_spray_reactive` accepts optional `les_settings` containing
+`[eddy coefficient, PrT, ScT, CI]` and `les_model` (`smagorinsky`, `wale` or
+`vreman`). Defaults disable LES. Two common LES half steps surround the gas
+reaction/transport/hydro split, inside the particle half steps. Gas subcycling
+remains available; LES itself uses common steps. Coefficients and model must
+agree across ranks. Gas, particles, optional films, IDs and boundary/correction
+diagnostics publish together after the entire coupled interval succeeds.
+The application namelist, restart identity and automatic timestep selection
+are not yet wired to these controls. See
+[coupled evidence](validation/les-amr-coupled-20260918.md).
