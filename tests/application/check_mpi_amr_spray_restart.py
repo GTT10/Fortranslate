@@ -19,6 +19,7 @@ p.add_argument('--rebalance', action='store_true')
 p.add_argument('--physical', action='store_true')
 p.add_argument('--inflow', action='store_true')
 p.add_argument('--films', action='store_true')
+p.add_argument('--les', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -76,8 +77,11 @@ if a.films:
         ' walls%liquid_conductivity=.6,walls%minimum_height=1.e-10,\n'
         ' options%surface_tension=.072,options%liquid_viscosity=.001\n/\n')
 
+if a.les:
+    spray += "\n&amr_spray_les les_cs=.17,les_ci=.1,les_model='vreman' /\n"
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False):
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -86,6 +90,8 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False)
     if changed:
         local_spray = (spray.replace('port_temperatures=350.', 'port_temperatures=351.') if a.multiport
                        else spray.replace('speed=20.', 'speed=21.'))
+    if changed_les:
+        local_spray = local_spray.replace('les_ci=.1', 'les_ci=.2')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -170,6 +176,8 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.les:
+    run('changed_les', 2, f"restart_file='{checkpoint}'", good=False, changed_les=True)
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)
 if a.physical:
     run('changed_boundary', 2, f"restart_file='{checkpoint}'", good=False, changed_boundary=True)

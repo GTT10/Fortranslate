@@ -1,4 +1,5 @@
 module spray_mpi_amr_application_mod
+  use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
@@ -63,6 +64,9 @@ contains
     type(spray_wall_options) :: walls
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: film_mass(:,:)
+    real(dp) :: les_cs,les_prt,les_sct,les_ci,les_cfl,les_dt
+    character(len=16) :: les_model
+    namelist /amr_spray_les/ les_cs,les_prt,les_sct,les_ci,les_cfl,les_model
     logical :: wall_active
     real(dp), allocatable :: masses(:,:),x(:),y(:),z(:),mf(:),ledger(:),global_ledger(:)
     integer, allocatable :: owners(:),assigned(:),ratios(:)
@@ -124,6 +128,7 @@ contains
     injection_events=0;injection_times=0;event_parcels=0;event_mass=0;event_ports=1
     port_count=0;port_centers=0;port_axes=0;port_axes(1,:)=1;port_speeds=10;port_half_angles=0
     port_diameters=1e-5_dp;port_temperatures=350;port_fractions=-1;port_radii=0
+    les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
     read(unit,nml=amr_spray,iostat=ios)
@@ -131,8 +136,16 @@ contains
     checkpoint_file='';restart_file='';checkpoint_time=-1;stop_after_checkpoint=.false.;checkpoint_written=.false.
     rewind(unit)
     read(unit,nml=amr_spray_checkpoint,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_checkpoint namelist')
+    rewind(unit)
+    read(unit,nml=amr_spray_les,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_les namelist')
+    if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
+    if (les_cs<0.or.les_cs>2.or.les_ci<0.or.les_ci>1) call fatal('Invalid LES coefficients')
+    if (min(les_prt,les_sct)<1e-6_dp.or.max(les_prt,les_sct)>1e6_dp) call fatal('Invalid LES PrT/ScT')
+    if (les_cfl<=0.or.les_cfl>.2_dp) call fatal('Invalid LES diffusion CFL')
+    if (les_model/='smagorinsky'.and.les_model/='wale'.and.les_model/='vreman') call fatal('Invalid LES model')
     if (.not.ieee_is_finite(checkpoint_time)) call fatal('Invalid checkpoint time')
     if ((checkpoint_time>=0).neqv.(len_trim(checkpoint_file)>0)) call fatal('Checkpoint requires path and time')
     if (stop_after_checkpoint.and.checkpoint_time<0) call fatal('Stop requires a checkpoint')
@@ -223,6 +236,11 @@ contains
     if (ios/=0) call fatal('Cannot allocate checkpoint context')
     write(unit,nml=amr_spray,iostat=ios)
     if (ios/=0) call fatal('Cannot serialize spray context')
+    if (les_cs/=0.or.les_ci/=0.or.les_prt/=.7_dp.or.les_sct/=.7_dp.or. &
+        les_cfl/=.1_dp.or.les_model/='smagorinsky') then
+      write(unit,nml=amr_spray_les,iostat=ios)
+      if (ios/=0) call fatal('Cannot serialize LES context')
+    end if
     rewind(unit);spray_context=''
     do
       read(unit,'(a)',iostat=ios) context_line
@@ -376,6 +394,13 @@ contains
         if (.not.ok) call fatal('Transport timestep failed')
         dt=min(dt,transport_dt)
       end if
+      if (les_cs>0.or.les_ci>0) then
+        call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,spacing,les_cfl,faces, &
+          les_cs,les_prt,les_sct,les_dt,diffusivity,comm,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci)
+        if (.not.ok) call fatal('LES timestep failed')
+        dt=min(dt,les_dt)
+      end if
       sample_work=.false.
       if (rebalance_interval>0) sample_work=mod(step+1,rebalance_interval)==0
       do attempt=1,20
@@ -395,7 +420,8 @@ contains
             config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
             config%wall_temperature,config%wall_velocity, &
-            wall_films=films,film_mass=film_mass,film_settings=walls)
+            wall_films=films,film_mass=film_mass,film_settings=walls, &
+            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model)
         else
           call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -405,7 +431,8 @@ contains
             config%transport_enabled.and.config%barodiffusion_enabled, &
             config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
-            config%wall_temperature,config%wall_velocity)
+            config%wall_temperature,config%wall_velocity, &
+            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model)
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
