@@ -101,7 +101,7 @@ contains
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
-      mixture_components,component_mass,film_component_mass)
+      mixture_components,component_mass,film_component_mass,les_model)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -119,6 +119,7 @@ contains
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3),dt,rtol,atol,cs,prt,sct
     logical, intent(in) :: chemistry_enabled,transport_enabled
+    character(len=*), optional, intent(in) :: les_model
     character(len=*), intent(in) :: chemistry_method
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
@@ -151,6 +152,13 @@ contains
     end if
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
+    if (present(les_model)) then
+      select case(les_model)
+      case('smagorinsky','wale','vreman')
+      case default
+        message='Invalid LES model'; return
+      end select
+    end if
     if (.not.allocated(parcels)) return
     if (present(mixture_components).neqv.present(component_mass)) then
       message='Mixture components and mass storage must be supplied together';return
@@ -220,7 +228,7 @@ contains
         if (.not. local_ok) return
         ledger=ledger+exchange
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
-          inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
@@ -242,7 +250,7 @@ contains
         ledger=ledger+exchange
       else
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
-          inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if

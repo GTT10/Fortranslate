@@ -34,7 +34,7 @@ program test_spray_integration
   integer :: i,j,k,iteration,steps,event,record_status
   character(len=16384) :: checkpoint_record
   logical :: ok
-  character(len=32) :: which,method
+  character(len=32) :: which,method,les_model
   character(len=256) :: message
   call get_command_argument(1,which)
   call load_h2o2_full_thermo(species,ok); call require(ok,'thermo')
@@ -542,10 +542,26 @@ program test_spray_integration
     do i=1,size(drops)
       call require(all(drops(i)%velocity==before_drops(i)%velocity),'force parcel rollback')
     end do
-  case('coupled')
+  case('coupled','coupled_wale','coupled_vreman')
+    les_model='smagorinsky'
+    if (which=='coupled_wale') les_model='wale'
+    if (which=='coupled_vreman') les_model='vreman'
+    if (which/='coupled') then
+      do k=1,5
+        do j=1,5
+          do i=1,5
+            state(2,i,j,k)=state(1,i,j,k)*10*sin(2*acos(-1._dp)*(j-.5_dp)/5)
+            state(3,i,j,k)=state(1,i,j,k)*10*sin(2*acos(-1._dp)*(i-.5_dp)/5)
+          end do
+        end do
+      end do
+      state(5,:,:,:)=state(5,:,:,:)+.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:)
+      before=state
+      call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals0)
+    end if
     call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
       [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],2.0e-7_dp,.true.,.true.,'implicit', &
-      1.0e-7_dp,1.0e-12_dp,0.1_dp,0.7_dp,0.7_dp,ok,message)
+      1.0e-7_dp,1.0e-12_dp,0.1_dp,0.7_dp,0.7_dp,ok,message,les_model=les_model)
     call require(ok,trim(message))
     call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals1)
     call require(abs(totals1(1)-totals0(1))<1.0e-12_dp*totals0(1),'coupled mass balance')
@@ -553,6 +569,15 @@ program test_spray_integration
     call require(abs(totals1(5)-totals0(5))<1.0e-12_dp*abs(totals0(5)),'coupled energy balance')
     call require(sum(drops%mass)<sum(before_drops%mass),'coupled evaporation active')
     call require(maxval(abs(state(6,:,:,:)-before(6,:,:,:)))>1.0e-12_dp,'coupled chemistry active')
+    before=state;before_t=temperature;before_drops=drops
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+      1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message,les_model='invalid')
+    call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'invalid LES coupled rollback')
+    do i=1,size(drops)
+      call require(drops(i)%mass==before_drops(i)%mass.and.all(drops(i)%position==before_drops(i)%position), &
+        'invalid LES parcel rollback')
+    end do
   case('rollback')
     ! The first spray/LES stages run before the invalid backend is encountered.
     call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
