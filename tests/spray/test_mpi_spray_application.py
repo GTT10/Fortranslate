@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--species-count', type=int, default=10)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
-    parser.add_argument('--les-model', choices=('wale', 'vreman'))
+    parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
@@ -29,6 +29,8 @@ def main():
     input_path = args.input.resolve()
     if args.les_model:
         source = source.replace('&mpi_spray', f"&mpi_spray\n les_cs=.17, les_model='{args.les_model}',")
+        if args.les_model == 'dynamic':
+            source = source.replace('&mpi_spray', "&mpi_spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
         input_path = work / 'les.nml'
         input_path.write_text(source)
     command = [str(args.mpiexec.resolve()), '-n', str(args.ranks),
@@ -116,9 +118,30 @@ def main():
             ('invalid_model', "les_model='invalid',", 'Invalid LES model'),
         ]:
             source = original_source.replace(f"les_model='{args.les_model}',", replacement)
+            if args.les_model == 'dynamic' and label != 'invalid_model':
+                source = source.replace("les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,", '')
             run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
             assert diagnostic in (work / f'{label}.log').read_text()
             assert not (work / f'{label}.history.csv').exists()
+        if args.les_model == 'dynamic':
+            for label, old, new in [
+                ('filter', "les_test_filter='gaussian'", "les_test_filter='box'"),
+                ('ratio', 'les_test_ratio=4', 'les_test_ratio=2'),
+                ('grid', 'les_grid_ratio=2', 'les_grid_ratio=1'),
+                ('removed_filter', "les_test_filter='gaussian',", ''),
+                ('removed_ratio', 'les_test_ratio=4,', ''),
+                ('removed_grid', 'les_grid_ratio=2,', ''),
+            ]:
+                source = original_source.replace(old, new)
+                run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
+                assert 'Restart rejected: invalid data or incompatible model/input context' in (work / f'{label}.log').read_text()
+                assert not (work / f'{label}.history.csv').exists()
+            source = original_source.replace('les_test_ratio=4', 'les_test_ratio=3')
+            run_variant('bad_filter', args.ranks, '', expect_success=False)
+            assert 'Invalid dynamic LES filter' in (work / 'bad_filter.log').read_text()
+            source = original_source
+            run_variant('bad_faces', args.ranks, " boundary_faces=6*'outflow'", expect_success=False)
+            assert 'Dynamic LES requires periodic boundaries' in (work / 'bad_faces.log').read_text()
         print(args.les_model, 'PASS: coupled MPI restart, changed ranks, model guards; artifacts:', work)
         return
     schedule = ' injection_events=3\n injection_interval=7.5e-9'

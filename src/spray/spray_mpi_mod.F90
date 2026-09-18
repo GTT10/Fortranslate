@@ -11,6 +11,8 @@ module spray_mpi_mod
   use spray_reactive_3d_mod, only: advance_spray_chemistry_3d
   use reactive_transport_3d_mod, only: reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
+  use les_mpi_dynamic_mod, only: advance_mpi_dynamic_les_ssprk2_3d
+  use les_filter_3d_mod, only: les_filter_weights
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d, &
@@ -1162,7 +1164,7 @@ contains
       parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok, &
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      wall_films,film_mass,film_settings,les_model)
+      wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1174,7 +1176,12 @@ contains
     real(dp), allocatable, intent(inout) :: component_mass(:,:)
     real(dp), intent(in) :: lower(3),spacing(3),interval,rtol,atol
     integer, intent(in) :: cells(3),parts(3)
-    character(len=*), optional, intent(in) :: les_model
+    character(len=*), optional, intent(in) :: les_model,les_test_filter
+    integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
+    character(len=32) :: selected_filter
+    integer :: filter_code,test_ratio,grid_ratio
+    real(dp), allocatable :: filter_weights(:)
+    logical :: filter_valid
     integer :: les_code
     character(len=*), intent(in) :: method
     character(len=*), intent(in), optional :: hydro_solver,hydro_limiter
@@ -1198,7 +1205,7 @@ contains
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(16),minimum(16),maximum(16),chemistry_interval,transport_theta
+    real(dp) :: controls(19),minimum(19),maximum(19),chemistry_interval,transport_theta
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
@@ -1217,8 +1224,24 @@ contains
       case('smagorinsky');les_code=1
       case('wale');les_code=2
       case('vreman');les_code=3
+      case('dynamic');les_code=4
       case default;les_code=0
       end select
+    end if
+    selected_filter='box';test_ratio=2;grid_ratio=1;filter_code=2;filter_valid=.true.
+    if (les_code==4) then
+      if (present(les_test_filter)) selected_filter=les_test_filter
+      if (present(les_test_ratio)) test_ratio=les_test_ratio
+      if (present(les_grid_ratio)) grid_ratio=les_grid_ratio
+      filter_code=0
+      select case(selected_filter)
+      case('none');filter_code=1
+      case('box');filter_code=2
+      case('gaussian');filter_code=3
+      end select
+      call les_filter_weights(selected_filter,test_ratio,filter_weights,filter_valid)
+      filter_valid=filter_valid.and.grid_ratio>=1.and.grid_ratio<=64
+      if (present(boundary_faces)) filter_valid=filter_valid.and.all(boundary_faces=='periodic')
     end if
     sgs=[0.0_dp,.7_dp,.7_dp]
     if (present(les_settings)) sgs=les_settings
@@ -1240,7 +1263,7 @@ contains
     end if
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
-    valid=allocated(parcels).and.allocated(component_mass).and.method_code>0.and.les_code>0
+    valid=allocated(parcels).and.allocated(component_mass).and.method_code>0.and.les_code>0.and.filter_valid
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(state,1)
     valid=valid.and.(present(wall_films).eqv.present(film_mass)).and.(present(wall_films).eqv.present(film_settings))
     if (present(wall_films)) valid=valid.and.present(boundary_faces)
@@ -1259,10 +1282,10 @@ contains
     if (.not.agreed) return
     controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
       merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces)),merge(1.0_dp,0.0_dp,present(wall_films)), &
-      real(les_code,dp)]
-    call MPI_Allreduce(controls,minimum,16,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      real(les_code,dp),real(filter_code,dp),real(test_ratio,dp),real(grid_ratio,dp)]
+    call MPI_Allreduce(controls,minimum,19,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,16,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,19,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
@@ -1303,8 +1326,14 @@ contains
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
       if (sgs(1)>0) then
+        if (les_code==4) then
+          if (allocated(stage_change)) stage_change=0
+          call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
+            .5_dp*interval,valid,grid_ratio)
+        else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
           boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
+        end if
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
@@ -1313,8 +1342,14 @@ contains
       if (.not.valid) return
       if (allocated(stage_change)) ledger=ledger+stage_change
       if (sgs(1)>0) then
+        if (les_code==4) then
+          if (allocated(stage_change)) stage_change=0
+          call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
+            .5_dp*interval,valid,grid_ratio)
+        else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
           boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
+        end if
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
