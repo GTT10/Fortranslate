@@ -414,6 +414,37 @@ disabled ports and controls on unused ports are rejected. A supplied group
 binds restart identity; retain it unchanged on continuation. See
 [evidence](../../docs/validation/spray-amr-discharge-20260918.md).
 
+### Rate table files
+
+Each port can load its rate table from a shared text file:
+
+```fortran
+&amr_spray_rate_files
+ profile_files(1)='injector-rate.dat'
+/
+```
+
+The file contains exactly two whitespace-separated numeric columns: time in
+seconds and mass rate in kg/s. Blank lines and comments starting with `#` or
+`!` are allowed. For example:
+
+```text
+# time [s] rate [kg/s]
+0       0.001
+1.e-8   0.002
+2.e-8   0.006
+```
+
+The same 2–64 knot limits, monotone times and rate bounds apply. Records must
+be shorter than 4096 characters. Paths resolve from the process working
+directory and must be readable consistently on every rank. Leave that port's
+inline `profile_points`, `profile_times` and `profile_rates` at zero; supplying
+both a file and inline data is rejected. `event_end_times` still belongs in
+`&amr_spray_rates`. The loaded numeric table binds restart identity, not the file
+path or comments: moving an unchanged curve does not change the context, while
+changing its values rejects restart. Files are read at startup only. See
+[evidence](../../docs/validation/spray-rate-files-20260918.md).
+
 ### Computational parcel splitting
 
 `options%maximum_multiplicity` in `&amr_spray` now activates the existing
