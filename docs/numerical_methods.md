@@ -2778,3 +2778,9 @@ The sparse MPI Strang reaction/hydro wrapper now validates and forwards pressure
 targets. Focused 2/4-rank reacting corner-patch results match the serial split
 exactly; [Strang evidence](validation/pressure-outlet-mpi-strang-20260918.md).
 Molecular-transport/full-split and application forwarding remain pending.
+
+Sparse MPI molecular transport and the full reaction/transport/hydro split now
+forward pressure targets through all stages. Focused 2/4-rank corner-patch
+results match serial updates exactly; see
+[transport/full-split evidence](validation/pressure-outlet-mpi-transport-20260918.md).
+MPI application/restart/regrid and patch-tree connections remain pending.
