@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--species-count', type=int, default=10)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
@@ -29,6 +30,10 @@ def main():
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     source = args.input.read_text()
     input_path = args.input.resolve()
+    if args.pressure_outlet:
+        if args.les_model not in ('wale', 'vreman'):
+            parser.error('--pressure-outlet requires a static LES fixture')
+        source = source.replace('&mpi_spray', "&mpi_spray\n boundary_faces=6*'outflow', outlet_pressure(2)=320000,")
     if args.les_isotropic:
         if args.les_model not in ('wale', 'vreman'):
             parser.error('--les-isotropic requires --les-model wale or vreman')
@@ -134,6 +139,16 @@ def main():
             run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
             assert diagnostic in (work / f'{label}.log').read_text()
             assert not (work / f'{label}.history.csv').exists()
+        if args.pressure_outlet:
+            for label, replacement, diagnostic in [
+                ('changed_pressure', 'outlet_pressure(2)=320100,', 'Restart rejected: invalid data or incompatible model/input context'),
+                ('removed_pressure', '', 'Restart rejected: invalid data or incompatible model/input context'),
+                ('invalid_pressure', 'outlet_pressure(2)=-1,', 'Invalid outlet pressure'),
+            ]:
+                source = original_source.replace('outlet_pressure(2)=320000,', replacement)
+                run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
+                assert diagnostic in (work / f'{label}.log').read_text()
+                assert not (work / f'{label}.history.csv').exists()
         if args.les_isotropic:
             for label, replacement, diagnostic in [
                 ('changed_ci', 'les_ci=0.2,', 'Restart rejected: invalid data or incompatible model/input context'),
