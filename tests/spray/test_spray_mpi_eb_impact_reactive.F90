@@ -43,7 +43,7 @@ program test_spray_mpi_eb_impact_reactive
   real(dp), allocatable :: positions(:,:),feedback(:,:),cell(:),primitive(:),y(:),total(:),parent(:),fine(:)
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=.001_dp,t,sound,r,volume
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
-  logical :: ok,include_films=.true.
+  logical :: ok,include_films=.true.,outflow=.false.
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -213,6 +213,36 @@ program test_spray_mpi_eb_impact_reactive
     call require(all(abs(masses(:,p)/drops(p)%mass-[.25_dp,.75_dp])<1e-13_dp),'split composition')
     if(drops(p)%id>1) call require(drops(p)%parent_id==1,'split lineage')
   end do
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
+  options%breakup_model='none';options%maximum_multiplicity=0
+  options%surface_tension=.072_dp;options%maximum_parcels=100
+  include_films=.true.;outflow=.true.
+  if(rank==nranks-1) then
+    drops(1)%position=[.00199_dp,.001250001_dp,.0039999999_dp]
+    drops(1)%velocity=[20._dp,-200._dp,5._dp]
+  end if
+  saved_drops=drops;last_id=1;ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
+  call advance()
+  call require(.not.ok.and.steps==0.and.last_id==1,'outflow reactive failure watermark rollback')
+  call require(size(drops)==size(saved_drops).and.size(films)==0.and.all(masses==saved_mass),'outflow arrays rollback')
+  if(rank==nranks-1) call require(all(drops(1)%position==saved_drops(1)%position),'outflow position rollback')
+  do node=1,2
+    if(owners(node)/=rank) cycle
+    call require(all(field%fields(node)%values==saved%fields(node)%values),'outflow gas rollback')
+    call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'outflow temperature rollback')
+  end do
+  call require(all(ledger==42).and.all(boundary==43).and.all(chemical==44).and.theta==45,'outflow budget rollback')
+  solver='hllc'
+  call inventory(before)
+  call advance()
+  call require(ok.and.last_id==5,'reactive outflow splash IDs')
+  i=size(drops)
+  call MPI_Allreduce(i,j,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(j>0.and.j<4,'some splash children escaped')
+  call inventory(after)
+  call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'MPI reactive splash exterior conservation')
   if(rank==0) print *, 'PASS: MPI EB reactive impacts, evolving films, shared IDs and rollback'
   call MPI_Finalize(ierr)
 contains
@@ -228,12 +258,12 @@ contains
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
       .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &
       films=films,film_mass=film_mass,film_settings=walls,film_steps=film_steps, &
-      last_id=last_id,model_rejected=rejected)
+      last_id=last_id,model_rejected=rejected,particle_outflow=outflow)
     else
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
       .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &
-      film_steps=film_steps,last_id=last_id,model_rejected=rejected)
+      film_steps=film_steps,last_id=last_id,model_rejected=rejected,particle_outflow=outflow)
     end if
   end subroutine
   subroutine inventory(result)

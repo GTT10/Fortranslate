@@ -27,7 +27,7 @@ contains
       liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,solver, &
       chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
-      films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created)
+      films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -55,6 +55,10 @@ contains
     integer(int64), optional, intent(inout) :: last_id
     logical, optional, intent(out) :: model_rejected
     integer(int64), optional, intent(out) :: split_created
+    logical, optional, intent(in) :: particle_outflow
+    logical :: outflow
+    real(dp), allocatable :: half_exterior(:)
+    real(dp) :: exterior(reactive_nvar(size(species)))
     integer(int64) :: before_split
     real(dp) :: low_multiplicity,high_multiplicity
     integer(int64) :: watermark
@@ -75,14 +79,21 @@ contains
     if(present(film_steps)) film_steps=0
     if(present(split_created)) split_created=0
     if(present(model_rejected)) model_rejected=.false.
+    outflow=.false.;exterior=0
+    if(present(particle_outflow)) outflow=particle_outflow
     watermark=0
     if(present(last_id)) watermark=last_id
     flags=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))+ &
-      8*merge(1,0,present(last_id))
+      8*merge(1,0,present(last_id))+16*merge(1,0,outflow)
     call MPI_Allreduce(flags,lowflags,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(flags,highflags,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.lowflags/=highflags) return
+    if(outflow) then
+      if(flags/=31) return
+      allocate(half_exterior(nv));half_exterior=0
+      flags=flags-16
+    end if
     if(flags/=0.and.flags/=7.and.flags/=8.and.flags/=15) return
     valid=valid_spray_options(options)
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
@@ -137,7 +148,7 @@ contains
     if(present(last_id)) last_id=watermark
     if(present(split_created)) split_created=watermark-before_split
     if(present(film_steps)) film_steps=first_film_steps+second_film_steps
-    boundary_change=boundary;wall_change=wall+first+second+first_film+second_film;chemical_change=chemical
+    boundary_change=boundary+exterior;wall_change=wall+first+second+first_film+second_film;chemical_change=chemical
     minimum_theta=theta;particle_steps=first_steps+second_steps;ok=.true.
   contains
     subroutine particle_half(steps,exchange)
@@ -148,7 +159,8 @@ contains
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
           wall_films=patches,film_mass=patch_mass,film_settings=film_settings, &
-          eb_geometry=geometry,nodal_phi=phi,model_rejected=rejected)
+          eb_geometry=geometry,nodal_phi=phi,model_rejected=rejected,eb_outflow_change=half_exterior)
+        if(valid.and.outflow) exterior=exterior+half_exterior
         if(present(model_rejected)) model_rejected=rejected
       else if(present(last_id)) then
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
