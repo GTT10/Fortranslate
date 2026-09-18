@@ -3022,3 +3022,12 @@ periodic SGS half steps use distributed coefficient, flux and SSPRK2 APIs.
 Same-rank exact continuation and 2-to-4-rank continuation pass for fixed/selected
 H2O2. Nonperiodic and AMR dynamic LES remain open; see
 [MPI dynamic application evidence](validation/les-mpi-dynamic-application-20260918.md).
+
+### Approximate LES filters
+
+`les_test_filter` also accepts `box3`, `box5`, `gaussian3`, `gaussian5` and their
+`opt` suffix variants. These use pinned polynomial formulas or optimized tables
+for ratios 1–10, followed by the reference fallbacks. They retain signed weights;
+filtered state may fail EOS validation, and very wide polynomial kernels may
+fail the existing normalization guard. Serial/MPI use the same filter identities.
+See [formulas, limits and focused checks](validation/les-filter-approximations-20260918.md).
