@@ -436,7 +436,7 @@ contains
   end subroutine repartition_mpi_amr_sparse_3d
 
   subroutine regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok,reconstruction,limiter, &
-      boundary_faces,inflow_state,inflow_temperature)
+      boundary_faces,inflow_state,inflow_temperature,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(inout) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(inout) :: patch
@@ -450,6 +450,8 @@ contains
     type(mpi_amr_sparse_hierarchy_3d) :: candidate
     real(dp), allocatable :: recovered(:,:,:),old_ft(:,:,:),halo(:,:,:,:),ht(:,:,:)
     real(dp) :: initial(reactive_nvar(size(species))),final(reactive_nvar(size(species)))
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: outlet_values(6)
     integer :: n(3),r,shift
     logical :: local_ok,global_ok,touched(6)
 
@@ -473,10 +475,17 @@ contains
     else
       local_ok=local_ok.and.patch%is_strictly_interior().and.next_patch%is_strictly_interior()
     end if
+    outlet_values=0
+    if (present(outlet_pressure)) outlet_values=outlet_pressure
+    local_ok=local_ok.and.all(ieee_is_finite(outlet_values)).and.all(outlet_values>=0).and.all(outlet_values<=1e15_dp)
+    if (any(outlet_values>0)) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) local_ok=local_ok.and..not.any(outlet_values>0.and.boundary_faces/='outflow')
+    end if
     call sparse_collective_contract_matches_3d(distribution,species,patch, &
-      real([next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz, &
+      [real([next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz, &
         next_patch%coarse_i_lower,next_patch%coarse_i_upper,next_patch%coarse_j_lower,next_patch%coarse_j_upper, &
-        next_patch%coarse_k_lower,next_patch%coarse_k_upper,next_patch%refinement_ratio],dp), &
+        next_patch%coarse_k_lower,next_patch%coarse_k_upper,next_patch%refinement_ratio],dp),outlet_values], &
       reconstruction//'|'//limiter//merge('|physical','|periodic',present(boundary_faces)),local_ok,global_ok)
     if (.not.global_ok) return
     call initialize_mpi_amr_sparse_distribution_3d(next_patch,distribution%comm,next_distribution,local_ok, &
@@ -513,7 +522,7 @@ contains
       shift=2
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,candidate%coarse_state, &
         candidate%coarse_temperature,boundary_faces,halo,ht,local_ok, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
     else
       call build_mpi_amr_sparse_periodic_halos_3d(distribution,candidate%coarse_state, &
         candidate%coarse_temperature,halo,ht,local_ok)
