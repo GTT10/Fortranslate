@@ -978,7 +978,7 @@ contains
     np=merge(1,0,rank<nranks-1)
     allocate(drops(np),cm(2,np),patches(0),fm(2,0),loc(3,np),normal(3,np),data(6,np),events(np))
     if (np>0) then
-      drops(1)=spray_parcel(int(rank+1,int64),[.25_dp,.25_dp,0.0_dp], &
+      drops(1)=spray_parcel(int(nranks-1-rank,int64),[.25_dp,.25_dp,0.0_dp], &
         [10.0_dp,0.0_dp,-20.0_dp],1e-9_dp,330.0_dp,100.0_dp)
       cm(:,1)=drops(1)%mass*[.25_dp,.75_dp];events(1)=1
       loc(:,1)=drops(1)%position;normal(:,1)=[0.0_dp,0.0_dp,1.0_dp]
@@ -999,7 +999,8 @@ contains
     call require(ok.and.mark==nranks+4*(nranks-1),'MPI impact reserves child IDs')
     call require(size(drops)==5*np.and.size(patches)==np,'MPI dry impact splashes and deposits')
     do q=2,size(drops)
-      call require(drops(q)%id==nranks+4*rank+q-1.and.drops(q)%parent_id==rank+1,'splash IDs and lineage')
+      call require(drops(q)%id==nranks+4*(nranks-2-rank)+q-1.and. &
+        drops(q)%parent_id==nranks-1-rank,'splash parent-ordered IDs and lineage')
       call require(all(abs(cm(:,q)/drops(q)%mass-[.25_dp,.75_dp])<1e-14_dp),'splash composition inheritance')
     end do
     do q=1,2
@@ -1236,7 +1237,7 @@ contains
     allocate(drops(np),cm(2,np),density(np),velocity(3,np),reynolds(np),energy(1));energy=123
     y=[.25_dp,.75_dp]
     if (np>0) then
-      drops(1)=spray_parcel(int(rank+1,int64),[.25_dp,.25_dp,.25_dp], &
+      drops(1)=spray_parcel(int(nranks-1-rank,int64),[.25_dp,.25_dp,.25_dp], &
         [0.0_dp,0.0_dp,0.0_dp],1e-9_dp,330.0_dp,100.0_dp)
       cm(:,1)=drops(1)%mass*y
     end if
@@ -1260,8 +1261,8 @@ contains
     if (np>0) then
       call require(energy(1)<0,'KH transverse kinetic energy debits gas')
       do q=2,5
-        call require(drops(q)%id==nranks+4*rank+q-1,'KH rank-prefix child IDs')
-        call require(drops(q)%parent_id==rank+1,'KH child lineage')
+        call require(drops(q)%id==nranks+4*(nranks-2-rank)+q-1,'KH parent-ordered child IDs')
+        call require(drops(q)%parent_id==nranks-1-rank,'KH child lineage')
         call require(all(abs(cm(:,q)/drops(q)%mass-y)<1e-14_dp),'KH inherited composition')
       end do
     end if

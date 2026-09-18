@@ -434,6 +434,8 @@ contains
     valid=valid.and.cursor==np+number.and.film_cursor<=maximum_films
     call agree()
     if (.not.agreed) return
+    call assign_parent_child_ids(comm,candidate,np,last_id,valid)
+    if (.not.valid) return
     call MPI_Allreduce(ledger,global_ledger,5,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call move_alloc(candidate,parcels);call move_alloc(masses,component_mass)
@@ -1566,6 +1568,8 @@ contains
     end do
     call agree()
     if (.not.agreed) return
+    call assign_parent_child_ids(comm,result,np,last_id,valid)
+    if (.not.valid) return
     call move_alloc(result,parcels);call move_alloc(result_mass,component_mass);call move_alloc(energy,gas_energy)
     last_id=next_id;ok=.true.
   contains
@@ -2338,16 +2342,16 @@ contains
     next_id=last_id;first_id=0
     call reserve_spray_ids(comm,size(candidate)-old_count,next_id,first_id,valid)
     if (.not.valid) return
-    call assign_split_ids(comm,candidate,old_count,last_id,valid)
+    call assign_parent_child_ids(comm,candidate,old_count,last_id,valid)
     if (.not.valid) return
     call move_alloc(candidate,parcels)
     if (present(component_mass)) call move_alloc(masses,component_mass)
     last_id=next_id;ok=.true.
   end subroutine
 
-  ! Order computational children by global parent ID, then local sibling order.
+  ! Order children by global parent ID, then deterministic local sibling order.
   ! Broadcast one owner's compact parent/count metadata at a time, never parcel payloads.
-  subroutine assign_split_ids(comm,candidate,old_count,base,ok)
+  subroutine assign_parent_child_ids(comm,candidate,old_count,base,ok)
     type(MPI_Comm), intent(in) :: comm
     type(spray_parcel), intent(inout) :: candidate(:)
     integer, intent(in) :: old_count
