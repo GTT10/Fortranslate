@@ -3177,3 +3177,5 @@ order; different physical event grouping can also change IDs. Future child IDs
 can differ from older builds, while existing saved IDs remain unchanged on load.
 See [computational splitting](validation/spray-split-id-order-20260918.md) and
 [KH/splash checks](validation/spray-physical-child-id-order-20260918.md).
+The level-set EB impact wrapper uses the same wall-event routine and has
+[reversed-owner ID checks](validation/spray-eb-child-id-order-20260918.md).
