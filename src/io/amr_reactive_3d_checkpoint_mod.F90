@@ -64,6 +64,14 @@ contains
         config%inflow_composition_mole_fractions(i)
       signature=trim(signature)//' '//trim(entry)
     end do
+    ! Preserve existing zero-target checkpoint identities.
+    if (any(config%outlet_pressure>0)) then
+      signature=trim(signature)//' PRESSURE_OUTLET_V1'
+      do i=1,6
+        write(entry,'(es27.18e3)') config%outlet_pressure(i)
+        signature=trim(signature)//' '//trim(entry)
+      end do
+    end if
   end function amr_reactive_boundary_signature_3d
 
   function dynamic_signature(config) result(signature)

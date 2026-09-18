@@ -369,8 +369,13 @@ contains
             amr_config%regrid_buffer_cells,next_patch,patch_changed,ok,regrid_faces)
           if (.not.ok) error stop '3D AMR temperature tagging failed'
           if (patch_changed) then
+            if (any(config%outlet_pressure>0)) then
+              call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+                next_patch,ok,config%reconstruction,config%limiter,faces,inflow_state,inflow_t,config%outlet_pressure)
+            else
             call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
               next_patch,ok,config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
+            end if
             if (.not.ok) error stop '3D AMR conservative regrid rejected'
             deallocate(xf,yf,zf)
             allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
@@ -436,7 +441,7 @@ contains
         config%reconstruction, config%limiter, &
         chemistry_integrator=chemistry_integrator,boundary_faces=active_faces,boundary_change=step_boundary, &
         inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-        wall_velocity=config%wall_velocity)
+        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
       if (.not. ok) error stop "3D AMR reactive split rejected its candidate"
       boundary_total=boundary_total+step_boundary
       maximum_reflux = max(maximum_reflux, step_reflux)

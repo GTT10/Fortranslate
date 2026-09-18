@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--reacting', action='store_true')
+    parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--touching', action='store_true')
     parser.add_argument('--dynamic-touching', action='store_true')
     parser.add_argument('--load-balance', action='store_true')
@@ -58,6 +59,8 @@ def main() -> None:
     labels = ('dynamic', 'elementary') if args.reacting else ('wall', 'dynamic', 'inlet')
     if args.touching:
         labels = ('wall', 'elementary') if args.reacting else ('wall', 'inlet')
+    if args.pressure_outlet:
+        labels = ('wall',)
     for label in labels:
         source = template
         if args.reacting:
@@ -90,6 +93,12 @@ def main() -> None:
         if args.load_balance:
             source = source.replace('nx = 4', 'nx = 8')
             source = source.replace('&amr_reactive_3d', '&amr_reactive_3d\nload_balance=.true.,')
+        if args.pressure_outlet:
+            source = source.replace('&reactive_3d', '&reactive_3d\n outlet_pressure(2)=102325,')
+            source = source.replace('coarse_i_upper = 3', 'coarse_i_upper = 4')
+            source = source.replace('cfl = 0.02', 'cfl = 0.005')
+            source = source.replace('&amr_reactive_3d', '&amr_reactive_3d\n'
+                                    'regrid_physical_boundaries=.true., regrid_interval_steps=1, regrid_temperature_threshold=1, regrid_buffer_cells=0,')
         reference = run(f'{label}_reference', source)
         stopped = run(f'{label}_stopped', source,
                       f"checkpoint_interval_steps=1, checkpoint_file='{label}.chk', stop_after_checkpoint=.true.,")
@@ -98,9 +107,19 @@ def main() -> None:
             assert 'Balanced coarse columns:' in stopped
             if args.dynamic_touching:
                 assert stopped.count('Balanced coarse columns:') >= 2
-        if label == 'dynamic' or args.dynamic_touching:
+        if label == 'dynamic' or args.dynamic_touching or args.pressure_outlet:
             assert 'Regrid at step 0:' in stopped
         resumed = run(f'{label}_resumed', source, f"restart_file='{label}.chk',")
+        if args.pressure_outlet:
+            assert 'PRESSURE_OUTLET_V1' in (work / f'{label}.chk').read_text()
+            steps = lambda log: int(next(line.split(':')[1] for line in log.splitlines()
+                                        if line.startswith('Completed coarse steps:')))
+            assert steps(reference) > 1
+            for suffix, changed_pressure in [('pressure_changed', '103325'), ('pressure_removed', '0')]:
+                changed_source = source.replace('outlet_pressure(2)=102325',
+                                                f'outlet_pressure(2)={changed_pressure}')
+                run(f'{label}_{suffix}', changed_source, f"restart_file='{label}.chk',", success=False)
+
         for level in ('coarse', 'fine'):
             require_equal(work / f'{label}_reference_{level}.csv',
                           work / f'{label}_resumed_{level}.csv', f'{label}_{level}')

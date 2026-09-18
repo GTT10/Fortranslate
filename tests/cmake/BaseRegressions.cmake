@@ -945,3 +945,9 @@ add_test(NAME unit_amr_patch_tree_subcycle_3d COMMAND test_amr_patch_tree_subcyc
 add_executable(test_amr_patch_tree_transport_subcycle_3d unit/test_amr_patch_tree_transport_subcycle_3d.F90)
 target_link_libraries(test_amr_patch_tree_transport_subcycle_3d PRIVATE pelef_core)
 add_test(NAME unit_amr_patch_tree_transport_subcycle_3d COMMAND test_amr_patch_tree_transport_subcycle_3d)
+
+add_test(NAME amr_pressure_outlet_restart_3d
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
+    --pressure-outlet --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_pressure_outlet_restart_3d")
+set_tests_properties(amr_pressure_outlet_restart_3d PROPERTIES TIMEOUT 300)
