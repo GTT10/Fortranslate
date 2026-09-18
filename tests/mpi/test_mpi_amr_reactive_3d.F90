@@ -240,6 +240,13 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--pressure-transport-only') then
+      call check_physical_hierarchy(2,.true.,transport_mode=.true.)
+      if (distribution%rank==0) print *, 'PASS: sparse pressure transport and full split'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--pressure-strang-only') then
       call check_physical_hierarchy(2,.true.,.true.)
       if (distribution%rank==0) print *, 'PASS: sparse pressure Strang split'
@@ -814,8 +821,8 @@ contains
     end do
   end subroutine check_boundary_distribution
 
-  subroutine check_physical_hierarchy(geometry,pressure_mode,reaction_mode)
-    logical, optional, intent(in) :: pressure_mode,reaction_mode
+  subroutine check_physical_hierarchy(geometry,pressure_mode,reaction_mode,transport_mode)
+    logical, optional, intent(in) :: pressure_mode,reaction_mode,transport_mode
     real(dp) :: outlet(6),test_dt
     integer :: first_mode
     integer, optional, intent(in) :: geometry
@@ -851,6 +858,11 @@ contains
         first_mode=3;last_mode=4;test_dt=1e-10_dp
       end if
     end if
+    if (present(transport_mode)) then
+      if (transport_mode) then
+        first_mode=5;last_mode=6;test_dt=1e-10_dp;outlet(2)=0
+      end if
+    end if
     nf=(hi-lo+1)*ratio
     call initialize_amr_patch_3d(n,n,n,lo,hi,lo,hi,lo,hi,ratio,wall_patch,ok)
     call require(ok,'physical hierarchy near-wall patch')
@@ -878,12 +890,12 @@ contains
       c=c0;ct=ct0;f=f0;ft=ft0
       if (mode==5) then
         call advance_amr_reactive_transport_3d(species,transport,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
-          .true.,.true.,.true.,.true.,'mc',thr,rr,ok,faces,expected,inlet,it,tw,wv)
+          .true.,.true.,.true.,.true.,'mc',thr,rr,ok,faces,expected,inlet,it,tw,wv,outlet)
       else if (mode==6) then
         call advance_amr_reactive_full_3d(species,reactions,transport,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,thr,rr,ok,method,'mc', &
           boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it, &
-          wall_temperature=tw,wall_velocity=wv)
+          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
       else if (mode>2) then
         call advance_amr_reactive_strang_3d(species,reactions,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,rr,ok,method,'mc', &
@@ -898,12 +910,12 @@ contains
       saved=h
       if (mode==5) then
         call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,test_dt, &
-          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv)
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv,outlet)
       else if (mode==6) then
         call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
-          wall_temperature=tw,wall_velocity=wv)
+          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
       else if (mode>2) then
         call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
@@ -943,12 +955,12 @@ contains
       if (dist%rank==dist%nranks-1) inlet(1,3)=-1
       if (mode==5) then
         call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,test_dt, &
-          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv)
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv,outlet)
       else if (mode==6) then
         call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
-          wall_temperature=tw,wall_velocity=wv)
+          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
       else if (mode>2) then
         call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &

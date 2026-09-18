@@ -908,7 +908,7 @@ contains
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
       minimum_theta, maximum_reflux_correction, ok, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -923,6 +923,8 @@ contains
 
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: outlet_values(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp) :: budget_one(reactive_nvar(size(species))),budget_two(reactive_nvar(size(species)))
     type(mpi_amr_sparse_hierarchy_3d) :: stage, euler, candidate
@@ -954,13 +956,20 @@ contains
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(budget_one)
+    outlet_values=0
+    if (present(outlet_pressure)) outlet_values=outlet_pressure
+    local_ok=local_ok.and.all(ieee_is_finite(outlet_values)).and.all(outlet_values>=0).and.all(outlet_values<=1e15_dp)
+    if (any(outlet_values>0)) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) local_ok=local_ok.and..not.any(outlet_values>0.and.boundary_faces/='outflow')
+    end if
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, &
       [dx, dy, dz, interval, &
         merge(1.0_dp, 0.0_dp, viscosity_enabled), &
         merge(1.0_dp, 0.0_dp, thermal_conduction_enabled), &
         merge(1.0_dp, 0.0_dp, species_diffusion_enabled), &
-        merge(1.0_dp, 0.0_dp, barodiffusion_enabled)], &
+        merge(1.0_dp, 0.0_dp, barodiffusion_enabled),outlet_values], &
       "transport|" // trim(limiter)//merge("|physical","|periodic",present(boundary_faces)), local_ok, global_ok)
     if (.not. global_ok) return
     call sparse_collective_transport_matches_3d( &
@@ -977,14 +986,14 @@ contains
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, stage, &
       theta_one, reflux_one, local_ok, &
-      boundary_faces,budget_one,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,budget_one,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     if (.not. local_ok) return
     call advance_mpi_amr_sparse_transport_euler_3d( &
       distribution, species, transport, patch, stage, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, euler, &
       theta_two, reflux_two, local_ok, &
-      boundary_faces,budget_two,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,budget_two,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     if (.not. local_ok) return
 
     candidate = hierarchy
@@ -1041,7 +1050,7 @@ contains
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, minimum_transport_theta, &
       maximum_reflux_correction, ok, chemistry_integrator, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1060,6 +1069,8 @@ contains
 
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: outlet_values(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp) :: stage_budget(reactive_nvar(size(species))),total_budget(reactive_nvar(size(species)))
     type(mpi_amr_sparse_hierarchy_3d) :: candidate
@@ -1105,6 +1116,13 @@ contains
         species_diffusion_enabled
     end if
     if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(total_budget)
+    outlet_values=0
+    if (present(outlet_pressure)) outlet_values=outlet_pressure
+    local_ok=local_ok.and.all(ieee_is_finite(outlet_values)).and.all(outlet_values>=0).and.all(outlet_values<=1e15_dp)
+    if (any(outlet_values>0)) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) local_ok=local_ok.and..not.any(outlet_values>0.and.boundary_faces/='outflow')
+    end if
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, &
       [dx, dy, dz, dt, contract_rtol, contract_atol, &
@@ -1113,7 +1131,7 @@ contains
         merge(1.0_dp, 0.0_dp, viscosity_enabled), &
         merge(1.0_dp, 0.0_dp, thermal_conduction_enabled), &
         merge(1.0_dp, 0.0_dp, species_diffusion_enabled), &
-        merge(1.0_dp, 0.0_dp, barodiffusion_enabled)], &
+        merge(1.0_dp, 0.0_dp, barodiffusion_enabled),outlet_values], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
         trim(limiter) // "|" // trim(integrator_name)//merge("|physical","|periodic",present(boundary_faces)), &
       local_ok, global_ok)
@@ -1123,7 +1141,7 @@ contains
         distribution, species, reactions, patch, hierarchy, dx, dy, dz, &
         dt, riemann_solver, reconstruction, limiter, chemistry_enabled, &
         rtol, atol, candidate_reflux, ok, chemistry_integrator, &
-        boundary_faces,boundary_change,inflow_state,inflow_temperature)
+        boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
       if (ok) maximum_reflux_correction = candidate_reflux
       return
     end if
@@ -1143,7 +1161,7 @@ contains
       0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
       stage_theta, stage_reflux, local_ok, &
-      boundary_faces,stage_budget,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,stage_budget,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     if (.not. local_ok) return
     total_budget=total_budget+stage_budget
     candidate_theta = min(candidate_theta, stage_theta)
@@ -1151,7 +1169,7 @@ contains
     call advance_mpi_amr_sparse_hydro_3d( &
       distribution, species, patch, candidate, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, hydro_reflux, local_ok, &
-      boundary_faces,stage_budget,inflow_state,inflow_temperature)
+      boundary_faces,stage_budget,inflow_state,inflow_temperature,outlet_pressure)
     if (.not. local_ok) return
     total_budget=total_budget+stage_budget
     candidate_reflux = max(candidate_reflux, hydro_reflux)
@@ -1160,7 +1178,7 @@ contains
       0.5_dp * dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
       stage_theta, stage_reflux, local_ok, &
-      boundary_faces,stage_budget,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,stage_budget,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     if (.not. local_ok) return
     total_budget=total_budget+stage_budget
     candidate_theta = min(candidate_theta, stage_theta)
@@ -1184,7 +1202,7 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, limiter, &
       new_hierarchy, minimum_theta, maximum_reflux_correction, ok, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1220,6 +1238,7 @@ contains
     real(dp), allocatable :: boundary_z_upper(:, :, :)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), allocatable :: full_y(:,:,:,:),full_z(:,:,:,:)
     real(dp) :: candidate_budget(reactive_nvar(size(species)))
@@ -1243,7 +1262,7 @@ contains
         hierarchy%coarse_state,hierarchy%coarse_temperature,[dx,dy,dz],dt,boundary_faces, &
         viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
         coarse_flux_x,full_y,full_z,coarse_theta,candidate_budget,local_ok, &
-        inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
       if (.not.local_ok) return
       coarse_flux_y=full_y(:,:,1:,:);coarse_flux_z=full_z(:,:,:,1:)
       do k=1,patch%coarse_nz
@@ -1294,11 +1313,13 @@ contains
     if (present(boundary_faces)) then
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,hierarchy%coarse_state,hierarchy%coarse_temperature, &
         boundary_faces,coarse_start_halo,coarse_start_halo_temperature,local_ok, &
-        viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+        viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
+        species=species,outlet_pressure=outlet_pressure)
       if (.not.local_ok) return
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,new_hierarchy%coarse_state,new_hierarchy%coarse_temperature, &
         boundary_faces,coarse_end_halo,coarse_end_halo_temperature,local_ok, &
-        viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+        viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
+        species=species,outlet_pressure=outlet_pressure)
       if (.not.local_ok) return
     else
     call build_mpi_amr_sparse_periodic_halos_3d( &
@@ -1361,7 +1382,7 @@ contains
         dy / ratio_real, dz / ratio_real, fine_dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, fine_flux_x, fine_flux_y, fine_flux_z, &
-        fine_theta, local_ok,boundary_faces,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+        fine_theta, local_ok,boundary_faces,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
       if (.not. local_ok) return
       minimum_theta = min(minimum_theta, fine_theta)
       if (distribution%fine_count > 0) then
@@ -1859,7 +1880,7 @@ contains
 
   subroutine compute_sparse_boundary_transport_fluxes_3d(distribution,species,transport,patch,u,t,spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,budget,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1870,6 +1891,7 @@ contains
     real(dp), allocatable, intent(out) :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp), intent(out) :: theta,budget(:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
     real(dp) :: wall_data(7),reference(7),local_theta,local_budget(size(budget)),velocity(3,6)
@@ -1893,7 +1915,8 @@ contains
     call sparse_collective_logical_and_3d(distribution%comm,all(wall_data==reference),global_ok)
     if (.not.global_ok) return
     call build_mpi_amr_sparse_boundary_halos_3d(distribution,u,t,faces,ghost,gt,local_ok, &
-      viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+      viscous_wall=.true.,inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
+        species=species,outlet_pressure=outlet_pressure)
     if (.not.local_ok) return
     n=shape(t);nv=size(u,1)
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
@@ -2053,7 +2076,7 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, face_flux_x, &
       face_flux_y, face_flux_z, minimum_theta, ok, &
-      boundary_faces,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -2073,6 +2096,7 @@ contains
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     character(len=32) :: local_faces(6)
     real(dp) :: velocity(3,6)
@@ -2119,7 +2143,8 @@ contains
         coarse_start_temperature, coarse_end, coarse_end_temperature, &
         state, temperature, alpha, "characteristic_plm", limiter, &
         extended_state, extended_temperature, local_ok, &
-        boundary_faces,inflow_state,inflow_temperature,viscous_wall=.true.,wall_velocity=wall_velocity)
+        boundary_faces,inflow_state,inflow_temperature,viscous_wall=.true.,wall_velocity=wall_velocity, &
+        outlet_pressure=outlet_pressure)
     else
       local_ok = .true.
     end if
