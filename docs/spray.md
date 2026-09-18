@@ -106,7 +106,10 @@ parent gas stencil, and their pressure inherits the parent's sampled value.
 Parents and children then drift for the source interval. IDs and pending KH
 state remain private through retries and whole-interval failure. This remains
 source-first operator splitting, not globally time-ordered breakup. The serial
-application still rejects KH child mode pending reactive/restart wiring.
+reactive wrapper and application now pass the private shared watermark through
+both source halves and retain KH state through restart; restore validates
+four-child ID groups after subtracting injection and computational split IDs.
+See [application evidence](validation/spray-eb-khrt-application-20260918.md).
 See [serial KH source evidence](validation/spray-eb-khrt-source-20260918.md).
 
 Set `spray_eb_wall_options%evolve` to enable stationary mixed-film heat and

@@ -121,5 +121,18 @@ store cumulative split IDs immediately after the ID watermark. Restore subtracts
 that count before checking injection and four-child splash groups. Disabled-mode
 checkpoint layout is unchanged. Older splitting-enabled snapshots without this
 counter are rejected. Final-time injections are retained unsplit until the next
-reactive update. KH shed-mass child creation remains unsupported in this serial
-application. See [focused evidence](../../docs/validation/spray-eb-split-20260918.md).
+reactive update. See [focused evidence](../../docs/validation/spray-eb-split-20260918.md).
+
+### KH shed-mass children
+
+Set `options%breakup_model='khrt'` and `options%khrt_children=.true.` to
+create KH shed-mass children. The shared watermark covers injection, KH,
+splash and computational splitting. Children and pending KH inventories survive
+checkpoint/restart. Restore checks four-child release groups after subtracting
+injected and computational split IDs. The existing checkpoint layout already
+stores the KH fields; no new format is needed for KH mode alone.
+
+A crossing parent skips KH for that source substep and takes the wall path.
+Other parents and their children drift after release; the transverse child energy
+is balanced against the gas. This is source-first splitting, not a calibrated
+breakup validation. See [focused evidence](../../docs/validation/spray-eb-khrt-application-20260918.md).
