@@ -183,3 +183,32 @@ and films use the component models. All property inputs enter restart context.
 Older checkpoints lacking these fields are rejected. The supplied coefficients
 must describe the intended liquid; illustrative test fits are not calibrated
 material data. See [focused evidence](../../docs/validation/spray-eb-properties-20260918.md).
+
+### Injection-rate histories
+
+Set `injection_profile_points` to 2–64 and supply increasing
+`injection_profile_times` (s) and nonnegative `injection_profile_rates` (kg/s).
+Each event integrates the piecewise-linear profile from `injection_times(i)` to
+`injection_end_times(i)` and multiplies the result by `injection_scales(i)`.
+Injection still occurs as a batch at the event start; the integration interval
+specifies its dose, not continuous particle insertion. All intervals must lie
+within the profile. Zero dose consumes no IDs. With zero profile points, the
+existing `total_mass * injection_scales(i)` rule applies.
+
+For a finite nozzle, `velocity_from_rate=.true.` computes speed as scaled event
+mass divided by interval duration, mixture density, circular outlet area and
+`discharge_coefficient`. The coefficient defaults to 1 and must be in [1e-6,1];
+rate-driven radius must be at least 1e-12 m. Positive event speeds cannot exceed
+1e7 m/s. Prescribed `speed` remains the default when rate-driven velocity is off.
+Example:
+
+```fortran
+ injection_profile_points=2
+ injection_profile_times=0.,4e-8, injection_profile_rates=.001,.003
+ injection_times(1)=0., injection_end_times(1)=5e-9
+ nozzle_radius=1e-4, velocity_from_rate=.true., discharge_coefficient=.8
+```
+
+Unused profile slots remain zero; without a profile, end times remain -1. Profile
+and velocity controls enter restart context, so older snapshots lacking those
+fields are rejected. See [focused evidence](../../docs/validation/spray-eb-rate-20260918.md).
