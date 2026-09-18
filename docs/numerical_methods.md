@@ -2747,6 +2747,8 @@ See [equations, reference identity and focused checks](validation/characteristic
 The serial two-level AMR hydro/Strang APIs also forward pressure targets.
 Coarse interpolation halos receive pressure ghosts; fine stages apply them
 only on root physical faces touched by the patch. Full refinement matches the
-uniform fine-grid hydro state exactly in the focused cases. AMR transport,
-application input and MPI dispatch are still pending; see
+uniform fine-grid hydro state exactly in the focused cases. Two-level transport
+and the complete reactive split now share pressure ghosts and forward targets
+through every stage. AMR application input and MPI dispatch are still pending; see
+[transport evidence](validation/pressure-outlet-amr-transport-20260918.md) and
 [two-level hydro evidence](validation/pressure-outlet-amr-hydro-20260918.md).
