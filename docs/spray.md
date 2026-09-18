@@ -2959,3 +2959,12 @@ number gate, including isotropic stress and thermal transport. This estimate is
 not a general nonlinear stability proof. Coupled-spray/application selection,
 MPI and nonperiodic paths remain open. See
 [time-integration evidence and initial-test diagnosis](validation/les-dynamic-step-20260918.md).
+
+The serial coupled `advance_spray_reactive_3d` API accepts `les_model='dynamic'`
+with periodic boundaries. Optional `les_test_filter`, `les_test_ratio` and
+`les_grid_ratio` default to box, two and one. Dynamic SGS runs in both half steps;
+`cs=0` disables it and positive cs enables it without scaling the computed
+coefficients. Fixed prt/sct do not set dynamic heat/species transport. Invalid
+filters and nonperiodic faces reject even when cs is zero. Application input,
+restart identity and MPI dynamic dispatch remain pending. See
+[coupled dynamic checks](validation/les-dynamic-coupled-20260918.md).
