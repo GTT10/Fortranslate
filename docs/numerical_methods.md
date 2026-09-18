@@ -2734,8 +2734,11 @@ The helper returns a consistent NASA7 conserved state and temperature or preserv
 outputs on rejection. Regular 3D RK2 hydro now accepts optional
 `outlet_pressure(6)`: positive entries select pressure extrapolation on existing
 `outflow` faces; zero retains ordinary extrapolation. Both ghost layers are
-recomputed at each stage. Reaction/transport, application input, AMR and MPI
-connections remain pending. See
+recomputed at each stage. Regular transport shares this ghost fill, including
+transverse corners in deterministic face order. The full reactive wrapper
+forwards the pressure option to hydro and both transport halves. Application
+input, AMR and MPI connections remain pending. See
+[transport evidence](validation/pressure-outlet-transport-20260918.md) and
 [hydro evidence](validation/pressure-outlet-hydro-20260918.md). This is
 separate from GC-NSCBC, which the pinned reference guide marks unported.
 See [equations, reference identity and focused checks](validation/characteristic-pressure-ghost-20260918.md).
