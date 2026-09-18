@@ -2995,3 +2995,10 @@ and rejection are collective; output publishes only after all ranks accept.
 Two/four-rank unequal-slab checks match serial filtering exactly. Dynamic MPI
 coefficient evaluation and time stepping still require connection; see
 [distributed filter evidence](validation/les-mpi-filter-20260918.md).
+
+`les_mpi_dynamic_mod::compute_mpi_dynamic_les_coefficients_3d` now evaluates and
+smooths dynamic coefficient fields on periodic x slabs, using distributed
+filters and neighbor primitive gradients. Two/four-rank unequal partitions match
+serial coefficients exactly; invalid local configuration/EOS data reject
+collectively. Distributed dynamic fluxes, stepping and application dispatch
+remain open. See [MPI coefficient-field evidence](validation/les-mpi-dynamic-field-20260918.md).
