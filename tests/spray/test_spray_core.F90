@@ -15,6 +15,7 @@ program test_spray_core
   use spray_wall_impact_mod
   use spray_breakup_mod
   use spray_coupling_3d_mod
+  use les_filter_3d_mod
   use les_dynamic_smagorinsky_mod
   use les_smagorinsky_3d_mod
   implicit none
@@ -1153,6 +1154,65 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
+  case('les_filter')
+    block
+      real(dp), allocatable :: w(:)
+      real(dp) :: field(2,4,3,2),filtered(2,4,3,2),halo(2,10,9,8),cropped(2,4,3,2),before(2,4,3,2)
+      integer :: i,j,k
+      call les_filter_weights('box',2,w,ok)
+      call require(ok.and.size(w)==3,'box width')
+      call require(all(w==[.25_dp,.5_dp,.25_dp]),'box endpoint weights')
+      field=0;field(1,1,1,1)=1;field(2,:,:,:)=7
+      call filter_les_field_3d(field,w,filtered,ok)
+      call require(ok,'periodic impulse filter')
+      call near(filtered(1,1,1,1),.125_dp,1e-13_dp,'tensor impulse center')
+      call near(sum(filtered(1,:,:,:)),1._dp,1e-13_dp,'filter conservation')
+      call require(all(filtered(2,:,:,:)==7),'filter constant')
+      do i=1,4
+        field(1,i,:,:)=cos(2*pi*real(i-1,dp)/4)
+      end do
+      call filter_les_field_3d(field,w,filtered,ok)
+      call require(ok.and.maxval(abs(filtered(1,:,:,:)-.5_dp*field(1,:,:,:)))<1e-14_dp,'Fourier attenuation')
+      call les_filter_weights('box',6,w,ok)
+      call require(ok.and.size(w)==7,'coefficient smoothing width')
+      call near(w(1),1._dp/12,1e-13_dp,'width six endpoint')
+      call near(w(4),1._dp/6,1e-13_dp,'width six center')
+      do k=1,8
+        do j=1,9
+          do i=1,10
+            halo(:,i,j,k)=field(:,modulo(i-4,4)+1,modulo(j-4,3)+1,modulo(k-4,2)+1)
+          end do
+        end do
+      end do
+      call filter_les_field_3d(field,w,filtered,ok)
+      call require(ok,'wide periodic filter on small grid')
+      call filter_les_field_3d(halo,w,cropped,ok,[4,4,4])
+      call require(ok.and.all(cropped==filtered),'halo and periodic filters agree')
+      before=cropped
+      call filter_les_field_3d(halo,w,cropped,ok,[3,4,4])
+      call require(.not.ok.and.all(cropped==before),'insufficient halo rollback')
+      halo(1,1,1,1)=ieee_value(1._dp,ieee_quiet_nan)
+      call filter_les_field_3d(halo,w,cropped,ok,[4,4,4])
+      call require(.not.ok.and.all(cropped==before),'nonfinite halo rollback')
+      call les_filter_weights('gaussian',2,w,ok)
+      call require(ok,'Gaussian weights')
+      call near(w(1)/w(2),exp(-1.5_dp),1e-13_dp,'Gaussian analytic weight ratio')
+      call near(sum(w),1._dp,1e-13_dp,'Gaussian normalization')
+      call filter_les_field_3d(field,w,filtered,ok)
+      call require(ok,'Gaussian periodic filter')
+      call near(filtered(1,1,1,1),w(2),1e-13_dp,'Gaussian Fourier response')
+      call les_filter_weights('none',2,w,ok)
+      call require(ok,'identity weights')
+      call filter_les_field_3d(field,w,filtered,ok)
+      call require(ok.and.all(filtered==field),'identity filter')
+      before=filtered;w=huge(1._dp)
+      call filter_les_field_3d(field,w,filtered,ok)
+      call require(.not.ok.and.all(filtered==before),'oversized weights rollback')
+      call les_filter_weights('box',3,w,ok)
+      call require(.not.ok.and..not.allocated(w),'odd box ratio rejected')
+      call les_filter_weights('gaussian',1,w,ok)
+      call require(.not.ok.and..not.allocated(w),'odd Gaussian ratio rejected')
+    end block
   case('les_dynamic_algebra')
     block
       real(dp) :: kij(3,3),rut(3),aij(3,3),a,ft(3),bij(3,3),b,test_ft(3),coeff(3),vel(3),leonard(3,3)

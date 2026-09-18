@@ -17,6 +17,7 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_application_mod.F90
       src/les/les_smagorinsky_3d_mod.F90
       src/les/les_dynamic_smagorinsky_mod.F90
+      src/les/les_filter_3d_mod.F90
     )
     if(PELEF_ENABLE_MPI)
       target_sources(${target} PRIVATE src/spray/spray_mpi_exchange_mod.F90

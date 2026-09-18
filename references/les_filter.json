@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "sources": [
+    {
+      "path": "Source/Utility/Filter/Filter.cpp",
+      "sha256": "d6a2679248211602da286e220fa3736d7560a9c6e2cd6a6096e924f8e5899726"
+    },
+    {
+      "path": "Source/Utility/Filter/Filter.H",
+      "sha256": "38e4a7698687dbe30e50beb58a4d706f63881cfb0740af174dfa2f2714f42a2f"
+    }
+  ],
+  "implemented_scope": "Standard box, normalized truncated Gaussian and identity weights; tensor-product filtering of periodic fields or supplied halos. Dynamic LES field/flux integration remains pending.",
+  "numerical_changes": [
+    "Three separable passes rather than a triple stencil sum; roundoff ordering differs",
+    "Gaussian common prefactor cancels before normalization",
+    "Invalid input preserves caller output; filter ratio bounded to 1..64"
+  ],
+  "remaining_filters": "Polynomial and optimized approximations are not implemented."
+}
