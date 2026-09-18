@@ -44,7 +44,7 @@ module amr_reactive_3d_mod
 
 contains
   subroutine regrid_amr_reactive_3d(species,patch,coarse,ct,fine,ft,next_patch,ok,reconstruction,limiter, &
-      boundary_faces,inflow_state,inflow_temperature)
+      boundary_faces,inflow_state,inflow_temperature,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(inout) :: patch
     type(amr_patch_3d), intent(in) :: next_patch
@@ -53,6 +53,7 @@ contains
     logical, intent(out) :: ok
     character(len=*), intent(in) :: reconstruction,limiter
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), allocatable :: slope_state(:,:,:,:),ghost_temperature(:,:,:)
     integer :: shift,face
@@ -63,6 +64,14 @@ contains
     integer :: n(3),lo(3),oldlo(3),i,j,k,ci,cj,ck,ii,jj,kk,oldidx(3),v,r,attempt
     logical :: local_ok,physical
     ok=.false.
+    if (present(outlet_pressure)) then
+      if (.not.all(ieee_is_finite(outlet_pressure))) return
+      if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+      if (any(outlet_pressure>0)) then
+        if (.not.present(boundary_faces)) return
+        if (any(outlet_pressure>0.and.boundary_faces/='outflow')) return
+      end if
+    end if
     if (.not.patch%is_valid().or..not.next_patch%is_valid()) return
     if (present(boundary_faces)) then
       if (.not.valid_reactive_boundaries_3d(boundary_faces)) return
@@ -103,6 +112,9 @@ contains
       allocate(slope_state(size(c,1),n(1)+4,n(2)+4,n(3)+4),ghost_temperature(n(1)+4,n(2)+4,n(3)+4))
       call fill_reactive_boundary_ghosts_3d(c,tc,boundary_faces,slope_state,ghost_temperature,local_ok, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if (.not.local_ok) return
+      call fill_pressure_outlet_ghosts_3d(species,n,boundary_faces,outlet_pressure, &
+        slope_state,ghost_temperature,local_ok)
       if (.not.local_ok) return
     else
       allocate(slope_state,source=c)
