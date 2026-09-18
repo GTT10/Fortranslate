@@ -193,7 +193,7 @@ contains
     real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
     real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:),ref(:,:,:,:),rt(:,:,:)
     real(dp), allocatable :: inlet(:,:),it(:),before(:),after(:),ledger(:),rl(:),total_ledger(:),scale(:)
-    real(dp) :: r,interval,velocity(3),factor,inlet_density
+    real(dp) :: r,interval,velocity(3),factor,inlet_density,outlet(6)
     integer :: mode,scheme,lo(3),hi(3),a,i,j,k,nv,rr,substep
     character(len=32) :: faces(6),method,bad_faces(6)
     interval=1e-8_dp;velocity=[30._dp,-20._dp,10._dp]
@@ -264,6 +264,30 @@ contains
           call require(all(ref==f).and.all(rt==ft).and.r==0,'full refinement exact fine-grid equality')
           call require(all(abs(total_ledger-ledger)<=2e-11_dp*scale),'full refinement boundary transfer')
         end if
+        outlet=0;outlet(2)=102325.0_dp;outlet(5)=outlet(2)
+        c=c0;t=t0;f=f0;ft=ft0
+        call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
+          method,'mc',faces,ledger,inlet,it,outlet)
+        call require(ok,'AMR pressure outlet hydro accepted')
+        call composite_integrals_amr_3d(c,f,p,dx,dy,dz,after,ok)
+        scale=max(abs(before),abs(ledger),1e-20_dp);scale(2:4)=maxval(scale(2:4))
+        call require(ok.and.all(abs(after-before-ledger)<=2e-11_dp*scale),'AMR pressure outlet balance')
+        if (mode==7) then
+          ref=f0;rt=ft0;total_ledger=0
+          do substep=1,rr
+            call advance_reactive_boundary_hydro_3d(species,ref,rt,[dx,dy,dz]/rr,interval/rr, &
+              faces,method,'mc','rusanov',rl,ok,inlet,it,outlet_pressure=outlet)
+            call require(ok,'pressure full refinement reference')
+            total_ledger=total_ledger+rl
+          end do
+          call require(all(ref==f).and.all(rt==ft).and.r==0,'pressure full refinement exact equality')
+          call require(all(abs(total_ledger-ledger)<=2e-11_dp*scale),'pressure full refinement boundary transfer')
+        end if
+        c=c0;t=t0;f=f0;ft=ft0;outlet(2)=1
+        call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
+          method,'mc',faces,ledger,inlet,it,outlet)
+        call require(.not.ok.and.hierarchy_matches(c,t,f,ft,c0,t0,f0,ft0).and.r==0.and.all(ledger==0), &
+          'AMR pressure outlet rejection rollback')
         c=c0;t=t0;f=f0;ft=ft0;inlet(1,1)=-1
         call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
           method,'mc',faces,ledger,inlet,it)

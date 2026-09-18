@@ -1,7 +1,7 @@
 module amr_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
-    valid_reactive_boundaries_3d,valid_wall_velocity_3d
+    valid_reactive_boundaries_3d,valid_wall_velocity_3d,fill_pressure_outlet_ghosts_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use elementary_kinetics_mod, only: &
@@ -448,7 +448,7 @@ contains
       fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
       chemistry_enabled, rtol, atol, maximum_reflux_correction, ok, &
       reconstruction, limiter, chemistry_integrator, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -470,6 +470,7 @@ contains
     real(dp), allocatable :: fine_candidate(:, :, :, :)
     real(dp), allocatable :: fine_candidate_temperature(:, :, :)
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), optional, intent(out) :: boundary_change(:)
     real(dp) :: candidate_boundary(size(coarse_state,1))
@@ -498,7 +499,7 @@ contains
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
         maximum_reflux_correction, ok, reconstruction, limiter, &
-        boundary_faces,boundary_change,inflow_state,inflow_temperature)
+        boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
       return
     end if
 
@@ -535,7 +536,7 @@ contains
       species, patch, coarse_candidate, coarse_candidate_temperature, &
       fine_candidate, fine_candidate_temperature, dx, dy, dz, dt, &
       riemann_solver, candidate_reflux, local_ok, reconstruction, limiter, &
-      boundary_faces,candidate_boundary,inflow_state,inflow_temperature)
+      boundary_faces,candidate_boundary,inflow_state,inflow_temperature,outlet_pressure)
     if (.not. local_ok) return
 
     if (present(chemistry_integrator)) then
@@ -569,11 +570,12 @@ contains
       species, patch, coarse_state, coarse_temperature, &
       fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
       maximum_reflux_correction, ok, reconstruction, limiter, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     type(amr_patch_3d) :: interpolation_patch
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), optional, intent(out) :: boundary_change(:)
     real(dp), allocatable :: start_ghost(:,:,:,:),end_ghost(:,:,:,:),start_gt(:,:,:),end_gt(:,:,:)
@@ -618,6 +620,14 @@ contains
     if (present(boundary_change)) then
       boundary_change=0
       if (size(boundary_change)/=size(coarse_state,1)) return
+    end if
+    if (present(outlet_pressure)) then
+      if (.not.all(ieee_is_finite(outlet_pressure))) return
+      if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+      if (any(outlet_pressure>0)) then
+        if (.not.present(boundary_faces)) return
+        if (any(outlet_pressure>0.and.boundary_faces/='outflow')) return
+      end if
     end if
     selected_reconstruction = "pcm"
     selected_limiter = "mc"
@@ -675,7 +685,7 @@ contains
     if (present(boundary_faces)) then
       call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
         boundary_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
-        inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z)
+        inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z,outlet_pressure)
     else
     select case (trim(selected_reconstruction))
     case ("pcm")
@@ -727,6 +737,12 @@ contains
       call fill_reactive_boundary_ghosts_3d(coarse_candidate,coarse_candidate_temperature,boundary_faces,end_ghost,end_gt, &
         local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       if (.not.local_ok) return
+      call fill_pressure_outlet_ghosts_3d(species,[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz], &
+        boundary_faces,outlet_pressure,start_ghost,start_gt,local_ok)
+      if (.not.local_ok) return
+      call fill_pressure_outlet_ghosts_3d(species,[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz], &
+        boundary_faces,outlet_pressure,end_ghost,end_gt,local_ok)
+      if (.not.local_ok) return
       call initialize_amr_patch_3d(patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4, &
         patch%coarse_i_lower+2,patch%coarse_i_upper+2,patch%coarse_j_lower+2,patch%coarse_j_upper+2, &
         patch%coarse_k_lower+2,patch%coarse_k_upper+2,ratio,interpolation_patch,local_ok)
@@ -744,7 +760,7 @@ contains
         dx / real(ratio, dp), dy / real(ratio, dp), &
         dz / real(ratio, dp), fine_dt, alpha_start, alpha_end, &
         riemann_solver, selected_reconstruction, selected_limiter, &
-        fine_flux_x, fine_flux_y, fine_flux_z, local_ok,touched,boundary_faces,inflow_state,inflow_temperature)
+        fine_flux_x, fine_flux_y, fine_flux_z, local_ok,touched,boundary_faces,inflow_state,inflow_temperature,outlet_pressure)
       else
       call advance_fine_patch_ssprk2_3d( &
         species, patch, coarse_start, coarse_start_temperature, &
@@ -805,7 +821,8 @@ contains
       species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, &
       dx, dy, dz, dt, alpha_start, alpha_end, riemann_solver, &
-      reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok,touched,faces,inflow_state,inflow_temperature)
+      reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok,touched,faces,inflow_state,inflow_temperature, &
+        outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: coarse_start(:, :, :, :)
@@ -822,6 +839,7 @@ contains
     logical, intent(out) :: ok
     logical, optional, intent(in) :: touched(6)
     character(len=*), optional, intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
 
     real(dp), allocatable :: old_state(:, :, :, :)
@@ -879,7 +897,7 @@ contains
       if (.not.present(faces)) return
       call compute_boundary_fine_fluxes_3d(species,patch,coarse_start,coarse_start_temperature, &
         coarse_end,coarse_end_temperature,old_state,old_temperature,alpha_start,riemann_solver,reconstruction,limiter, &
-        touched,faces,first_flux_x,first_flux_y,first_flux_z,local_ok,inflow_state,inflow_temperature)
+        touched,faces,first_flux_x,first_flux_y,first_flux_z,local_ok,inflow_state,inflow_temperature,outlet_pressure)
     else
     call compute_fine_patch_face_fluxes_3d( &
       species, patch, coarse_start, coarse_start_temperature, &
@@ -902,7 +920,7 @@ contains
       if (.not.present(faces)) return
       call compute_boundary_fine_fluxes_3d(species,patch,coarse_start,coarse_start_temperature, &
         coarse_end,coarse_end_temperature,stage_state,stage_temperature,alpha_end,riemann_solver,reconstruction,limiter, &
-        touched,faces,second_flux_x,second_flux_y,second_flux_z,local_ok,inflow_state,inflow_temperature)
+        touched,faces,second_flux_x,second_flux_y,second_flux_z,local_ok,inflow_state,inflow_temperature,outlet_pressure)
     else
     call compute_fine_patch_face_fluxes_3d( &
       species, patch, coarse_start, coarse_start_temperature, &
@@ -931,7 +949,7 @@ contains
   end subroutine advance_fine_patch_ssprk2_3d
 
   subroutine build_boundary_fine_ghosts_3d(species,patch,c0,t0,c1,t1,u,t,alpha,reconstruction,limiter, &
-      touched,faces,ghost,gt,ok,inflow_state,inflow_temperature,viscous_wall,wall_velocity)
+      touched,faces,ghost,gt,ok,inflow_state,inflow_temperature,viscous_wall,wall_velocity,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: c0(:,:,:,:),t0(:,:,:),c1(:,:,:,:),t1(:,:,:),u(:,:,:,:),t(:,:,:),alpha
@@ -940,6 +958,8 @@ contains
     real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: local_pressure(6)
     logical, optional, intent(in) :: viscous_wall
     real(dp) :: primitive(reactive_nprim(size(species))),shift(3),old_momentum(3),rho
     integer :: n(3),ex(3),q(3),ci(3),lower(3),i,j,k,a,face,inlet
@@ -1025,10 +1045,23 @@ contains
     end do
     ok=all(ieee_is_finite(ghost)).and.all(ieee_is_finite(gt))
     if (ok) ok=minval(gt)>0
+    if (.not.ok) return
+    if (present(outlet_pressure)) then
+      if (.not.all(ieee_is_finite(outlet_pressure))) then
+        ok=.false.;return
+      end if
+      if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp).or. &
+          any(outlet_pressure>0.and.faces/='outflow')) then
+        ok=.false.;return
+      end if
+      local_pressure=0
+      where(touched) local_pressure=outlet_pressure
+      call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost,gt,ok)
+    end if
   end subroutine build_boundary_fine_ghosts_3d
 
   subroutine compute_boundary_fine_fluxes_3d(species,patch,c0,t0,c1,t1,u,t,alpha,solver,reconstruction,limiter, &
-      touched,faces,fx,fy,fz,ok,inflow_state,inflow_temperature)
+      touched,faces,fx,fy,fz,ok,inflow_state,inflow_temperature,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: c0(:,:,:,:),t0(:,:,:),c1(:,:,:,:),t1(:,:,:),u(:,:,:,:),t(:,:,:),alpha
@@ -1036,6 +1069,7 @@ contains
     logical, intent(in) :: touched(6)
     real(dp), intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
     integer :: n(3),ex(3)
@@ -1045,7 +1079,7 @@ contains
     allocate(ghost(size(u,1),ex(1),ex(2),ex(3)),gt(ex(1),ex(2),ex(3)))
     allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
     call build_boundary_fine_ghosts_3d(species,patch,c0,t0,c1,t1,u,t,alpha,reconstruction,limiter, &
-      touched,faces,ghost,gt,local_ok,inflow_state,inflow_temperature)
+      touched,faces,ghost,gt,local_ok,inflow_state,inflow_temperature,outlet_pressure=outlet_pressure)
     if (.not.local_ok) return
     if (reconstruction=='pcm') then
       call compute_reactive_face_fluxes_3d(species,ghost,gt,ex(1),ex(2),ex(3),solver,gx,gy,gz,local_ok)
@@ -1911,7 +1945,7 @@ contains
       species, patch, coarse_state, coarse_temperature, fine_state, &
       fine_temperature, dx, dy, dz, dt, riemann_solver, &
       maximum_reflux_correction, ok, reconstruction, limiter, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(inout) :: coarse_state(:, :, :, :)
@@ -1925,6 +1959,7 @@ contains
     character(len=*), intent(in), optional :: reconstruction, limiter
 
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), optional, intent(out) :: boundary_change(:)
 
@@ -1935,27 +1970,27 @@ contains
           fine_temperature, dx, dy, dz, dt, riemann_solver, &
           maximum_reflux_correction, ok, reconstruction=reconstruction, &
           limiter=limiter, boundary_faces=boundary_faces,boundary_change=boundary_change, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
       else
         call advance_amr_reactive_hydro_3d( &
           species, patch, coarse_state, coarse_temperature, fine_state, &
           fine_temperature, dx, dy, dz, dt, riemann_solver, &
           maximum_reflux_correction, ok, reconstruction=reconstruction, &
           boundary_faces=boundary_faces,boundary_change=boundary_change, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
       end if
     else if (present(limiter)) then
       call advance_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
         maximum_reflux_correction, ok, limiter=limiter, boundary_faces=boundary_faces,boundary_change=boundary_change, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
     else
       call advance_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
         maximum_reflux_correction, ok,boundary_faces=boundary_faces,boundary_change=boundary_change, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
     end if
   end subroutine dispatch_amr_reactive_hydro_3d
 
