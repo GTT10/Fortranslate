@@ -1,6 +1,6 @@
 program test_les_mpi_amr_tree
   use mpi_f08
-  use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d
+  use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d,compute_mpi_amr_tree_les_timestep_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -101,6 +101,21 @@ program test_les_mpi_amr_tree
             local%fields(node)%values=saved%fields(node)%values
             local_t%fields(node)%values=saved_t%fields(node)%values
           end do
+          call compute_amr_patch_tree_les_timestep_3d(tree,species,saved,saved_t,spacing,.05_dp,faces, &
+            .17_dp,.7_dp,.7_dp,chosen,diffusivity,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+          call require(ok,'serial timestep oracle')
+          call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,.05_dp,faces, &
+            .17_dp,.7_dp,.7_dp,half_dt,half_diff,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+          call require(ok,'MPI timestep')
+          call require(abs(half_dt-chosen)<=2e-12_dp*chosen,'MPI timestep parity')
+          call require(abs(half_diff-diffusivity)<=2e-12_dp*diffusivity,'MPI diffusivity parity')
+          half_dt=-7;half_diff=-9;trial_ci=.05_dp
+          if (rank==nranks-1) trial_ci=.1_dp
+          call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,trial_ci,faces, &
+            .17_dp,.7_dp,.7_dp,half_dt,half_diff,MPI_COMM_WORLD,ok,model=model)
+          call require(.not.ok.and.half_dt==-7.and.half_diff==-9,'CFL disagreement preserves outputs')
           call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,dt,faces, &
             .17_dp,.7_dp,.7_dp,mpi_budget,mpi_largest,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
             coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
