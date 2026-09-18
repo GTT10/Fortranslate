@@ -3042,3 +3042,15 @@ The setting enters checkpoint identity only when enabled, preserving the
 arithmetic default context. Restart rejects a changed or removed true setting.
 See [reference and harmonic parity checks](validation/les-harmonic-20260918.md)
 and [application restart checks](validation/les-harmonic-application-20260918.md).
+
+### Static LES isotropic stress
+
+`smagorinsky_stress`, `wale_stress`, `vreman_stress`,
+`compute_les_rhs_3d`, `compute_les_ghosted_rhs_3d` and
+`advance_les_ssprk2_3d` accept optional trailing `ci` in `[0,1]`.
+Omission or zero retains the deviatoric model. Positive `ci` adds the pinned
+isotropic stress, including pressure work in the energy flux; it does not change
+eddy viscosity or species/heat diffusion. It can act with `cs=0`.
+Both SSPRK2 stages include its additional timestep estimate and EOS checks.
+MPI, coupled-spray and application controls are not yet connected.
+See [formula and focused evidence](validation/les-isotropic-20260918.md).
