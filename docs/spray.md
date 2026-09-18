@@ -2936,3 +2936,11 @@ caller-supplied halos. The box ratio-six kernel is available for dynamic coeffic
 smoothing. Output is preserved on rejection. These building blocks still require
 connection to dynamic LES field evaluation and fluxes; see
 [filter evidence and reference scope](validation/les-filter-20260918.md).
+
+`compute_dynamic_les_coefficients_3d` now connects these building blocks on a
+periodic regular grid: conserved-state filtering, EOS recovery, centered
+primitive gradients, grid/test contractions and ratio-six box smoothing.
+It returns the three dynamic coefficient fields transactionally; dynamic face
+fluxes, time integration, application selection and nonperiodic/MPI/AMR field
+paths remain to be connected. See
+[coefficient-field checks](validation/les-dynamic-field-20260918.md).
