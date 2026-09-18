@@ -9,6 +9,7 @@ module les_dynamic_smagorinsky_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   implicit none
   private
+  public :: les_face_mean
   public :: advance_dynamic_les_ssprk2_3d
   public :: compute_dynamic_les_rhs_3d
   public :: compute_dynamic_les_coefficients_3d
@@ -16,13 +17,27 @@ module les_dynamic_smagorinsky_mod
   ! Pinned PeleC Constants.H small_num(), including its coefficient floor.
   real(dp), parameter :: regularizer=1e-8_dp
 contains
-  subroutine advance_dynamic_les_ssprk2_3d(species,state,temperature,spacing,test_model,test_ratio,dt,ok,grid_ratio)
+  pure elemental real(dp) function les_face_mean(a,b,harmonic) result(value)
+    real(dp), intent(in) :: a,b
+    logical, intent(in) :: harmonic
+    real(dp) :: small,large
+    value=.5_dp*a+.5_dp*b
+    if (.not.harmonic) return
+    value=0
+    if (.not.((a>0.and.b>0).or.(a<0.and.b<0))) return
+    small=min(abs(a),abs(b));large=max(abs(a),abs(b))
+    ! Equivalent to 2*a*b/(a+b), without product overflow/underflow.
+    value=sign(small/(.5_dp+.5_dp*(small/large)),a)
+  end function
+
+  subroutine advance_dynamic_les_ssprk2_3d(species,state,temperature,spacing,test_model,test_ratio,dt,ok,grid_ratio,harmonic_mean)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
     character(len=*), intent(in) :: test_model
     integer, intent(in) :: test_ratio
     integer, optional, intent(in) :: grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
     logical, intent(out) :: ok
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
     real(dp) :: diffusion
@@ -34,7 +49,8 @@ contains
     allocate(rhs,mold=state);allocate(stage,mold=state);allocate(candidate,mold=state)
     allocate(t1,mold=temperature);allocate(t2,mold=temperature)
     call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,local_ok, &
-      grid_ratio,diffusion)
+      grid_ratio,diffusion, &
+      harmonic_mean=harmonic_mean)
     if (.not.local_ok) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     if (dt==0) then
@@ -43,7 +59,8 @@ contains
     stage=state+dt*rhs
     call recover_reactive_temperatures_3d(species,stage,temperature,n(1),n(2),n(3),t1,local_ok)
     if (.not.local_ok) return
-    call compute_dynamic_les_rhs_3d(species,stage,t1,spacing,test_model,test_ratio,rhs,local_ok,grid_ratio,diffusion)
+    call compute_dynamic_les_rhs_3d(species,stage,t1,spacing,test_model,test_ratio,rhs,local_ok,grid_ratio,diffusion, &
+      harmonic_mean=harmonic_mean)
     if (.not.local_ok) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     candidate=.5_dp*state+.5_dp*stage+.5_dp*dt*rhs
@@ -55,12 +72,13 @@ contains
   ! Periodic dynamic SGS flux divergence, arithmetic cell-to-face interpolation.
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
-      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x)
+      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
     integer, intent(in) :: test_ratio
     real(dp), intent(inout) :: rhs(:,:,:,:)
+    logical, optional, intent(in) :: harmonic_mean
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     real(dp), optional, intent(out) :: maximum_diffusivity
@@ -74,8 +92,10 @@ contains
     real(dp) :: primitive(reactive_nprim(size(species))),g(3,3),gt(3),kij(3,3),rut(3),stress(3,3),a,ft(3)
     real(dp) :: c(3),sigma(3),velocity(3),flux(5),y(size(species)),t,sound,mw,r,cp,cv,gamma,h,e,entropy
     integer :: n(3),i,j,k,d,cell(3),lo(3),hi(3),neighbor(3),ratio
-    logical :: local_ok
+    logical :: local_ok,harmonic
     ok=.false.;n=shape(temperature);ratio=1;diffusion=0
+    harmonic=.false.
+    if (present(harmonic_mean)) harmonic=harmonic_mean
     if (present(maximum_diffusivity)) maximum_diffusivity=0
     if (present(grid_ratio)) ratio=grid_ratio
     if (any(shape(rhs)/=shape(state))) return
@@ -143,10 +163,10 @@ contains
         do j=1,n(2)
           do i=face_first,last_x
             neighbor=[i,j,k];neighbor(d)=modulo(neighbor(d),n(d))+1
-            c=.5_dp*(coeff(:,i,j,k)+coeff(:,neighbor(1),neighbor(2),neighbor(3)))
-            stress=.5_dp*(aij(:,:,i,j,k)+aij(:,:,neighbor(1),neighbor(2),neighbor(3)))
-            a=.5_dp*(alpha(i,j,k)+alpha(neighbor(1),neighbor(2),neighbor(3)))
-            ft=.5_dp*(thermal(:,i,j,k)+thermal(:,neighbor(1),neighbor(2),neighbor(3)))
+            c=les_face_mean(coeff(:,i,j,k),coeff(:,neighbor(1),neighbor(2),neighbor(3)),harmonic)
+            stress=les_face_mean(aij(:,:,i,j,k),aij(:,:,neighbor(1),neighbor(2),neighbor(3)),harmonic)
+            a=les_face_mean(alpha(i,j,k),alpha(neighbor(1),neighbor(2),neighbor(3)),harmonic)
+            ft=les_face_mean(thermal(:,i,j,k),thermal(:,neighbor(1),neighbor(2),neighbor(3)),harmonic)
             velocity=.5_dp*(q(2:4,i,j,k)+q(2:4,neighbor(1),neighbor(2),neighbor(3)))
             y=.5_dp*(q(6:,i,j,k)+q(6:,neighbor(1),neighbor(2),neighbor(3)))
             t=.5_dp*(temps(i,j,k)+temps(neighbor(1),neighbor(2),neighbor(3)))

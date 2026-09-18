@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "pelec_commit": "bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8",
+  "source": "Source/PeleCUtilities.H",
+  "sha256": "2a77e64ce3cf3cb4eb00716ae6de66b9e470f007a040c0c812878142ea6e940d",
+  "routine": "pc_move_transcoefs_to_ec",
+  "implemented_scope": "Arithmetic and signed harmonic interpolation for dynamic LES coefficient, stress, isotropic and thermal quantities in serial/MPI RHS and SSPRK2 APIs. Coupled/application selection remains pending.",
+  "numerical_changes": [
+    "Use same-sign comparisons instead of testing the product",
+    "Use signed min magnitude divided by (0.5+0.5 min/max) to avoid product overflow and underflow",
+    "Arithmetic mean sums individually halved operands"
+  ]
+}

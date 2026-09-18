@@ -20,7 +20,8 @@ program test_les_mpi_dynamic
   real(dp) :: reference_state(15,5,3,2),reference_t(5,3,2),dt
   integer :: rank,nranks,ierr,i,j,k,first(3),extent(3),lo,hi,m,ratio,grid
   character(len=16) :: model
-  logical :: ok
+  real(dp) :: arithmetic_rhs(15,5,3,2)
+  logical :: ok,harmonic
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -41,23 +42,27 @@ program test_les_mpi_dynamic
   end do
   state=full(:,lo:hi,:,:);temperature=temps(lo:hi,:,:)
   allocate(coeff(3,extent(1),3,2),rhs(15,extent(1),3,2))
-  do m=1,4
+  do m=1,8
+    harmonic=m>4
     model='box';ratio=2;grid=1
-    if (m==2) then
+    if (modulo(m-1,4)==1) then
       model='gaussian';ratio=4;grid=2
     end if
-    if (m==3) model='box5opt'
-    if (m==4) model='gaussian3opt'
+    if (modulo(m-1,4)==2) model='box5opt'
+    if (modulo(m-1,4)==3) model='gaussian3opt'
     call compute_dynamic_les_coefficients_3d(species,full,temps,spacing,model,ratio,reference,ok,grid)
     call require(ok,'serial dynamic coefficient field')
     call compute_mpi_dynamic_les_coefficients_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
       model,ratio,coeff,ok,grid)
     call require(ok.and.all(coeff==reference(:,lo:hi,:,:)),'exact serial dynamic coefficient parity')
     call require(maxval(reference)>1e-6_dp,'nontrivial coefficients')
-    call compute_dynamic_les_rhs_3d(species,full,temps,spacing,model,ratio,serial_rhs,ok,grid,serial_diffusion)
+    call compute_dynamic_les_rhs_3d(species,full,temps,spacing,model,ratio,serial_rhs,ok,grid,serial_diffusion, &
+      harmonic_mean=harmonic)
     call require(ok,'serial dynamic flux')
+    if (m==1) arithmetic_rhs=serial_rhs
+    if (m==5) call require(maxval(abs(serial_rhs-arithmetic_rhs))>1e-6_dp,'harmonic changes face flux')
     call compute_mpi_dynamic_les_rhs_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells,model,ratio, &
-      rhs,ok,grid,diffusion)
+      rhs,ok,grid,diffusion,harmonic)
     call require(ok.and.all(rhs==serial_rhs(:,lo:hi,:,:)),'exact serial flux parity')
     call require(diffusion==serial_diffusion,'global diffusion estimate parity')
     do i=1,15
@@ -69,10 +74,10 @@ program test_les_mpi_dynamic
     end do
     dt=.025_dp/(diffusion*sum(1/spacing**2))
     reference_state=full;reference_t=temps
-    call advance_dynamic_les_ssprk2_3d(species,reference_state,reference_t,spacing,model,ratio,dt,ok,grid)
+    call advance_dynamic_les_ssprk2_3d(species,reference_state,reference_t,spacing,model,ratio,dt,ok,grid,harmonic)
     call require(ok,'serial dynamic step')
     call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
-      model,ratio,dt,ok,grid)
+      model,ratio,dt,ok,grid,harmonic)
     call require(ok.and.all(state==reference_state(:,lo:hi,:,:)).and.all(temperature==reference_t(lo:hi,:,:)), &
       'exact serial dynamic step parity')
     do i=1,15
@@ -84,19 +89,24 @@ program test_les_mpi_dynamic
     end do
     state=full(:,lo:hi,:,:);temperature=temps(lo:hi,:,:)
     call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
-      model,ratio,0._dp,ok,grid)
+      model,ratio,0._dp,ok,grid,harmonic)
     call require(ok.and.all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)),'zero step unchanged')
     call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
-      model,ratio,20*dt,ok,grid)
+      model,ratio,20*dt,ok,grid,harmonic)
     call require(.not.ok.and.all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)), &
       'oversized step collective rollback')
     if (rank==nranks-1) dt=dt/2
     call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
-      model,ratio,dt,ok,grid)
+      model,ratio,dt,ok,grid,harmonic)
     call require(.not.ok.and.all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)), &
       'inconsistent step collective rollback')
   end do
   call require(all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)),'inputs preserved')
+  saved_rhs=rhs
+  harmonic=rank==nranks-1
+  call compute_mpi_dynamic_les_rhs_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells,'box',2,rhs,ok, &
+    harmonic_mean=harmonic)
+  call require(.not.ok.and.all(rhs==saved_rhs),'rank-dependent face interpolation rejected')
   saved=coeff;saved_rhs=rhs
   grid=1
   if (rank==nranks-1) grid=2

@@ -16,13 +16,14 @@ module les_mpi_dynamic_mod
   public :: advance_mpi_dynamic_les_ssprk2_3d
 contains
   subroutine advance_mpi_dynamic_les_ssprk2_3d(comm,species,state,temperature,spacing,cells,test_model, &
-      test_ratio,dt,ok,grid_ratio)
+      test_ratio,dt,ok,grid_ratio,harmonic_mean)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
     integer, intent(in) :: cells(3),test_ratio
     character(len=*), intent(in) :: test_model
+    logical, optional, intent(in) :: harmonic_mean
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
@@ -43,7 +44,7 @@ contains
     valid=ios==0;call agree()
     if (.not.global_valid) return
     call compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
-      rhs,valid,grid_ratio,diffusion)
+      rhs,valid,grid_ratio,diffusion,harmonic_mean)
     call agree()
     if (.not.global_valid) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
@@ -55,7 +56,7 @@ contains
     call agree()
     if (.not.global_valid) return
     call compute_mpi_dynamic_les_rhs_3d(comm,species,stage,t1,spacing,cells,test_model,test_ratio,rhs,valid, &
-      grid_ratio,diffusion)
+      grid_ratio,diffusion,harmonic_mean)
     call agree()
     if (.not.global_valid) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
@@ -72,13 +73,14 @@ contains
   end subroutine
 
   subroutine compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
-      rhs,ok,grid_ratio,maximum_diffusivity)
+      rhs,ok,grid_ratio,maximum_diffusivity,harmonic_mean)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     integer, intent(in) :: cells(3),test_ratio
     character(len=*), intent(in) :: test_model
     real(dp), intent(inout) :: rhs(:,:,:,:)
+    logical, optional, intent(in) :: harmonic_mean
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     real(dp), optional, intent(out) :: maximum_diffusivity
@@ -86,9 +88,17 @@ contains
     real(dp), allocatable :: send_left(:,:,:),send_right(:,:,:),recv_left(:,:,:),recv_right(:,:,:),halo_rhs(:,:,:,:)
     real(dp) :: diffusion,global_diffusion
     integer :: n(3),nv,nc,rank,nranks,ierr,ios,count,left,right,s
-    logical :: valid,global_valid
+    integer :: mean_code,mean_min,mean_max
+    logical :: valid,global_valid,harmonic
     ok=.false.;n=shape(temperature);nv=size(state,1);nc=nv+4
     if (present(maximum_diffusivity)) maximum_diffusivity=0
+    harmonic=.false.
+    if (present(harmonic_mean)) harmonic=harmonic_mean
+    mean_code=merge(1,0,harmonic)
+    call MPI_Allreduce(mean_code,mean_min,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(mean_code,mean_max,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.mean_min/=mean_max) return
     valid=all(shape(rhs)==shape(state)).and.all(n>=1)
     call agree()
     if (.not.global_valid) return
@@ -127,7 +137,7 @@ contains
       right_stream(:,1:n(1)-1,:,:)=right_stream(:,2:n(1),:,:);right_stream(:,n(1),:,:)=recv_right
     end do
     call compute_dynamic_les_rhs_3d(species,halo(:nv,:,:,:),halo(nv+1,:,:,:),spacing,test_model,test_ratio, &
-      halo_rhs,valid,grid_ratio,diffusion,halo(nv+2:,:,:,:),[3,n(1)+2])
+      halo_rhs,valid,grid_ratio,diffusion,halo(nv+2:,:,:,:),[3,n(1)+2],harmonic)
     call agree()
     if (.not.global_valid) return
     call MPI_Allreduce(diffusion,global_diffusion,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
