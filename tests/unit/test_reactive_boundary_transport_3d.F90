@@ -22,6 +22,7 @@ program test_reactive_boundary_transport_3d
   call require(ok,'thermo')
   call load_h2o2_elementary_transport(transport,ok)
   call require(ok,'transport')
+  call check_pressure_transport()
   call check_wall_shear()
   call check_wall_heat()
   do mode=1,4
@@ -76,6 +77,34 @@ program test_reactive_boundary_transport_3d
   end do
   print *, 'PASS: physical viscosity/conduction/diffusion, surface ledger, walls and rollback'
 contains
+  subroutine check_pressure_transport()
+    real(dp) :: outlet(6)
+    integer :: face
+    q=0;q(1)=.3_dp;q(5)=101325;q(6)=.03_dp;q(9)=.22_dp;q(12)=.75_dp
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      call reactive_primitive_to_conserved(species,q,before(:,i,j,k),bt(i,j,k),sound,ok)
+      call require(ok,'pressure transport base')
+    end do
+    end do
+    end do
+    faces='outflow'
+    do face=1,6
+      outlet=0;outlet(face)=102325;u=before;t=bt
+      call reactive_integrals_3d(u,4,4,4,dx,dx,dx,total0,ok)
+      call advance_reactive_transport_3d(species,transport,u,t,4,4,4,dx,dx,dx,dt, &
+        .true.,.true.,.true.,.true.,theta,ok,faces,change,outlet_pressure=outlet)
+      call require(ok.and.any(change/=0),'pressure outlet transport update')
+      call reactive_integrals_3d(u,4,4,4,dx,dx,dx,total1,ok)
+      call require(all(abs(total1-total0-change)<=3e-12_dp*max(abs(total0),abs(total1),1e-20_dp)), &
+        'pressure transport surface inventory')
+    end do
+    outlet=0;outlet(1)=1;u=before;t=bt
+    call advance_reactive_transport_3d(species,transport,u,t,4,4,4,dx,dx,dx,dt, &
+      .true.,.true.,.true.,.true.,theta,ok,faces,change,outlet_pressure=outlet)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'pressure transport rollback')
+  end subroutine
   subroutine check_wall_heat()
     real(dp) :: mu,kappa,diffusion(7),wt(6),expected,wall_dt,rate,mw,gas_r,cp,cv,gamma,h,e,entropy
     integer :: face,thermal_case

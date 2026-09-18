@@ -79,6 +79,7 @@ module simulation_config_reactive_3d_mod
     character(len=512) :: output_file = "reactive_entropy_wave_3d.csv"
   end type reactive_3d_config
 
+  public :: fill_pressure_outlet_ghosts_3d
   public :: characteristic_pressure_ghost_3d
   public :: valid_wall_velocity_3d
   public :: fill_reactive_boundary_ghosts_3d
@@ -118,6 +119,50 @@ contains
     call reactive_primitive_to_conserved(species,q,candidate,new_t,new_sound,ok)
     if(.not.ok) return
     ghost=candidate;ghost_temperature=new_t
+  end subroutine
+
+  ! Apply after ordinary ghost filling; face order defines corner composition.
+  subroutine fill_pressure_outlet_ghosts_3d(species,n,faces,pressure,ghost,gt,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    integer, intent(in) :: n(3)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), optional, intent(in) :: pressure(6)
+    real(dp), intent(inout) :: ghost(:,:,:,:),gt(:,:,:)
+    logical, intent(out) :: ok
+    integer :: face,axis,layer,i,j,k,idx(3),donor(3),dims(3)
+    real(dp) :: state(size(ghost,1)),temperature
+    ok=.false.;dims=n+4
+    if(any(n<2).or.any(shape(gt)/=dims)) return
+    if(any(shape(ghost)/=[5+size(species),dims])) return
+    if(.not.present(pressure)) then
+      ok=.true.;return
+    end if
+    if(.not.all(ieee_is_finite(pressure))) return
+    if(any(pressure<0).or.any(pressure>1e15_dp)) return
+    if(any(pressure>0.and.faces/='outflow')) return
+    do face=1,6
+      if(pressure(face)<=0) cycle
+      axis=(face+1)/2
+      do k=1,dims(3)
+      do j=1,dims(2)
+      do i=1,dims(1)
+        donor=[i,j,k]
+        if(donor(axis)/=1) cycle
+        donor(axis)=3
+        if(modulo(face,2)==0) donor(axis)=n(axis)+2
+        state=ghost(:,donor(1),donor(2),donor(3));temperature=gt(donor(1),donor(2),donor(3))
+        do layer=1,2
+          idx=donor;idx(axis)=3-layer
+          if(modulo(face,2)==0) idx(axis)=n(axis)+2+layer
+          call characteristic_pressure_ghost_3d(species,state,temperature,face,pressure(face),real(2*layer,dp), &
+            ghost(:,idx(1),idx(2),idx(3)),gt(idx(1),idx(2),idx(3)),ok)
+          if(.not.ok) return
+        end do
+      end do
+      end do
+      end do
+    end do
+    ok=.true.
   end subroutine
 
   pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall, &

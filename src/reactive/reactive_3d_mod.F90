@@ -1,7 +1,7 @@
 module reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d, &
-    characteristic_pressure_ghost_3d
+    fill_pressure_outlet_ghosts_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -1062,7 +1062,7 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
-      boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity)
+      boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1081,6 +1081,7 @@ contains
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
@@ -1094,6 +1095,11 @@ contains
     minimum_transport_theta = 1.0_dp
     faces = "periodic"
     if (present(boundary_faces)) faces = boundary_faces
+    if(present(outlet_pressure)) then
+      if(.not.all(ieee_is_finite(outlet_pressure))) return
+      if(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+      if(any(outlet_pressure>0.and.faces/='outflow')) return
+    end if
     if (present(boundary_change)) then
       boundary_change = 0.0_dp
       if (size(boundary_change) /= size(state,1)) return
@@ -1139,7 +1145,7 @@ contains
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
-        inflow_state, inflow_temperature, wall_temperature,wall_velocity)
+        inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1148,7 +1154,7 @@ contains
     if (any(faces /= "periodic")) then
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
         [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
-        inflow_state, inflow_temperature)
+        inflow_state, inflow_temperature,outlet_pressure=outlet_pressure)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -1169,7 +1175,7 @@ contains
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
-        inflow_state, inflow_temperature, wall_temperature,wall_velocity)
+        inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1266,7 +1272,7 @@ contains
       real(dp), intent(out) :: du(:,:,:,:),rate(:)
       logical, intent(out) :: success
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-      integer :: dims(3),i,j,k,nv,face,axis,layer,idx(3),donor(3)
+      integer :: dims(3),i,j,k,nv
       success=.false.; du=0.0_dp; rate=0.0_dp
       dims=n+4; nv=size(u,1)
       allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
@@ -1274,30 +1280,8 @@ contains
       call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,success, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       if (.not.success) return
-      if(present(outlet_pressure)) then
-        do face=1,6
-          if(outlet_pressure(face)<=0) cycle
-          axis=(face+1)/2
-          do k=1,n(3)
-          do j=1,n(2)
-          do i=1,n(1)
-            donor=[i,j,k]
-            if(donor(axis)/=1) cycle
-            if(modulo(face,2)==0) donor(axis)=n(axis)
-            do layer=1,2
-              idx=donor+2
-              idx(axis)=3-layer
-              if(modulo(face,2)==0) idx(axis)=n(axis)+2+layer
-              call characteristic_pressure_ghost_3d(species,u(:,donor(1),donor(2),donor(3)), &
-                t(donor(1),donor(2),donor(3)),face,outlet_pressure(face),real(2*layer,dp), &
-                ghost(:,idx(1),idx(2),idx(3)),gt(idx(1),idx(2),idx(3)),success)
-              if(.not.success) return
-            end do
-          end do
-          end do
-          end do
-        end do
-      end if
+      call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,success)
+      if(.not.success) return
       if (reconstruction=='pcm') then
         call compute_reactive_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3), &
           riemann_solver,fx,fy,fz,success)
