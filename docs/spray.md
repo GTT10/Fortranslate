@@ -3118,7 +3118,12 @@ bounds. Supply a diffusion CFL fraction in `(0,0.2]`; its output is capped at
 largest patch diffusivity, which alone is not the grid-dependent interval bound.
 Outputs remain unchanged on failure. The stepper still checks both stages and
 can reject a selected interval after nonlinear evolution or EOS recovery.
-Subcycling, MPI and application dispatch remain open.
+The MPI spray tree runtime also exports
+`les_mpi_amr_tree_mod::advance_mpi_amr_tree_les_3d`, using owner-local fields,
+collective control agreement, distributed ghost queries, restriction and reflux.
+It preserves all caller fields and diagnostics on collective failure. Empty
+owners are supported. An MPI timestep selector, subcycling and application
+dispatch remain open. See [distributed AMR evidence](validation/les-mpi-amr-tree-20260918.md).
 See [timestep evidence](validation/les-amr-timestep-20260918.md).
 Dynamic LES and EB grids are outside this API.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
