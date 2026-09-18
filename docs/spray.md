@@ -288,19 +288,19 @@ migration succeed. KH eligibility clips the candidate flight at the root before
 querying the EB. With specular reflection, local drift losses are summed once
 across ranks before accumulation, and escaped records are removed after each
 accepted substep. This prevents later gas sampling at their exterior endpoints.
-The reactive wrapper and application still require films for outflow. See
+The reactive wrapper and application support both specular and impact-film outflow. See
 [specular source evidence](validation/spray-mpi-eb-specular-outflow-20260918.md) and
 [source evidence](validation/spray-mpi-eb-outflow-source-20260918.md).
 
-`advance_mpi_eb_spray_reactive` accepts `particle_outflow=.true.` together with
-impact films and the shared ID watermark. The effective flag must agree across
+`advance_mpi_eb_spray_reactive` accepts `particle_outflow=.true.` with specular
+reflection or with impact films and the shared ID watermark. The effective flag must agree across
 ranks. Both particle halves collect their exterior inventories privately; these
 join the gas boundary output only after all particle, film, reaction, transport,
 hydro and optional splitting work succeeds. Wall exchange remains separate.
-This mode requires impact films. See
+See
 [reactive evidence](validation/spray-mpi-eb-outflow-reactive-20260918.md).
 The MPI EB spray application accepts the same `particle_outflow` flag in
-`eb_spray`, requiring `wall_impacts=.true.`. It enters the serialized restart
+`eb_spray`, with either wall model. It enters the serialized restart
 context. Existing particle/film and gas archives preserve surviving sparse IDs,
 watermark and boundary history through rank-changing restart. See
 [application evidence](validation/spray-mpi-eb-outflow-application-20260918.md).
@@ -2840,3 +2840,6 @@ Temporary injection inventory liquids retain evaluated constant mixture values,
 without reapplying a component's polynomial. See
 [component controls](../cases/mpi_eb_spray_3d/README.md#component-property-models)
 and [focused evidence](validation/spray-mpi-eb-properties-20260918.md).
+
+MPI specular outflow and empty-population rank-changing restart are covered by
+[this application record](validation/spray-mpi-eb-specular-application-20260918.md).

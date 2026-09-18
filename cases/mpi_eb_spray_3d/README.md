@@ -342,3 +342,14 @@ V1 without impact films and V2 with them. Splitting-disabled checkpoints retain
 their two-field injection metadata. Newly injected parcels are split by the next
 reactive update; injection at the final time is not immediately split.
 See [focused evidence](../../docs/validation/spray-mpi-eb-split-20260918.md).
+
+## Particle outflow
+
+Set `particle_outflow=.true.` in `eb_spray` to let particles leave through all
+root faces. The default is false. This works with default specular EB reflection
+and with `wall_impacts=.true.`. Removed particles do not recycle IDs; gas boundary
+budgets include their mass, momentum, energy and vapor-species inventories while
+EB wall budgets remain separate. The mode enters restart context. An empty
+particle population can be checkpointed and resumed with a different rank count.
+See [specular restart evidence](../../docs/validation/spray-mpi-eb-specular-application-20260918.md)
+and [impact-film restart evidence](../../docs/validation/spray-mpi-eb-outflow-application-20260918.md).
