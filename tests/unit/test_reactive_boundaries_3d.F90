@@ -5,7 +5,8 @@ program test_reactive_boundaries_3d
   use reactive_1d_mod, only: reactive_primitive_to_conserved,reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d, reactive_integrals_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, &
-    validate_reactive_3d_configuration, resolved_reactive_boundaries_3d,characteristic_pressure_ghost_3d
+    validate_reactive_3d_configuration, resolved_reactive_boundaries_3d,characteristic_pressure_ghost_3d, &
+    read_reactive_3d_configuration
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(reactive_3d_config) :: config
@@ -18,6 +19,7 @@ program test_reactive_boundaries_3d
   integer :: i,j,k,r,b,s
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
+  call check_pressure_input()
   call check_pressure_outlet()
   call check_pressure_ghost()
   call check_inflow()
@@ -35,6 +37,16 @@ program test_reactive_boundaries_3d
   config%boundary_faces(3:6)='slip_wall'
   call validate_reactive_3d_configuration(config,ok,message)
   call require(ok,'mixed physical config')
+  config%outlet_pressure(2)=102325
+  call validate_reactive_3d_configuration(config,ok,message)
+  call require(ok,'pressure outlet config')
+  config%outlet_pressure(3)=102325
+  call validate_reactive_3d_configuration(config,ok,message)
+  call require(.not.ok,'pressure on wall rejected')
+  config%outlet_pressure=0;config%outlet_pressure(2)=-1
+  call validate_reactive_3d_configuration(config,ok,message)
+  call require(.not.ok,'negative outlet pressure rejected')
+  config%outlet_pressure=0
   faces=resolved_reactive_boundaries_3d(config)
   call require(all(faces(1:2)=='outflow'),'face defaults')
   config%boundary_faces(1)='periodic'
@@ -87,6 +99,21 @@ program test_reactive_boundaries_3d
   end do
   print *, 'PASS: six-face PCM/PLM, three solvers, surface balance, wall flux and rollback'
 contains
+  subroutine check_pressure_input()
+    integer :: unit
+    type(reactive_3d_config) :: input_config
+    open(newunit=unit,file='pressure_outlet_input_test.nml',status='replace',action='write')
+    write(unit,'(a)') "&reactive_3d boundary_condition='outflow', outlet_pressure(2)=102325 /"
+    close(unit)
+    call read_reactive_3d_configuration('pressure_outlet_input_test.nml',input_config,ok,message)
+    call require(.not.ok.and.index(message,'not connected')>0,'unconnected reader rejects pressure outlet')
+    call read_reactive_3d_configuration('pressure_outlet_input_test.nml',input_config,ok,message, &
+      allow_pressure_outlet=.true.)
+    call require(ok.and.input_config%outlet_pressure(2)==102325,'connected reader accepts pressure outlet')
+    open(newunit=unit,file='pressure_outlet_input_test.nml',status='old')
+    close(unit,status='delete')
+  end subroutine
+
   subroutine check_pressure_outlet()
     real(dp) :: outlet(6)
     integer :: face,order
