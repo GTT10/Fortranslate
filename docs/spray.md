@@ -2877,3 +2877,12 @@ and saves cumulative force separately in the gas checkpoint prefix; its budget
 CSV includes a `force` column. See
 [application evidence](validation/spray-mpi-eb-acceleration-application-20260918.md).
 See [focused evidence](validation/spray-mpi-eb-acceleration-20260918.md).
+
+### Additional LES stress kernels
+
+`les_smagorinsky_3d_mod` now exports `wale_stress` and `vreman_stress` with the
+same gradient/density/spacing/coefficient/output layout as `smagorinsky_stress`.
+These implement the pinned deviatoric WALE and Vreman algebra; zero gradients
+return zero safely. They are library kernels only: grid fluxes and application
+model selection still use Smagorinsky. See
+[reference and focused algebra checks](validation/les-algebraic-closures-20260918.md).
