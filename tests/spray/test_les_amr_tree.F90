@@ -1,0 +1,110 @@
+program test_les_amr_tree
+  use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use reactive_1d_mod, only: reactive_primitive_to_conserved
+  use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
+    prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d
+  use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d
+  implicit none
+  type(nasa7_species), allocatable :: species(:)
+  type(amr_patch_tree_3d) :: tree
+  type(amr_tree_state_3d) :: state,temperature,saved,saved_t
+  type(amr_patch_3d) :: patches(5)
+  real(dp) :: root(12,4,4,4),rt(1,4,4,4),serial(12,4,4,4),st(4,4,4),q(12),sound
+  real(dp) :: spacing(3),dt,budget(12),serial_budget(12),largest,initial(12),final(12),wall_t(6),wall_v(3,6),outlet(6)
+  integer :: i,j,k,mode,geometry,node,m
+  character(len=32) :: faces(6),model
+  logical :: ok
+  call load_h2o2_elementary_thermo(species,ok)
+  call require(ok,'thermo')
+  spacing=[.001_dp,.0015_dp,.002_dp];dt=1e-9_dp;wall_t=1100
+  do k=1,4
+    do j=1,4
+      do i=1,4
+        q=0;q(1)=.3_dp*(1+.02_dp*(i+j+k));q(5)=101325*(1+.02_dp*k)
+        q(2:4)=[10.0_dp+i,20.0_dp+j,-4.0_dp+.5_dp*k]
+        q(6)=.025_dp+.003_dp*i;q(9)=.22_dp;q(12)=1-q(6)-q(9)
+        call reactive_primitive_to_conserved(species,q,root(:,i,j,k),rt(1,i,j,k),sound,ok)
+        call require(ok,'initial state')
+      end do
+    end do
+  end do
+  call initialize_amr_patch_3d(4,4,4,1,2,2,3,1,4,2,patches(1),ok)
+  call initialize_amr_patch_3d(4,4,4,3,4,2,3,1,4,2,patches(2),ok)
+  call initialize_amr_patch_3d(4,4,8,3,4,1,2,1,2,2,patches(3),ok)
+  call initialize_amr_patch_3d(4,4,8,1,2,1,2,1,2,2,patches(4),ok)
+  call initialize_amr_patch_3d(4,4,4,3,4,1,2,1,2,2,patches(5),ok)
+  do geometry=1,2
+    if (geometry==1) then
+      call initialize_amr_patch_tree_3d([4,4,4],[integer::],patches(:0),tree,ok)
+    else
+      call initialize_amr_patch_tree_3d([4,4,4],[1,1,2,3,4],patches,tree,ok)
+    end if
+    call require(ok,'topology')
+    do m=1,3
+      select case(m)
+      case(1)
+        model='smagorinsky'
+      case(2)
+        model='wale'
+      case(3)
+        model='vreman'
+      end select
+      do mode=1,3
+        faces='periodic';wall_v=0;outlet=0
+        if (mode>=2) faces='outflow'
+        if (mode==3) then
+          faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
+          outlet(2)=102325
+        end if
+        call prolong_amr_patch_tree_3d(tree,root,state,ok)
+        call require(ok,'state initialization')
+        call prolong_amr_patch_tree_3d(tree,rt,temperature,ok)
+        call require(ok,'temperature initialization')
+        call composite_integrals_amr_patch_tree_3d(tree,state,spacing,initial,ok)
+        call require(ok,'initial inventory')
+        saved=state
+        call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,dt,faces, &
+          .17_dp,.7_dp,.7_dp,budget,largest,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+        call require(ok.and.largest>=0,'AMR LES step')
+        call require(any(state%fields(1)%values/=saved%fields(1)%values),'AMR LES evolves')
+        if (geometry==1) then
+          serial=root;st=rt(1,:,:,:)
+          call advance_les_ssprk2_3d(species,serial,st,spacing,.17_dp,.7_dp,.7_dp,dt,ok, &
+            boundary_faces=faces,boundary_change=serial_budget,wall_temperature=wall_t,wall_velocity=wall_v, &
+            model=model,ci=.1_dp,outlet_pressure=outlet)
+          call require(ok,'regular LES oracle')
+          call require(maxval(abs(state%fields(1)%values-serial)/max(1._dp,abs(serial)))<2e-13_dp,'root state parity')
+          call require(maxval(abs(temperature%fields(1)%values(1,:,:,:)-st))<1e-9_dp,'root temperature parity')
+          call require(maxval(abs(budget-serial_budget))<1e-14_dp,'root ledger parity')
+        end if
+        call composite_integrals_amr_patch_tree_3d(tree,state,spacing,final,ok)
+        call require(ok,'final inventory')
+        call require(maxval(abs(final-initial-budget)/max(1e-12_dp,abs(initial)))<2e-12_dp,'composite conservation')
+        saved=state;saved_t=temperature;budget=-17;largest=-19
+        call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,1._dp,faces, &
+          .17_dp,.7_dp,.7_dp,budget,largest,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+        call require(.not.ok,'excessive interval rejected')
+        do node=1,size(tree%nodes)
+          call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')
+          call require(all(temperature%fields(node)%values==saved_t%fields(node)%values),'temperature rollback')
+        end do
+        call require(all(budget==-17).and.largest==-19,'diagnostics rollback')
+      end do
+    end do
+  end do
+  print *, 'PASS: AMR static LES, root parity, composite conservation and rollback'
+contains
+  subroutine require(condition,label)
+    logical, intent(in) :: condition
+    character(len=*), intent(in) :: label
+    if (condition) return
+    print *, 'FAIL: ',label
+    error stop 1
+  end subroutine
+end program
