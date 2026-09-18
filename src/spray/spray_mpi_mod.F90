@@ -857,7 +857,7 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_les(comm,species,state,temperature,spacing,cells,dt,cs,prt,sct,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -866,6 +866,8 @@ contains
     real(dp), intent(in) :: cs,prt,sct
     character(len=*), optional, intent(in) :: model
     character(len=16) :: selected_model
+    real(dp), optional, intent(in) :: ci
+    real(dp) :: isotropic
     integer :: model_id
     character(len=*), optional, intent(in) :: faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
@@ -877,10 +879,12 @@ contains
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
     real(dp), allocatable :: rhs(:,:,:,:)
-    real(dp) :: controls(7),minimum(7),maximum(7),diffusivity
+    real(dp) :: controls(8),minimum(8),maximum(8),diffusivity
     integer :: config(6),minconfig(6),maxconfig(6),rank,nranks,ierr,first(3),extent(3)
     integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next
     logical :: valid,agreed
+    isotropic=0
+    if (present(ci)) isotropic=ci
     change=0
     if (present(boundary_change)) boundary_change=0
     ok=.false.;nvar=size(state,1)
@@ -902,19 +906,20 @@ contains
       end select
       if (model_id>0) selected_model=model
     end if
-    valid=model_id>0.and.all(ieee_is_finite([spacing,dt,cs,prt,sct]))
+    valid=model_id>0.and.all(ieee_is_finite([spacing,dt,cs,prt,sct,isotropic]))
+    valid=valid.and.isotropic>=0.and.isotropic<=1
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
     if (present(boundary_change)) valid=valid.and.present(faces).and.size(boundary_change)==nvar
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,merge(1,0,present(faces)),model_id];controls=[spacing,dt,cs,prt,sct]
+    config=[cells,nvar,merge(1,0,present(faces)),model_id];controls=[spacing,dt,cs,prt,sct,isotropic]
     call MPI_Allreduce(config,minconfig,6,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(config,maxconfig,6,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,minimum,7,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(controls,minimum,8,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,7,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,8,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minconfig/=maxconfig).or.any(minimum/=maximum)) return
     call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
@@ -947,7 +952,7 @@ contains
         call agree()
         if (.not.agreed) return
         call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid, &
-          local_faces,rate,wall_temperature,include_face,model=selected_model)
+          local_faces,rate,wall_temperature,include_face,model=selected_model,ci=isotropic)
         change=change+.5_dp*dt*rate
         valid=valid.and.all(ieee_is_finite(change))
       else
@@ -969,7 +974,7 @@ contains
           end do
         end do
         call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid, &
-          model=selected_model)
+          model=selected_model,ci=isotropic)
       end if
       if (valid) valid=dt*diffusivity*sum(1.0_dp/spacing**2)<=.2_dp
       call agree()
