@@ -3009,3 +3009,9 @@ global maximum diffusion estimate match serial results exactly in the focused
 unequal-slab tests. Publication is collective and transactional. MPI dynamic
 stepping and coupled/application dispatch remain to be connected; see
 [MPI dynamic flux evidence](validation/les-mpi-dynamic-flux-20260918.md).
+
+`advance_mpi_dynamic_les_ssprk2_3d` now integrates periodic owner-local dynamic
+LES with collective dt agreement, global diffusion checks and transactional EOS
+recovery after both stages. Two/four-rank variable-state checks match serial
+state and temperature exactly. MPI coupled-spray/application dispatch remains
+pending. See [distributed stepping evidence](validation/les-mpi-dynamic-step-20260918.md).
