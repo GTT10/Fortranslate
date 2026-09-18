@@ -3080,7 +3080,11 @@ travel with the neighbor halos. Serial `advance_spray_reactive_3d` and
 fixed/selected serial spray namelists now accept `outlet_pressure(6)`, passing
 it to hydro, molecular transport and static LES. Positive pressure requires
 outflow faces; nonzero settings enter checkpoint identity. Changed/removed
-settings reject restart. MPI coupled/application controls remain open.
+settings reject restart. MPI hydro and molecular-transport wrappers, mixed-spray
+coupling, and fixed/selected MPI application inputs also accept the same control.
+Pressure agreement is checked collectively before stepping. The shared physical
+ghost routine supplies each operator's halo; nonzero settings enter MPI restart
+identity. See [MPI application checks](validation/spray-mpi-pressure-outlet-20260918.md).
 See [serial application evidence](validation/spray-pressure-outlet-20260918.md).
 See [MPI pressure parity](validation/les-mpi-pressure-20260918.md).
 See [focused evidence](validation/les-pressure-outlet-20260918.md).
