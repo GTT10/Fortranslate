@@ -2743,3 +2743,10 @@ pending. See [application evidence](validation/pressure-outlet-application-20260
 [hydro evidence](validation/pressure-outlet-hydro-20260918.md). This is
 separate from GC-NSCBC, which the pinned reference guide marks unported.
 See [equations, reference identity and focused checks](validation/characteristic-pressure-ghost-20260918.md).
+
+The serial two-level AMR hydro/Strang APIs also forward pressure targets.
+Coarse interpolation halos receive pressure ghosts; fine stages apply them
+only on root physical faces touched by the patch. Full refinement matches the
+uniform fine-grid hydro state exactly in the focused cases. AMR transport,
+application input and MPI dispatch are still pending; see
+[two-level hydro evidence](validation/pressure-outlet-amr-hydro-20260918.md).
