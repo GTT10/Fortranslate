@@ -3148,3 +3148,17 @@ handle later nonlinear rejection. See the
 [input guide](../cases/mpi_amr_spray_3d/README.md#static-les) and
 [application checks](validation/les-amr-application-20260918.md). See
 [coupled evidence](validation/les-amr-coupled-20260918.md).
+
+### MPI AMR uniform acceleration
+
+`advance_mpi_amr_spray_reactive` also accepts `acceleration(3)` and
+`source_change(nvar)`. A nonzero acceleration requires the source ledger;
+components must be finite, bounded by `1e6` in magnitude and identical across
+ranks. Two half kicks update gas and parcel velocities around the gas/LES
+operators, preserving internal energy and recording external impulse/work.
+Covered coarse cells receive the update but do not contribute twice to the
+composite ledger. Stationary wall films remain attached to their walls.
+Source diagnostics publish only with the entire accepted coupled interval and
+remain separate from boundary exchange. Application inputs and checkpoint
+persistence for this source ledger are not yet connected. See
+[focused evidence](validation/spray-amr-force-20260918.md).
