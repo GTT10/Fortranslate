@@ -3052,5 +3052,8 @@ Omission or zero retains the deviatoric model. Positive `ci` adds the pinned
 isotropic stress, including pressure work in the energy flux; it does not change
 eddy viscosity or species/heat diffusion. It can act with `cs=0`.
 Both SSPRK2 stages include its additional timestep estimate and EOS checks.
-MPI, coupled-spray and application controls are not yet connected.
-See [formula and focused evidence](validation/les-isotropic-20260918.md).
+`advance_mpi_spray_les` also accepts trailing `ci`, checks its finite range and
+rank agreement before stepping, and forwards it to both periodic and physical
+boundary paths. Coupled-spray and application controls are not yet connected.
+See [formula and focused evidence](validation/les-isotropic-20260918.md) and
+[MPI stepping checks](validation/les-mpi-isotropic-20260918.md).
