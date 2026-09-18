@@ -19,6 +19,8 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
+  use spray_eb_impact_mod, only: spray_eb_wall_options
+  use spray_mpi_eb_impact_mod, only: advance_mpi_level_set_impacts
   implicit none
   private
   public :: advance_mpi_amr_mixture_coupling
@@ -27,7 +29,7 @@ contains
   ! Species, transport, liquids and options must be identical on every rank.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings,eb_geometry,nodal_phi)
+      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -49,6 +51,9 @@ contains
     type(spray_wall_options), optional, intent(in) :: film_settings
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    logical, optional, intent(out) :: model_rejected
+    type(spray_eb_wall_options) :: eb_walls
+    logical :: rejected
     integer :: eb_hits
     type(spray_wall_film), allocatable :: patches(:),trial_patches(:)
     real(dp), allocatable :: patch_mass(:,:),trial_patch_mass(:,:),impact_previous(:,:),impact_pressure(:)
@@ -77,12 +82,13 @@ contains
     logical :: periodic(3)
     logical :: valid,agreed,accepted
     ok=.false.;substeps=0;faces='periodic';ledger=0;wall_ledger=0
+    if(present(model_rejected)) model_rejected=.false.
     if(present(eb_geometry)) faces="slip_wall"
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
     if(present(eb_geometry)) valid=valid.and..not.present(boundary_faces).and. &
-      .not.present(wall_films).and..not.options%khrt_children
+      .not.options%khrt_children
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
@@ -95,9 +101,18 @@ contains
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(ledger)
     valid=valid.and.(present(wall_films).eqv.present(film_mass))
     valid=valid.and.(present(wall_films).eqv.present(film_settings))
-    if (present(wall_films)) valid=valid.and.allocated(wall_films).and.present(last_id).and.present(boundary_faces)
+    if (present(wall_films)) valid=valid.and.allocated(wall_films).and.present(last_id).and. &
+      (present(boundary_faces).or.present(eb_geometry))
     if (present(film_mass)) valid=valid.and.allocated(film_mass)
-    if (present(film_settings)) valid=valid.and.valid_wall_options(film_settings,faces)
+    if (present(film_settings)) then
+      valid=valid.and.valid_wall_options(film_settings,faces)
+      if (present(eb_geometry)) then
+        valid=valid.and.all(film_settings%temperature==film_settings%temperature(1))
+        eb_walls%temperature=film_settings%temperature(1)
+        eb_walls%contact_angle=film_settings%contact_angle
+        eb_walls%maximum_films=film_settings%maximum_films
+      end if
+    end if
     call agree()
     if (.not.agreed) return
     film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(eb_geometry))+4*merge(1,0,present(nodal_phi))
@@ -145,7 +160,8 @@ contains
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     if (present(wall_films)) then
       patches=wall_films;patch_mass=film_mass
-      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,film_settings%maximum_films,valid)
+      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
+        film_settings%maximum_films,valid,nodal_phi)
       if (.not.valid) return
       do n=1,nc
         mw(n)=species(components(n)%vapor_index)%molecular_weight
@@ -264,7 +280,7 @@ contains
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
         end if
-        if(agreed.and.present(eb_geometry)) then
+        if(agreed.and.present(eb_geometry).and..not.present(wall_films)) then
           exchange=0;eb_hits=0
           call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid)
           if(valid) trial_ledger(:5)=exchange
@@ -276,8 +292,19 @@ contains
           call prepare_impacts()
           call agree()
           if (agreed) then
-            call impact_mpi_planar_walls(comm,components,options,film_settings,faces,mw,impact_pressure,impact_previous, &
-              lower,lower+length,trial,next_mass,trial_patches,trial_patch_mass,trial_id,hit,impact_wall,valid)
+            if (present(eb_geometry)) then
+              eb_hits=0
+              call advance_mpi_level_set_impacts(comm,components,options,eb_walls,nodal_phi,mw,impact_pressure, &
+                lower,lower+length,dt,trial,next_mass,trial_patches,trial_patch_mass,trial_id,impact_wall, &
+                eb_hits,valid,rejected)
+              if (rejected) then
+                if (present(model_rejected)) model_rejected=.true.
+                return
+              end if
+            else
+              call impact_mpi_planar_walls(comm,components,options,film_settings,faces,mw,impact_pressure,impact_previous, &
+                lower,lower+length,trial,next_mass,trial_patches,trial_patch_mass,trial_id,hit,impact_wall,valid)
+            end if
             if (valid) valid=size(trial)<=125000
             call agree()
           end if
@@ -326,7 +353,8 @@ contains
     end if
     if (.not.valid) return
     if (present(wall_films)) then
-      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,film_settings%maximum_films,valid)
+      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
+        film_settings%maximum_films,valid,nodal_phi)
       if (.not.valid) return
     end if
     call MPI_Allreduce(ledger,global_ledger,size(ledger),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
