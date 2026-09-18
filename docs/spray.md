@@ -2871,5 +2871,8 @@ receive impulse/work; covered solid cells and attached films do not. Coarse
 cells under children are updated for consistent donors but omitted from the
 composite source ledger. Local inventories are summed once across MPI ranks.
 Gas temperature recovery checks unchanged internal energy. Failure on any rank
-preserves caller state and ledgers. MPI application/restart wiring is pending.
+preserves caller state and ledgers. The MPI application now exposes acceleration
+and saves cumulative force separately in the gas checkpoint prefix; its budget
+CSV includes a `force` column. See
+[application evidence](validation/spray-mpi-eb-acceleration-application-20260918.md).
 See [focused evidence](validation/spray-mpi-eb-acceleration-20260918.md).

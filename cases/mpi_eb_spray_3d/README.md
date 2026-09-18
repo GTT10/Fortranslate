@@ -353,3 +353,13 @@ EB wall budgets remain separate. The mode enters restart context. An empty
 particle population can be checkpointed and resumed with a different rank count.
 See [specular restart evidence](../../docs/validation/spray-mpi-eb-specular-application-20260918.md)
 and [impact-film restart evidence](../../docs/validation/spray-mpi-eb-outflow-application-20260918.md).
+
+## External acceleration
+
+`acceleration=0,0,-9.81` in `eb_spray` applies uniform acceleration in m/s² to
+gas and live particles. Each component must be finite and bounded by 1e6;
+the default is zero. Attached films remain stationary. The budget CSV has a
+`force` column, separate from wall and exterior exchange. Nonzero acceleration
+adds force history to the coupled gas checkpoint prefix; its serialized input
+binds the mode to restart. See
+[rank-changing restart evidence](../../docs/validation/spray-mpi-eb-acceleration-application-20260918.md).
