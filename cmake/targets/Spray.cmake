@@ -20,7 +20,7 @@ if(PELEF_ENABLE_SPRAY)
       src/les/les_filter_3d_mod.F90
     )
     if(PELEF_ENABLE_MPI)
-      target_sources(${target} PRIVATE src/les/les_mpi_filter_mod.F90
+      target_sources(${target} PRIVATE src/les/les_mpi_filter_mod.F90 src/les/les_mpi_dynamic_mod.F90
         src/spray/spray_mpi_exchange_mod.F90
         src/spray/spray_mpi_mod.F90 src/spray/spray_mpi_checkpoint_mod.F90
         src/spray/spray_mpi_application_mod.F90)
