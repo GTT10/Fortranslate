@@ -3054,6 +3054,12 @@ eddy viscosity or species/heat diffusion. It can act with `cs=0`.
 Both SSPRK2 stages include its additional timestep estimate and EOS checks.
 `advance_mpi_spray_les` also accepts trailing `ci`, checks its finite range and
 rank agreement before stepping, and forwards it to both periodic and physical
-boundary paths. Coupled-spray and application controls are not yet connected.
+boundary paths. Serial/MPI coupled APIs and fixed/selected application namelists
+accept `les_ci` in `[0,1]`, default zero. Positive CI is allowed for Smagorinsky,
+WALE and Vreman; dynamic LES derives its own isotropic coefficient and rejects
+nonzero fixed CI. MPI coupling checks CI agreement and enables the static SGS
+half steps with positive CI even when `les_cs=0`. Nonzero CI enters restart
+identity; changing or removing it rejects restart. See the
+[application checks](validation/les-isotropic-application-20260918.md).
 See [formula and focused evidence](validation/les-isotropic-20260918.md) and
 [MPI stepping checks](validation/les-mpi-isotropic-20260918.md).
