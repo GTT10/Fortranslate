@@ -79,6 +79,7 @@ module simulation_config_reactive_3d_mod
     character(len=512) :: output_file = "reactive_entropy_wave_3d.csv"
   end type reactive_3d_config
 
+  public :: characteristic_pressure_ghost_3d
   public :: valid_wall_velocity_3d
   public :: fill_reactive_boundary_ghosts_3d
   public :: resolved_reactive_boundaries_3d, valid_reactive_boundaries_3d
@@ -88,6 +89,36 @@ module simulation_config_reactive_3d_mod
   public :: resolve_reactive_3d_selected_composition
 
 contains
+
+  ! Frozen-composition acoustic pressure extrapolation, as in pinned
+  ! PeleC EB-ConvergingNozzle/prob.H. distance_ratio=2 is the first ghost center.
+  subroutine characteristic_pressure_ghost_3d(species,interior,temperature,face,pressure,distance_ratio, &
+      ghost,ghost_temperature,ok)
+    use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: interior(:),temperature,pressure,distance_ratio
+    integer, intent(in) :: face
+    real(dp), intent(inout) :: ghost(:),ghost_temperature
+    logical, intent(out) :: ok
+    real(dp) :: q(reactive_nvar(size(species))),candidate(reactive_nvar(size(species)))
+    real(dp) :: recovered,sound,new_t,new_sound,dpres,rho,sign_normal
+    integer :: axis
+    ok=.false.
+    if(face<1.or.face>6) return
+    if(size(interior)/=size(q).or.size(ghost)/=size(q)) return
+    if(.not.all(ieee_is_finite([pressure,distance_ratio]))) return
+    if(pressure<=0.or.pressure>1e15_dp.or.distance_ratio<0.or.distance_ratio>1e6_dp) return
+    call reactive_conserved_to_primitive(species,interior,temperature,q,recovered,sound,ok)
+    if(.not.ok) return
+    ok=.false.;rho=q(1);dpres=distance_ratio*(pressure-q(5));axis=(face+1)/2
+    sign_normal=merge(-1._dp,1._dp,modulo(face,2)==1)
+    q(1)=rho+dpres/(sound*sound)
+    q(axis+1)=q(axis+1)-sign_normal*dpres/(rho*sound)
+    q(5)=q(5)+dpres
+    call reactive_primitive_to_conserved(species,q,candidate,new_t,new_sound,ok)
+    if(.not.ok) return
+    ghost=candidate;ghost_temperature=new_t
+  end subroutine
 
   pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall, &
       inflow_state,inflow_temperature,wall_velocity)

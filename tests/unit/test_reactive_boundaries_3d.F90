@@ -2,10 +2,10 @@ program test_reactive_boundaries_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use reactive_1d_mod, only: reactive_primitive_to_conserved
+  use reactive_1d_mod, only: reactive_primitive_to_conserved,reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d, reactive_integrals_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, &
-    validate_reactive_3d_configuration, resolved_reactive_boundaries_3d
+    validate_reactive_3d_configuration, resolved_reactive_boundaries_3d,characteristic_pressure_ghost_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(reactive_3d_config) :: config
@@ -18,6 +18,7 @@ program test_reactive_boundaries_3d
   integer :: i,j,k,r,b,s
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
+  call check_pressure_ghost()
   call check_inflow()
   config%boundary_condition='isothermal_wall'
   call validate_reactive_3d_configuration(config,ok,message)
@@ -85,6 +86,30 @@ program test_reactive_boundaries_3d
   end do
   print *, 'PASS: six-face PCM/PLM, three solvers, surface balance, wall flux and rollback'
 contains
+  subroutine check_pressure_ghost()
+    real(dp) :: qi(12),ui(12),ug(12),qg(12),ti,tg,ci,cg,expected(12),normal
+    integer :: face,axis
+    qi=0;qi(1)=.3_dp;qi(2:4)=[20._dp,30._dp,40._dp];qi(5)=101325
+    qi(6)=.03_dp;qi(9)=.22_dp;qi(12)=.75_dp
+    call reactive_primitive_to_conserved(species,qi,ui,ti,ci,ok)
+    call require(ok,'pressure ghost input')
+    do face=1,6
+      axis=(face+1)/2;normal=merge(-1._dp,1._dp,modulo(face,2)==1)
+      expected=qi;expected(1)=qi(1)+2000/(ci*ci)
+      expected(axis+1)=qi(axis+1)-normal*2000/(qi(1)*ci);expected(5)=qi(5)+2000
+      ug=42;tg=43
+      call characteristic_pressure_ghost_3d(species,ui,ti,face,102325._dp,2._dp,ug,tg,ok)
+      call require(ok,'pressure ghost six faces')
+      call reactive_conserved_to_primitive(species,ug,tg,qg,ti,cg,ok)
+      call require(ok.and.all(abs(qg-expected)<=3e-12_dp*max(abs(expected),1e-30_dp)), &
+        'pressure density velocity and frozen composition')
+      ! Restore the interior temperature guess after the output conversion.
+      call reactive_primitive_to_conserved(species,qi,ui,ti,ci,ok)
+    end do
+    ug=42;tg=43
+    call characteristic_pressure_ghost_3d(species,ui,ti,2,1._dp,2._dp,ug,tg,ok)
+    call require(.not.ok.and.all(ug==42).and.tg==43,'nonpositive extrapolated pressure rollback')
+  end subroutine
   subroutine check_inflow()
     real(dp) :: inlet(12,6),it(6),base(12,4,4,4),base_t(4,4,4)
     integer :: face,axis
