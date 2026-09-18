@@ -136,3 +136,25 @@ A crossing parent skips KH for that source substep and takes the wall path.
 Other parents and their children drift after release; the transverse child energy
 is balanced against the gas. This is source-first splitting, not a calibrated
 breakup validation. See [focused evidence](../../docs/validation/spray-eb-khrt-application-20260918.md).
+
+### Finite nozzle and size distributions
+
+The shared scheduled nozzle accepts `nozzle_radius` in metres (default zero),
+`nozzle%profile='solid'` or `'hollow'`, and `nozzle%swirl` and `nozzle%spread`.
+These use the existing deterministic cone sampler. For example:
+
+```fortran
+ nozzle_radius=1e-4, half_angle=.1
+ nozzle%profile='hollow', nozzle%swirl=.4, nozzle%spread=.02
+ sizes%distribution='lognormal', sizes%std=2e-6
+ sizes%minimum=5e-6, sizes%maximum=2e-5, sizes%weighting='number'
+```
+
+`sizes%shape` enables the existing Weibull sampler; the other existing choices
+are `normal`, `lognormal` and `chi-squared`. The default remains monodisperse.
+`sizes%weighting='mass'` assigns equal represented mass to records; `'number'`
+assigns equal represented drop counts. The requested event dose is preserved.
+Every generated point must lie in fluid; validation precedes population and
+budget publication. All controls enter normalized restart context, so checkpoints
+from before these added fields fail context comparison. This does not add
+independent nozzle ports. See [focused evidence](../../docs/validation/spray-eb-nozzle-20260918.md).
