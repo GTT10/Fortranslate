@@ -266,6 +266,17 @@ source-rank ownership during this interval. Gas feedback, film evolution and
 final finest-owner migration are the caller's responsibility. See
 [remaining-flight evidence](validation/spray-mpi-eb-impact-interval-20260918.md).
 
+Its optional `outflow_change(5+nc)` enables all-root-face outflow. Presence must
+agree across ranks. Each flight is clipped at its first exterior crossing;
+earlier EB contacts use the corrected remaining time. Escaped records are
+removed without recycling IDs. The global negative system inventory contains
+mass, momentum, energy and component masses in component order, while the wall
+output remains wall receipt. Exterior events share the per-lineage hit budget.
+All ranks receive the same inventory only after collective success. The tree
+migration wrapper, MPI source/reactive coupling and MPI application do not yet
+expose this option. See [MPI outflow evidence](validation/spray-mpi-eb-impact-outflow-20260918.md).
+
+
 `advance_mpi_eb_tree_impacts` composes that interval with transactional AMR
 ownership. It first validates/migrates a private copy of existing EB films,
 advances the impact interval with pressures still attached to their input
