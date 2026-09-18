@@ -218,6 +218,18 @@ source-rank ownership during this interval. Gas feedback, film evolution and
 final finest-owner migration are the caller's responsibility. See
 [remaining-flight evidence](validation/spray-mpi-eb-impact-interval-20260918.md).
 
+`advance_mpi_eb_tree_impacts` composes that interval with transactional AMR
+ownership. It first validates/migrates a private copy of existing EB films,
+advances the impact interval with pressures still attached to their input
+parcels, then migrates live parcels and films to the finest current fluid-side
+owners. Failure at either final receive-capacity check restores the entire
+pre-impact state, including IDs and diagnostics. The root upper bound is derived
+from tree shape and root spacing. Both capacities come from the supplied particle
+and wall options. This wrapper adds final migration, not gas feedback or film
+evolution; callers must resample pressures after repartitioning for the next
+source interval. See
+[impact/migration evidence](validation/spray-mpi-eb-impact-migration-20260918.md).
+
 `spray_eb_field_mod` supplies `eb_spray_stencil`, `sample_eb_spray_field` and
 `deposit_eb_spray_gas`. Callers must supply geometry and its original nodal level
 set together. Point queries reject solid locations. Up to eight neighboring
