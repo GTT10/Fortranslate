@@ -1408,9 +1408,20 @@ match exactly at the paired faces. The shared hit budget covers both event types
 change, including escaping liquid internal and kinetic energy. Escaped records
 retain their IDs with zero mass; callers must retire their component inventories
 and account for species loss. All parcels and both ledgers publish together.
-Omitting the optional group retains root-contained behavior. Source coupling,
-impact/film flight and application exposure remain separate work. See
+Omitting the optional group retains root-contained behavior. Impact/film flight
+and application exposure remain separate work. See
 [focused evidence](validation/spray-eb-outer-drift-20260918.md).
+
+The allocated serial source accepts `outer_faces(6)` with `outer_change(nvar)`
+and invokes this drift after gas exchange. It computes each live parcel's liquid
+energy from its component state, clears escaped component masses, and accumulates
+their mapped vapor-species losses with exterior mass/momentum/energy. Its existing
+five-entry boundary output continues to report EB wall exchange. Both ledgers,
+gas, particles and IDs commit only after the complete interval succeeds. KH
+eligibility checks stop at the first exterior crossing before querying the EB.
+This source mode currently rejects simultaneous impact-film arguments; reactive
+and application wiring are pending. See
+[source evidence](validation/spray-eb-outer-source-20260918.md).
 
 ## KH-RT representative-drop breakup
 
