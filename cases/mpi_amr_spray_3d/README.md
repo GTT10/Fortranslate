@@ -358,3 +358,34 @@ Omitting the group retains the old restart context. A supplied group binds all
 size settings to restart identity; retain it unchanged on continuation. These
 example distributions are fixtures, not a calibrated injector. See
 [evidence](../../docs/validation/spray-amr-sizes-20260918.md).
+
+### Per-port injection rate histories
+
+`&amr_spray_rates` optionally supplies piecewise-linear mass rates per port:
+
+```fortran
+&amr_spray_rates
+ profile_points(1)=3
+ profile_times(:,1)=0.,1.e-8,2.e-8
+ profile_rates(:,1)=.001,.002,.006
+ event_end_times=1.e-8,1.5e-8,2.e-8
+/
+```
+
+Times are seconds, rates kg/s. Each active profile needs 2–64 strictly increasing
+knots; supported time/rate bounds are `[0,1e6] s` and `[0,1] kg/s`. For each
+event using that port, set its explicit `event_mass` to zero in `&amr_spray`
+and provide an end time here. The existing exact piecewise-linear integral
+over `[injection_times(event),event_end_times(event)]` becomes its mass.
+The interval must lie inside the profile. A positive integral requires a positive
+parcel count; a zero integral requires zero parcels. Ports without profiles
+retain explicit event masses and require end-time sentinel `-1`.
+
+The entire interval mass is injected at the event's start, using the existing
+port speed and parcel count. This is event discretization of a rate history;
+divide intervals as needed for temporal resolution. Automatic interval
+subdivision and rate-derived velocity are not part of this input path.
+Unused profile entries must remain zero and unused end times `-1`. A supplied
+group binds the rate table and intervals to restart identity; omitting it
+preserves the previous context. See
+[evidence](../../docs/validation/spray-amr-rates-20260918.md).
