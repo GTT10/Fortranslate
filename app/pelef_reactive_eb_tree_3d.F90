@@ -504,6 +504,9 @@ contains
     real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),injection_end_times(1024),profile_mass
     real(dp) :: port_centers(3,16),port_axes(3,16),port_masses(16),port_speeds(16)
     real(dp) :: port_angles(16),port_diameters(16),port_temperatures(16),port_fractions(16,16)
+    real(dp) :: port_radii(16)=0
+    type(spray_nozzle_model) :: port_nozzles(16)
+    type(spray_size_options) :: port_sizes(16)
     character(len=4096) :: context_line
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
@@ -514,7 +517,8 @@ contains
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
       port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
-      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls
+      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls, &
+      port_radii,port_nozzles,port_sizes
     port_profile_points=0;port_profile_times=0;port_profile_rates=0;injection_end_times=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp)
@@ -583,7 +587,11 @@ contains
       effective%reference_temperature=port_temperatures(port);effective%reference_energy=e
       call inject_cone_parcels(effective,port_masses(port),port_numbers(port),1_int64, &
         port_centers(:,port),port_axes(:,port),port_speeds(port),port_angles(port),port_diameters(port), &
-        port_temperatures(port),injection_ports(port)%parcels,ok)
+        port_temperatures(port),injection_ports(port)%parcels,ok, &
+        diameter_shape=port_sizes(port)%shape,diameter_min=port_sizes(port)%minimum, &
+        diameter_max=port_sizes(port)%maximum,diameter_weighting=port_sizes(port)%weighting, &
+        diameter_distribution=port_sizes(port)%distribution,diameter_std=port_sizes(port)%std, &
+        nozzle_radius=port_radii(port),nozzle_model=port_nozzles(port))
       if(.not.ok) error stop 'Invalid injection port template'
       injection_ports(port)%fractions=port_fractions(:nc,port)
       injection_ports(port)%parcels%material_id=port
