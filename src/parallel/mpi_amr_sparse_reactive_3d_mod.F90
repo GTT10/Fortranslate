@@ -2495,7 +2495,7 @@ contains
   subroutine advance_mpi_amr_sparse_boundary_hydro_3d( &
       distribution, species, patch, state, temperature, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, face_flux_x, &
-      face_flux_y, face_flux_z, faces,boundary_change,ok,inflow_state,inflow_temperature)
+      face_flux_y, face_flux_z, faces,boundary_change,ok,inflow_state,inflow_temperature,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2508,6 +2508,7 @@ contains
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(out) :: boundary_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
 
     real(dp), allocatable :: old_state(:, :, :, :)
@@ -2623,7 +2624,7 @@ contains
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
       integer :: dims(3)
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,u,t,faces,ghost,gt,success, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
       if (.not.success) return
       dims=shape(gt)
       allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)

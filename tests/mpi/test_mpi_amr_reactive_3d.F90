@@ -240,6 +240,13 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--coarse-hydro-only') then
+      call check_physical_coarse_hydro()
+      if (distribution%rank==0) print *, 'PASS: sparse physical and pressure coarse hydro'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--halos-only') then
       call check_physical_halos()
       if (distribution%rank==0) print *, 'PASS: sparse physical and pressure halos'
@@ -930,23 +937,29 @@ contains
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),reference(:,:,:,:),rt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp), allocatable :: inlet(:,:),it(:),ledger(:),expected(:),sx(:,:,:,:),sy(:,:,:,:),sz(:,:,:,:)
     character(len=32) :: faces(6),method
-    integer :: mode,lo,hi,nv
+    real(dp) :: pressure(6)
+    integer :: mode,lo,hi,nv,trial
     lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last;nv=size(coarse_state,1)
     allocate(inlet(nv,6),it(6),ledger(nv),expected(nv))
     allocate(sx,mold=coarse_state);allocate(sy,mold=coarse_state);allocate(sz,mold=coarse_state)
     inlet=spread(coarse_state(:,1,1,1),2,6);it=coarse_temperature(1,1,1)
     inlet(:,3)=1.1_dp*inlet(:,3)
     faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
-    do mode=1,2
+    do trial=1,4
+      mode=modulo(trial-1,2)+1
+      pressure=0
+      if (trial>2) then
+        where(faces=='outflow') pressure=102325
+      end if
       method='pcm'
       if (mode==2) method='characteristic_plm'
       reference=coarse_state;rt=coarse_temperature
       call advance_reactive_boundary_hydro_3d(species,reference,rt,[dx,dy,dz],1e-7_dp, &
-        faces,method,'mc',config%riemann_solver,expected,ok,inlet,it,sx,sy,sz)
+        faces,method,'mc',config%riemann_solver,expected,ok,inlet,it,sx,sy,sz,pressure)
       call require(ok,'serial physical coarse hydro reference')
       u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
       call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it)
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it,pressure)
       call require(ok,'sparse physical coarse hydro advance')
       call require(all(u==reference(:,lo:hi,:,:)).and.all(t==rt(lo:hi,:,:)), &
         'sparse physical coarse state and temperature exactly match serial')
@@ -958,7 +971,7 @@ contains
       u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
       if (sparse_distribution%rank==0) inlet(1,3)=-1
       call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it)
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it,pressure)
       call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
         all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0), &
         'physical hydro rank-local invalid inlet rolls back collectively')
