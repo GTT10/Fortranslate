@@ -13,7 +13,7 @@ program test_les_mpi_models
   integer, parameter :: cells(3)=[8,4,4]
   real(dp) :: initial(15,8,4,4),initial_t(8,4,4),reference(15,8,4,4),reference_t(8,4,4)
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),saved(:,:,:,:),saved_t(:,:,:)
-  real(dp) :: q(15),sound,change(15),serial_change(15),wall_t(6),wall_v(3,6),ci,cs,trial_ci
+  real(dp) :: q(15),sound,change(15),serial_change(15),wall_t(6),wall_v(3,6),ci,cs,trial_ci,pressure(6),bad_pressure(6)
   real(dp), parameter :: spacing(3)=[.001_dp,.001_dp,.001_dp],dt=1e-7_dp
   character(len=16), parameter :: models(3)=[character(len=16)::'smagorinsky','wale','vreman']
   character(len=16) :: model,faces(6)
@@ -44,7 +44,10 @@ program test_les_mpi_models
     ci=0;cs=.17_dp
     if (m>3) ci=.1_dp
     if (m>6) cs=0
-    do b=1,2
+    do b=1,4
+      wall_v=0
+      if (b==2.or.b==3) wall_v(1,3:4)=2
+      pressure=0
       reference=initial;reference_t=initial_t
       state=initial(:,lo:hi,:,:);temperature=initial_t(lo:hi,:,:)
       change=0;serial_change=0
@@ -55,11 +58,16 @@ program test_les_mpi_models
           ok,model=model,ci=ci)
       else
         faces='outflow';faces(3:4)='isothermal_wall'
+        if (b==3) pressure(2)=100000
+        if (b==4) then
+          faces='outflow'
+          pressure=[100500._dp,100000._dp,100300._dp,100100._dp,100400._dp,100200._dp]
+        end if
         call advance_les_ssprk2_3d(species,reference,reference_t,spacing,cs,.7_dp,.7_dp,dt,ok,faces,serial_change, &
-          wall_temperature=wall_t,wall_velocity=wall_v,model=model,ci=ci)
+          wall_temperature=wall_t,wall_velocity=wall_v,model=model,ci=ci,outlet_pressure=pressure)
         call require(ok,'serial walls')
         call advance_mpi_spray_les(MPI_COMM_WORLD,species,state,temperature,spacing,cells,dt,cs,.7_dp,.7_dp, &
-          ok,faces,change,wall_temperature=wall_t,wall_velocity=wall_v,model=model,ci=ci)
+          ok,faces,change,wall_temperature=wall_t,wall_velocity=wall_v,model=model,ci=ci,outlet_pressure=pressure)
       end if
       call require(ok,'MPI LES')
       call require(maxval(abs(state-reference(:,lo:hi,:,:))/max(1._dp,abs(reference(:,lo:hi,:,:))))<2e-12_dp, &
@@ -67,6 +75,20 @@ program test_les_mpi_models
       call require(maxval(abs(temperature-reference_t(lo:hi,:,:)))<1e-8_dp,'temperature parity')
       call require(all(abs(change-serial_change)<1e-10_dp*max(1e-12_dp,abs(serial_change))),'budget parity')
       saved=state;saved_t=temperature
+      faces='outflow';bad_pressure=0
+      if (rank==nranks-1) bad_pressure(2)=100000
+      call advance_mpi_spray_les(MPI_COMM_WORLD,species,state,temperature,spacing,cells,0._dp,0._dp,.7_dp,.7_dp, &
+        ok,faces=faces,model=model,outlet_pressure=bad_pressure)
+      call require(.not.ok.and.all(state==saved).and.all(temperature==saved_t),'pressure mismatch rollback')
+      bad_pressure=0
+      if (rank==nranks-1) bad_pressure(2)=ieee_value(0._dp,ieee_quiet_nan)
+      call advance_mpi_spray_les(MPI_COMM_WORLD,species,state,temperature,spacing,cells,dt,cs,.7_dp,.7_dp, &
+        ok,faces=faces,model=model,outlet_pressure=bad_pressure)
+      call require(.not.ok.and.all(state==saved).and.all(temperature==saved_t),'pressure NaN rollback')
+      bad_pressure=100000
+      call advance_mpi_spray_les(MPI_COMM_WORLD,species,state,temperature,spacing,cells,0._dp,0._dp,.7_dp,.7_dp, &
+        ok,model=model,outlet_pressure=bad_pressure)
+      call require(.not.ok.and.all(state==saved).and.all(temperature==saved_t),'pressure needs physical faces')
       trial_ci=ci
       if (rank==nranks-1) trial_ci=ci+.01_dp
       call advance_mpi_spray_les(MPI_COMM_WORLD,species,state,temperature,spacing,cells,0._dp,0._dp,.7_dp,.7_dp, &

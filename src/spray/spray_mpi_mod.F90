@@ -2,7 +2,7 @@ module spray_mpi_mod
   use mpi_f08
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
-    valid_reactive_boundaries_3d,valid_wall_velocity_3d
+    valid_reactive_boundaries_3d,valid_wall_velocity_3d,fill_pressure_outlet_ghosts_3d
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -44,8 +44,11 @@ module spray_mpi_mod
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
   subroutine fill_mpi_spray_ghosts(comm,state,temperature,cells,faces,ghost,ghost_temperature,ok, &
-      viscous_wall,inflow_state,inflow_temperature,wall_velocity)
+      viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure)
     type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), optional, intent(in) :: species(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: pressure(6),local_pressure(6),minpressure(6),maxpressure(6)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
     integer, intent(in) :: cells(3)
     character(len=*), intent(in) :: faces(6)
@@ -64,8 +67,17 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
+    pressure=0
+    if (present(outlet_pressure)) pressure=outlet_pressure
     nvar=size(state,1);config(:4)=[cells,nvar];config(11)=merge(1,0,viscous)
     valid=valid_reactive_boundaries_3d(faces).and.nvar>=5.and.nvar<=256
+    valid=valid.and.all(ieee_is_finite(pressure))
+    valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
+    valid=valid.and..not.any(pressure>0.and.faces/='outflow')
+    if (any(pressure>0)) then
+      valid=valid.and.present(species)
+      if (present(species)) valid=valid.and.nvar==5+size(species)
+    end if
     do f=1,6
       select case(trim(faces(f)))
       case('periodic');config(4+f)=1
@@ -84,6 +96,11 @@ contains
     end if
     call agree()
     if (.not.agreed) return
+    call MPI_Allreduce(pressure,minpressure,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(pressure,maxpressure,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (any(minpressure/=maxpressure)) return
     call MPI_Allreduce(config,low,11,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(config,high,11,MPI_INTEGER,MPI_MAX,comm,ierr)
@@ -111,6 +128,14 @@ contains
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=local_velocity)
     call agree()
     if (.not.agreed) return
+    if (any(pressure>0)) then
+      local_pressure=pressure
+      if (rank/=0) local_pressure(1)=0
+      if (rank/=nranks-1) local_pressure(2)=0
+      call fill_pressure_outlet_ghosts_3d(species,extent,local_faces,local_pressure,candidate,temp,valid)
+      call agree()
+      if (.not.agreed) return
+    end if
     allocate(send(nvar+1,2,ny+4,nz+4),left(nvar+1,2,ny+4,nz+4),right(nvar+1,2,ny+4,nz+4))
     send(:nvar,:,:,:)=candidate(:,nx+1:nx+2,:,:);send(nvar+1,:,:,:)=temp(nx+1:nx+2,:,:)
     call MPI_Sendrecv(send,size(send),MPI_DOUBLE_PRECISION,next,3331,left,size(left),MPI_DOUBLE_PRECISION, &
@@ -857,7 +882,7 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_les(comm,species,state,temperature,spacing,cells,dt,cs,prt,sct,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci)
+      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -866,6 +891,8 @@ contains
     real(dp), intent(in) :: cs,prt,sct
     character(len=*), optional, intent(in) :: model
     character(len=16) :: selected_model
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: pressure(6)
     real(dp), optional, intent(in) :: ci
     real(dp) :: isotropic
     integer :: model_id
@@ -879,10 +906,12 @@ contains
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
     real(dp), allocatable :: rhs(:,:,:,:)
-    real(dp) :: controls(8),minimum(8),maximum(8),diffusivity
+    real(dp) :: controls(14),minimum(14),maximum(14),diffusivity
     integer :: config(6),minconfig(6),maxconfig(6),rank,nranks,ierr,first(3),extent(3)
     integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next
     logical :: valid,agreed
+    pressure=0
+    if (present(outlet_pressure)) pressure=outlet_pressure
     isotropic=0
     if (present(ci)) isotropic=ci
     change=0
@@ -906,20 +935,23 @@ contains
       end select
       if (model_id>0) selected_model=model
     end if
-    valid=model_id>0.and.all(ieee_is_finite([spacing,dt,cs,prt,sct,isotropic]))
+    valid=model_id>0.and.all(ieee_is_finite([spacing,dt,cs,prt,sct,isotropic,pressure]))
+    valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
+    if (any(pressure>0)) valid=valid.and.present(faces)
+    if (present(faces)) valid=valid.and..not.any(pressure>0.and.faces/='outflow')
     valid=valid.and.isotropic>=0.and.isotropic<=1
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
     if (present(boundary_change)) valid=valid.and.present(faces).and.size(boundary_change)==nvar
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,merge(1,0,present(faces)),model_id];controls=[spacing,dt,cs,prt,sct,isotropic]
+    config=[cells,nvar,merge(1,0,present(faces)),model_id];controls=[spacing,dt,cs,prt,sct,isotropic,pressure]
     call MPI_Allreduce(config,minconfig,6,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(config,maxconfig,6,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,minimum,8,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(controls,minimum,14,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,8,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,14,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minconfig/=maxconfig).or.any(minimum/=maximum)) return
     call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
@@ -948,7 +980,8 @@ contains
     do stage=1,2
       if (present(faces)) then
         call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
+          species=species,outlet_pressure=pressure)
         call agree()
         if (.not.agreed) return
         call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid, &
