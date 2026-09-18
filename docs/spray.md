@@ -2900,3 +2900,11 @@ the model through both RK2 stages. Two/four-rank tests cover periodic and moving
 isothermal-wall parity with serial; see
 [MPI LES model checks](validation/les-mpi-models-20260918.md).
 Coupled spray/application model controls remain to be connected.
+
+The serial `advance_spray_reactive_3d` and MPI `advance_mpi_mixture_reaction`
+coupled library APIs accept optional `les_model` and forward it through both
+LES half steps. The MPI wrapper includes the model in collective control
+agreement; omission keeps Smagorinsky. Serial reacting/evaporating conservation
+checks cover all three models. MPI coupled runtime qualification and application/
+checkpoint controls remain pending; see
+[coupled LES evidence](validation/les-coupled-models-20260918.md).
