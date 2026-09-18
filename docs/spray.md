@@ -2135,7 +2135,9 @@ the entire event, preserving parent, child array and film output and zeroing the
 wall budget. Successful calls replace the film/children output with this event's
 results (empty when absent); a caller must append or accumulate them into its
 persistent state. Regular gas coupling and checkpoint persistence are wired into
-the application below; lateral film transport remains open. See
+the application below. Lateral film transport remains a future extension; the
+pinned particle mover excludes films from position updates
+([source audit](validation/film-reference-scope-20260918.md)). See
 [event checks](validation/wall-impact-event-20260916.md).
 
 

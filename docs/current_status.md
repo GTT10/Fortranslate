@@ -685,8 +685,7 @@ temperature and composition selected per event, with restart-bound inputs
 ([evidence](validation/spray-mpi-eb-ports-20260918.md)). Per-port tabulated rates
 now integrate explicit packet intervals with restart-bound profile inputs
 ([evidence](validation/spray-mpi-eb-profile-20260918.md)). External curve-file
-loading, liquid wall impacts, lateral film transport and
-physical qualification remain open.
+loading and physical qualification remain open. Liquid wall-impact support is described in the subsequent evidence. Lateral film transport remains a future extension beyond the pinned stationary-film path ([source audit](validation/film-reference-scope-20260918.md)).
 Coarse/fine interpolation currently uses piecewise-constant
 cell values; higher-order interface treatment/convergence remain unqualified.
 

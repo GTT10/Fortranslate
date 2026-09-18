@@ -4,7 +4,7 @@
   "path": "Source/Spray/BreakupSplash/AhamedSplash.H",
   "sha256": "37ddd95a06bc96d6c2b1e740cf583a872335efc787b56a4cce80211f4381cb92",
   "license_path": "references/pelephysics-spray-license.txt",
-  "scope": "Regular coupled planar impacts and stationary film heating/evaporation with CLI and checkpoint persistence; lateral film transport remains open",
+  "scope": "Regular coupled planar impacts and stationary film heating/evaporation with CLI and checkpoint persistence; lateral film transport is a future extension beyond the pinned stationary-film path",
   "child_source": {
     "path": "Source/Spray/SpraySB.cpp",
     "sha256": "e540abf90a3e5acd9b91d6f7994c9373ad505bb47f512fa8c5b7c3e536f32382"
@@ -23,5 +23,11 @@
     "path": "Source/Spray/Drag.H",
     "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345",
     "rule": "WallFilm.H supplies rule=1/2 to calcVaporState; temperature uses nonnegative gas-minus-film difference."
+  },
+  "film_position_source": {
+    "path": "Source/Spray/SprayParticles.cpp",
+    "sha256": "0e376f77df434ae7eec9fba39ab67af5ad4c20fb4c46529a9ff35b6d978b4d05",
+    "rule": "Positive film height selects calculateFilmSource; particle position update explicitly requires !is_film.",
+    "evidence": "docs/validation/film-reference-scope-20260918.md"
   }
 }
