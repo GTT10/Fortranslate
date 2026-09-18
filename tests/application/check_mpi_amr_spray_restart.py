@@ -23,6 +23,7 @@ p.add_argument('--les', action='store_true')
 p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
+p.add_argument('--sizes', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -107,7 +108,16 @@ if a.properties:
               " mixture_antoine_temperature_ranges(:,1)=300.,450.\n/\n")
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False):
+if a.sizes:
+    assert a.multiport
+    spray += ("\n&amr_spray_sizes\n"
+              " port_sizes(1)%distribution='normal',port_sizes(1)%std=2.e-6,\n"
+              " port_sizes(1)%minimum=2.e-6,port_sizes(1)%maximum=3.e-5,\n"
+              " port_sizes(2)%shape=2.5,port_sizes(2)%weighting='number',\n"
+              " port_sizes(2)%minimum=2.e-6,port_sizes(2)%maximum=4.e-5\n/\n")
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -126,6 +136,10 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('1100.,-.2', '1101.,-.2')
     if invalid_properties:
         local_spray = local_spray.replace('1100.,-.2', '-1100.,0.')
+    if changed_sizes:
+        local_spray = local_spray.replace('%std=2.e-6', '%std=3.e-6')
+    if invalid_sizes:
+        local_spray = local_spray.replace('%std=2.e-6', '%std=-2.e-6')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -210,6 +224,12 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.sizes:
+    for port in (1., 2.):
+        drop_masses = [row[9] for row in particles if row[2] == port]
+        assert max(drop_masses) > 1.1 * min(drop_masses), 'size distribution must vary drop mass'
+    run('changed_sizes', 2, f"restart_file='{checkpoint}'", good=False, changed_sizes=True)
+    run('invalid_sizes', 2, '', good=False, invalid_sizes=True)
 if a.properties:
     run('changed_properties', 2, f"restart_file='{checkpoint}'", good=False, changed_properties=True)
     run('invalid_properties', 2, '', good=False, invalid_properties=True)

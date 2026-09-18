@@ -104,6 +104,9 @@ contains
     real(dp) :: port_centers(3,16),port_axes(3,16),port_speeds(16),port_half_angles(16), &
       port_diameters(16),port_temperatures(16),port_fractions(16,16),port_radii(16)
     type(spray_nozzle_model) :: port_nozzles(16)
+    type(spray_size_options) :: port_sizes(16)
+    logical :: sizes_present
+    namelist /amr_spray_sizes/ port_sizes
     real(dp) :: injection_times(maximum_events),event_mass(maximum_events)
     character(len=24) :: vapor_names(16)
     real(dp) :: fractions(16),liquid_density(16),liquid_cp(16),reference_temperature(16), &
@@ -147,6 +150,7 @@ contains
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
+    port_sizes=spray_size_options()
     acceleration=0
     les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
@@ -165,9 +169,13 @@ contains
     if (ios>0) call fatal('Invalid amr_spray_force namelist')
     rewind(unit)
     read(unit,nml=amr_spray_properties,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_properties namelist')
     properties_present=ios==0
+    rewind(unit)
+    read(unit,nml=amr_spray_sizes,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_sizes namelist')
+    sizes_present=ios==0
     if (.not.all(ieee_is_finite(acceleration))) call fatal('Nonfinite acceleration')
     if (any(abs(acceleration)>1e6_dp)) call fatal('Invalid acceleration')
     if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
@@ -298,6 +306,10 @@ contains
     if (properties_present) then
       write(unit,nml=amr_spray_properties,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize liquid properties context')
+    end if
+    if (sizes_present) then
+      write(unit,nml=amr_spray_sizes,iostat=ios)
+      if (ios/=0) call fatal('Cannot serialize size distribution context')
     end if
     rewind(unit);spray_context=''
     do
@@ -656,7 +668,10 @@ contains
       call inject_mpi_cone_parcels(comm,liquids(1),local_mass,number,port_centers(:,outlet),port_axes(:,outlet), &
         port_speeds(outlet),port_half_angles(outlet),port_diameters(outlet),port_temperatures(outlet), &
         maximum_parcels,next_id,candidate,ledger,ok,liquids,port_fractions(:component_count,outlet),candidate_mass, &
-        nozzle_radius=port_radii(outlet),nozzle_model=port_nozzles(outlet))
+        nozzle_radius=port_radii(outlet),nozzle_model=port_nozzles(outlet), &
+        diameter_shape=port_sizes(outlet)%shape,diameter_min=port_sizes(outlet)%minimum, &
+        diameter_max=port_sizes(outlet)%maximum,diameter_weighting=port_sizes(outlet)%weighting, &
+        diameter_distribution=port_sizes(outlet)%distribution,diameter_std=port_sizes(outlet)%std)
       if (.not.ok) call fatal('Scheduled injection failed')
       do born=old_count+1,size(candidate)
         candidate(born)%material_id=outlet
