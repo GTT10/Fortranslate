@@ -3099,6 +3099,19 @@ without face-area or time factors. They are the same fluxes used for the RHS.
 The caller supplies two halo layers, including any coarse/peer/physical donors.
 All three outputs publish only on success; partial output sets or wrong shapes
 are rejected. Boundary masks affect the ledger, not the returned flux values.
-This exposes the fluxes needed for later coarse/fine synchronization; it does
-not yet connect LES to an AMR time integrator.
+This supplies the fluxes used by the serial AMR LES integrator below.
 See [focused evidence](validation/les-face-fluxes-20260918.md).
+
+### Serial AMR static LES
+
+The spray tree runtime exports `les_amr_patch_tree_mod` and
+`advance_amr_patch_tree_les_3d`. It advances regular patch trees with common-step
+SSPRK2, shared peer/coarse ghost filling, optional limited coarse donors,
+physical boundaries including pressure outlets, conservative face synchronization
+and reflux, averaging down and EOS recovery. It supports Smagorinsky, WALE and
+Vreman with optional CI. Every patch/stage checks the existing LES diffusion
+interval bound. State, temperature and boundary/correction diagnostics publish
+together on success. The caller supplies a positive timestep; this API does not
+yet provide a hierarchy timestep selector, subcycling, MPI or application dispatch.
+Dynamic LES and EB grids are outside this API.
+See [AMR evidence](validation/les-amr-tree-20260918.md).
