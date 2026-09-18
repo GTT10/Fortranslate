@@ -394,8 +394,13 @@ contains
             next_patch,patch_changed,ok,regrid_faces)
           call collective_require(ok,'Failed distributed MPI temperature tagging',4)
           if (patch_changed) then
+            if (any(config%outlet_pressure>0)) then
+              call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok, &
+                config%reconstruction,config%limiter,faces,inflow_state,inflow_t,config%outlet_pressure)
+            else
             call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok, &
               config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
+            end if
             call collective_require(ok,'Failed distributed conservative MPI regrid',4)
             call balance_hierarchy()
             regrid_count=regrid_count+1
@@ -470,7 +475,7 @@ contains
           step_transport_theta, step_reflux, ok, &
           chemistry_integrator=chemistry_integrator,boundary_faces=active_faces,boundary_change=step_boundary, &
           inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-          wall_velocity=config%wall_velocity)
+          wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
       else
         call advance_mpi_amr_sparse_full_3d( &
           distribution, species, reactions, transport, patch, hierarchy, &
@@ -482,7 +487,7 @@ contains
           config%species_diffusion_enabled, config%barodiffusion_enabled, &
           step_transport_theta, step_reflux, ok,boundary_faces=active_faces,boundary_change=step_boundary, &
           inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-          wall_velocity=config%wall_velocity)
+          wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
       end if
       call collective_require( &
         ok, "MPI 3D AMR reactive split rejected its candidate", 4)

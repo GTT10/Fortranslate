@@ -43,7 +43,7 @@ program pelef_mpi_amr_reactive_3d
       "Usage: pelef_mpi_amr_reactive_3d <input.nml> [output-prefix]", 2)
   end if
   call get_command_argument(1, input_path)
-  call read_reactive_3d_configuration(trim(input_path), config, ok, message)
+  call read_reactive_3d_configuration(trim(input_path), config, ok, message, allow_pressure_outlet=.true.)
   if (.not. ok) call abort_run(trim(message), 2)
   call read_amr_reactive_3d_configuration( &
     trim(input_path), config, amr_config, ok, message,allow_physical=.true., &
