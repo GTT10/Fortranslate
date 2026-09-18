@@ -3015,3 +3015,10 @@ LES with collective dt agreement, global diffusion checks and transactional EOS
 recovery after both stages. Two/four-rank variable-state checks match serial
 state and temperature exactly. MPI coupled-spray/application dispatch remains
 pending. See [distributed stepping evidence](validation/les-mpi-dynamic-step-20260918.md).
+
+MPI mixed-spray coupling and both MPI applications now accept the dynamic model
+and filter controls. Controls agree collectively and enter restart identity;
+periodic SGS half steps use distributed coefficient, flux and SSPRK2 APIs.
+Same-rank exact continuation and 2-to-4-rank continuation pass for fixed/selected
+H2O2. Nonperiodic and AMR dynamic LES remain open; see
+[MPI dynamic application evidence](validation/les-mpi-dynamic-application-20260918.md).
