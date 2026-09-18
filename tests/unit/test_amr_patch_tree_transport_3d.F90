@@ -20,7 +20,7 @@ program test_amr_patch_tree_transport_3d
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),serial(12,4,4,4),st(4,4,4),q(12),sound
   real(dp) :: spacing(3),dt,root_dt,expected_dt,local_dt,h(3),budget(12),serial_budget(12),largest, &
       initial(12),final(12),theta,serial_theta,diffusivity,local_diffusivity
-  real(dp) :: wall_t(6),wall_v(3,6),wall_dt
+  real(dp) :: wall_t(6),wall_v(3,6),wall_dt,outlet(6)
   integer :: i,j,k,mode,geometry,node,n(3),axis,level,boundary_mode
   character(len=:), allocatable :: coarse_limiter
   type(amr_tree_state_3d) :: pcm_results(4)
@@ -59,8 +59,14 @@ program test_amr_patch_tree_transport_3d
     call require(ok,'topology')
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     call require(ok,'global layout')
-    do mode=1,8
+    do mode=1,10
+      outlet=0
+      if (mode>8) then
+        outlet(2)=102325;outlet(6)=102325
+      end if
       boundary_mode=mod(mode-1,4)+1
+      if (mode==9) boundary_mode=2
+      if (mode==10) boundary_mode=4
       if (allocated(coarse_limiter)) deallocate(coarse_limiter)
       if (mode>4) coarse_limiter="mc"
       faces='periodic';wall_v=0
@@ -114,9 +120,9 @@ program test_amr_patch_tree_transport_3d
       dt=min(dt,1e-8_dp)
       call advance_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
         .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-        coarse_limiter=coarse_limiter)
+        coarse_limiter=coarse_limiter,outlet_pressure=outlet)
       call require(ok,'transport step')
-      if (geometry==2) then
+      if (geometry==2.and.mode<=8) then
         if (mode<=4) then
           pcm_results(mode)=state
         else
@@ -127,7 +133,8 @@ program test_amr_patch_tree_transport_3d
       if (geometry==1) then
         serial=root;st=rt(1,:,:,:)
         call advance_reactive_transport_3d(species,transport,serial,st,4,4,4,spacing(1),spacing(2),spacing(3),dt, &
-          .true.,.true.,.true.,.true.,serial_theta,ok,faces,serial_budget,wall_temperature=wall_t,wall_velocity=wall_v)
+          .true.,.true.,.true.,.true.,serial_theta,ok,faces,serial_budget,wall_temperature=wall_t,wall_velocity=wall_v, &
+          outlet_pressure=outlet)
         call require(ok,'serial oracle')
         call require(maxval(abs(state%fields(1)%values-serial)/max(1.0_dp,abs(serial)))<2e-13_dp,'serial state')
         call require(maxval(abs(temperature%fields(1)%values(1,:,:,:)-st))<1e-9_dp,'serial temperature')
@@ -144,7 +151,7 @@ program test_amr_patch_tree_transport_3d
       saved=state;saved_t=temperature;budget=-17;largest=-19;theta=-23
       call advance_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,1.0_dp,faces, &
         .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-        coarse_limiter=coarse_limiter)
+        coarse_limiter=coarse_limiter,outlet_pressure=outlet)
       call require(.not.ok,'nonphysical candidate rejection')
       do node=1,size(tree%nodes)
         call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')
