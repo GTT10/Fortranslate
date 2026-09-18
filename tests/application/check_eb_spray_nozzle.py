@@ -35,18 +35,25 @@ def run(profile, label, extra='', invalid=False):
     else:
         controls += "nozzle%spread=.02,sizes%distribution='lognormal',sizes%weighting='number',sizes%std=2.e-6,"
     if a.ports:
-        assert a.properties and not a.rate
+        assert a.properties
         controls = controls.replace('injection_events=2,injection_times=0.,2.e-8,',
             'port_count=2,injection_events=5,injection_times=0.,0.,1.e-8,2.e-8,2.e-8,'
             'injection_scales=1.,1.,0.,1.,1.,event_ports=1,2,2,1,2,'
             'port_numbers(2)=4,port_centers(:,2)=.003,.0015,.0015,port_masses(2)=2.e-10,'
             'port_speeds(2)=30.,port_fractions(:,2)=.75,.25,14*0.,')
     if a.rate:
-        controls = controls.replace('injection_events=2,injection_times=0.,2.e-8,',
-            'injection_events=3,injection_times=0.,1.e-8,2.e-8,injection_scales=1.,0.,2.,')
-        controls += ('injection_profile_points=2,injection_profile_times=0.,4.e-8,'
-                     'injection_end_times=5.e-9,1.5e-8,2.5e-8,velocity_from_rate=.true.,discharge_coefficient=.8,')
-        controls += 'injection_profile_rates=2*.002,' if profile == 'solid' else 'injection_profile_rates=.001,.003,'
+        if a.ports:
+            controls += ('injection_profile_points=2,injection_profile_times=0.,4.e-8,injection_profile_rates=2*.002,'
+                         'injection_end_times=5.e-9,5.e-9,1.5e-8,2.5e-8,2.5e-8,'
+                         'velocity_from_rate=.true.,discharge_coefficient=.8,'
+                         'port_profile_points(2)=2,port_profile_times(1:2,2)=0.,4.e-8,'
+                         'port_profile_rates(1:2,2)=.001,.003,port_radii(2)=.0002,port_discharge_coefficients(2)=.5,')
+        else:
+            controls = controls.replace('injection_events=2,injection_times=0.,2.e-8,',
+                'injection_events=3,injection_times=0.,1.e-8,2.e-8,injection_scales=1.,0.,2.,')
+            controls += ('injection_profile_points=2,injection_profile_times=0.,4.e-8,'
+                         'injection_end_times=5.e-9,1.5e-8,2.5e-8,velocity_from_rate=.true.,discharge_coefficient=.8,')
+            controls += 'injection_profile_rates=2*.002,' if profile == 'solid' else 'injection_profile_rates=.001,.003,'
     if a.properties:
         values = values.replace("nc=1, number=8, vapor_names(1)='H2O', fractions(1)=1",
                                 "nc=2, number=8, vapor_names='H2O','H2', fractions=.25,.75")
@@ -86,18 +93,21 @@ for profile in ('solid', 'hollow'):
         dy, dz = float(row['y'])-.0015, float(row['z'])-.0015
         radius = math.hypot(dy, dz)
         second = a.ports and int(row['material_id']) == 2
+        outlet_radius = .0002 if second and a.rate else .0001
         assert float(row['x']) == (.003 if second else .002) and radius > 0
         if profile == 'hollow':
-            assert math.isclose(radius, .0001, rel_tol=1e-13)
+            assert math.isclose(radius, outlet_radius, rel_tol=1e-13)
         else:
-            assert radius < .0001
+            assert radius < outlet_radius
         assert abs(dy*float(row['w'])-dz*float(row['v'])) > 1e-8
         mass, count = float(row['mass']), float(row['multiplicity'])
         fraction = .75 if second else .25
         density = 1/(fraction/1030+(1-fraction)/865) if a.properties else 1000
         diameter = (6*mass/(math.pi*density))**(1/3)
         if a.rate:
-            expected_speed = dose/(5e-9*density*math.pi*.0001**2*.8)
+            event_dose = (1.0625e-11 if second else 1e-11) if a.ports else dose
+            coefficient = .5 if second else .8
+            expected_speed = event_dose/(5e-9*density*math.pi*outlet_radius**2*coefficient)
             actual_speed = math.sqrt(sum(float(row[k])**2 for k in ('u','v','w')))
             assert math.isclose(actual_speed, expected_speed, rel_tol=1e-12)
         assert 5e-6 <= diameter <= 2e-5
@@ -112,10 +122,11 @@ for profile in ('solid', 'hollow'):
     assert max(diameters) > min(diameters)*1.1
     if a.ports:
         assert [int(r['material_id']) for r in rows] == [1]*8+[2]*4+[1]*8+[2]*4
-        assert math.isclose(sum(doses[8:]), 2e-10, rel_tol=1e-13)
-        assert math.isclose(sum(doses[:8]), 1e-10, rel_tol=1e-13)
+        assert math.isclose(sum(doses[8:]), 1.0625e-11 if a.rate else 2e-10, rel_tol=1e-13)
+        assert math.isclose(sum(doses[:8]), 1e-11 if a.rate else 1e-10, rel_tol=1e-13)
         speeds = [math.sqrt(sum(float(r[k])**2 for k in ('u','v','w'))) for r in fresh]
-        assert all(math.isclose(v,20 if i<8 else 30,rel_tol=1e-13) for i,v in enumerate(speeds))
+        if not a.rate:
+            assert all(math.isclose(v,20 if i<8 else 30,rel_tol=1e-13) for i,v in enumerate(speeds))
     else:
         assert math.isclose(sum(doses), dose, rel_tol=1e-13)
     weights = doses if profile == 'solid' else counts

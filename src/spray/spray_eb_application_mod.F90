@@ -65,6 +65,8 @@ contains
     real(dp) :: mixture_cp_coefficients(4,16)=0,mixture_cp_temperature_ranges(2,16)=0
     real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
     real(dp) :: mixture_critical_temperatures(16)=0
+    integer :: port_profile_points(16)
+    real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),port_radii(16),port_discharge_coefficients(16)
     integer :: injection_profile_points=0
     real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,injection_end_times(1024)=-1
     logical :: velocity_from_rate=.false.
@@ -83,7 +85,8 @@ contains
       mixture_boiling_models,mixture_critical_temperatures,injection_profile_points, &
       injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient, &
       port_count,event_ports,port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles, &
-      port_diameters,port_temperatures,port_fractions
+      port_diameters,port_temperatures,port_fractions,port_profile_points,port_profile_times,port_profile_rates, &
+      port_radii,port_discharge_coefficients
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -102,6 +105,7 @@ contains
     character(len=24) :: component_label
     character(len=:), allocatable :: header
     ! Configuration and namelist objects are local to one invocation.
+    port_profile_points=-1;port_profile_times=0;port_profile_rates=0;port_radii=-1;port_discharge_coefficients=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp);port_masses=-1;port_speeds=-1
     port_angles=-1;port_diameters=-1;port_temperatures=-1;port_fractions=-1
@@ -207,48 +211,59 @@ contains
       error stop 'Invalid injection profile size'
     if(any(injection_profile_times(injection_profile_points+1:)/=0).or. &
        any(injection_profile_rates(injection_profile_points+1:)/=0)) error stop 'Unused injection profile entries'
-    if(.not.ieee_is_finite(discharge_coefficient)) error stop 'Invalid discharge coefficient'
-    if(velocity_from_rate) then
-      if(discharge_coefficient<1e-6_dp.or.discharge_coefficient>1) error stop 'Invalid discharge coefficient'
-      if(.not.ieee_is_finite(nozzle_radius)) error stop 'Invalid rate-driven outlet radius'
-      if(nozzle_radius<1e-12_dp.or.nozzle_radius>1) error stop 'Invalid rate-driven outlet radius'
-      if(injection_profile_points<2) error stop 'Rate-driven velocity requires an injection profile'
-    else if(discharge_coefficient/=1) then
-      error stop 'Discharge coefficient requires rate-driven velocity'
-    end if
+    do port=1,port_count
+      if(port_radii(port)==-1) port_radii(port)=nozzle_radius
+      if(port_discharge_coefficients(port)==-1) port_discharge_coefficients(port)=discharge_coefficient
+      if(port_profile_points(port)==-1) then
+        if(any(port_profile_times(:,port)/=0).or.any(port_profile_rates(:,port)/=0)) &
+          error stop 'Port profile data requires an explicit point count'
+        port_profile_points(port)=injection_profile_points
+        port_profile_times(:,port)=injection_profile_times;port_profile_rates(:,port)=injection_profile_rates
+      end if
+      n=port_profile_points(port)
+      if(n/=0.and.(n<2.or.n>64)) error stop 'Invalid port profile size'
+      if(any(port_profile_times(n+1:,port)/=0).or.any(port_profile_rates(n+1:,port)/=0)) &
+        error stop 'Unused port profile entries'
+      if(n>0) then
+        call integrate_spray_injection_profile(port_profile_times(:n,port),port_profile_rates(:n,port), &
+          port_profile_times(1,port),port_profile_times(n,port),profile_mass,ok)
+        if(.not.ok) error stop 'Invalid port rate profile'
+      end if
+      if(.not.ieee_is_finite(port_discharge_coefficients(port))) error stop 'Invalid discharge coefficient'
+      if(velocity_from_rate) then
+        if(port_discharge_coefficients(port)<1e-6_dp.or.port_discharge_coefficients(port)>1) &
+          error stop 'Invalid discharge coefficient'
+        if(.not.ieee_is_finite(port_radii(port))) error stop 'Invalid rate-driven outlet radius'
+        if(port_radii(port)<1e-12_dp.or.port_radii(port)>1) error stop 'Invalid rate-driven outlet radius'
+        if(n<2) error stop 'Rate-driven velocity requires an injection profile'
+      else if(port_discharge_coefficients(port)/=1) then
+        error stop 'Discharge coefficient requires rate-driven velocity'
+      end if
+    end do
     event_masses=0;event_speeds=0
     do p=1,injection_events
-      event_speeds(p)=port_speeds(event_ports(p))
-    end do
-    if(injection_profile_points==0) then
-      if(any(injection_end_times/=-1)) error stop 'Integration intervals require an injection profile'
-      do p=1,injection_events
-        event_masses(p)=port_masses(event_ports(p))*injection_scales(p)
-      end do
-      if(any(event_masses>1e6_dp)) error stop 'Injection mass exceeds bounds'
-    else
-      n=injection_profile_points
-      call integrate_spray_injection_profile(injection_profile_times(:n),injection_profile_rates(:n), &
-        injection_profile_times(1),injection_profile_times(n),profile_mass,ok)
-      if(.not.ok) error stop 'Invalid injection rate profile'
-      do p=1,injection_events
-        call integrate_spray_injection_profile(injection_profile_times(:n),injection_profile_rates(:n), &
+      port=event_ports(p);n=port_profile_points(port);event_speeds(p)=port_speeds(port)
+      if(n==0) then
+        if(injection_end_times(p)/=-1) error stop 'Integration intervals require an injection profile'
+        event_masses(p)=port_masses(port)*injection_scales(p)
+      else
+        call integrate_spray_injection_profile(port_profile_times(:n,port),port_profile_rates(:n,port), &
           injection_times(p),injection_end_times(p),profile_mass,ok)
         if(.not.ok) error stop 'Invalid injection integration interval'
         event_masses(p)=profile_mass*injection_scales(p)
-        if(event_masses(p)>1e6_dp) error stop 'Integrated injection exceeds bounds'
-        if(velocity_from_rate) then
-          event_speeds(p)=0
-          if(event_masses(p)>0) then
-            denominator=(injection_end_times(p)-injection_times(p))*port_liquids(event_ports(p))%density*acos(-1._dp)* &
-              nozzle_radius**2*discharge_coefficient
-            if(denominator<=0) error stop 'Invalid rate-driven interval'
-            if(event_masses(p)>1e7_dp*denominator) error stop 'Rate-driven speed exceeds bounds'
-            event_speeds(p)=event_masses(p)/denominator
-          end if
+      end if
+      if(event_masses(p)>1e6_dp) error stop 'Integrated injection exceeds bounds'
+      if(velocity_from_rate) then
+        event_speeds(p)=0
+        if(event_masses(p)>0) then
+          denominator=(injection_end_times(p)-injection_times(p))*port_liquids(port)%density*acos(-1._dp)* &
+            port_radii(port)**2*port_discharge_coefficients(port)
+          if(denominator<=0) error stop 'Invalid rate-driven interval'
+          if(event_masses(p)>1e7_dp*denominator) error stop 'Rate-driven speed exceeds bounds'
+          event_speeds(p)=event_masses(p)/denominator
         end if
-      end do
-    end if
+      end if
+    end do
     allocate(drops(0),masses(nc,0),films(0),film_mass(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
@@ -505,7 +520,7 @@ contains
         port_diameters(port),port_temperatures(port),added,valid, &
         diameter_shape=sizes%shape,diameter_min=sizes%minimum,diameter_max=sizes%maximum, &
         diameter_weighting=sizes%weighting,diameter_distribution=sizes%distribution,diameter_std=sizes%std, &
-        nozzle_radius=nozzle_radius,nozzle_model=nozzle)
+        nozzle_radius=port_radii(port),nozzle_model=nozzle)
       if(.not.valid) error stop 'Invalid scheduled EB injection'
       change=0;cells=0;weights=0;volumes=0
       allocate(candidate(old_count+nadd),candidate_mass(nc,old_count+nadd),stat=ios)
