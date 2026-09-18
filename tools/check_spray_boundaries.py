@@ -16,7 +16,7 @@ def main():
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
-    parser.add_argument('--les-model', choices=('wale', 'vreman'))
+    parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='spray-boundaries-', dir=args.work_dir.resolve()))
@@ -25,11 +25,17 @@ def main():
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
     if args.les_model:
         template = template.replace('&spray', f"&spray\n les_model='{args.les_model}',")
+    if args.les_model == 'dynamic':
+        template = template.replace("'slip_wall'", "'periodic'")
+        template = template.replace('&spray', "&spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
     if args.acceleration:
         template = template.replace('&spray', f'&spray\n acceleration(3)={args.acceleration},')
     if args.sgs:
         template = template.replace('&spray', '&spray\n shear_velocity=10,')
-    for kind in (('thermal_wall',) if args.thermal_wall else (('inflow',) if args.inflow else ('wall', 'outflow'))):
+    kinds = ('thermal_wall',) if args.thermal_wall else (('inflow',) if args.inflow else ('wall', 'outflow'))
+    if args.les_model == 'dynamic':
+        kinds = ('periodic',)
+    for kind in kinds:
         def run(name, extra=''):
             tag = kind + '_' + name
             config = re.sub(r"output_prefix='[^']*'", f"output_prefix='{tag}'", template)
@@ -56,8 +62,10 @@ def main():
         assert row == last(resumed), 'resumed history ledger'
         if args.acceleration:
             assert float(row['source_pz']) < 0
-        mass = float(row['system_mass']) + abs(float(row['boundary_mass']))
-        energy = abs(float(row['total_energy'])) + abs(float(row['boundary_energy']))
+        boundary_mass = 0 if kind == 'periodic' else float(row['boundary_mass'])
+        boundary_energy = 0 if kind == 'periodic' else float(row['boundary_energy'])
+        mass = float(row['system_mass']) + abs(boundary_mass)
+        energy = abs(float(row['total_energy'])) + abs(boundary_energy)
         assert abs(float(row['mass_error'])) < 1e-9 * mass
         assert abs(float(row['energy_error'])) < 1e-9 * energy
         for axis in ('px', 'py', 'pz'):
@@ -72,6 +80,9 @@ def main():
         elif kind == 'outflow':
             assert int(row['live_parcels']) == 0
             assert float(row['boundary_mass']) < -5e-11
+        elif kind == 'periodic':
+            assert int(row['live_parcels']) == 2
+            assert not any(name.startswith('boundary_') for name in row)
         else:
             assert int(row['live_parcels']) == 2
             assert float(row['boundary_pz']) < -1e-9
@@ -100,6 +111,28 @@ def main():
                 ('invalid_model', "les_model='invalid',", 'Invalid LES model'),
             ]:
                 config = original.replace(f"les_model='{args.les_model}',", replacement).replace(resumed, label)
+                if args.les_model == 'dynamic' and label != 'invalid_model':
+                    config = config.replace("les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,", '')
+                path = work / (label + '.nml')
+                path.write_text(config)
+                result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                        text=True, capture_output=True, timeout=30)
+                (work / (label + '.log')).write_text(result.stdout + result.stderr)
+                assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
+                assert not (work / (label + '.history.csv')).exists()
+        if args.les_model == 'dynamic':
+            guards = [
+                ('filter', "les_test_filter='gaussian'", "les_test_filter='box'", 'incompatible spray checkpoint'),
+                ('ratio', 'les_test_ratio=4', 'les_test_ratio=2', 'incompatible spray checkpoint'),
+                ('grid', 'les_grid_ratio=2', 'les_grid_ratio=1', 'incompatible spray checkpoint'),
+                ('removed_filter', "les_test_filter='gaussian',", '', 'incompatible spray checkpoint'),
+                ('removed_ratio', 'les_test_ratio=4,', '', 'incompatible spray checkpoint'),
+                ('removed_grid', 'les_grid_ratio=2,', '', 'incompatible spray checkpoint'),
+                ('bad_filter', 'les_test_ratio=4', 'les_test_ratio=3', 'Invalid dynamic LES filter'),
+                ('boundary', "'periodic'", "'outflow'", 'Dynamic LES requires periodic boundaries'),
+            ]
+            for label, old, new, diagnostic in guards:
+                config = original.replace(old, new).replace(resumed, label)
                 path = work / (label + '.nml')
                 path.write_text(config)
                 result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,

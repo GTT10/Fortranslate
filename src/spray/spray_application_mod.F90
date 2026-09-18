@@ -17,6 +17,7 @@ module spray_application_mod
   use spray_mixture_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, mixture_system_totals, valid_spray_boundary_faces
+  use les_filter_3d_mod, only: les_filter_weights
   use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available
   use spray_checkpoint_mod, only: write_spray_checkpoint, read_spray_checkpoint
   implicit none
@@ -115,7 +116,9 @@ contains
     real(dp) :: diameter_shape,diameter_min,diameter_max
     real(dp) :: drop_temperature,drop_diameter,initial_liquid_mass,injection_center(3),injection_axis(3)
     real(dp) :: injection_speed,cone_angle,mass_flow_rate,injection_start,injection_end,injection_interval
-    character(len=16) :: les_model
+    character(len=16) :: les_model,les_test_filter
+    integer :: les_test_ratio,les_grid_ratio
+    real(dp), allocatable :: les_weights(:)
     real(dp) :: final_time,maximum_dt,cfl,rtol,atol,smagorinsky_constant,turbulent_prandtl,turbulent_schmidt
     real(dp) :: max_fractional_change,particle_cfl,minimum_diameter,time,dt,cfl_dt,next_event,tolerance,amount
     real(dp) :: spacing(3),sound,local_temperature,gas_constant,totals5(5),volume
@@ -199,6 +202,7 @@ contains
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
       chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_model,drag_enabled,heat_enabled,evaporation_enabled, &
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant,les_model, &
+      les_test_filter,les_test_ratio,les_grid_ratio, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
     wall_conductivity_model='constant';wall_conductivity_coefficients=0;wall_conductivity_temperature_range=0
@@ -266,7 +270,7 @@ contains
     drag_model="schiller-naumann"
     drag_enabled=.true.; heat_enabled=.true.; evaporation_enabled=.true.; abramzon_sirignano=.true.
     max_fractional_change=0.05_dp; particle_cfl=0.25_dp; minimum_diameter=1.0e-9_dp; maximum_substeps=100000
-    les_model='smagorinsky'
+    les_model='smagorinsky';les_test_filter='box';les_test_ratio=2;les_grid_ratio=1
     smagorinsky_constant=0.0_dp; turbulent_prandtl=0.7_dp; turbulent_schmidt=0.7_dp
     output_prefix='spray'; checkpoint_file=''; restart_file=''
     open(newunit=unit,file=trim(input_path),status='old',action='read',iostat=ios)
@@ -337,7 +341,16 @@ contains
         final_time>1000.0_dp .or. cfl<=0.0_dp .or. cfl>0.5_dp .or. maximum_steps<1 .or. &
         maximum_steps>10000000 .or. stop_after_steps<0) call fail('Invalid time controls')
     if (rtol<=0.0_dp .or. rtol>0.01_dp .or. atol<=0.0_dp .or. atol>0.001_dp) call fail('Invalid chemistry tolerances')
-    if (les_model/='smagorinsky'.and.les_model/='wale'.and.les_model/='vreman') call fail('Invalid LES model')
+    if (les_model/='smagorinsky'.and.les_model/='wale'.and.les_model/='vreman'.and.les_model/='dynamic') &
+      call fail('Invalid LES model')
+    if (les_model=='dynamic') then
+      if (any(boundary_faces/='periodic')) call fail('Dynamic LES requires periodic boundaries')
+      call les_filter_weights(les_test_filter,les_test_ratio,les_weights,ok)
+      if (.not.ok.or.les_grid_ratio<1.or.les_grid_ratio>64) call fail('Invalid dynamic LES filter')
+    else
+      if (les_test_filter/='box'.or.les_test_ratio/=2.or.les_grid_ratio/=1) &
+        call fail('Dynamic LES filter controls require dynamic model')
+    end if
     if (smagorinsky_constant<0.0_dp .or. smagorinsky_constant>0.5_dp .or. &
         min(turbulent_prandtl,turbulent_schmidt)<0.1_dp .or. &
         max(turbulent_prandtl,turbulent_schmidt)>10.0_dp) call fail('Invalid LES controls')
@@ -824,6 +837,11 @@ contains
       if (len_trim(context)+14+len_trim(les_model)>len(context)) call fail('LES model context too long')
       context=trim(context)//' les-model-v1 '//trim(les_model)
     end if
+    if (les_model=='dynamic') then
+      if (len_trim(context)+23+len_trim(les_test_filter)>len(context)) call fail('Dynamic LES context too long')
+      context=trim(context)//' dynamic-les-filter-v1 '//trim(les_test_filter)
+      call append_reals([real(les_test_ratio,dp),real(les_grid_ratio,dp)])
+    end if
     if (injection_port_count>0) then
       context=trim(context)//' injection-ports-v1'
       call append_reals([real(injection_port_count,dp), &
@@ -1242,13 +1260,15 @@ contains
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step, &
           mixture_components=mixture_components,component_mass=component_mass, &
-          wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model)
+          wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model, &
+          les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio)
         else
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
-          breakup_options,wall_options,wall_films,les_model=les_model)
+          breakup_options,wall_options,wall_films,les_model=les_model, &
+          les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio)
         end if
         if (ok) exit
         dt=0.5_dp*dt

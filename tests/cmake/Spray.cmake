@@ -473,7 +473,7 @@ if(PELEF_ENABLE_SPRAY)
       set_tests_properties(spray_mpi_${les_model}_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
     endforeach()
   endif()
-  foreach(les_model wale vreman)
+  foreach(les_model wale vreman dynamic)
     add_test(NAME spray_${les_model}_boundary_restart COMMAND "${Python3_EXECUTABLE}"
       "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --sgs .17 --les-model ${les_model}
       --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_${les_model}_boundaries")
