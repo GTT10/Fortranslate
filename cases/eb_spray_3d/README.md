@@ -223,8 +223,8 @@ Unspecified ports inherit the shared injection settings. Per-port overrides are:
 one for each active port. Defaults use -1 for unspecified counts/scalars/fractions
 and the internal large-value sentinel for position/direction vectors.
 
-The nozzle shape and size distribution apply to every port. Radius, rate profile
-and discharge coefficient inherit the shared values unless overridden below.
+Nozzle shape, size distribution, radius, rate profile and discharge coefficient
+inherit the shared values unless overridden below.
 With a rate profile, its integrated dose replaces
 `port_masses`; rate-driven velocity uses each selected port's mixed density.
 Every parcel carries its port in `material_id`, now also included in particle CSV.
@@ -255,3 +255,22 @@ resolved profiles and outlet settings enter restart context. Example overrides:
 ```
 
 See [focused evidence](../../docs/validation/spray-eb-port-profiles-20260918.md).
+
+### Per-port nozzle and size models
+
+`port_nozzles(16)` and `port_sizes(16)` accept the same fields as `nozzle` and
+`sizes`. Each omitted field inherits its shared counterpart. For example, a
+second hollow/lognormal port beside a shared solid/Weibull port can specify:
+
+```fortran
+ port_nozzles(2)%profile='hollow', port_nozzles(2)%spread=.02
+ port_sizes(2)%distribution='lognormal', port_sizes(2)%weighting='number'
+ port_sizes(2)%std=2e-6, port_sizes(2)%shape=0.
+```
+
+Set inherited distribution-specific parameters explicitly when changing models
+(e.g. `std=0` for Weibull, or `shape=0` for lognormal). The internal inheritance
+markers are `'inherit'` for strings, -1 for nonnegative numeric controls and
+`huge(real)` for signed swirl. Resolved values enter restart context; snapshots
+from before these fields fail context comparison. See
+[focused evidence](../../docs/validation/spray-eb-port-models-20260918.md).

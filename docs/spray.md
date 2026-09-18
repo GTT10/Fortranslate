@@ -346,8 +346,8 @@ checkpoints now preserve gas, particle/component state, event/ID counters and al
 cumulative ledgers; restart checks the complete numerical and nodal geometry
 context. Up to 1024 ordered injection events share
 up to 16 cone ports with per-port geometry, population and composition, per-event
-mass scaling and zero-dose support. Nozzle models and size distributions remain shared;
-rate profiles, outlet radii and discharge coefficients accept per-port overrides. Steps
+mass scaling and zero-dose support. Nozzle models, size distributions, rate
+profiles, outlet radii and discharge coefficients accept per-port overrides. Steps
 end at event times; tied and final-time events are included. Fluid-location
 validation precedes population/ID/injected-inventory publication. See
 [serial port evidence](validation/spray-eb-ports-20260918.md).
