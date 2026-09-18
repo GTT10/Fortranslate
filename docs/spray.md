@@ -3111,7 +3111,14 @@ physical boundaries including pressure outlets, conservative face synchronizatio
 and reflux, averaging down and EOS recovery. It supports Smagorinsky, WALE and
 Vreman with optional CI. Every patch/stage checks the existing LES diffusion
 interval bound. State, temperature and boundary/correction diagnostics publish
-together on success. The caller supplies a positive timestep; this API does not
-yet provide a hierarchy timestep selector, subcycling, MPI or application dispatch.
+together on success. `compute_amr_patch_tree_les_timestep_3d` selects a positive
+common timestep from the same initial averaged state and ghost-aware diffusion
+bounds. Supply a diffusion CFL fraction in `(0,0.2]`; its output is capped at
+`1e6` seconds, including when all LES diffusion vanishes. It also returns the
+largest patch diffusivity, which alone is not the grid-dependent interval bound.
+Outputs remain unchanged on failure. The stepper still checks both stages and
+can reject a selected interval after nonlinear evolution or EOS recovery.
+Subcycling, MPI and application dispatch remain open.
+See [timestep evidence](validation/les-amr-timestep-20260918.md).
 Dynamic LES and EB grids are outside this API.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
