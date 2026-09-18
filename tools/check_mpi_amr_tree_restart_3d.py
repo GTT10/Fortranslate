@@ -12,6 +12,7 @@ def main():
     for option in ('fixed', 'selected', 'serial-fixed', 'serial-selected', 'case-dir', 'workdir'):
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--scheduled', action='store_true')
+    parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
     parser.add_argument('--indexed', action='store_true')
     parser.add_argument('--rebalance', action='store_true')
@@ -20,6 +21,9 @@ def main():
     args = parser.parse_args()
     case = args.case_dir.resolve()
     template = (case / 'hotspot.nml').read_text()
+    if args.pressure_outlet:
+        template = template.replace('  boundary_condition=',
+                                    '  outlet_pressure(2)=102325\n  boundary_condition=')
     if not args.scheduled:
         template = template.replace('cfl=0.2', 'cfl=0.002')
     topology = case / 'branched.dat'
@@ -135,6 +139,12 @@ def main():
             run('wrong_index', config + restart, 3, 'Invalid MPI tree restart checkpoint/context')
             compare()
             checkpoint.write_bytes(saved)
+        if args.pressure_outlet:
+            for label, target in [('changed_pressure', '103325'), ('removed_pressure', '0')]:
+                run(label, config.replace('outlet_pressure(2)=102325',
+                                          'outlet_pressure(2)=' + target) + restart,
+                    3, 'Invalid MPI tree restart checkpoint/context')
+                compare()
         run('changed_physics', config.replace('initial_temperature=1100.0', 'initial_temperature=1110.0') + restart,
             3, 'Invalid MPI tree restart checkpoint/context')
         checkpoint.write_bytes(saved[:saved.rfind(b'END_AMR_TREE_CHECKPOINT')])

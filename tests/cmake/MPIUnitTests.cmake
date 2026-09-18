@@ -566,6 +566,16 @@ if(PELEF_ENABLE_MPI)
       --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
       --workdir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_tree_restart_3d")
   set_tests_properties(regression_mpi_amr_tree_restart_3d PROPERTIES TIMEOUT 600 PROCESSORS 3)
+  add_test(NAME regression_mpi_amr_tree_pressure_restart_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_amr_tree_restart_3d.py"
+      --fixed $<TARGET_FILE:pelef_mpi_amr_tree_reactive_3d>
+      --selected $<TARGET_FILE:test_selected_elementary_mpi_amr_tree_3d>
+      --serial-fixed $<TARGET_FILE:pelef_amr_tree_reactive_3d>
+      --serial-selected $<TARGET_FILE:test_selected_elementary_amr_tree_3d>
+      --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+      --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
+      --workdir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_tree_pressure_restart_3d" --scheduled --pressure-outlet)
+  set_tests_properties(regression_mpi_amr_tree_pressure_restart_3d PROPERTIES TIMEOUT 600 PROCESSORS 3)
 endif()
 
 if(PELEF_ENABLE_MPI)
