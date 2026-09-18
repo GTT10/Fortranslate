@@ -21,6 +21,7 @@ program test_mpi_amr_patch_tree_transport_3d
   type(amr_tree_state_3d) :: global,reference,local,temperature,saved,oracle,oracle_t,saved_t
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
+  real(dp) :: pressure(6)
   character(len=32) :: faces(6),reconstruction
   character(len=:), allocatable :: coarse_limiter
   real(dp) :: theta,serial_theta,wall_t(6),wall_v(3,6)
@@ -64,7 +65,7 @@ program test_mpi_amr_patch_tree_transport_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
-  do mode=1,4
+  do mode=1,6
     owners=[0,1,0]
     if (mode==3) owners=0
     if (mode==4) owners=mod([0,1,2],nranks)
@@ -77,6 +78,8 @@ program test_mpi_amr_patch_tree_transport_3d
       faces='outflow';faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
     end if
     if (mode==4) faces(1)='inflow'
+    pressure=0
+    if (mode>=5) pressure([1,6])=102325
     allocate(local%fields(3),temperature%fields(3))
     do node=1,3
       if (owners(node)/=rank) cycle
@@ -91,10 +94,12 @@ program test_mpi_amr_patch_tree_transport_3d
     call require(ok.and.transport_dt==serial_dt.and.diffusivity==serial_diffusivity,'exact transport timestep bounds')
     oracle=global;oracle_t=reference;dt=1e-9_dp
     call advance_amr_patch_tree_transport_3d(tree,species,transport,oracle,oracle_t,spacing,dt,faces, &
-      .true.,.true.,.true.,.true.,serial_budget,serial_largest,serial_theta,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter)
+      .true.,.true.,.true.,.true.,serial_budget,serial_largest,serial_theta,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter, &
+      outlet_pressure=pressure)
     call require(ok,'serial transport RK2 oracle')
     call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
-      .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter)
+      .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter, &
+      outlet_pressure=pressure)
     call require(ok,'distributed transport RK2')
     do node=1,3
       call require(allocated(local%fields(node)%values).eqv.(owners(node)==rank),'owned state only')
@@ -109,7 +114,8 @@ program test_mpi_amr_patch_tree_transport_3d
     bad=transport
     if (rank==owners(3)) bad(1)%diameter=-1
     call advance_mpi_amr_tree_transport_3d(tree,owners,species,bad,local,temperature,spacing,dt,faces, &
-      .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter)
+      .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter, &
+      outlet_pressure=pressure)
     call require(.not.ok,'one owner transport flux failure rejects collectively')
     call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,bad,local,temperature,spacing,.15_dp, &
       .true.,.true.,.true.,transport_dt,diffusivity,MPI_COMM_WORLD,ok,faces,wall_t)
@@ -117,9 +123,19 @@ program test_mpi_amr_patch_tree_transport_3d
     call unchanged()
     if (rank==nranks-1) dt=2*dt
     call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
-      .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter)
+      .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok,inlet,inlet_t,wall_t,wall_v,coarse_limiter, &
+      outlet_pressure=pressure)
     call require(.not.ok,'mismatched timestep rejected')
     call unchanged()
+    if (mode>=5) then
+      dt=1e-9_dp
+      if (rank==nranks-1) pressure(1)=103325
+      call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
+        .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok, &
+        wall_temperature=wall_t,wall_velocity=wall_v,outlet_pressure=pressure)
+      call require(.not.ok,'mismatched pressure rejected')
+      call unchanged()
+    end if
     deallocate(local%fields,temperature%fields)
   end do
   if (rank==0) print *, 'PASS: owner transport RK2, PCM/PLM, moving isothermal walls, serial parity and rollback'

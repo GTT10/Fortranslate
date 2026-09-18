@@ -11,6 +11,7 @@ module mpi_amr_patch_tree_transport_level_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
+  use amr_patch_tree_ghost_3d_mod, only: apply_amr_tree_pressure_ghosts_3d
   use mpi_amr_patch_tree_ghost_3d_mod, only: fill_mpi_amr_tree_ghosts_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
@@ -21,7 +22,7 @@ contains
   subroutine advance_mpi_amr_tree_transport_level_3d(tree,owners,species,transport,state,temperature,depth,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,integrated_flux,minimum_theta,comm,ok, &
       coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,coarse_limiter)
+      wall_temperature,wall_velocity,coarse_limiter,outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -40,12 +41,14 @@ contains
     integer :: endpoint_flags(5),minimum_flags(5),maximum_flags(5)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: pressure(6)
     character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,candidate,temps,initial_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_theta,second_theta
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(4),low(4),high(4)
+    real(dp) :: controls(10),low(10),high(10)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(7),reference_options(7)
     integer :: flags(7),min_flags(7),max_flags(7)
@@ -61,8 +64,14 @@ contains
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
-    controls=[root_spacing,dt]
-    valid=all(ieee_is_finite(controls)).and.all(controls>0)
+    pressure=0
+    if (present(outlet_pressure)) pressure=outlet_pressure
+    controls=[root_spacing,dt,pressure]
+    valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
+    valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
+    do node=1,6
+      if (pressure(node)>0.and.faces(node)/='outflow') valid=.false.
+    end do
     valid=valid.and.valid_reactive_boundaries_3d(faces)
     valid=valid.and..not.(barodiffusion.and..not.diffusion).and.size(transport)==size(species)
     if (present(coarse_limiter)) valid=valid.and.(coarse_limiter=='mc'.or.coarse_limiter=='minmod')
@@ -80,9 +89,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,viscosity),merge(1,0,conduction),merge(1,0,diffusion),merge(1,0,barodiffusion), &
@@ -248,6 +257,8 @@ contains
         n=tree%nodes(peer)%shape;dims=n+4
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
+          call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success)
+          if (.not.success) exit
           allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)), &
             fz(nvar,n(1),n(2),n(3)+1),stat=allocation_status)
           if (allocation_status/=0) then

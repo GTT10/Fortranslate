@@ -23,6 +23,7 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
   type(amr_tree_state_3d) :: global,reference,local,temperature,saved,oracle,oracle_t,saved_t
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
+  real(dp) :: pressure(6)
   character(len=32) :: faces(6),reconstruction
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   integer(int64) :: steps(3),serial_steps(3)
@@ -63,7 +64,7 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
   spacing=[.001_dp,.0015_dp,.002_dp]
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
-  do mode=1,4
+  do mode=1,6
     owners=[0,1,0]
     if (mode==3) owners=0
     if (mode==4) owners=mod([0,1,2],nranks)
@@ -74,6 +75,8 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
       faces='outflow';faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
     end if
     if (mode==4) faces(1)='inflow'
+    pressure=0
+    if (mode>=5) pressure([1,6])=102325
     allocate(local%fields(3),temperature%fields(3))
     do node=1,3
       if (owners(node)/=rank) cycle
@@ -89,11 +92,13 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
     oracle=global;oracle_t=reference;dt=1.e-9_dp
     call advance_amr_patch_tree_subcycle_transport_3d(tree,species,transport,oracle,oracle_t,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,serial_budget,serial_largest,serial_theta,ok, &
-      inlet,inlet_t,wall_t,wall_v,coarse_limiter,serial_steps)
+      inlet,inlet_t,wall_t,wall_v,coarse_limiter,serial_steps, &
+      outlet_pressure=pressure)
     call require(ok,'serial RK2 oracle')
     call advance_mpi_amr_tree_subcycle_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok, &
-      inlet,inlet_t,wall_t,wall_v,coarse_limiter,steps)
+      inlet,inlet_t,wall_t,wall_v,coarse_limiter,steps, &
+      outlet_pressure=pressure)
     call require(ok,'distributed recursive RK2')
     call require(all(steps==[1_int64,4_int64,36_int64]).and.all(steps==serial_steps),'exact recursive step counts')
     do node=1,3
@@ -110,15 +115,26 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
     if (rank==owners(1)) bad(1)%diameter=-1
     call advance_mpi_amr_tree_subcycle_transport_3d(tree,owners,species,bad,local,temperature,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok, &
-      inlet,inlet_t,wall_t,wall_v,coarse_limiter,steps)
+      inlet,inlet_t,wall_t,wall_v,coarse_limiter,steps, &
+      outlet_pressure=pressure)
     call require(.not.ok,'owner transport failure rejects collectively')
     call unchanged()
     if (rank==nranks-1) dt=2*dt
     call advance_mpi_amr_tree_subcycle_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok, &
-      inlet,inlet_t,wall_t,wall_v,coarse_limiter,steps)
+      inlet,inlet_t,wall_t,wall_v,coarse_limiter,steps, &
+      outlet_pressure=pressure)
     call require(.not.ok,'mismatched timestep rejected')
     call unchanged()
+    if (mode>=5) then
+      dt=1e-9_dp
+      if (rank==nranks-1) pressure(1)=103325
+      call advance_mpi_amr_tree_subcycle_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
+        .true.,.true.,.true.,.true.,budget,largest,theta,MPI_COMM_WORLD,ok, &
+        wall_temperature=wall_t,wall_velocity=wall_v,outlet_pressure=pressure,level_steps=steps)
+      call require(.not.ok,'mismatched pressure rejected')
+      call unchanged()
+    end if
     deallocate(local%fields,temperature%fields)
   end do
   if (rank==0) print *, 'PASS: MPI recursive transport: 1/4/36 steps, scaled bound, exact state/budget, empty ranks and rollback'
