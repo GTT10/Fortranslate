@@ -16,6 +16,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--split', action='store_true')
+p.add_argument('--outflow', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='impact_', dir=a.work.resolve()))
@@ -76,6 +77,10 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         spray = spray.replace('&eb_spray', "&eb_spray\n particle_options%breakup_model='etab',"
                               'particle_options%maximum_multiplicity=60.,'
                               'particle_options%drag=.false.,particle_options%heat=.false.,particle_options%evaporation=.false.,', 1)
+    if a.outflow:
+        assert mode == 'splash'
+        spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+        spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0015,.001250001,.003999999')
     if altered:
         spray = spray.replace('6*400.', '6*401.')
     (directory / 'spray.nml').write_text(spray)
@@ -87,7 +92,7 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
     return directory
 
 
-for mode in (('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'splash')):
+for mode in (('splash',) if a.outflow else ('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'splash')):
     full = run(mode, 'full', 4)
     films = population(full, 'films')
     particles = population(full, 'particles')
@@ -99,6 +104,8 @@ for mode in (('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'sp
         assert len(films) == 0 and len(particles) > 2 and (len(particles)-2) % 4 == 0
         assert sorted(int(r['id']) for r in particles) == list(range(1, len(particles)+1))
         assert all(float(r['u']) > 0 and float(r['x']) > .0015 for r in particles)
+    elif a.outflow:
+        assert len(films) == 2 and 0 < len(particles) < 8
     else:
         assert len(films) == 2 and len(particles) == (0 if mode == 'deposit' else 8)
     for film in films:
@@ -106,7 +113,10 @@ for mode in (('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'sp
         assert float(film['ny']) == 1 and float(film['y']) == .00125
         assert float(film['component_mass_1']) == float(film['mass'])
     if particles and mode not in ('khrt', 'split'):
-        assert sorted(int(r['id']) for r in particles) == list(range(3, 11))
+        ids = sorted(int(r['id']) for r in particles)
+        assert ids == sorted(set(ids)) and all(3 <= i <= 10 for i in ids)
+        if not a.outflow:
+            assert ids == list(range(3, 11))
         assert all(float(r['v']) > 0 and float(r['y']) > .00125 for r in particles)
     log = (full / 'run.log').read_text()
     assert all(f'Regrid stage: {n}' in log for n in (1, 2, 3)), log

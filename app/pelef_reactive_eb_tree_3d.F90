@@ -92,7 +92,7 @@ program pelef_reactive_eb_tree_3d
   type(spray_wall_options) :: walls
   type(spray_wall_film), allocatable :: films(:)
   real(dp), allocatable :: film_mass(:,:)
-  logical :: wall_impacts=.false.,model_rejected
+  logical :: wall_impacts=.false.,particle_outflow=.false.,model_rejected
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
   character(len=:), allocatable :: spray_context
   character(len=1024) :: spray_input
@@ -396,7 +396,7 @@ program pelef_reactive_eb_tree_3d
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
         films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
-        split_created=step_split_created)
+        split_created=step_split_created,particle_outflow=particle_outflow)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -404,7 +404,7 @@ program pelef_reactive_eb_tree_3d
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
-        split_created=step_split_created)
+        split_created=step_split_created,particle_outflow=particle_outflow)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -531,7 +531,7 @@ contains
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
       port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
-      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls, &
+      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls,particle_outflow, &
       port_radii,port_nozzles,port_sizes,port_velocity_from_rate,port_discharge_coefficients, &
       mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
@@ -555,6 +555,7 @@ contains
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Invalid fraction sum'
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
+    if(particle_outflow.and..not.wall_impacts) error stop 'MPI EB particle outflow requires impact films'
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
     if(wall_impacts) then
       if(.not.valid_wall_options(walls,[character(len=16)::'slip_wall','slip_wall','slip_wall', &
