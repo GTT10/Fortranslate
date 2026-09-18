@@ -21,12 +21,17 @@ def main():
     parser.add_argument('--species-count', type=int, default=10)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     source = args.input.read_text()
     input_path = args.input.resolve()
+    if args.les_harmonic:
+        if args.les_model != 'dynamic':
+            parser.error('--les-harmonic requires --les-model dynamic')
+        source = source.replace('&mpi_spray', '&mpi_spray\n les_harmonic_mean=.true.,')
     if args.les_model:
         source = source.replace('&mpi_spray', f"&mpi_spray\n les_cs=.17, les_model='{args.les_model}',")
         if args.les_model == 'dynamic':
@@ -120,18 +125,25 @@ def main():
             source = original_source.replace(f"les_model='{args.les_model}',", replacement)
             if args.les_model == 'dynamic' and label != 'invalid_model':
                 source = source.replace("les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,", '')
+                source = source.replace('les_harmonic_mean=.true.,', '')
             run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
             assert diagnostic in (work / f'{label}.log').read_text()
             assert not (work / f'{label}.history.csv').exists()
         if args.les_model == 'dynamic':
-            for label, old, new in [
+            guards = [
                 ('filter', "les_test_filter='gaussian'", "les_test_filter='box'"),
                 ('ratio', 'les_test_ratio=4', 'les_test_ratio=2'),
                 ('grid', 'les_grid_ratio=2', 'les_grid_ratio=1'),
                 ('removed_filter', "les_test_filter='gaussian',", ''),
                 ('removed_ratio', 'les_test_ratio=4,', ''),
                 ('removed_grid', 'les_grid_ratio=2,', ''),
-            ]:
+            ]
+            if args.les_harmonic:
+                guards += [
+                    ('harmonic', 'les_harmonic_mean=.true.', 'les_harmonic_mean=.false.'),
+                    ('removed_harmonic', 'les_harmonic_mean=.true.,', ''),
+                ]
+            for label, old, new in guards:
                 source = original_source.replace(old, new)
                 run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
                 assert 'Restart rejected: invalid data or incompatible model/input context' in (work / f'{label}.log').read_text()

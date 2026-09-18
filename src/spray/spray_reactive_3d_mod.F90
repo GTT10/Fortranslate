@@ -103,7 +103,8 @@ contains
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
-      mixture_components,component_mass,film_component_mass,les_model,les_test_filter,les_test_ratio,les_grid_ratio)
+      mixture_components,component_mass,film_component_mass,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
+      les_harmonic_mean)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -123,6 +124,8 @@ contains
     logical, intent(in) :: chemistry_enabled,transport_enabled
     character(len=*), optional, intent(in) :: les_model,les_test_filter
     integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
+    logical, optional, intent(in) :: les_harmonic_mean
+    logical :: harmonic
     character(len=32) :: selected_les,selected_filter
     integer :: test_ratio,grid_ratio
     real(dp), allocatable :: filter_weights(:)
@@ -158,7 +161,8 @@ contains
     end if
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
-    selected_les='smagorinsky';selected_filter='box';test_ratio=2;grid_ratio=1
+    selected_les='smagorinsky';selected_filter='box';test_ratio=2;grid_ratio=1;harmonic=.false.
+    if (present(les_harmonic_mean)) harmonic=les_harmonic_mean
     if (present(les_model)) then
       select case(les_model)
       case('smagorinsky','wale','vreman','dynamic')
@@ -166,6 +170,9 @@ contains
       case default
         message='Invalid LES model'; return
       end select
+    end if
+    if (harmonic.and.selected_les/='dynamic') then
+      message='Harmonic LES interpolation requires dynamic model';return
     end if
     if (selected_les=='dynamic') then
       if (any(faces/='periodic')) then
@@ -303,7 +310,7 @@ contains
         ! cs=0 retains the existing disabled convention. A positive cs enables
         ! dynamic coefficients; its magnitude and fixed prt/sct do not set them.
         if (cs>0) call advance_dynamic_les_ssprk2_3d(species,candidate,temp,spacing,selected_filter, &
-          test_ratio,.5_dp*dt,local_ok,grid_ratio)
+          test_ratio,.5_dp*dt,local_ok,grid_ratio,harmonic)
       else
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,.5_dp*dt,local_ok,faces,exchange, &
           inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=selected_les)

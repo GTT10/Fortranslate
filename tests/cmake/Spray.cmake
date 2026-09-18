@@ -495,6 +495,18 @@ if(PELEF_ENABLE_SPRAY)
       --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_${les_model}_boundaries")
     set_tests_properties(spray_${les_model}_boundary_restart PROPERTIES LABELS "spray" TIMEOUT 600)
   endforeach()
+  add_test(NAME spray_dynamic_harmonic_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --sgs .17 --les-model dynamic --les-harmonic
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_dynamic_harmonic_restart")
+  set_tests_properties(spray_dynamic_harmonic_restart PROPERTIES LABELS "spray" TIMEOUT 600)
+  if(PELEF_ENABLE_MPI)
+    add_test(NAME spray_mpi_dynamic_harmonic_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/spray/test_mpi_spray_application.py"
+        --executable "$<TARGET_FILE:pelef_mpi_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}" --ranks 2
+        --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
+        --les-model dynamic --les-harmonic --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_dynamic_harmonic_restart")
+    set_tests_properties(spray_mpi_dynamic_harmonic_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
+  endif()
   add_executable(test_spray_core spray/test_spray_core.F90)
   target_link_libraries(test_spray_core PRIVATE pelef_spray_runtime)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")

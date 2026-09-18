@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
+    parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -23,6 +24,10 @@ def main():
     case = 'thermal_moving_wall.nml' if args.thermal_wall else ('inflow.nml' if args.inflow else 'wall_reflection.nml')
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
+    if args.les_harmonic:
+        if args.les_model != 'dynamic':
+            parser.error('--les-harmonic requires --les-model dynamic')
+        template = template.replace('&spray', '&spray\n les_harmonic_mean=.true.,')
     if args.les_model:
         template = template.replace('&spray', f"&spray\n les_model='{args.les_model}',")
     if args.les_model == 'dynamic':
@@ -113,6 +118,7 @@ def main():
                 config = original.replace(f"les_model='{args.les_model}',", replacement).replace(resumed, label)
                 if args.les_model == 'dynamic' and label != 'invalid_model':
                     config = config.replace("les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,", '')
+                    config = config.replace('les_harmonic_mean=.true.,', '')
                 path = work / (label + '.nml')
                 path.write_text(config)
                 result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
@@ -131,6 +137,11 @@ def main():
                 ('bad_filter', 'les_test_ratio=4', 'les_test_ratio=3', 'Invalid dynamic LES filter'),
                 ('boundary', "'periodic'", "'outflow'", 'Dynamic LES requires periodic boundaries'),
             ]
+            if args.les_harmonic:
+                guards += [
+                    ('harmonic', 'les_harmonic_mean=.true.', 'les_harmonic_mean=.false.', 'incompatible spray checkpoint'),
+                    ('removed_harmonic', 'les_harmonic_mean=.true.,', '', 'incompatible spray checkpoint'),
+                ]
             for label, old, new, diagnostic in guards:
                 config = original.replace(old, new).replace(resumed, label)
                 path = work / (label + '.nml')
