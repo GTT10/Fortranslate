@@ -2736,8 +2736,9 @@ outputs on rejection. Regular 3D RK2 hydro now accepts optional
 `outflow` faces; zero retains ordinary extrapolation. Both ghost layers are
 recomputed at each stage. Regular transport shares this ghost fill, including
 transverse corners in deterministic face order. The full reactive wrapper
-forwards the pressure option to hydro and both transport halves. Application
-input, AMR and MPI connections remain pending. See
+forwards the pressure option to hydro and both transport halves. Regular
+fixed/selected application input is connected; AMR and MPI connections remain
+pending. See [application evidence](validation/pressure-outlet-application-20260918.md),
 [transport evidence](validation/pressure-outlet-transport-20260918.md) and
 [hydro evidence](validation/pressure-outlet-hydro-20260918.md). This is
 separate from GC-NSCBC, which the pinned reference guide marks unported.

@@ -29,8 +29,16 @@ z-low, z-high**. Empty entries inherit `boundary_condition` (default
   adjacent inlets unless this corner convention is intended. The timestep
   also accounts for inlet wave speeds and inlet transport diffusivity.
 - `outflow`: copy the nearest physical cell into ghost cells (zero-gradient
-  extrapolation). This is not characteristic or non-reflecting outflow and
-  does not prescribe a backflow state.
+  extrapolation). Optional `outlet_pressure(6)` entries select characteristic
+  pressure extrapolation on these faces: zero keeps the default, positive
+  values specify pressure in Pa (finite, at most 1e15). For example,
+  `outlet_pressure(2)=102325` sets the x-high pressure target. Hydro and
+  molecular transport share both ghost layers; composition is extrapolated
+  from the interior. Invalid extrapolated states reject the step. This does
+  not prescribe a backflow reservoir or establish nonreflection.
+  `pressure_outlet.nml` exercises the full chemistry/transport/hydro path.
+  Pressure input is currently enabled only in the regular fixed/selected
+  front ends; shared-input AMR applications reject nonzero pressure targets.
 - `slip_wall`: mirror the normal momentum and extrapolate thermodynamic and
   tangential states by reflection. The inviscid wall is impermeable and
   adiabatic; it exerts pressure forces on the gas.
@@ -107,6 +115,6 @@ ghost reflections are composed in x/y/z order.
 `moving_wall.nml` exercises this work and momentum transfer between periodic
 x/z faces and adiabatic y walls. See [focused evidence](../../docs/validation/moving-walls-20260915.md).
 
-Moving geometry, characteristic boundaries, general AMR/EB boundaries and particle boundary
+Moving geometry, characteristic inflow, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.
