@@ -3036,5 +3036,9 @@ Dynamic serial/MPI RHS and SSPRK2 APIs accept optional `harmonic_mean=.true.`
 for coefficient/stress/thermal-quantity face interpolation. Same-sign values use
 a signed harmonic mean; opposite signs and zero inputs produce zero. Omission
 retains arithmetic interpolation. MPI rejects different interpolation settings
-across ranks. Coupled-spray/application controls remain to be connected; see
-[reference and harmonic parity checks](validation/les-harmonic-20260918.md).
+across ranks. Serial/MPI coupled APIs and fixed/selected applications expose
+`les_harmonic_mean=.true.` with `les_model='dynamic'`; the default is `.false.`.
+The setting enters checkpoint identity only when enabled, preserving the
+arithmetic default context. Restart rejects a changed or removed true setting.
+See [reference and harmonic parity checks](validation/les-harmonic-20260918.md)
+and [application restart checks](validation/les-harmonic-application-20260918.md).
