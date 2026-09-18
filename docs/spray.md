@@ -2985,3 +2985,13 @@ use the filter API's valid ratios; the grid ratio is 1–64. Nondefault filter
 controls require the dynamic model. Model and filter settings are checked on
 restart, including settings omitted back to their defaults. MPI dynamic input
 remains unsupported. See [fixed/selected application checks](validation/les-dynamic-application-20260918.md).
+
+### Distributed LES filter
+
+`les_mpi_filter_mod::filter_mpi_les_field_3d` applies supplied normalized weights
+on periodic x slabs. One-plane neighbor propagation supports stencils wider than
+local slabs without globally replicating fields. Weight/configuration agreement
+and rejection are collective; output publishes only after all ranks accept.
+Two/four-rank unequal-slab checks match serial filtering exactly. Dynamic MPI
+coefficient evaluation and time stepping still require connection; see
+[distributed filter evidence](validation/les-mpi-filter-20260918.md).
