@@ -106,7 +106,8 @@ contains
   end subroutine
 
   subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+    character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     real(dp), intent(out) :: rhs(:,:,:,:),maximum_diffusivity
@@ -145,7 +146,7 @@ contains
       end do
     end if
     if (all(faces=='periodic')) then
-      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok)
+      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok,model=model)
       return
     end if
     n=shape(temperature); dims=n+4
@@ -156,7 +157,7 @@ contains
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
     if (.not.ok) return
     call compute_les_face_rhs_3d(species,ghost,gt,spacing,cs,prt,sct,grhs,maximum_diffusivity,ok,n,rate, &
-      faces,wall_temperature)
+      faces,wall_temperature,model=model)
     if (.not.ok) return
     rhs=grhs(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
     if (present(boundary_rate)) boundary_rate=rate
@@ -164,7 +165,8 @@ contains
 
   ! Two supplied halo layers on every face; return only the active-cell RHS.
   subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok, &
-      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask)
+      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model)
+    character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     integer, intent(in) :: cells(3)
@@ -196,12 +198,13 @@ contains
     if (any(shape(temperature)/=cells+4).or.any(shape(rhs)/=[size(state,1),cells])) return
     allocate(full_rhs,mold=state)
     call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells, &
-      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask)
+      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model)
     if (ok) rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
   end subroutine
 
   subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask)
+      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model)
+    character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),cs,prt,sct
     real(dp), intent(out) :: rhs(:,:,:,:), maximum_diffusivity
@@ -213,6 +216,7 @@ contains
     logical :: include_face(6)
     real(dp), intent(out), optional :: boundary_rate(:)
     real(dp) :: rate(size(state,1))
+    character(len=16) :: selected_model
     logical :: active_face
     real(dp), allocatable :: primitive(:,:,:,:), temps(:,:,:), cp(:,:,:), cv(:,:,:), enthalpies(:,:,:,:)
     real(dp) :: q(reactive_nprim(size(species))), y(size(species)), grad(3,3), tau(3,3), flux(size(state,1))
@@ -221,6 +225,15 @@ contains
     integer :: dims(3),l(3),ridx(3),lo(3),hi(3),lo2(3),hi2(3),i,j,k,n,a,b,wall_face
     logical :: local_ok
     rhs=0.0_dp; maximum_diffusivity=0.0_dp; ok=.false.; rate=0
+    selected_model='smagorinsky'
+    if (present(model)) then
+      select case(model)
+      case('smagorinsky','wale','vreman')
+        selected_model=model
+      case default
+        return
+      end select
+    end if
     include_face=.true.
     if (present(boundary_face_mask)) include_face=boundary_face_mask
     if (present(boundary_rate)) boundary_rate=0
@@ -280,7 +293,14 @@ contains
                 primitive(2:4,hi2(1),hi2(2),hi2(3))-primitive(2:4,lo2(1),lo2(2),lo2(3)))/(4.0_dp*spacing(b))
             end do
             rho=0.5_dp*(primitive(1,i,j,k)+primitive(1,ridx(1),ridx(2),ridx(3)))
-            call smagorinsky_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+            select case(selected_model)
+            case('smagorinsky')
+              call smagorinsky_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+            case('wale')
+              call wale_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+            case('vreman')
+              call vreman_stress(grad,rho,spacing,cs,mu,tau,local_ok)
+            end select
             if (.not. local_ok) then
               rhs=0.0_dp; maximum_diffusivity=0.0_dp; return
             end if
@@ -335,7 +355,8 @@ contains
   end subroutine
 
   subroutine advance_les_ssprk2_3d(species,state,temperature,spacing,cs,prt,sct,dt,ok, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
+    character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),cs,prt,sct,dt
@@ -358,7 +379,7 @@ contains
     allocate(rhs,mold=state); allocate(stage,mold=state); allocate(candidate,mold=state)
     allocate(t1,mold=temperature); allocate(t2,mold=temperature)
     call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate1, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     if (cs == 0.0_dp .or. dt == 0.0_dp) then
@@ -368,7 +389,7 @@ contains
     call recover_reactive_temperatures_3d(species,stage,temperature,dims(1),dims(2),dims(3),t1,local_ok)
     if (.not. local_ok) return
     call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate2, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     candidate=0.5_dp*(state+stage+dt*rhs)

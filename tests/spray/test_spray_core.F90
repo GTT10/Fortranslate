@@ -48,6 +48,8 @@ program test_spray_core
   real(dp) :: impact_kv(6),impact_tstar(6),impact_film(6)
   integer :: impact_kinds(6),event_index
   integer, allocatable :: partition_counts(:),partition_offsets(:)
+  integer :: les_case,jcell
+  character(len=16) :: les_model
   integer :: regime
   integer :: indices(3,8),n,steps
   logical :: ok
@@ -1178,6 +1180,40 @@ program test_spray_core
     call near(mu/1e29_dp,expected,1e-13_dp,'WALE scaling')
     call vreman_stress(grad,-1._dp,[.1_dp,.2_dp,.4_dp],.2_dp,mu,stress,ok)
     call require(.not.ok.and.mu==0.and.all(stress==0),'Vreman invalid density')
+  case('les_wale','les_vreman')
+    les_model=test(5:)
+    do les_case=1,2
+      call make_gas(.true.)
+      do jcell=1,4
+        state(2,:,jcell,:)=10*sin(2*pi*(real(jcell,dp)-.5_dp)/4)*state(1,:,jcell,:)
+      end do
+      state(5,:,:,:)=state(5,:,:,:)+.5_dp*state(2,:,:,:)**2/state(1,:,:,:)
+      saved=state;saved_t=temp
+      faces='periodic'
+      if (les_case==2) faces='outflow'
+      call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,rhs,diff,ok,faces,totals0,model=les_model)
+      call require(ok.and.diff>0,'alternative LES flux')
+      do n=1,15
+        call require(abs(sum(rhs(n,:,:,:))*product(spacing)-totals0(n)) &
+          <=1e-12_dp*max(1._dp,sum(abs(rhs(n,:,:,:))))*product(spacing),'LES flux balance')
+      end do
+      ke0=sum(.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:))
+      call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,1e-7_dp,ok,faces,totals1,model=les_model)
+      call require(ok,'alternative LES step')
+      do n=1,15
+        call require(abs((sum(state(n,:,:,:))-sum(saved(n,:,:,:)))*product(spacing)-totals1(n)) &
+          <=1e-12_dp*max(1._dp,sum(abs(saved(n,:,:,:))))*product(spacing), 'LES step boundary budget')
+      end do
+      if (les_case==1) then
+        ke1=sum(.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:))
+        call require(ke1<ke0,'alternative LES kinetic dissipation')
+      end if
+      saved=state;saved_t=temp
+      call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,1e6_dp,ok,faces,model=les_model)
+      call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'alternative LES timestep rollback')
+      call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,0._dp,ok,model='invalid')
+      call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'invalid LES model rollback')
+    end do
   case('les_boundary')
     call make_gas(.false.)
     state(2,:,:,:)=20.0_dp*state(1,:,:,:)
