@@ -97,6 +97,18 @@ commit together after the whole interval succeeds. MPI and application wiring
 remain separate work. See
 [coupling evidence](validation/spray-eb-impact-coupling-20260918.md).
 
+The allocated serial source also supports KH shed-mass children with a shared
+`last_id`, with or without impact films. It checks each source-updated trajectory
+against the original level set before shedding: a crossing skips KH for that
+substep and takes the wall path. Unhit parents may release four children through
+`advance_mixture_khrt_shedding`; their transverse kinetic-energy change feeds the
+parent gas stencil, and their pressure inherits the parent's sampled value.
+Parents and children then drift for the source interval. IDs and pending KH
+state remain private through retries and whole-interval failure. This remains
+source-first operator splitting, not globally time-ordered breakup. The serial
+application still rejects KH child mode pending reactive/restart wiring.
+See [serial KH source evidence](validation/spray-eb-khrt-source-20260918.md).
+
 Set `spray_eb_wall_options%evolve` to enable stationary mixed-film heat and
 evaporation in that allocated source interval. `conductivity` is a common
 constant liquid conductivity (default 0.6 W/(m K)); `minimum_height` defaults to
