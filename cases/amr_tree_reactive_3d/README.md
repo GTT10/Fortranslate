@@ -19,7 +19,7 @@ each direction. The application is also registered for installation.
 
 ## Pressure outlets
 
-The serial fixed/selected frontends accept `outlet_pressure(6)` in `reactive_3d`.
+The serial and MPI fixed/selected frontends accept `outlet_pressure(6)` in `reactive_3d`.
 For example, `outlet_pressure(2)=102325` sets a 102325 Pa target on an `outflow`
 x-high face; zero retains extrapolation. Targets must be finite, positive only
 on outflow faces, and at most 1e15 Pa. The pressure ghost extrapolation feeds
@@ -30,8 +30,9 @@ nonreflection.
 
 Targets are part of checkpoint context: changing or removing them at restart
 is rejected. Scheduled/automatic remapping preserves volume inventories and
-does not sample physical ghost states. MPI tree input remains unconnected and
-rejects nonzero targets.
+does not sample physical ghost states. MPI stepping checks target agreement
+collectively. Rank-changing and serial/MPI restart retain the same pressure
+identity requirements.
 
 ## Configure-time selected mechanisms
 

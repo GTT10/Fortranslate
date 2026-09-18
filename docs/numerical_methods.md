@@ -2850,3 +2850,10 @@ both transport halves and the flow step, with common or recursive timesteps.
 The coupled transaction keeps candidate state private through the last reaction
 half; see [MPI tree split evidence](validation/pressure-outlet-mpi-tree-split-20260918.md).
 MPI application input and standalone reaction/hydro Strang forwarding remain pending.
+
+Fixed/selected MPI patch-tree applications now accept pressure targets and
+forward them into coupled stepping. The focused common-step scheduled-regrid
+regression verifies byte-exact serial/MPI output and checkpoint interchange,
+rank-changing restart and rejection of changed/removed pressure; see
+[MPI tree application evidence](validation/pressure-outlet-mpi-tree-application-20260918.md).
+Standalone reaction/hydro Strang API forwarding remains separate pending work.

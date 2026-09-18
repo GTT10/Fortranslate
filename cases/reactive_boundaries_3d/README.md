@@ -37,8 +37,8 @@ z-low, z-high**. Empty entries inherit `boundary_condition` (default
   from the interior. Invalid extrapolated states reject the step. This does
   not prescribe a backflow reservoir or establish nonreflection.
   `pressure_outlet.nml` exercises the full chemistry/transport/hydro path.
-  Pressure input is enabled in regular, serial/MPI two-level AMR, and serial
-  patch-tree fixed/selected front ends; MPI patch-tree readers reject nonzero targets.
+  Pressure input is enabled in regular, serial/MPI two-level AMR and serial/MPI
+  patch-tree fixed/selected front ends.
 - `slip_wall`: mirror the normal momentum and extrapolate thermodynamic and
   tangential states by reflection. The inviscid wall is impermeable and
   adiabatic; it exerts pressure forces on the gas.
