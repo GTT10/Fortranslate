@@ -118,6 +118,7 @@ contains
     real(dp) :: injection_speed,cone_angle,mass_flow_rate,injection_start,injection_end,injection_interval
     character(len=16) :: les_model,les_test_filter
     integer :: les_test_ratio,les_grid_ratio
+    real(dp) :: les_ci
     logical :: les_harmonic_mean
     real(dp), allocatable :: les_weights(:)
     real(dp) :: final_time,maximum_dt,cfl,rtol,atol,smagorinsky_constant,turbulent_prandtl,turbulent_schmidt
@@ -203,7 +204,7 @@ contains
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
       chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_model,drag_enabled,heat_enabled,evaporation_enabled, &
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant,les_model, &
-      les_test_filter,les_test_ratio,les_grid_ratio,les_harmonic_mean, &
+      les_test_filter,les_test_ratio,les_grid_ratio,les_harmonic_mean,les_ci, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
     wall_conductivity_model='constant';wall_conductivity_coefficients=0;wall_conductivity_temperature_range=0
@@ -271,6 +272,7 @@ contains
     drag_model="schiller-naumann"
     drag_enabled=.true.; heat_enabled=.true.; evaporation_enabled=.true.; abramzon_sirignano=.true.
     max_fractional_change=0.05_dp; particle_cfl=0.25_dp; minimum_diameter=1.0e-9_dp; maximum_substeps=100000
+    les_ci=0
     les_model='smagorinsky';les_test_filter='box';les_test_ratio=2;les_grid_ratio=1;les_harmonic_mean=.false.
     smagorinsky_constant=0.0_dp; turbulent_prandtl=0.7_dp; turbulent_schmidt=0.7_dp
     output_prefix='spray'; checkpoint_file=''; restart_file=''
@@ -344,6 +346,9 @@ contains
     if (rtol<=0.0_dp .or. rtol>0.01_dp .or. atol<=0.0_dp .or. atol>0.001_dp) call fail('Invalid chemistry tolerances')
     if (les_model/='smagorinsky'.and.les_model/='wale'.and.les_model/='vreman'.and.les_model/='dynamic') &
       call fail('Invalid LES model')
+    if (.not.ieee_is_finite(les_ci)) call fail('Invalid LES CI')
+    if (les_ci<0.or.les_ci>1) call fail('Invalid LES CI')
+    if (les_ci/=0.and.les_model=='dynamic') call fail('Fixed LES CI requires a static model')
     if (les_harmonic_mean.and.les_model/='dynamic') call fail('Harmonic LES interpolation requires dynamic model')
     if (les_model=='dynamic') then
       if (any(boundary_faces/='periodic')) call fail('Dynamic LES requires periodic boundaries')
@@ -844,6 +849,10 @@ contains
       context=trim(context)//' dynamic-les-filter-v1 '//trim(les_test_filter)
       call append_reals([real(les_test_ratio,dp),real(les_grid_ratio,dp)])
     end if
+    if (les_ci/=0) then
+      context=trim(context)//' les-ci-v1'
+      call append_reals([les_ci])
+    end if
     if (les_harmonic_mean) then
       if (len_trim(context)+len(' les-harmonic-v1')>len(context)) call fail('Harmonic LES context too long')
       context=trim(context)//' les-harmonic-v1'
@@ -1268,7 +1277,7 @@ contains
           mixture_components=mixture_components,component_mass=component_mass, &
           wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-          les_harmonic_mean=les_harmonic_mean)
+          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci)
         else
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
@@ -1276,7 +1285,7 @@ contains
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
           breakup_options,wall_options,wall_films,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-          les_harmonic_mean=les_harmonic_mean)
+          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci)
         end if
         if (ok) exit
         dt=0.5_dp*dt

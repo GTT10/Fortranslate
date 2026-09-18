@@ -75,7 +75,7 @@ contains
   real(dp) :: boiling_temperature(2)=[373.15_dp,350.0_dp],latent_heat(2)=[2.257e6_dp,1e6_dp]
   real(dp) :: final_time=2e-8_dp,dt_max=1e-8_dp,cfl=.3_dp,rtol=1e-7_dp,atol=1e-12_dp
   logical :: transport_flags(4)=.true.
-  real(dp) :: les_cs=0,les_prt=.7_dp,les_sct=.7_dp
+  real(dp) :: les_ci=0,les_cs=0,les_prt=.7_dp,les_sct=.7_dp
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
   character(len=16) :: solver='hllc',limiter='mc',les_model='smagorinsky',les_test_filter='box'
   integer :: les_test_ratio=2,les_grid_ratio=1
@@ -101,7 +101,7 @@ contains
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
     size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3, &
     khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-    boundary_faces,wall_temperature,wall_velocity,impact,les_harmonic_mean
+    boundary_faces,wall_temperature,wall_velocity,impact,les_harmonic_mean,les_ci
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -272,6 +272,16 @@ contains
   call require(les_model=='smagorinsky'.or.les_model=='wale'.or.les_model=='vreman'.or.les_model=='dynamic', &
     'Invalid LES model')
   call require(.not.les_harmonic_mean.or.les_model=='dynamic','Harmonic LES interpolation requires dynamic model')
+  call require(ieee_is_finite(les_ci),'Invalid LES CI')
+  call require(les_ci>=0.and.les_ci<=1,'Invalid LES CI')
+  call require(les_ci==0.or.les_model/='dynamic','Fixed LES CI requires a static model')
+  if (les_ci/=0) then
+    write(profile_context,'(*(g0,1x))',iostat=status) 'les-ci-v1',les_ci
+    call require(status==0,'LES CI context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint LES CI context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end if
   if (les_harmonic_mean) then
     call require(len_trim(checkpoint_context)+len(' les-harmonic-v1')<=len(checkpoint_context), &
       'Checkpoint harmonic LES context too long')
@@ -388,14 +398,14 @@ contains
         inlet_state,inlet_temperature,wall_temperature,wall_velocity,checkpoint_films,checkpoint_film_mass,impact, &
         les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-        les_harmonic_mean=les_harmonic_mean)
+        les_harmonic_mean=les_harmonic_mean,les_ci=les_ci)
       else
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
         solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
         inlet_state,inlet_temperature,wall_temperature,wall_velocity,les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-        les_harmonic_mean=les_harmonic_mean)
+        les_harmonic_mean=les_harmonic_mean,les_ci=les_ci)
       end if
       if (ok) exit
       dt=.5_dp*dt

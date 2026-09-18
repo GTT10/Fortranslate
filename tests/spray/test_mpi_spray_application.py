@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--species-count', type=int, default=10)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
@@ -28,6 +29,10 @@ def main():
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     source = args.input.read_text()
     input_path = args.input.resolve()
+    if args.les_isotropic:
+        if args.les_model not in ('wale', 'vreman'):
+            parser.error('--les-isotropic requires --les-model wale or vreman')
+        source = source.replace('&mpi_spray', '&mpi_spray\n les_ci=0.1,')
     if args.les_harmonic:
         if args.les_model != 'dynamic':
             parser.error('--les-harmonic requires --les-model dynamic')
@@ -129,6 +134,16 @@ def main():
             run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
             assert diagnostic in (work / f'{label}.log').read_text()
             assert not (work / f'{label}.history.csv').exists()
+        if args.les_isotropic:
+            for label, replacement, diagnostic in [
+                ('changed_ci', 'les_ci=0.2,', 'Restart rejected: invalid data or incompatible model/input context'),
+                ('removed_ci', '', 'Restart rejected: invalid data or incompatible model/input context'),
+                ('invalid_ci', 'les_ci=-0.1,', 'Invalid LES CI'),
+            ]:
+                source = original_source.replace('les_ci=0.1,', replacement)
+                run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
+                assert diagnostic in (work / f'{label}.log').read_text()
+                assert not (work / f'{label}.history.csv').exists()
         if args.les_model == 'dynamic':
             guards = [
                 ('filter', "les_test_filter='gaussian'", "les_test_filter='box'"),

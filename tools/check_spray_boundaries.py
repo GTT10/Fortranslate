@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
+    parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
@@ -24,6 +25,10 @@ def main():
     case = 'thermal_moving_wall.nml' if args.thermal_wall else ('inflow.nml' if args.inflow else 'wall_reflection.nml')
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
+    if args.les_isotropic:
+        if args.les_model not in ('wale', 'vreman'):
+            parser.error('--les-isotropic requires --les-model wale or vreman')
+        template = template.replace('&spray', '&spray\n les_ci=0.1,')
     if args.les_harmonic:
         if args.les_model != 'dynamic':
             parser.error('--les-harmonic requires --les-model dynamic')
@@ -119,6 +124,20 @@ def main():
                 if args.les_model == 'dynamic' and label != 'invalid_model':
                     config = config.replace("les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,", '')
                     config = config.replace('les_harmonic_mean=.true.,', '')
+                path = work / (label + '.nml')
+                path.write_text(config)
+                result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                        text=True, capture_output=True, timeout=30)
+                (work / (label + '.log')).write_text(result.stdout + result.stderr)
+                assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
+                assert not (work / (label + '.history.csv')).exists()
+        if args.les_isotropic:
+            for label, replacement, diagnostic in [
+                ('changed_ci', 'les_ci=0.2,', 'incompatible spray checkpoint'),
+                ('removed_ci', '', 'incompatible spray checkpoint'),
+                ('invalid_ci', 'les_ci=-0.1,', 'Invalid LES CI'),
+            ]:
+                config = original.replace('les_ci=0.1,', replacement).replace(resumed, label)
                 path = work / (label + '.nml')
                 path.write_text(config)
                 result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,

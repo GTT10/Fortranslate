@@ -1169,7 +1169,8 @@ contains
       parcels,component_mass,lower,spacing,cells,parts,interval,rtol,atol,method,substeps,ok, &
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio,les_harmonic_mean)
+      wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
+      les_harmonic_mean,les_ci)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1183,6 +1184,8 @@ contains
     integer, intent(in) :: cells(3),parts(3)
     character(len=*), optional, intent(in) :: les_model,les_test_filter
     integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
+    real(dp), optional, intent(in) :: les_ci
+    real(dp) :: isotropic
     logical, optional, intent(in) :: les_harmonic_mean
     logical :: harmonic
     character(len=32) :: selected_filter
@@ -1212,7 +1215,7 @@ contains
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(20),minimum(20),maximum(20),chemistry_interval,transport_theta
+    real(dp) :: controls(21),minimum(21),maximum(21),chemistry_interval,transport_theta
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
@@ -1236,6 +1239,8 @@ contains
       end select
     end if
     selected_filter='box';test_ratio=2;grid_ratio=1;filter_code=2;filter_valid=.true.
+    isotropic=0
+    if (present(les_ci)) isotropic=les_ci
     harmonic=.false.
     if (present(les_harmonic_mean)) harmonic=les_harmonic_mean
     if (les_code==4) then
@@ -1269,13 +1274,15 @@ contains
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(component_mass).and.method_code>0.and.les_code>0.and.filter_valid
     valid=valid.and.(.not.harmonic.or.les_code==4)
+    valid=valid.and.ieee_is_finite(isotropic)
+    valid=valid.and.isotropic>=0.and.isotropic<=1.and.(isotropic==0.or.les_code/=4)
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(state,1)
     valid=valid.and.(present(wall_films).eqv.present(film_mass)).and.(present(wall_films).eqv.present(film_settings))
     if (present(wall_films)) valid=valid.and.present(boundary_faces)
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     valid=valid.and.all(ieee_is_finite([interval,rtol,atol,sgs]))
     valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.minval(sgs(2:))>=1e-6_dp.and.maxval(sgs(2:))<=1e6_dp
-    valid=valid.and.(sgs(1)==0.or.present(hydro_solver))
+    valid=valid.and.((sgs(1)==0.and.isotropic==0).or.present(hydro_solver))
     valid=valid.and.interval>=0.and.interval<=1e6_dp.and.min(rtol,atol)>0
     valid=valid.and.(.not.any(enabled).or.present(hydro_solver))
     valid=valid.and.(present(hydro_solver).eqv.present(hydro_limiter))
@@ -1287,10 +1294,10 @@ contains
     if (.not.agreed) return
     controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
       merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces)),merge(1.0_dp,0.0_dp,present(wall_films)), &
-      real(les_code,dp),real(filter_code,dp),real(test_ratio,dp),real(grid_ratio,dp),merge(1._dp,0._dp,harmonic)]
-    call MPI_Allreduce(controls,minimum,20,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      real(les_code,dp),real(filter_code,dp),real(test_ratio,dp),real(grid_ratio,dp),merge(1._dp,0._dp,harmonic),isotropic]
+    call MPI_Allreduce(controls,minimum,21,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,20,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,21,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
@@ -1330,14 +1337,14 @@ contains
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
-      if (sgs(1)>0) then
+      if (sgs(1)>0.or.isotropic>0) then
         if (les_code==4) then
           if (allocated(stage_change)) stage_change=0
           call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
             .5_dp*interval,valid,grid_ratio,harmonic)
         else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
-          boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
+          boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model,ci=isotropic)
         end if
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
@@ -1346,14 +1353,14 @@ contains
         boundary_faces,stage_change,inflow_state,inflow_temperature)
       if (.not.valid) return
       if (allocated(stage_change)) ledger=ledger+stage_change
-      if (sgs(1)>0) then
+      if (sgs(1)>0.or.isotropic>0) then
         if (les_code==4) then
           if (allocated(stage_change)) stage_change=0
           call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
             .5_dp*interval,valid,grid_ratio,harmonic)
         else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
-          boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
+          boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model,ci=isotropic)
         end if
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
