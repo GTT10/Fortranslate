@@ -45,7 +45,7 @@ Output:
   Existing particle CSV files are protected and cause the run to fail.
 
 This executable supports scheduled cone injection and the existing EB tree
-regrid controls. KH child shedding remains explicitly rejected; optional wall impacts create splash children. It inherits root-contained EB flight and the
+regrid controls. Optional KH shedding and wall impacts create child parcels. It inherits root-contained EB flight and the
 composite stencil approximation. It is a synthetic integration fixture, not
 nozzle, diesel ignition, convergence or physical validation.
 
@@ -302,3 +302,26 @@ the component models also feed evaporation, heating, breakup, impacts and film
 exchange through the existing mixture APIs. All model parameters enter restart
 context. Checkpoints preceding these fields fail strict context comparison.
 See [focused evidence](../../docs/validation/spray-mpi-eb-properties-20260918.md).
+
+## KH-RT child parcels
+
+The MPI EB executable now accepts the existing KH child controls, for example:
+
+```fortran
+particle_options%breakup_model='khrt',particle_options%khrt_children=.true.,
+particle_options%liquid_viscosity=.001,particle_options%surface_tension=.072,
+```
+
+The shared ID watermark covers both injection and four-child releases. Child
+composition, lineage and pending KH state follow migration, regrid and checkpoint
+restore. The transverse kinetic-energy contribution is balanced against the gas.
+A source parent crossing the EB skips KH release for that substep and takes the
+wall path; this applies to both specular reflection and optional impact films.
+Unhit parents and generated children advance through the remaining source flight.
+The source operator uses breakup followed by drift, not globally ordered physical
+breakup times. The full gas/particle/film update retains rollback, including IDs.
+
+Checkpoint restore verifies the watermark against processed injections plus
+four-child release groups. It works with the V1 particle-only payload and V2
+impact/film payload. The mode remains experimental and its constants need
+physical calibration. See [focused evidence](../../docs/validation/spray-mpi-eb-khrt-application-20260918.md).

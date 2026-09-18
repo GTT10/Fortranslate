@@ -192,6 +192,13 @@ begin thermal evolution on a subsequent step. Presence of the watermark and
 film arguments must agree across ranks. The MPI application connects this path
 as described below. See [reactive MPI film evidence](validation/spray-mpi-eb-film-reactive-20260918.md)
 and [reactive impact evidence](validation/spray-mpi-eb-impact-reactive-20260918.md).
+A watermark may also be supplied without films for KH children with specular
+flight. KH mode requires it; its presence is agreed across ranks and both
+particle halves use a private copy. It commits only after the complete reactive
+step succeeds. The MPI executable now enables this path and restores injection
+plus four-child ID groups from its existing checkpoint payload. See
+[KH application evidence](validation/spray-mpi-eb-khrt-application-20260918.md).
+
 
 `spray_mpi_eb_impact_mod` exports `impact_mpi_level_set` for one earliest contact
 per supplied trial trajectory. It uses original nodal geometry, sampled parcel
@@ -384,7 +391,7 @@ time-ordered aerodynamic-breakup event solver. The collective KH helper's
 optional `eligible` mask preserves excluded parent mass, pending breakup state
 and zero release-energy contribution. See
 [KH source evidence](validation/spray-mpi-eb-khrt-source-20260918.md).
-The MPI application still rejects KH child mode pending its shared-ID integration. This is a particle
+The MPI application now connects KH mode and its shared IDs as described below. This is a particle
 interval; the distributed gas/spray wrapper below composes it with gas dynamics.
 
 `spray_mpi_eb_reactive_mod` exports `advance_mpi_eb_spray_reactive`: particle
