@@ -2855,5 +2855,8 @@ cells and stationary wall films receive no kick. Temperature recovery checks
 that gas internal energy is unchanged. The returned system impulse/work is
 separate from exterior, wall and chemistry inventories, with zero mass/species
 entries. All state and ledgers publish only on full-step success. The fixed-array
-wrapper, serial application and MPI paths do not yet expose EB acceleration.
+wrapper and MPI paths do not yet expose EB acceleration. The serial application
+accepts `acceleration` in `eb_spray`, prints `Force inventory`, and persists it
+separately from wall exchange through restart. See
+[application evidence](validation/spray-eb-acceleration-application-20260918.md).
 See [focused evidence](validation/spray-eb-acceleration-20260918.md).

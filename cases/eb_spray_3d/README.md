@@ -294,3 +294,13 @@ combined boundary history and dead records; the new mode flag enters restart
 context. Earlier contexts are rejected. See
 [specular evidence](../../docs/validation/spray-eb-outflow-application-20260918.md)
 and [impact/film restart evidence](../../docs/validation/spray-eb-splash-outflow-application-20260918.md).
+
+### External acceleration
+
+Set `acceleration=0,0,-9.81` in `eb_spray` for a uniform acceleration in m/s².
+The default is zero; each component must be finite and at most 1e6 in magnitude.
+Gas and live particles receive impulse/work; stationary attached films do not.
+`Force inventory` reports cumulative external exchange separately from wall,
+exterior and chemistry budgets. Nonzero acceleration adds an `_EXT_V1`
+checkpoint inventory and the setting is part of restart context. See
+[restart evidence](../../docs/validation/spray-eb-acceleration-application-20260918.md).
