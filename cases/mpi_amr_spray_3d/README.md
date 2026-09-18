@@ -426,6 +426,9 @@ Splitting divides represented droplet counts while preserving individual drop
 mass, composition and the aggregate inventories. New parcels receive global
 IDs and retain parent IDs; the existing checkpoint carries these fields and the
 global ID watermark. Capacity failure rejects the entire coupled interval.
+Computational child IDs now follow global parent-ID order and sibling order,
+independent of owner rank. Future child IDs can differ from older builds that
+reserved them in rank order; saved IDs remain unchanged on load.
 This does not itself represent additional physical breakup. The coupled API's
 optional `split_created` reports the global number of computational children,
 excluding KH/splash children created earlier in the interval. See
