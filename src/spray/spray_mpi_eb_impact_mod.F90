@@ -12,7 +12,7 @@ module spray_mpi_eb_impact_mod
   use spray_mpi_mod, only: sample_mpi_wall_film_thickness,resolve_mpi_wall_impacts
   implicit none
   private
-  public :: impact_mpi_level_set
+  public :: impact_mpi_level_set,advance_mpi_level_set_impacts
 contains
   ! One earliest EB contact per original parcel; endpoints are supplied by caller.
   ! Film queries use the pre-event distributed film population. Wall receives budget.
@@ -163,4 +163,117 @@ contains
     end subroutine
   end subroutine
 
+  ! Collective batches of remaining flight. Film thickness is frozen per batch.
+  ! Keep source-rank ownership until the caller performs final migration.
+  subroutine advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
+      lower,upper,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: properties
+    type(spray_eb_wall_options), intent(in) :: settings
+    real(dp), intent(in) :: phi(0:,0:,0:),molecular_weights(:),pressure(:),lower(3),upper(3),dt
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:),film_mass(:,:)
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    integer(int64), intent(inout) :: last_id
+    real(dp), intent(inout) :: wall_change(5)
+    integer, intent(inout) :: hits
+    logical, intent(out) :: ok
+    logical, optional, intent(out) :: model_rejected
+    type(spray_parcel), allocatable :: drops(:),kept(:)
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: masses(:,:),patch_mass(:,:),remaining(:),pressures(:),previous(:,:),fractions(:)
+    real(dp), allocatable :: next_remaining(:),next_pressure(:),kept_mass(:,:)
+    integer, allocatable :: depth(:),next_depth(:)
+    logical, allocatable :: crossed(:)
+    real(dp) :: ledger(5),budget(5),lowdt,highdt
+    integer(int64) :: watermark,local_hits,total_hits
+    integer :: np,p,q,lo,hi,mid,nc,ierr,limits(2),lowlimits(2),highlimits(2)
+    logical :: valid,agreed,rejected,active,global_active
+    ok=.false.
+    if(present(model_rejected)) model_rejected=.false.
+    valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
+    valid=valid.and.ieee_is_finite(dt)
+    if(valid) valid=dt>=0.and.dt<=1e6_dp
+    valid=valid.and.settings%maximum_hits>=0.and.settings%maximum_hits<=1024
+    call agree();if(.not.agreed) return
+    valid=size(pressure)==size(parcels)
+    call agree();if(.not.agreed) return
+    limits=[settings%maximum_hits,properties%maximum_parcels]
+    call MPI_Allreduce(limits,lowlimits,2,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(limits,highlimits,2,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(lowlimits/=highlimits)) return
+    call MPI_Allreduce(dt,lowdt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(dt,highdt,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.lowdt/=highdt) return
+    drops=parcels;masses=component_mass;patches=films;patch_mass=film_mass;watermark=last_id
+    allocate(remaining(size(drops)),depth(size(drops)));remaining=dt;depth=0;pressures=pressure
+    ledger=0;local_hits=0;nc=size(components)
+    do
+      np=size(drops)
+      if(allocated(previous)) deallocate(previous)
+      allocate(previous(3,np))
+      do p=1,np
+        previous(:,p)=drops(p)%position
+        if(drops(p)%mass>0) drops(p)%position=previous(:,p)+remaining(p)*drops(p)%velocity
+      end do
+      call impact_mpi_level_set(comm,components,properties,settings,phi,molecular_weights,pressures,previous, &
+        lower,upper,drops,masses,patches,patch_mass,watermark,crossed,fractions,budget,valid,rejected)
+      if(rejected) then
+        if(present(model_rejected)) model_rejected=.true.
+        return
+      end if
+      if(.not.valid) return
+      allocate(next_remaining(size(drops)),next_pressure(size(drops)),next_depth(size(drops)))
+      next_remaining=0;next_pressure(:np)=pressures;next_depth(:np)=depth
+      do p=1,np
+        if(.not.crossed(p)) cycle
+        local_hits=local_hits+1_int64
+        next_remaining(p)=remaining(p)*(1-fractions(p));next_depth(p)=depth(p)+1
+      end do
+      valid=.true.
+      do p=np+1,size(drops)
+        ! Original local IDs are strictly increasing; child ancestry stays local until migration.
+        lo=1;hi=np;q=0
+        do while(lo<=hi)
+          mid=lo+(hi-lo)/2
+          if(drops(mid)%id==drops(p)%parent_id) then
+            q=mid;exit
+          else if(drops(mid)%id<drops(p)%parent_id) then
+            lo=mid+1
+          else
+            hi=mid-1
+          end if
+        end do
+        if(q==0) then
+          valid=.false.;exit
+        end if
+        next_remaining(p)=next_remaining(q);next_pressure(p)=pressures(q);next_depth(p)=next_depth(q)
+      end do
+      if(valid) valid=all(next_depth<=settings%maximum_hits)
+      call agree();if(.not.agreed) return
+      call move_alloc(next_remaining,remaining);call move_alloc(next_pressure,pressures);call move_alloc(next_depth,depth)
+      ledger=ledger+budget
+      active=any(remaining>0.and.drops%mass>0)
+      call MPI_Allreduce(active,global_active,1,MPI_LOGICAL,MPI_LOR,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      if(.not.global_active) exit
+    end do
+    call MPI_Allreduce(local_hits,total_hits,1,MPI_INTEGER8,MPI_SUM,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.total_hits>int(huge(hits),int64)) return
+    kept=pack(drops,drops%mass>0);allocate(kept_mass(nc,size(kept)))
+    do p=1,nc
+      kept_mass(p,:)=pack(masses(p,:),drops%mass>0)
+    end do
+    call move_alloc(kept,parcels);call move_alloc(kept_mass,component_mass)
+    call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
+    last_id=watermark;wall_change=ledger;hits=int(total_hits);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine
 end module

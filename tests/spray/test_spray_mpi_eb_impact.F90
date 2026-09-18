@@ -7,7 +7,7 @@ program test_spray_mpi_eb_impact
   use spray_parcel_mod
   use spray_wall_impact_mod, only: spray_wall_film,wall_film_totals
   use spray_eb_impact_mod, only: spray_eb_wall_options
-  use spray_mpi_eb_impact_mod, only: impact_mpi_level_set
+  use spray_mpi_eb_impact_mod, only: impact_mpi_level_set,advance_mpi_level_set_impacts
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(spray_liquid) :: liquids(1)
@@ -19,7 +19,7 @@ program test_spray_mpi_eb_impact
   logical, allocatable :: hit(:)
   real(dp) :: phi(0:2,0:2,0:2),normal(3),mw(1),wall(5),before(5),after(5),d
   integer(int64) :: last_id
-  integer :: rank,nranks,ierr,i,j,k,p
+  integer :: rank,nranks,ierr,i,j,k,p,hits,mode
   logical :: ok,rejected
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -85,7 +85,55 @@ program test_spray_mpi_eb_impact
   call impact()
   call require(ok.and.last_id==nranks+4,'empty ranks participate in ID reservation')
   call require(size(drops)==merge(5,0,rank==nranks-1),'empty rank payload')
-  if(rank==0) print *, 'PASS: distributed EB contact, remote films, IDs and rollback'
+  deallocate(drops,masses,films,film_mass,pressure)
+  allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)))
+  allocate(pressure(size(drops)),films(0),film_mass(1,0))
+  if(rank==nranks-1) then
+    drops=saved;drops(1)%position=[.6_dp,.6_dp,.5_dp];masses=1e-12_dp;pressure=101325
+  end if
+  last_id=nranks;wall=42;hits=43;settings_loop: do mode=0,1
+    walls%maximum_hits=mode
+    if(mode==1) call inventory(before)
+    call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.2_dp*sqrt(2._dp)/200, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+    if(mode==0) then
+      call require(.not.ok.and..not.rejected.and.last_id==nranks,'contact limit restores watermark')
+      call require(all(wall==42).and.hits==43.and.size(films)==0,'contact limit restores films and diagnostics')
+      if(rank==nranks-1) call require(all(drops(1)%position==[.6_dp,.6_dp,.5_dp]),'flight rollback')
+    else
+      call require(ok.and.hits==1.and.last_id==nranks+4,'remaining-flight interval')
+      call require(size(drops)==merge(4,0,rank==nranks-1),'dead parent removed')
+      do p=1,size(drops)
+        call require(sum(drops(p)%position(:2))>1.001_dp,'children advance remaining time')
+      end do
+      call inventory(after)
+      call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'interval inventory')
+    end if
+  end do settings_loop
+  deallocate(drops,masses,films,film_mass)
+  allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)),films(0),film_mass(1,0))
+  do i=0,2
+    phi(i,:,:)=.1_dp-abs(.5_dp*i-.5_dp)
+  end do
+  if(rank==nranks-1) then
+    drops=saved;drops(1)%position=[.55_dp,.5_dp,.5_dp];drops(1)%velocity=[1._dp,0._dp,0._dp];masses=1e-12_dp
+  end if
+  last_id=nranks;wall=42;hits=43;walls%temperature=600
+  do mode=1,2
+    walls%maximum_hits=mode
+    call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.4_dp, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+    if(mode==1) then
+      call require(.not.ok.and.hits==43.and.all(wall==42),'second-contact rollback')
+      if(rank==nranks-1) call require(drops(1)%position(1)==.55_dp,'first contact rolled back')
+    else
+      call require(ok.and.hits==2,'two collective rebound batches')
+      if(rank==nranks-1) call require(drops(1)%position(1)>.4_dp.and.drops(1)%position(1)<.6_dp,'slab endpoint')
+    end if
+  end do
+  if(rank==0) print *, 'PASS: distributed EB contact and remaining-flight transaction'
   call MPI_Finalize(ierr)
 contains
   subroutine impact()
