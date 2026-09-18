@@ -101,7 +101,6 @@ contains
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
     impacts=present(wall_options);outflow=.false.
     if(present(particle_outflow)) outflow=particle_outflow
-    if(outflow.and.impacts) return
     outer_faces='outflow';first_exterior=0;second_exterior=0
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
@@ -116,12 +115,18 @@ contains
     end if
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     first_wall=0;second_wall=0;boundary=0;wall=0;chemical=0
-    if(outflow) then
+    if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
         .5_dp*dt,first_steps,first_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=first_exterior)
     else if (impacts) then
-      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
-        .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+      if(outflow) then
+        call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
+          .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected, &
+          outer_faces,first_exterior)
+      else
+        call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
+          .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+      end if
       if (rejected) then
         if (present(model_rejected)) model_rejected=.true.
         return
@@ -139,12 +144,18 @@ contains
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,next_gas,next_temp, &
       theta,valid,target_volume_fraction,chemistry_integrator,boundary,wall,chemical)
     if (.not.valid) return
-    if(outflow) then
+    if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
         .5_dp*dt,second_steps,second_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=second_exterior)
     else if (impacts) then
-      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
-        .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+      if(outflow) then
+        call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
+          .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected, &
+          outer_faces,second_exterior)
+      else
+        call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
+          .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+      end if
       if (rejected) then
         if (present(model_rejected)) model_rejected=.true.
         return

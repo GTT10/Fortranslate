@@ -57,7 +57,7 @@ contains
     character(len=*), optional, intent(in) :: outer_faces(6)
     real(dp), optional, intent(inout) :: outer_change(:)
     real(dp) :: exterior(reactive_nvar(size(species))),trial_exterior(reactive_nvar(size(species)))
-    real(dp), allocatable :: liquid_energies(:)
+    real(dp), allocatable :: liquid_energies(:),impact_exterior(:)
     real(dp) :: clipped_finish(3),flight_fraction,axis_fraction
     integer :: axis
     type(spray_eb_wall_options), optional, intent(in) :: wall_options
@@ -95,7 +95,7 @@ contains
     impacts=present(wall_options)
     if(present(outer_faces).neqv.present(outer_change)) return
     if(present(outer_faces)) then
-      if(impacts) return
+      if(impacts.and.any(outer_faces/="outflow")) return
       if(.not.valid_spray_boundary_faces(outer_faces)) return
       if(size(outer_change)/=reactive_nvar(size(species))) return
     end if
@@ -153,6 +153,7 @@ contains
       if (components(n)%vapor_index>size(species)) return
       molecular_weights(n)=species(components(n)%vapor_index)%molecular_weight
     end do
+    if(impacts.and.present(outer_faces)) allocate(impact_exterior(5+nc))
     lower=[g%x_lower,g%y_lower,g%z_lower];upper=[g%x_upper,g%y_upper,g%z_upper];h=[g%dx,g%dy,g%dz]
     gas=state;temp=temperature;drops=parcels;masses=component_mass;ledger=0
     allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np),field(nvar+1,g%nx,g%ny,g%nz))
@@ -270,6 +271,7 @@ contains
           if(valid) change(5,:)=change(5,:)+child_energy
         end if
         exchange=0;hits=0;film_change=0;trial_exterior=0
+        if(allocated(impact_exterior)) impact_exterior=0
         if (valid) then
           next_gas=gas;next_temp=temp
           call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
@@ -296,10 +298,17 @@ contains
             if (valid) call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
               min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
               101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
-              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,impact_pressures,rejected)
+              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,impact_pressures,rejected,impact_exterior)
             if (rejected) then
               if (present(model_rejected)) model_rejected=.true.
               return
+            end if
+            if(valid.and.allocated(impact_exterior)) then
+              trial_exterior(:5)=impact_exterior(:5)
+              do n=1,nc
+                trial_exterior(5+components(n)%vapor_index)=trial_exterior(5+components(n)%vapor_index)+ &
+                  impact_exterior(5+n)
+              end do
             end if
             exchange=-exchange
           else if(present(outer_faces)) then

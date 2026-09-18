@@ -202,8 +202,38 @@ program test_spray_eb_impact_coupling
     call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
       'gas particle exterior component conservation')
   end do
+  ! Impact children cross the exterior in later source substeps.
+  options%breakup_model='none';options%khrt_children=.false.;options%khrt_reference_diameter_cubed=0
+  state=saved;temperature=saved_t
+  deallocate(drops,masses,films,film_mass)
+  allocate(drops(1),masses(2,1),films(0),film_mass(2,0))
+  drops(1)=saved_drop;drops(1)%velocity=[-200._dp,10._dp,5._dp]
+  masses=saved_mass;last_id=100;interval=1e-3_dp
+  options%maximum_substeps=1;ledger=42;exterior=43
+  call impact_exterior_advance()
+  call require(.not.ok.and.steps==0.and.last_id==100,'splash outflow interval rollback')
+  call require(size(drops)==1.and.size(films)==0.and.all(masses==saved_mass),'splash outflow population rollback')
+  call require(all(drops(1)%position==saved_drop%position),'splash outflow position rollback')
+  call require(all(state==saved).and.all(temperature==saved_t),'splash outflow gas rollback')
+  call require(all(ledger==42).and.all(exterior==43),'splash outflow ledger rollback')
+  options%maximum_substeps=100000
+  call inventory(before)
+  call impact_exterior_advance()
+  call require(ok.and.steps>1,'splash outflow coupled interval')
+  call require(size(drops)==0.and.size(films)==1.and.last_id==104,'escaped splash population and IDs')
+  call require(exterior(1)<0.and.ledger(2)>0,'separate splash exterior and wall losses')
+  call require(abs(exterior(5+liquids(1)%vapor_index)-.25_dp*exterior(1))<1e-23_dp,'splash first species')
+  call require(abs(exterior(5+liquids(2)%vapor_index)-.75_dp*exterior(1))<1e-23_dp,'splash second species')
+  call inventory(after)
+  expected=exterior;expected(:5)=expected(:5)+ledger
+  call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'splash gas film wall exterior conservation')
   print *, 'PASS: EB source coupling, KH and exterior inventories'
 contains
+  subroutine impact_exterior_advance()
+    call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
+      drops,masses,interval,steps,ledger,ok,walls,films,film_mass,last_id,outer_faces=faces,outer_change=exterior)
+  end subroutine
   subroutine exterior_advance()
     call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,steps,ledger,ok,last_id=last_id,outer_faces=faces,outer_change=exterior)
