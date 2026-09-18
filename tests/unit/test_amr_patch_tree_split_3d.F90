@@ -24,6 +24,7 @@ program test_amr_patch_tree_split_3d
   real(dp) :: initial(12),final(12),elements0(3),elements1(3),boundary_elements(3),budget(12),largest,theta, &
       reference_budget(12),reference_max
   real(dp), parameter :: spacing(3)=[.001_dp,.001_dp,.001_dp],dt=1e-8_dp
+  real(dp) :: outlet_pressure(6)
   integer :: node,mode
   character(len=32) :: faces(6),integrator
   logical :: ok
@@ -46,9 +47,9 @@ program test_amr_patch_tree_split_3d
   call initialize_amr_patch_3d(2,4,4,1,1,1,1,1,1,2,patches(3),ok)
   call initialize_amr_patch_tree_3d([2,2,2],[1,1,2],patches,tree,ok)
   call require(ok,'three-level branched tree')
-  do mode=1,2
+  do mode=1,4
     integrator='explicit'
-    if (mode==2) integrator='implicit'
+    if (mod(mode,2)==0) integrator='implicit'
     call prolong_amr_patch_tree_3d(tree,root,state,ok)
     call require(ok,'state')
     call prolong_amr_patch_tree_3d(tree,rt,temperature,ok)
@@ -66,7 +67,9 @@ program test_amr_patch_tree_split_3d
     call require(ok,'initial restriction')
     call inventory(initial,elements0)
     faces='periodic'
-    if (mode==2) faces='outflow'
+    if (mode>=2) faces='outflow'
+    outlet_pressure=0
+    if (mode>=3) outlet_pressure([2,6])=203650
     if (mode==1) then
       oracle=state;synchronized=temperature
       call advance_amr_patch_tree_strang_3d(tree,species,reactions,oracle,synchronized,spacing,dt,faces, &
@@ -75,7 +78,7 @@ program test_amr_patch_tree_split_3d
     end if
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       'characteristic_plm','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok, &
-      integrator,subcycling=mode==2)
+      integrator,subcycling=mod(mode,2)==0,outlet_pressure=outlet_pressure)
     call require(ok,'Strang step')
     if (mode==1) call require(maxval(abs(state%fields(4)%values-oracle%fields(4)%values))>1e-10_dp, &
       'transport changes the coupled solution')
@@ -98,7 +101,7 @@ program test_amr_patch_tree_split_3d
     ! A hydro failure occurs after the first successful half reaction step.
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       'invalid','mc','hllc',.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,budget,largest,theta,ok, &
-      integrator,subcycling=mode==2)
+      integrator,subcycling=mod(mode,2)==0,outlet_pressure=outlet_pressure)
     call require(.not.ok,'post-source hydro rejection')
     call unchanged()
     bad=reactions;bad(1)%reactant_stoich(1)=-1
@@ -107,21 +110,24 @@ program test_amr_patch_tree_split_3d
     call unchanged()
     ! With transport disabled the integrated entry point must reduce exactly
     ! to the pre-existing reaction/hydro composition.
-    oracle=state;synchronized=temperature
-    call advance_amr_patch_tree_strang_3d(tree,species,reactions,oracle,synchronized,spacing,dt,faces, &
-      'pcm','mc','hllc',2e-7_dp,1e-12_dp,reference_budget,reference_max,ok,integrator)
-    call require(ok,'reaction/hydro reference')
-    call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
-      'pcm','mc','hllc',.true.,.false.,.false.,.false.,.false.,2e-7_dp,1e-12_dp,budget,largest,theta,ok,integrator)
-    call require(ok,'disabled transport')
-    call same_as_reference()
-    call require(theta==1,'inactive transport limiter')
+    if (mode<=2) then
+      oracle=state;synchronized=temperature
+      call advance_amr_patch_tree_strang_3d(tree,species,reactions,oracle,synchronized,spacing,dt,faces, &
+        'pcm','mc','hllc',2e-7_dp,1e-12_dp,reference_budget,reference_max,ok,integrator)
+      call require(ok,'reaction/hydro reference')
+      call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
+        'pcm','mc','hllc',.true.,.false.,.false.,.false.,.false.,2e-7_dp,1e-12_dp,budget,largest,theta,ok,integrator)
+      call require(ok,'disabled transport')
+      call same_as_reference()
+      call require(theta==1,'inactive transport limiter')
+    end if
     oracle=state;synchronized=temperature
     call advance_amr_patch_tree_hydro_3d(tree,species,oracle,synchronized,spacing,dt,faces, &
-      'pcm','mc','hllc',reference_budget,reference_max,ok)
+      'pcm','mc','hllc',reference_budget,reference_max,ok,outlet_pressure=outlet_pressure)
     call require(ok,'hydro reference')
     call advance_amr_patch_tree_split_3d(tree,species,bad,transport(:0),state,temperature,spacing,dt,faces, &
-      'pcm','mc','hllc',.false.,.false.,.false.,.false.,.false.,2e-7_dp,1e-12_dp,budget,largest,theta,ok)
+      'pcm','mc','hllc',.false.,.false.,.false.,.false.,.false.,2e-7_dp,1e-12_dp,budget,largest,theta,ok, &
+      outlet_pressure=outlet_pressure)
     call require(ok,'disabled chemistry and transport')
     call same_as_reference()
   end do

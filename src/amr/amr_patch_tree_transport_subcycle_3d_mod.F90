@@ -78,7 +78,7 @@ contains
 
   subroutine advance_amr_patch_tree_subcycle_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -91,6 +91,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction,minimum_theta
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
     type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint
     type(amr_tree_flux_3d), allocatable :: integrated(:)
@@ -152,7 +153,7 @@ contains
       local_theta=1
       call advance_amr_patch_tree_transport_level_3d(tree,species,transport,candidate,temps,depth,spacing,local_dt,faces, &
         viscosity,conduction,diffusion,barodiffusion,total,local_theta,good,old_endpoint,new_endpoint,fraction0,fraction1, &
-        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter)
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure)
       if (.not.good) return
       theta=min(theta,local_theta)
       executed(depth+1)=executed(depth+1)+1
