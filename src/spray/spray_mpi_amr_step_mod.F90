@@ -19,6 +19,7 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
+  use spray_eb_intersection_mod, only: intersect_spray_level_set
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_mpi_eb_impact_mod, only: advance_mpi_level_set_impacts
   implicit none
@@ -58,7 +59,10 @@ contains
     type(spray_wall_film), allocatable :: patches(:),trial_patches(:)
     real(dp), allocatable :: patch_mass(:,:),trial_patch_mass(:,:),impact_previous(:,:),impact_pressure(:)
     real(dp) :: mw(size(components)),impact_wall(5),wall_ledger(5)
-    logical, allocatable :: hit(:)
+    logical, allocatable :: hit(:),eligible(:)
+    logical :: crossing
+    real(dp) :: crossing_fraction,crossing_position(3),crossing_normal(3)
+    integer :: crossing_cell(3)
     integer :: film_flag
     real(dp) :: ledger(reactive_nvar(size(species))),trial_ledger(reactive_nvar(size(species)))
     real(dp) :: global_ledger(reactive_nvar(size(species))),exchange(5)
@@ -87,8 +91,7 @@ contains
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
-    if(present(eb_geometry)) valid=valid.and..not.present(boundary_faces).and. &
-      .not.options%khrt_children
+    if(present(eb_geometry)) valid=valid.and..not.present(boundary_faces)
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
@@ -274,8 +277,24 @@ contains
         end do
         call agree()
         if (agreed.and.options%khrt_children) then
-          call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid)
+          if(allocated(eligible)) deallocate(eligible)
+          allocate(eligible(np));eligible=.true.
+          if(present(eb_geometry)) then
+            ! A parent crossing the EB takes the wall path, with no KH release
+            ! on that substep. Unhit parents and their children then drift together.
+            do p=1,np
+              if(trial(p)%mass<=0) cycle
+              crossing=.false.;crossing_fraction=0;crossing_position=0;crossing_normal=0;crossing_cell=0
+              call intersect_spray_level_set(nodal_phi,lower,lower+length,trial(p)%position, &
+                trial(p)%position+dt*trial(p)%velocity,crossing,crossing_fraction, &
+                crossing_position,crossing_normal,crossing_cell,valid)
+              if(.not.valid) exit
+              eligible(p)=.not.crossing
+            end do
+            call agree()
+          end if
+          if(agreed) call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
+            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid,eligible)
           if (valid) valid=size(trial)<=125000
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy

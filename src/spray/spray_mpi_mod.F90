@@ -1343,7 +1343,7 @@ contains
   ! gas_energy(p) is the gas energy increment at original parent p (not a rate).
   ! The caller must deposit it transactionally with these candidates.
   subroutine advance_mpi_khrt_shedding(comm,components,options,parcels,component_mass,gas_density, &
-      gas_velocity,reynolds,dt,last_id,gas_energy,ok)
+      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: options
@@ -1352,6 +1352,7 @@ contains
     real(dp), intent(in) :: gas_density(:),gas_velocity(:,:),reynolds(:),dt
     integer(int64), intent(inout) :: last_id
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: eligible(:)
     type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
     type(spray_khrt_release), allocatable :: releases(:)
     type(spray_khrt_shedding_state) :: pending
@@ -1370,6 +1371,7 @@ contains
     valid=np<=1000000.and.nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,np])
     valid=valid.and.size(gas_density)==np.and.size(reynolds)==np.and.all(shape(gas_velocity)==[3,np])
     valid=valid.and.ieee_is_finite(dt).and.dt>=0.and.dt<=1e6_dp
+    if(present(eligible)) valid=valid.and.size(eligible)==np
     call agree()
     if (.not.agreed) return
     bounds=[dt]
@@ -1384,6 +1386,9 @@ contains
       if (p>1) valid=valid.and.candidate(p)%id>candidate(p-1)%id
       if (.not.valid) exit
       if (candidate(p)%mass<=0) cycle
+      if(present(eligible)) then
+        if(.not.eligible(p)) cycle
+      end if
       fractions(:,p)=masses(:,p)/candidate(p)%mass
       call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
       if (.not.valid) exit

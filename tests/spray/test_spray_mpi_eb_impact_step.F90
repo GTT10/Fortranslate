@@ -107,7 +107,9 @@ program test_spray_mpi_eb_impact_step
   deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
   last_id=1;interval=2e-5_dp
   if(scenario==2) then
-    interval=1e-6_dp
+    options%breakup_model='khrt';options%khrt_children=.true.
+    options%khrt_reference_diameter_cubed=1e-25_dp
+    interval=1e-8_dp
     if(rank==nranks-1) drops(1)%velocity=[20._dp,-200._dp,5._dp]
   end if
   if(scenario==2) then
@@ -135,6 +137,7 @@ program test_spray_mpi_eb_impact_step
     deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
   end if
   ledger=42;options%maximum_substeps=1
+  if(scenario==2) options%maximum_parcels=1
   call advance()
   call require(.not.ok.and.steps==0.and.all(ledger==42),'whole interval failure and ledger rollback')
   call require(all(masses==saved_mass).and.size(drops)==size(saved_drops),'particle population rollback')
@@ -145,10 +148,10 @@ program test_spray_mpi_eb_impact_step
     call require(all(field%fields(node)%values==saved%fields(node)%values),'gas rollback')
     call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'temperature rollback')
   end do
-  options%maximum_substeps=100000
+  options%maximum_substeps=100000;options%maximum_parcels=100
   call inventory(before)
   call advance()
-  call require(ok.and.steps>1,'distributed EB interval')
+  call require(ok.and.steps>=1,'distributed EB interval')
   call inventory(after)
   call require(all(abs(after-before-ledger)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'composite gas parcel wall conservation')
@@ -171,6 +174,45 @@ program test_spray_mpi_eb_impact_step
     end do
   end if
   end do
+  ! No wall crossing: KH release conserves composite gas/particle inventory,
+  ! advances children and migrates their full state to the final finest owners.
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
+  if(rank==nranks-1) then
+    drops(1)%position=[.001995_dp,.0015_dp,.0015_dp]
+    drops(1)%velocity=[1000._dp,10._dp,5._dp]
+  end if
+  saved_drops=drops;interval=1e-8_dp;last_id=1;ledger=42
+  options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+  options%maximum_parcels=1;options%maximum_substeps=1
+  call advance()
+  call require(.not.ok.and.steps==0.and.last_id==1.and.all(ledger==42),'KH capacity interval rollback')
+  call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'KH payload rollback')
+  if(rank==nranks-1) call require(all(drops(1)%position==saved_drops(1)%position),'KH position rollback')
+  options%maximum_parcels=100;options%maximum_substeps=100000
+  call inventory(before)
+  call advance()
+  call require(ok.and.last_id>1,'EB KH release')
+  call inventory(after)
+  call require(all(abs(after-before-ledger)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'KH transverse energy and composite conservation')
+  local_count=size(drops)
+  call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(global_count==5.and.last_id==5.and.size(films)==0,'one KH four-child release')
+  do p=1,size(drops)
+    call require(drops(p)%position(1)>=.002_dp.and.rank==0,'KH final coarse owner and flight')
+    if(drops(p)%id>1) call require(drops(p)%parent_id==1,'KH child lineage')
+    call require(all(abs(masses(:,p)/drops(p)%mass-[.25_dp,.75_dp])<1e-13_dp),'KH component preservation')
+  end do
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass;last_id=1;ledger=0
+  call inventory(before)
+  call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
+    tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id=last_id,boundary_change=ledger, &
+    eb_geometry=g,nodal_phi=phi)
+  call require(ok.and.last_id==5,'KH release with specular EB flight')
+  call inventory(after)
+  call require(all(abs(after-before-ledger)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'specular KH composite conservation')
   if(rank==0) print *, 'PASS: MPI EB impact source coupling and global gas parcel film wall inventory'
   call MPI_Finalize(ierr)
 contains
