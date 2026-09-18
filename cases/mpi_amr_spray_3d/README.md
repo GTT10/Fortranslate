@@ -295,3 +295,37 @@ to the particle checkpoint payload, with a matching gas-context marker.
 The source inventory restores together with gas and parcels on a changed rank
 count. Zero acceleration retains the previous context and payload format.
 See [focused evidence](../../docs/validation/spray-amr-force-application-20260918.md).
+
+### Component property fits
+
+The optional `&amr_spray_properties` group configures each liquid component in
+`vapor_names` order, independently of port composition. For example, a synthetic
+first-component density and heat-capacity fit is:
+
+```fortran
+&amr_spray_properties
+ mixture_density_models(1)='polynomial'
+ mixture_density_coefficients(:,1)=1100.,-.2,0.,0.
+ mixture_density_temperature_ranges(:,1)=300.,450.
+ mixture_cp_models(1)='polynomial'
+ mixture_cp_coefficients(:,1)=3800.,1.,0.,0.
+ mixture_cp_temperature_ranges(:,1)=300.,450.
+/
+```
+
+Coefficients specify `a + b*T + c*T**2 + d*T**3` in SI units with temperature
+in kelvin. Defaults are `constant`, using the existing `liquid_density` and
+`liquid_cp`. Optional `mixture_vapor_pressure_models` selects `clausius` (default)
+or `antoine`; the latter requires `mixture_antoine_coefficients(:,component)`
+as `[A,B,C,D]` for `p_sat = D*10**(A-B/(T+C))` and
+`mixture_antoine_temperature_ranges(:,component)`. `mixture_boiling_models`
+defaults to `reject`; `surface-cap` requires Clausius pressure and a supplied
+`mixture_critical_temperatures(component)` above its reference temperature.
+This cap is not a physical mixture-boiling rate model.
+
+The shared liquid-property API enforces model/range restrictions. Entries beyond
+`component_count` must retain defaults. Omitting the group retains the old
+restart context; when provided, the entire group binds checkpoint identity,
+including explicitly supplied defaults. Retain the group on restart.
+Example fits are software fixtures, not calibrated material data. See
+[evidence](../../docs/validation/spray-amr-properties-20260918.md).
