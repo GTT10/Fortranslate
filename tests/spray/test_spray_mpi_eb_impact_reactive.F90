@@ -185,6 +185,34 @@ program test_spray_mpi_eb_impact_reactive
   call inventory(after)
   call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'KH reactive composite conservation')
+  ! Computational splitting runs after both particle halves, before publication.
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  options%breakup_model='etab';options%khrt_children=.false.;options%khrt_reference_diameter_cubed=0
+  options%surface_tension=1e3_dp;options%maximum_parcels=1;options%maximum_multiplicity=20
+  last_id=1;ledger=42;boundary=43;chemical=44;theta=45
+  call kh_advance()
+  call require(.not.ok.and.steps==0.and.last_id==1,'late split capacity ID rollback')
+  call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'late split particle rollback')
+  if(rank==nranks-1) call require(all(drops(1)%position==saved_drops(1)%position),'late split position rollback')
+  do node=1,2
+    if(owners(node)/=rank) cycle
+    call require(all(field%fields(node)%values==saved%fields(node)%values),'late split gas rollback')
+    call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'late split temperature rollback')
+  end do
+  call require(all(ledger==42).and.all(boundary==43).and.all(chemical==44).and.theta==45,'late split ledger rollback')
+  options%maximum_parcels=8
+  call inventory(before)
+  call kh_advance()
+  call require(ok.and.last_id==5,'reactive split IDs')
+  call inventory(after)
+  call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'reactive split composite conservation')
+  call require(size(drops)==merge(5,0,rank==0),'split population retains final owner')
+  do p=1,size(drops)
+    call require(drops(p)%multiplicity==20,'split multiplicity cap')
+    call require(all(abs(masses(:,p)/drops(p)%mass-[.25_dp,.75_dp])<1e-13_dp),'split composition')
+    if(drops(p)%id>1) call require(drops(p)%parent_id==1,'split lineage')
+  end do
   if(rank==0) print *, 'PASS: MPI EB reactive impacts, evolving films, shared IDs and rollback'
   call MPI_Finalize(ierr)
 contains

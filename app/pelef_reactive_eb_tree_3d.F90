@@ -84,7 +84,7 @@ program pelef_reactive_eb_tree_3d
   type(spray_parcel), allocatable :: drops(:)
   integer :: port_count=1,event_ports(1024)=1
   integer :: injection_events=1,next_injection=1
-  integer(int64) :: last_particle_id=0
+  integer(int64) :: last_particle_id=0,split_created_total=0,step_split_created=0
   real(dp) :: injection_times(1024)=0,injection_scales(1024)=1,event_factors(1024)=1
   real(dp) :: event_velocity_scales(1024)=1
   type(spray_liquid), allocatable :: liquids(:)
@@ -395,14 +395,16 @@ program pelef_reactive_eb_tree_3d
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
-        films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected)
+        films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
+        split_created=step_split_created)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
-        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id)
+        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
+        split_created=step_split_created)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -419,6 +421,9 @@ program pelef_reactive_eb_tree_3d
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
       dt=.5_dp*dt
     end do
+#ifdef PELEF_MPI_EB_SPRAY
+    split_created_total=split_created_total+step_split_created
+#endif
     record%boundary=record%boundary+boundary;record%wall=record%wall+wall;record%chemical=record%chemical+chemical
     next_time=record%time+dt
     if (regrid_stage<regrid_count) then
@@ -809,7 +814,7 @@ contains
     type(spray_wall_film), allocatable :: patches(:)
     real(dp) :: source(nv),expected_source(nv),inventory(nv),saved_time
     integer :: stream,code,closed,saved_steps,saved_event,expected_event,date(8)
-    integer(int64) :: watermark,expected_mark,tick,expected_ids
+    integer(int64) :: watermark,expected_mark,tick,expected_ids,expected_splits
     character(len=256) :: token,step_label
     character(len=:), allocatable :: path,bound_context,line
     logical :: valid,agreed,exists
@@ -847,7 +852,13 @@ contains
       if(code/=0) error stop 'Cannot stage coupled checkpoint'
       call envelope(stream,.false.,header_only=.true.)
       write(stream,'(a)',iostat=code) bound_context
-      if(code==0) write(stream,*,iostat=code) next_injection,last_particle_id
+      if(code==0) then
+        if(particle_options%maximum_multiplicity>0) then
+          write(stream,*,iostat=code) next_injection,last_particle_id,split_created_total
+        else
+          write(stream,*,iostat=code) next_injection,last_particle_id
+        end if
+      end if
       if(code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) &
         record%initial,record%scale,record%boundary,record%wall,record%chemical,injected
       if(code/=0) error stop 'Cannot write coupled checkpoint prefix'
@@ -890,7 +901,12 @@ contains
 
       read(stream,'(a)',iostat=code) line
       if(code/=0.or.line/=bound_context) error stop 'EB spray context mismatch'
-      read(stream,*,iostat=code) expected_event,expected_mark
+      expected_splits=0
+      if(particle_options%maximum_multiplicity>0) then
+        read(stream,*,iostat=code) expected_event,expected_mark,expected_splits
+      else
+        read(stream,*,iostat=code) expected_event,expected_mark
+      end if
       if(code/=0) error stop 'Missing injection metadata'
       read(stream,*,iostat=code) coupled%initial,coupled%scale,coupled%boundary,coupled%wall,coupled%chemical,expected_source
       if(code/=0) error stop 'Missing coupled history'
@@ -933,11 +949,12 @@ contains
       do p=1,saved_event-1
         if(event_factors(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
       end do
+      if(watermark<expected_ids) error stop 'Invalid restart ID watermark'
+      if(expected_splits<0.or.expected_splits>watermark-expected_ids) error stop 'Invalid restart split ID count'
       if(wall_impacts.or.particle_options%khrt_children) then
-        if(watermark<expected_ids) error stop 'Invalid restart ID watermark'
-        if(modulo(watermark-expected_ids,4_int64)/=0) error stop 'Invalid restart splash ID watermark'
+        if(modulo(watermark-expected_ids-expected_splits,4_int64)/=0) error stop 'Invalid restart child ID watermark'
       else
-        if(watermark/=expected_ids) error stop 'Invalid restart ID watermark'
+        if(watermark-expected_ids/=expected_splits) error stop 'Invalid restart ID watermark'
       end if
       do p=1,size(patches)
         if(patches(p)%material_id>port_count) error stop 'Invalid restart film port'
@@ -964,7 +981,7 @@ contains
       end do
       call move_alloc(particles,drops);call move_alloc(components,component_mass)
       call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
-      injected=source;next_injection=saved_event;last_particle_id=watermark
+      injected=source;next_injection=saved_event;last_particle_id=watermark;split_created_total=expected_splits
     end if
   end subroutine
 

@@ -7,13 +7,14 @@ module spray_mpi_eb_reactive_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar
-  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options
+  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_options
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
+  use spray_mpi_mod, only: split_mpi_spray_parcels
   implicit none
   private
   public :: advance_mpi_eb_spray_reactive
@@ -26,7 +27,7 @@ contains
       liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,solver, &
       chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
-      films,film_mass,film_settings,film_steps,last_id,model_rejected)
+      films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -53,6 +54,9 @@ contains
     integer, optional, intent(out) :: film_steps
     integer(int64), optional, intent(inout) :: last_id
     logical, optional, intent(out) :: model_rejected
+    integer(int64), optional, intent(out) :: split_created
+    integer(int64) :: before_split
+    real(dp) :: low_multiplicity,high_multiplicity
     integer(int64) :: watermark
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: patch_mass(:,:)
@@ -69,6 +73,7 @@ contains
     logical :: valid,agreed
     ok=.false.;particle_steps=0;nv=size(boundary)
     if(present(film_steps)) film_steps=0
+    if(present(split_created)) split_created=0
     if(present(model_rejected)) model_rejected=.false.
     watermark=0
     if(present(last_id)) watermark=last_id
@@ -79,10 +84,16 @@ contains
     call MPI_Allreduce(flags,highflags,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.lowflags/=highflags) return
     if(flags/=0.and.flags/=7.and.flags/=8.and.flags/=15) return
-    valid=.not.options%khrt_children.or.present(last_id)
+    valid=valid_spray_options(options)
+    valid=valid.and.(.not.options%khrt_children.or.present(last_id))
+    valid=valid.and.(options%maximum_multiplicity==0.or.present(last_id))
     if(present(films)) valid=valid.and.allocated(films).and.allocated(film_mass)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(options%maximum_multiplicity,high_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.low_multiplicity/=high_multiplicity) return
     if(present(films)) then
       patches=films;patch_mass=film_mass
     end if
@@ -112,6 +123,11 @@ contains
     end if
     call particle_half(second_steps,second)
     if(.not.valid) return
+    before_split=watermark
+    if(options%maximum_multiplicity>0) then
+      call split_mpi_spray_parcels(comm,drops,options%maximum_multiplicity,options%maximum_parcels,watermark,valid,masses)
+      if(.not.valid) return
+    end if
     state=gas;temperature=temp
     call move_alloc(drops,parcels)
     call move_alloc(masses,component_mass)
@@ -119,6 +135,7 @@ contains
       call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
     end if
     if(present(last_id)) last_id=watermark
+    if(present(split_created)) split_created=watermark-before_split
     if(present(film_steps)) film_steps=first_film_steps+second_film_steps
     boundary_change=boundary;wall_change=wall+first+second+first_film+second_film;chemical_change=chemical
     minimum_theta=theta;particle_steps=first_steps+second_steps;ok=.true.
