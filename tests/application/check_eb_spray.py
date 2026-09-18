@@ -60,10 +60,15 @@ if a.khrt:
     spray = spray.replace('speed=20', 'speed=1000').replace('total_mass=1e-10', 'total_mass=1e-14')
     (work / 'spray.nml').write_text(spray)
 if a.outflow:
-    assert not a.impacts and not a.scheduled and not a.khrt and not a.split
+    assert not a.scheduled and not a.khrt and not a.split
+    assert a.impacts in (None, "splash")
     spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,')
-    spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
-                          'center=.003999999,.0015,.0015, axis=1,0,0')
+    if a.impacts:
+        spray = spray.replace('center=.001250001,.0015,.0015', 'center=.001250001,.0015,.003999999')
+        spray = spray.replace('maximum_dt=1e-8', 'maximum_dt=5e-9')
+    else:
+        spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
+                              'center=.003999999,.0015,.0015, axis=1,0,0')
     (work / 'spray.nml').write_text(spray)
 exe = str(a.exe.resolve())
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
@@ -71,7 +76,7 @@ result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=
 assert result.returncode == 0, (work, result.stderr)
 with (work / 'gas.csv.particles.csv').open() as stream:
     rows = list(csv.DictReader(stream))
-if a.outflow:
+if a.outflow and not a.impacts:
     assert [int(row['id']) for row in rows] == [1, 2]
     assert all(float(row['mass']) == 0 and float(row['component_mass_1']) == 0 for row in rows)
     boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
@@ -111,7 +116,13 @@ else:
         films = list(csv.DictReader(stream))
     if a.impacts == 'deposit':
         assert films, work
-    assert len(rows) == ((2 if a.scheduled else 0) if a.impacts == 'deposit' else (26 if a.scheduled else 8))
+    if a.outflow:
+        assert films and 0 < len(rows) < 8, work
+        assert all(3 <= int(row['id']) <= 10 for row in rows)
+        boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
+        assert float(boundary_line.split(':', 1)[1].split()[0]) < 0
+    else:
+        assert len(rows) == ((2 if a.scheduled else 0) if a.impacts == 'deposit' else (26 if a.scheduled else 8))
     ids = [int(row['id']) for row in rows]
     assert ids == sorted(set(ids))
     for row in rows + films:
@@ -217,6 +228,7 @@ if a.restart:
 
 if a.impacts == 'splash':
     wet = (work / 'spray.nml').read_text().replace('total_mass=1e-16', 'total_mass=1e-10')
+    wet = wet.replace('center=.001250001,.0015,.003999999', 'center=.001250001,.0015,.0015')
     (work / 'invalid_wet.nml').write_text(wet)
     run = subprocess.run([exe, 'gas.nml', 'invalid_wet.nml'], cwd=work,
                          capture_output=True, text=True, timeout=10)

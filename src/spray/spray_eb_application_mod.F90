@@ -144,7 +144,6 @@ contains
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Liquid fractions must sum to one'
     if(.not.valid_spray_options(options)) error stop 'Unsupported EB spray options'
-    if(particle_outflow.and.wall_impacts) error stop 'Particle outflow with impact films is not connected'
     if(options%maximum_multiplicity>0) then
       allocate(split_created_total);split_created_total=0
     end if
@@ -356,7 +355,7 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          walls,films,film_mass,last_id,model_rejected,step_split_created)
+          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
