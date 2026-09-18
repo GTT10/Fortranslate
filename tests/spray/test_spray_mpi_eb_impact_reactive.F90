@@ -27,7 +27,8 @@ program test_spray_mpi_eb_impact_reactive
   type(gas_transport_species), allocatable :: transport(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: boundary(:),chemical(:)
-  real(dp) :: theta
+  real(dp) :: theta,accel(3)=0
+  real(dp), allocatable :: force(:)
   character(len=8) :: solver
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -243,6 +244,30 @@ program test_spray_mpi_eb_impact_reactive
   call inventory(after)
   call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'MPI reactive splash exterior conservation')
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  deallocate(films,film_mass);allocate(films(0),film_mass(2,0),force(nv))
+  if(rank==nranks-1) drops(1)%position=[.002_dp,.0015_dp,.0015_dp]
+  saved_drops=drops;last_id=1;force=46;ledger=42;boundary=43;chemical=44;theta=45
+  accel=[1000._dp,-2000._dp,3000._dp]
+  if(rank==0) accel(1)=0
+  call kh_advance()
+  call require(.not.ok.and.all(force==46),'force rank agreement')
+  accel(1)=1000;solver='invalid'
+  call kh_advance()
+  call require(.not.ok.and.steps==0.and.last_id==1.and.all(force==46),'force whole step rollback')
+  if(rank==nranks-1) call require(all(drops(1)%velocity==saved_drops(1)%velocity),'force velocity rollback')
+  do node=1,2
+    if(owners(node)/=rank) cycle
+    call require(all(field%fields(node)%values==saved%fields(node)%values),'force gas rollback')
+    call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'force temperature rollback')
+  end do
+  solver='hllc'
+  call inventory(before)
+  call kh_advance()
+  call require(ok.and.any(force(2:4)/=0).and.force(1)==0.and.all(force(6:)==0),'force impulse inventory')
+  call inventory(after)
+  call require(all(abs(after-before-ledger-boundary-chemical-force)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'MPI EB composite force work conservation')
   if(rank==0) print *, 'PASS: MPI EB reactive impacts, evolving films, shared IDs and rollback'
   call MPI_Finalize(ierr)
 contains
@@ -250,7 +275,7 @@ contains
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
       .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &
-      last_id=last_id)
+      last_id=last_id,acceleration=accel,source_change=force)
   end subroutine
   subroutine advance()
     if(include_films) then

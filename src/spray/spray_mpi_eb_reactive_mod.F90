@@ -6,8 +6,8 @@ module spray_mpi_eb_reactive_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar
-  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_options
+  use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
+  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_options,valid_spray_parcel
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
@@ -15,6 +15,9 @@ module spray_mpi_eb_reactive_mod
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
   use spray_mpi_mod, only: split_mpi_spray_parcels
+  use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
+  use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
   private
   public :: advance_mpi_eb_spray_reactive
@@ -27,7 +30,8 @@ contains
       liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,solver, &
       chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
-      films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow)
+      films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow, &
+      acceleration,source_change)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -55,6 +59,9 @@ contains
     integer(int64), optional, intent(inout) :: last_id
     logical, optional, intent(out) :: model_rejected
     integer(int64), optional, intent(out) :: split_created
+    real(dp), optional, intent(in) :: acceleration(3)
+    real(dp), optional, intent(inout) :: source_change(:)
+    real(dp) :: accel(3),low_accel(3),high_accel(3),force_ledger(reactive_nvar(size(species)))
     logical, optional, intent(in) :: particle_outflow
     logical :: outflow
     real(dp), allocatable :: half_exterior(:)
@@ -79,6 +86,18 @@ contains
     if(present(film_steps)) film_steps=0
     if(present(split_created)) split_created=0
     if(present(model_rejected)) model_rejected=.false.
+    accel=0;force_ledger=0
+    if(present(acceleration)) accel=acceleration
+    valid=all(ieee_is_finite(accel))
+    valid=valid.and.all(abs(accel)<=1e6_dp)
+    if(any(accel/=0)) valid=valid.and.present(source_change)
+    if(present(source_change)) valid=valid.and.size(source_change)==nv
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(accel,low_accel,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(accel,high_accel,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(low_accel/=high_accel)) return
     outflow=.false.;exterior=0
     if(present(particle_outflow)) outflow=particle_outflow
     watermark=0
@@ -116,6 +135,10 @@ contains
     if(ierr/=MPI_SUCCESS.or..not.agreed) return
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     boundary=0;wall=0;chemical=0;first=0;second=0;theta=1
+    if(any(accel/=0)) then
+      call force_kick()
+      if(.not.valid) return
+    end if
     call particle_half(first_steps,first)
     if(.not.valid) return
     if(present(films)) then
@@ -139,6 +162,10 @@ contains
       call split_mpi_spray_parcels(comm,drops,options%maximum_multiplicity,options%maximum_parcels,watermark,valid,masses)
       if(.not.valid) return
     end if
+    if(any(accel/=0)) then
+      call force_kick()
+      if(.not.valid) return
+    end if
     state=gas;temperature=temp
     call move_alloc(drops,parcels)
     call move_alloc(masses,component_mass)
@@ -149,8 +176,70 @@ contains
     if(present(split_created)) split_created=watermark-before_split
     if(present(film_steps)) film_steps=first_film_steps+second_film_steps
     boundary_change=boundary+exterior;wall_change=wall+first+second+first_film+second_film;chemical_change=chemical
+    if(present(source_change)) source_change=force_ledger
     minimum_theta=theta;particle_steps=first_steps+second_steps;ok=.true.
   contains
+    subroutine force_kick()
+      real(dp) :: local(nv),global(nv)
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,valid)
+      if(.not.valid) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,gas,nv,comm,valid)
+      if(.not.valid) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,temp,1,comm,valid)
+      if(.not.valid) return
+      call local_force_kick(local)
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      valid=ierr==MPI_SUCCESS.and.agreed
+      if(.not.valid) return
+      call MPI_Allreduce(local,global,nv,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      valid=ierr==MPI_SUCCESS
+      if(valid) force_ledger=force_ledger+global
+    end subroutine
+    subroutine local_force_kick(local)
+      real(dp), intent(out) :: local(nv)
+      real(dp) :: dv(3),mass,momentum(3),energy,volume,velocity(3),prim(nv),checked_t,sound
+      integer :: rank,status,node,i,j,k,p,n(3)
+      valid=.false.;local=0;dv=.5_dp*dt*accel
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(geometry(node)%volume_fraction(i,j,k)<=0) cycle
+          mass=gas%fields(node)%values(1,i,j,k)
+          if(.not.ieee_is_finite(mass).or.mass<=0) return
+          velocity=gas%fields(node)%values(2:4,i,j,k)/mass
+          if(any(abs(velocity+dv)>1e7_dp)) return
+          momentum=mass*dv
+          energy=dot_product(gas%fields(node)%values(2:4,i,j,k)+.5_dp*momentum,dv)
+          gas%fields(node)%values(2:4,i,j,k)=gas%fields(node)%values(2:4,i,j,k)+momentum
+          gas%fields(node)%values(5,i,j,k)=gas%fields(node)%values(5,i,j,k)+energy
+          call reactive_conserved_to_primitive(species,gas%fields(node)%values(:,i,j,k), &
+            temp%fields(node)%values(1,i,j,k),prim,checked_t,sound,valid)
+          if(.not.valid) return
+          valid=.false.
+          if(abs(checked_t-temp%fields(node)%values(1,i,j,k))> &
+            1e-9_dp*max(1._dp,abs(temp%fields(node)%values(1,i,j,k)))) return
+          if(covered(tree,node,[i,j,k])) cycle
+          volume=geometry(node)%volume_fraction(i,j,k)*geometry(node)%dx*geometry(node)%dy*geometry(node)%dz
+          local(2:4)=local(2:4)+volume*momentum;local(5)=local(5)+volume*energy
+        end do
+        end do
+        end do
+      end do
+      do p=1,size(drops)
+        if(drops(p)%mass<=0) cycle
+        mass=drops(p)%mass*drops(p)%multiplicity;velocity=drops(p)%velocity
+        drops(p)%velocity=velocity+dv
+        if(.not.valid_spray_parcel(drops(p))) return
+        local(2:4)=local(2:4)+mass*dv
+        local(5)=local(5)+mass*dot_product(velocity+.5_dp*dv,dv)
+      end do
+      valid=all(ieee_is_finite(local))
+    end subroutine
     subroutine particle_half(steps,exchange)
       integer, intent(out) :: steps
       real(dp), intent(inout) :: exchange(:)
