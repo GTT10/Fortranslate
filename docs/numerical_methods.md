@@ -2798,3 +2798,9 @@ kernel. Root-only comparisons, multilevel conservation and transactional
 rejection pass the focused common-step test; see
 [tree hydro evidence](validation/pressure-outlet-tree-hydro-20260918.md).
 Tree subcycling/transport/full wrappers and application connections remain pending.
+
+The serial tree hydro subcycling wrapper now forwards pressure targets through
+every recursive level update. Focused PCM/PLM checks include 1/2/6 level-step
+counts, composite conservation and rollback; see
+[subcycle evidence](validation/pressure-outlet-tree-subcycle-20260918.md).
+Tree transport/full/MPI wrappers and application input remain pending.
