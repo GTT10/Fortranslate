@@ -280,15 +280,17 @@ from before these fields fail context comparison. See
 
 `particle_outflow=.true.` allows parcels to leave through all six exterior faces,
 matching the existing extrapolated-outflow gas boundary convention. EB walls
-remain specular. The default is false and retains root-contained trajectories.
-The option currently rejects `wall_impacts=.true.` because combined exterior
-and non-specular EB impact/film flight is not yet connected.
+use specular reflection by default, or the impact/film model when
+`wall_impacts=.true.`. The default is false and retains root-contained trajectories.
 
-Escaped records retain their IDs with zero mass and zero component inventory.
+Without impact films, escaped records retain their IDs with zero mass and zero
+component inventory. With impacts enabled, escaped records are removed alongside
+consumed parents; the shared ID watermark remains unchanged by removal.
 Mass, momentum, liquid internal plus kinetic energy and mapped species losses
 join `Boundary inventory`, separately from `Wall inventory`. KH children and
 computational splitting remain supported. The reactive update and its retries
 publish all state and ledgers together. Existing checkpoint fields persist the
 combined boundary history and dead records; the new mode flag enters restart
 context. Earlier contexts are rejected. See
-[focused evidence](../../docs/validation/spray-eb-outflow-application-20260918.md).
+[specular evidence](../../docs/validation/spray-eb-outflow-application-20260918.md)
+and [impact/film restart evidence](../../docs/validation/spray-eb-splash-outflow-application-20260918.md).
