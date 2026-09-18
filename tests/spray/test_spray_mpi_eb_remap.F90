@@ -9,6 +9,7 @@ program test_spray_mpi_eb_remap
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use gas_transport_mod, only: gas_transport_species
@@ -18,6 +19,10 @@ program test_spray_mpi_eb_remap
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field
   implicit none
+  type(spray_wall_film), allocatable :: films(:)
+  type(spray_wall_film) :: original_film
+  real(dp), allocatable :: film_mass(:,:)
+  integer :: film_capacity=100
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -101,6 +106,12 @@ program test_spray_mpi_eb_remap
     masses(:,1)=drops(1)%mass*[.25_dp,.75_dp]
   end if
   if(rank==owners(2)) field%fields(2)%values=1.1_dp*field%fields(2)%values
+  original_film=spray_wall_film([.00199_dp,.00125_dp,.0015_dp],[0._dp,1._dp,0._dp], &
+    1e-10_dp,350._dp,.0001_dp,1e-6_dp,1)
+  allocate(films(merge(1,0,rank==nranks-1)),film_mass(2,merge(1,0,rank==nranks-1)))
+  if(rank==nranks-1) then
+    films(1)=original_film;film_mass(:,1)=1e-10_dp*[.25_dp,.75_dp]
+  end if
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   call integrate_mpi_eb_tree_3d(tree,owners,g,field,before,MPI_COMM_WORLD,ok)
   call require(ok,'initial composite inventory')
@@ -132,12 +143,29 @@ program test_spray_mpi_eb_remap
       end do
     end if
     capacity=100
+    if(stage==1) then
+      film_capacity=0
+      call remap()
+      call require(.not.ok.and.all(owners==[0,nranks-1]),'film capacity owner rollback')
+      call require(tree%nodes(2)%patch%coarse_i_lower==1,'film capacity topology rollback')
+      call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'film capacity particle rollback')
+      call require(size(films)==merge(1,0,rank==nranks-1),'film capacity population rollback')
+      call check_film()
+      do node=1,2
+        if(owners(node)/=rank) cycle
+        call require(all(field%fields(node)%values==saved%fields(node)%values),'film capacity gas rollback')
+        call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'film capacity temperature rollback')
+      end do
+      film_capacity=100
+    end if
     call remap()
     call require(ok,'coupled EB remap')
     call integrate_mpi_eb_tree_3d(tree,owners,g,field,after,MPI_COMM_WORLD,ok)
     call require(ok,'remapped inventory')
     call require(all(abs(after-before)<=3e-13_dp*max(abs(before),1e-30_dp)),'conservative gas remap')
     call require(size(drops)==merge(1,0,rank==merge(nranks-1,0,stage==2)),'new particle owner')
+    call require(size(films)==size(drops),'film follows new finest owner')
+    call check_film()
     if(size(drops)>0) then
       call require(drops(1)%id==1.and.drops(1)%mass==1e-12_dp,'parcel preservation')
       call require(all(masses(:,1)==1e-12_dp*[.25_dp,.75_dp]),'component preservation')
@@ -161,9 +189,18 @@ program test_spray_mpi_eb_remap
   if(rank==0) print *, 'PASS: EB coupled patch movement, coarsening, refinement and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_film()
+    if(size(films)==0) return
+    call require(all(films(1)%position==original_film%position).and. &
+      all(films(1)%normal==original_film%normal),'film location and normal preserved')
+    call require(films(1)%mass==original_film%mass.and.films(1)%temperature==original_film%temperature.and. &
+      films(1)%diameter==original_film%diameter.and.films(1)%height==original_film%height.and. &
+      films(1)%material_id==original_film%material_id,'film physical payload preserved')
+    call require(all(film_mass(:,1)==1e-10_dp*[.25_dp,.75_dp]),'film composition preserved')
+  end subroutine
   subroutine remap()
     call remap_mpi_eb_spray(MPI_COMM_WORLD,species,tree,owners,g,field,temp,drops,masses, &
-      target,next_owners,finest,phi,zero,spacing,capacity,ok)
+      target,next_owners,finest,phi,zero,spacing,capacity,ok,films,film_mass,film_capacity)
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition

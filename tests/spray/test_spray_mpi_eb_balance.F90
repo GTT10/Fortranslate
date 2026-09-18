@@ -9,6 +9,7 @@ program test_spray_mpi_eb_balance
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
+  use spray_wall_impact_mod, only: spray_wall_film
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
   use gas_transport_mod, only: gas_transport_species
@@ -16,6 +17,10 @@ program test_spray_mpi_eb_balance
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   implicit none
+  type(spray_wall_film), allocatable :: films(:)
+  type(spray_wall_film) :: original_film
+  real(dp), allocatable :: film_mass(:,:)
+  integer :: film_capacity=100
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -94,6 +99,12 @@ program test_spray_mpi_eb_balance
       [20._dp,-20._dp,5._dp],1e-12_dp,350._dp,100._dp)
     masses(:,1)=drops(1)%mass*[.25_dp,.75_dp]
   end if
+  original_film=spray_wall_film([.00199_dp,.00125_dp,.0015_dp],[0._dp,1._dp,0._dp], &
+    1e-10_dp,350._dp,.0001_dp,1e-6_dp,1)
+  allocate(films(merge(1,0,rank==nranks-1)),film_mass(2,merge(1,0,rank==nranks-1)))
+  if(rank==nranks-1) then
+    films(1)=original_film;film_mass(:,1)=1e-10_dp*[.25_dp,.75_dp]
+  end if
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   costs=0
   if(rank==nranks-1) costs=[1._dp,100._dp]
@@ -107,10 +118,24 @@ program test_spray_mpi_eb_balance
       call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'failed temperature rollback')
     end do
   end if
-  capacity=100
+  capacity=100;film_capacity=0
+  call rebalance()
+  call require(.not.ok.and..not.changed.and.all(owners==nranks-1),'film capacity owner rollback')
+  call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'film capacity particle rollback')
+  call require(size(films)==merge(1,0,rank==nranks-1),'film capacity population rollback')
+  call check_film()
+  if(rank==nranks-1) then
+    do node=1,2
+      call require(all(field%fields(node)%values==saved%fields(node)%values),'film capacity gas rollback')
+      call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'film capacity temperature rollback')
+    end do
+  end if
+  film_capacity=100
   call rebalance()
   call require(ok.and.changed.and.owners(2)==0,'accepted EB balance')
   call require(size(drops)==merge(1,0,rank==owners(2)),'particle follows fine owner')
+  call require(size(films)==merge(1,0,rank==owners(2)),'film follows fine owner')
+  call check_film()
   if(size(drops)>0) then
     call require(drops(1)%id==1.and.drops(1)%mass==1e-12_dp,'particle identity')
     call require(all(masses(:,1)==1e-12_dp*[.25_dp,.75_dp]),'component preservation')
@@ -136,9 +161,19 @@ program test_spray_mpi_eb_balance
   if(rank==0) print *, 'PASS: EB gas/particle rebalance and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_film()
+    if(size(films)==0) return
+    call require(all(films(1)%position==original_film%position).and. &
+      all(films(1)%normal==original_film%normal),'film location and normal preserved')
+    call require(films(1)%mass==original_film%mass.and.films(1)%temperature==original_film%temperature.and. &
+      films(1)%diameter==original_film%diameter.and.films(1)%height==original_film%height.and. &
+      films(1)%material_id==original_film%material_id,'film physical payload preserved')
+    call require(all(film_mass(:,1)==1e-10_dp*[.25_dp,.75_dp]),'film composition preserved')
+  end subroutine
   subroutine rebalance()
     call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,field,temp,drops,masses,zero,spacing, &
-      [.false.,.false.,.false.],costs,0._dp,capacity,changed,ok,nodal_phi=phi)
+      [.false.,.false.,.false.],costs,0._dp,capacity,changed,ok, &
+      wall_films=films,film_mass=film_mass,maximum_films=film_capacity,nodal_phi=phi)
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition
