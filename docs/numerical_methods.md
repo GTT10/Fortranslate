@@ -2754,3 +2754,9 @@ and checkpoint target matching are connected. Patch-tree and MPI dispatch
 remain pending; see [application evidence](validation/pressure-outlet-amr-application-20260918.md),
 [transport evidence](validation/pressure-outlet-amr-transport-20260918.md) and
 [two-level hydro evidence](validation/pressure-outlet-amr-hydro-20260918.md).
+
+Sparse MPI coarse physical halo generation now accepts pressure targets,
+checks rank agreement and preserves outputs on collective failure. Focused
+2/4-rank halos match serial faces and corners exactly. MPI stepping/application
+forwarding remains pending; see
+[MPI halo evidence](validation/pressure-outlet-mpi-halos-20260918.md).
