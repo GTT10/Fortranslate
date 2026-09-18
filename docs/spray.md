@@ -2671,3 +2671,10 @@ and retired parents through a shared watermark and validates wall settings in
 the normalized context. Inadmissible empirical impact output fails immediately.
 See [input/output controls](../cases/mpi_eb_spray_3d/README.md#eb-wall-impacts-and-stationary-films)
 and [focused application evidence](validation/spray-mpi-eb-impact-application-20260918.md).
+
+MPI EB ports also accept `port_radii`, `port_nozzles` and `port_sizes`, reusing
+the existing finite solid/hollow outlet, swirl and bounded size-distribution
+kernel. Their normalized values enter checkpoint identity. Point/monodisperse
+defaults remain available. See the
+[case controls](../cases/mpi_eb_spray_3d/README.md#finite-outlets-and-size-distributions)
+and [MPI nozzle evidence](validation/spray-mpi-eb-nozzle-20260918.md).

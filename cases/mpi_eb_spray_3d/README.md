@@ -199,3 +199,39 @@ outside its supported range; this terminates with an explicit model-range error
 instead of repeated timestep retries. This integration does not qualify general
 thick-film impact, lateral film flow, nozzle or diesel combustion physics.
 See [dated evidence](../../docs/validation/spray-mpi-eb-impact-application-20260918.md).
+
+## Finite outlets and size distributions
+
+Each port accepts `port_radii(p)` in metres, `port_nozzles(p)` and
+`port_sizes(p)`. Defaults retain a point outlet and one prescribed diameter.
+For example:
+
+```fortran
+port_radii(1)=1.e-4,
+port_nozzles(1)%profile='solid',port_nozzles(1)%swirl=.4,
+port_sizes(1)%distribution='weibull',port_sizes(1)%shape=2.5,
+port_sizes(1)%minimum=5.e-6,port_sizes(1)%maximum=2.e-5,
+```
+
+Nozzle profiles are `legacy`, `solid` and `hollow`. Solid/hollow profiles require
+a positive radius. `swirl` is a rotation in radians of the transverse velocity
+relative to the outlet radial direction. Hollow outlets place parcels at the
+outlet radius; optional `spread` sets their angular spread about the port cone
+angle. Solid outlets use the existing deterministic radial/cone quadrature.
+The supplied finite outlet must lie inside fluid; EB migration rejects samples
+outside the domain or inside the solid.
+
+Size fields are `distribution` (`weibull`, `normal`, `lognormal`, `chi-squared`),
+`weighting` (`mass` or `number`), `shape`, `std`, `minimum` and `maximum`.
+Use `shape` for Weibull and `std` for normal/lognormal; unused parameters must
+satisfy the existing injection-kernel contract. Diameters and bounds use metres;
+`port_diameters(p)` remains the distribution's nominal diameter. The default
+Weibull shape zero retains the single prescribed size. Mass weighting gives
+records equal represented mass; number weighting gives equal multiplicity.
+Both normalize to the port's event mass before profile/scaling factors apply.
+
+The port template is deterministic and reused at successive events, with new
+global IDs. These are injection geometry and size controls, not stochastic
+particle dispersion. They are included in the restart context; checkpoints
+predating the new fields fail the strict context comparison. See
+[focused evidence](../../docs/validation/spray-mpi-eb-nozzle-20260918.md).
