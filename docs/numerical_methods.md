@@ -2760,3 +2760,9 @@ checks rank agreement and preserves outputs on collective failure. Focused
 2/4-rank halos match serial faces and corners exactly. MPI stepping/application
 forwarding remains pending; see
 [MPI halo evidence](validation/pressure-outlet-mpi-halos-20260918.md).
+
+Sparse MPI coarse RK2 hydro now forwards pressure targets through both halo
+builds. Its focused PCM/characteristic-PLM states, temperatures and face fluxes
+match serial results exactly at 2 and 4 ranks. Fine hierarchy and transport
+forwarding remain pending; see
+[coarse hydro evidence](validation/pressure-outlet-mpi-coarse-hydro-20260918.md).
