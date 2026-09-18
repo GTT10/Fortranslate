@@ -3031,3 +3031,10 @@ for ratios 1–10, followed by the reference fallbacks. They retain signed weigh
 filtered state may fail EOS validation, and very wide polynomial kernels may
 fail the existing normalization guard. Serial/MPI use the same filter identities.
 See [formulas, limits and focused checks](validation/les-filter-approximations-20260918.md).
+
+Dynamic serial/MPI RHS and SSPRK2 APIs accept optional `harmonic_mean=.true.`
+for coefficient/stress/thermal-quantity face interpolation. Same-sign values use
+a signed harmonic mean; opposite signs and zero inputs produce zero. Omission
+retains arithmetic interpolation. MPI rejects different interpolation settings
+across ranks. Coupled-spray/application controls remain to be connected; see
+[reference and harmonic parity checks](validation/les-harmonic-20260918.md).
