@@ -263,9 +263,12 @@ are spread across different partitions. The focused changed-rank case places its
 releasing population on one owner and therefore compares future IDs directly.
 
 
-## Smagorinsky SGS
+## LES closures
 
-Set `les_cs>0` (at most 2) to enable the existing deviatoric Smagorinsky model.
+Set `les_cs>0` (at most 2) to enable deviatoric SGS fluxes.
+`les_model='smagorinsky'` is the default; `wale` and `vreman` select the
+alternative algebraic closures. The coefficient `les_cs` means Cw for WALE
+and Cs otherwise.
 `les_prt` and `les_sct` default to 0.7 and control turbulent heat and species
 transport. `les_cs=0` is the default disabled setting.
 
@@ -280,7 +283,8 @@ serial face-flux kernel and advances with SSPRK2. SGS half-steps surround hydro,
 inside the molecular-transport half-steps. Each SGS stage rejects a diffusion
 number above 0.2 or inadmissible thermodynamics. The application retries the whole
 coupled step with a halved time interval; gas, particles and IDs remain transactional.
-The coefficients are bound to checkpoint context. This supplies a modeled SGS
+The coefficients and model are bound to checkpoint context. Changing or removing
+a nondefault model rejects restart. This supplies a modeled SGS
 stress/heat/species flux; it does not establish validated LES or near-wall behavior.
 
 ## Physical boundaries

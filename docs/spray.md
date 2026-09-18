@@ -2891,7 +2891,7 @@ optional trailing `model='smagorinsky'|'wale'|'vreman'`. Omission retains
 Smagorinsky. The coefficient argument `cs` means Cw for WALE and Cs otherwise.
 The selected viscosity drives stress, heat/species fluxes and the diffusion
 stability bound. Invalid names reject even when coefficient or dt is zero.
-Spray/MPI/application controls still use the default; see
+See
 [grid integration checks](validation/les-alternative-grid-20260918.md).
 
 `advance_mpi_spray_les` also accepts the optional `model` argument. It checks
@@ -2899,12 +2899,23 @@ model validity and agreement across ranks before halo exchange and forwards
 the model through both RK2 stages. Two/four-rank tests cover periodic and moving
 isothermal-wall parity with serial; see
 [MPI LES model checks](validation/les-mpi-models-20260918.md).
-Coupled spray/application model controls remain to be connected.
 
 The serial `advance_spray_reactive_3d` and MPI `advance_mpi_mixture_reaction`
 coupled library APIs accept optional `les_model` and forward it through both
 LES half steps. The MPI wrapper includes the model in collective control
 agreement; omission keeps Smagorinsky. Serial reacting/evaporating conservation
-checks cover all three models. MPI coupled runtime qualification and application/
-checkpoint controls remain pending; see
+checks cover all three models; see
 [coupled LES evidence](validation/les-coupled-models-20260918.md).
+
+### Application LES selection
+
+The regular serial `spray` and MPI `mpi_spray` namelists accept
+`les_model='smagorinsky'|'wale'|'vreman'`. Serial `smagorinsky_constant` and MPI
+`les_cs` retain their input names and bounds; they mean Cw for WALE and Cs
+otherwise. Their zero defaults disable SGS. Model validity is checked even with
+zero coefficient. The selected model supplies both SGS half steps and their
+existing diffusion rejection bound; rejected coupled steps retry at half dt.
+Nondefault models enter checkpoint identity, so changing or omitting one on
+restart rejects before history output. Omitted/default Smagorinsky preserves
+the previous context. Fixed and selected frontends share these drivers.
+See [focused application evidence](validation/les-application-models-20260918.md).
