@@ -199,6 +199,13 @@ step succeeds. The MPI executable now enables this path and restores injection
 plus four-child ID groups from its existing checkpoint payload. See
 [KH application evidence](validation/spray-mpi-eb-khrt-application-20260918.md).
 
+The MPI EB reactive wrapper also applies `options%maximum_multiplicity` after
+the final particle half, before publication. A positive cap requires shared IDs
+and must agree across ranks. Splitting failure preserves the entire incoming
+state; optional `split_created` reports newly allocated IDs only on success.
+The application saves their cumulative count for strict restart ID accounting.
+See [computational splitting evidence](validation/spray-mpi-eb-split-20260918.md).
+
 
 `spray_mpi_eb_impact_mod` exports `impact_mpi_level_set` for one earliest contact
 per supplied trial trajectory. It uses original nodal geometry, sampled parcel

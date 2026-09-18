@@ -325,3 +325,20 @@ Checkpoint restore verifies the watermark against processed injections plus
 four-child release groups. It works with the V1 particle-only payload and V2
 impact/film payload. The mode remains experimental and its constants need
 physical calibration. See [focused evidence](../../docs/validation/spray-mpi-eb-khrt-application-20260918.md).
+
+## Computational parcel splitting
+
+For ETAB or KH-RT, `particle_options%maximum_multiplicity>0` enables splitting
+after both particle source halves of each accepted reactive step. Zero disables
+it. Descendants retain their final owner, composition and lineage; represented
+mass, momentum and energy are preserved. `particle_options%maximum_parcels`
+bounds each rank's population. Capacity failure rolls back the entire step,
+including gas, films, particle IDs and budgets.
+
+The checkpoint gas prefix additionally stores the cumulative number of IDs
+created by computational splitting. Restore subtracts this count before checking
+the injection and four-child KH/splash ID groups. The particle payload remains
+V1 without impact films and V2 with them. Splitting-disabled checkpoints retain
+their two-field injection metadata. Newly injected parcels are split by the next
+reactive update; injection at the final time is not immediately split.
+See [focused evidence](../../docs/validation/spray-mpi-eb-split-20260918.md).
