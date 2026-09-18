@@ -413,3 +413,20 @@ Ports default to prescribed speed and coefficient 1. Non-unit coefficients on
 disabled ports and controls on unused ports are rejected. A supplied group
 binds restart identity; retain it unchanged on continuation. See
 [evidence](../../docs/validation/spray-amr-discharge-20260918.md).
+
+### Computational parcel splitting
+
+`options%maximum_multiplicity` in `&amr_spray` now activates the existing
+conservative computational splitting after a coupled interval. Zero disables
+it. As in the shared spray options, a positive value requires an active
+breakup model (`etab` or `khrt`) with its physical inputs. `maximum_parcels`
+bounds each owner's resulting parcel count.
+
+Splitting divides represented droplet counts while preserving individual drop
+mass, composition and the aggregate inventories. New parcels receive global
+IDs and retain parent IDs; the existing checkpoint carries these fields and the
+global ID watermark. Capacity failure rejects the entire coupled interval.
+This does not itself represent additional physical breakup. The coupled API's
+optional `split_created` reports the global number of computational children,
+excluding KH/splash children created earlier in the interval. See
+[focused evidence](../../docs/validation/spray-amr-split-20260918.md).
