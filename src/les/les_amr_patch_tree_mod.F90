@@ -13,8 +13,83 @@ module les_amr_patch_tree_mod
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
   private
-  public :: advance_amr_patch_tree_les_3d
+  public :: advance_amr_patch_tree_les_3d,compute_amr_patch_tree_les_timestep_3d
 contains
+  subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
+      cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
+      coarse_limiter,outlet_pressure,model,ci)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: root_spacing(3),cfl,cs,prt,sct
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(inout) :: dt,maximum_diffusivity
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6),ci
+    character(len=*), optional, intent(in) :: coarse_limiter,model
+    type(amr_tree_state_3d) :: averaged,packed
+    real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),rhs(:,:,:,:),recovered(:,:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp) :: candidate,diffusivity,largest,rate
+    character(len=32) :: local_faces(6)
+    integer :: peer,n(3),nvar,axis,level
+    logical :: valid
+    ok=.false.
+    call prepare(tree,species,state,temperature,root_spacing,h,valid)
+    if (.not.valid) return
+    if (.not.ieee_is_finite(cfl)) return
+    if (cfl<=0.or.cfl>.2_dp.or..not.valid_reactive_boundaries_3d(faces)) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if (.not.valid) return
+    nvar=reactive_nvar(size(species))
+    if (any(faces=='inflow')) then
+      if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
+      if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
+      allocate(inlet(nvar+1,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+    end if
+    averaged=state
+    call average_down_amr_patch_tree_3d(tree,averaged,valid)
+    if (.not.valid) return
+    allocate(packed%fields(size(tree%nodes)))
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      allocate(recovered(n(1),n(2),n(3)))
+      call recover_reactive_temperatures_3d(species,averaged%fields(peer)%values, &
+        temperature%fields(peer)%values(1,:,:,:),n(1),n(2),n(3),recovered,valid)
+      if (.not.valid) return
+      allocate(packed%fields(peer)%values(nvar+1,n(1),n(2),n(3)))
+      packed%fields(peer)%values(:nvar,:,:,:)=averaged%fields(peer)%values
+      packed%fields(peer)%values(nvar+1,:,:,:)=recovered
+      deallocate(recovered)
+    end do
+    candidate=1e6_dp;largest=0
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,viscous_wall=.true., &
+        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter,species_count=size(species))
+      if (.not.valid) return
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
+      if (.not.valid) return
+      local_faces='outflow';level=tree%nodes(peer)%level+1
+      do axis=1,3
+        if (origin(axis,peer)==0) local_faces(2*axis-1)=faces(2*axis-1)
+        if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
+      end do
+      allocate(rhs(nvar,n(1),n(2),n(3)))
+      call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
+        cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature,model=model,ci=ci)
+      if (.not.valid) return
+      rate=diffusivity*sum(1._dp/h(:,peer)**2)
+      if (rate>cfl/candidate) candidate=cfl/rate
+      largest=max(largest,diffusivity)
+      deallocate(rhs)
+    end do
+    dt=candidate;maximum_diffusivity=largest;ok=.true.
+  end subroutine
+
   subroutine advance_amr_patch_tree_les_3d(tree,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci)
