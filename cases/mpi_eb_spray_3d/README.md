@@ -36,7 +36,7 @@ injection_scales=1.,.5,2.` injects at the start, midpoint and end.
 Output:
 
 - `result.csv`: exposed composite gas cells, using the existing MPI EB writer.
-- `result.csv.budget.csv`: combined gas-plus-particle initial/final inventories
+- `result.csv.budget.csv`: combined gas, particle and film initial/final inventories
   and exterior, wall, chemistry and injected exchanges, all with change-in-system signs.
   Initial inventory is gas before injection, including for a zero-time event.
 - `result.csv.particles.rank<R>.csv`: local parcel IDs, `material_id` (injection port), position, velocity,
@@ -45,7 +45,7 @@ Output:
   Existing particle CSV files are protected and cause the run to fail.
 
 This executable supports scheduled cone injection and the existing EB tree
-regrid controls. Particle child creation remains explicitly rejected. It inherits root-contained specular EB drift and the
+regrid controls. KH child shedding remains explicitly rejected; optional wall impacts create splash children. It inherits root-contained EB flight and the
 composite stencil approximation. It is a synthetic integration fixture, not
 nozzle, diesel ignition, convergence or physical validation.
 
@@ -62,7 +62,7 @@ and the same tree/spray model inputs. The MPI rank count may change. Final time,
 step limit and output/checkpoint controls may change within the existing gas
 restart contract. A checkpoint is taken after the accepted step and before
 injections due at its new time; resuming processes those events exactly once.
-All particle fields, event position, ID watermark, injected inventory, gas state
+All particle and film fields, event position, ID watermark, injected inventory, gas state
 and cumulative coupled ledgers continue together.
 
 The context binds normalized spray namelist values and original nodal values;
@@ -78,8 +78,8 @@ are rejected when checkpointing is requested.
 
 `rebalance_interval_steps=N` samples the existing gas-kernel work counters every
 N accepted steps. `rebalance_minimum_gain` is the required predicted gain
-(default 0.1); zero accepts any positive gain. Gas/temperature and particles with
-their component masses move atomically to the proposed patch owners. If particle
+(default 0.1); zero accepts any positive gain. Gas/temperature, particles and films with
+their component masses move atomically to the proposed patch owners. If particle or film
 migration fails, the original ownership and all state remain intact. A move is
 reported as `Rebalanced at step:`; an already balanced layout may stay unchanged.
 This uses measured gas cost, not a separate model of particle work. The
@@ -90,7 +90,7 @@ again under a different rank count. Rebalancing changes ownership only; the phys
 
 The existing `/eb_tree/` controls `regrid_count`, `regrid_times`,
 `regrid_child_count`, `regrid_parent`, `regrid_ratio`, `regrid_lower` and
-`regrid_upper` now remap gas and particles together. Refinement may move,
+`regrid_upper` now remap gas, particles and films together. Refinement may move,
 coarsen to the root or grow again on the shared refinement lattice. Supply the
 original nodal field at the maximum lattice resolution required by the complete
 schedule. Coarsening retains that field for collision/visibility queries.
@@ -158,3 +158,44 @@ for the desired temporal resolution. Intervals may overlap if explicitly
 specified. A profile does not create events automatically. Profiles and interval
 ends are part of the restart context. The arrays are supplied in the namelist;
 external rate-curve file loading is not provided here.
+
+## EB wall impacts and stationary films
+
+The default `wall_impacts=.false.` retains specular reflection. To enable
+mixture deposition/splash and film heating/evaporation, add to `/eb_spray/`:
+
+```fortran
+wall_impacts=.true.,
+particle_options%liquid_viscosity=.001,
+particle_options%surface_tension=.072,
+walls%enabled=6*.true.,walls%temperature=6*400.,
+walls%evolve=.true.,walls%liquid_conductivity=.6,
+```
+
+Viscosity and surface tension must be positive. All six wall-temperature entries
+must match: they represent one uniform EB wall temperature. Face-enable flags
+do not select individual EB facets. Existing contact angle, film capacity,
+minimum height and per-material conductivity members of `spray_wall_options`
+remain available. `walls%evolve` requires impacts. Contact depth is limited to
+32 per particle source substep. Film thermal evolution occurs in separate half
+steps; films created in the final particle half begin evolving on a later step.
+
+`result.csv.films.rank<R>.csv` contains material/port, position, normal, total
+mass, temperature, diameter, height and total component masses. Empty ranks
+write headers. Films have no global ID or canonical ordering. Files are protected
+from overwrite. The budget includes film mass, species and energy plus the wall
+impulse/heat ledger. Films follow the current finest fluid-side owners through
+regrid and load redistribution.
+
+Impact checkpoints use the V2 particle/film payload and retain splash lineage,
+retired-parent ID watermark and film composition. The normalized wall settings
+are part of the restart context. Checkpoints predating these new namelist fields
+are rejected by strict context comparison. Continued runs can change rank count.
+
+The focused fixture covers deposition at 20 m/s and splash at 200 m/s, using
+1e-16 kg total injected mass for the splash case to remain in the bounded thin-film
+range. The pinned wet-impact correlation can produce inadmissible child fractions
+outside its supported range; this terminates with an explicit model-range error
+instead of repeated timestep retries. This integration does not qualify general
+thick-film impact, lateral film flow, nozzle or diesel combustion physics.
+See [dated evidence](../../docs/validation/spray-mpi-eb-impact-application-20260918.md).

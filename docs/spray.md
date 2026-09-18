@@ -189,8 +189,8 @@ step succeeds, together with new children and films; optional `model_rejected`
 propagates the source diagnostic. Films created in the first particle half can
 evolve in the following film halves. Films created in the final particle half
 begin thermal evolution on a subsequent step. Presence of the watermark and
-film arguments must agree across ranks. MPI application persistence remains
-open. See [reactive MPI film evidence](validation/spray-mpi-eb-film-reactive-20260918.md)
+film arguments must agree across ranks. The MPI application connects this path
+as described below. See [reactive MPI film evidence](validation/spray-mpi-eb-film-reactive-20260918.md)
 and [reactive impact evidence](validation/spray-mpi-eb-impact-reactive-20260918.md).
 
 `spray_mpi_eb_impact_mod` exports `impact_mpi_level_set` for one earliest contact
@@ -208,7 +208,7 @@ model/property tables are identical by caller contract. This is a batched
 contact API: newly deposited films do not affect other contacts in the same
 batch. The caller owns remaining flight, dead-parent removal, final particle/film
 migration and binding the nodal field to the gas geometry. The source and reactive integrations are described below;
-application integration remains open. See
+application integration is described below. See
 [MPI EB contact evidence](validation/spray-mpi-eb-impact-20260918.md).
 
 `advance_mpi_level_set_impacts` now wraps collective contacts in a force-free
@@ -255,7 +255,7 @@ in EB mode. Properties/settings must match across ranks. Film thermal evolution
 is still supplied by the separate film source API; these source arguments alone
 do not evolve films. The MPI reactive wrapper can compose these impact-enabled
 particle halves with separate film evolution, as described above. MPI application
-and restart integration remain open.
+and restart controls are described below.
 See [source coupling evidence](validation/spray-mpi-eb-impact-source-20260918.md).
 
 
@@ -413,7 +413,7 @@ publishing particles, films or metadata. Invalid film geometry after particle
 redistribution rolls back the whole restore. Film ordering follows migration
 source order; films have no global IDs. See
 [film payload evidence](validation/spray-mpi-eb-film-checkpoint-20260918.md).
-This library extension is not yet connected to MPI application film persistence.
+The MPI application now selects V2 when wall impacts are enabled.
 
 The fixed/selected MPI EB spray applications now connect this payload with the
 existing gas snapshot using a generation-bound manifest. Restore stages both
@@ -2660,3 +2660,14 @@ formula. Profiles cover all event intervals; unused entries stay zero. Active
 profiles replace fixed event mass and are included in restart identity. Zero-dose
 events advance the schedule without consuming IDs. Independent MPI port schedules
 remain open. See [profile evidence](validation/spray-mpi-profile-20260917.md).
+
+### MPI EB application impacts and films
+
+The fixed and selected MPI EB spray executables now accept `wall_impacts` and
+`walls` in `/eb_spray/`. They connect impact-enabled reactive stepping, stationary
+film evolution, composite budgets, per-rank film CSVs, regrid/rebalance migration
+and generation-bound V2 checkpoint payloads. Restart retains splash-child IDs
+and retired parents through a shared watermark and validates wall settings in
+the normalized context. Inadmissible empirical impact output fails immediately.
+See [input/output controls](../cases/mpi_eb_spray_3d/README.md#eb-wall-impacts-and-stationary-films)
+and [focused application evidence](validation/spray-mpi-eb-impact-application-20260918.md).
