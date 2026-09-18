@@ -76,7 +76,7 @@ contains
   logical :: transport_flags(4)=.true.
   real(dp) :: les_cs=0,les_prt=.7_dp,les_sct=.7_dp
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
-  character(len=16) :: solver='hllc',limiter='mc'
+  character(len=16) :: solver='hllc',limiter='mc',les_model='smagorinsky'
   character(len=512) :: output_prefix='mpi_spray',restart_path='',checkpoint_path=''
   character(len=spray_checkpoint_context_capacity) :: checkpoint_context
   character(len=131072) :: input_record
@@ -96,7 +96,7 @@ contains
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
     size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3, &
-    khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct, &
+    khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct,les_model, &
     boundary_faces,wall_temperature,wall_velocity,impact
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -265,6 +265,12 @@ contains
       'Checkpoint KH child context too long')
     checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end if
+  call require(les_model=='smagorinsky'.or.les_model=='wale'.or.les_model=='vreman','Invalid LES model')
+  if (les_model/='smagorinsky') then
+    call require(len_trim(checkpoint_context)+14+len_trim(les_model)<=len(checkpoint_context), &
+      'Checkpoint LES model context too long')
+    checkpoint_context=trim(checkpoint_context)//' les-model-v1 '//trim(les_model)
+  end if
   call require(all(ieee_is_finite([les_cs,les_prt,les_sct])),'Nonfinite SGS settings')
   call require(les_cs>=0.and.les_cs<=2.and.min(les_prt,les_sct)>=1e-6_dp.and. &
     max(les_prt,les_sct)<=1e6_dp,'Invalid SGS settings')
@@ -354,12 +360,13 @@ contains
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
         solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
-        inlet_state,inlet_temperature,wall_temperature,wall_velocity,checkpoint_films,checkpoint_film_mass,impact)
+        inlet_state,inlet_temperature,wall_temperature,wall_velocity,checkpoint_films,checkpoint_film_mass,impact, &
+        les_model=les_model)
       else
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
         solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
-        inlet_state,inlet_temperature,wall_temperature,wall_velocity)
+        inlet_state,inlet_temperature,wall_temperature,wall_velocity,les_model=les_model)
       end if
       if (ok) exit
       dt=.5_dp*dt

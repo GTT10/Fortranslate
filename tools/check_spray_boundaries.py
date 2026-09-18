@@ -16,12 +16,15 @@ def main():
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
+    parser.add_argument('--les-model', choices=('wale', 'vreman'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='spray-boundaries-', dir=args.work_dir.resolve()))
     case = 'thermal_moving_wall.nml' if args.thermal_wall else ('inflow.nml' if args.inflow else 'wall_reflection.nml')
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
+    if args.les_model:
+        template = template.replace('&spray', f"&spray\n les_model='{args.les_model}',")
     if args.acceleration:
         template = template.replace('&spray', f'&spray\n acceleration(3)={args.acceleration},')
     if args.sgs:
@@ -89,6 +92,21 @@ def main():
             (work / 'changed_faces.log').write_text(result.stdout + result.stderr)
             assert result.returncode != 0 and 'incompatible spray checkpoint' in result.stdout + result.stderr
             assert not (work / 'changed_faces.history.csv').exists()
+        if args.les_model:
+            original = (work / (resumed + '.nml')).read_text()
+            for label, replacement, diagnostic in [
+                ('changed_model', "les_model='smagorinsky',", 'incompatible spray checkpoint'),
+                ('removed_model', '', 'incompatible spray checkpoint'),
+                ('invalid_model', "les_model='invalid',", 'Invalid LES model'),
+            ]:
+                config = original.replace(f"les_model='{args.les_model}',", replacement).replace(resumed, label)
+                path = work / (label + '.nml')
+                path.write_text(config)
+                result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                        text=True, capture_output=True, timeout=30)
+                (work / (label + '.log')).write_text(result.stdout + result.stderr)
+                assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
+                assert not (work / (label + '.history.csv')).exists()
         print(kind, 'PASS: exact restart and boundary budget')
     print('artifacts:', work)
 

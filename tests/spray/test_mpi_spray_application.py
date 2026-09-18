@@ -21,11 +21,18 @@ def main():
     parser.add_argument('--species-count', type=int, default=10)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--les-model', choices=('wale', 'vreman'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
+    source = args.input.read_text()
+    input_path = args.input.resolve()
+    if args.les_model:
+        source = source.replace('&mpi_spray', f"&mpi_spray\n les_cs=.17, les_model='{args.les_model}',")
+        input_path = work / 'les.nml'
+        input_path.write_text(source)
     command = [str(args.mpiexec.resolve()), '-n', str(args.ranks),
-               str(args.executable.resolve()), str(args.input.resolve())]
+               str(args.executable.resolve()), str(input_path)]
     result = subprocess.run(command, cwd=work, capture_output=True, text=True, timeout=90)
     (work / 'run.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -60,7 +67,6 @@ def main():
     (work / 'repeat.log').write_text(repeated.stdout + repeated.stderr)
     assert repeated.returncode != 0
     assert (work / 'periodic_mixture.history.csv').read_bytes() == original
-    source = args.input.read_text()
 
     def run_variant(name, rank_count, additions, stop=None, expect_success=True):
         text = source.replace("output_prefix='periodic_mixture'", f"output_prefix='{name}'")
@@ -102,6 +108,19 @@ def main():
         assert abs(float(resumed_history[-1]['relative_energy_error'])) < 2e-11
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
+    if args.les_model:
+        original_source = source
+        for label, replacement, diagnostic in [
+            ('changed_model', "les_model='smagorinsky',", 'Restart rejected: invalid data or incompatible model/input context'),
+            ('removed_model', '', 'Restart rejected: invalid data or incompatible model/input context'),
+            ('invalid_model', "les_model='invalid',", 'Invalid LES model'),
+        ]:
+            source = original_source.replace(f"les_model='{args.les_model}',", replacement)
+            run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
+            assert diagnostic in (work / f'{label}.log').read_text()
+            assert not (work / f'{label}.history.csv').exists()
+        print(args.les_model, 'PASS: coupled MPI restart, changed ranks, model guards; artifacts:', work)
+        return
     schedule = ' injection_events=3\n injection_interval=7.5e-9'
     run_variant('scheduled', args.ranks, schedule)
     schedule_history = rows(work / 'scheduled.history.csv')
