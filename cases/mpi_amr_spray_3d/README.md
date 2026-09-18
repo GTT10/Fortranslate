@@ -238,6 +238,19 @@ or row order after restart. These CSVs are analysis output; restart uses the
 checkpoint's V2 particle/film payload. No lateral film transport or EB impact
 geometry is implemented in this path.
 
+### Pressure outlets
+
+Set `outlet_pressure(face)` in the gas namelist on an `outflow` face to enable
+the existing acoustic pressure ghost condition, for example
+`outlet_pressure(2)=100000.` for the high-x face. Zero retains extrapolation;
+positive pressures must not exceed `1e15 Pa`. Fixed and selected applications
+pass this condition through the gas split, LES steps and LES interval estimate.
+Pressure controls already belong to the gas checkpoint identity, so changed
+values reject restart. Particles retain their outflow-removal behavior. A large
+pressure jump can produce inadmissible ghost states and be rejected; this is not
+a general nonreflecting boundary. See
+[focused evidence](../../docs/validation/spray-amr-pressure-20260918.md).
+
 ### Static LES
 
 Both fixed and selected executables accept an optional group in the spray input:
