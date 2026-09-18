@@ -278,15 +278,18 @@ and retains it privately until final particle and film migration both succeed.
 MPI source, reactive coupling and the MPI application now expose the option below. See [MPI outflow evidence](validation/spray-mpi-eb-impact-outflow-20260918.md)
 and [migration evidence](validation/spray-mpi-eb-outflow-migration-20260918.md).
 
-The MPI AMR source API accepts `eb_outflow_change(nvar)` with nodal EB geometry
-and impact films. Presence enables all-face particle outflow and must agree
+The MPI AMR source API accepts `eb_outflow_change(nvar)` with nodal EB geometry,
+using either specular reflection or impact films. Presence enables all-face particle outflow and must agree
 across ranks. Component-order losses are mapped into vapor-species entries;
 already-global impact inventories are accumulated without a second MPI sum.
 The existing `boundary_change` continues to report EB system wall exchange.
 Both ledgers publish only after the complete source interval and final ownership
 migration succeed. KH eligibility clips the candidate flight at the root before
-querying the EB. The option currently requires impact films; it does not expose
-specular EB exterior modes. See
+querying the EB. With specular reflection, local drift losses are summed once
+across ranks before accumulation, and escaped records are removed after each
+accepted substep. This prevents later gas sampling at their exterior endpoints.
+The reactive wrapper and application still require films for outflow. See
+[specular source evidence](validation/spray-mpi-eb-specular-outflow-20260918.md) and
 [source evidence](validation/spray-mpi-eb-outflow-source-20260918.md).
 
 `advance_mpi_eb_spray_reactive` accepts `particle_outflow=.true.` together with
