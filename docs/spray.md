@@ -3088,3 +3088,17 @@ identity. See [MPI application checks](validation/spray-mpi-pressure-outlet-2026
 See [serial application evidence](validation/spray-pressure-outlet-20260918.md).
 See [MPI pressure parity](validation/les-mpi-pressure-20260918.md).
 See [focused evidence](validation/les-pressure-outlet-20260918.md).
+
+### Static LES face fluxes for mesh coupling
+
+`compute_les_ghosted_rhs_3d` optionally returns `fx`, `fy`, `fz` together.
+For `cells=[nx,ny,nz]` and `nv` conserved components, use shapes
+`(nv,0:nx,ny,nz)`, `(nv,nx,0:ny,nz)`, `(nv,nx,ny,0:nz)` respectively.
+These are instantaneous flux densities in the positive coordinate directions,
+without face-area or time factors. They are the same fluxes used for the RHS.
+The caller supplies two halo layers, including any coarse/peer/physical donors.
+All three outputs publish only on success; partial output sets or wrong shapes
+are rejected. Boundary masks affect the ledger, not the returned flux values.
+This exposes the fluxes needed for later coarse/fine synchronization; it does
+not yet connect LES to an AMR time integrator.
+See [focused evidence](validation/les-face-fluxes-20260918.md).
