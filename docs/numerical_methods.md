@@ -2831,3 +2831,10 @@ Two/three-rank PCM/PLM checks reproduce serial state, temperature and diagnostic
 exactly and preserve rollback on rank-local pressure errors; see
 [MPI tree hydro evidence](validation/pressure-outlet-mpi-tree-hydro-20260918.md).
 MPI level/subcycle hydro, transport, coupled wrappers and tree input remain pending.
+
+MPI level and recursive tree hydro now forward pressure targets through both
+RK2 stages on each active level. Two/three-rank 1/2/6-step checks reproduce the
+serial solution and diagnostics exactly, with transactional rejection of
+rank-local pressure errors; see
+[MPI tree subcycle evidence](validation/pressure-outlet-mpi-tree-subcycle-20260918.md).
+MPI transport, reactive wrappers and tree application input remain pending.
