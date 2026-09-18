@@ -6,7 +6,7 @@ module spray_breakup_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use spray_parcel_mod
-  use spray_mixture_mod, only: valid_component_inventory
+  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   implicit none
   private
   public :: advance_etab_breakup, advance_khrt_breakup, advance_spray_breakup, split_spray_parcels
@@ -16,8 +16,89 @@ module spray_breakup_mod
   type, public :: spray_khrt_release
     real(dp) :: mass=0,drop_mass=0,multiplicity=0,diameter=0,tangential_speed=0
   end type
-  public :: advance_khrt_shedding,construct_khrt_children
+  public :: advance_khrt_shedding,construct_khrt_children,advance_mixture_khrt_shedding
 contains
+  subroutine advance_mixture_khrt_shedding(components,options,parcels,component_mass,gas_density, &
+      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:),gas_energy(:)
+    real(dp), intent(in) :: gas_density(:),gas_velocity(:,:),reynolds(:),dt
+    integer(int64), intent(inout) :: last_id
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: eligible(:)
+    type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
+    type(spray_khrt_release), allocatable :: releases(:)
+    type(spray_khrt_shedding_state) :: pending
+    type(spray_liquid) :: effective
+    real(dp), allocatable :: masses(:,:),fractions(:,:),energy(:),result_mass(:,:)
+    real(dp) :: rho,cp,e,axis(3)
+    integer :: np,nc,p,n,number,cursor
+    integer(int64) :: next_id,first_id
+    logical :: valid
+    ok=.false.
+    valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
+    if (.not.valid) return
+    np=size(parcels);nc=size(components)
+    valid=np<=1000000.and.nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,np])
+    valid=valid.and.size(gas_density)==np.and.size(reynolds)==np.and.all(shape(gas_velocity)==[3,np])
+    valid=valid.and.ieee_is_finite(dt).and.dt>=0.and.dt<=1e6_dp
+    if(present(eligible)) valid=valid.and.size(eligible)==np
+    if (.not.valid) return
+    if (last_id<0) return
+    candidate=parcels;masses=component_mass
+    allocate(releases(np),fractions(nc,np),energy(np));energy=0;fractions=0;number=0
+    do p=1,np
+      valid=valid_component_inventory(candidate(p),masses(:,p)).and.candidate(p)%id<=last_id
+      if (p>1) valid=valid.and.candidate(p)%id>candidate(p-1)%id
+      if (.not.valid) exit
+      if (candidate(p)%mass<=0) cycle
+      if(present(eligible)) then
+        if(.not.eligible(p)) cycle
+      end if
+      fractions(:,p)=masses(:,p)/candidate(p)%mass
+      call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
+      if (.not.valid) exit
+      effective=components(1);effective%density_model='constant';effective%density=rho
+      effective%density_coefficients=0;effective%density_temperature_range=0
+      effective%heat_capacity_model='constant';effective%heat_capacity=cp
+      effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
+      effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=e
+      effective%boiling_model='reject';effective%critical_temperature=0
+      pending=spray_khrt_shedding_state(candidate(p)%khrt_initial_count,candidate(p)%khrt_shed_volume)
+      call advance_khrt_shedding(candidate(p),effective,options,gas_density(p),gas_velocity(:,p),reynolds(p), &
+        dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid)
+      if (.not.valid) exit
+      candidate(p)%khrt_initial_count=pending%initial_count;candidate(p)%khrt_shed_volume=pending%shed_volume
+      masses(:,p)=candidate(p)%mass*fractions(:,p)
+      if (releases(p)%mass>0) number=number+4
+    end do
+    valid=valid.and.number<=options%maximum_parcels-np
+    if (.not.valid) return
+    if (last_id>huge(last_id)-int(number,int64)) return
+    next_id=last_id+int(number,int64)
+    first_id=last_id
+    if(number>0) first_id=last_id+1_int64
+    allocate(result(np+number),result_mass(nc,np+number))
+    result(:np)=candidate;result_mass(:,:np)=masses;cursor=np
+    do p=1,np
+      if (releases(p)%mass<=0) cycle
+      axis=candidate(p)%velocity
+      if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
+      call construct_khrt_children(candidate(p),releases(p),axis,first_id+int(cursor-np,int64),children,energy(p),valid)
+      if (.not.valid) exit
+      result(cursor+1:cursor+4)=children
+      do n=1,4
+        result_mass(:,cursor+n)=children(n)%mass*fractions(:,p)
+      end do
+      cursor=cursor+4
+    end do
+    if (.not.valid) return
+    call move_alloc(result,parcels);call move_alloc(result_mass,component_mass);call move_alloc(energy,gas_energy)
+    last_id=next_id;ok=.true.
+  end subroutine
   subroutine construct_khrt_children(parent,release,axis,first_id,children,gas_energy,ok)
     type(spray_parcel), intent(in) :: parent
     type(spray_khrt_release), intent(in) :: release

@@ -30,7 +30,7 @@ program test_spray_eb_impact_coupling
   real(dp) :: ledger(5),interval=2e-5_dp,old_film_mass,old_film_temperature
   real(dp), allocatable :: film_saved_gas(:,:,:,:),film_saved_t(:,:,:)
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
-  integer :: i,j,k,nv,nitrogen,steps
+  integer :: i,j,k,nv,nitrogen,steps,mode
   logical :: ok
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
@@ -122,7 +122,53 @@ program test_spray_eb_impact_coupling
   expected=0;expected(1:5)=ledger
   call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'splash gas film wall conservation')
-  print *, 'PASS: EB mixture coupling with heat, evaporation, drag, deposition and splash'
+  ! KH children share retired IDs and deposit their transverse energy at the parent.
+  options%breakup_model='khrt';options%khrt_children=.true.
+  options%khrt_reference_diameter_cubed=1e-25_dp
+  options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+  walls%evolve=.false.;interval=1e-8_dp
+  do mode=1,3
+    state=saved;temperature=saved_t
+    deallocate(drops,masses,films,film_mass)
+    allocate(drops(1),masses(2,1),films(0),film_mass(2,0))
+    drops(1)=saved_drop;drops(1)%position=[.002_dp,.0015_dp,.0015_dp]
+    drops(1)%velocity=[1000._dp,0._dp,0._dp];masses=saved_mass;last_id=100
+    if(mode==3) then
+      drops(1)%position(1)=.001250001_dp;drops(1)%velocity(1)=-200
+    end if
+    if(mode==1) then
+      options%maximum_parcels=1;ledger=42
+      call advance()
+      call require(.not.ok.and.steps==0.and.last_id==100,'KH capacity rollback')
+      call require(size(drops)==1.and.all(masses==saved_mass).and.all(ledger==42),'KH particle ledger rollback')
+      call require(all(state==saved).and.all(temperature==saved_t),'KH gas rollback')
+      options%maximum_parcels=100
+    end if
+    call inventory(before)
+    if(mode==2) then
+      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
+        drops,masses,interval,steps,ledger,ok,last_id=last_id)
+    else
+      call advance()
+    end if
+    call require(ok,'KH source update')
+    if(mode==3) then
+      call require(size(drops)==4.and.size(films)==1.and.last_id==104,'wall takes precedence over KH')
+      call require(all(drops%khrt_initial_count==0),'splash children have no KH pending inventory')
+    else
+      call require(size(drops)==5.and.last_id==104.and.size(films)==0,'KH four-child release')
+      call require(all(drops(2:)%id==[101_int64,102_int64,103_int64,104_int64]),'KH retired ID preservation')
+      call require(all(drops(2:)%parent_id==1),'KH child lineage')
+      do i=1,size(drops)
+        call require(drops(i)%position(1)>.002_dp,'KH children drift in source interval')
+      end do
+    end if
+    call inventory(after)
+    expected=0;expected(1:5)=ledger
+    call require(all(abs(after-before-expected)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+      'KH gas particle film wall conservation')
+  end do
+  print *, 'PASS: EB mixture coupling with impacts, KH children and rollback'
 contains
   subroutine advance()
     call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &

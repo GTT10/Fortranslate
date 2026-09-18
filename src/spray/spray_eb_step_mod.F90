@@ -7,9 +7,10 @@ module spray_eb_step_mod
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
-  use spray_breakup_mod, only: advance_spray_breakup
+  use spray_breakup_mod, only: advance_spray_breakup,advance_mixture_khrt_shedding
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_field_mod, only: sample_eb_spray_field,deposit_eb_spray_gas
+  use spray_eb_intersection_mod, only: intersect_spray_level_set
   use spray_eb_drift_mod, only: drift_spray_level_set
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_eb_impact_mod, only: advance_mixture_level_set_impacts,spray_eb_wall_options
@@ -72,17 +73,32 @@ contains
     real(dp) :: y(size(components)),rates(size(components)),hv(size(components))
     integer :: np,nc,nvar,p,n,attempt,count_steps,hits,film_steps
     real(dp) :: film_change(5)
-    logical :: valid,accepted
+    real(dp), allocatable :: reynolds(:),child_energy(:),impact_pressures(:)
+    logical, allocatable :: eligible(:)
+    real(dp) :: crossing_fraction,crossing_position(3),crossing_normal(3)
+    integer :: crossing_cell(3),parent
+    logical :: crossing,valid,accepted
     ok=.false.;substeps=0
     if (present(model_rejected)) model_rejected=.false.
     if (.not.g%is_valid().or..not.valid_spray_options(options)) return
     if (.not.ieee_is_finite(interval)) return
-    if (interval<0.or.interval>1e6_dp.or.options%khrt_children) return
+    if (interval<0.or.interval>1e6_dp) return
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
     impacts=present(wall_options)
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
-    if (present(last_id).neqv.impacts) return
+    if ((impacts.or.options%khrt_children).and..not.present(last_id)) return
+    watermark=0
+    if (present(last_id)) then
+      watermark=last_id
+      if(watermark<0) return
+      do p=1,size(parcels)
+        if(parcels(p)%id>watermark) return
+        if(p>1) then
+          if(parcels(p)%id<=parcels(p-1)%id) return
+        end if
+      end do
+    end if
     if (impacts) then
       if (.not.all(ieee_is_finite([wall_options%temperature,wall_options%contact_angle]))) return
       if (wall_options%temperature<1.or.wall_options%temperature>1e5_dp) return
@@ -170,10 +186,12 @@ contains
         if (speed>0) dt=min(dt,options%particle_cfl*minval(h)/speed)
       end do
       if (.not.valid) return
+      if(allocated(reynolds)) deallocate(reynolds,eligible)
+      allocate(reynolds(np),eligible(np));reynolds=0;eligible=.true.
       accepted=.false.
       do attempt=1,30
         if (dt<=0.or.elapsed+dt<=elapsed) exit
-        trial=drops;next_mass=masses;change=0;valid=.true.
+        trial=drops;next_mass=masses;change=0;valid=.true.;next_watermark=watermark
         do p=1,np
           if (drops(p)%mass<=0) cycle
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
@@ -192,16 +210,36 @@ contains
             call build_mixture_film(species,transport,primitive(:,p),tg(p),trial(p),components,y,options, &
               film,rates,hv,valid)
             if (.not.valid) exit
+            if(options%khrt_children) then
+              reynolds(p)=film%density*norm2(primitive(2:4,p)-trial(p)%velocity)* &
+                parcel_diameter(trial(p),effective)/film%viscosity
+            else
             call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
               film%density,film%viscosity,dt,valid)
             if (.not.valid) exit
             next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
+            end if
           end if
 
           ! Source-first split: move at the updated velocity through EB geometry.
           ! Replace the source kernel's free-space trapezoidal position update.
           trial(p)%position=drops(p)%position
         end do
+        if(valid.and.options%khrt_children) then
+          eligible=.true.
+          do p=1,np
+            if(trial(p)%mass<=0) cycle
+            call intersect_spray_level_set(phi,lower,upper,trial(p)%position, &
+              trial(p)%position+dt*trial(p)%velocity,crossing,crossing_fraction, &
+              crossing_position,crossing_normal,crossing_cell,valid)
+            if(.not.valid) exit
+            eligible(p)=.not.crossing
+          end do
+          if(valid) call advance_mixture_khrt_shedding(components,options,trial,next_mass,primitive(1,:), &
+            primitive(2:4,:),reynolds,dt,next_watermark,child_energy,valid,eligible)
+          if(valid) valid=size(trial)<=125000
+          if(valid) change(5,:)=change(5,:)+child_energy
+        end if
         exchange=0;hits=0;film_change=0
         if (valid) then
           next_gas=gas;next_temp=temp
@@ -209,7 +247,18 @@ contains
         end if
         if (valid) then
           if (impacts) then
-            next_patches=patches;next_patch_mass=patch_mass;next_watermark=watermark
+            next_patches=patches;next_patch_mass=patch_mass
+            if(allocated(impact_pressures)) deallocate(impact_pressures)
+            allocate(impact_pressures(size(trial)));impact_pressures(:np)=primitive(5,:)
+            parent=1
+            do p=np+1,size(trial)
+              do while(parent<np)
+                if(trial(parent)%id>=trial(p)%parent_id) exit
+                parent=parent+1
+              end do
+              if(trial(parent)%id/=trial(p)%parent_id) return
+              impact_pressures(p)=primitive(5,parent)
+            end do
             if (wall_options%evolve) then
               call advance_eb_film_coupling(species,transport,components,options,wall_options,g,phi, &
                 next_gas,next_temp,next_patches,next_patch_mass,dt,film_steps,film_change,valid)
@@ -218,7 +267,7 @@ contains
             if (valid) call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
               min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
               101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
-              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,primitive(5,:),rejected)
+              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,impact_pressures,rejected)
             if (rejected) then
               if (present(model_rejected)) model_rejected=.true.
               return
@@ -236,15 +285,17 @@ contains
       end do
       if (.not.accepted) return
       gas=next_gas;temp=next_temp;drops=trial;masses=next_mass;ledger=ledger+exchange
+      watermark=next_watermark
       if (impacts) then
-        patches=next_patches;patch_mass=next_patch_mass;watermark=next_watermark
+        patches=next_patches;patch_mass=next_patch_mass
       end if
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
     state=gas;temperature=temp;parcels=drops;component_mass=masses
     if (impacts) then
-      films=patches;film_mass=patch_mass;last_id=watermark
+      films=patches;film_mass=patch_mass
     end if
+    if(present(last_id)) last_id=watermark
     boundary_change=ledger;substeps=count_steps;ok=.true.
   end subroutine
 end module
