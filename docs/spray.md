@@ -2893,3 +2893,10 @@ The selected viscosity drives stress, heat/species fluxes and the diffusion
 stability bound. Invalid names reject even when coefficient or dt is zero.
 Spray/MPI/application controls still use the default; see
 [grid integration checks](validation/les-alternative-grid-20260918.md).
+
+`advance_mpi_spray_les` also accepts the optional `model` argument. It checks
+model validity and agreement across ranks before halo exchange and forwards
+the model through both RK2 stages. Two/four-rank tests cover periodic and moving
+isothermal-wall parity with serial; see
+[MPI LES model checks](validation/les-mpi-models-20260918.md).
+Coupled spray/application model controls remain to be connected.
