@@ -3165,3 +3165,15 @@ source inventory through changed-rank checkpoint/restart. See the
 [input guide](../cases/mpi_amr_spray_3d/README.md#uniform-acceleration),
 [application evidence](validation/spray-amr-force-application-20260918.md) and
 [focused evidence](validation/spray-amr-force-20260918.md).
+
+### MPI child ID ordering
+
+The shared MPI computational splitting, KH shedding and wall-event splash APIs
+assign new IDs by global parent ID and deterministic sibling order within each
+collective event. Assignment uses compact parent/count metadata and publishes
+with the particle transaction. Repartitioning the same event's parents therefore
+does not change these IDs. Initial injection still uses its separate reservation
+order; different physical event grouping can also change IDs. Future child IDs
+can differ from older builds, while existing saved IDs remain unchanged on load.
+See [computational splitting](validation/spray-split-id-order-20260918.md) and
+[KH/splash checks](validation/spray-physical-child-id-order-20260918.md).
