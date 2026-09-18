@@ -2919,3 +2919,13 @@ Nondefault models enter checkpoint identity, so changing or omitting one on
 restart rejects before history output. Omitted/default Smagorinsky preserves
 the previous context. Fixed and selected frontends share these drivers.
 See [focused application evidence](validation/les-application-models-20260918.md).
+
+### Dynamic Smagorinsky building blocks
+
+`les_dynamic_smagorinsky_mod` provides `dynamic_smagorinsky_quantities` from
+supplied cell-centered velocity/temperature gradients and
+`dynamic_smagorinsky_coefficients` from supplied filtered tensors. The latter
+returns `Cs^2`, `CI`, `Cs^2/PrT` with pinned regularization and clipping. These
+APIs do not perform spatial filtering or add a `dynamic` application choice;
+filtering, smoothing and dynamic flux integration remain to be connected.
+See [reference, numerical boundaries and algebra checks](validation/les-dynamic-algebra-20260918.md).
