@@ -2804,3 +2804,9 @@ every recursive level update. Focused PCM/PLM checks include 1/2/6 level-step
 counts, composite conservation and rollback; see
 [subcycle evidence](validation/pressure-outlet-tree-subcycle-20260918.md).
 Tree transport/full/MPI wrappers and application input remain pending.
+
+Tree common-step and per-level molecular transport now apply pressure targets
+after viscous ghost sampling. Root comparisons, multilevel conservation and
+rollback pass with pressure outlets and moving isothermal walls; see
+[tree transport evidence](validation/pressure-outlet-tree-transport-20260918.md).
+Transport subcycling/full wrappers and MPI/application forwarding remain pending.
