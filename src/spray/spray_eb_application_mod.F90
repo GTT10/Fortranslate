@@ -51,6 +51,9 @@ contains
     real(dp) :: reference_pressures(16)=101325,latent_heats(16)=2.257e6_dp,fractions(16)=0
     real(dp) :: total_mass=1e-10_dp,center(3)=0,axis(3)=[1._dp,0._dp,0._dp],speed=1,half_angle=0
     real(dp) :: diameter=1e-5_dp,liquid_temperature=350,maximum_dt=1e-8_dp
+    real(dp) :: nozzle_radius=0
+    type(spray_nozzle_model) :: nozzle
+    type(spray_size_options) :: sizes
     type(spray_options) :: options
     type(spray_eb_wall_options) :: walls
     logical :: wall_impacts=.false.
@@ -58,7 +61,8 @@ contains
     real(dp), allocatable :: film_mass(:,:)
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
-      liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales,wall_impacts,walls
+      liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales,wall_impacts,walls, &
+      nozzle_radius,nozzle,sizes
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -82,6 +86,7 @@ contains
     reference_pressures=101325;latent_heats=2.257e6_dp;total_mass=1e-10_dp;center=0
     axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0;diameter=1e-5_dp;liquid_temperature=350
     maximum_dt=1e-8_dp;options=spray_options();walls=spray_eb_wall_options();wall_impacts=.false.
+    nozzle_radius=0;nozzle=spray_nozzle_model();sizes=spray_size_options()
     injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
@@ -366,7 +371,10 @@ contains
       old_count=size(drops)
       if(old_count>min(125000,options%maximum_parcels)-number) error stop 'EB injection capacity exceeded'
       call inject_cone_parcels(effective,total_mass*injection_scales(next_event),number,last_id+1_int64, &
-        center,axis,speed,half_angle,diameter,liquid_temperature,added,valid)
+        center,axis,speed,half_angle,diameter,liquid_temperature,added,valid, &
+        diameter_shape=sizes%shape,diameter_min=sizes%minimum,diameter_max=sizes%maximum, &
+        diameter_weighting=sizes%weighting,diameter_distribution=sizes%distribution,diameter_std=sizes%std, &
+        nozzle_radius=nozzle_radius,nozzle_model=nozzle)
       if(.not.valid) error stop 'Invalid scheduled EB injection'
       change=0;cells=0;weights=0;volumes=0
       allocate(candidate(old_count+number),candidate_mass(nc,old_count+number),stat=ios)
