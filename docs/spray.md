@@ -1394,6 +1394,24 @@ film composition and temperature. [mixture_wall.nml](../cases/spray_3d/mixture_w
 is a small synthetic deposition/evaporation example. See
 [CLI evidence](validation/spray-mixture-wall-cli-20260916.md).
 
+## EB and exterior drift API
+
+`drift_spray_level_set` accepts the optional group `outer_faces(6)`,
+`specific_energy(:)` and `outer_change(5)`. The energy array supplies each
+parcel's specific liquid internal energy (J/kg). The routine processes the first
+EB or root-domain crossing, then continues the remaining flight. Exterior
+`outflow`/`inflow` removes represented inventory; supported wall labels reflect
+specularly; paired periodic faces wrap positions. Periodic nodal geometry must
+match exactly at the paired faces. The shared hit budget covers both event types.
+
+`change` reports EB impulse/energy only; `outer_change` reports exterior system
+change, including escaping liquid internal and kinetic energy. Escaped records
+retain their IDs with zero mass; callers must retire their component inventories
+and account for species loss. All parcels and both ledgers publish together.
+Omitting the optional group retains root-contained behavior. Source coupling,
+impact/film flight and application exposure remain separate work. See
+[focused evidence](validation/spray-eb-outer-drift-20260918.md).
+
 ## KH-RT representative-drop breakup
 
 Set `breakup_model='khrt'` with positive `surface_tension` and
