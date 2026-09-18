@@ -2810,3 +2810,10 @@ after viscous ghost sampling. Root comparisons, multilevel conservation and
 rollback pass with pressure outlets and moving isothermal walls; see
 [tree transport evidence](validation/pressure-outlet-tree-transport-20260918.md).
 Transport subcycling/full wrappers and MPI/application forwarding remain pending.
+
+Serial tree recursive transport and full reaction/transport/hydro splitting
+now forward pressure targets through all flow and transport stages. Focused
+checks cover 1/4/36 transport substeps, common/recursive reacting updates,
+composite budgets and rollback; see
+[tree split evidence](validation/pressure-outlet-tree-split-20260918.md).
+MPI tree and application input connections remain pending.
