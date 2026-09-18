@@ -12,6 +12,7 @@ p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--properties', action='store_true')
+p.add_argument('--rate', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
@@ -32,6 +33,12 @@ def run(profile, label, extra='', invalid=False):
         controls += 'sizes%shape=2.5,'
     else:
         controls += "nozzle%spread=.02,sizes%distribution='lognormal',sizes%weighting='number',sizes%std=2.e-6,"
+    if a.rate:
+        controls = controls.replace('injection_events=2,injection_times=0.,2.e-8,',
+            'injection_events=3,injection_times=0.,1.e-8,2.e-8,injection_scales=1.,0.,2.,')
+        controls += ('injection_profile_points=2,injection_profile_times=0.,4.e-8,'
+                     'injection_end_times=5.e-9,1.5e-8,2.5e-8,velocity_from_rate=.true.,discharge_coefficient=.8,')
+        controls += 'injection_profile_rates=2*.002,' if profile == 'solid' else 'injection_profile_rates=.001,.003,'
     if a.properties:
         values = values.replace("nc=1, number=8, vapor_names(1)='H2O', fractions(1)=1",
                                 "nc=2, number=8, vapor_names='H2O','H2', fractions=.25,.75")
@@ -64,6 +71,7 @@ for profile in ('solid', 'hollow'):
         rows = list(csv.DictReader(stream))
     assert [int(r['id']) for r in rows] == list(range(1, 17))
     fresh = rows[8:]
+    dose = (2e-11 if profile == 'solid' else 2.125e-11) if a.rate else 1e-10
     diameters, doses, counts = [], [], []
     for row in fresh:
         assert all(math.isfinite(float(v)) for v in row.values())
@@ -78,6 +86,10 @@ for profile in ('solid', 'hollow'):
         mass, count = float(row['mass']), float(row['multiplicity'])
         density = 1/(.25/1030+.75/865) if a.properties else 1000
         diameter = (6*mass/(math.pi*density))**(1/3)
+        if a.rate:
+            expected_speed = dose/(5e-9*density*math.pi*.0001**2*.8)
+            actual_speed = math.sqrt(sum(float(row[k])**2 for k in ('u','v','w')))
+            assert math.isclose(actual_speed, expected_speed, rel_tol=1e-12)
         assert 5e-6 <= diameter <= 2e-5
         if a.properties:
             assert math.isclose(float(row['component_mass_1'])/mass, .25, rel_tol=1e-14)
@@ -88,7 +100,7 @@ for profile in ('solid', 'hollow'):
         doses.append(mass*count)
         counts.append(count)
     assert max(diameters) > min(diameters)*1.1
-    assert math.isclose(sum(doses), 1e-10, rel_tol=1e-13)
+    assert math.isclose(sum(doses), dose, rel_tol=1e-13)
     weights = doses if profile == 'solid' else counts
     assert max(weights)-min(weights) <= 1e-13*max(weights)
     stopped = run(profile, 'stopped', "checkpoint_interval_steps=1,stop_after_checkpoint=.true.,checkpoint_file='saved',")
@@ -101,6 +113,6 @@ for profile in ('solid', 'hollow'):
         after = next(x for x in (resumed / 'run.log').read_text().splitlines() if x.startswith(label))
         assert before == after
     bad = run(profile, 'invalid', invalid=True)
-    assert ('Invalid injected liquid mixture' if a.properties else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
+    assert ('Invalid injected liquid mixture' if a.properties else 'Invalid rate-driven outlet radius' if a.rate else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
     assert not (bad / 'gas.csv').exists()
 print(f'PASS: serial EB finite nozzles, size weights and restart: {work}')

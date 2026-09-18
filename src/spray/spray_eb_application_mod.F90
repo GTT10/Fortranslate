@@ -15,6 +15,7 @@ module spray_eb_application_mod
   use reactive_eb_cfl_3d_mod, only: compute_reactive_eb_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
   use spray_parcel_mod
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_eb_reactive_mod, only: advance_eb_spray_reactive_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
@@ -60,6 +61,10 @@ contains
     real(dp) :: mixture_cp_coefficients(4,16)=0,mixture_cp_temperature_ranges(2,16)=0
     real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
     real(dp) :: mixture_critical_temperatures(16)=0
+    integer :: injection_profile_points=0
+    real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,injection_end_times(1024)=-1
+    logical :: velocity_from_rate=.false.
+    real(dp) :: discharge_coefficient=1,event_masses(1024),event_speeds(1024),profile_mass,denominator
     type(spray_options) :: options
     type(spray_eb_wall_options) :: walls
     logical :: wall_impacts=.false.
@@ -71,7 +76,8 @@ contains
       nozzle_radius,nozzle,sizes,mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
-      mixture_boiling_models,mixture_critical_temperatures
+      mixture_boiling_models,mixture_critical_temperatures,injection_profile_points, &
+      injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -101,6 +107,8 @@ contains
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     nozzle_radius=0;nozzle=spray_nozzle_model();sizes=spray_size_options()
+    injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0;injection_end_times=-1
+    velocity_from_rate=.false.;discharge_coefficient=1
     injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
@@ -164,6 +172,49 @@ contains
     effective=spray_liquid(vapor_name=liquids(1)%vapor_name,vapor_index=liquids(1)%vapor_index, &
       density=rho,heat_capacity=cp,reference_temperature=liquid_temperature, &
       reference_pressure=liquids(1)%reference_pressure,latent_heat=liquids(1)%latent_heat,reference_energy=e)
+    if(.not.ieee_is_finite(total_mass)) error stop 'Invalid injection mass'
+    if(total_mass<=0.or.total_mass>1e6_dp) error stop 'Invalid injection mass'
+    if(injection_profile_points/=0.and.(injection_profile_points<2.or.injection_profile_points>64)) &
+      error stop 'Invalid injection profile size'
+    if(any(injection_profile_times(injection_profile_points+1:)/=0).or. &
+       any(injection_profile_rates(injection_profile_points+1:)/=0)) error stop 'Unused injection profile entries'
+    if(.not.ieee_is_finite(discharge_coefficient)) error stop 'Invalid discharge coefficient'
+    if(velocity_from_rate) then
+      if(discharge_coefficient<1e-6_dp.or.discharge_coefficient>1) error stop 'Invalid discharge coefficient'
+      if(.not.ieee_is_finite(nozzle_radius)) error stop 'Invalid rate-driven outlet radius'
+      if(nozzle_radius<1e-12_dp.or.nozzle_radius>1) error stop 'Invalid rate-driven outlet radius'
+      if(injection_profile_points<2) error stop 'Rate-driven velocity requires an injection profile'
+    else if(discharge_coefficient/=1) then
+      error stop 'Discharge coefficient requires rate-driven velocity'
+    end if
+    event_masses=0;event_speeds=speed
+    if(injection_profile_points==0) then
+      if(any(injection_end_times/=-1)) error stop 'Integration intervals require an injection profile'
+      event_masses(:injection_events)=total_mass*injection_scales(:injection_events)
+      if(any(event_masses>1e6_dp)) error stop 'Injection mass exceeds bounds'
+    else
+      n=injection_profile_points
+      call integrate_spray_injection_profile(injection_profile_times(:n),injection_profile_rates(:n), &
+        injection_profile_times(1),injection_profile_times(n),profile_mass,ok)
+      if(.not.ok) error stop 'Invalid injection rate profile'
+      do p=1,injection_events
+        call integrate_spray_injection_profile(injection_profile_times(:n),injection_profile_rates(:n), &
+          injection_times(p),injection_end_times(p),profile_mass,ok)
+        if(.not.ok) error stop 'Invalid injection integration interval'
+        event_masses(p)=profile_mass*injection_scales(p)
+        if(event_masses(p)>1e6_dp) error stop 'Integrated injection exceeds bounds'
+        if(velocity_from_rate) then
+          event_speeds(p)=0
+          if(event_masses(p)>0) then
+            denominator=(injection_end_times(p)-injection_times(p))*rho*acos(-1._dp)* &
+              nozzle_radius**2*discharge_coefficient
+            if(denominator<=0) error stop 'Invalid rate-driven interval'
+            if(event_masses(p)>1e7_dp*denominator) error stop 'Rate-driven speed exceeds bounds'
+            event_speeds(p)=event_masses(p)/denominator
+          end if
+        end if
+      end do
+    end if
     allocate(drops(0),masses(nc,0),films(0),film_mass(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
@@ -352,7 +403,7 @@ contains
       if(next_event>1) then
         if(injection_times(next_event-1)>time) error stop 'Restart injection ahead of time'
       end if
-      expected_count=count(injection_scales(:next_event-1)>0)*number
+      expected_count=count(event_masses(:next_event-1)>0)*number
       step_split_created=0
       if(allocated(split_created_total)) step_split_created=split_created_total
       if(last_id<int(expected_count,int64)) error stop 'Invalid restart injection watermark'
@@ -403,11 +454,11 @@ contains
       real(dp) :: change(nv),totals(5),weights(8),volumes(8)
       integer :: cells(3,8),q,j,old_count,ios
       logical :: valid
-      if(injection_scales(next_event)==0) return
+      if(event_masses(next_event)==0) return
       old_count=size(drops)
       if(old_count>min(125000,options%maximum_parcels)-number) error stop 'EB injection capacity exceeded'
-      call inject_cone_parcels(effective,total_mass*injection_scales(next_event),number,last_id+1_int64, &
-        center,axis,speed,half_angle,diameter,liquid_temperature,added,valid, &
+      call inject_cone_parcels(effective,event_masses(next_event),number,last_id+1_int64, &
+        center,axis,event_speeds(next_event),half_angle,diameter,liquid_temperature,added,valid, &
         diameter_shape=sizes%shape,diameter_min=sizes%minimum,diameter_max=sizes%maximum, &
         diameter_weighting=sizes%weighting,diameter_distribution=sizes%distribution,diameter_std=sizes%std, &
         nozzle_radius=nozzle_radius,nozzle_model=nozzle)
