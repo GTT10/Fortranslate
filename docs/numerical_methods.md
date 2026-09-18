@@ -2838,3 +2838,9 @@ serial solution and diagnostics exactly, with transactional rejection of
 rank-local pressure errors; see
 [MPI tree subcycle evidence](validation/pressure-outlet-mpi-tree-subcycle-20260918.md).
 MPI transport, reactive wrappers and tree application input remain pending.
+
+MPI tree common, level-specific and recursive molecular transport now apply
+pressure targets after viscous ghost sampling. Collective target agreement and
+private state/diagnostic publication preserve failure atomicity; see
+[MPI tree transport evidence](validation/pressure-outlet-mpi-tree-transport-20260918.md).
+MPI reactive wrappers and tree application input remain pending.
