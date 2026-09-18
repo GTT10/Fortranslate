@@ -329,3 +329,32 @@ restart context; when provided, the entire group binds checkpoint identity,
 including explicitly supplied defaults. Retain the group on restart.
 Example fits are software fixtures, not calibrated material data. See
 [evidence](../../docs/validation/spray-amr-properties-20260918.md).
+
+### Per-port size distributions
+
+The optional `&amr_spray_sizes` group selects the existing deterministic diameter
+sampler independently for each port. For example:
+
+```fortran
+&amr_spray_sizes
+ port_sizes(1)%distribution='normal',port_sizes(1)%std=2.e-6
+ port_sizes(1)%minimum=2.e-6,port_sizes(1)%maximum=3.e-5
+ port_sizes(2)%distribution='weibull',port_sizes(2)%shape=2.5
+ port_sizes(2)%weighting='number'
+ port_sizes(2)%minimum=2.e-6,port_sizes(2)%maximum=4.e-5
+/
+```
+
+Distributions are `weibull`, `normal`, `lognormal` and `chi-squared`; weighting
+is `mass` (default) or `number`. `port_diameters` retains the existing diameter
+parameter meaning for the chosen sampler. `std` is the diameter standard
+deviation for normal/lognormal fits, in metres; other distributions require
+zero. Only Weibull uses a nonzero `shape`. Defaults are Weibull with zero shape,
+zero standard deviation and bounds `[1e-12,1] m`, preserving monodisperse
+injection. The shared injector validates controls before accepting each event.
+Sampling retains deterministic global parcel IDs and event mass accounting.
+
+Omitting the group retains the old restart context. A supplied group binds all
+size settings to restart identity; retain it unchanged on continuation. These
+example distributions are fixtures, not a calibrated injector. See
+[evidence](../../docs/validation/spray-amr-sizes-20260918.md).
