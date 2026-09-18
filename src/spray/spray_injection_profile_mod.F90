@@ -1,10 +1,56 @@
 module spray_injection_profile_mod
   use precision_mod, only: dp
+  use, intrinsic :: iso_fortran_env, only: iostat_end,iostat_eor
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
-  public :: integrate_spray_injection_profile
+  public :: integrate_spray_injection_profile,read_spray_injection_profile
 contains
+  ! Two whitespace-separated SI columns; blank lines and #/! comments are allowed.
+  ! Publish a zero-padded table only after parsing and validating every record.
+  subroutine read_spray_injection_profile(path,times,rates,count,ok)
+    character(len=*), intent(in) :: path
+    real(dp), intent(inout) :: times(64),rates(64)
+    integer, intent(inout) :: count
+    logical, intent(out) :: ok
+    real(dp) :: candidate_times(64),candidate_rates(64),mass
+    character(len=4096) :: line
+    integer :: unit,ios,n,i,words,cut
+    logical :: in_word,valid
+    ok=.false.;n=0;candidate_times=0;candidate_rates=0
+    open(newunit=unit,file=path,status='old',action='read',iostat=ios)
+    if (ios/=0) return
+    do
+      read(unit,'(a)',advance='no',iostat=ios) line
+      if (ios==iostat_end) exit
+      if (ios/=iostat_eor) go to 900
+      cut=scan(line,'#!')
+      if (cut>0) line(cut:)=' '
+      words=0;in_word=.false.
+      do i=1,len_trim(line)
+        if (line(i:i)==' '.or.line(i:i)==achar(9)) then
+          in_word=.false.
+        else
+          if (scan('0123456789+-.eEdD',line(i:i))==0) go to 900
+          if (.not.in_word) words=words+1
+          in_word=.true.
+        end if
+      end do
+      if (words==0) cycle
+      if (words/=2.or.n==64) go to 900
+      n=n+1
+      read(line,*,iostat=ios) candidate_times(n),candidate_rates(n)
+      if (ios/=0) go to 900
+    end do
+    close(unit,iostat=ios)
+    if (ios/=0.or.n<2) return
+    call integrate_spray_injection_profile(candidate_times(:n),candidate_rates(:n), &
+      candidate_times(1),candidate_times(n),mass,valid)
+    if (.not.valid) return
+    times=candidate_times;rates=candidate_rates;count=n;ok=.true.
+    return
+900 close(unit)
+  end subroutine
   pure subroutine integrate_spray_injection_profile(times,rates,begin_time,end_time,mass,ok)
     real(dp), intent(in) :: times(:),rates(:),begin_time,end_time
     real(dp), intent(out) :: mass

@@ -177,6 +177,12 @@ if(PELEF_ENABLE_SPRAY)
         --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_discharge_application"
         --multiport --rates --discharge)
     set_tests_properties(spray_mpi_amr_discharge_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
+    add_test(NAME spray_mpi_amr_rate_files_application
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe "$<TARGET_FILE:pelef_mpi_amr_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_rate_files_application"
+        --multiport --rates --rate-files)
+    set_tests_properties(spray_mpi_amr_rate_files_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
     add_test(NAME spray_mpi_amr_rates_application
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
         --exe "$<TARGET_FILE:pelef_mpi_amr_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
@@ -372,6 +378,10 @@ if(PELEF_ENABLE_SPRAY)
           $<TARGET_FILE:test_les_mpi_models> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_les_mpi_models_${les_ranks} PROPERTIES LABELS "spray;mpi" TIMEOUT 60 PROCESSORS ${les_ranks})
     endforeach()
+    add_executable(test_spray_rate_file spray/test_spray_rate_file.F90)
+    target_link_libraries(test_spray_rate_file PRIVATE pelef_spray_runtime)
+    add_test(NAME spray_rate_file COMMAND test_spray_rate_file "${CMAKE_CURRENT_BINARY_DIR}/rate_file_fixture.dat")
+    set_tests_properties(spray_rate_file PROPERTIES LABELS "spray" TIMEOUT 20)
     add_executable(test_spray_mpi spray/test_spray_mpi.F90)
     target_link_libraries(test_spray_mpi PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
     foreach(ranks 2 4)

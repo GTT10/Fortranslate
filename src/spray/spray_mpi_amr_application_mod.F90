@@ -1,6 +1,6 @@
 module spray_mpi_amr_application_mod
   use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
-  use spray_injection_profile_mod, only: integrate_spray_injection_profile
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod, only: liquid_mixture_properties
   use mpi_f08
   use precision_mod, only: dp
@@ -107,6 +107,8 @@ contains
     logical :: rate_velocity(16),velocity_present
     real(dp) :: discharge_coefficients(16),event_speeds(maximum_events),rate_denominator,liquid_rho,liquid_heat,liquid_energy
     namelist /amr_spray_velocity/ rate_velocity,discharge_coefficients
+    character(len=1024) :: profile_files(16)
+    namelist /amr_spray_rate_files/ profile_files
     logical :: rates_present
     namelist /amr_spray_rates/ profile_points,profile_times,profile_rates,event_end_times
     integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
@@ -160,6 +162,7 @@ contains
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     rate_velocity=.false.;discharge_coefficients=1
+    profile_files=''
     profile_points=0;profile_times=0;profile_rates=0;event_end_times=-1
     port_sizes=spray_size_options()
     acceleration=0
@@ -192,9 +195,12 @@ contains
     rates_present=ios==0
     rewind(unit)
     read(unit,nml=amr_spray_velocity,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_velocity namelist')
     velocity_present=ios==0
+    rewind(unit)
+    read(unit,nml=amr_spray_rate_files,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_rate_files namelist')
     if (.not.all(ieee_is_finite(acceleration))) call fatal('Nonfinite acceleration')
     if (any(abs(acceleration)>1e6_dp)) call fatal('Invalid acceleration')
     if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
@@ -249,6 +255,15 @@ contains
     if (injection_events==0) then
       injection_events=1;injection_times(1)=0;event_parcels(1)=parcel_count;event_mass(1)=total_mass
     end if
+    if (any(len_trim(profile_files(port_count+1:))>0)) call fatal('Unused profile files')
+    do i=1,port_count
+      if (len_trim(profile_files(i))==0) cycle
+      if (profile_points(i)/=0.or.any(profile_times(:,i)/=0).or.any(profile_rates(:,i)/=0)) &
+        call fatal('Profile file conflicts with inline table')
+      call read_spray_injection_profile(trim(profile_files(i)),profile_times(:,i),profile_rates(:,i),profile_points(i),ok)
+      if (.not.ok) call fatal('Invalid injection rate file')
+      rates_present=.true.
+    end do
     if (any(profile_points(port_count+1:)/=0).or.any(profile_times(:,port_count+1:)/=0).or. &
         any(profile_rates(:,port_count+1:)/=0)) call fatal('Unused port rate profile entries')
     if (any(event_end_times(injection_events+1:)/=-1)) call fatal('Unused event integration intervals')

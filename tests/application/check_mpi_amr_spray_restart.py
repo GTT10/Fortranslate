@@ -27,6 +27,7 @@ p.add_argument('--sizes', action='store_true')
 p.add_argument('--rates', action='store_true')
 p.add_argument('--discharge', action='store_true')
 p.add_argument('--split', action='store_true')
+p.add_argument('--rate-files', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -145,6 +146,14 @@ if a.split:
         " options%drag=.false.,options%heat=.false.,options%evaporation=.false.,\n", 1)
 
 
+if a.rate_files:
+    assert a.rates
+    spray = spray.replace('profile_points=2,3,', '')
+    spray = spray.replace('profile_times(:,1)=0.,2.e-8,profile_rates(:,1)=.002,.004,', '')
+    spray = spray.replace('profile_times(:,2)=0.,1.e-8,2.e-8,profile_rates(:,2)=.001,.002,.006,', '')
+    spray += "\n&amr_spray_rate_files profile_files='rate1.dat','rate2.dat' /\n"
+
+
 def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False):
     folder = work / name
     folder.mkdir()
@@ -178,6 +187,14 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('discharge_coefficients=.8,.9', 'discharge_coefficients=0.,.9')
     if changed_split:
         local_spray = local_spray.replace('maximum_multiplicity=5.', 'maximum_multiplicity=6.')
+    if a.rate_files:
+        rate1 = '# time [s] rate [kg/s]\n\n0 .002\n2.e-8 .004 ! endpoint\n'
+        if changed_rates:
+            rate1 = rate1.replace('.004', '.005')
+        if invalid_rates:
+            rate1 = rate1.replace('0 .002', '0 -.002')
+        (folder / 'rate1.dat').write_text(rate1)
+        (folder / 'rate2.dat').write_text('0 .001\n1.e-8\t.002\n2.e-8 .006\n')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
