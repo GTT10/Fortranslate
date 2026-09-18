@@ -18,6 +18,7 @@ p.add_argument('--restart', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--outflow', action='store_true')
+p.add_argument('--force', action='store_true')
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
@@ -70,6 +71,12 @@ if a.outflow:
         spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
                               'center=.003999999,.0015,.0015, axis=1,0,0')
     (work / 'spray.nml').write_text(spray)
+if a.force:
+    spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n acceleration=0,0,1e6,', 1)
+    (work / 'spray.nml').write_text(spray)
+labels = ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', 'Chemistry inventory:')
+if a.force:
+    labels += ('Force inventory:',)
 exe = str(a.exe.resolve())
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
 (work / 'run.log').write_text(result.stdout + result.stderr)
@@ -143,12 +150,15 @@ with (work / 'gas.csv').open() as stream:
     gas_rows = list(csv.DictReader(stream))
 assert len(gas_rows) == 64
 assert all(abs(float(row['time']) - 2e-8) < 1e-20 for row in gas_rows)
-for label in ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', 'Chemistry inventory:'):
+for label in labels:
     line = next(line for line in result.stdout.splitlines() if line.startswith(label))
     assert all(math.isfinite(float(x)) for x in line.split(':', 1)[1].split())
 line = next(line for line in result.stdout.splitlines() if line.startswith('Injected inventory:'))
 injected = [float(x) for x in line.split(':', 1)[1].split()]
 assert math.isclose(injected[0], (4.5 if a.scheduled else 1) * (1e-14 if a.khrt else 1e-16 if a.impacts == 'splash' else 1e-10), rel_tol=1e-14)
+if a.force:
+    force = next(line for line in result.stdout.splitlines() if line.startswith('Force inventory:'))
+    assert float(force.split(':', 1)[1].split()[3]) > 0
 if a.scheduled:
     assert 'Injection events processed: 5' in result.stdout
     # Tied positive events have identical evolution, and the zero event consumes no IDs.
@@ -178,7 +188,7 @@ if a.restart:
     assert (work / 'gas.csv').read_bytes() == full_gas
     assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
     assert (work / 'gas.csv.films.csv').read_bytes() == full_films
-    for label in ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', 'Chemistry inventory:'):
+    for label in labels:
         before = next(line for line in full_log.splitlines() if line.startswith(label))
         after = next(line for line in run.stdout.splitlines() if line.startswith(label))
         assert before == after, (label, work)

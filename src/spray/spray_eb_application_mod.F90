@@ -74,6 +74,8 @@ contains
     real(dp) :: discharge_coefficient=1,event_masses(1024),event_speeds(1024),profile_mass,denominator
     type(spray_options) :: options
     type(spray_eb_wall_options) :: walls
+    real(dp) :: acceleration(3)=0
+    real(dp), allocatable :: force(:),sf(:)
     logical :: wall_impacts=.false.,particle_outflow=.false.
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: film_mass(:,:)
@@ -87,7 +89,7 @@ contains
       injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient, &
       port_count,event_ports,port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles, &
       port_diameters,port_temperatures,port_fractions,port_profile_points,port_profile_times,port_profile_rates, &
-      port_radii,port_discharge_coefficients,port_nozzles,port_sizes,particle_outflow
+      port_radii,port_discharge_coefficients,port_nozzles,port_sizes,particle_outflow,acceleration
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -125,7 +127,7 @@ contains
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     nozzle_radius=0;nozzle=spray_nozzle_model();sizes=spray_size_options()
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0;injection_end_times=-1
-    velocity_from_rate=.false.;discharge_coefficient=1;particle_outflow=.false.
+    velocity_from_rate=.false.;discharge_coefficient=1;particle_outflow=.false.;acceleration=0
     injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
     call check_output(trim(config%output_file)//'.particles.csv')
@@ -280,6 +282,12 @@ contains
     allocate(drops(0),masses(nc,0),films(0),film_mass(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
+    if(.not.all(ieee_is_finite(acceleration))) error stop 'Invalid EB acceleration'
+    if(any(abs(acceleration)>1e6_dp)) error stop 'Invalid EB acceleration'
+    allocate(sf(nv));sf=0
+    if(any(acceleration/=0)) then
+      allocate(force(nv));force=0
+    end if
     allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv),initial(nv))
     call initialize_reactive_eb_density_sheet_3d(species,config,g,state,temperature,ok,mole_fractions)
     if(.not.ok) error stop 'Invalid EB initial gas'
@@ -300,7 +308,7 @@ contains
         initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
         breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
         component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
-        retired_parent_state=wall_impacts,split_created_total=split_created_total)
+        retired_parent_state=wall_impacts,split_created_total=split_created_total,external_totals=force)
       if(.not.ok) then
         write(*,'(a)') trim(message)
         error stop 'EB spray restart rejected'
@@ -323,7 +331,7 @@ contains
             initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
             breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
             component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
-        retired_parent_state=wall_impacts,split_created_total=split_created_total)
+        retired_parent_state=wall_impacts,split_created_total=split_created_total,external_totals=force)
           if(.not.ok) then
             write(*,'(a)') trim(message)
             error stop 'EB spray checkpoint rejected'
@@ -355,7 +363,7 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow)
+          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
@@ -363,13 +371,15 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow)
+          last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow, &
+          acceleration=acceleration,source_change=sf)
         end if
         if(ok) exit
         dt=.5_dp*dt
       end do
       if(.not.ok) error stop 'EB spray coupled step rejected'
       if(allocated(split_created_total)) split_created_total=split_created_total+step_split_created
+      if(allocated(force)) force=force+sf
       time=time+dt;step=step+1;boundary=boundary+sb;wall=wall+sw;chemical=chemical+sc
     end do
     call write_reactive_eb_3d_csv(config%output_file,species,g,state,temperature,time,ok,message)
@@ -411,6 +421,7 @@ contains
     write(*,'(a,*(es25.16,1x))') 'Boundary inventory: ',boundary
     write(*,'(a,*(es25.16,1x))') 'Wall inventory: ',wall
     write(*,'(a,*(es25.16,1x))') 'Chemistry inventory: ',chemical
+    if(allocated(force)) write(*,'(a,*(es25.16,1x))') 'Force inventory: ',force
   contains
     subroutine build_context()
       integer :: scratch,ios,j,k,length
