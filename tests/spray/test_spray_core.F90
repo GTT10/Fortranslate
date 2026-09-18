@@ -1153,6 +1153,67 @@ program test_spray_core
     call near(les_face_mean(-2._dp,6._dp,.false.),2._dp,1e-13_dp,'arithmetic default')
     call near(les_face_mean(1e300_dp,1e300_dp,.true.)/1e300_dp,1._dp,1e-13_dp,'large harmonic mean')
     call near(les_face_mean(1e-300_dp,1e-300_dp,.true.)/1e-300_dp,1._dp,1e-13_dp,'small harmonic mean')
+  case('les_pressure_outlet')
+    block
+      real(dp) :: pressure(6),other(15,4,4,4),base_diff,sound
+      integer :: i,j,k,c,m
+      do m=1,3
+        select case(m)
+        case(1)
+          les_model='smagorinsky'
+        case(2)
+          les_model='wale'
+        case(3)
+          les_model='vreman'
+        end select
+        do k=1,4
+          do j=1,4
+            do i=1,4
+              primitive=0;primitive(1)=.3_dp;primitive(5)=101325;primitive(15)=1
+              primitive(2)=20+2*i;primitive(3)=3*j
+              call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),temp(i,j,k),sound,ok)
+              call require(ok,'pressure LES fixture')
+            end do
+          end do
+        end do
+        saved=state;saved_t=temp;faces='outflow';pressure=0
+        call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,other,base_diff,ok, &
+          boundary_faces=faces,model=les_model,ci=.1_dp)
+        call require(ok,'unpressurized LES reference')
+        call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,rhs,diff,ok, &
+          boundary_faces=faces,model=les_model,ci=.1_dp,outlet_pressure=pressure)
+        call require(ok.and.all(rhs==other).and.diff==base_diff,'zero pressure exact compatibility')
+        pressure(2)=100000
+        call compute_les_rhs_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,rhs,diff,ok, &
+          boundary_faces=faces,boundary_rate=totals0,model=les_model,ci=.1_dp,outlet_pressure=pressure)
+        call require(ok.and.any(rhs/=other).and.diff>0,'pressure enters LES flux')
+        do c=1,15
+          expected=sum(rhs(c,:,:,:))*product(spacing)
+          call require(abs(expected-totals0(c))<=1e-12_dp*max(1._dp,abs(totals0(c))),'pressure RHS ledger')
+        end do
+        dt=.01_dp/(diff*sum(1/spacing**2))
+        call advance_les_ssprk2_3d(species,state,temp,spacing,.17_dp,.7_dp,.7_dp,dt,ok, &
+          boundary_faces=faces,boundary_change=totals0,model=les_model,ci=.1_dp,outlet_pressure=pressure)
+        call require(ok.and.any(state/=saved),'pressure LES SSPRK2')
+        do c=1,15
+          expected=(sum(state(c,:,:,:))-sum(saved(c,:,:,:)))*product(spacing)
+          call require(abs(expected-totals0(c))<=1e-12_dp* &
+            max(1._dp,sum(abs(saved(c,:,:,:)))*product(spacing)),'pressure step ledger')
+        end do
+        state=saved;temp=saved_t;faces='periodic'
+        call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,0._dp,ok, &
+          boundary_faces=faces,model=les_model,outlet_pressure=pressure)
+        call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'pressure on periodic face rejected')
+        faces='outflow';pressure(2)=ieee_value(0._dp,ieee_quiet_nan)
+        call advance_les_ssprk2_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,0._dp,ok, &
+          boundary_faces=faces,model=les_model,outlet_pressure=pressure)
+        call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'nonfinite pressure rejected')
+        pressure(2)=-1
+        call compute_les_rhs_3d(species,state,temp,spacing,0._dp,.7_dp,.7_dp,rhs,diff,ok, &
+          boundary_faces=faces,model=les_model,outlet_pressure=pressure)
+        call require(.not.ok.and.all(rhs==0).and.diff==0,'negative pressure rejected')
+      end do
+    end block
   case('les_isotropic')
     block
       real(dp) :: base(3,3),base_mu,sound,other(15,4,4,4),base_diff
