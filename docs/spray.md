@@ -3002,3 +3002,10 @@ filters and neighbor primitive gradients. Two/four-rank unequal partitions match
 serial coefficients exactly; invalid local configuration/EOS data reject
 collectively. Distributed dynamic fluxes, stepping and application dispatch
 remain open. See [MPI coefficient-field evidence](validation/les-mpi-dynamic-field-20260918.md).
+
+`compute_mpi_dynamic_les_rhs_3d` now uses distributed coefficients and two-layer
+neighbor halos with the shared dynamic flux kernel. Owner-local RHS and the
+global maximum diffusion estimate match serial results exactly in the focused
+unequal-slab tests. Publication is collective and transactional. MPI dynamic
+stepping and coupled/application dispatch remain to be connected; see
+[MPI dynamic flux evidence](validation/les-mpi-dynamic-flux-20260918.md).
