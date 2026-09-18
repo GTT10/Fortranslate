@@ -3159,6 +3159,9 @@ operators, preserving internal energy and recording external impulse/work.
 Covered coarse cells receive the update but do not contribute twice to the
 composite ledger. Stationary wall films remain attached to their walls.
 Source diagnostics publish only with the entire accepted coupled interval and
-remain separate from boundary exchange. Application inputs and checkpoint
-persistence for this source ledger are not yet connected. See
+remain separate from boundary exchange. The fixed/selected MPI AMR spray
+application exposes `&amr_spray_force acceleration=... /` and retains cumulative
+source inventory through changed-rank checkpoint/restart. See the
+[input guide](../cases/mpi_amr_spray_3d/README.md#uniform-acceleration),
+[application evidence](validation/spray-amr-force-application-20260918.md) and
 [focused evidence](validation/spray-amr-force-20260918.md).

@@ -275,3 +275,23 @@ gas stepping does not subcycle LES. Nondefault LES settings bind the checkpoint
 context, so changing them on restart is rejected. Default settings retain the
 previous context serialization. Dynamic LES and EB grids are not supported here.
 See [application evidence](../../docs/validation/les-amr-application-20260918.md).
+
+### Uniform acceleration
+
+Add an optional group to the spray input to apply a uniform acceleration to
+gas and free parcels (SI units, each component bounded by `1e6`):
+
+```fortran
+&amr_spray_force
+ acceleration=0.,0.,-9.81
+/
+```
+
+The default is zero. Attached wall films stay stationary. The application
+prints cumulative external momentum and energy exchange as `Source inventory:`
+in conserved-variable order, separately from injection and boundary inventories.
+Nonzero acceleration binds restart identity and adds a `SPRAY_SOURCE_V1` record
+to the particle checkpoint payload, with a matching gas-context marker.
+The source inventory restores together with gas and parcels on a changed rank
+count. Zero acceleration retains the previous context and payload format.
+See [focused evidence](../../docs/validation/spray-amr-force-application-20260918.md).
