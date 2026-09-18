@@ -384,8 +384,32 @@ retain explicit event masses and require end-time sentinel `-1`.
 The entire interval mass is injected at the event's start, using the existing
 port speed and parcel count. This is event discretization of a rate history;
 divide intervals as needed for temporal resolution. Automatic interval
-subdivision and rate-derived velocity are not part of this input path.
+subdivision is not provided. Optional rate-derived velocity is described below.
 Unused profile entries must remain zero and unused end times `-1`. A supplied
 group binds the rate table and intervals to restart identity; omitting it
 preserves the previous context. See
 [evidence](../../docs/validation/spray-amr-rates-20260918.md).
+
+### Rate-derived injection velocity
+
+For ports with rate profiles, an additional group can replace prescribed speed:
+
+```fortran
+&amr_spray_velocity
+ rate_velocity(1)=.true.
+ discharge_coefficients(1)=.8
+/
+```
+
+The event speed is `mass / (duration * rho_liquid * pi * port_radius**2 * Cd)`.
+Density comes from that port's component fractions and injection temperature,
+including configured density fits. Set a positive `port_radii` entry in
+`&amr_spray`; allowed bounds are `[1e-12,1] m`. The discharge coefficient must
+be in `[1e-6,1]` and the resulting speed no greater than `1e7 m/s`. Zero-mass
+events use zero speed. The computed scalar speed feeds the existing cone/swirl
+geometry. It is an interval-average rate conversion, not a pressure-drop model.
+
+Ports default to prescribed speed and coefficient 1. Non-unit coefficients on
+disabled ports and controls on unused ports are rejected. A supplied group
+binds restart identity; retain it unchanged on continuation. See
+[evidence](../../docs/validation/spray-amr-discharge-20260918.md).
