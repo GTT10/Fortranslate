@@ -1,6 +1,6 @@
 program test_spray_core
   use, intrinsic :: iso_fortran_env, only: int64
-  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
@@ -1150,6 +1150,34 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
+  case('les_alternative_algebra')
+    grad=0
+    call wale_stress(grad,2._dp,[.1_dp,.1_dp,.1_dp],.5_dp,mu,stress,ok)
+    call require(ok.and.mu==0.and.all(stress==0),'WALE zero gradient')
+    call vreman_stress(grad,2._dp,[.1_dp,.1_dp,.1_dp],.2_dp,mu,stress,ok)
+    call require(ok.and.mu==0.and.all(stress==0),'Vreman zero gradient')
+    grad(1,2)=3
+    call wale_stress(grad,2._dp,[.1_dp,.1_dp,.1_dp],.5_dp,mu,stress,ok)
+    call require(ok.and.mu==0.and.all(stress==0),'WALE simple shear')
+    call vreman_stress(grad,2._dp,[.1_dp,.1_dp,.1_dp],.2_dp,mu,stress,ok)
+    call require(ok.and.mu==0.and.all(stress==0),'Vreman simple shear')
+    grad=0;grad(1,1)=1;grad(2,2)=2;grad(3,3)=3
+    call wale_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.5_dp,mu,stress,ok)
+    call require(ok,'WALE diagonal strain')
+    expected=2*(.5_dp*.2_dp)**2*(98._dp/3)**1.5_dp/(14._dp**2.5_dp+(98._dp/3)**1.25_dp)
+    call near(mu,expected,1e-13_dp,'WALE analytic invariant')
+    call near(stress(1,1),-2*mu,1e-13_dp,'WALE deviatoric stress')
+    call near(stress(1,1)+stress(2,2),-stress(3,3),1e-13_dp,'WALE trace')
+    call vreman_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.2_dp,mu,stress,ok)
+    call require(ok,'Vreman diagonal strain')
+    call near(mu,2*(.2_dp*.2_dp)**2*2.5_dp*sqrt(3.5_dp),1e-13_dp,'Vreman analytic invariant')
+    call near(stress(3,3),2*mu,1e-13_dp,'Vreman deviatoric stress')
+    grad=grad*1e29_dp
+    call wale_stress(grad,2._dp,[.1_dp,.2_dp,.4_dp],.5_dp,mu,stress,ok)
+    call require(ok.and.all(ieee_is_finite(stress)),'WALE scaled large gradient')
+    call near(mu/1e29_dp,expected,1e-13_dp,'WALE scaling')
+    call vreman_stress(grad,-1._dp,[.1_dp,.2_dp,.4_dp],.2_dp,mu,stress,ok)
+    call require(.not.ok.and.mu==0.and.all(stress==0),'Vreman invalid density')
   case('les_boundary')
     call make_gas(.false.)
     state(2,:,:,:)=20.0_dp*state(1,:,:,:)

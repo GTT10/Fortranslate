@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "pelec_commit": "bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8",
+  "source": "https://raw.githubusercontent.com/Pele-Suite/PeleC/bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8/Source/LES.H",
+  "sha256": "d9d24bc5dc24206408121fee64a9d616c78ac3edac99e16857bfa4aa93b69a17",
+  "routines": [
+    "get_wale_sfs_stresses",
+    "pc_wale_sfs_term",
+    "get_vreman_sfs_stresses",
+    "pc_vreman_sfs_term"
+  ],
+  "implemented_scope": "Deviatoric stress and dynamic eddy viscosity from a supplied velocity gradient; CI=0; no flux or application dispatch yet",
+  "numerical_changes": [
+    "Normalize velocity gradient before forming homogeneous invariants",
+    "Return zero for zero gradient or coefficient",
+    "Evaluate Vreman Gram invariant as sum of squared minors to avoid cancellation"
+  ]
+}

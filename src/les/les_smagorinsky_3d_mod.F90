@@ -9,6 +9,7 @@ module les_smagorinsky_3d_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   implicit none
   private
+  public :: wale_stress,vreman_stress
   public :: compute_les_ghosted_rhs_3d
   public :: smagorinsky_stress, compute_les_rhs_3d, advance_les_ssprk2_3d
 contains
@@ -35,6 +36,73 @@ contains
     ! Deviatoric compressible Smagorinsky only: no modeled isotropic SGS energy.
     stress=2.0_dp*viscosity*strain
     ok=.true.
+  end subroutine
+
+  ! Pinned PeleC LES.H deviatoric WALE/Vreman closures (CI=0).
+  ! Gradient rows are velocity components, columns are spatial derivatives.
+  subroutine wale_stress(gradient,density,spacing,cw,viscosity,stress,ok)
+    real(dp), intent(in) :: gradient(3,3),density,spacing(3),cw
+    real(dp), intent(out) :: viscosity,stress(3,3)
+    logical, intent(out) :: ok
+    call algebraic_stress(gradient,density,spacing,cw,.true.,viscosity,stress,ok)
+  end subroutine
+
+  subroutine vreman_stress(gradient,density,spacing,cs,viscosity,stress,ok)
+    real(dp), intent(in) :: gradient(3,3),density,spacing(3),cs
+    real(dp), intent(out) :: viscosity,stress(3,3)
+    logical, intent(out) :: ok
+    call algebraic_stress(gradient,density,spacing,cs,.false.,viscosity,stress,ok)
+  end subroutine
+
+  subroutine algebraic_stress(gradient,density,spacing,coefficient,wale,viscosity,stress,ok)
+    real(dp), intent(in) :: gradient(3,3),density,spacing(3),coefficient
+    logical, intent(in) :: wale
+    real(dp), intent(out) :: viscosity,stress(3,3)
+    logical, intent(out) :: ok
+    real(dp) :: g(3,3),strain(3,3),square(3,3),deviator(3,3),scale,delta,trace,s2,d2,rate,beta
+    integer :: i,j,k,l
+    viscosity=0;stress=0;ok=.false.
+    if (.not.all(ieee_is_finite(gradient))) return
+    if (.not.all(ieee_is_finite([density,spacing,coefficient]))) return
+    scale=maxval(abs(gradient))
+    if (scale>1e30_dp.or.density<=0.or.density>1e8_dp) return
+    if (any(spacing<1e-12_dp).or.any(spacing>1e9_dp)) return
+    if (coefficient<0.or.coefficient>2) return
+    ok=.true.
+    if (scale==0.or.coefficient==0) return
+    ! Homogeneity permits normalized invariants without fifth-power overflow.
+    g=gradient/scale;strain=.5_dp*(g+transpose(g))
+    delta=product(spacing)**(1._dp/3._dp)
+    if (wale) then
+      square=matmul(g,g);deviator=.5_dp*(square+transpose(square))
+      trace=(square(1,1)+square(2,2)+square(3,3))/3
+      do i=1,3
+        deviator(i,i)=deviator(i,i)-trace
+      end do
+      s2=sum(strain**2);d2=sum(deviator**2)
+      rate=0
+      if (d2>0) rate=d2**1.5_dp/(s2**2.5_dp+d2**1.25_dp)
+    else
+      ! Sum squared 2x2 minors equals the Gram-matrix invariant B_beta;
+      ! this form avoids cancellation to a negative value for rank-one shear.
+      beta=0
+      do i=1,2
+        do j=i+1,3
+          do k=1,2
+            do l=k+1,3
+              beta=beta+(g(k,i)*g(l,j)-g(l,i)*g(k,j))**2
+            end do
+          end do
+        end do
+      end do
+      rate=2.5_dp*sqrt(beta/sum(g**2))
+    end if
+    viscosity=density*(coefficient*delta)**2*scale*rate
+    trace=(strain(1,1)+strain(2,2)+strain(3,3))/3
+    do i=1,3
+      strain(i,i)=strain(i,i)-trace
+    end do
+    stress=2*viscosity*scale*strain
   end subroutine
 
   subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
