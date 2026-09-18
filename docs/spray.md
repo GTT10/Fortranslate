@@ -2929,3 +2929,10 @@ returns `Cs^2`, `CI`, `Cs^2/PrT` with pinned regularization and clipping. These
 APIs do not perform spatial filtering or add a `dynamic` application choice;
 filtering, smoothing and dynamic flux integration remain to be connected.
 See [reference, numerical boundaries and algebra checks](validation/les-dynamic-algebra-20260918.md).
+
+`les_filter_3d_mod` now provides `les_filter_weights` for standard box, normalized
+Gaussian and identity kernels, and `filter_les_field_3d` for periodic fields or
+caller-supplied halos. The box ratio-six kernel is available for dynamic coefficient
+smoothing. Output is preserved on rejection. These building blocks still require
+connection to dynamic LES field evaluation and fluxes; see
+[filter evidence and reference scope](validation/les-filter-20260918.md).
