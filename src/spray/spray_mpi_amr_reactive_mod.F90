@@ -25,7 +25,9 @@ contains
       chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol,particle_steps, &
       maximum_correction,minimum_theta,ok,last_id,chemistry_integrator,subcycling, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      wall_films,film_mass,film_settings,film_steps,les_settings,les_model)
+      wall_films,film_mass,film_settings,film_steps,les_settings,les_model,outlet_pressure)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: pressure(6),pressure_min(6),pressure_max(6)
     ! LES settings are [eddy coefficient, PrT, ScT, CI]; zero eddy/CI disables.
     real(dp), optional, intent(in) :: les_settings(4)
     character(len=*), optional, intent(in) :: les_model
@@ -94,8 +96,18 @@ contains
       valid=valid.and.all(len_trim(boundary_faces)<=len(faces))
       faces=boundary_faces
     end if
+    pressure=0
+    if (present(outlet_pressure)) pressure=outlet_pressure
+    valid=valid.and.all(ieee_is_finite(pressure))
+    valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
+    valid=valid.and..not.any(pressure>0.and.faces/='outflow')
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(pressure,pressure_min,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(pressure,pressure_max,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (any(pressure_min/=pressure_max)) return
     call MPI_Allreduce(sgs,sgs_min,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(sgs,sgs_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
@@ -138,7 +150,7 @@ contains
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       boundary,correction,theta,comm,valid,chemistry_integrator=chemistry_integrator,subcycling=subcycling, &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
-      wall_velocity=wall_velocity)
+      wall_velocity=wall_velocity,outlet_pressure=pressure)
     if (.not.valid) return
     call les_half_step()
     if (.not.valid) return
@@ -178,7 +190,7 @@ contains
       call advance_mpi_amr_tree_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
         sgs(1),sgs(2),sgs(3),les_boundary,les_correction,comm,valid, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
-        wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4))
+        wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure)
       if (.not.valid) return
       les_ledger=les_ledger+les_boundary;les_max=max(les_max,les_correction)
     end subroutine

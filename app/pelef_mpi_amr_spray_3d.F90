@@ -34,7 +34,7 @@ program pelef_mpi_amr_spray_3d
   end if
   call get_command_argument(1, input_path)
   call get_command_argument(2, topology_path)
-  call read_reactive_3d_configuration(trim(input_path), config, ok, message)
+  call read_reactive_3d_configuration(trim(input_path), config, ok, message,allow_pressure_outlet=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     call fatal('Invalid MPI tree command or input')

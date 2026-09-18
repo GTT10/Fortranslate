@@ -20,6 +20,7 @@ p.add_argument('--physical', action='store_true')
 p.add_argument('--inflow', action='store_true')
 p.add_argument('--films', action='store_true')
 p.add_argument('--les', action='store_true')
+p.add_argument('--pressure', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -69,6 +70,10 @@ if a.inflow:
     spray = spray.replace('port_centers(:,1)=.000001', 'port_centers(:,1)=.00075')
     spray = spray.replace('port_axes(:,1)=-1.', 'port_axes(:,1)=1.')
 
+if a.pressure:
+    assert a.physical
+    gas = gas.replace(' output_file=', ' outlet_pressure(2)=100000.\n output_file=')
+
 if a.films:
     assert a.physical and not a.inflow
     spray = spray.replace('port_centers(:,1)=.000001', 'port_centers(:,1)=1.e-9')
@@ -81,10 +86,12 @@ if a.les:
     spray += "\n&amr_spray_les les_cs=.17,les_ci=.1,les_model='vreman' /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False):
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
+    if changed_pressure:
+        local_gas = local_gas.replace('outlet_pressure(2)=100000.', 'outlet_pressure(2)=100100.')
     (folder / 'gas.nml').write_text(local_gas)
     local_spray = spray
     if changed:
@@ -176,6 +183,8 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.pressure:
+    run('changed_pressure', 2, f"restart_file='{checkpoint}'", good=False, changed_pressure=True)
 if a.les:
     run('changed_les', 2, f"restart_file='{checkpoint}'", good=False, changed_les=True)
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)

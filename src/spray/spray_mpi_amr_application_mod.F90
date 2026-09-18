@@ -397,7 +397,8 @@ contains
       if (les_cs>0.or.les_ci>0) then
         call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,spacing,les_cfl,faces, &
           les_cs,les_prt,les_sct,les_dt,diffusivity,comm,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci)
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci, &
+          outlet_pressure=config%outlet_pressure)
         if (.not.ok) call fatal('LES timestep failed')
         dt=min(dt,les_dt)
       end if
@@ -421,7 +422,7 @@ contains
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
             config%wall_temperature,config%wall_velocity, &
             wall_films=films,film_mass=film_mass,film_settings=walls, &
-            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model)
+            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure)
         else
           call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -432,7 +433,7 @@ contains
             config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,particle_steps,correction,theta, &
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
             config%wall_temperature,config%wall_velocity, &
-            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model)
+            les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure)
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
