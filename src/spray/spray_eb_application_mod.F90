@@ -99,7 +99,7 @@ contains
     if(maximum_dt<=0.or.maximum_dt>1e6_dp) error stop 'Invalid EB spray maximum_dt'
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Liquid fractions must sum to one'
-    if(.not.valid_spray_options(options).or.options%khrt_children) error stop 'Unsupported EB spray options'
+    if(.not.valid_spray_options(options)) error stop 'Unsupported EB spray options'
     if(options%maximum_multiplicity>0) then
       allocate(split_created_total);split_created_total=0
     end if
@@ -317,13 +317,14 @@ contains
       if(last_id<int(expected_count,int64)) error stop 'Invalid restart injection watermark'
       if(step_split_created<0.or.step_split_created>last_id-int(expected_count,int64)) &
         error stop 'Invalid restart split count'
-      if (wall_impacts) then
-        if(last_id<int(expected_count,int64)) error stop 'Invalid restart impact watermark'
-        if(modulo(last_id-int(expected_count,int64)-step_split_created,4_int64)/=0) error stop 'Invalid restart splash IDs'
+      if (wall_impacts.or.options%khrt_children) then
+        if(modulo(last_id-int(expected_count,int64)-step_split_created,4_int64)/=0) error stop 'Invalid restart child IDs'
       else
+        if(last_id-int(expected_count,int64)/=step_split_created) error stop 'Invalid restart injection IDs'
+      end if
+      if (.not.wall_impacts) then
         if(size(films)/=0) error stop 'Unexpected restart films'
-        if(int(size(drops),int64)/=last_id.or.last_id-int(expected_count,int64)/=step_split_created) &
-          error stop 'Invalid restart injection IDs'
+        if(int(size(drops),int64)/=last_id) error stop 'Invalid restart particle count'
       end if
       if(size(drops)>min(125000,options%maximum_parcels)) error stop 'Restart exceeds population capacity'
       if(any(shape(masses)/=[nc,size(drops)])) error stop 'Restart component shape mismatch'

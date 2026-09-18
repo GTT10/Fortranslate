@@ -16,6 +16,7 @@ p.add_argument('--selected', action='store_true')
 p.add_argument('--scheduled', action='store_true')
 p.add_argument('--restart', action='store_true')
 p.add_argument('--split', action='store_true')
+p.add_argument('--khrt', action='store_true')
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
@@ -45,13 +46,30 @@ if a.split:
         ' options%surface_tension=1000, options%liquid_viscosity=.001,\n'
         ' options%drag=.false., options%heat=.false., options%evaporation=.false.,')
     (work / 'spray.nml').write_text(spray)
+if a.khrt:
+    assert not a.impacts and not a.scheduled and not a.split
+    gas = (work / 'gas.nml').read_text().replace('regular_density=.31, cut_density=.31', 'regular_density=1, cut_density=1')
+    gas = gas.replace('initial_pressure=135000', 'initial_pressure=435483.87096774194')
+    (work / 'gas.nml').write_text(gas)
+    spray = (work / 'spray.nml').read_text().replace('&eb_spray',
+        "&eb_spray\n options%breakup_model='khrt', options%khrt_children=.true.,\n"
+        ' options%khrt_reference_diameter_cubed=1e-25, options%surface_tension=.072, options%liquid_viscosity=.001,\n'
+        ' options%drag=.false., options%heat=.false., options%evaporation=.false.,')
+    spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0', 'center=.002,.0015,.0015, axis=1,0,0')
+    spray = spray.replace('speed=20', 'speed=1000').replace('total_mass=1e-10', 'total_mass=1e-14')
+    (work / 'spray.nml').write_text(spray)
 exe = str(a.exe.resolve())
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
 (work / 'run.log').write_text(result.stdout + result.stderr)
 assert result.returncode == 0, (work, result.stderr)
 with (work / 'gas.csv.particles.csv').open() as stream:
     rows = list(csv.DictReader(stream))
-if a.split:
+if a.khrt:
+    assert len(rows)>2 and (len(rows)-2)%4==0
+    assert [int(row['id']) for row in rows] == list(range(1,len(rows)+1))
+    assert all(float(row['u'])>0 and float(row['x'])>.002 for row in rows)
+    assert all(float(row['component_mass_1']) == float(row['mass']) for row in rows)
+elif a.split:
     assert len(rows) == (12 if a.scheduled else 4)
     assert [int(row['id']) for row in rows] == list(range(1, len(rows)+1))
     evolved = rows[:-2] if a.scheduled else rows
@@ -107,7 +125,7 @@ for label in ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', '
     assert all(math.isfinite(float(x)) for x in line.split(':', 1)[1].split())
 line = next(line for line in result.stdout.splitlines() if line.startswith('Injected inventory:'))
 injected = [float(x) for x in line.split(':', 1)[1].split()]
-assert math.isclose(injected[0], (4.5 if a.scheduled else 1) * (1e-16 if a.impacts == 'splash' else 1e-10), rel_tol=1e-14)
+assert math.isclose(injected[0], (4.5 if a.scheduled else 1) * (1e-14 if a.khrt else 1e-16 if a.impacts == 'splash' else 1e-10), rel_tol=1e-14)
 if a.scheduled:
     assert 'Injection events processed: 5' in result.stdout
     # Tied positive events have identical evolution, and the zero event consumes no IDs.
@@ -164,6 +182,16 @@ if a.restart:
     run = subprocess.run([exe, 'truncated.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
     (work / 'truncated.log').write_text(run.stdout + run.stderr)
     assert run.returncode != 0 and checkpoint.read_bytes() == payload
+    if a.khrt:
+        lines = payload.decode().splitlines()
+        assert int(lines[2].split()[-1]) > 2
+        assert (int(lines[4])-2) % 4 == 0
+        lines[4] = str(int(lines[4])+1)
+        (work / 'bad_ids.chk').write_text('\n'.join(lines)+'\n')
+        (work / 'bad_ids.nml').write_text(resume.replace(checkpoint_name,'bad_ids.chk'))
+        run = subprocess.run([exe,'bad_ids.nml','spray.nml'],cwd=work,capture_output=True,text=True)
+        (work / 'bad_ids.log').write_text(run.stdout+run.stderr)
+        assert run.returncode != 0 and 'Invalid restart child IDs' in run.stderr
     if a.split:
         lines = payload.decode().splitlines()
         assert lines[0].endswith('_SCOUNT_V1')

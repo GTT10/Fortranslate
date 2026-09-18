@@ -172,8 +172,32 @@ program test_spray_eb_impact_reactive
     call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
       'split composite conservation')
   end do
-  print *, 'PASS: reactive EB impacts, films, splitting, rollback and terminal model rejection'
+  state=saved;temperature=saved_t
+  deallocate(drops,masses);allocate(drops(1),masses(2,1))
+  drops(1)=saved_drop;drops(1)%velocity=[1000._dp,0._dp,0._dp];masses=saved_mass
+  options%breakup_model='khrt';options%khrt_children=.true.;options%khrt_reference_diameter_cubed=1e-25_dp
+  options%surface_tension=.072_dp;options%maximum_multiplicity=0;options%maximum_parcels=100
+  last_id=100;boundary=42;wall=42;chemical=42;theta=42;solver='invalid'
+  call kh_advance()
+  call require(.not.ok.and.steps==0.and.last_id==100,'KH gas failure ID rollback')
+  call require(size(drops)==1.and.all(masses==saved_mass),'KH population rollback')
+  call require(all(state==saved).and.all(temperature==saved_t),'KH gas rollback')
+  call require(all(boundary==42).and.all(wall==42).and.all(chemical==42).and.theta==42,'KH ledger rollback')
+  solver='rusanov'
+  call inventory(before)
+  call kh_advance()
+  call require(ok.and.size(drops)>1.and.last_id>100,'KH reactive children')
+  call require(modulo(last_id-100_int64,4_int64)==0,'KH reactive four-child IDs')
+  call inventory(after)
+  call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'KH reactive composite conservation')
+  print *, 'PASS: reactive EB impacts, films, KH children, splitting and rollback'
 contains
+  subroutine kh_advance()
+    call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+      drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
+      2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit',last_id=last_id)
+  end subroutine
   subroutine advance()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &

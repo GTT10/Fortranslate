@@ -99,7 +99,7 @@ contains
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
     if (impacts.and..not.present(last_id)) return
-    if (options%maximum_multiplicity>0.and..not.present(last_id)) return
+    if ((options%maximum_multiplicity>0.or.options%khrt_children).and..not.present(last_id)) return
     watermark=0
     if (present(last_id)) watermark=last_id
     if (impacts) then
@@ -115,6 +115,9 @@ contains
         if (present(model_rejected)) model_rejected=.true.
         return
       end if
+    else if(present(last_id)) then
+      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
+        .5_dp*dt,first_steps,first_wall,valid,last_id=watermark)
     else
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
         .5_dp*dt,first_steps,first_wall,valid)
@@ -132,6 +135,9 @@ contains
         if (present(model_rejected)) model_rejected=.true.
         return
       end if
+    else if(present(last_id)) then
+      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
+        .5_dp*dt,second_steps,second_wall,valid,last_id=watermark)
     else
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
         .5_dp*dt,second_steps,second_wall,valid)
