@@ -13,6 +13,7 @@ p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--mpiexec', type=Path, required=True)
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
+p.add_argument('--rate', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
@@ -53,6 +54,16 @@ def run(label, ranks, extra='', invalid=False):
                 "port_sizes(1)%shape=2.5,port_sizes(1)%minimum=5.e-6,port_sizes(1)%maximum=2.e-5,"
                 "port_sizes(2)%distribution='lognormal',port_sizes(2)%weighting='number',"
                 "port_sizes(2)%std=2.e-6,port_sizes(2)%minimum=5.e-6,port_sizes(2)%maximum=2.e-5,")
+    if a.rate:
+        controls = controls.replace(
+            'injection_events=4,event_ports=1,2,1,2,injection_times=0.,0.,2.e-8,2.e-8,',
+            'injection_events=5,event_ports=1,2,1,1,2,injection_times=0.,0.,1.e-8,2.e-8,2.e-8,'
+            'injection_scales=1.,1.,0.,.5,2.,')
+        controls += ('port_velocity_from_rate=2*.true.,port_discharge_coefficients=.8,.5,'
+                     'port_profile_points=2,2,port_profile_times(:,1)=0.,4.e-8,62*0.,'
+                     'port_profile_times(:,2)=0.,4.e-8,62*0.,port_profile_rates(:,1)=2*.002,62*0.,'
+                     'port_profile_rates(:,2)=.001,.003,62*0.,'
+                     'injection_end_times=5.e-9,5.e-9,1.5e-8,2.5e-8,2.5e-8,')
     if invalid:
         controls = controls.replace('port_radii=2*.0001', 'port_radii=2*-.0001')
     spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1))
@@ -71,6 +82,8 @@ for directory in full:
     for port, start in ((1, 16), (2, 24)):
         fresh = data[start:start+8]
         sizes, counts, doses = [], [], []
+        dose = (5e-12 if port == 1 else 2.125e-11) if a.rate else 1e-10
+        expected_speed = dose / (5e-9 * 1000 * math.pi * .0001**2 * (.8 if port == 1 else .5)) if a.rate else 20
         for row in fresh:
             assert int(row['material_id']) == port
             x = float(row['x']) - (.0015 if port == 1 else .003)
@@ -80,6 +93,8 @@ for directory in full:
             if port == 2:
                 assert abs(radial-.0001) <= 1e-12*.0001
             u, w = float(row['u']), float(row['w'])
+            speed = math.sqrt(u*u + float(row['v'])**2 + w*w)
+            assert abs(speed-expected_speed) <= 1e-12*expected_speed
             assert abs((x*u+z*w)/(radial*math.hypot(u, w))-math.cos(.4)) < 1e-12
             assert float(row['y']) == .0015 and float(row['temperature']) == 350
             mass, count = float(row['mass']), float(row['multiplicity'])
@@ -89,7 +104,7 @@ for directory in full:
         assert all(5e-6 <= d <= 2e-5 for d in sizes) and max(sizes) > 1.1*min(sizes)
         values = doses if port == 1 else counts
         assert max(values)-min(values) <= 1e-13*max(values)
-        assert abs(sum(doses)-1e-10) <= 1e-23
+        assert abs(sum(doses)-dose) <= 1e-13*dose
     assert any(float(r['temperature']) != 350 for r in data[:16])
 compare(rows(full[0] / 'result.csv'), rows(full[1] / 'result.csv'))
 compare(particles(full[0]), particles(full[1]))
@@ -98,6 +113,7 @@ resumed = run('resumed', 4, f"restart_file='{stopped / 'saved.step1'}',")
 compare(rows(full[1] / 'result.csv'), rows(resumed / 'result.csv'))
 compare(particles(full[1]), particles(resumed))
 invalid = run('invalid', 2, invalid=True)
-assert 'Invalid injection port template' in (invalid / 'run.log').read_text()
+expected_error = 'Rate-driven outlet requires positive radius' if a.rate else 'Invalid injection port template'
+assert expected_error in (invalid / 'run.log').read_text()
 assert not (invalid / 'result.csv').exists()
-print(f'PASS: solid/hollow ports, swirl, mass/number size distributions, MPI 2/4 parity and restart; {work}')
+print(f'PASS: finite ports, size distributions, rate velocity={a.rate}, MPI 2/4 parity and restart; {work}')

@@ -86,6 +86,7 @@ program pelef_reactive_eb_tree_3d
   integer :: injection_events=1,next_injection=1
   integer(int64) :: last_particle_id=0
   real(dp) :: injection_times(1024)=0,injection_scales(1024)=1,event_factors(1024)=1
+  real(dp) :: event_velocity_scales(1024)=1
   type(spray_liquid), allocatable :: liquids(:)
   type(spray_options) :: particle_options
   type(spray_wall_options) :: walls
@@ -507,6 +508,8 @@ contains
     real(dp) :: port_radii(16)=0
     type(spray_nozzle_model) :: port_nozzles(16)
     type(spray_size_options) :: port_sizes(16)
+    logical :: port_velocity_from_rate(16)=.false.
+    real(dp) :: port_discharge_coefficients(16)=1,template_speed,denominator
     character(len=4096) :: context_line
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
@@ -518,7 +521,7 @@ contains
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
       port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
       port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls, &
-      port_radii,port_nozzles,port_sizes
+      port_radii,port_nozzles,port_sizes,port_velocity_from_rate,port_discharge_coefficients
     port_profile_points=0;port_profile_times=0;port_profile_rates=0;injection_end_times=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp)
@@ -585,8 +588,20 @@ contains
       if(.not.ok) error stop 'Invalid injected port mixture'
       effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
       effective%reference_temperature=port_temperatures(port);effective%reference_energy=e
+      template_speed=port_speeds(port)
+      if(port_velocity_from_rate(port)) then
+        if(.not.ieee_is_finite(port_discharge_coefficients(port))) error stop 'Nonfinite discharge coefficient'
+        if(port_discharge_coefficients(port)<1e-6_dp.or.port_discharge_coefficients(port)>1) &
+          error stop 'Invalid discharge coefficient'
+        if(.not.ieee_is_finite(port_radii(port))) error stop 'Nonfinite rate-driven outlet radius'
+        if(port_radii(port)<1e-12_dp) error stop 'Rate-driven outlet requires positive radius'
+        if(port_profile_points(port)<2) error stop 'Rate-driven outlet requires a mass-flow profile'
+        template_speed=1
+      else if(port_discharge_coefficients(port)/=1) then
+        error stop 'Discharge coefficient requires rate-driven velocity'
+      end if
       call inject_cone_parcels(effective,port_masses(port),port_numbers(port),1_int64, &
-        port_centers(:,port),port_axes(:,port),port_speeds(port),port_angles(port),port_diameters(port), &
+        port_centers(:,port),port_axes(:,port),template_speed,port_angles(port),port_diameters(port), &
         port_temperatures(port),injection_ports(port)%parcels,ok, &
         diameter_shape=port_sizes(port)%shape,diameter_min=port_sizes(port)%minimum, &
         diameter_max=port_sizes(port)%maximum,diameter_weighting=port_sizes(port)%weighting, &
@@ -596,7 +611,7 @@ contains
       injection_ports(port)%fractions=port_fractions(:nc,port)
       injection_ports(port)%parcels%material_id=port
     end do
-    event_factors=injection_scales
+    event_factors=injection_scales;event_velocity_scales=1
     do port=1,port_count
       q=port_profile_points(port)
       if(q/=0.and.(q<2.or.q>64)) error stop 'Invalid port profile size'
@@ -614,6 +629,18 @@ contains
       profile_mass=profile_mass*injection_scales(c)
       if(profile_mass>1e6_dp.or.profile_mass>1e6_dp*port_masses(port)) error stop 'Integrated injection exceeds bounds'
       event_factors(c)=profile_mass/port_masses(port)
+      if(port_velocity_from_rate(port)) then
+        event_velocity_scales(c)=0
+        if(profile_mass>0) then
+          call liquid_mixture_properties(liquids,port_fractions(:nc,port),port_temperatures(port),rho,cp,e,ok)
+          if(.not.ok) error stop 'Invalid rate-driven mixture density'
+          denominator=(injection_end_times(c)-injection_times(c))*rho*acos(-1._dp)* &
+            port_radii(port)**2*port_discharge_coefficients(port)
+          if(denominator<=0) error stop 'Invalid rate-driven injection interval'
+          if(profile_mass>1e7_dp*denominator) error stop 'Rate-driven injection speed exceeds bounds'
+          event_velocity_scales(c)=profile_mass/denominator
+        end if
+      end if
     end do
     allocate(drops(0),component_mass(nc,0),films(0),film_mass(nc,0))
     if(checkpoint_interval_steps>0.or.len_trim(restart_file)>0) then
@@ -636,6 +663,7 @@ contains
   end subroutine
 
   subroutine inject_due_events()
+    type(spray_parcel) :: injected_parcel
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: masses(:,:)
     real(dp) :: change(nv),totals(5),rho,cp,e,scale
@@ -659,7 +687,9 @@ contains
           if(.not.ok) error stop 'Invalid injection properties'
           effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
           effective%reference_temperature=injection_template(q)%temperature;effective%reference_energy=e
-          totals=scale*parcel_totals(injection_template(q),effective)
+          injected_parcel=injection_template(q)
+          injected_parcel%velocity=event_velocity_scales(next_injection)*injected_parcel%velocity
+          totals=scale*parcel_totals(injected_parcel,effective)
           change(:5)=change(:5)+totals
           do c=1,size(liquids)
             change(5+liquids(c)%vapor_index)=change(5+liquids(c)%vapor_index)+totals(1)*injection_fractions(c)
@@ -672,6 +702,7 @@ contains
           candidate(:old_count)=drops;masses(:,:old_count)=component_mass
           do q=1,number
             candidate(old_count+q)=injection_template(q)
+            candidate(old_count+q)%velocity=event_velocity_scales(next_injection)*injection_template(q)%velocity
             candidate(old_count+q)%id=last_particle_id+q
             candidate(old_count+q)%multiplicity=scale*injection_template(q)%multiplicity
             masses(:,old_count+q)=injection_fractions*candidate(old_count+q)%mass

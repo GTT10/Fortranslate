@@ -461,6 +461,11 @@ if(PELEF_ENABLE_SPRAY)
 endif()
 
 if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
+  add_test(NAME spray_mpi_eb_rate_velocity_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_nozzle.py"
+    --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+    --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_rate_velocity_application" --rate)
+  set_tests_properties(spray_mpi_eb_rate_velocity_application PROPERTIES LABELS "spray;mpi;eb;application" TIMEOUT 180 PROCESSORS 4)
   add_test(NAME spray_mpi_eb_nozzle_application COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_nozzle.py"
     --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
