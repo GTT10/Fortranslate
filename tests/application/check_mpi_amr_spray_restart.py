@@ -24,6 +24,7 @@ p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
 p.add_argument('--sizes', action='store_true')
+p.add_argument('--rates', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -117,7 +118,16 @@ if a.sizes:
               " port_sizes(2)%minimum=2.e-6,port_sizes(2)%maximum=4.e-5\n/\n")
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False):
+if a.rates:
+    assert a.multiport
+    spray = spray.replace('event_mass=2.e-11,3.e-11,1.e-11,4.e-11', 'event_mass=4*0.')
+    spray += ("\n&amr_spray_rates\n profile_points=2,3,\n"
+              " profile_times(:,1)=0.,2.e-8,profile_rates(:,1)=.002,.004,\n"
+              " profile_times(:,2)=0.,1.e-8,2.e-8,profile_rates(:,2)=.001,.002,.006,\n"
+              " event_end_times=1.e-8,1.5e-8,1.5e-8,2.e-8\n/\n")
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -140,6 +150,10 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('%std=2.e-6', '%std=3.e-6')
     if invalid_sizes:
         local_spray = local_spray.replace('%std=2.e-6', '%std=-2.e-6')
+    if changed_rates:
+        local_spray = local_spray.replace('=.002,.004', '=.002,.005')
+    if invalid_rates:
+        local_spray = local_spray.replace('=.002,.004', '=-.002,.004')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -224,6 +238,12 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.rates:
+    line = next(x for x in (continued / 'run.log').read_text().splitlines() if x.startswith('Injected inventory:'))
+    injected_mass = float(line.split(':', 1)[1].split()[0])
+    assert math.isclose(injected_mass, 8.125e-11, rel_tol=2e-12)
+    run('changed_rates', 2, f"restart_file='{checkpoint}'", good=False, changed_rates=True)
+    run('invalid_rates', 2, '', good=False, invalid_rates=True)
 if a.sizes:
     for port in (1., 2.):
         drop_masses = [row[9] for row in particles if row[2] == port]

@@ -1,5 +1,6 @@
 module spray_mpi_amr_application_mod
   use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
@@ -100,6 +101,10 @@ contains
     character(len=512) :: message
     real(dp) :: temperature_thresholds(16)
     integer, parameter :: maximum_events=1024
+    integer :: profile_points(16),profile_count
+    real(dp) :: profile_times(64,16),profile_rates(64,16),event_end_times(maximum_events),integrated_mass
+    logical :: rates_present
+    namelist /amr_spray_rates/ profile_points,profile_times,profile_rates,event_end_times
     integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
     real(dp) :: port_centers(3,16),port_axes(3,16),port_speeds(16),port_half_angles(16), &
       port_diameters(16),port_temperatures(16),port_fractions(16,16),port_radii(16)
@@ -150,6 +155,7 @@ contains
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
+    profile_points=0;profile_times=0;profile_rates=0;event_end_times=-1
     port_sizes=spray_size_options()
     acceleration=0
     les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
@@ -173,9 +179,13 @@ contains
     properties_present=ios==0
     rewind(unit)
     read(unit,nml=amr_spray_sizes,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_sizes namelist')
     sizes_present=ios==0
+    rewind(unit)
+    read(unit,nml=amr_spray_rates,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_rates namelist')
+    rates_present=ios==0
     if (.not.all(ieee_is_finite(acceleration))) call fatal('Nonfinite acceleration')
     if (any(abs(acceleration)>1e6_dp)) call fatal('Invalid acceleration')
     if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
@@ -230,6 +240,32 @@ contains
     if (injection_events==0) then
       injection_events=1;injection_times(1)=0;event_parcels(1)=parcel_count;event_mass(1)=total_mass
     end if
+    if (any(profile_points(port_count+1:)/=0).or.any(profile_times(:,port_count+1:)/=0).or. &
+        any(profile_rates(:,port_count+1:)/=0)) call fatal('Unused port rate profile entries')
+    if (any(event_end_times(injection_events+1:)/=-1)) call fatal('Unused event integration intervals')
+    do i=1,port_count
+      profile_count=profile_points(i)
+      if (profile_count/=0.and.(profile_count<2.or.profile_count>64)) call fatal('Invalid rate profile count')
+      if (any(profile_times(profile_count+1:,i)/=0).or.any(profile_rates(profile_count+1:,i)/=0)) &
+        call fatal('Unused rate profile entries')
+      if (profile_count==0) cycle
+      call integrate_spray_injection_profile(profile_times(:profile_count,i),profile_rates(:profile_count,i), &
+        profile_times(1,i),profile_times(profile_count,i),integrated_mass,ok)
+      if (.not.ok) call fatal('Invalid port rate profile')
+    end do
+    do i=1,injection_events
+      if (event_ports(i)<1.or.event_ports(i)>port_count) call fatal('Invalid event port')
+      profile_count=profile_points(event_ports(i))
+      if (profile_count==0) then
+        if (event_end_times(i)/=-1) call fatal('Integration interval requires rate profile')
+        cycle
+      end if
+      if (event_mass(i)/=0) call fatal('Rate profile requires zero explicit event mass')
+      call integrate_spray_injection_profile(profile_times(:profile_count,event_ports(i)), &
+        profile_rates(:profile_count,event_ports(i)),injection_times(i),event_end_times(i),integrated_mass,ok)
+      if (.not.ok) call fatal('Invalid injection integration interval')
+      event_mass(i)=integrated_mass
+    end do
     if (.not.all(ieee_is_finite(injection_times(:injection_events))).or. &
         .not.all(ieee_is_finite(event_mass(:injection_events)))) call fatal('Nonfinite injection schedule')
     if (any(injection_times(:injection_events)<0).or.any(event_mass(:injection_events)<0).or. &
@@ -310,6 +346,10 @@ contains
     if (sizes_present) then
       write(unit,nml=amr_spray_sizes,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize size distribution context')
+    end if
+    if (rates_present) then
+      write(unit,nml=amr_spray_rates,iostat=ios)
+      if (ios/=0) call fatal('Cannot serialize injection rate context')
     end if
     rewind(unit);spray_context=''
     do
