@@ -3076,6 +3076,11 @@ including CI. The supplied-halo RHS continues to consume caller-prepared ghosts.
 `fill_mpi_spray_ghosts` accepts optional `species` and `outlet_pressure`; positive
 pressure requires species metadata. Pressure settings agree collectively, only
 physical x-face owners apply those corrections, and tangential pressure ghosts
-travel with the neighbor halos. Spray coupled/application controls remain open.
+travel with the neighbor halos. Serial `advance_spray_reactive_3d` and
+fixed/selected serial spray namelists now accept `outlet_pressure(6)`, passing
+it to hydro, molecular transport and static LES. Positive pressure requires
+outflow faces; nonzero settings enter checkpoint identity. Changed/removed
+settings reject restart. MPI coupled/application controls remain open.
+See [serial application evidence](validation/spray-pressure-outlet-20260918.md).
 See [MPI pressure parity](validation/les-mpi-pressure-20260918.md).
 See [focused evidence](validation/les-pressure-outlet-20260918.md).
