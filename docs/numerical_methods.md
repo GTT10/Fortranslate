@@ -2844,3 +2844,9 @@ pressure targets after viscous ghost sampling. Collective target agreement and
 private state/diagnostic publication preserve failure atomicity; see
 [MPI tree transport evidence](validation/pressure-outlet-mpi-tree-transport-20260918.md).
 MPI reactive wrappers and tree application input remain pending.
+
+MPI full reaction/transport/hydro splitting now forwards pressure targets to
+both transport halves and the flow step, with common or recursive timesteps.
+The coupled transaction keeps candidate state private through the last reaction
+half; see [MPI tree split evidence](validation/pressure-outlet-mpi-tree-split-20260918.md).
+MPI application input and standalone reaction/hydro Strang forwarding remain pending.
