@@ -14,6 +14,7 @@ p.add_argument('--mpiexec', type=Path, required=True)
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--rate', action='store_true')
+p.add_argument('--properties', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
@@ -64,7 +65,23 @@ def run(label, ranks, extra='', invalid=False):
                      'port_profile_times(:,2)=0.,4.e-8,62*0.,port_profile_rates(:,1)=2*.002,62*0.,'
                      'port_profile_rates(:,2)=.001,.003,62*0.,'
                      'injection_end_times=5.e-9,5.e-9,1.5e-8,2.5e-8,2.5e-8,')
-    if invalid:
+    if a.properties:
+        values = values.replace('nc=1,', "nc=2,vapor_names(2)='H2',")
+        controls += ("port_fractions(:,1)=.25,.75,14*0.,port_fractions(:,2)=.75,.25,14*0.,"
+                     "mixture_density_models=2*'polynomial',"
+                     "mixture_density_coefficients(:,1)=1100.,-.2,0.,0.,"
+                     "mixture_density_coefficients(:,2)=900.,-.1,0.,0.,"
+                     "mixture_density_temperature_ranges(:,1)=300.,450.,"
+                     "mixture_density_temperature_ranges(:,2)=300.,450.,"
+                     "mixture_cp_models=2*'polynomial',mixture_cp_coefficients(:,1)=3800.,1.,0.,0.,"
+                     "mixture_cp_coefficients(:,2)=1800.,.5,0.,0.,"
+                     "mixture_cp_temperature_ranges(:,1)=300.,450.,mixture_cp_temperature_ranges(:,2)=300.,450.,"
+                     "mixture_vapor_pressure_models(1)='antoine',"
+                     "mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,"
+                     "mixture_antoine_temperature_ranges(:,1)=300.,450.,")
+    if invalid and a.properties:
+        controls = controls.replace('1100.,-.2,0.,0.', '-1100.,0.,0.,0.')
+    elif invalid:
         controls = controls.replace('port_radii=2*.0001', 'port_radii=2*-.0001')
     spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1))
     result = subprocess.run([str(a.mpiexec.resolve()), '-n', str(ranks), str(a.exe.resolve()), 'tree.nml', 'spray.nml'],
@@ -83,7 +100,9 @@ for directory in full:
         fresh = data[start:start+8]
         sizes, counts, doses = [], [], []
         dose = (5e-12 if port == 1 else 2.125e-11) if a.rate else 1e-10
-        expected_speed = dose / (5e-9 * 1000 * math.pi * .0001**2 * (.8 if port == 1 else .5)) if a.rate else 20
+        fractions = (.25, .75) if port == 1 else (.75, .25)
+        density = 1 / (fractions[0]/1030 + fractions[1]/865) if a.properties else 1000
+        expected_speed = dose / (5e-9 * density * math.pi * .0001**2 * (.8 if port == 1 else .5)) if a.rate else 20
         for row in fresh:
             assert int(row['material_id']) == port
             x = float(row['x']) - (.0015 if port == 1 else .003)
@@ -98,7 +117,10 @@ for directory in full:
             assert abs((x*u+z*w)/(radial*math.hypot(u, w))-math.cos(.4)) < 1e-12
             assert float(row['y']) == .0015 and float(row['temperature']) == 350
             mass, count = float(row['mass']), float(row['multiplicity'])
-            sizes.append((6*mass/(math.pi*1000))**(1/3))
+            sizes.append((6*mass/(math.pi*density))**(1/3))
+            if a.properties:
+                for c, fraction in enumerate(fractions, 1):
+                    assert abs(float(row[f'component_mass_{c}'])/mass-fraction) < 1e-13
             counts.append(count)
             doses.append(mass*count)
         assert all(5e-6 <= d <= 2e-5 for d in sizes) and max(sizes) > 1.1*min(sizes)
@@ -113,7 +135,8 @@ resumed = run('resumed', 4, f"restart_file='{stopped / 'saved.step1'}',")
 compare(rows(full[1] / 'result.csv'), rows(resumed / 'result.csv'))
 compare(particles(full[1]), particles(resumed))
 invalid = run('invalid', 2, invalid=True)
-expected_error = 'Rate-driven outlet requires positive radius' if a.rate else 'Invalid injection port template'
+expected_error = ('Invalid injected port mixture' if a.properties else
+                  'Rate-driven outlet requires positive radius' if a.rate else 'Invalid injection port template')
 assert expected_error in (invalid / 'run.log').read_text()
 assert not (invalid / 'result.csv').exists()
-print(f'PASS: finite ports, size distributions, rate velocity={a.rate}, MPI 2/4 parity and restart; {work}')
+print(f'PASS: finite ports, size distributions, rate velocity={a.rate}, property models={a.properties}, MPI 2/4 parity and restart; {work}')

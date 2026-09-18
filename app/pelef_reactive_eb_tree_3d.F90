@@ -510,6 +510,12 @@ contains
     type(spray_size_options) :: port_sizes(16)
     logical :: port_velocity_from_rate(16)=.false.
     real(dp) :: port_discharge_coefficients(16)=1,template_speed,denominator
+    character(len=16) :: mixture_density_models(16)='constant',mixture_cp_models(16)='constant'
+    character(len=16) :: mixture_vapor_pressure_models(16)='clausius',mixture_boiling_models(16)='reject'
+    real(dp) :: mixture_density_coefficients(4,16)=0,mixture_density_temperature_ranges(2,16)=0
+    real(dp) :: mixture_cp_coefficients(4,16)=0,mixture_cp_temperature_ranges(2,16)=0
+    real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
+    real(dp) :: mixture_critical_temperatures(16)=0
     character(len=4096) :: context_line
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
@@ -521,7 +527,11 @@ contains
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
       port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
       port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls, &
-      port_radii,port_nozzles,port_sizes,port_velocity_from_rate,port_discharge_coefficients
+      port_radii,port_nozzles,port_sizes,port_velocity_from_rate,port_discharge_coefficients, &
+      mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
+      mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
+      mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
+      mixture_boiling_models,mixture_critical_temperatures
     port_profile_points=0;port_profile_times=0;port_profile_rates=0;injection_end_times=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp)
@@ -558,11 +568,32 @@ contains
     do q=2,injection_events
       if(injection_times(q)<injection_times(q-1)) error stop 'Injection times must be nondecreasing'
     end do
+    if(any(mixture_density_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
+    if(any(mixture_cp_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
+    if(any(mixture_vapor_pressure_models(nc+1:)/='clausius')) error stop 'Unused mixture property entries'
+    if(any(mixture_boiling_models(nc+1:)/='reject')) error stop 'Unused mixture property entries'
+    if(any(mixture_critical_temperatures(nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_density_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_density_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_cp_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_cp_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_antoine_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_antoine_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
     allocate(liquids(nc))
     do c=1,nc
       call initialize_spray_liquid(species,vapor_names(c),densities(c),heat_capacities(c),reference_temperatures(c), &
-        reference_pressures(c),latent_heats(c),liquids(c),ok)
+        reference_pressures(c),latent_heats(c),liquids(c),ok,mixture_vapor_pressure_models(c), &
+        mixture_antoine_coefficients(:,c),mixture_antoine_temperature_ranges(:,c))
       if(.not.ok) error stop 'Invalid liquid properties'
+      liquids(c)%density_model=mixture_density_models(c)
+      liquids(c)%density_coefficients=mixture_density_coefficients(:,c)
+      liquids(c)%density_temperature_range=mixture_density_temperature_ranges(:,c)
+      liquids(c)%heat_capacity_model=mixture_cp_models(c)
+      liquids(c)%heat_capacity_coefficients=mixture_cp_coefficients(:,c)
+      liquids(c)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,c)
+      liquids(c)%boiling_model=mixture_boiling_models(c)
+      liquids(c)%critical_temperature=mixture_critical_temperatures(c)
+      if(.not.valid_spray_liquid(liquids(c))) error stop 'Invalid mixture component property model'
     end do
     if(port_count<1.or.port_count>16) error stop 'Invalid injection port count'
     if(any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
@@ -586,8 +617,9 @@ contains
         error stop 'Invalid port fraction sum'
       call liquid_mixture_properties(liquids,port_fractions(:nc,port),port_temperatures(port),rho,cp,e,ok)
       if(.not.ok) error stop 'Invalid injected port mixture'
-      effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
-      effective%reference_temperature=port_temperatures(port);effective%reference_energy=e
+      effective=spray_liquid(vapor_name=liquids(1)%vapor_name,vapor_index=liquids(1)%vapor_index, &
+        density=rho,heat_capacity=cp,reference_temperature=port_temperatures(port), &
+        reference_pressure=liquids(1)%reference_pressure,latent_heat=liquids(1)%latent_heat,reference_energy=e)
       template_speed=port_speeds(port)
       if(port_velocity_from_rate(port)) then
         if(.not.ieee_is_finite(port_discharge_coefficients(port))) error stop 'Nonfinite discharge coefficient'
@@ -685,8 +717,9 @@ contains
         do q=1,number
           call liquid_mixture_properties(liquids,injection_fractions,injection_template(q)%temperature,rho,cp,e,ok)
           if(.not.ok) error stop 'Invalid injection properties'
-          effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
-          effective%reference_temperature=injection_template(q)%temperature;effective%reference_energy=e
+          effective=spray_liquid(vapor_name=liquids(1)%vapor_name,vapor_index=liquids(1)%vapor_index, &
+            density=rho,heat_capacity=cp,reference_temperature=injection_template(q)%temperature, &
+            reference_pressure=liquids(1)%reference_pressure,latent_heat=liquids(1)%latent_heat,reference_energy=e)
           injected_parcel=injection_template(q)
           injected_parcel%velocity=event_velocity_scales(next_injection)*injected_parcel%velocity
           totals=scale*parcel_totals(injected_parcel,effective)
