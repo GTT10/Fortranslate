@@ -9,6 +9,7 @@ module mpi_amr_patch_tree_hydro_level_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
+  use amr_patch_tree_ghost_3d_mod, only: apply_amr_tree_pressure_ghosts_3d
   use mpi_amr_patch_tree_ghost_3d_mod, only: fill_mpi_amr_tree_ghosts_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
@@ -18,7 +19,7 @@ module mpi_amr_patch_tree_hydro_level_3d_mod
 contains
   subroutine advance_mpi_amr_tree_hydro_level_3d(tree,owners,species,state,temperature,depth,root_spacing,dt,faces, &
       reconstruction,limiter,solver,integrated_flux,comm,ok,coarse_start,coarse_end,fractions_start,fractions_end, &
-      inflow_state,inflow_temperature)
+      inflow_state,inflow_temperature,outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -33,11 +34,13 @@ contains
     real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: pressure(6)
     type(amr_tree_state_3d) :: initial,candidate,temps
     real(dp), allocatable :: h(:,:),inlet(:,:)
     integer :: flags(5),minimum_flags(5),maximum_flags(5)
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(4),low(4),high(4)
+    real(dp) :: controls(10),low(10),high(10)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
     character(len=:), allocatable :: donor_limiter
@@ -50,8 +53,14 @@ contains
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
-    controls=[root_spacing,dt]
-    valid=all(ieee_is_finite(controls)).and.all(controls>0)
+    pressure=0
+    if (present(outlet_pressure)) pressure=outlet_pressure
+    controls=[root_spacing,dt,pressure]
+    valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
+    valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
+    do node=1,6
+      if (pressure(node)>0.and.faces(node)/='outflow') valid=.false.
+    end do
     valid=valid.and.valid_reactive_boundaries_3d(faces)
     valid=valid.and.(reconstruction=='pcm'.or.reconstruction=='characteristic_plm')
     valid=valid.and.(limiter=='mc'.or.limiter=='minmod').and.len_trim(solver)<=64
@@ -63,9 +72,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     options(:6)=faces;options(7)=reconstruction;options(8)=limiter;options(9)=solver
@@ -204,6 +213,8 @@ contains
         n=tree%nodes(peer)%shape;dims=n+4
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
+          call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success)
+          if (.not.success) exit
           allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)), &
             fz(nvar,dims(1),dims(2),dims(3)),stat=allocation_status)
           if (allocation_status/=0) then
