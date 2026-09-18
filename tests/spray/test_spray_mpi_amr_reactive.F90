@@ -30,7 +30,8 @@ program test_spray_mpi_amr_reactive
   real(dp), allocatable :: boundary(:)
   character(len=32) :: faces(6)
   real(dp) :: correction,theta
-  real(dp) :: sgs(4)
+  real(dp) :: sgs(4),accel(3)=0
+  real(dp), allocatable :: source(:)
   character(len=16) :: argument
   integer :: mode
   character(len=8) :: solver
@@ -169,6 +170,30 @@ program test_spray_mpi_amr_reactive
     call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(q==2,'coupled outflow removes parcel')
   end do
+  if (argument=='force') then
+    allocate(source(nv));source=123
+    local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+    faces='periodic';recursive=.false.;chemistry=.false.;last_id=3
+    accel=[100._dp,-200._dp,300._dp]
+    if (rank==nranks-1) accel(1)=101
+    call coupled()
+    call require(.not.ok.and.all(source==123),'force disagreement preserves source ledger')
+    call unchanged()
+    accel(1)=100
+    solver='invalid'
+    call coupled()
+    call require(.not.ok.and.all(source==123),'later failure preserves force ledger')
+    call unchanged()
+    solver='hllc'
+    call totals(before)
+    call coupled()
+    call require(ok,'uniform acceleration coupled step')
+    call totals(after)
+    scale=max(abs(before),abs(after),abs(source),1.e-30_dp)
+    call require(all(abs(after-before-source)<=3.e-12_dp*scale),'external impulse and work balance')
+    call require(all(abs(source(2:4)-before(1)*interval*accel)<= &
+      3.e-12_dp*abs(before(1)*interval*accel)),'analytic total impulse')
+  end if
   if (rank==0) print *, 'PASS: MPI AMR reacting spray periodic and physical boundaries'
   call MPI_Finalize(ierr)
 contains
@@ -177,7 +202,7 @@ contains
       local,local_t,drops,masses,zero,spacing,interval,'pcm','minmod',solver,chemistry, &
       .true.,.true.,.true.,.false.,1.e-6_dp,1.e-12_dp,steps,correction,theta,ok,last_id, &
       chemistry_integrator='implicit',subcycling=recursive,boundary_faces=faces,boundary_change=boundary, &
-      les_settings=sgs,les_model='vreman')
+      les_settings=sgs,les_model='vreman',acceleration=accel,source_change=source)
   end subroutine
   subroutine unchanged()
     integer :: a
