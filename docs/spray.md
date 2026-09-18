@@ -250,8 +250,8 @@ repeated timestep halving.
 
 EB impact mode requires one uniform wall temperature across the six existing
 wall-option entries; enabled face flags do not select EB facets. Contact depth
-is limited to 32 per source substep, and KH child shedding remains unsupported
-in EB mode. Properties/settings must match across ranks. Film thermal evolution
+is limited to 32 per source substep. KH child shedding is now supported by the
+MPI source API, with wall-crossing precedence as described below. Properties/settings must match across ranks. Film thermal evolution
 is still supplied by the separate film source API; these source arguments alone
 do not evolve films. The MPI reactive wrapper can compose these impact-enabled
 particle halves with separate film evolution, as described above. MPI application
@@ -371,8 +371,20 @@ updated velocity, as in the serial EB interval. Local wall exchanges accumulate
 only for accepted substeps and are summed once into the returned global boundary
 ledger. The full interval publishes gas, temperature, particles, component masses
 and ledger together. Exhaustion or late migration failure leaves them unchanged.
-EB mode rejects explicit exterior-face settings, wall-film arguments and KH
-child creation; trajectories must stay inside the root domain. This is a particle
+EB mode rejects explicit exterior-face settings; trajectories must stay inside
+the root domain. Optional wall-film state enables the impact path described above.
+KH child creation requires a shared `last_id`. Each parent trajectory is checked
+against the original EB field before release: a crossing suppresses that parent's
+KH update for the source substep, leaving the wall path to handle it. Unhit
+parents can release four children through the collective allocator, with a gas
+energy debit for their transverse motion. Parents and new children then undergo
+the selected specular or impact remaining-flight path and final owner migration.
+Source-first breakup/flight splitting remains in force; this is not a globally
+time-ordered aerodynamic-breakup event solver. The collective KH helper's
+optional `eligible` mask preserves excluded parent mass, pending breakup state
+and zero release-energy contribution. See
+[KH source evidence](validation/spray-mpi-eb-khrt-source-20260918.md).
+The MPI application still rejects KH child mode pending its shared-ID integration. This is a particle
 interval; the distributed gas/spray wrapper below composes it with gas dynamics.
 
 `spray_mpi_eb_reactive_mod` exports `advance_mpi_eb_spray_reactive`: particle
