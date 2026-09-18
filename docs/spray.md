@@ -2843,3 +2843,17 @@ and [focused evidence](validation/spray-mpi-eb-properties-20260918.md).
 
 MPI specular outflow and empty-population rank-changing restart are covered by
 [this application record](validation/spray-mpi-eb-specular-application-20260918.md).
+
+## Serial EB external acceleration
+
+`advance_eb_spray_reactive_allocated` accepts optional `acceleration(3)` and
+`source_change(nvar)`. Nonzero acceleration requires the output ledger; each
+component must be finite and at most 1e6 m/s² in magnitude. Half kicks bracket
+the existing coupled step, changing gas and live-particle momentum and kinetic
+energy. Gas contributions use fluid volume fraction times cell volume; covered
+cells and stationary wall films receive no kick. Temperature recovery checks
+that gas internal energy is unchanged. The returned system impulse/work is
+separate from exterior, wall and chemistry inventories, with zero mass/species
+entries. All state and ledgers publish only on full-step success. The fixed-array
+wrapper, serial application and MPI paths do not yet expose EB acceleration.
+See [focused evidence](validation/spray-eb-acceleration-20260918.md).
