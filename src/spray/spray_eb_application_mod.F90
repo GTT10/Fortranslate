@@ -45,6 +45,10 @@ contains
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), optional, intent(in) :: mole_fractions(:)
     character(len=*), optional, intent(in) :: integrator
+    integer :: port_count=1,event_ports(1024)=1,port_numbers(16),port
+    real(dp) :: port_centers(3,16),port_axes(3,16),port_masses(16),port_speeds(16)
+    real(dp) :: port_angles(16),port_diameters(16),port_temperatures(16),port_fractions(16,16)
+    type(spray_liquid) :: port_liquids(16)
     integer :: nc=1,number=1,injection_events=1
     real(dp) :: injection_times(1024)=0,injection_scales(1024)=1
     character(len=24) :: vapor_names(16)='H2O'
@@ -77,7 +81,9 @@ contains
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
       mixture_boiling_models,mixture_critical_temperatures,injection_profile_points, &
-      injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient
+      injection_profile_times,injection_profile_rates,injection_end_times,velocity_from_rate,discharge_coefficient, &
+      port_count,event_ports,port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles, &
+      port_diameters,port_temperatures,port_fractions
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -96,6 +102,9 @@ contains
     character(len=24) :: component_label
     character(len=:), allocatable :: header
     ! Configuration and namelist objects are local to one invocation.
+    port_count=1;event_ports=1;port_numbers=-1
+    port_centers=huge(1._dp);port_axes=huge(1._dp);port_masses=-1;port_speeds=-1
+    port_angles=-1;port_diameters=-1;port_temperatures=-1;port_fractions=-1
     nc=1;number=1;fractions=0;fractions(1)=1
     vapor_names='H2O';densities=1000;heat_capacities=4184;reference_temperatures=373.15_dp
     reference_pressures=101325;latent_heats=2.257e6_dp;total_mass=1e-10_dp;center=0
@@ -167,13 +176,33 @@ contains
       liquids(n)%critical_temperature=mixture_critical_temperatures(n)
       if(.not.valid_spray_liquid(liquids(n))) error stop 'Invalid mixture component property model'
     end do
-    call liquid_mixture_properties(liquids,fractions(:nc),liquid_temperature,rho,cp,e,ok)
-    if(.not.ok) error stop 'Invalid injected liquid mixture'
-    effective=spray_liquid(vapor_name=liquids(1)%vapor_name,vapor_index=liquids(1)%vapor_index, &
-      density=rho,heat_capacity=cp,reference_temperature=liquid_temperature, &
-      reference_pressure=liquids(1)%reference_pressure,latent_heat=liquids(1)%latent_heat,reference_energy=e)
-    if(.not.ieee_is_finite(total_mass)) error stop 'Invalid injection mass'
-    if(total_mass<=0.or.total_mass>1e6_dp) error stop 'Invalid injection mass'
+    if(port_count<1.or.port_count>16) error stop 'Invalid injection port count'
+    if(any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
+      error stop 'Invalid injection event port'
+    do port=1,port_count
+      if(port_numbers(port)==-1) port_numbers(port)=number
+      if(all(port_centers(:,port)==huge(1._dp))) port_centers(:,port)=center
+      if(all(port_axes(:,port)==huge(1._dp))) port_axes(:,port)=axis
+      if(port_masses(port)==-1) port_masses(port)=total_mass
+      if(port_speeds(port)==-1) port_speeds(port)=speed
+      if(port_angles(port)==-1) port_angles(port)=half_angle
+      if(port_diameters(port)==-1) port_diameters(port)=diameter
+      if(port_temperatures(port)==-1) port_temperatures(port)=liquid_temperature
+      if(all(port_fractions(:,port)==-1)) port_fractions(:,port)=fractions
+      if(port_numbers(port)<1.or.port_numbers(port)>min(125000,options%maximum_parcels)) &
+        error stop 'Invalid port population'
+      if(.not.all(ieee_is_finite(port_fractions(:,port))).or.any(port_fractions(:,port)<0)) &
+        error stop 'Invalid port fractions'
+      if(abs(sum(port_fractions(:nc,port))-1)>1e-12_dp.or.any(port_fractions(nc+1:,port)/=0)) &
+        error stop 'Invalid port fraction sum'
+      call liquid_mixture_properties(liquids,port_fractions(:nc,port),port_temperatures(port),rho,cp,e,ok)
+      if(.not.ok) error stop 'Invalid injected liquid mixture'
+      port_liquids(port)=spray_liquid(vapor_name=liquids(1)%vapor_name,vapor_index=liquids(1)%vapor_index, &
+        density=rho,heat_capacity=cp,reference_temperature=port_temperatures(port), &
+        reference_pressure=liquids(1)%reference_pressure,latent_heat=liquids(1)%latent_heat,reference_energy=e)
+      if(.not.ieee_is_finite(port_masses(port))) error stop 'Invalid injection mass'
+      if(port_masses(port)<=0.or.port_masses(port)>1e6_dp) error stop 'Invalid injection mass'
+    end do
     if(injection_profile_points/=0.and.(injection_profile_points<2.or.injection_profile_points>64)) &
       error stop 'Invalid injection profile size'
     if(any(injection_profile_times(injection_profile_points+1:)/=0).or. &
@@ -187,10 +216,15 @@ contains
     else if(discharge_coefficient/=1) then
       error stop 'Discharge coefficient requires rate-driven velocity'
     end if
-    event_masses=0;event_speeds=speed
+    event_masses=0;event_speeds=0
+    do p=1,injection_events
+      event_speeds(p)=port_speeds(event_ports(p))
+    end do
     if(injection_profile_points==0) then
       if(any(injection_end_times/=-1)) error stop 'Integration intervals require an injection profile'
-      event_masses(:injection_events)=total_mass*injection_scales(:injection_events)
+      do p=1,injection_events
+        event_masses(p)=port_masses(event_ports(p))*injection_scales(p)
+      end do
       if(any(event_masses>1e6_dp)) error stop 'Injection mass exceeds bounds'
     else
       n=injection_profile_points
@@ -206,7 +240,7 @@ contains
         if(velocity_from_rate) then
           event_speeds(p)=0
           if(event_masses(p)>0) then
-            denominator=(injection_end_times(p)-injection_times(p))*rho*acos(-1._dp)* &
+            denominator=(injection_end_times(p)-injection_times(p))*port_liquids(event_ports(p))%density*acos(-1._dp)* &
               nozzle_radius**2*discharge_coefficient
             if(denominator<=0) error stop 'Invalid rate-driven interval'
             if(event_masses(p)>1e7_dp*denominator) error stop 'Rate-driven speed exceeds bounds'
@@ -314,7 +348,7 @@ contains
     if(.not.ok) error stop 'Cannot write EB spray gas CSV'
     open(newunit=unit,file=trim(config%output_file)//'.particles.csv',status='replace',action='write',iostat=status)
     if(status/=0) error stop 'Cannot write EB spray particle CSV'
-    header='id,x,y,z,u,v,w,mass,temperature,multiplicity'
+    header='id,material_id,x,y,z,u,v,w,mass,temperature,multiplicity'
     do n=1,nc
       write(component_label,'(i0)') n
       header=header//',component_mass_'//trim(component_label)
@@ -322,7 +356,8 @@ contains
     write(unit,'(a)',iostat=status) header
     do p=1,size(drops)
       if(status/=0) exit
-      write(unit,'(i0,*(",",es25.16,:))',iostat=status) drops(p)%id,drops(p)%position,drops(p)%velocity, &
+      write(unit,'(i0,",",i0,*(",",es25.16,:))',iostat=status) &
+        drops(p)%id,drops(p)%material_id,drops(p)%position,drops(p)%velocity, &
         drops(p)%mass,drops(p)%temperature,drops(p)%multiplicity,masses(:,p)
     end do
     close(unit,iostat=close_status)
@@ -403,7 +438,10 @@ contains
       if(next_event>1) then
         if(injection_times(next_event-1)>time) error stop 'Restart injection ahead of time'
       end if
-      expected_count=count(event_masses(:next_event-1)>0)*number
+      expected_count=0
+      do q=1,next_event-1
+        if(event_masses(q)>0) expected_count=expected_count+port_numbers(event_ports(q))
+      end do
       step_split_created=0
       if(allocated(split_created_total)) step_split_created=split_created_total
       if(last_id<int(expected_count,int64)) error stop 'Invalid restart injection watermark'
@@ -420,8 +458,12 @@ contains
       end if
       if(size(drops)>min(125000,options%maximum_parcels)) error stop 'Restart exceeds population capacity'
       if(any(shape(masses)/=[nc,size(drops)])) error stop 'Restart component shape mismatch'
+      do q=1,size(films)
+        if(films(q)%material_id>port_count) error stop 'Invalid restart film port'
+      end do
       cells=0;weights=0;volumes=0
       do q=1,size(drops)
+        if(drops(q)%material_id>port_count) error stop 'Invalid restart particle port'
         if (wall_impacts) then
           if(drops(q)%id>last_id) error stop 'Restart ID exceeds watermark'
           if(q>1) then
@@ -452,26 +494,29 @@ contains
       type(spray_parcel), allocatable :: added(:),candidate(:)
       real(dp), allocatable :: candidate_mass(:,:)
       real(dp) :: change(nv),totals(5),weights(8),volumes(8)
-      integer :: cells(3,8),q,j,old_count,ios
+      integer :: cells(3,8),q,j,old_count,ios,port,nadd
       logical :: valid
       if(event_masses(next_event)==0) return
+      port=event_ports(next_event);nadd=port_numbers(port);effective=port_liquids(port)
       old_count=size(drops)
-      if(old_count>min(125000,options%maximum_parcels)-number) error stop 'EB injection capacity exceeded'
-      call inject_cone_parcels(effective,event_masses(next_event),number,last_id+1_int64, &
-        center,axis,event_speeds(next_event),half_angle,diameter,liquid_temperature,added,valid, &
+      if(old_count>min(125000,options%maximum_parcels)-nadd) error stop 'EB injection capacity exceeded'
+      call inject_cone_parcels(effective,event_masses(next_event),nadd,last_id+1_int64, &
+        port_centers(:,port),port_axes(:,port),event_speeds(next_event),port_angles(port), &
+        port_diameters(port),port_temperatures(port),added,valid, &
         diameter_shape=sizes%shape,diameter_min=sizes%minimum,diameter_max=sizes%maximum, &
         diameter_weighting=sizes%weighting,diameter_distribution=sizes%distribution,diameter_std=sizes%std, &
         nozzle_radius=nozzle_radius,nozzle_model=nozzle)
       if(.not.valid) error stop 'Invalid scheduled EB injection'
       change=0;cells=0;weights=0;volumes=0
-      allocate(candidate(old_count+number),candidate_mass(nc,old_count+number),stat=ios)
+      allocate(candidate(old_count+nadd),candidate_mass(nc,old_count+nadd),stat=ios)
       if(ios/=0) error stop 'Cannot allocate scheduled injection'
       candidate(:old_count)=drops;candidate_mass(:,:old_count)=masses
-      do q=1,number
+      do q=1,nadd
         call eb_spray_stencil(g,phi,added(q)%position,cells,weights,volumes,valid)
         if(.not.valid) error stop 'EB injection point is not in fluid'
+        added(q)%material_id=port
         candidate(old_count+q)=added(q)
-        candidate_mass(:,old_count+q)=added(q)%mass*fractions(:nc)
+        candidate_mass(:,old_count+q)=added(q)%mass*port_fractions(:nc,port)
         totals=parcel_totals(added(q),effective);change(1:5)=change(1:5)+totals
         do j=1,nc
           change(5+liquids(j)%vapor_index)=change(5+liquids(j)%vapor_index)+ &
@@ -480,7 +525,7 @@ contains
       end do
       if(.not.all(ieee_is_finite(change))) error stop 'Invalid injection inventory'
       call move_alloc(candidate,drops);call move_alloc(candidate_mass,masses)
-      last_id=last_id+int(number,int64);injected=injected+change
+      last_id=last_id+int(nadd,int64);injected=injected+change
     end subroutine
     function absolute_path(path) result(value)
       character(len=*), intent(in) :: path

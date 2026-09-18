@@ -13,6 +13,7 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--properties', action='store_true')
 p.add_argument('--rate', action='store_true')
+p.add_argument('--ports', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
@@ -33,6 +34,13 @@ def run(profile, label, extra='', invalid=False):
         controls += 'sizes%shape=2.5,'
     else:
         controls += "nozzle%spread=.02,sizes%distribution='lognormal',sizes%weighting='number',sizes%std=2.e-6,"
+    if a.ports:
+        assert a.properties and not a.rate
+        controls = controls.replace('injection_events=2,injection_times=0.,2.e-8,',
+            'port_count=2,injection_events=5,injection_times=0.,0.,1.e-8,2.e-8,2.e-8,'
+            'injection_scales=1.,1.,0.,1.,1.,event_ports=1,2,2,1,2,'
+            'port_numbers(2)=4,port_centers(:,2)=.003,.0015,.0015,port_masses(2)=2.e-10,'
+            'port_speeds(2)=30.,port_fractions(:,2)=.75,.25,14*0.,')
     if a.rate:
         controls = controls.replace('injection_events=2,injection_times=0.,2.e-8,',
             'injection_events=3,injection_times=0.,1.e-8,2.e-8,injection_scales=1.,0.,2.,')
@@ -69,22 +77,24 @@ for profile in ('solid', 'hollow'):
     full = run(profile, 'full')
     with (full / 'gas.csv.particles.csv').open() as stream:
         rows = list(csv.DictReader(stream))
-    assert [int(r['id']) for r in rows] == list(range(1, 17))
-    fresh = rows[8:]
+    assert [int(r['id']) for r in rows] == list(range(1, 25 if a.ports else 17))
+    fresh = rows[12:] if a.ports else rows[8:]
     dose = (2e-11 if profile == 'solid' else 2.125e-11) if a.rate else 1e-10
     diameters, doses, counts = [], [], []
     for row in fresh:
         assert all(math.isfinite(float(v)) for v in row.values())
         dy, dz = float(row['y'])-.0015, float(row['z'])-.0015
         radius = math.hypot(dy, dz)
-        assert float(row['x']) == .002 and radius > 0
+        second = a.ports and int(row['material_id']) == 2
+        assert float(row['x']) == (.003 if second else .002) and radius > 0
         if profile == 'hollow':
             assert math.isclose(radius, .0001, rel_tol=1e-13)
         else:
             assert radius < .0001
         assert abs(dy*float(row['w'])-dz*float(row['v'])) > 1e-8
         mass, count = float(row['mass']), float(row['multiplicity'])
-        density = 1/(.25/1030+.75/865) if a.properties else 1000
+        fraction = .75 if second else .25
+        density = 1/(fraction/1030+(1-fraction)/865) if a.properties else 1000
         diameter = (6*mass/(math.pi*density))**(1/3)
         if a.rate:
             expected_speed = dose/(5e-9*density*math.pi*.0001**2*.8)
@@ -92,17 +102,26 @@ for profile in ('solid', 'hollow'):
             assert math.isclose(actual_speed, expected_speed, rel_tol=1e-12)
         assert 5e-6 <= diameter <= 2e-5
         if a.properties:
-            assert math.isclose(float(row['component_mass_1'])/mass, .25, rel_tol=1e-14)
-            assert math.isclose(float(row['component_mass_2'])/mass, .75, rel_tol=1e-14)
+            assert math.isclose(float(row['component_mass_1'])/mass, fraction, rel_tol=1e-14)
+            assert math.isclose(float(row['component_mass_2'])/mass, 1-fraction, rel_tol=1e-14)
         else:
             assert float(row['component_mass_1']) == mass
         diameters.append(diameter)
         doses.append(mass*count)
         counts.append(count)
     assert max(diameters) > min(diameters)*1.1
-    assert math.isclose(sum(doses), dose, rel_tol=1e-13)
+    if a.ports:
+        assert [int(r['material_id']) for r in rows] == [1]*8+[2]*4+[1]*8+[2]*4
+        assert math.isclose(sum(doses[8:]), 2e-10, rel_tol=1e-13)
+        assert math.isclose(sum(doses[:8]), 1e-10, rel_tol=1e-13)
+        speeds = [math.sqrt(sum(float(r[k])**2 for k in ('u','v','w'))) for r in fresh]
+        assert all(math.isclose(v,20 if i<8 else 30,rel_tol=1e-13) for i,v in enumerate(speeds))
+    else:
+        assert math.isclose(sum(doses), dose, rel_tol=1e-13)
     weights = doses if profile == 'solid' else counts
-    assert max(weights)-min(weights) <= 1e-13*max(weights)
+    groups = (weights[:8], weights[8:]) if a.ports else (weights,)
+    for group in groups:
+        assert max(group)-min(group) <= 1e-13*max(group)
     stopped = run(profile, 'stopped', "checkpoint_interval_steps=1,stop_after_checkpoint=.true.,checkpoint_file='saved',")
     archive = stopped / 'saved.step1'
     resumed = run(profile, 'resumed', f"restart_file='{archive}',")
