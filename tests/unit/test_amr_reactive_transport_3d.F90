@@ -11,7 +11,8 @@ program test_amr_reactive_transport_3d
   use transport_database_mod, only: load_h2o2_elementary_transport
   use mesh_3d_mod, only: uniform_cell_centers_3d
   use reactive_1d_mod, only: reactive_nvar, reactive_species_component
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config,fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,fill_reactive_boundary_ghosts_3d, &
+    fill_pressure_outlet_ghosts_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
@@ -266,9 +267,9 @@ contains
     real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:)
     real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
     real(dp), allocatable :: before(:),after(:),ledger(:),inlet(:,:),it(:),scale(:)
-    real(dp) :: tw(6),wv(3,6),th,r,e0(3),e1(3),eb(3)
+    real(dp) :: tw(6),wv(3,6),th,r,e0(3),e1(3),eb(3),outlet(6)
     character(len=32) :: faces(6)
-    integer :: mode,nv
+    integer :: mode,nv,trial
     call initialize_hierarchy(.true.,c0,t0,f0,ft0,ok,patch_override=patch)
     call require(ok,'physical transport initial hierarchy')
     nv=size(c0,1)
@@ -278,7 +279,10 @@ contains
     tw=600;wv=0;wv(2,1)=20
     call composite_integrals_amr_3d(c0,f0,patch,dx,dy,dz,before,ok)
     call require(ok,'physical transport initial inventory')
-    do mode=1,4
+    do trial=1,8
+      mode=modulo(trial-1,4)+1
+      outlet=0
+      if (trial>4) outlet(2)=102325
       faces='periodic';faces(1)='isothermal_wall';faces(2)='outflow'
       wv=0
       if (mode==2) then
@@ -298,21 +302,23 @@ contains
         allocate(ghost(nv,size(f0,2)+4,size(f0,3)+4,size(f0,4)+4),gt(size(f0,2)+4,size(f0,3)+4,size(f0,4)+4))
         allocate(reference,mold=ghost);allocate(reference_t,mold=gt)
         call build_boundary_fine_ghosts_3d(species,patch,c0,t0,c0,t0,f0,ft0,.5_dp,'characteristic_plm','mc', &
-          [.true.,.true.,.true.,.true.,.true.,.true.],faces,ghost,gt,ok,inlet,it,.true.,wv)
+          [.true.,.true.,.true.,.true.,.true.,.true.],faces,ghost,gt,ok,inlet,it,.true.,wv,outlet)
         call require(ok,'full-domain viscous fine ghosts')
         call fill_reactive_boundary_ghosts_3d(f0,ft0,faces,reference,reference_t,ok, &
           viscous_wall=.true.,inflow_state=inlet,inflow_temperature=it,wall_velocity=wv)
+        call require(ok,'regular viscous ghost fill')
+        call fill_pressure_outlet_ghosts_3d(species,shape(ft0),faces,outlet,reference,reference_t,ok)
         call require(ok.and.all(ghost==reference).and.all(gt==reference_t),'viscous fine ghosts equal regular grid')
       end if
       c=c0;t=t0;f=f0;ft=ft0
       if (mode<=2) then
         call advance_amr_reactive_transport_3d(species,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
-          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,ledger,inlet,it,tw,wv)
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,ledger,inlet,it,tw,wv,outlet)
       else
         call advance_amr_reactive_full_3d(species,reactions,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
           'rusanov',mode==4,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           'characteristic_plm','mc',boundary_faces=faces,boundary_change=ledger,inflow_state=inlet, &
-          inflow_temperature=it,wall_temperature=tw,wall_velocity=wv)
+          inflow_temperature=it,wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
       end if
       call require(ok,'physical AMR transport or full split advance')
       call composite_integrals_amr_3d(c,f,patch,dx,dy,dz,after,ok)
@@ -343,12 +349,12 @@ contains
       end if
       if (mode<=2) then
         call advance_amr_reactive_transport_3d(species,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
-          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,ledger,inlet,it,tw,wv)
+          .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,ledger,inlet,it,tw,wv,outlet)
       else
         call advance_amr_reactive_full_3d(species,reactions,transport,patch,c,t,f,ft,dx,dy,dz,interval, &
           'rusanov',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           'characteristic_plm','mc',boundary_faces=faces,boundary_change=ledger,inflow_state=inlet, &
-          inflow_temperature=it,wall_temperature=tw,wall_velocity=wv)
+          inflow_temperature=it,wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
       end if
       call require(.not.ok.and.all(c==c0).and.all(t==t0).and.all(f==f0).and.all(ft==ft0).and. &
         all(ledger==0).and.th==1.and.r==0,'physical transport rejection rolls back all outputs')
