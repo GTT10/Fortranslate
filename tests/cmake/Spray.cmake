@@ -254,6 +254,10 @@ if(PELEF_ENABLE_SPRAY)
       target_compile_options(test_spray_mpi_amr_remap PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
     endif()
     add_executable(test_spray_mpi_amr_reactive spray/test_spray_mpi_amr_reactive.F90)
+    add_test(NAME spray_mpi_amr_split_2
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_spray_mpi_amr_reactive> split ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(spray_mpi_amr_split_2 PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 120 PROCESSORS 2)
     add_test(NAME spray_mpi_amr_force_2
       COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_spray_mpi_amr_reactive> force ${MPIEXEC_POSTFLAGS})

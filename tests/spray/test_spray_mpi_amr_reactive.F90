@@ -45,7 +45,7 @@ program test_spray_mpi_amr_reactive
   integer :: nv,node,n(3),i,j,k,p,water,nitrogen,steps
   integer :: rank,nranks,ierr,owners(3),q
   logical :: ok
-  integer(int64) :: last_id
+  integer(int64) :: last_id,created
   call get_command_argument(1,argument)
   sgs=[0._dp,.7_dp,.7_dp,0._dp]
   if (argument=='les') sgs=[.17_dp,.7_dp,.7_dp,.1_dp]
@@ -170,6 +170,31 @@ program test_spray_mpi_amr_reactive
     call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(q==2,'coupled outflow removes parcel')
   end do
+  if (argument=='split') then
+    local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+    faces='periodic';recursive=.false.;chemistry=.false.;last_id=3
+    options%breakup_model='etab';options%surface_tension=1e3_dp;options%liquid_viscosity=.001_dp
+    options%maximum_multiplicity=50;options%maximum_parcels=3
+    call coupled()
+    call require(.not.ok.and.created==0,'split capacity rejects coupled candidate')
+    call unchanged()
+    options%maximum_parcels=100
+    if (rank==nranks-1) options%maximum_multiplicity=60
+    call coupled()
+    call require(.not.ok.and.created==0,'split controls agree collectively')
+    call unchanged()
+    options%maximum_multiplicity=50
+    call totals(before)
+    call coupled()
+    call require(ok.and.created==3.and.last_id==6,'split reserves three global IDs')
+    call totals(after)
+    scale=max(abs(before),abs(after),1.e-30_dp)
+    call require(all(abs(after-before)<=3.e-12_dp*scale),'split composite conservation')
+    call require(all(drops%multiplicity<=50),'split multiplicity bound')
+    q=size(drops)
+    call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(q==6,'split doubles three parcels')
+  end if
   if (argument=='force') then
     allocate(source(nv));source=123
     local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
@@ -202,7 +227,7 @@ contains
       local,local_t,drops,masses,zero,spacing,interval,'pcm','minmod',solver,chemistry, &
       .true.,.true.,.true.,.false.,1.e-6_dp,1.e-12_dp,steps,correction,theta,ok,last_id, &
       chemistry_integrator='implicit',subcycling=recursive,boundary_faces=faces,boundary_change=boundary, &
-      les_settings=sgs,les_model='vreman',acceleration=accel,source_change=source)
+      les_settings=sgs,les_model='vreman',acceleration=accel,source_change=source,split_created=created)
   end subroutine
   subroutine unchanged()
     integer :: a

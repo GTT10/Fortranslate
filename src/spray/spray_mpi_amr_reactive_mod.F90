@@ -1,5 +1,6 @@
 module spray_mpi_amr_reactive_mod
   use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d
+  use spray_mpi_mod, only: split_mpi_spray_parcels
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
@@ -8,7 +9,7 @@ module spray_mpi_amr_reactive_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
-  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_parcel
+  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_parcel,valid_spray_options
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
@@ -27,7 +28,10 @@ contains
       chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol,particle_steps, &
       maximum_correction,minimum_theta,ok,last_id,chemistry_integrator,subcycling, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      wall_films,film_mass,film_settings,film_steps,les_settings,les_model,outlet_pressure,acceleration,source_change)
+      wall_films,film_mass,film_settings,film_steps,les_settings,les_model,outlet_pressure,acceleration,source_change,split_created)
+    integer(int64), optional, intent(out) :: split_created
+    integer(int64) :: before_split
+    real(dp) :: low_multiplicity,high_multiplicity
     real(dp), optional, intent(in) :: acceleration(3)
     real(dp), optional, intent(inout) :: source_change(:)
     real(dp) :: accel(3),low_accel(3),high_accel(3)
@@ -81,6 +85,7 @@ contains
     logical :: valid,agreed
     character(len=32) :: faces(6)
     ok=.false.;particle_steps=0;film_first=0;film_second=0;film_ledger=0
+    if (present(split_created)) split_created=0
     if (present(film_steps)) film_steps=0
     sgs=[0._dp,.7_dp,.7_dp,0._dp];model='smagorinsky';les_ledger=0;les_max=0
     if (present(les_settings)) sgs=les_settings
@@ -91,6 +96,8 @@ contains
     valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.sgs(4)>=0.and.sgs(4)<=1
     valid=valid.and.minval(sgs(2:3))>=1e-6_dp.and.maxval(sgs(2:3))<=1e6_dp
     valid=valid.and.(model=='smagorinsky'.or.model=='wale'.or.model=='vreman')
+    valid=valid.and.valid_spray_options(options)
+    valid=valid.and.(options%maximum_multiplicity==0.or.present(last_id))
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(boundary)
     valid=valid.and.(present(wall_films).eqv.present(film_mass))
@@ -114,6 +121,10 @@ contains
     valid=valid.and..not.any(pressure>0.and.faces/='outflow')
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(options%maximum_multiplicity,high_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.low_multiplicity/=high_multiplicity) return
     call MPI_Allreduce(accel,low_accel,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(accel,high_accel,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
@@ -188,6 +199,12 @@ contains
       if (.not.valid) return
       film_ledger=film_ledger+film_boundary
     end if
+    before_split=candidate_id
+    if (options%maximum_multiplicity>0) then
+      call split_mpi_spray_parcels(comm,drops,options%maximum_multiplicity,options%maximum_parcels, &
+        candidate_id,valid,masses)
+      if (.not.valid) return
+    end if
     boundary=boundary+first_boundary+second_boundary+film_ledger+les_ledger
     valid=all(ieee_is_finite(boundary)).and.all(ieee_is_finite(force_ledger))
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
@@ -198,6 +215,7 @@ contains
       call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
     end if
     if (present(film_steps)) film_steps=film_first+film_second
+    if (present(split_created)) split_created=candidate_id-before_split
     if (present(last_id)) last_id=candidate_id
     if (present(boundary_change)) boundary_change=boundary
     if (present(source_change)) source_change=force_ledger
