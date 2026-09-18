@@ -2944,3 +2944,10 @@ It returns the three dynamic coefficient fields transactionally; dynamic face
 fluxes, time integration, application selection and nonperiodic/MPI/AMR field
 paths remain to be connected. See
 [coefficient-field checks](validation/les-dynamic-field-20260918.md).
+
+`compute_dynamic_les_rhs_3d` now forms periodic dynamic SGS momentum/energy flux
+divergence, including isotropic stress and dynamic thermal transport. It uses
+arithmetic face interpolation and preserves RHS on rejection; mass/species SGS
+fluxes are zero as in the pinned dynamic model. Time integration, application
+selection and nonperiodic/MPI/AMR paths remain open. See
+[dynamic spatial flux checks](validation/les-dynamic-flux-20260918.md).
