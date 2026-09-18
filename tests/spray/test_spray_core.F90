@@ -1154,10 +1154,10 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
-  case('les_dynamic_flux')
+  case('les_dynamic_flux','les_dynamic_step')
     block
-      real(dp) :: other(15,4,4,4),reference(15,4,4,4),sound,power
-      integer :: i,j,k,c
+      real(dp) :: other(15,4,4,4),reference(15,4,4,4),sound,power,error_coarse,error_fine
+      integer :: i,j,k,c,substep
       call make_gas(.false.)
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
       call require(ok.and.all(rhs==0),'uniform dynamic flux zero')
@@ -1167,12 +1167,52 @@ program test_spray_core
             primitive=0;primitive(1)=.3_dp
             primitive(2)=20*sin(2*pi*(j-1)/4);primitive(3)=15*cos(2*pi*(i-1)/4)
             primitive(5)=101325;primitive(15)=1
+            if (test=='les_dynamic_step') then
+              primitive(1)=.3_dp*(1+.1_dp*sin(2*pi*(i-1)/4+.2_dp))
+              primitive(4)=5*sin(2*pi*(k-1)/4+.3_dp)
+              primitive(5)=101325*(1+.05_dp*cos(2*pi*(j-1)/4+.4_dp))
+            end if
             call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),temp(i,j,k),sound,ok)
             call require(ok,'dynamic flux fixture')
           end do
         end do
       end do
       saved=state;saved_t=temp
+      if (test=='les_dynamic_step') then
+        call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok,maximum_diffusivity=diff)
+        call require(ok.and.diff>0,'dynamic diffusion estimate')
+        dt=.05_dp/(diff*sum(1/spacing**2))
+        call advance_dynamic_les_ssprk2_3d(species,state,temp,spacing,'box',2,0._dp,ok)
+        call require(ok.and.all(state==saved).and.all(temp==saved_t),'dynamic zero step')
+        ke0=sum(.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:))
+        call advance_dynamic_les_ssprk2_3d(species,state,temp,spacing,'box',2,dt,ok)
+        call require(ok,'dynamic SSPRK2 step')
+        ke1=sum(.5_dp*sum(state(2:4,:,:,:)**2,dim=1)/state(1,:,:,:))
+        call require(ieee_is_finite(ke1).and.ke1/=ke0,'dynamic step changes kinetic energy')
+        do c=1,15
+          call require(abs(sum(state(c,:,:,:))-sum(saved(c,:,:,:))) &
+            <=1e-12_dp*max(1._dp,sum(abs(saved(c,:,:,:)))),'dynamic step conservation')
+        end do
+        call require(all(state(1,:,:,:)==saved(1,:,:,:)).and.all(state(6:,:,:,:)==saved(6:,:,:,:)), &
+          'dynamic step preserves species and density')
+        other=state;state=saved;temp=saved_t
+        do substep=1,2
+          call advance_dynamic_les_ssprk2_3d(species,state,temp,spacing,'box',2,dt/2,ok)
+          call require(ok,'dynamic half step')
+        end do
+        reference=state;state=saved;temp=saved_t
+        do substep=1,4
+          call advance_dynamic_les_ssprk2_3d(species,state,temp,spacing,'box',2,dt/4,ok)
+          call require(ok,'dynamic quarter step')
+        end do
+        error_coarse=maxval(abs(other-reference));error_fine=maxval(abs(reference-state))
+        call require(error_coarse>3*error_fine.and.error_coarse<5*error_fine,'dynamic second order refinement')
+        state=saved;temp=saved_t
+        call advance_dynamic_les_ssprk2_3d(species,state,temp,spacing,'box',2,10*dt,ok)
+        call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'dynamic oversized step rollback')
+        call advance_dynamic_les_ssprk2_3d(species,state,temp,spacing,'box',3,0._dp,ok)
+        call require(.not.ok.and.all(state==saved).and.all(temp==saved_t),'dynamic invalid model at zero dt')
+      end if
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
       call require(ok.and.maxval(abs(rhs(2:5,:,:,:)))>0,'dynamic flux active')
       call require(all(rhs(1,:,:,:)==0).and.all(rhs(6:,:,:,:)==0),'dynamic mass and species unchanged')
@@ -1181,7 +1221,7 @@ program test_spray_core
           'dynamic periodic flux conservation')
       end do
       power=sum(state(2:4,:,:,:)*rhs(2:4,:,:,:)/spread(state(1,:,:,:),1,3))
-      call require(power<0,'dynamic shear kinetic energy dissipation')
+      if (test=='les_dynamic_flux') call require(power<0,'dynamic shear kinetic energy dissipation')
       call require(all(state==saved).and.all(temp==saved_t),'dynamic flux inputs preserved')
       state=cshift(saved,1,dim=2);temp=cshift(saved_t,1,dim=1)
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,other,ok)
