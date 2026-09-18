@@ -6,7 +6,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use elementary_kinetics_mod, only: plog_capacity, chebyshev_capacity
   use simulation_config_reactive_3d_mod, only: &
     fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d,valid_wall_velocity_3d, &
-    fill_pressure_outlet_ghosts_3d
+    fill_pressure_outlet_ghosts_3d,characteristic_pressure_ghost_3d
   use precision_mod, only: dp
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   use constants_mod, only: density_floor, pressure_floor
@@ -2283,7 +2283,7 @@ contains
   subroutine advance_mpi_amr_sparse_hydro_3d( &
       distribution, species, patch, hierarchy, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, maximum_reflux_correction, ok, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2291,6 +2291,7 @@ contains
     real(dp), intent(in) :: dx, dy, dz, dt
     character(len=*), intent(in) :: riemann_solver, reconstruction, limiter
     real(dp), intent(out) :: maximum_reflux_correction
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
 
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -2320,6 +2321,7 @@ contains
     logical :: local_ok, global_ok, touched(6)
     real(dp) :: local_boundary(reactive_nvar(size(species))), reflux_boundary(reactive_nvar(size(species)))
     integer :: covered_nx, covered_ny, covered_nz
+    real(dp) :: outlet_values(6)
     integer :: ratio, substep, ierr
 
     maximum_reflux_correction = 0.0_dp
@@ -2342,8 +2344,15 @@ contains
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(candidate_boundary)
+    outlet_values=0
+    if (present(outlet_pressure)) outlet_values=outlet_pressure
+    local_ok=local_ok.and.all(ieee_is_finite(outlet_values)).and.all(outlet_values>=0).and.all(outlet_values<=1e15_dp)
+    if (any(outlet_values>0)) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) local_ok=local_ok.and..not.any(outlet_values>0.and.boundary_faces/='outflow')
+    end if
     call sparse_collective_contract_matches_3d( &
-      distribution, species, patch, [dx, dy, dz, dt], &
+      distribution, species, patch, [dx, dy, dz, dt,outlet_values], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
         trim(limiter)//merge("|physical","|periodic",present(boundary_faces)), local_ok, global_ok)
     if (.not. global_ok) return
@@ -2366,16 +2375,16 @@ contains
     if (present(boundary_faces)) then
       call advance_mpi_amr_sparse_boundary_hydro_3d(distribution,species,patch,candidate%coarse_state, &
         candidate%coarse_temperature,dx,dy,dz,dt,riemann_solver,reconstruction,limiter,coarse_flux_x, &
-        full_y,full_z,boundary_faces,candidate_boundary,local_ok,inflow_state,inflow_temperature)
+        full_y,full_z,boundary_faces,candidate_boundary,local_ok,inflow_state,inflow_temperature,outlet_pressure)
       if (.not.local_ok) return
       coarse_flux_y=full_y(:,:,1:,:);coarse_flux_z=full_z(:,:,:,1:)
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,coarse_start,coarse_start_temperature, &
         boundary_faces,coarse_start_halo,coarse_start_halo_temperature,local_ok, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
       if (.not.local_ok) return
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,candidate%coarse_state,candidate%coarse_temperature, &
         boundary_faces,coarse_end_halo,coarse_end_halo_temperature,local_ok, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
       if (.not.local_ok) return
     else
     call advance_mpi_amr_sparse_periodic_hydro_3d( &
@@ -2421,7 +2430,7 @@ contains
         dy / real(ratio, dp), dz / real(ratio, dp), fine_dt, &
         alpha_start, alpha_end, riemann_solver, reconstruction, limiter, &
         fine_flux_x, fine_flux_y, fine_flux_z, local_ok, &
-        boundary_faces, inflow_state, inflow_temperature)
+        boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
       call sparse_collective_logical_and_3d( &
         distribution%comm, local_ok, global_ok)
       if (.not. global_ok) return
@@ -2951,7 +2960,7 @@ contains
       coarse_end, coarse_end_temperature, state, temperature, &
       dx, dy, dz, dt, alpha_start, alpha_end, riemann_solver, &
       reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok, &
-      boundary_faces, inflow_state, inflow_temperature)
+      boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -2965,6 +2974,7 @@ contains
     real(dp), allocatable, intent(out) :: face_flux_x(:, :, :, :)
     real(dp), allocatable, intent(out) :: face_flux_y(:, :, :, :)
     real(dp), allocatable, intent(out) :: face_flux_z(:, :, :, :)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:), inflow_temperature(:)
@@ -3013,7 +3023,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, old_state, old_temperature, &
       alpha_start, riemann_solver, reconstruction, limiter, first_flux_x, &
-      first_flux_y, first_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature)
+      first_flux_y, first_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, old_state, first_flux_x, first_flux_y, first_flux_z, &
@@ -3029,7 +3039,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, stage_state, stage_temperature, &
       alpha_end, riemann_solver, reconstruction, limiter, second_flux_x, &
-      second_flux_y, second_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature)
+      second_flux_y, second_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, stage_state, second_flux_x, second_flux_y, second_flux_z, &
@@ -3057,7 +3067,7 @@ contains
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
       riemann_solver, reconstruction, limiter, face_flux_x, &
       face_flux_y, face_flux_z, ok, &
-      boundary_faces, inflow_state, inflow_temperature)
+      boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -3071,6 +3081,7 @@ contains
     real(dp), allocatable, intent(out) :: face_flux_x(:, :, :, :)
     real(dp), allocatable, intent(out) :: face_flux_y(:, :, :, :)
     real(dp), allocatable, intent(out) :: face_flux_z(:, :, :, :)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:), inflow_temperature(:)
@@ -3098,7 +3109,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
       reconstruction, limiter, extended_state, extended_temperature, face_ok, &
-      boundary_faces, inflow_state, inflow_temperature)
+      boundary_faces, inflow_state, inflow_temperature,outlet_pressure=outlet_pressure)
     if (.not. face_ok) return
 
     select case (trim(reconstruction))
@@ -3191,7 +3202,7 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
       reconstruction, limiter, extended_state, extended_temperature, ok, &
-      boundary_faces, inflow_state, inflow_temperature, viscous_wall, wall_velocity)
+      boundary_faces, inflow_state, inflow_temperature, viscous_wall, wall_velocity,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -3213,6 +3224,9 @@ contains
     real(dp), allocatable :: primitive(:)
     logical, optional, intent(in) :: viscous_wall
     real(dp), optional, intent(in) :: wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: donor_state(size(state,1)),donor_t
+    integer :: donor(3),distance,global_q(3)
     real(dp) :: shift(3),old_momentum(3),rho
     logical :: viscous
     real(dp) :: ghost_temperature
@@ -3351,6 +3365,38 @@ contains
         end do
       end do
     end do
+    if (present(outlet_pressure)) then
+      if (.not.present(boundary_faces)) then
+        if (any(outlet_pressure/=0)) return
+      else
+        if (.not.all(ieee_is_finite(outlet_pressure))) return
+        if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+        if (any(outlet_pressure>0.and.boundary_faces/='outflow')) return
+        do face=1,6
+          if (.not.touched(face).or.outlet_pressure(face)<=0) cycle
+          a=(face+1)/2
+          do k=1,nz+4
+          do j=1,ny+4
+          do i=1,local_count+4
+            global_q=[distribution%fine_first+i-3,j-2,k-2]
+            distance=1-global_q(a)
+            if (modulo(face,2)==0) distance=global_q(a)-n(a)
+            if (distance<1.or.distance>2) cycle
+            donor=[i,j,k];donor(a)=3
+            if (modulo(face,2)==0) donor(a)=n(a)+2
+            if (a==1) donor(a)=donor(a)-distribution%fine_first+1
+            if (any(donor<1).or.any(donor>shape(extended_temperature))) return
+            donor_state=extended_state(:,donor(1),donor(2),donor(3))
+            donor_t=extended_temperature(donor(1),donor(2),donor(3))
+            call characteristic_pressure_ghost_3d(species,donor_state,donor_t,face,outlet_pressure(face), &
+              real(2*distance,dp),extended_state(:,i,j,k),extended_temperature(i,j,k),local_ok)
+            if (.not.local_ok) return
+          end do
+          end do
+          end do
+        end do
+      end if
+    end if
     ok = all(ieee_is_finite(extended_state))
     if (ok) ok = all(ieee_is_finite(extended_temperature))
     if (ok) ok = minval(extended_temperature) > 0.0_dp

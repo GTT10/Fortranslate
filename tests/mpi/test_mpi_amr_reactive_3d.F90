@@ -240,6 +240,16 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--pressure-hierarchy-only') then
+      call check_physical_hierarchy(0,.true.)
+      call check_physical_hierarchy(1,.true.)
+      call check_physical_hierarchy(2,.true.)
+      call check_physical_hierarchy(3,.true.)
+      if (distribution%rank==0) print *, 'PASS: sparse pressure hierarchy hydro'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--coarse-hydro-only') then
       call check_physical_coarse_hydro()
       if (distribution%rank==0) print *, 'PASS: sparse physical and pressure coarse hydro'
@@ -797,7 +807,9 @@ contains
     end do
   end subroutine check_boundary_distribution
 
-  subroutine check_physical_hierarchy(geometry)
+  subroutine check_physical_hierarchy(geometry,pressure_mode)
+    logical, optional, intent(in) :: pressure_mode
+    real(dp) :: outlet(6)
     integer, optional, intent(in) :: geometry
     type(amr_patch_3d) :: wall_patch
     type(mpi_amr_sparse_distribution_3d) :: dist
@@ -819,6 +831,12 @@ contains
       case(3)
         lo=1;hi=n;last_mode=6
       end select
+    end if
+    outlet=0
+    if (present(pressure_mode)) then
+      if (pressure_mode) then
+        last_mode=2;outlet(2)=102325;outlet(4)=102325;outlet(6)=102325
+      end if
     end if
     nf=(hi-lo+1)*ratio
     call initialize_amr_patch_3d(n,n,n,lo,hi,lo,hi,lo,hi,ratio,wall_patch,ok)
@@ -859,7 +877,7 @@ contains
           boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it)
       else
       call advance_amr_reactive_hydro_3d(species,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it)
+        config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it,outlet)
       end if
       call require(ok,'serial physical hierarchy advance')
       call scatter_mpi_amr_sparse_hierarchy_3d(dist,species,wall_patch,0,c0,ct0,f0,ft0,h,ok)
@@ -879,7 +897,7 @@ contains
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
       else
       call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it)
+        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet)
       end if
       call require(ok,'sparse physical hierarchy advance')
       call require(all(abs(budget-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
@@ -924,7 +942,7 @@ contains
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
       else
       call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it)
+        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet)
       end if
       call require(.not.ok.and.sparse_hierarchies_bits_match(h,saved).and.r==0.and.all(budget==0), &
         'physical hierarchy failure restores both levels and diagnostics')
