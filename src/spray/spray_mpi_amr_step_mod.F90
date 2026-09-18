@@ -30,7 +30,7 @@ contains
   ! Species, transport, liquids and options must be identical on every rank.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected)
+      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -52,6 +52,10 @@ contains
     type(spray_wall_options), optional, intent(in) :: film_settings
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), optional, intent(inout) :: eb_outflow_change(:)
+    real(dp), allocatable :: impact_exterior(:)
+    real(dp) :: exterior(reactive_nvar(size(species))),finish(3),delta(3),flight_fraction
+    integer :: axis
     logical, optional, intent(out) :: model_rejected
     type(spray_eb_wall_options) :: eb_walls
     logical :: rejected
@@ -86,6 +90,7 @@ contains
     logical :: periodic(3)
     logical :: valid,agreed,accepted
     ok=.false.;substeps=0;faces='periodic';ledger=0;wall_ledger=0
+    exterior=0
     if(present(model_rejected)) model_rejected=.false.
     if(present(eb_geometry)) faces="slip_wall"
     if (present(boundary_faces)) faces=boundary_faces
@@ -102,6 +107,10 @@ contains
       end do
     end if
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(ledger)
+    if(present(eb_outflow_change)) then
+      valid=valid.and.present(eb_geometry).and.present(wall_films)
+      valid=valid.and.size(eb_outflow_change)==size(ledger)
+    end if
     valid=valid.and.(present(wall_films).eqv.present(film_mass))
     valid=valid.and.(present(wall_films).eqv.present(film_settings))
     if (present(wall_films)) valid=valid.and.allocated(wall_films).and.present(last_id).and. &
@@ -119,10 +128,12 @@ contains
     call agree()
     if (.not.agreed) return
     film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(eb_geometry))+4*merge(1,0,present(nodal_phi))
+    film_flag=film_flag+8*merge(1,0,present(eb_outflow_change))
     call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.low_flag/=high_flag) return
+    if(present(eb_outflow_change)) allocate(impact_exterior(5+size(components)))
     reference_faces=faces
     call MPI_Bcast(reference_faces,32*6,MPI_CHARACTER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -285,8 +296,20 @@ contains
             do p=1,np
               if(trial(p)%mass<=0) cycle
               crossing=.false.;crossing_fraction=0;crossing_position=0;crossing_normal=0;crossing_cell=0
+              delta=dt*trial(p)%velocity;finish=trial(p)%position+delta
+              if(present(eb_outflow_change)) then
+                flight_fraction=1
+                do axis=1,3
+                  if(delta(axis)>0.and.finish(axis)>=lower(axis)+length(axis)) then
+                    flight_fraction=min(flight_fraction,(lower(axis)+length(axis)-trial(p)%position(axis))/delta(axis))
+                  else if(delta(axis)<0.and.finish(axis)<=lower(axis)) then
+                    flight_fraction=min(flight_fraction,(lower(axis)-trial(p)%position(axis))/delta(axis))
+                  end if
+                end do
+                finish=max(lower,min(lower+length,trial(p)%position+flight_fraction*delta))
+              end if
               call intersect_spray_level_set(nodal_phi,lower,lower+length,trial(p)%position, &
-                trial(p)%position+dt*trial(p)%velocity,crossing,crossing_fraction, &
+                finish,crossing,crossing_fraction, &
                 crossing_position,crossing_normal,crossing_cell,valid)
               if(.not.valid) exit
               eligible(p)=.not.crossing
@@ -306,6 +329,7 @@ contains
           call agree()
         end if
         impact_wall=0
+        if(allocated(impact_exterior)) impact_exterior=0
         if (agreed.and.present(wall_films)) then
           trial_patches=patches;trial_patch_mass=patch_mass
           call prepare_impacts()
@@ -315,7 +339,7 @@ contains
               eb_hits=0
               call advance_mpi_level_set_impacts(comm,components,options,eb_walls,nodal_phi,mw,impact_pressure, &
                 lower,lower+length,dt,trial,next_mass,trial_patches,trial_patch_mass,trial_id,impact_wall, &
-                eb_hits,valid,rejected)
+                eb_hits,valid,rejected,impact_exterior)
               if (rejected) then
                 if (present(model_rejected)) model_rejected=.true.
                 return
@@ -345,6 +369,12 @@ contains
       if (.not.accepted) return
       drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
       ledger=ledger+trial_ledger
+      if(allocated(impact_exterior)) then
+        exterior(:5)=exterior(:5)+impact_exterior(:5)
+        do n=1,nc
+          exterior(5+components(n)%vapor_index)=exterior(5+components(n)%vapor_index)+impact_exterior(5+n)
+        end do
+      end if
       if (present(wall_films)) then
         patches=trial_patches;patch_mass=trial_patch_mass;wall_ledger=wall_ledger+impact_wall
         kept=count(drops%mass>0);survivors=pack(drops,drops%mass>0)
@@ -387,6 +417,7 @@ contains
     end if
     if (present(last_id)) last_id=accepted_id
     if (present(boundary_change)) boundary_change=global_ledger
+    if(present(eb_outflow_change)) eb_outflow_change=exterior
     substeps=count_steps;ok=.true.
   contains
     subroutine prepare_impacts()

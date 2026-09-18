@@ -27,7 +27,7 @@ program test_spray_mpi_eb_impact_step
   real(dp) :: interval
   logical :: rejected
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
-  real(dp), allocatable :: masses(:,:),saved_mass(:,:),before(:),after(:),ledger(:)
+  real(dp), allocatable :: masses(:,:),saved_mass(:,:),before(:),after(:),ledger(:),exterior(:)
   integer :: steps,p
   real(dp) :: rho,cp,e,amount
   type(amr_patch_3d) :: patch(1)
@@ -213,9 +213,39 @@ program test_spray_mpi_eb_impact_step
   call inventory(after)
   call require(all(abs(after-before-ledger)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'specular KH composite conservation')
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  deallocate(films,film_mass);allocate(films(0),film_mass(2,0),exterior(nv))
+  if(rank==nranks-1) then
+    drops(1)%position=[.00199_dp,.001250001_dp,.0015_dp]
+    drops(1)%velocity=[20._dp,-200._dp,5._dp]
+  end if
+  saved_drops=drops;last_id=1;ledger=42;exterior=43;interval=1e-3_dp
+  options%breakup_model='none';options%khrt_children=.false.;options%khrt_reference_diameter_cubed=0
+  options%maximum_substeps=1
+  call outflow_advance()
+  call require(.not.ok.and.steps==0.and.last_id==1,'outflow interval rollback')
+  call require(size(drops)==size(saved_drops).and.size(films)==0.and.all(masses==saved_mass),'outflow arrays rollback')
+  call require(all(ledger==42).and.all(exterior==43),'outflow separate ledger rollback')
+  if(rank==nranks-1) call require(all(drops(1)%position==saved_drops(1)%position),'outflow position rollback')
+  options%maximum_substeps=100000
+  call inventory(before)
+  call outflow_advance()
+  call require(ok.and.size(drops)==0.and.last_id==5,'source splash children escape')
+  call require(exterior(1)<0,'source global exterior inventory')
+  call require(abs(exterior(5+liquids(1)%vapor_index)-.25_dp*exterior(1))<1e-23_dp,'first exterior species')
+  call require(abs(exterior(5+liquids(2)%vapor_index)-.75_dp*exterior(1))<1e-23_dp,'second exterior species')
+  call inventory(after)
+  call require(all(abs(after-before-ledger-exterior)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'MPI source gas film wall exterior conservation')
   if(rank==0) print *, 'PASS: MPI EB impact source coupling and global gas parcel film wall inventory'
   call MPI_Finalize(ierr)
 contains
+  subroutine outflow_advance()
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
+      tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id=last_id,boundary_change=ledger, &
+      wall_films=films,film_mass=film_mass,film_settings=walls,eb_geometry=g,nodal_phi=phi, &
+      model_rejected=rejected,eb_outflow_change=exterior)
+  end subroutine
   subroutine advance()
     call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
       tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id=last_id,boundary_change=ledger, &
