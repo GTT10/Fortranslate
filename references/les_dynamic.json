@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "pelec_commit": "bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8",
+  "sources": [
+    {
+      "path": "Source/LES.H",
+      "sha256": "d9d24bc5dc24206408121fee64a9d616c78ac3edac99e16857bfa4aa93b69a17",
+      "routines": [
+        "get_sfs_stresses_cc",
+        "pc_dynamic_smagorinsky_quantities",
+        "pc_dynamic_smagorinsky_coeffs"
+      ]
+    },
+    {
+      "path": "Source/Constants.H",
+      "sha256": "0b2757e83a7e608b3782049ab5215ae3e439230b9fc0c0624cdc096207f57d48",
+      "routines": [
+        "constants::small_num"
+      ]
+    }
+  ],
+  "implemented_scope": "Cell-local quantities from supplied gradients and Germano contractions from supplied filtered quantities; coefficients ordered Cs^2, CI, Cs^2/PrT. Spatial derivatives, filters and dynamic flux integration remain separate work.",
+  "regularizer_and_floor": 1e-08,
+  "numerical_changes": [
+    "Reject nonfinite and out-of-range inputs with zero outputs",
+    "Reject exactly zero regularized CI denominator",
+    "Apply CI clipping before division to avoid overflow without changing finite mathematical result"
+  ],
+  "units_note": "The pinned numerical regularizer is retained. This algebra check does not establish unit-rescaled dynamic LES equivalence or physical calibration."
+}

@@ -485,7 +485,7 @@ if(PELEF_ENABLE_SPRAY)
     target_compile_options(test_spray_core PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
   endif()
   foreach(spray_case partition mixture_wall_crossing mixture_wall_rates mixture_wall_exchange mixture_wall_event mixture_terminal mixture_rates mixture_exchange mixture film_evolution wall_event wall_state wall_impact heat_capacity port_states ports surface_cap viscosity density antoine split khrt etab boundaries drag heat evaporation terminal abramzon film_binary injection size_distribution stencil coupling rollback substeps zero invalid
-      les_boundary les_algebra les_alternative_algebra les_wale les_vreman les_grid les_zero les_reject)
+      les_boundary les_algebra les_dynamic_algebra les_alternative_algebra les_wale les_vreman les_grid les_zero les_reject)
     add_test(NAME spray_${spray_case} COMMAND test_spray_core ${spray_case})
     set_tests_properties(spray_${spray_case} PROPERTIES LABELS "spray" TIMEOUT 60)
   endforeach()

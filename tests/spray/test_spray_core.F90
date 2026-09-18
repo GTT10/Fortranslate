@@ -15,6 +15,7 @@ program test_spray_core
   use spray_wall_impact_mod
   use spray_breakup_mod
   use spray_coupling_3d_mod
+  use les_dynamic_smagorinsky_mod
   use les_smagorinsky_3d_mod
   implicit none
   integer(int64) :: split_watermark
@@ -1152,6 +1153,60 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
+  case('les_dynamic_algebra')
+    block
+      real(dp) :: kij(3,3),rut(3),aij(3,3),a,ft(3),bij(3,3),b,test_ft(3),coeff(3),vel(3),leonard(3,3)
+      real(dp), parameter :: eps=1e-8_dp
+      integer :: i,j
+      grad=0;grad(1,2)=3;vel=[1._dp,2._dp,3._dp]
+      call dynamic_smagorinsky_quantities(grad,[2._dp,-1._dp,0._dp],2._dp,vel,300._dp, &
+        [.1_dp,.2_dp,.4_dp],2,kij,rut,aij,a,ft,ok)
+      call require(ok,'dynamic grid quantities')
+      ! Delta=0.4, |S|=3, mu/rho=delta^2 |S|.
+      call near(aij(1,2),2*.4_dp**2*3*3,1e-13_dp,'dynamic shear tensor')
+      call near(a,2*2*.4_dp**2*9,1e-13_dp,'dynamic isotropic quantity')
+      call near(ft(1),2*2*.4_dp**2*3,1e-13_dp,'dynamic thermal quantity')
+      call near(kij(2,3),12._dp,1e-13_dp,'dynamic density weighted velocity product')
+      call near(rut(3),1800._dp,1e-13_dp,'dynamic density weighted temperature product')
+      call require(all(aij==transpose(aij)),'dynamic tensor symmetry')
+      ! A manufactured Germano tensor includes shear, trace and signed heat flux.
+      aij=0;a=0;bij=0;bij(1,1)=2;bij(2,2)=-1;bij(3,3)=-1;bij(1,2)=1;bij(2,1)=1
+      leonard=2*bij
+      do i=1,3
+        leonard(i,i)=leonard(i,i)+3
+      end do
+      do j=1,3
+        do i=1,3
+          kij(i,j)=2*vel(i)*vel(j)+leonard(i,j)
+        end do
+      end do
+      b=6;test_ft=0;ft=[1._dp,-2._dp,2._dp];rut=600*vel+4*ft
+      call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
+      call require(ok,'dynamic coefficient solve')
+      call near(coeff(1),16/(8+eps),1e-13_dp,'dynamic double off-diagonal contraction')
+      call near(coeff(2),1._dp,1e-13_dp,'dynamic CI upper bound')
+      call near(coeff(3),36/(9+eps),1e-13_dp,'dynamic thermal contraction')
+      b=18
+      call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
+      call require(ok,'dynamic interior CI solve')
+      call near(coeff(2),9/(18+eps),1e-13_dp,'dynamic unclipped CI')
+      kij=0;rut=0;bij=0;b=0;ft=0;vel=0
+      call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
+      call require(ok.and.all(coeff==eps),'dynamic zero tensors retain pinned floor')
+      kij=-1;rut=-1;bij=1;b=1;ft=1
+      call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
+      call require(ok.and.all(coeff==eps),'dynamic negative coefficients clipped')
+      b=-eps
+      call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
+      call require(.not.ok.and.all(coeff==0),'dynamic singular CI rejects atomically')
+      b=ieee_value(1._dp,ieee_quiet_nan)
+      call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
+      call require(.not.ok.and.all(coeff==0),'dynamic nonfinite coefficient input')
+      call dynamic_smagorinsky_quantities(grad,[2._dp,-1._dp,0._dp],2._dp,vel,300._dp, &
+        [.1_dp,.2_dp,.4_dp],0,kij,rut,aij,a,ft,ok)
+      call require(.not.ok.and.all(kij==0).and.all(rut==0).and.all(aij==0).and.a==0.and.all(ft==0), &
+        'dynamic invalid filter width')
+    end block
   case('les_alternative_algebra')
     grad=0
     call wale_stress(grad,2._dp,[.1_dp,.1_dp,.1_dp],.5_dp,mu,stress,ok)
