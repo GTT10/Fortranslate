@@ -273,8 +273,11 @@ removed without recycling IDs. The global negative system inventory contains
 mass, momentum, energy and component masses in component order, while the wall
 output remains wall receipt. Exterior events share the per-lineage hit budget.
 All ranks receive the same inventory only after collective success. The tree
-migration wrapper, MPI source/reactive coupling and MPI application do not yet
-expose this option. See [MPI outflow evidence](validation/spray-mpi-eb-impact-outflow-20260918.md).
+migration wrapper `advance_mpi_eb_tree_impacts` accepts the same optional output
+and retains it privately until final particle and film migration both succeed.
+MPI source/reactive coupling and the MPI application do not yet expose this
+option. See [MPI outflow evidence](validation/spray-mpi-eb-impact-outflow-20260918.md)
+and [migration evidence](validation/spray-mpi-eb-outflow-migration-20260918.md).
 
 
 `advance_mpi_eb_tree_impacts` composes that interval with transactional AMR
