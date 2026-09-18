@@ -542,10 +542,11 @@ program test_spray_integration
     do i=1,size(drops)
       call require(all(drops(i)%velocity==before_drops(i)%velocity),'force parcel rollback')
     end do
-  case('coupled','coupled_wale','coupled_vreman')
+  case('coupled','coupled_wale','coupled_vreman','coupled_dynamic')
     les_model='smagorinsky'
     if (which=='coupled_wale') les_model='wale'
     if (which=='coupled_vreman') les_model='vreman'
+    if (which=='coupled_dynamic') les_model='dynamic'
     if (which/='coupled') then
       do k=1,5
         do j=1,5
@@ -570,6 +571,23 @@ program test_spray_integration
     call require(sum(drops%mass)<sum(before_drops%mass),'coupled evaporation active')
     call require(maxval(abs(state(6,:,:,:)-before(6,:,:,:)))>1.0e-12_dp,'coupled chemistry active')
     before=state;before_t=temperature;before_drops=drops
+    if (which=='coupled_dynamic') then
+      faces='outflow'
+      call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+        [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+        1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message,les_model='dynamic',boundary_faces=faces)
+      call require(.not.ok.and.message=='Dynamic LES requires periodic boundaries','dynamic boundary guard')
+      call require(all(state==before).and.all(temperature==before_t),'dynamic boundary rollback')
+      call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+        [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
+        1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message,les_model='dynamic',les_test_ratio=3)
+      call require(.not.ok.and.message=='Invalid dynamic LES filter','dynamic filter guard')
+      call require(all(state==before).and.all(temperature==before_t),'dynamic filter rollback')
+      call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+        [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'invalid', &
+        1e-7_dp,1e-12_dp,.1_dp,.7_dp,.7_dp,ok,message,les_model='dynamic',les_test_filter='gaussian')
+      call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'dynamic late failure rollback')
+    end if
     call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
       [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],2e-7_dp,.true.,.true.,'implicit', &
       1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message,les_model='invalid')

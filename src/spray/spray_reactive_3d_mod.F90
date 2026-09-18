@@ -10,6 +10,8 @@ module spray_reactive_3d_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: advance_spray_coupling_3d, advance_mixture_coupling_3d, valid_spray_boundary_faces
   use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d
+  use les_dynamic_smagorinsky_mod, only: advance_dynamic_les_ssprk2_3d
+  use les_filter_3d_mod, only: les_filter_weights
 #ifdef PELEF_SPRAY_CVODE
   use sundials_constant_volume_reactor_mod, only: cvode_reactor_context, initialize_constant_volume_cvode, &
     advance_constant_volume_cvode, finalize_constant_volume_cvode
@@ -101,7 +103,7 @@ contains
       lower,spacing,dt,chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,cs,prt,sct,ok,message, &
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
-      mixture_components,component_mass,film_component_mass,les_model)
+      mixture_components,component_mass,film_component_mass,les_model,les_test_filter,les_test_ratio,les_grid_ratio)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -119,7 +121,11 @@ contains
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3),dt,rtol,atol,cs,prt,sct
     logical, intent(in) :: chemistry_enabled,transport_enabled
-    character(len=*), optional, intent(in) :: les_model
+    character(len=*), optional, intent(in) :: les_model,les_test_filter
+    integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
+    character(len=32) :: selected_les,selected_filter
+    integer :: test_ratio,grid_ratio
+    real(dp), allocatable :: filter_weights(:)
     character(len=*), intent(in) :: chemistry_method
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
@@ -152,12 +158,26 @@ contains
     end if
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
+    selected_les='smagorinsky';selected_filter='box';test_ratio=2;grid_ratio=1
     if (present(les_model)) then
       select case(les_model)
-      case('smagorinsky','wale','vreman')
+      case('smagorinsky','wale','vreman','dynamic')
+        selected_les=les_model
       case default
         message='Invalid LES model'; return
       end select
+    end if
+    if (selected_les=='dynamic') then
+      if (any(faces/='periodic')) then
+        message='Dynamic LES requires periodic boundaries';return
+      end if
+      if (present(les_test_filter)) selected_filter=les_test_filter
+      if (present(les_test_ratio)) test_ratio=les_test_ratio
+      if (present(les_grid_ratio)) grid_ratio=les_grid_ratio
+      call les_filter_weights(selected_filter,test_ratio,filter_weights,local_ok)
+      if (.not.local_ok.or.grid_ratio<1.or.grid_ratio>64) then
+        message='Invalid dynamic LES filter';return
+      end if
     end if
     if (.not.allocated(parcels)) return
     if (present(mixture_components).neqv.present(component_mass)) then
@@ -183,6 +203,7 @@ contains
     if (present(reconstruction)) selected_reconstruction=reconstruction
     if (present(riemann_solver)) selected_riemann=riemann_solver
     if (.not. all(ieee_is_finite([dt,rtol,atol,cs,prt,sct]))) return
+    if (cs<0.or.cs>2.or.min(prt,sct)<1e-6_dp.or.max(prt,sct)>1e6_dp) return
     if (dt <= 0.0_dp .or. dt > 1.0e6_dp) return
     dims=shape(temperature)
     if (size(state,1)/=reactive_nvar(size(species)).or.any(shape(state(1,:,:,:))/=dims)) return
@@ -227,8 +248,7 @@ contains
         end if
         if (.not. local_ok) return
         ledger=ledger+exchange
-        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
-          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
+        call les_half_step()
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
@@ -249,8 +269,7 @@ contains
         end if
         ledger=ledger+exchange
       else
-        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,0.5_dp*dt,local_ok,faces,exchange, &
-          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=les_model)
+        call les_half_step()
         if (.not. local_ok) then
           message='LES step rejected'; return
         end if
@@ -278,6 +297,19 @@ contains
     if (present(film_component_mass)) call move_alloc(mixture_film_mass,film_component_mass)
     if (present(wall_films)) call move_alloc(patches,wall_films); ok=.true.; message=''
   contains
+    subroutine les_half_step()
+      if (selected_les=='dynamic') then
+        exchange=0;local_ok=.true.
+        ! cs=0 retains the existing disabled convention. A positive cs enables
+        ! dynamic coefficients; its magnitude and fixed prt/sct do not set them.
+        if (cs>0) call advance_dynamic_les_ssprk2_3d(species,candidate,temp,spacing,selected_filter, &
+          test_ratio,.5_dp*dt,local_ok,grid_ratio)
+      else
+        call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,.5_dp*dt,local_ok,faces,exchange, &
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=selected_les)
+      end if
+    end subroutine
+
     subroutine force_kick(gas,particles,interval,accepted)
       real(dp), intent(inout) :: gas(:,:,:,:)
       type(spray_parcel), intent(inout) :: particles(:)
