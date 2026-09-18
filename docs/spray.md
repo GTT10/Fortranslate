@@ -2860,3 +2860,16 @@ accepts `acceleration` in `eb_spray`, prints `Force inventory`, and persists it
 separately from wall exchange through restart. See
 [application evidence](validation/spray-eb-acceleration-application-20260918.md).
 See [focused evidence](validation/spray-eb-acceleration-20260918.md).
+
+## MPI EB external acceleration
+
+`advance_mpi_eb_spray_reactive` now accepts `acceleration(3)` and
+`source_change(nvar)`. Acceleration must agree across ranks and be finite with
+each component bounded by 1e6 m/s²; nonzero acceleration requires source output.
+Half kicks bracket the coupled update. Owner-local fluid cells and live parcels
+receive impulse/work; covered solid cells and attached films do not. Coarse
+cells under children are updated for consistent donors but omitted from the
+composite source ledger. Local inventories are summed once across MPI ranks.
+Gas temperature recovery checks unchanged internal energy. Failure on any rank
+preserves caller state and ledgers. MPI application/restart wiring is pending.
+See [focused evidence](validation/spray-mpi-eb-acceleration-20260918.md).
