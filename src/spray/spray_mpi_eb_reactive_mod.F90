@@ -78,9 +78,9 @@ contains
     if(ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(flags,highflags,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.lowflags/=highflags) return
-    if(flags/=0.and.flags/=7.and.flags/=15) return
-    valid=.true.
-    if(present(films)) valid=allocated(films).and.allocated(film_mass)
+    if(flags/=0.and.flags/=7.and.flags/=8.and.flags/=15) return
+    valid=.not.options%khrt_children.or.present(last_id)
+    if(present(films)) valid=valid.and.allocated(films).and.allocated(film_mass)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.agreed) return
     if(present(films)) then
@@ -127,12 +127,16 @@ contains
       integer, intent(out) :: steps
       real(dp), intent(inout) :: exchange(:)
       logical :: rejected
-      if(present(last_id)) then
+      if(present(last_id).and.present(films)) then
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
           wall_films=patches,film_mass=patch_mass,film_settings=film_settings, &
           eb_geometry=geometry,nodal_phi=phi,model_rejected=rejected)
         if(present(model_rejected)) model_rejected=rejected
+      else if(present(last_id)) then
+        call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
+          drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
+          eb_geometry=geometry,nodal_phi=phi)
       else
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,boundary_change=exchange, &

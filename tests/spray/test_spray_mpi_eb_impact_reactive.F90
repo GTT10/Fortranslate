@@ -158,9 +158,42 @@ program test_spray_mpi_eb_impact_reactive
   do p=1,size(films)
     call require(films(p)%mass>0.and.films(p)%temperature>350,'new film evolves after impact')
   end do
+  ! KH children without supplied films use the same private shared watermark.
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
+  if(rank==nranks-1) then
+    drops(1)%position=[.001995_dp,.0015_dp,.0015_dp]
+    drops(1)%velocity=[1000._dp,10._dp,5._dp]
+  end if
+  saved_drops=drops
+  options%breakup_model='khrt';options%khrt_children=.true.;options%khrt_reference_diameter_cubed=1e-25_dp
+  options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+  last_id=1;ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
+  call kh_advance()
+  call require(.not.ok.and.steps==0.and.last_id==1,'KH gas failure watermark rollback')
+  call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'KH gas failure particle rollback')
+  if(rank==nranks-1) call require(all(drops(1)%velocity==saved_drops(1)%velocity),'KH velocity rollback')
+  do node=1,2
+    if(owners(node)/=rank) cycle
+    call require(all(field%fields(node)%values==saved%fields(node)%values),'KH gas rollback')
+  end do
+  call require(all(ledger==42).and.all(boundary==43).and.all(chemical==44).and.theta==45,'KH ledger rollback')
+  solver='hllc'
+  call inventory(before)
+  call kh_advance()
+  call require(ok.and.last_id>1.and.modulo(last_id-1,4_int64)==0,'KH reactive shared IDs')
+  call inventory(after)
+  call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'KH reactive composite conservation')
   if(rank==0) print *, 'PASS: MPI EB reactive impacts, evolving films, shared IDs and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine kh_advance()
+    call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
+      liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
+      .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &
+      last_id=last_id)
+  end subroutine
   subroutine advance()
     if(include_films) then
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &

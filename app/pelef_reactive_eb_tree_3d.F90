@@ -402,7 +402,7 @@ program pelef_reactive_eb_tree_3d
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
-        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling)
+        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -548,7 +548,7 @@ contains
     if(nc<1.or.nc>16.or.number<1.or.number>125000) error stop 'Invalid MPI EB spray dimensions'
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Invalid fraction sum'
-    if(.not.valid_spray_options(particle_options).or.particle_options%khrt_children) &
+    if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
     if(wall_impacts) then
@@ -933,7 +933,7 @@ contains
       do p=1,saved_event-1
         if(event_factors(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
       end do
-      if(wall_impacts) then
+      if(wall_impacts.or.particle_options%khrt_children) then
         if(watermark<expected_ids) error stop 'Invalid restart ID watermark'
         if(modulo(watermark-expected_ids,4_int64)/=0) error stop 'Invalid restart splash ID watermark'
       else
