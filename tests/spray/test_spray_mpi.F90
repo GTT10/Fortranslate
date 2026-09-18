@@ -89,7 +89,7 @@ program test_spray_mpi
   call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'split failure preserves payload')
   call split_mpi_spray_parcels(MPI_COMM_WORLD,parcels,60.0_dp,100,last_id,ok,masses)
   call require(ok.and.size(parcels)==4.and.last_id==4*nranks,'collective split ID allocation')
-  call require(all(parcels(3:4)%id==[2*nranks+2*rank+1,2*nranks+2*rank+2]),'split globally disjoint IDs')
+  call require(all(parcels(3:4)%id==2*nranks+saved%id),'split IDs follow global parent ordering')
   call require(all(parcels(3:4)%parent_id==saved%id),'split lineage')
   call require(sum(parcels%multiplicity)==sum(saved%multiplicity),'split multiplicity conserved')
   call require(sum(parcels%khrt_initial_count)==sum(saved%khrt_initial_count),'split KH count conserved')
@@ -98,6 +98,7 @@ program test_spray_mpi
     call require(all(masses(:,p)==parcels(p)%mass*[.25_dp,.75_dp]),'split component inheritance')
     call require(parcels(p)%multiplicity<=60,'split count cap')
   end do
+  call check_parent_order()
   last_id=100;first_id=-7
   call reserve_spray_ids(MPI_COMM_WORLD,rank,last_id,first_id,ok)
   call require(ok.and.last_id==100+nranks*(nranks-1)/2,'collective ID high-water mark')
@@ -537,6 +538,45 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_parent_order()
+    type(spray_parcel), allocatable :: trial(:)
+    real(dp), allocatable :: components(:,:)
+    integer(int64) :: watermark,previous
+    integer :: mode,id,owner,amount,index,original,sibling
+    logical :: accepted
+    do mode=1,3
+      amount=0
+      do id=1,4
+        owner=modulo(id-1,nranks)
+        if (mode==2) owner=nranks-1-owner
+        if (mode==3) owner=0
+        if (owner==rank) amount=amount+1
+      end do
+      allocate(trial(amount),components(2,amount));index=0
+      do id=1,4
+        owner=modulo(id-1,nranks)
+        if (mode==2) owner=nranks-1-owner
+        if (mode==3) owner=0
+        if (owner/=rank) cycle
+        index=index+1;trial(index)=saved(1)
+        trial(index)%id=id;trial(index)%parent_id=0
+        trial(index)%multiplicity=real(60*id+1,dp)
+        components(:,index)=trial(index)%mass*[.25_dp,.75_dp]
+      end do
+      original=size(trial);watermark=4
+      call split_mpi_spray_parcels(MPI_COMM_WORLD,trial,60._dp,100,watermark,accepted,components)
+      call require(accepted.and.watermark==14,'owner-independent split watermark')
+      previous=0;sibling=0
+      do index=original+1,size(trial)
+        id=int(trial(index)%parent_id)
+        if (trial(index)%parent_id/=previous) sibling=0
+        sibling=sibling+1;previous=trial(index)%parent_id
+        call require(trial(index)%id==4+id*(id-1)/2+sibling,'owner-independent parent/sibling IDs')
+        call require(all(components(:,index)==trial(index)%mass*[.25_dp,.75_dp]),'ordered split composition')
+      end do
+      deallocate(trial,components)
+    end do
+  end subroutine
   subroutine check_boundary_split()
     type(spray_parcel), allocatable :: drops(:)
     type(spray_options) :: settings

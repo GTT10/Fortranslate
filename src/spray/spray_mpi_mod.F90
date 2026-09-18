@@ -2338,12 +2338,92 @@ contains
     next_id=last_id;first_id=0
     call reserve_spray_ids(comm,size(candidate)-old_count,next_id,first_id,valid)
     if (.not.valid) return
-    do p=old_count+1,size(candidate)
-      candidate(p)%id=first_id+int(p-old_count-1,int64)
-    end do
+    call assign_split_ids(comm,candidate,old_count,last_id,valid)
+    if (.not.valid) return
     call move_alloc(candidate,parcels)
     if (present(component_mass)) call move_alloc(masses,component_mass)
     last_id=next_id;ok=.true.
+  end subroutine
+
+  ! Order computational children by global parent ID, then local sibling order.
+  ! Broadcast one owner's compact parent/count metadata at a time, never parcel payloads.
+  subroutine assign_split_ids(comm,candidate,old_count,base,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_parcel), intent(inout) :: candidate(:)
+    integer, intent(in) :: old_count
+    integer(int64), intent(in) :: base
+    logical, intent(out) :: ok
+    integer(int64), allocatable :: groups(:,:),remote(:,:),offset(:)
+    integer(int64) :: prefix,sibling
+    integer :: rank,nranks,ierr,n,p,j,k,sender,count,ios
+    logical :: valid,agreed
+    ok=.false.;n=0
+    do p=old_count+1,size(candidate)
+      if (p==old_count+1) then
+        n=n+1
+      else if (candidate(p)%parent_id/=candidate(p-1)%parent_id) then
+        n=n+1
+      end if
+    end do
+    allocate(groups(2,n),offset(n),stat=ios)
+    valid=ios==0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    groups=0;offset=0;j=0
+    do p=old_count+1,size(candidate)
+      if (p==old_count+1) then
+        j=j+1
+      else if (candidate(p)%parent_id/=candidate(p-1)%parent_id) then
+        j=j+1
+      end if
+      groups(1,j)=candidate(p)%parent_id;groups(2,j)=groups(2,j)+1
+    end do
+    do j=2,n
+      offset(j)=offset(j-1)+groups(2,j-1)
+    end do
+    call MPI_Comm_rank(comm,rank,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    do sender=0,nranks-1
+      count=n
+      call MPI_Bcast(count,1,MPI_INTEGER,sender,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      allocate(remote(2,count),stat=ios)
+      valid=ios==0
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS.or..not.agreed) return
+      if (rank==sender) remote=groups
+      call MPI_Bcast(remote,2*count,MPI_INTEGER8,sender,comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      valid=.true.
+      if (rank/=sender) then
+        k=1;prefix=0
+        do j=1,n
+          do while(k<=count)
+            if (remote(1,k)>=groups(1,j)) exit
+            prefix=prefix+remote(2,k);k=k+1
+          end do
+          if (k<=count) then
+            if (remote(1,k)==groups(1,j)) valid=.false.
+          end if
+          offset(j)=offset(j)+prefix
+        end do
+      end if
+      deallocate(remote)
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    end do
+    j=0;sibling=0
+    do p=old_count+1,size(candidate)
+      if (p==old_count+1) then
+        j=j+1;sibling=0
+      else if (candidate(p)%parent_id/=candidate(p-1)%parent_id) then
+        j=j+1;sibling=0
+      end if
+      sibling=sibling+1;candidate(p)%id=base+offset(j)+sibling
+    end do
+    ok=.true.
   end subroutine
 
   ! All ranks retain the same high-water mark; rank order breaks allocation ties.
