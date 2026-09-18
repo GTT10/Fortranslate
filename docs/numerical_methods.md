@@ -2731,6 +2731,11 @@ EB AMR are not implied.
 pressure extrapolation used by the pinned PeleC EB-ConvergingNozzle case.
 It supports all six outward normals and a caller-supplied ghost-distance ratio.
 The helper returns a consistent NASA7 conserved state and temperature or preserves
-outputs on rejection. Solver boundary dispatch is not connected yet. This is
+outputs on rejection. Regular 3D RK2 hydro now accepts optional
+`outlet_pressure(6)`: positive entries select pressure extrapolation on existing
+`outflow` faces; zero retains ordinary extrapolation. Both ghost layers are
+recomputed at each stage. Reaction/transport, application input, AMR and MPI
+connections remain pending. See
+[hydro evidence](validation/pressure-outlet-hydro-20260918.md). This is
 separate from GC-NSCBC, which the pinned reference guide marks unported.
 See [equations, reference identity and focused checks](validation/characteristic-pressure-ghost-20260918.md).
