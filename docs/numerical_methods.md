@@ -2824,3 +2824,10 @@ already includes the targets. Scheduled-regrid continuation reproduces state
 and budget CSVs exactly, while changed/removed targets reject restart; see
 [tree application evidence](validation/pressure-outlet-tree-application-20260918.md).
 MPI patch-tree pressure input remains unconnected.
+
+MPI tree common-step hydro now applies the shared pressure ghost helper on
+owner-local physical faces after collective target validation/agreement.
+Two/three-rank PCM/PLM checks reproduce serial state, temperature and diagnostics
+exactly and preserve rollback on rank-local pressure errors; see
+[MPI tree hydro evidence](validation/pressure-outlet-mpi-tree-hydro-20260918.md).
+MPI level/subcycle hydro, transport, coupled wrappers and tree input remain pending.
