@@ -41,7 +41,8 @@ contains
   end subroutine
 
   subroutine advance_amr_patch_tree_subcycle_hydro_3d(tree,species,state,temperature,spacing,dt,faces, &
-      reconstruction,limiter,solver,boundary_change,maximum_correction,ok,inflow_state,inflow_temperature,level_steps)
+      reconstruction,limiter,solver,boundary_change,maximum_correction,ok,inflow_state,inflow_temperature,level_steps, &
+      outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -50,6 +51,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
     type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint
     type(amr_tree_flux_3d), allocatable :: integrated(:)
@@ -109,7 +111,7 @@ contains
       call pack_depth(depth,old_endpoint)
       call advance_amr_patch_tree_hydro_level_3d(tree,species,candidate,temps,depth,spacing,local_dt,faces, &
         reconstruction,limiter,solver,total,good,old_endpoint,new_endpoint,fraction0,fraction1, &
-        inflow_state,inflow_temperature)
+        inflow_state,inflow_temperature,outlet_pressure)
       if (.not.good) return
       executed(depth+1)=executed(depth+1)+1
       call pack_depth(depth,new_endpoint)
