@@ -37,6 +37,8 @@ program test_spray_eb_impact_reactive
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
   logical :: ok,rejected,outflow=.false.
+  real(dp) :: accel(3)=0
+  real(dp), allocatable :: force(:)
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
   end do
@@ -230,13 +232,30 @@ program test_spray_eb_impact_reactive
   call inventory(after)
   call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'reactive splash exterior composite conservation')
+  state=saved;temperature=saved_t
+  deallocate(drops,masses,films,film_mass)
+  allocate(drops(1),masses(2,1),films(0),film_mass(2,0),force(nv))
+  drops(1)=saved_drop;drops(1)%position=[.002_dp,.0015_dp,.0015_dp]
+  masses=saved_mass;last_id=100;outflow=.false.;accel=[1000._dp,-2000._dp,3000._dp]
+  force=46;solver='invalid';boundary=42;wall=42;chemical=42;theta=42
+  call kh_advance()
+  call require(.not.ok.and.all(force==46).and.last_id==100,'force ledger rollback')
+  call require(all(state==saved).and.all(temperature==saved_t),'force gas rollback')
+  call require(all(drops(1)%velocity==saved_drop%velocity),'force particle rollback')
+  solver='rusanov'
+  call inventory(before)
+  call kh_advance()
+  call require(ok.and.any(force(2:4)/=0).and.force(1)==0.and.all(force(6:)==0),'force inventory shape')
+  call inventory(after)
+  call require(all(abs(after-before-boundary-wall-chemical-force)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'EB external impulse and work conservation')
   print *, 'PASS: reactive EB impacts, KH, splitting and exterior budgets'
 contains
   subroutine kh_advance()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
       2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
-      last_id=last_id,particle_outflow=outflow)
+      last_id=last_id,particle_outflow=outflow,acceleration=accel,source_change=force)
   end subroutine
   subroutine advance()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &

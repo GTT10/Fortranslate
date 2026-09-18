@@ -4,8 +4,8 @@ module spray_eb_reactive_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar
-  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options
+  use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
+  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_parcel
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_breakup_mod, only: split_spray_parcels
   use spray_eb_step_mod, only: advance_eb_mixture_coupling_allocated
@@ -55,7 +55,7 @@ contains
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
       ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected, &
-      split_created,particle_outflow)
+      split_created,particle_outflow,acceleration,source_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -76,6 +76,9 @@ contains
     real(dp), allocatable :: patch_mass(:,:)
     integer(int64), optional, intent(out) :: split_created
     integer(int64) :: watermark,before_split
+    real(dp), optional, intent(in) :: acceleration(3)
+    real(dp), optional, intent(inout) :: source_change(:)
+    real(dp) :: accel(3),force_ledger(reactive_nvar(size(species)))
     logical, optional, intent(in) :: particle_outflow
     logical :: impacts,rejected,outflow
     character(len=16) :: outer_faces(6)
@@ -99,6 +102,14 @@ contains
     if (dt<=0.or.dt>1e6_dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(chemistry_change)/=nv) return
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
+    accel=0;force_ledger=0
+    if(present(acceleration)) accel=acceleration
+    if(.not.all(ieee_is_finite(accel))) return
+    if(any(abs(accel)>1e6_dp)) return
+    if(any(accel/=0).and..not.present(source_change)) return
+    if(present(source_change)) then
+      if(size(source_change)/=nv) return
+    end if
     impacts=present(wall_options);outflow=.false.
     if(present(particle_outflow)) outflow=particle_outflow
     outer_faces='outflow';first_exterior=0;second_exterior=0
@@ -114,6 +125,10 @@ contains
       patches=films;patch_mass=film_mass;watermark=last_id
     end if
     gas=state;temp=temperature;drops=parcels;masses=component_mass
+    if(any(accel/=0)) then
+      call force_kick(gas,temp,drops,valid)
+      if(.not.valid) return
+    end if
     first_wall=0;second_wall=0;boundary=0;wall=0;chemical=0
     if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
@@ -174,6 +189,10 @@ contains
         valid,watermark,masses)
       if (.not.valid) return
     end if
+    if(any(accel/=0)) then
+      call force_kick(next_gas,next_temp,drops,valid)
+      if(.not.valid) return
+    end if
     boundary=boundary+first_exterior+second_exterior
     wall(1:5)=wall(1:5)+first_wall+second_wall
     state=next_gas;temperature=next_temp;parcels=drops;component_mass=masses
@@ -183,6 +202,51 @@ contains
     if (present(last_id)) last_id=watermark
     if (present(split_created)) split_created=watermark-before_split
     minimum_theta=theta;boundary_change=boundary;wall_change=wall;chemistry_change=chemical
+    if(present(source_change)) source_change=force_ledger
     particle_steps=first_steps+second_steps;ok=.true.
+  contains
+    subroutine force_kick(gas_state,gas_temperature,particles,accepted)
+      real(dp), intent(inout) :: gas_state(:,:,:,:)
+      real(dp), intent(in) :: gas_temperature(:,:,:)
+      type(spray_parcel), intent(inout) :: particles(:)
+      logical, intent(out) :: accepted
+      real(dp) :: dv(3),momentum(3),energy,mass,volume,velocity(3),checked_t,sound,primitive(nv)
+      integer :: i,j,k,p
+      accepted=.false.;dv=.5_dp*dt*accel
+      if(.not.g%is_valid()) return
+      if(any(shape(gas_state)/=[nv,g%nx,g%ny,g%nz])) return
+      if(any(shape(gas_temperature)/=[g%nx,g%ny,g%nz])) return
+      do k=1,g%nz
+      do j=1,g%ny
+      do i=1,g%nx
+        if(g%volume_fraction(i,j,k)<=0) cycle
+        mass=gas_state(1,i,j,k)
+        if(.not.ieee_is_finite(mass).or.mass<=0) return
+        if(maxval(abs(gas_state(2:4,i,j,k)/mass+dv))>1e7_dp) return
+        momentum=mass*dv
+        energy=dot_product(gas_state(2:4,i,j,k)+.5_dp*momentum,dv)
+        gas_state(2:4,i,j,k)=gas_state(2:4,i,j,k)+momentum
+        gas_state(5,i,j,k)=gas_state(5,i,j,k)+energy
+        volume=g%volume_fraction(i,j,k)*g%dx*g%dy*g%dz
+        force_ledger(2:4)=force_ledger(2:4)+volume*momentum
+        force_ledger(5)=force_ledger(5)+volume*energy
+        call reactive_conserved_to_primitive(species,gas_state(:,i,j,k),gas_temperature(i,j,k), &
+          primitive,checked_t,sound,accepted)
+        if(.not.accepted) return
+        accepted=.false.
+        if(abs(checked_t-gas_temperature(i,j,k))>1e-9_dp*max(1._dp,abs(gas_temperature(i,j,k)))) return
+      end do
+      end do
+      end do
+      do p=1,size(particles)
+        if(particles(p)%mass<=0) cycle
+        mass=particles(p)%mass*particles(p)%multiplicity;velocity=particles(p)%velocity
+        particles(p)%velocity=velocity+dv
+        if(.not.valid_spray_parcel(particles(p))) return
+        force_ledger(2:4)=force_ledger(2:4)+mass*dv
+        force_ledger(5)=force_ledger(5)+mass*dot_product(velocity+.5_dp*dv,dv)
+      end do
+      accepted=all(ieee_is_finite(force_ledger))
+    end subroutine
   end subroutine
 end module
