@@ -2968,3 +2968,20 @@ coefficients. Fixed prt/sct do not set dynamic heat/species transport. Invalid
 filters and nonperiodic faces reject even when cs is zero. Application input,
 restart identity and MPI dynamic dispatch remain pending. See
 [coupled dynamic checks](validation/les-dynamic-coupled-20260918.md).
+
+### Serial dynamic LES input and restart
+
+Both serial spray executables now accept these `spray` namelist entries:
+
+```fortran
+ les_model='dynamic', smagorinsky_constant=.1,
+ les_test_filter='box', les_test_ratio=2, les_grid_ratio=1,
+```
+
+Only periodic boundaries are supported. Positive `smagorinsky_constant` enables
+this model; its magnitude and fixed turbulent Prandtl/Schmidt values do not set
+the dynamic coefficients. Zero disables SGS. Box/Gaussian/identity test kernels
+use the filter API's valid ratios; the grid ratio is 1–64. Nondefault filter
+controls require the dynamic model. Model and filter settings are checked on
+restart, including settings omitted back to their defaults. MPI dynamic input
+remains unsupported. See [fixed/selected application checks](validation/les-dynamic-application-20260918.md).
