@@ -237,3 +237,28 @@ that rank has no films. Film patches have no global ID and may change output ran
 or row order after restart. These CSVs are analysis output; restart uses the
 checkpoint's V2 particle/film payload. No lateral film transport or EB impact
 geometry is implemented in this path.
+
+### Static LES
+
+Both fixed and selected executables accept an optional group in the spray input:
+
+```fortran
+&amr_spray_les
+ les_model='vreman',les_cs=.17,les_ci=.1
+ les_prt=.7,les_sct=.7,les_cfl=.1
+/
+```
+
+Models are `smagorinsky` (default), `wale` and `vreman`. `les_cs` is the
+model's eddy coefficient in `[0,2]`; `les_ci` controls isotropic stress in
+`[0,1]`. Both default to zero, disabling LES. PrT/ScT default to 0.7 and must
+lie in `[1e-6,1e6]`. The diffusion CFL defaults to 0.1 and must be in `(0,0.2]`.
+These example coefficients are implementation fixtures, not calibrated values.
+
+LES runs as two common half steps around the gas split. Its initial diffusion
+estimate limits the application interval; subsequent particle feedback and
+nonlinear stages can still require the existing retry/halving path. Recursive
+gas stepping does not subcycle LES. Nondefault LES settings bind the checkpoint
+context, so changing them on restart is rejected. Default settings retain the
+previous context serialization. Dynamic LES and EB grids are not supported here.
+See [application evidence](../../docs/validation/les-amr-application-20260918.md).

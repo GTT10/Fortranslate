@@ -3125,8 +3125,8 @@ It preserves all caller fields and diagnostics on collective failure. Empty
 owners are supported. `compute_mpi_amr_tree_les_timestep_3d` now returns the
 collective minimum patch interval and maximum diffusivity, with the same CFL
 range/cap as the serial selector. It checks controls collectively, evaluates
-owner-local ghosts and preserves both outputs on failure. Subcycling and
-application dispatch remain open. See
+owner-local ghosts and preserves both outputs on failure. LES subcycling
+remains open. The MPI AMR spray application connects the common-step API below. See
 [MPI timestep checks](validation/les-mpi-amr-timestep-20260918.md). See [distributed AMR evidence](validation/les-mpi-amr-tree-20260918.md).
 See [timestep evidence](validation/les-amr-timestep-20260918.md).
 Dynamic LES and EB grids are outside this API.
@@ -3141,6 +3141,10 @@ reaction/transport/hydro split, inside the particle half steps. Gas subcycling
 remains available; LES itself uses common steps. Coefficients and model must
 agree across ranks. Gas, particles, optional films, IDs and boundary/correction
 diagnostics publish together after the entire coupled interval succeeds.
-The application namelist, restart identity and automatic timestep selection
-are not yet wired to these controls. See
+The fixed/selected MPI AMR spray application exposes these controls through
+`&amr_spray_les`, binds nondefault settings to restart identity and applies the
+initial LES diffusion estimate to its automatic timestep. Existing retries
+handle later nonlinear rejection. See the
+[input guide](../cases/mpi_amr_spray_3d/README.md#static-les) and
+[application checks](validation/les-amr-application-20260918.md). See
 [coupled evidence](validation/les-amr-coupled-20260918.md).
