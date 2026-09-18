@@ -5,6 +5,8 @@ program test_spray_eb_drift
   implicit none
   type(spray_parcel) :: p(2),saved(2)
   real(dp) :: phi(0:2,0:2,0:2),lo(3)=0,hi(3)=2,change(5),normal(3),v(3),expected(3)
+  real(dp) :: exterior(5),energy(2)=10
+  character(len=16) :: faces(6)
   integer :: i,j,k,hits
   logical :: ok
   ! Oblique plane x+y=1, fluid to the upper right. Tangential z motion persists.
@@ -47,7 +49,40 @@ program test_spray_eb_drift
   call require(maxval(abs(change))<1e-14_dp,'opposite wall impulses cancel')
   call drift_spray_level_set(phi,lo,hi,0._dp,0,p,change,hits,ok)
   call require(ok.and.hits==0.and.all(change==0),'zero interval')
-  print *, 'PASS: transactional specular EB parcel drift'
+  ! EB reflection precedes a root-domain outflow in the remaining flight.
+  do i=0,2
+    phi(i,:,:)=real(i,dp)-.5_dp
+  end do
+  p=saved;p(1)%position=[.75_dp,1._dp,1._dp];p(1)%velocity=[-1._dp,0._dp,0._dp];p(2)%mass=0
+  saved=p;faces='outflow';change=42;exterior=43;hits=17
+  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call require(ok.and.hits==2.and.p(1)%mass==0,'EB then exterior escape')
+  call require(abs(change(2)-.06_dp)<1e-14_dp.and.abs(exterior(2)+.03_dp)<1e-14_dp,'separate wall and outflow impulse')
+  call require(abs(exterior(1)+.03_dp)<1e-14_dp.and.abs(exterior(5)+.315_dp)<1e-14_dp,'outflow mass and liquid energy')
+  ! Same earliest-event ordering with exterior specular reflection.
+  p=saved;faces(2)='slip_wall'
+  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call require(ok.and.hits==2.and.abs(p(1)%position(1)-1.75_dp)<1e-14_dp,'EB then exterior reflection')
+  call require(p(1)%velocity(1)==-1.and.abs(change(2)+exterior(2))<1e-14_dp,'two wall impulses cancel')
+  ! Multiple periodic wraps require matching geometry at the seam.
+  p=saved;p(1)%position=1;p(1)%velocity=[0._dp,0._dp,5._dp];saved=p
+  faces='outflow';faces(5:6)='periodic'
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call require(ok.and.hits==3.and.abs(p(1)%position(3))<1e-14_dp,'periodic multiple wraps')
+  call require(all(change==0).and.all(exterior==0),'periodic inventory unchanged')
+  p=saved;change=42;exterior=43;hits=17
+  call drift_spray_level_set(phi,lo,hi,1._dp,2,p,change,hits,ok,faces,energy,exterior)
+  call require(.not.ok.and.all(p(1)%position==saved(1)%position),'combined event limit rollback')
+  call require(all(change==42).and.all(exterior==43).and.hits==17,'combined diagnostics rollback')
+  faces(1:2)='periodic'
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call require(.not.ok.and.all(exterior==43),'nonperiodic EB seam rejected')
+  ! A later solid start rolls back an earlier outflow.
+  faces='outflow';p=saved;p(1)%position(1)=1.9_dp;p(1)%velocity=[1._dp,0._dp,0._dp]
+  p(2)=p(1);p(2)%id=2;p(2)%position(1)=.1_dp;saved=p
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call require(.not.ok.and.p(1)%mass==saved(1)%mass.and.all(exterior==43),'late invalid start preserves escaped parcel')
+  print *, 'PASS: transactional EB and exterior parcel drift'
 contains
   subroutine require(condition,label)
     logical, intent(in) :: condition
