@@ -92,6 +92,7 @@ program pelef_reactive_eb_tree_3d
   type(spray_wall_options) :: walls
   type(spray_wall_film), allocatable :: films(:)
   real(dp), allocatable :: film_mass(:,:)
+  real(dp) :: acceleration(3)=0
   logical :: wall_impacts=.false.,particle_outflow=.false.,model_rejected
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
   character(len=:), allocatable :: spray_context
@@ -150,6 +151,7 @@ program pelef_reactive_eb_tree_3d
   type(reactive_eb_3d_config) :: config,root_config
   integer(int64), allocatable :: origin(:,:),domain(:,:)
   integer, allocatable :: ratios(:),shared_ratios(:)
+  real(dp), allocatable :: force_total(:),step_force(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),current(:),boundary(:),wall(:),chemical(:),injected(:)
   real(dp) :: dt,theta,error,estimated_dt
   integer :: unit,ios,status,node,n(3),nv,retry,depth,event,common
@@ -330,6 +332,7 @@ program pelef_reactive_eb_tree_3d
 #endif
   nv=reactive_nvar(size(species));n=root_shape
   allocate(current(nv),boundary(nv),wall(nv),chemical(nv),injected(nv))
+  allocate(force_total(nv),step_force(nv));force_total=0;step_force=0
   injected=0
   root_config=config;root_config%nx=n(1);root_config%ny=n(2);root_config%nz=n(3)
 #ifdef PELEF_MPI_EB_TREE
@@ -396,7 +399,8 @@ program pelef_reactive_eb_tree_3d
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
         films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
-        split_created=step_split_created,particle_outflow=particle_outflow)
+        split_created=step_split_created,particle_outflow=particle_outflow, &
+        acceleration=acceleration,source_change=step_force)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -404,7 +408,8 @@ program pelef_reactive_eb_tree_3d
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
-        split_created=step_split_created,particle_outflow=particle_outflow)
+        split_created=step_split_created,particle_outflow=particle_outflow, &
+        acceleration=acceleration,source_change=step_force)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -424,6 +429,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
     split_created_total=split_created_total+step_split_created
 #endif
+    force_total=force_total+step_force
     record%boundary=record%boundary+boundary;record%wall=record%wall+wall;record%chemical=record%chemical+chemical
     next_time=record%time+dt
     if (regrid_stage<regrid_count) then
@@ -531,7 +537,8 @@ contains
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,particle_options,injection_events,injection_times,injection_scales,port_count,event_ports, &
       port_numbers,port_centers,port_axes,port_masses,port_speeds,port_angles,port_diameters,port_temperatures,port_fractions, &
-      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls,particle_outflow, &
+      port_profile_points,port_profile_times,port_profile_rates,injection_end_times,wall_impacts,walls, &
+      particle_outflow,acceleration, &
       port_radii,port_nozzles,port_sizes,port_velocity_from_rate,port_discharge_coefficients, &
       mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
@@ -556,6 +563,8 @@ contains
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
+    if(.not.all(ieee_is_finite(acceleration))) error stop 'Invalid MPI EB acceleration'
+    if(any(abs(acceleration)>1e6_dp)) error stop 'Invalid MPI EB acceleration'
     if(wall_impacts) then
       if(.not.valid_wall_options(walls,[character(len=16)::'slip_wall','slip_wall','slip_wall', &
         'slip_wall','slip_wall','slip_wall'])) error stop 'Invalid EB wall options'
@@ -812,7 +821,7 @@ contains
     type(spray_parcel), allocatable :: particles(:)
     real(dp), allocatable :: components(:,:),patch_mass(:,:)
     type(spray_wall_film), allocatable :: patches(:)
-    real(dp) :: source(nv),expected_source(nv),inventory(nv),saved_time
+    real(dp) :: source(nv),expected_source(nv),inventory(nv),saved_time,saved_force(nv)
     integer :: stream,code,closed,saved_steps,saved_event,expected_event,date(8)
     integer(int64) :: watermark,expected_mark,tick,expected_ids,expected_splits
     character(len=256) :: token,step_label
@@ -861,6 +870,7 @@ contains
       end if
       if(code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) &
         record%initial,record%scale,record%boundary,record%wall,record%chemical,injected
+      if(any(acceleration/=0).and.code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) force_total
       if(code/=0) error stop 'Cannot write coupled checkpoint prefix'
       ! The gas archive is a snapshot with its own zero-exchange reference.
       ! The complete coupled history is retained separately in the prefix above.
@@ -912,6 +922,12 @@ contains
       if(code/=0) error stop 'Missing coupled history'
       if(.not.all(ieee_is_finite([coupled%initial,coupled%scale,coupled%boundary,coupled%wall, &
         coupled%chemical,expected_source])).or.any(coupled%scale<0)) error stop 'Invalid coupled history'
+      saved_force=0
+      if(any(acceleration/=0)) then
+        read(stream,*,iostat=code) saved_force
+        if(code/=0) error stop 'Missing external force history'
+        if(.not.all(ieee_is_finite(saved_force))) error stop 'Invalid external force history'
+      end if
       call read_mpi_eb_tree_checkpoint_3d(path//'.gas',stream,species,reactions,transport,config, &
         checkpoint_tree,checkpoint_owners, &
         checkpoint_geometry,candidate,ct,gas_record,MPI_COMM_WORLD,valid, &
@@ -968,9 +984,10 @@ contains
       if(.not.valid) error stop 'Cannot integrate restored gas'
       call add_particle_inventory(inventory,particles,components)
       call add_film_inventory(inventory,patches,patch_mass)
-      if(any(abs(inventory-coupled%initial-coupled%boundary-coupled%wall-coupled%chemical-source)> &
+      if(any(abs(inventory-coupled%initial-coupled%boundary-coupled%wall-coupled%chemical-source-saved_force)> &
         5e-10_dp*max(1._dp,coupled%scale,abs(inventory), &
-        abs(coupled%boundary)+abs(coupled%wall)+abs(coupled%chemical)+abs(source)))) error stop 'Restored budget failed'
+        abs(coupled%boundary)+abs(coupled%wall)+abs(coupled%chemical)+abs(source)+abs(saved_force)))) &
+        error stop 'Restored budget failed'
       mpi_state=candidate;mpi_temperature=ct;record=coupled
       topology=checkpoint_tree;mpi_owners=checkpoint_owners;mpi_geometry=checkpoint_geometry
       regrid_stage=restart_layout_stage;tree%topology=topology
@@ -981,6 +998,7 @@ contains
       end do
       call move_alloc(particles,drops);call move_alloc(components,component_mass)
       call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
+      force_total=saved_force
       injected=source;next_injection=saved_event;last_particle_id=watermark;split_created_total=expected_splits
     end if
   end subroutine
@@ -1339,8 +1357,9 @@ contains
     call add_particle_inventory(current,drops,component_mass)
     call add_film_inventory(current,films,film_mass)
 #endif
-    error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical-injected)/ &
-      max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)+abs(injected)))
+    error=maxval(abs(current-record%initial-record%boundary-record%wall-record%chemical-injected-force_total)/ &
+      max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+ &
+      abs(record%chemical)+abs(injected)+abs(force_total)))
     if (.not.ieee_is_finite(error).or.error>5.e-10_dp) error stop 'Composite budget failed'
   end subroutine
   subroutine envelope(stream,reading,header_only)
@@ -1511,11 +1530,11 @@ contains
     open(newunit=unit,file=trim(budget_path),status='replace',action='write',iostat=ios)
     if (ios/=0) error stop 'Cannot open budget CSV'
 #ifdef PELEF_MPI_EB_SPRAY
-    write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,injected,residual'
+    write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,injected,force,residual'
     do c=1,nv
-      write(unit,'(i0,7(",",es26.17e3))') c,record%initial(c),current(c),record%boundary(c), &
-        record%wall(c),record%chemical(c),injected(c), &
-        current(c)-record%initial(c)-record%boundary(c)-record%wall(c)-record%chemical(c)-injected(c)
+      write(unit,'(i0,8(",",es26.17e3))') c,record%initial(c),current(c),record%boundary(c), &
+        record%wall(c),record%chemical(c),injected(c),force_total(c), &
+        current(c)-record%initial(c)-record%boundary(c)-record%wall(c)-record%chemical(c)-injected(c)-force_total(c)
     end do
     write(*,'(a,i0)') 'Processed injection events: ',next_injection-1
 #else

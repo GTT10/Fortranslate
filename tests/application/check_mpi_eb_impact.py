@@ -18,6 +18,7 @@ p.add_argument('--khrt', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--specular-outflow', action='store_true')
+p.add_argument('--force', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='impact_', dir=a.work.resolve()))
@@ -87,6 +88,8 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         assert mode == 'splash'
         spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
         spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0015,.001250001,.003999999')
+    if a.force:
+        spray = spray.replace('&eb_spray', '&eb_spray\n acceleration=0,0,1e6,', 1)
     if altered:
         spray = spray.replace('6*400.', '6*401.')
     (directory / 'spray.nml').write_text(spray)
@@ -98,7 +101,7 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
     return directory
 
 
-for mode in (('outflow',) if a.specular_outflow else ('splash',) if a.outflow else ('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'splash')):
+for mode in (('deposit',) if a.force else ('outflow',) if a.specular_outflow else ('splash',) if a.outflow else ('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'splash')):
     full = run(mode, 'full', 4)
     films = population(full, 'films')
     particles = population(full, 'particles')
@@ -126,6 +129,8 @@ for mode in (('outflow',) if a.specular_outflow else ('splash',) if a.outflow el
         if not a.outflow:
             assert ids == list(range(3, 11))
         assert all(float(r['v']) > 0 and float(r['y']) > .00125 for r in particles)
+    if a.force:
+        assert float(rows(full / 'result.csv.budget.csv')[3]['force']) > 0
     log = (full / 'run.log').read_text()
     assert all(f'Regrid stage: {n}' in log for n in (1, 2, 3)), log
     stopped = run(mode, 'stopped', 2, "checkpoint_file='saved',checkpoint_interval_steps=2,stop_after_checkpoint=.true.,")
@@ -143,8 +148,8 @@ for mode in (('outflow',) if a.specular_outflow else ('splash',) if a.outflow el
     compare(particles, population(resumed, 'particles'))
     compare(films, population(resumed, 'films'))
     for x, y in zip(rows(full / 'result.csv.budget.csv'), rows(resumed / 'result.csv.budget.csv')):
-        compare([{k: x[k] for k in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected')}],
-                [{k: y[k] for k in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected')}])
+        compare([{k: x[k] for k in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected', 'force')}],
+                [{k: y[k] for k in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected', 'force')}])
     mismatch = run(mode, 'mismatch', 2, f"restart_file='{archive}',", success=False, altered=True)
     assert 'EB spray context mismatch' in (mismatch / 'run.log').read_text()
     assert not (mismatch / 'result.csv').exists()
