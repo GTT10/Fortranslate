@@ -15,6 +15,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--scheduled', action='store_true')
 p.add_argument('--restart', action='store_true')
+p.add_argument('--split', action='store_true')
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
@@ -37,13 +38,29 @@ if a.impacts:
     if a.impacts == 'splash':
         spray = spray.replace('speed=20', 'speed=200').replace('total_mass=1e-10', 'total_mass=1e-16')
     (work / 'spray.nml').write_text(spray)
+if a.split:
+    assert not a.impacts
+    spray = (work / 'spray.nml').read_text().replace('&eb_spray',
+        "&eb_spray\n options%breakup_model='etab', options%maximum_multiplicity=60,\n"
+        ' options%surface_tension=1000, options%liquid_viscosity=.001,\n'
+        ' options%drag=.false., options%heat=.false., options%evaporation=.false.,')
+    (work / 'spray.nml').write_text(spray)
 exe = str(a.exe.resolve())
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
 (work / 'run.log').write_text(result.stdout + result.stderr)
 assert result.returncode == 0, (work, result.stderr)
 with (work / 'gas.csv.particles.csv').open() as stream:
     rows = list(csv.DictReader(stream))
-if not a.impacts:
+if a.split:
+    assert len(rows) == (12 if a.scheduled else 4)
+    assert [int(row['id']) for row in rows] == list(range(1, len(rows)+1))
+    evolved = rows[:-2] if a.scheduled else rows
+    assert all(0 < float(row['multiplicity']) <= 60 for row in evolved)
+    assert all(float(row['u']) > 0 for row in evolved)
+    assert all(float(row['component_mass_1']) == float(row['mass']) for row in rows)
+    if a.scheduled:
+        assert all(float(row['multiplicity']) > 60 and float(row['u']) == -20 for row in rows[-2:])
+elif not a.impacts:
     assert len(rows) == (8 if a.scheduled else 2)
     assert [int(row["id"]) for row in rows] == list(range(1, len(rows) + 1))
     initial_mass = math.pi / 6 * 1000 * 1e-15
@@ -94,7 +111,7 @@ assert math.isclose(injected[0], (4.5 if a.scheduled else 1) * (1e-16 if a.impac
 if a.scheduled:
     assert 'Injection events processed: 5' in result.stdout
     # Tied positive events have identical evolution, and the zero event consumes no IDs.
-    for left, right in ([] if a.impacts else zip(rows[:2], rows[2:4])):
+    for left, right in ([] if a.impacts or a.split else zip(rows[:2], rows[2:4])):
         assert all(left[key] == right[key] for key in left if key != 'id')
 if a.restart:
     full_gas = (work / 'gas.csv').read_bytes()
@@ -103,9 +120,9 @@ if a.restart:
     full_log = result.stdout
     base_gas = (work / 'gas.nml').read_text()
     split = base_gas.replace(" output_file=", " checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='save.chk'\n output_file=")
-    if a.impacts:
+    if a.impacts or a.split:
         split = split.replace('checkpoint_interval_steps=1', 'checkpoint_interval_steps=2')
-    checkpoint_name = 'save.chk.step2' if a.impacts else 'save.chk.step1'
+    checkpoint_name = 'save.chk.step2' if a.impacts or a.split else 'save.chk.step1'
     (work / 'split.nml').write_text(split)
     run = subprocess.run([exe, 'split.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
     (work / 'save.log').write_text(run.stdout + run.stderr)
@@ -147,6 +164,17 @@ if a.restart:
     run = subprocess.run([exe, 'truncated.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
     (work / 'truncated.log').write_text(run.stdout + run.stderr)
     assert run.returncode != 0 and checkpoint.read_bytes() == payload
+    if a.split:
+        lines = payload.decode().splitlines()
+        assert lines[0].endswith('_SCOUNT_V1')
+        assert int(lines[5]) == (4 if a.scheduled else 2)
+        lines[5] = str(int(lines[5]) - 1)
+        (work / 'bad_count.chk').write_text('\n'.join(lines) + '\n')
+        (work / 'bad_count.nml').write_text(resume.replace(checkpoint_name, 'bad_count.chk'))
+        run = subprocess.run([exe, 'bad_count.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+        (work / 'bad_count.log').write_text(run.stdout + run.stderr)
+        assert run.returncode != 0 and 'Invalid restart injection IDs' in run.stderr
+
 if a.impacts == 'splash':
     wet = (work / 'spray.nml').read_text().replace('total_mass=1e-16', 'total_mass=1e-10')
     (work / 'invalid_wet.nml').write_text(wet)

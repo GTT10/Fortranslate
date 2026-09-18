@@ -7,6 +7,7 @@ module spray_eb_reactive_mod
   use reactive_1d_mod, only: reactive_nvar
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options
   use eb_geometry_3d_mod, only: eb_geometry_3d
+  use spray_breakup_mod, only: split_spray_parcels
   use spray_eb_step_mod, only: advance_eb_mixture_coupling_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_wall_impact_mod, only: spray_wall_film
@@ -38,6 +39,8 @@ contains
     character(len=*), optional, intent(in) :: chemistry_integrator
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:)
+    ok=.false.;particle_steps=0
+    if (options%maximum_multiplicity>0) return
     drops=parcels;masses=component_mass
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
@@ -51,7 +54,7 @@ contains
   subroutine advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected)
+      ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected,split_created)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -70,7 +73,8 @@ contains
     integer(int64), optional, intent(inout) :: last_id
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: patch_mass(:,:)
-    integer(int64) :: watermark
+    integer(int64), optional, intent(out) :: split_created
+    integer(int64) :: watermark,before_split
     logical :: impacts,rejected
     logical, optional, intent(out) :: model_rejected
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemistry_change(:)
@@ -85,6 +89,7 @@ contains
     integer :: first_steps,second_steps,nv
     logical :: valid
     if (present(model_rejected)) model_rejected=.false.
+    if (present(split_created)) split_created=0
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0.or.dt>1e6_dp) return
@@ -93,7 +98,10 @@ contains
     impacts=present(wall_options)
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
-    if (present(last_id).neqv.impacts) return
+    if (impacts.and..not.present(last_id)) return
+    if (options%maximum_multiplicity>0.and..not.present(last_id)) return
+    watermark=0
+    if (present(last_id)) watermark=last_id
     if (impacts) then
       if (.not.allocated(films).or..not.allocated(film_mass)) return
       patches=films;patch_mass=film_mass;watermark=last_id
@@ -129,11 +137,19 @@ contains
         .5_dp*dt,second_steps,second_wall,valid)
     end if
     if (.not.valid) return
+    before_split=watermark
+    if (options%maximum_multiplicity>0) then
+      call split_spray_parcels(drops,options%maximum_multiplicity,min(125000,options%maximum_parcels), &
+        valid,watermark,masses)
+      if (.not.valid) return
+    end if
     wall(1:5)=wall(1:5)+first_wall+second_wall
     state=next_gas;temperature=next_temp;parcels=drops;component_mass=masses
     if (impacts) then
-      films=patches;film_mass=patch_mass;last_id=watermark
+      films=patches;film_mass=patch_mass
     end if
+    if (present(last_id)) last_id=watermark
+    if (present(split_created)) split_created=watermark-before_split
     minimum_theta=theta;boundary_change=boundary;wall_change=wall;chemistry_change=chemical
     particle_steps=first_steps+second_steps;ok=.true.
   end subroutine

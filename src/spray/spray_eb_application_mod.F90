@@ -16,7 +16,7 @@ module spray_eb_application_mod
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
-  use spray_eb_reactive_mod, only: advance_eb_spray_reactive,advance_eb_spray_reactive_allocated
+  use spray_eb_reactive_mod, only: advance_eb_spray_reactive_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_wall_impact_mod, only: spray_wall_film
   use spray_eb_film_step_mod, only: advance_eb_film_coupling
@@ -68,7 +68,8 @@ contains
     real(dp), allocatable :: boundary(:),wall(:),chemical(:),sb(:),sw(:),sc(:),injected(:),initial(:)
     real(dp) :: time,dt,hydro_dt,transport_dt,diffusivity,theta,rho,cp,e
     integer :: unit,status,close_status,nv,n,p,step,attempt,particle_steps,next_event
-    integer(int64) :: last_id
+    integer(int64) :: last_id,step_split_created
+    integer(int64), allocatable :: split_created_total
     logical :: ok,model_rejected
     integer :: last_checkpoint_step
     character(len=:), allocatable :: context,checkpoint_path
@@ -99,6 +100,9 @@ contains
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Liquid fractions must sum to one'
     if(.not.valid_spray_options(options).or.options%khrt_children) error stop 'Unsupported EB spray options'
+    if(options%maximum_multiplicity>0) then
+      allocate(split_created_total);split_created_total=0
+    end if
     if(injection_events<1.or.injection_events>1024) error stop 'Invalid injection_events'
     if(.not.all(ieee_is_finite(injection_times)).or..not.all(ieee_is_finite(injection_scales))) &
       error stop 'Nonfinite injection schedule'
@@ -142,7 +146,7 @@ contains
         initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
         breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
         component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
-        retired_parent_state=wall_impacts)
+        retired_parent_state=wall_impacts,split_created_total=split_created_total)
       if(.not.ok) then
         write(*,'(a)') trim(message)
         error stop 'EB spray restart rejected'
@@ -165,7 +169,7 @@ contains
             initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
             breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
             component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
-        retired_parent_state=wall_impacts)
+        retired_parent_state=wall_impacts,split_created_total=split_created_total)
           if(.not.ok) then
             write(*,'(a)') trim(message)
             error stop 'EB spray checkpoint rejected'
@@ -197,19 +201,21 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          walls,films,film_mass,last_id,model_rejected)
+          walls,films,film_mass,last_id,model_rejected,step_split_created)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
-        call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+        call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
           drops,masses,dt,config%riemann_solver,config%redistribution,config%chemistry_enabled,config%transport_enabled, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-          particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator)
+          particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
+          last_id=last_id,split_created=step_split_created)
         end if
         if(ok) exit
         dt=.5_dp*dt
       end do
       if(.not.ok) error stop 'EB spray coupled step rejected'
+      if(allocated(split_created_total)) split_created_total=split_created_total+step_split_created
       time=time+dt;step=step+1;boundary=boundary+sb;wall=wall+sw;chemical=chemical+sc
     end do
     call write_reactive_eb_3d_csv(config%output_file,species,g,state,temperature,time,ok,message)
@@ -306,12 +312,18 @@ contains
         if(injection_times(next_event-1)>time) error stop 'Restart injection ahead of time'
       end if
       expected_count=count(injection_scales(:next_event-1)>0)*number
+      step_split_created=0
+      if(allocated(split_created_total)) step_split_created=split_created_total
+      if(last_id<int(expected_count,int64)) error stop 'Invalid restart injection watermark'
+      if(step_split_created<0.or.step_split_created>last_id-int(expected_count,int64)) &
+        error stop 'Invalid restart split count'
       if (wall_impacts) then
         if(last_id<int(expected_count,int64)) error stop 'Invalid restart impact watermark'
-        if(modulo(last_id-int(expected_count,int64),4_int64)/=0) error stop 'Invalid restart splash IDs'
+        if(modulo(last_id-int(expected_count,int64)-step_split_created,4_int64)/=0) error stop 'Invalid restart splash IDs'
       else
         if(size(films)/=0) error stop 'Unexpected restart films'
-        if(size(drops)/=expected_count.or.last_id/=int(expected_count,int64)) error stop 'Invalid restart injection IDs'
+        if(int(size(drops),int64)/=last_id.or.last_id-int(expected_count,int64)/=step_split_created) &
+          error stop 'Invalid restart injection IDs'
       end if
       if(size(drops)>min(125000,options%maximum_parcels)) error stop 'Restart exceeds population capacity'
       if(any(shape(masses)/=[nc,size(drops)])) error stop 'Restart component shape mismatch'

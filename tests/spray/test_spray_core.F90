@@ -17,6 +17,7 @@ program test_spray_core
   use spray_coupling_3d_mod
   use les_smagorinsky_3d_mod
   implicit none
+  integer(int64) :: split_watermark
   real(dp) :: port_centers(3,2),port_axes(3,2),port_fractions(2)
   real(dp) :: value,td,omega,wer,initial_mass,z,tkh,wavelength,tau,acceleration
   real(dp), parameter :: pi=acos(-1.0_dp)
@@ -814,6 +815,26 @@ program test_spray_core
     do n=1,size(drops)
       call require(abs(drops(n)%khrt_initial_count/drops(n)%multiplicity-.7_dp)<1e-14_dp,'KH count per drop')
       call require(abs(drops(n)%khrt_shed_volume/drops(n)%multiplicity/1e-13_dp-1)<1e-14_dp,'KH volume per drop')
+    end do
+    allocate(child_component_mass(2,size(drops)))
+    child_component_mass(1,:)=.25_dp*drops%mass
+    child_component_mass(2,:)=.75_dp*drops%mass
+    saved_child_mass=child_component_mass;saved_drops=drops
+    split_watermark=huge(split_watermark)
+    call split_spray_parcels(drops,.5_dp,100,ok,split_watermark,child_component_mass)
+    call require(.not.ok.and.split_watermark==huge(split_watermark),'split ID overflow rejection')
+    call require(all(drops%id==saved_drops%id).and.all(child_component_mass==saved_child_mass),'overflow rollback')
+    split_watermark=1000
+    child_component_mass(1,1)=-1
+    call split_spray_parcels(drops,.5_dp,100,ok,split_watermark,child_component_mass)
+    call require(.not.ok.and.split_watermark==1000.and.size(drops)==48,'invalid split components rejected')
+    child_component_mass=saved_child_mass
+    call split_spray_parcels(drops,.5_dp,100,ok,split_watermark,child_component_mass)
+    call require(ok.and.size(drops)==96.and.split_watermark==1048,'mixed split shared watermark')
+    do n=49,96
+      call require(drops(n)%id==1000+n-48,'mixed split avoids retired IDs')
+      call require(all(child_component_mass(:,n)==saved_child_mass(:,int(drops(n)%parent_id))), &
+        'mixed split component ancestry')
     end do
   case('khrt')
     options%breakup_model='khrt';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp

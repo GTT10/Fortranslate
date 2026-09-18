@@ -85,7 +85,8 @@ contains
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
       source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
-      retired_parent_state,chemistry_totals)
+      retired_parent_state,chemistry_totals,split_created_total)
+    integer(int64), intent(in), optional :: split_created_total
     integer(int64), intent(in), optional :: last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical, intent(in), optional :: retired_parent_state
@@ -150,6 +151,10 @@ contains
       if (.not.present(last_id).or..not.(has_split.or.has_films)) return
       expected_magic=trim(expected_magic)//'_RET_V1'
     end if
+    if (present(split_created_total)) then
+      if (.not.present(last_id).or..not.has_split) return
+      expected_magic=trim(expected_magic)//'_SCOUNT_V1'
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -188,6 +193,9 @@ contains
     if (present(last_id)) then
       if (last_id<0) return
       if (any(parcels%id>last_id)) return
+      if (present(split_created_total)) then
+        if (split_created_total<0.or.split_created_total>last_id) return
+      end if
     end if
     do p=1,size(parcels)
       if (.not. valid_spray_parcel(parcels(p))) return
@@ -228,6 +236,9 @@ contains
     end if
     if (present(last_id)) then
       if (ios==0) write(unit,'(i0)',iostat=ios) last_id
+    end if
+    if (present(split_created_total)) then
+      if (ios==0) write(unit,'(i0)',iostat=ios) split_created_total
     end if
     if (ios==0) write(unit,'(es26.17e3,2(1x,i0))',iostat=ios) time,steps,event
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) reference_totals
@@ -298,7 +309,9 @@ contains
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
       source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
-      retired_parent_state,chemistry_totals)
+      retired_parent_state,chemistry_totals,split_created_total)
+    integer(int64), intent(inout), optional :: split_created_total
+    integer(int64) :: candidate_split_created
     integer(int64), intent(inout), optional :: last_id
     integer(int64) :: candidate_last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
@@ -374,6 +387,10 @@ contains
       if (.not.present(last_id).or..not.(has_split.or.has_films)) return
       expected_magic=trim(expected_magic)//'_RET_V1'
     end if
+    if (present(split_created_total)) then
+      if (.not.present(last_id).or..not.has_split) return
+      expected_magic=trim(expected_magic)//'_SCOUNT_V1'
+    end if
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (len_trim(context)==0 .or. len_trim(context)>len(line)) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
@@ -408,6 +425,14 @@ contains
       read(tokens(1),*,iostat=ios) candidate_last_id
       if (ios/=0) goto 900
       if (candidate_last_id<0) goto 900
+    end if
+    if (present(split_created_total)) then
+      call read_tokens(unit,tokens(1:1),ios)
+      if (ios/=0) goto 900
+      if (verify(trim(tokens(1)),'0123456789+-')/=0) goto 900
+      read(tokens(1),*,iostat=ios) candidate_split_created
+      if (ios/=0) goto 900
+      if (candidate_split_created<0.or.candidate_split_created>candidate_last_id) goto 900
     end if
     call read_tokens(unit,tokens(1:3),ios)
     if (ios/=0) goto 900
@@ -544,6 +569,7 @@ contains
       if (any(drops%id>candidate_last_id)) return
       last_id=candidate_last_id
     end if
+    if (present(split_created_total)) split_created_total=candidate_split_created
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
     if (present(boundary_totals)) boundary_totals=boundary
     if (present(source_totals)) source_totals=source

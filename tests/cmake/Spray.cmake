@@ -1,4 +1,9 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME spray_eb_split_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
+    --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_split_application" --scheduled --restart --split)
+  set_tests_properties(spray_eb_split_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
   foreach(impact_mode deposit splash)
     add_test(NAME spray_eb_app_${impact_mode} COMMAND "${Python3_EXECUTABLE}"
       "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"

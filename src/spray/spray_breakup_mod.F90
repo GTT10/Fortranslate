@@ -6,6 +6,7 @@ module spray_breakup_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use spray_parcel_mod
+  use spray_mixture_mod, only: valid_component_inventory
   implicit none
   private
   public :: advance_etab_breakup, advance_khrt_breakup, advance_spray_breakup, split_spray_parcels
@@ -225,11 +226,14 @@ contains
     parcel=candidate;ok=.true.
   end subroutine
 
-  subroutine split_spray_parcels(parcels,maximum_multiplicity,maximum_parcels,ok)
+  subroutine split_spray_parcels(parcels,maximum_multiplicity,maximum_parcels,ok,watermark,component_mass)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: maximum_multiplicity
     integer, intent(in) :: maximum_parcels
     logical, intent(out) :: ok
+    integer(int64), optional, intent(inout) :: watermark
+    real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    real(dp), allocatable :: candidate_mass(:,:)
     type(spray_parcel), allocatable :: candidate(:)
     integer, allocatable :: pieces(:)
     integer :: p,n,total,extra,cursor
@@ -240,6 +244,20 @@ contains
     if (.not.ieee_is_finite(maximum_multiplicity).or.maximum_multiplicity<0.or.maximum_multiplicity>1e18_dp) return
     if (maximum_multiplicity>0.and.maximum_multiplicity<1e-12_dp) return
     if (maximum_parcels<1.or.maximum_parcels>1000000.or.size(parcels)>maximum_parcels) return
+    if (present(watermark)) then
+      if (watermark<0) return
+      do p=1,size(parcels)
+        if (parcels(p)%id>watermark) return
+      end do
+    end if
+    if (present(component_mass)) then
+      if (.not.allocated(component_mass)) return
+      if (size(component_mass,2)/=size(parcels)) return
+      if (size(component_mass,1)<1.or.size(component_mass,1)>16) return
+      do p=1,size(parcels)
+        if (.not.valid_component_inventory(parcels(p),component_mass(:,p))) return
+      end do
+    end if
     if (maximum_multiplicity==0) then
       ok=.true.;return
     end if
@@ -258,8 +276,13 @@ contains
     if (total==size(parcels)) then
       ok=.true.;return
     end if
+    if (present(watermark)) last_id=watermark
     if (last_id>huge(last_id)-int(total-size(parcels),int64)) return
     allocate(candidate(total)); candidate(:size(parcels))=parcels;cursor=size(parcels)
+    if (present(component_mass)) then
+      allocate(candidate_mass(size(component_mass,1),total))
+      candidate_mass(:,:size(parcels))=component_mass
+    end if
     do p=1,size(parcels)
       if (pieces(p)==1) cycle
       weight=parcels(p)%multiplicity/real(pieces(p),dp)
@@ -272,6 +295,7 @@ contains
       if (.not.valid_spray_parcel(candidate(p))) return
       do n=2,pieces(p)
         cursor=cursor+1;candidate(cursor)=parcels(p)
+        if (present(component_mass)) candidate_mass(:,cursor)=component_mass(:,p)
         last_id=last_id+1;candidate(cursor)%id=last_id
         candidate(cursor)%parent_id=parcels(p)%id
         candidate(cursor)%multiplicity=weight
@@ -284,7 +308,10 @@ contains
         if (.not.valid_spray_parcel(candidate(cursor))) return
       end do
     end do
-    call move_alloc(candidate,parcels);ok=.true.
+    call move_alloc(candidate,parcels)
+    if (present(component_mass)) call move_alloc(candidate_mass,component_mass)
+    if (present(watermark)) watermark=last_id
+    ok=.true.
   end subroutine
 
   subroutine advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok)
