@@ -2686,3 +2686,12 @@ speed. Particle velocities and injected momentum/energy use that same value;
 zero-mass events consume no IDs. See
 [rate-velocity controls](../cases/mpi_eb_spray_3d/README.md#speed-from-the-port-mass-flow-profile)
 and [evidence](validation/spray-mpi-eb-rate-velocity-20260918.md).
+
+MPI EB component tables now expose the existing density/heat-capacity polynomial,
+Antoine pressure and Clausius surface-cap controls through `mixture_*` fields.
+Port composition and temperature supply mixture properties to injection and
+rate-derived speed; source/film operators use the full component records.
+Temporary injection inventory liquids retain evaluated constant mixture values,
+without reapplying a component's polynomial. See
+[component controls](../cases/mpi_eb_spray_3d/README.md#component-property-models)
+and [focused evidence](validation/spray-mpi-eb-properties-20260918.md).

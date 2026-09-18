@@ -271,3 +271,34 @@ injection_times(1)=0.,injection_end_times(1)=5.e-9,
 ```
 
 See [focused evidence](../../docs/validation/spray-mpi-eb-rate-velocity-20260918.md).
+
+## Component property models
+
+The shared `nc` component table accepts the same `mixture_*` model controls as
+the regular spray application:
+
+| Model | Fields |
+| --- | --- |
+| Density | `mixture_density_models`, `mixture_density_coefficients(4,16)`, `mixture_density_temperature_ranges(2,16)` |
+| Heat capacity | `mixture_cp_models`, `mixture_cp_coefficients(4,16)`, `mixture_cp_temperature_ranges(2,16)` |
+| Saturation pressure | `mixture_vapor_pressure_models`, `mixture_antoine_coefficients(4,16)`, `mixture_antoine_temperature_ranges(2,16)` |
+| Vapor surface cap | `mixture_boiling_models`, `mixture_critical_temperatures` |
+
+Density and heat capacity default to `constant`; `polynomial` selects four
+coefficients in ascending powers of absolute temperature. Supply a valid fit
+interval. Existing validators reject nonpositive fits and out-of-range states.
+The base component reference enthalpy still comes from its gas species and the
+supplied latent heat; the polynomial heat capacity determines energy changes.
+
+Vapor pressure defaults to `clausius`. `antoine` uses coefficients A, B, C, D
+for `p_sat = D * 10**(A - B/(T+C))`, with T in kelvin and D in pascals.
+`mixture_boiling_models='surface-cap'` uses the existing Clausius surface-state
+cap and requires a valid critical temperature; it is not a general physical
+mixture-boiling model. Unused component model entries must retain defaults.
+
+Each port's composition and temperature determine its mixed density, heat
+capacity and energy. These values set injected drop mass and rate-derived speed;
+the component models also feed evaporation, heating, breakup, impacts and film
+exchange through the existing mixture APIs. All model parameters enter restart
+context. Checkpoints preceding these fields fail strict context comparison.
+See [focused evidence](../../docs/validation/spray-mpi-eb-properties-20260918.md).
