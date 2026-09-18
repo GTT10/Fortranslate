@@ -3072,5 +3072,10 @@ positive pressure is allowed only on `outflow` faces. The shared characteristic
 pressure-ghost routine supplies both halo layers before LES face gradients at
 each stage. Smagorinsky, WALE and Vreman use the same boundary treatment,
 including CI. The supplied-halo RHS continues to consume caller-prepared ghosts.
-MPI and spray application pressure-outlet controls are not yet connected.
+`advance_mpi_spray_les` now accepts the same outlet control. The shared
+`fill_mpi_spray_ghosts` accepts optional `species` and `outlet_pressure`; positive
+pressure requires species metadata. Pressure settings agree collectively, only
+physical x-face owners apply those corrections, and tangential pressure ghosts
+travel with the neighbor halos. Spray coupled/application controls remain open.
+See [MPI pressure parity](validation/les-mpi-pressure-20260918.md).
 See [focused evidence](validation/les-pressure-outlet-20260918.md).
