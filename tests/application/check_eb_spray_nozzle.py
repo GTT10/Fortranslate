@@ -11,6 +11,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
+p.add_argument('--properties', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
@@ -31,7 +32,23 @@ def run(profile, label, extra='', invalid=False):
         controls += 'sizes%shape=2.5,'
     else:
         controls += "nozzle%spread=.02,sizes%distribution='lognormal',sizes%weighting='number',sizes%std=2.e-6,"
-    if invalid:
+    if a.properties:
+        values = values.replace("nc=1, number=8, vapor_names(1)='H2O', fractions(1)=1",
+                                "nc=2, number=8, vapor_names='H2O','H2', fractions=.25,.75")
+        controls += ("mixture_density_models=2*'polynomial',"
+                     "mixture_density_coefficients(:,1)=1100.,-.2,0.,0.,"
+                     "mixture_density_coefficients(:,2)=900.,-.1,0.,0.,"
+                     "mixture_density_temperature_ranges(:,1)=300.,450.,"
+                     "mixture_density_temperature_ranges(:,2)=300.,450.,"
+                     "mixture_cp_models=2*'polynomial',mixture_cp_coefficients(:,1)=3800.,1.,0.,0.,"
+                     "mixture_cp_coefficients(:,2)=1800.,.5,0.,0.,"
+                     "mixture_cp_temperature_ranges(:,1)=300.,450.,mixture_cp_temperature_ranges(:,2)=300.,450.,"
+                     "mixture_vapor_pressure_models(1)='antoine',"
+                     "mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,"
+                     "mixture_antoine_temperature_ranges(:,1)=300.,450.,")
+    if invalid and a.properties:
+        controls = controls.replace('1100.,-.2,0.,0.', '-1100.,0.,0.,0.')
+    elif invalid:
         controls = controls.replace('nozzle_radius=.0001', 'nozzle_radius=-.0001')
     spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1))
     result = subprocess.run([str(a.exe.resolve()), 'gas.nml', 'spray.nml'], cwd=directory,
@@ -59,9 +76,14 @@ for profile in ('solid', 'hollow'):
             assert radius < .0001
         assert abs(dy*float(row['w'])-dz*float(row['v'])) > 1e-8
         mass, count = float(row['mass']), float(row['multiplicity'])
-        diameter = (6*mass/(math.pi*1000))**(1/3)
+        density = 1/(.25/1030+.75/865) if a.properties else 1000
+        diameter = (6*mass/(math.pi*density))**(1/3)
         assert 5e-6 <= diameter <= 2e-5
-        assert float(row['component_mass_1']) == mass
+        if a.properties:
+            assert math.isclose(float(row['component_mass_1'])/mass, .25, rel_tol=1e-14)
+            assert math.isclose(float(row['component_mass_2'])/mass, .75, rel_tol=1e-14)
+        else:
+            assert float(row['component_mass_1']) == mass
         diameters.append(diameter)
         doses.append(mass*count)
         counts.append(count)
@@ -79,6 +101,6 @@ for profile in ('solid', 'hollow'):
         after = next(x for x in (resumed / 'run.log').read_text().splitlines() if x.startswith(label))
         assert before == after
     bad = run(profile, 'invalid', invalid=True)
-    assert 'Invalid scheduled EB injection' in (bad / 'run.log').read_text()
+    assert ('Invalid injected liquid mixture' if a.properties else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
     assert not (bad / 'gas.csv').exists()
 print(f'PASS: serial EB finite nozzles, size weights and restart: {work}')

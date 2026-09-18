@@ -54,6 +54,12 @@ contains
     real(dp) :: nozzle_radius=0
     type(spray_nozzle_model) :: nozzle
     type(spray_size_options) :: sizes
+    character(len=16) :: mixture_density_models(16)='constant',mixture_cp_models(16)='constant'
+    character(len=16) :: mixture_vapor_pressure_models(16)='clausius',mixture_boiling_models(16)='reject'
+    real(dp) :: mixture_density_coefficients(4,16)=0,mixture_density_temperature_ranges(2,16)=0
+    real(dp) :: mixture_cp_coefficients(4,16)=0,mixture_cp_temperature_ranges(2,16)=0
+    real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
+    real(dp) :: mixture_critical_temperatures(16)=0
     type(spray_options) :: options
     type(spray_eb_wall_options) :: walls
     logical :: wall_impacts=.false.
@@ -62,7 +68,10 @@ contains
     namelist /eb_spray/ nc,number,vapor_names,densities,heat_capacities,reference_temperatures, &
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales,wall_impacts,walls, &
-      nozzle_radius,nozzle,sizes
+      nozzle_radius,nozzle,sizes,mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
+      mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
+      mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
+      mixture_boiling_models,mixture_critical_temperatures
     type(eb_geometry_3d) :: g
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -86,6 +95,11 @@ contains
     reference_pressures=101325;latent_heats=2.257e6_dp;total_mass=1e-10_dp;center=0
     axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0;diameter=1e-5_dp;liquid_temperature=350
     maximum_dt=1e-8_dp;options=spray_options();walls=spray_eb_wall_options();wall_impacts=.false.
+    mixture_density_models='constant';mixture_cp_models='constant'
+    mixture_vapor_pressure_models='clausius';mixture_boiling_models='reject'
+    mixture_density_coefficients=0;mixture_density_temperature_ranges=0
+    mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
+    mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     nozzle_radius=0;nozzle=spray_nozzle_model();sizes=spray_size_options()
     injection_events=1;injection_times=0;injection_scales=1;next_event=1;last_id=0
     call check_output(config%output_file)
@@ -118,16 +132,38 @@ contains
     end do
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
+    if(any(mixture_density_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
+    if(any(mixture_cp_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
+    if(any(mixture_vapor_pressure_models(nc+1:)/='clausius')) error stop 'Unused mixture property entries'
+    if(any(mixture_boiling_models(nc+1:)/='reject')) error stop 'Unused mixture property entries'
+    if(any(mixture_critical_temperatures(nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_density_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_density_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_cp_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_cp_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_antoine_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_antoine_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
     allocate(liquids(nc))
     do n=1,nc
       call initialize_spray_liquid(species,vapor_names(n),densities(n),heat_capacities(n),reference_temperatures(n), &
-        reference_pressures(n),latent_heats(n),liquids(n),ok)
-      if(.not.ok) error stop 'Invalid EB spray liquid table'
+        reference_pressures(n),latent_heats(n),liquids(n),ok,mixture_vapor_pressure_models(n), &
+        mixture_antoine_coefficients(:,n),mixture_antoine_temperature_ranges(:,n))
+      if(.not.ok) error stop 'Invalid liquid properties'
+      liquids(n)%density_model=mixture_density_models(n)
+      liquids(n)%density_coefficients=mixture_density_coefficients(:,n)
+      liquids(n)%density_temperature_range=mixture_density_temperature_ranges(:,n)
+      liquids(n)%heat_capacity_model=mixture_cp_models(n)
+      liquids(n)%heat_capacity_coefficients=mixture_cp_coefficients(:,n)
+      liquids(n)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,n)
+      liquids(n)%boiling_model=mixture_boiling_models(n)
+      liquids(n)%critical_temperature=mixture_critical_temperatures(n)
+      if(.not.valid_spray_liquid(liquids(n))) error stop 'Invalid mixture component property model'
     end do
     call liquid_mixture_properties(liquids,fractions(:nc),liquid_temperature,rho,cp,e,ok)
     if(.not.ok) error stop 'Invalid injected liquid mixture'
-    effective=liquids(1);effective%density=rho;effective%heat_capacity=cp
-    effective%reference_temperature=liquid_temperature;effective%reference_energy=e
+    effective=spray_liquid(vapor_name=liquids(1)%vapor_name,vapor_index=liquids(1)%vapor_index, &
+      density=rho,heat_capacity=cp,reference_temperature=liquid_temperature, &
+      reference_pressure=liquids(1)%reference_pressure,latent_heat=liquids(1)%latent_heat,reference_energy=e)
     allocate(drops(0),masses(nc,0),films(0),film_mass(nc,0))
     nv=reactive_nvar(size(species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
