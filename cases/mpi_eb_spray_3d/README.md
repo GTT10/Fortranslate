@@ -235,3 +235,39 @@ global IDs. These are injection geometry and size controls, not stochastic
 particle dispersion. They are included in the restart context; checkpoints
 predating the new fields fail the strict context comparison. See
 [focused evidence](../../docs/validation/spray-mpi-eb-nozzle-20260918.md).
+
+## Speed from the port mass-flow profile
+
+Set `port_velocity_from_rate(p)=.true.` for a port with a positive finite radius
+and a mass-flow table. `port_discharge_coefficients(p)` defaults to one and must
+be in [1e-6, 1]. Other ports retain their prescribed speeds. A nondefault
+coefficient on a prescribed-speed port is rejected.
+
+For each event, the code integrates that port's rate table, applies the event
+scale, and computes
+
+```text
+speed = event_mass / (event_duration * liquid_density * pi * radius**2 * discharge_coefficient)
+```
+
+Density is evaluated from the port's liquid composition and temperature.
+`event_duration` is `injection_end_times(e)-injection_times(e)`. The speed uses
+the average scaled rate over this interval, while the whole packet is injected
+at the interval start, as for the existing profile-mass input. The port's
+prescribed speed is overridden; cone and swirl directions are retained.
+The resulting velocity enters both particles and injected momentum/energy.
+
+A zero-mass event reserves no IDs and injects nothing. Positive events require
+a positive duration and speed at most 1e7 m/s, the existing injection bound.
+Radius and coefficients are validated before stepping. The mode, coefficients,
+profiles and event intervals are bound into restart context. Example:
+
+```fortran
+port_velocity_from_rate(1)=.true.,port_discharge_coefficients(1)=.8,
+port_radii(1)=1.e-4,
+port_profile_points(1)=2,
+port_profile_times(1:2,1)=0.,4.e-8,port_profile_rates(1:2,1)=.002,.002,
+injection_times(1)=0.,injection_end_times(1)=5.e-9,
+```
+
+See [focused evidence](../../docs/validation/spray-mpi-eb-rate-velocity-20260918.md).
