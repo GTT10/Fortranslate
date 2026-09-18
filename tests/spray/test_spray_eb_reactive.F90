@@ -17,7 +17,8 @@ program test_spray_eb_reactive
   type(elementary_reaction), allocatable :: reactions(:)
   character(len=16) :: solver="rusanov"
   real(dp), allocatable :: boundary(:),wall(:),chemical(:)
-  real(dp) :: theta
+  real(dp) :: theta,accel(3)=0
+  real(dp), allocatable :: force(:)
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
@@ -89,12 +90,30 @@ program test_spray_eb_reactive
   call require(all(state(:,1,:,:)==0).and.all(temperature(1,:,:)==42),'covered cells unchanged')
   call require(theta>=0.and.theta<=1,'transport limiter')
   call require(any(chemical(6:)/=0),'active chemistry ledger')
+  state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass
+  accel=[1000._dp,-2000._dp,3000._dp]
+  ! Missing force output must reject before any kick or gas update.
+  call advance()
+  call require(.not.ok.and.steps==0.and.all(state==saved),'force requires output ledger')
+  allocate(force(nv));force=46;solver='invalid'
+  call advance()
+  call require(.not.ok.and.all(force==46).and.all(state==saved),'fixed-array force rollback')
+  call require(all(drops(1)%velocity==saved_drop%velocity),'fixed-array kick rollback')
+  solver='rusanov'
+  call inventory(before)
+  call advance()
+  call require(ok.and.force(1)==0.and.any(force(2:4)/=0).and.all(force(6:)==0),'fixed-array force inventory')
+  call inventory(after)
+  call require(all(abs(after-before-boundary-wall-chemical-force)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'fixed-array external force composite conservation')
+  call require(all(state(:,1,:,:)==0).and.all(temperature(1,:,:)==42),'force leaves covered cells unchanged')
   print *, 'PASS: reactive EB gas and spray composition with atomic ledgers'
 contains
   subroutine advance()
     call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
-      2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit')
+      2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
+      acceleration=accel,source_change=force)
   end subroutine
   subroutine inventory(total)
     real(dp), intent(out) :: total(:)

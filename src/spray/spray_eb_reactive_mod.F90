@@ -20,7 +20,7 @@ contains
   subroutine advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator)
+      ok,target_volume_fraction,chemistry_integrator,acceleration,source_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -35,6 +35,8 @@ contains
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemistry_change(:)
     integer, intent(out) :: particle_steps
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: acceleration(3)
+    real(dp), optional, intent(inout) :: source_change(:)
     real(dp), optional, intent(in) :: target_volume_fraction
     character(len=*), optional, intent(in) :: chemistry_integrator
     type(spray_parcel), allocatable :: drops(:)
@@ -45,7 +47,7 @@ contains
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator)
+      ok,target_volume_fraction,chemistry_integrator,acceleration=acceleration,source_change=source_change)
     if (.not.ok) return
     parcels=drops;component_mass=masses
   end subroutine
