@@ -1,6 +1,7 @@
 module spray_mpi_amr_application_mod
   use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
   use spray_injection_profile_mod, only: integrate_spray_injection_profile
+  use spray_mixture_mod, only: liquid_mixture_properties
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
@@ -103,6 +104,9 @@ contains
     integer, parameter :: maximum_events=1024
     integer :: profile_points(16),profile_count
     real(dp) :: profile_times(64,16),profile_rates(64,16),event_end_times(maximum_events),integrated_mass
+    logical :: rate_velocity(16),velocity_present
+    real(dp) :: discharge_coefficients(16),event_speeds(maximum_events),rate_denominator,liquid_rho,liquid_heat,liquid_energy
+    namelist /amr_spray_velocity/ rate_velocity,discharge_coefficients
     logical :: rates_present
     namelist /amr_spray_rates/ profile_points,profile_times,profile_rates,event_end_times
     integer :: injection_events,event,event_parcels(maximum_events),event_ports(maximum_events),port_count
@@ -155,6 +159,7 @@ contains
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
+    rate_velocity=.false.;discharge_coefficients=1
     profile_points=0;profile_times=0;profile_rates=0;event_end_times=-1
     port_sizes=spray_size_options()
     acceleration=0
@@ -183,9 +188,13 @@ contains
     sizes_present=ios==0
     rewind(unit)
     read(unit,nml=amr_spray_rates,iostat=ios)
-    close(unit)
     if (ios>0) call fatal('Invalid amr_spray_rates namelist')
     rates_present=ios==0
+    rewind(unit)
+    read(unit,nml=amr_spray_velocity,iostat=ios)
+    close(unit)
+    if (ios>0) call fatal('Invalid amr_spray_velocity namelist')
+    velocity_present=ios==0
     if (.not.all(ieee_is_finite(acceleration))) call fatal('Nonfinite acceleration')
     if (any(abs(acceleration)>1e6_dp)) call fatal('Invalid acceleration')
     if (.not.all(ieee_is_finite([les_cs,les_prt,les_sct,les_ci,les_cfl]))) call fatal('Nonfinite LES settings')
@@ -324,6 +333,34 @@ contains
       liquids(i)%critical_temperature=mixture_critical_temperatures(i)
       if(.not.valid_spray_liquid(liquids(i))) call fatal('Invalid mixture component property model')
     end do
+    if (any(rate_velocity(port_count+1:)).or.any(discharge_coefficients(port_count+1:)/=1)) &
+      call fatal('Unused velocity controls')
+    do i=1,port_count
+      if (.not.ieee_is_finite(discharge_coefficients(i))) call fatal('Nonfinite discharge coefficient')
+      if (.not.rate_velocity(i)) then
+        if (discharge_coefficients(i)/=1) call fatal('Discharge coefficient requires rate velocity')
+        cycle
+      end if
+      if (profile_points(i)<2) call fatal('Rate velocity requires a rate profile')
+      if (discharge_coefficients(i)<1e-6_dp.or.discharge_coefficients(i)>1) call fatal('Invalid discharge coefficient')
+      if (.not.ieee_is_finite(port_radii(i))) call fatal('Nonfinite rate outlet radius')
+      if (port_radii(i)<1e-12_dp.or.port_radii(i)>1) call fatal('Invalid rate outlet radius')
+    end do
+    event_speeds=0
+    do i=1,injection_events
+      p=event_ports(i);event_speeds(i)=port_speeds(p)
+      if (.not.rate_velocity(p)) cycle
+      event_speeds(i)=0
+      if (event_mass(i)==0) cycle
+      call liquid_mixture_properties(liquids,port_fractions(:component_count,p),port_temperatures(p), &
+        liquid_rho,liquid_heat,liquid_energy,ok)
+      if (.not.ok) call fatal('Invalid rate-driven liquid state')
+      rate_denominator=(event_end_times(i)-injection_times(i))*liquid_rho*acos(-1._dp)* &
+        port_radii(p)**2*discharge_coefficients(p)
+      if (rate_denominator<=0) call fatal('Invalid rate-driven interval')
+      if (event_mass(i)>1e7_dp*rate_denominator) call fatal('Rate-driven speed exceeds bounds')
+      event_speeds(i)=event_mass(i)/rate_denominator
+    end do
     call read_topology(topology_path,tree)
     if (regrid_time>=0) call read_topology(trim(regrid_topology),target)
     open(newunit=unit,status='scratch',form='formatted',iostat=ios)
@@ -350,6 +387,10 @@ contains
     if (rates_present) then
       write(unit,nml=amr_spray_rates,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize injection rate context')
+    end if
+    if (velocity_present) then
+      write(unit,nml=amr_spray_velocity,iostat=ios)
+      if (ios/=0) call fatal('Cannot serialize rate velocity context')
     end if
     rewind(unit);spray_context=''
     do
@@ -706,7 +747,7 @@ contains
         number=event_parcels(event);local_mass=event_mass(event)
       end if
       call inject_mpi_cone_parcels(comm,liquids(1),local_mass,number,port_centers(:,outlet),port_axes(:,outlet), &
-        port_speeds(outlet),port_half_angles(outlet),port_diameters(outlet),port_temperatures(outlet), &
+        event_speeds(event),port_half_angles(outlet),port_diameters(outlet),port_temperatures(outlet), &
         maximum_parcels,next_id,candidate,ledger,ok,liquids,port_fractions(:component_count,outlet),candidate_mass, &
         nozzle_radius=port_radii(outlet),nozzle_model=port_nozzles(outlet), &
         diameter_shape=port_sizes(outlet)%shape,diameter_min=port_sizes(outlet)%minimum, &

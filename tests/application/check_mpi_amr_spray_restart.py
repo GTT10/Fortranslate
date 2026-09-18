@@ -25,6 +25,7 @@ p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
 p.add_argument('--sizes', action='store_true')
 p.add_argument('--rates', action='store_true')
+p.add_argument('--discharge', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -127,7 +128,15 @@ if a.rates:
               " event_end_times=1.e-8,1.5e-8,1.5e-8,2.e-8\n/\n")
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False):
+if a.discharge:
+    assert a.rates and a.multiport
+    spray = spray.replace('port_half_angles=.1,.2', 'port_half_angles=0.,0.')
+    spray = spray.replace('port_radii=1.e-5,2.e-5', 'port_radii=1.e-4,2.e-4')
+    spray = spray.replace('port_nozzles(2)%swirl=.2', 'port_nozzles(2)%swirl=0.')
+    spray += "\n&amr_spray_velocity rate_velocity=2*.true.,discharge_coefficients=.8,.9 /\n"
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -154,6 +163,10 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('=.002,.004', '=.002,.005')
     if invalid_rates:
         local_spray = local_spray.replace('=.002,.004', '=-.002,.004')
+    if changed_discharge:
+        local_spray = local_spray.replace('discharge_coefficients=.8,.9', 'discharge_coefficients=.7,.9')
+    if invalid_discharge:
+        local_spray = local_spray.replace('discharge_coefficients=.8,.9', 'discharge_coefficients=0.,.9')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -238,6 +251,15 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.discharge:
+    line = next(x for x in (continued / 'run.log').read_text().splitlines() if x.startswith('Injected inventory:'))
+    impulse = float(line.split(':', 1)[1].split()[1])
+    rho1, rho2 = 1/(.25/1000+.75/800), 1/(.75/1000+.25/800)
+    expected = sum(m*m/(dt*rho1*math.pi*1e-8*.8) for m, dt in ((2.5e-11, 1e-8), (1.625e-11, 5e-9)))
+    expected -= sum(m*m/(5e-9*rho2*math.pi*4e-8*.9) for m in (1.5e-11, 2.5e-11))
+    assert math.isclose(impulse, expected, rel_tol=2e-12), (impulse, expected)
+    run('changed_discharge', 2, f"restart_file='{checkpoint}'", good=False, changed_discharge=True)
+    run('invalid_discharge', 2, '', good=False, invalid_discharge=True)
 if a.rates:
     line = next(x for x in (continued / 'run.log').read_text().splitlines() if x.startswith('Injected inventory:'))
     injected_mass = float(line.split(':', 1)[1].split()[0])
