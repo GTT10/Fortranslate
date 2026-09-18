@@ -206,7 +206,11 @@ contains
 
   ! Two supplied halo layers on every face; return only the active-cell RHS.
   subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok, &
-      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model,ci)
+      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model,ci,fx,fy,fz)
+    ! Flux density in the positive coordinate direction; all three or none.
+    ! Face arrays publish together only after a successful RHS evaluation.
+    real(dp), optional, intent(inout) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    real(dp), allocatable :: xflux(:,:,:,:),yflux(:,:,:,:),zflux(:,:,:,:)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
@@ -238,14 +242,29 @@ contains
     end if
     if (any(cells<2).or.any(cells>huge(1)-4)) return
     if (any(shape(temperature)/=cells+4).or.any(shape(rhs)/=[size(state,1),cells])) return
+    if ((present(fx).neqv.present(fy)).or.(present(fx).neqv.present(fz))) return
+    if (present(fx)) then
+      if (any(shape(fx)/=[size(state,1),cells(1)+1,cells(2),cells(3)])) return
+      if (any(shape(fy)/=[size(state,1),cells(1),cells(2)+1,cells(3)])) return
+      if (any(shape(fz)/=[size(state,1),cells(1),cells(2),cells(3)+1])) return
+      allocate(xflux(size(state,1),0:cells(1),cells(2),cells(3)))
+      allocate(yflux(size(state,1),cells(1),0:cells(2),cells(3)))
+      allocate(zflux(size(state,1),cells(1),cells(2),0:cells(3)))
+    end if
     allocate(full_rhs,mold=state)
     call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells, &
-      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci)
-    if (ok) rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
+      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci,xflux,yflux,zflux)
+    if (ok) then
+      rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
+      if (present(fx)) then
+        fx=xflux;fy=yflux;fz=zflux
+      end if
+    end if
   end subroutine
 
   subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci)
+      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci,fx,fy,fz)
+    real(dp), optional, intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
@@ -272,6 +291,9 @@ contains
     if (present(ci)) isotropic=ci
     if (.not.ieee_is_finite(isotropic)) return
     if (isotropic<0.or.isotropic>1) return
+    if (present(fx)) then
+      fx=0;fy=0;fz=0
+    end if
     selected_model='smagorinsky'
     if (present(model)) then
       select case(model)
@@ -379,6 +401,16 @@ contains
             flux=0.0_dp; flux(2:4)=-tau(:,a)
             flux(5)=-dot_product(uface,tau(:,a))+heat_flux+dot_product(hav,jflux)
             flux(6:)=jflux
+            if (present(fx)) then
+              select case(a)
+              case(1)
+                fx(:,i-2,j-2,k-2)=flux
+              case(2)
+                fy(:,i-2,j-2,k-2)=flux
+              case(3)
+                fz(:,i-2,j-2,k-2)=flux
+              end select
+            end if
             if (present(active_cells)) then
               if (l(a)==2.and.include_face(2*a-1)) rate=rate+flux*cellvolume/spacing(a)
               if (l(a)==active_cells(a)+2.and.include_face(2*a)) rate=rate-flux*cellvolume/spacing(a)

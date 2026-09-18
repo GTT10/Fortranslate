@@ -17,6 +17,7 @@ program test_spray_core
   use spray_coupling_3d_mod
   use les_filter_3d_mod
   use les_dynamic_smagorinsky_mod
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use les_smagorinsky_3d_mod
   implicit none
   integer(int64) :: split_watermark
@@ -1153,6 +1154,69 @@ program test_spray_core
     call near(les_face_mean(-2._dp,6._dp,.false.),2._dp,1e-13_dp,'arithmetic default')
     call near(les_face_mean(1e300_dp,1e300_dp,.true.)/1e300_dp,1._dp,1e-13_dp,'large harmonic mean')
     call near(les_face_mean(1e-300_dp,1e-300_dp,.true.)/1e-300_dp,1._dp,1e-13_dp,'small harmonic mean')
+  case('les_face_fluxes')
+    block
+      real(dp) :: ghost(15,8,8,8),gt(8,8,8),other(15,4,4,4),base_diff,sound
+      real(dp) :: fx(15,0:4,4,4),fy(15,4,0:4,4),fz(15,4,4,0:4),divergence(15),rate(15)
+      integer :: i,j,k,m,b
+      do k=1,4
+        do j=1,4
+          do i=1,4
+            primitive=0;primitive(1)=.3_dp;primitive(5)=101325;primitive(15)=1
+            primitive(2)=20*sin(i*.7_dp)+j;primitive(3)=3*j;primitive(4)=2*k
+            call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),temp(i,j,k),sound,ok)
+            call require(ok,'LES flux fixture')
+          end do
+        end do
+      end do
+      do m=1,3
+        select case(m)
+        case(1)
+          les_model='smagorinsky'
+        case(2)
+          les_model='wale'
+        case(3)
+          les_model='vreman'
+        end select
+        do b=1,2
+          faces='periodic'
+          if (b==2) faces='outflow'
+          call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,ok,viscous_wall=.true.)
+          call require(ok,'LES flux halos')
+          call compute_les_ghosted_rhs_3d(species,ghost,gt,[4,4,4],spacing,.17_dp,.7_dp,.7_dp, &
+            other,base_diff,ok,boundary_faces=faces,model=les_model,ci=.1_dp)
+          call require(ok,'LES flux reference')
+          fx=91;fy=92;fz=93
+          call compute_les_ghosted_rhs_3d(species,ghost,gt,[4,4,4],spacing,.17_dp,.7_dp,.7_dp, &
+            rhs,diff,ok,boundary_faces=faces,boundary_rate=rate,model=les_model,ci=.1_dp,fx=fx,fy=fy,fz=fz)
+          call require(ok.and.all(rhs==other).and.diff==base_diff,'face output preserves RHS exactly')
+          do k=1,4
+            do j=1,4
+              do i=1,4
+                divergence=-(fx(:,i,j,k)-fx(:,i-1,j,k))/spacing(1) &
+                  -(fy(:,i,j,k)-fy(:,i,j-1,k))/spacing(2)-(fz(:,i,j,k)-fz(:,i,j,k-1))/spacing(3)
+                call require(all(abs(divergence-rhs(:,i,j,k))<=1e-12_dp*max(1._dp,abs(rhs(:,i,j,k)))), &
+                  'face divergence recovers RHS')
+              end do
+            end do
+          end do
+          totals0=(sum(sum(fx(:,0,:,:)-fx(:,4,:,:),dim=3),dim=2)*spacing(2)*spacing(3) &
+            +sum(sum(fy(:,:,0,:)-fy(:,:,4,:),dim=3),dim=2)*spacing(1)*spacing(3) &
+            +sum(sum(fz(:,:,:,0)-fz(:,:,:,4),dim=3),dim=2)*spacing(1)*spacing(2))
+          call require(all(abs(totals0-rate)<=1e-12_dp*max(1._dp,abs(rate))),'face flux boundary ledger')
+        end do
+      end do
+      fx=91;fy=92;fz=93
+      call compute_les_ghosted_rhs_3d(species,ghost,gt,[4,4,4],spacing,.17_dp,.7_dp,.7_dp, &
+        rhs,diff,ok,model='invalid',fx=fx,fy=fy,fz=fz)
+      call require(.not.ok.and.all(fx==91).and.all(fy==92).and.all(fz==93),'rejected flux outputs preserved')
+      call compute_les_ghosted_rhs_3d(species,ghost,gt,[4,4,4],spacing,.17_dp,.7_dp,.7_dp, &
+        rhs,diff,ok,fx=fx)
+      call require(.not.ok.and.all(fx==91),'partial face outputs rejected')
+      call compute_les_ghosted_rhs_3d(species,ghost,gt,[4,4,4],spacing,0._dp,.7_dp,.7_dp, &
+        rhs,diff,ok,fx=fx,fy=fy,fz=fz)
+      call require(ok.and.all(fx==0).and.all(fy==0).and.all(fz==0),'disabled LES zero flux')
+    end block
   case('les_pressure_outlet')
     block
       real(dp) :: pressure(6),other(15,4,4,4),base_diff,sound
