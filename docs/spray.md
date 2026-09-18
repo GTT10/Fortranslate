@@ -88,8 +88,8 @@ alongside consumed parents, without recycling IDs. The output is negative system
 change in mass, momentum, total energy and component masses (component order,
 not gas-species indices); the existing `wall` output remains wall receipt.
 The depth limit includes exterior events, and failures preserve all populations,
-films, IDs and both ledgers. Source/reactive/application wiring for this combined
-mode remains pending. See
+films, IDs and both ledgers. Serial source and reactive coupling now connect this
+mode; application and MPI wiring remain pending. See
 [impact/outflow evidence](validation/spray-eb-impact-outflow-20260918.md).
 
 `advance_eb_mixture_coupling_allocated` now exposes the serial EB source interval
@@ -1431,8 +1431,13 @@ their mapped vapor-species losses with exterior mass/momentum/energy. Its existi
 five-entry boundary output continues to report EB wall exchange. Both ledgers,
 gas, particles and IDs commit only after the complete interval succeeds. KH
 eligibility checks stop at the first exterior crossing before querying the EB.
-This source mode currently rejects simultaneous impact-film arguments. The
-allocated reactive wrapper and serial application expose `particle_outflow` for
+With impact-film arguments, all six exterior faces must be `outflow`. The
+impact interval compacts escaped records and maps component losses to their vapor
+species, summing components that share a species. The allocated reactive wrapper
+also accepts `particle_outflow` with films through both source halves, preserving
+the full-step transaction. The serial application still rejects this combination;
+see [combined coupling evidence](validation/spray-eb-impact-outflow-coupling-20260918.md).
+The allocated reactive wrapper and serial application expose `particle_outflow` for
 all exterior faces, matching the existing gas outflow convention. Source losses
 join the reactive boundary ledger and persist through checkpoint/restart. Other
 exterior particle modes remain at the source API level. See
