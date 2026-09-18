@@ -2773,3 +2773,8 @@ states with the serial face-order convention. Focused 2/4-rank coarse/fine
 states, temperatures and reflux diagnostics match serial two-level results
 exactly; [hierarchy evidence](validation/pressure-outlet-mpi-hierarchy-20260918.md).
 MPI reaction/full wrappers, transport and application input remain pending.
+
+The sparse MPI Strang reaction/hydro wrapper now validates and forwards pressure
+targets. Focused 2/4-rank reacting corner-patch results match the serial split
+exactly; [Strang evidence](validation/pressure-outlet-mpi-strang-20260918.md).
+Molecular-transport/full-split and application forwarding remain pending.
