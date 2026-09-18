@@ -555,7 +555,6 @@ contains
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Invalid fraction sum'
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
-    if(particle_outflow.and..not.wall_impacts) error stop 'MPI EB particle outflow requires impact films'
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
     if(wall_impacts) then
       if(.not.valid_wall_options(walls,[character(len=16)::'slip_wall','slip_wall','slip_wall', &

@@ -17,6 +17,7 @@ p.add_argument('--selected', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--outflow', action='store_true')
+p.add_argument('--specular-outflow', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='impact_', dir=a.work.resolve()))
@@ -77,6 +78,11 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         spray = spray.replace('&eb_spray', "&eb_spray\n particle_options%breakup_model='etab',"
                               'particle_options%maximum_multiplicity=60.,'
                               'particle_options%drag=.false.,particle_options%heat=.false.,particle_options%evaporation=.false.,', 1)
+    if mode == 'outflow':
+        spray = spray.replace('wall_impacts=.true.', 'wall_impacts=.false.').replace('walls%evolve=.true.', 'walls%evolve=.false.')
+        spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+        spray = spray.replace('center=.0015,.001250001,.0015', 'center=.003999999,.0015,.0015')
+        spray = spray.replace('axis=0.,-1.,0.', 'axis=1.,0.,0.')
     if a.outflow:
         assert mode == 'splash'
         spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
@@ -92,11 +98,13 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
     return directory
 
 
-for mode in (('splash',) if a.outflow else ('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'splash')):
+for mode in (('outflow',) if a.specular_outflow else ('splash',) if a.outflow else ('split',) if a.split else ('khrt',) if a.khrt else ('deposit', 'splash')):
     full = run(mode, 'full', 4)
     films = population(full, 'films')
     particles = population(full, 'particles')
-    if mode == 'split':
+    if mode == 'outflow':
+        assert not films and not particles
+    elif mode == 'split':
         assert len(films) == 0 and len(particles) == 4
         assert sorted(int(r['id']) for r in particles) == [1, 2, 3, 4]
         assert all(0 < float(r['multiplicity']) <= 60 for r in particles)
@@ -123,7 +131,7 @@ for mode in (('splash',) if a.outflow else ('split',) if a.split else ('khrt',) 
     stopped = run(mode, 'stopped', 2, "checkpoint_file='saved',checkpoint_interval_steps=2,stop_after_checkpoint=.true.,")
     archive = stopped / 'saved.step2'
     payload = Path(str(archive) + '.particles').read_text().splitlines()
-    assert payload[0] == ('PELEF_EB_PARTICLES_V1' if mode in ('khrt', 'split') else 'PELEF_EB_PARTICLES_V2')
+    assert payload[0] == ('PELEF_EB_PARTICLES_V1' if mode in ('khrt', 'split', 'outflow') else 'PELEF_EB_PARTICLES_V2')
     if mode == 'khrt':
         np = int(payload[2].split()[2])
         stored = [line.split() for line in payload[4:4+np]]

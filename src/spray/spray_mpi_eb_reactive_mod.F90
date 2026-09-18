@@ -90,7 +90,7 @@ contains
     call MPI_Allreduce(flags,highflags,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.lowflags/=highflags) return
     if(outflow) then
-      if(flags/=31) return
+      if(flags/=16.and.flags/=24.and.flags/=31) return
       allocate(half_exterior(nv));half_exterior=0
       flags=flags-16
     end if
@@ -160,17 +160,17 @@ contains
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
           wall_films=patches,film_mass=patch_mass,film_settings=film_settings, &
           eb_geometry=geometry,nodal_phi=phi,model_rejected=rejected,eb_outflow_change=half_exterior)
-        if(valid.and.outflow) exterior=exterior+half_exterior
         if(present(model_rejected)) model_rejected=rejected
       else if(present(last_id)) then
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
-          eb_geometry=geometry,nodal_phi=phi)
+          eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=half_exterior)
       else
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,boundary_change=exchange, &
-          eb_geometry=geometry,nodal_phi=phi)
+          eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=half_exterior)
       end if
+      if(valid.and.outflow) exterior=exterior+half_exterior
     end subroutine
   end subroutine
 end module
