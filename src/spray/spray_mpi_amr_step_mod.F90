@@ -53,7 +53,8 @@ contains
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     real(dp), optional, intent(inout) :: eb_outflow_change(:)
-    real(dp), allocatable :: impact_exterior(:)
+    real(dp), allocatable :: impact_exterior(:),liquid_energies(:)
+    character(len=16) :: outflow_faces(6)
     real(dp) :: exterior(reactive_nvar(size(species))),finish(3),delta(3),flight_fraction
     integer :: axis
     logical, optional, intent(out) :: model_rejected
@@ -108,7 +109,7 @@ contains
     end if
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(ledger)
     if(present(eb_outflow_change)) then
-      valid=valid.and.present(eb_geometry).and.present(wall_films)
+      valid=valid.and.present(eb_geometry)
       valid=valid.and.size(eb_outflow_change)==size(ledger)
     end if
     valid=valid.and.(present(wall_films).eqv.present(film_mass))
@@ -322,14 +323,39 @@ contains
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
         end if
+        if(allocated(impact_exterior)) impact_exterior=0
         if(agreed.and.present(eb_geometry).and..not.present(wall_films)) then
           exchange=0;eb_hits=0
-          call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid)
+          if(allocated(impact_exterior)) then
+            if(allocated(liquid_energies)) deallocate(liquid_energies)
+            allocate(liquid_energies(size(trial)));liquid_energies=0;outflow_faces='outflow'
+            do p=1,size(trial)
+              if(trial(p)%mass<=0) cycle
+              call liquid_mixture_properties(components,next_mass(:,p)/trial(p)%mass,trial(p)%temperature,rho,cp,e,valid)
+              if(.not.valid) exit
+              liquid_energies(p)=e
+            end do
+            if(valid) call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid, &
+              outflow_faces,liquid_energies,impact_exterior(:5))
+            if(valid) then
+              do p=1,size(trial)
+                if(trial(p)%mass>0) cycle
+                impact_exterior(6:)=impact_exterior(6:)-next_mass(:,p)*trial(p)%multiplicity
+                next_mass(:,p)=0
+              end do
+            end if
+            call agree()
+            if(agreed) then
+              call MPI_Allreduce(MPI_IN_PLACE,impact_exterior,size(impact_exterior),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+              valid=ierr==MPI_SUCCESS
+            end if
+          else
+            call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid)
+          end if
           if(valid) trial_ledger(:5)=exchange
           call agree()
         end if
         impact_wall=0
-        if(allocated(impact_exterior)) impact_exterior=0
         if (agreed.and.present(wall_films)) then
           trial_patches=patches;trial_patch_mass=patch_mass
           call prepare_impacts()
@@ -377,6 +403,8 @@ contains
       end if
       if (present(wall_films)) then
         patches=trial_patches;patch_mass=trial_patch_mass;wall_ledger=wall_ledger+impact_wall
+      end if
+      if(present(wall_films).or.allocated(impact_exterior)) then
         kept=count(drops%mass>0);survivors=pack(drops,drops%mass>0)
         allocate(kept_mass(nc,kept));kept=0
         do p=1,size(drops)

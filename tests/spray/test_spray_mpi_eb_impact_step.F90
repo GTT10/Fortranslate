@@ -237,9 +237,31 @@ program test_spray_mpi_eb_impact_step
   call inventory(after)
   call require(all(abs(after-before-ledger-exterior)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'MPI source gas film wall exterior conservation')
+  field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+  deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
+  last_id=1;ledger=42;exterior=43;options%maximum_substeps=1
+  call specular_outflow_advance()
+  call require(.not.ok.and.steps==0.and.last_id==1,'specular exterior interval rollback')
+  call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'specular exterior payload rollback')
+  call require(all(ledger==42).and.all(exterior==43),'specular exterior budgets rollback')
+  options%maximum_substeps=100000
+  call inventory(before)
+  call specular_outflow_advance()
+  call require(ok.and.size(drops)==0.and.last_id==1,'specular reflection then escape')
+  call require(ledger(3)>0.and.exterior(1)<0,'specular wall and exterior signs')
+  call require(abs(exterior(5+liquids(1)%vapor_index)-.25_dp*exterior(1))<1e-23_dp,'specular first species')
+  call require(abs(exterior(5+liquids(2)%vapor_index)-.75_dp*exterior(1))<1e-23_dp,'specular second species')
+  call inventory(after)
+  call require(all(abs(after-before-ledger-exterior)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'MPI specular source exterior conservation')
   if(rank==0) print *, 'PASS: MPI EB impact source coupling and global gas parcel film wall inventory'
   call MPI_Finalize(ierr)
 contains
+  subroutine specular_outflow_advance()
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
+      tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id=last_id,boundary_change=ledger, &
+      eb_geometry=g,nodal_phi=phi,eb_outflow_change=exterior)
+  end subroutine
   subroutine outflow_advance()
     call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
       tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id=last_id,boundary_change=ledger, &
