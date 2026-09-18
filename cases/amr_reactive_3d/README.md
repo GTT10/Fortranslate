@@ -290,3 +290,16 @@ The option does not change checkpoint physics/context records; the MPI layout
 is recomputed for the current rank count on restart. Existing global state
 and boundary-ledger comparisons remain applicable. See
 [balancing and restart evidence](../../docs/validation/amr-mpi-load-balance-20260917.md).
+
+## Pressure outlet
+
+The serial fixed/selected two-level applications accept `outlet_pressure(6)`
+in `reactive_3d`, using the regular six-face order and Pa units. Positive finite
+values up to 1e15 require `outflow`; zero keeps extrapolation. Targets feed hydro,
+molecular transport and coarse interpolation ghosts during regridding. Existing
+`regrid_physical_boundaries` policy still controls boundary-touching regrids.
+
+Checkpoint boundary identity includes all six targets when any is positive.
+Restart rejects changed or removed targets. MPI and patch-tree pressure input
+remain unconnected and are rejected by their readers. See
+[application/restart evidence](../../docs/validation/pressure-outlet-amr-application-20260918.md).

@@ -2749,6 +2749,8 @@ Coarse interpolation halos receive pressure ghosts; fine stages apply them
 only on root physical faces touched by the patch. Full refinement matches the
 uniform fine-grid hydro state exactly in the focused cases. Two-level transport
 and the complete reactive split now share pressure ghosts and forward targets
-through every stage. AMR application input and MPI dispatch are still pending; see
+through every stage. Serial two-level AMR input, pressure-aware regrid ghosts
+and checkpoint target matching are connected. Patch-tree and MPI dispatch
+remain pending; see [application evidence](validation/pressure-outlet-amr-application-20260918.md),
 [transport evidence](validation/pressure-outlet-amr-transport-20260918.md) and
 [two-level hydro evidence](validation/pressure-outlet-amr-hydro-20260918.md).
