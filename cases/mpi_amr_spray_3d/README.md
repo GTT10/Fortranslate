@@ -430,3 +430,5 @@ This does not itself represent additional physical breakup. The coupled API's
 optional `split_created` reports the global number of computational children,
 excluding KH/splash children created earlier in the interval. See
 [focused evidence](../../docs/validation/spray-amr-split-20260918.md).
+The application now also has a focused
+[2-to-4 rank splitting restart check](../../docs/validation/spray-amr-split-application-20260918.md).
