@@ -10,9 +10,12 @@ module spray_mpi_eb_impact_mod
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   use spray_mpi_mod, only: sample_mpi_wall_film_thickness,resolve_mpi_wall_impacts
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d
+  use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   implicit none
   private
-  public :: impact_mpi_level_set,advance_mpi_level_set_impacts
+  public :: impact_mpi_level_set,advance_mpi_level_set_impacts,advance_mpi_eb_tree_impacts
 contains
   ! One earliest EB contact per original parcel; endpoints are supplied by caller.
   ! Film queries use the pre-event distributed film population. Wall receives budget.
@@ -275,5 +278,59 @@ contains
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if(ierr/=MPI_SUCCESS) agreed=.false.
     end subroutine
+  end subroutine
+  ! Keep pressures attached to their input parcels; migrate only after flight.
+  ! Initial and final film migration use private payloads within this transaction.
+  subroutine advance_mpi_eb_tree_impacts(comm,tree,owners,components,properties,settings,phi,molecular_weights, &
+      pressure,lower,spacing,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: properties
+    type(spray_eb_wall_options), intent(in) :: settings
+    real(dp), intent(in) :: phi(0:,0:,0:),molecular_weights(:),pressure(:),lower(3),spacing(3),dt
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:),film_mass(:,:)
+    type(spray_wall_film), allocatable, intent(inout) :: films(:)
+    integer(int64), intent(inout) :: last_id
+    real(dp), intent(inout) :: wall_change(5)
+    integer, intent(inout) :: hits
+    logical, intent(out) :: ok
+    logical, optional, intent(out) :: model_rejected
+    type(spray_parcel), allocatable :: drops(:)
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: masses(:,:),patch_mass(:,:)
+    real(dp) :: upper(3),budget(5)
+    integer(int64) :: watermark
+    integer :: count,ierr
+    logical :: valid,agreed,rejected
+    ok=.false.
+    if(present(model_rejected)) model_rejected=.false.
+    valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
+    valid=valid.and.tree%is_valid()
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    drops=parcels;masses=component_mass;patches=films;patch_mass=film_mass;watermark=last_id
+    call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
+      settings%maximum_films,valid,phi)
+    if(.not.valid) return
+    upper=lower+spacing*real(tree%nodes(1)%shape,dp);budget=0;count=0
+    call advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
+      lower,upper,dt,drops,masses,patches,patch_mass,watermark,budget,count,valid,rejected)
+    if(rejected) then
+      if(present(model_rejected)) model_rejected=.true.
+      return
+    end if
+    if(.not.valid) return
+    call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing, &
+      properties%maximum_parcels,valid,masses)
+    if(.not.valid) return
+    call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
+      settings%maximum_films,valid,phi)
+    if(.not.valid) return
+    call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
+    call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
+    last_id=watermark;wall_change=budget;hits=count;ok=.true.
   end subroutine
 end module

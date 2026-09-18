@@ -7,8 +7,14 @@ program test_spray_mpi_eb_impact
   use spray_parcel_mod
   use spray_wall_impact_mod, only: spray_wall_film,wall_film_totals
   use spray_eb_impact_mod, only: spray_eb_wall_options
-  use spray_mpi_eb_impact_mod, only: impact_mpi_level_set,advance_mpi_level_set_impacts
+  use spray_mpi_eb_impact_mod, only: impact_mpi_level_set,advance_mpi_level_set_impacts,advance_mpi_eb_tree_impacts
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
+  use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   implicit none
+  type(amr_patch_tree_3d) :: tree
+  type(amr_patch_3d) :: patch(1)
+  real(dp) :: tree_phi(0:4,0:4,0:4)
+  integer :: owners(2)
   type(nasa7_species), allocatable :: species(:)
   type(spray_liquid) :: liquids(1)
   type(spray_options) :: options
@@ -133,7 +139,42 @@ program test_spray_mpi_eb_impact
       if(rank==nranks-1) call require(drops(1)%position(1)>.4_dp.and.drops(1)%position(1)<.6_dp,'slab endpoint')
     end if
   end do
-  if(rank==0) print *, 'PASS: distributed EB contact and remaining-flight transaction'
+  call initialize_amr_patch_3d(2,2,2,1,1,1,2,1,2,2,patch(1),ok)
+  call require(ok,'migration patch')
+  call initialize_amr_patch_tree_3d([2,2,2],[1],patch,tree,ok)
+  call require(ok,'migration tree');owners=[0,nranks-1]
+  do k=0,4
+  do j=0,4
+  do i=0,4
+    tree_phi(i,j,k)=.25_dp*(i+j)-.5_dp
+  end do
+  end do
+  end do
+  deallocate(drops,masses,films,film_mass,pressure)
+  allocate(drops(1),masses(1,1),films(0),film_mass(1,0),pressure(1))
+  drops=saved;drops(1)%position=[.35_dp,.35_dp,.5_dp];masses=1e-12_dp;pressure=101325
+  last_id=nranks;wall=42;hits=43;walls%temperature=300;walls%maximum_hits=4
+  call inventory(before)
+  do mode=1,3
+    options%maximum_parcels=100;walls%maximum_films=100
+    if(mode==1) options%maximum_parcels=5
+    if(mode==2) walls%maximum_films=1
+    call advance_mpi_eb_tree_impacts(MPI_COMM_WORLD,tree,owners,liquids,options,walls,tree_phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[.5_dp,.5_dp,.5_dp],.2_dp*sqrt(2._dp)/200, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+    if(mode<3) then
+      call require(.not.ok.and..not.rejected.and.last_id==nranks,'receive capacity rollback')
+      call require(size(drops)==1.and.size(films)==0.and.all(wall==42).and.hits==43,'migration payload rollback')
+      call require(all(drops(1)%position==[.35_dp,.35_dp,.5_dp]).and.all(masses==1e-12_dp),'migration state rollback')
+    else
+      call require(ok.and.hits==nranks.and.last_id==5*nranks,'complete interval and migration')
+      call require(size(drops)==merge(4*nranks,0,rank==nranks-1),'finest particle owner')
+      call require(size(films)==merge(nranks,0,rank==nranks-1),'fluid-side film owner')
+      call inventory(after)
+      call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'migrated interval inventory')
+    end if
+  end do
+  if(rank==0) print *, 'PASS: distributed EB impact interval and atomic final migration'
   call MPI_Finalize(ierr)
 contains
   subroutine impact()
