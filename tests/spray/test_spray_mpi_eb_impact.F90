@@ -45,7 +45,7 @@ program test_spray_mpi_eb_impact
   end do
   normal=[1._dp,1._dp,0._dp]/sqrt(2._dp)
   allocate(drops(1),masses(1,1),previous(3,1),pressure(1),hit(1),fractions(1))
-  drops(1)=spray_parcel(int(rank+1,int64),[.4_dp,.4_dp,.5_dp],-200*normal,1e-12_dp,350._dp,10._dp)
+  drops(1)=spray_parcel(int(nranks-rank,int64),[.4_dp,.4_dp,.5_dp],-200*normal,1e-12_dp,350._dp,10._dp)
   masses=1e-12_dp;previous(:,1)=[.6_dp,.6_dp,.5_dp];pressure=101325
   d=parcel_diameter(drops(1),liquids(1))
   allocate(films(merge(1,0,rank==nranks-1)),film_mass(1,merge(1,0,rank==nranks-1)))
@@ -76,7 +76,8 @@ program test_spray_mpi_eb_impact
   call require(size(drops)==5.and.drops(1)%mass==0,'four wet-splash children')
   call require(last_id==5*nranks,'global watermark')
   do p=2,5
-    call require(drops(p)%id==nranks+4*rank+p-1,'rank-prefix child IDs')
+    call require(drops(p)%id==nranks+4*(nranks-rank-1)+p-1,'parent-ordered EB child IDs')
+    call require(drops(p)%parent_id==nranks-rank,'EB child lineage')
     call require(dot_product(drops(p)%velocity,normal)>=0,'outgoing children')
   end do
   call inventory(after)
