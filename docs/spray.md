@@ -411,8 +411,10 @@ see the [case guide](../cases/mpi_eb_spray_3d/README.md) and
 Whole-patch rebalancing now uses the existing measured gas work and moves
 owner-local gas/temperature and particles atomically. `rebalance_mpi_amr_spray`
 accepts optional `nodal_phi` for EB owner migration; this mode requires
-nonperiodic coordinates and rejects film arguments. A rejected particle move
-preserves the proposed gas/owner changes privately. See
+nonperiodic coordinates and accepts the existing `wall_films`, `film_mass`,
+`maximum_films` group. EB films migrate using fluid-side probes against the
+original nodal field. A rejected particle or film move preserves the proposed
+gas/owner changes privately. See
 [rebalancing evidence](validation/spray-mpi-eb-balance-20260918.md).
 `remap_mpi_eb_spray` in `spray_mpi_eb_remap_mod` now stages the existing
 conservative MPI EB gas remap and particle owner migration before publishing
@@ -423,6 +425,14 @@ integer refinement of the current finest tree lattice, allowing coarsening
 without replacing the original collision geometry. MPI sampling requires exact
 nodal dimensions and values across ranks. See
 [remap evidence](validation/spray-mpi-eb-remap-20260918.md).
+The optional `wall_films`, `film_mass`, `maximum_films` group also carries EB
+films through remap. Presence must agree across ranks. Film migration occurs on
+private state after gas and particle remap; any geometry or receive-capacity
+failure discards the entire proposed topology/state change. Film locations,
+normals and physical/component payloads remain unchanged. Both remap and
+rebalancing retain their particle-only calling forms. The library connection is
+qualified separately from MPI application film persistence; see
+[film repartition evidence](validation/spray-mpi-eb-film-repartition-20260918.md).
 The fixed/selected MPI EB spray applications now route prescribed and
 existing temperature-tagged regrids through this coupled remap. Checkpoint
 restore prepares the stored hierarchy privately, checks the saved stage/time,
