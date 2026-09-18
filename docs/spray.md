@@ -3063,3 +3063,14 @@ identity; changing or removing it rejects restart. See the
 [application checks](validation/les-isotropic-application-20260918.md).
 See [formula and focused evidence](validation/les-isotropic-20260918.md) and
 [MPI stepping checks](validation/les-mpi-isotropic-20260918.md).
+
+### LES pressure outlets
+
+The serial `compute_les_rhs_3d` and `advance_les_ssprk2_3d` library APIs accept
+trailing optional `outlet_pressure(6)`, in Pa. Zero selects ordinary outflow;
+positive pressure is allowed only on `outflow` faces. The shared characteristic
+pressure-ghost routine supplies both halo layers before LES face gradients at
+each stage. Smagorinsky, WALE and Vreman use the same boundary treatment,
+including CI. The supplied-halo RHS continues to consume caller-prepared ghosts.
+MPI and spray application pressure-outlet controls are not yet connected.
+See [focused evidence](validation/les-pressure-outlet-20260918.md).
