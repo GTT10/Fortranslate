@@ -1,4 +1,5 @@
 module spray_mpi_amr_reactive_mod
+  use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
@@ -17,18 +18,24 @@ module spray_mpi_amr_reactive_mod
   private
   public :: advance_mpi_amr_spray_reactive
 contains
-  ! S/2 - (R/2 T/2 H T/2 R/2) - S/2 with atomic publication.
+  ! S/2 - L/2 - (R/2 T/2 H T/2 R/2) - L/2 - S/2 with atomic publication.
   ! Common tables/options and globally unique parcel IDs are caller contracts.
   subroutine advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
       state,temperature,parcels,component_mass,lower,spacing,dt,reconstruction,limiter,solver, &
       chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol,particle_steps, &
       maximum_correction,minimum_theta,ok,last_id,chemistry_integrator,subcycling, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      wall_films,film_mass,film_settings,film_steps)
+      wall_films,film_mass,film_settings,film_steps,les_settings,les_model)
+    ! LES settings are [eddy coefficient, PrT, ScT, CI]; zero eddy/CI disables.
+    real(dp), optional, intent(in) :: les_settings(4)
+    character(len=*), optional, intent(in) :: les_model
+    real(dp) :: sgs(4),sgs_min(4),sgs_max(4),les_correction,les_max
+    character(len=16) :: model,reference_model
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
+    real(dp) :: les_boundary(reactive_nvar(size(species))),les_ledger(reactive_nvar(size(species)))
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: liquids(:)
@@ -67,8 +74,15 @@ contains
     character(len=32) :: faces(6)
     ok=.false.;particle_steps=0;film_first=0;film_second=0;film_ledger=0
     if (present(film_steps)) film_steps=0
+    sgs=[0._dp,.7_dp,.7_dp,0._dp];model='smagorinsky';les_ledger=0;les_max=0
+    if (present(les_settings)) sgs=les_settings
+    if (present(les_model)) model=les_model
     valid=allocated(parcels).and.allocated(component_mass).and.ieee_is_finite(dt)
     if (valid) valid=dt>0.and.dt<=1e6_dp
+    valid=valid.and.all(ieee_is_finite(sgs))
+    valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.sgs(4)>=0.and.sgs(4)<=1
+    valid=valid.and.minval(sgs(2:3))>=1e-6_dp.and.maxval(sgs(2:3))<=1e6_dp
+    valid=valid.and.(model=='smagorinsky'.or.model=='wale'.or.model=='vreman')
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(boundary)
     valid=valid.and.(present(wall_films).eqv.present(film_mass))
@@ -80,6 +94,17 @@ contains
       valid=valid.and.all(len_trim(boundary_faces)<=len(faces))
       faces=boundary_faces
     end if
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(sgs,sgs_min,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(sgs,sgs_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    if (any(sgs_min/=sgs_max)) return
+    reference_model=model
+    call MPI_Bcast(reference_model,len(reference_model),MPI_CHARACTER,0,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    valid=model==reference_model
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS.or..not.agreed) return
     film_flag=merge(1,0,present(wall_films))
@@ -106,12 +131,16 @@ contains
         drops,masses,lower,spacing,.5_dp*dt,first_steps,valid,candidate_id,faces,first_boundary)
     end if
     if (.not.valid) return
+    call les_half_step()
+    if (.not.valid) return
     boundary=0;correction=0;theta=1
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,gas,temp,spacing,dt,faces, &
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       boundary,correction,theta,comm,valid,chemistry_integrator=chemistry_integrator,subcycling=subcycling, &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
       wall_velocity=wall_velocity)
+    if (.not.valid) return
+    call les_half_step()
     if (.not.valid) return
     if (present(wall_films)) then
       call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
@@ -128,7 +157,7 @@ contains
       if (.not.valid) return
       film_ledger=film_ledger+film_boundary
     end if
-    boundary=boundary+first_boundary+second_boundary+film_ledger
+    boundary=boundary+first_boundary+second_boundary+film_ledger+les_ledger
     valid=all(ieee_is_finite(boundary))
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS.or..not.agreed) return
@@ -140,7 +169,18 @@ contains
     if (present(film_steps)) film_steps=film_first+film_second
     if (present(last_id)) last_id=candidate_id
     if (present(boundary_change)) boundary_change=boundary
-    maximum_correction=correction;minimum_theta=theta
+    maximum_correction=max(correction,les_max);minimum_theta=theta
     particle_steps=first_steps+second_steps;ok=.true.
+  contains
+    subroutine les_half_step()
+      valid=.true.
+      if (sgs(1)==0.and.sgs(4)==0) return
+      call advance_mpi_amr_tree_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
+        sgs(1),sgs(2),sgs(3),les_boundary,les_correction,comm,valid, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+        wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4))
+      if (.not.valid) return
+      les_ledger=les_ledger+les_boundary;les_max=max(les_max,les_correction)
+    end subroutine
   end subroutine
 end module

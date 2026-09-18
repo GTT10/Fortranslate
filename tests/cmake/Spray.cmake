@@ -217,6 +217,12 @@ if(PELEF_ENABLE_SPRAY)
       target_compile_options(test_spray_mpi_amr_remap PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
     endif()
     add_executable(test_spray_mpi_amr_reactive spray/test_spray_mpi_amr_reactive.F90)
+    foreach(les_ranks 2 4)
+      add_test(NAME spray_mpi_amr_les_coupled_${les_ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${les_ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_amr_reactive> les ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(spray_mpi_amr_les_coupled_${les_ranks} PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 120 PROCESSORS ${les_ranks})
+    endforeach()
     target_link_libraries(test_spray_mpi_amr_reactive PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
       target_compile_options(test_spray_mpi_amr_reactive PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)

@@ -30,6 +30,8 @@ program test_spray_mpi_amr_reactive
   real(dp), allocatable :: boundary(:)
   character(len=32) :: faces(6)
   real(dp) :: correction,theta
+  real(dp) :: sgs(4)
+  character(len=16) :: argument
   integer :: mode
   character(len=8) :: solver
   logical :: recursive,chemistry
@@ -43,6 +45,9 @@ program test_spray_mpi_amr_reactive
   integer :: rank,nranks,ierr,owners(3),q
   logical :: ok
   integer(int64) :: last_id
+  call get_command_argument(1,argument)
+  sgs=[0._dp,.7_dp,.7_dp,0._dp]
+  if (argument=='les') sgs=[.17_dp,.7_dp,.7_dp,.1_dp]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -112,6 +117,15 @@ program test_spray_mpi_amr_reactive
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses
   last_id=3;interval=1.e-8_dp;correction=123;theta=456
   solver='invalid';recursive=.false.;chemistry=.false.
+  if (argument=='les') then
+    solver='hllc'
+    if (rank==nranks-1) sgs(4)=.2_dp
+    call coupled()
+    call require(.not.ok.and.steps==0.and.correction==123.and.theta==456,'LES disagreement preserves diagnostics')
+    call unchanged()
+    sgs(4)=.1_dp
+    solver='invalid'
+  end if
   call coupled()
   call require(.not.ok.and.steps==0.and.correction==123.and.theta==456,'gas-stage failure preserves diagnostics')
   call require(all(boundary==123),'gas failure preserves boundary ledger')
@@ -162,7 +176,8 @@ contains
     call advance_mpi_amr_spray_reactive(MPI_COMM_WORLD,tree,owners,species,reactions,transport,liquids,options, &
       local,local_t,drops,masses,zero,spacing,interval,'pcm','minmod',solver,chemistry, &
       .true.,.true.,.true.,.false.,1.e-6_dp,1.e-12_dp,steps,correction,theta,ok,last_id, &
-      chemistry_integrator='implicit',subcycling=recursive,boundary_faces=faces,boundary_change=boundary)
+      chemistry_integrator='implicit',subcycling=recursive,boundary_faces=faces,boundary_change=boundary, &
+      les_settings=sgs,les_model='vreman')
   end subroutine
   subroutine unchanged()
     integer :: a
