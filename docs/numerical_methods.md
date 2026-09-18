@@ -2791,3 +2791,10 @@ rejects changed/removed targets. A 4-rank checkpoint resumed at 2 ranks matches
 serial coarse/fine CSVs exactly after regridding; see
 [MPI application evidence](validation/pressure-outlet-mpi-application-20260918.md).
 Patch-tree pressure connections remain pending.
+
+Serial patch-tree common and per-level hydro now accept pressure targets.
+Integer node origins identify physical faces before applying the shared ghost
+kernel. Root-only comparisons, multilevel conservation and transactional
+rejection pass the focused common-step test; see
+[tree hydro evidence](validation/pressure-outlet-tree-hydro-20260918.md).
+Tree subcycling/transport/full wrappers and application connections remain pending.
