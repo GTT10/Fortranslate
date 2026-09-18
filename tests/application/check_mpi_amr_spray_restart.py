@@ -26,6 +26,7 @@ p.add_argument('--properties', action='store_true')
 p.add_argument('--sizes', action='store_true')
 p.add_argument('--rates', action='store_true')
 p.add_argument('--discharge', action='store_true')
+p.add_argument('--split', action='store_true')
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
@@ -136,7 +137,15 @@ if a.discharge:
     spray += "\n&amr_spray_velocity rate_velocity=2*.true.,discharge_coefficients=.8,.9 /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False):
+if a.split:
+    assert not (a.multiport or a.physical or a.films or a.sizes)
+    spray = spray.replace('&amr_spray\n',
+        "&amr_spray\n options%breakup_model='etab',options%maximum_multiplicity=5.,\n"
+        " options%surface_tension=1000.,options%liquid_viscosity=.001,\n"
+        " options%drag=.false.,options%heat=.false.,options%evaporation=.false.,\n", 1)
+
+
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -167,6 +176,8 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('discharge_coefficients=.8,.9', 'discharge_coefficients=.7,.9')
     if invalid_discharge:
         local_spray = local_spray.replace('discharge_coefficients=.8,.9', 'discharge_coefficients=0.,.9')
+    if changed_split:
+        local_spray = local_spray.replace('maximum_multiplicity=5.', 'maximum_multiplicity=6.')
     (folder / 'spray.nml').write_text(local_spray + '\n&amr_spray_checkpoint\n' + controls + '\n/\n')
     result = subprocess.run([a.mpiexec, '-n', str(ranks), str(a.exe.resolve()), 'gas.nml',
                              str(case / 'tree.dat'), 'spray.nml'], cwd=folder,
@@ -208,7 +219,7 @@ for expected, actual in zip(read(full, 2), read(continued, 4)):
             assert math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25), (x, y)
 assert f'Injection events applied: {4 if a.multiport else 3}' in (continued / 'run.log').read_text()
 particles = read(continued, 4)[1]
-assert len(particles) == (0 if a.films else 8 if a.physical else 16 if a.multiport else 12)
+assert len(particles) == (52 if a.split else 0 if a.films else 8 if a.physical else 16 if a.multiport else 12)
 if a.multiport and not a.films:
     assert [row[2] for row in particles] == [1.]*8 + ([] if a.physical else [2.]*8)
     assert all(row[3] < .001 if row[2] == 1 else row[3] > .003 for row in particles)
@@ -251,6 +262,15 @@ if a.adaptive:
     assert 'Adaptation check step: 2 ' in resumed_log
 if a.rebalance:
     assert 'Rebalance step: 2 ' in (continued / 'run.log').read_text()
+if a.split:
+    assert len({row[0] for row in particles}) == 52 and max(row[0] for row in particles) == 52
+    assert sum(row[1] > 0 for row in particles) == 40
+    assert all(0 < row[11] <= 5 for row in particles)
+    assert math.isclose(sum(row[9]*row[11] for row in particles), 1.e-10, rel_tol=2e-12)
+    assert all(math.isclose(row[12]/row[9], .25, rel_tol=2e-12) for row in particles)
+    saved_header = (split / 'state.particles').read_text().splitlines()[2].split()
+    assert int(saved_header[1]) == 20 and int(saved_header[2]) == 20
+    run('changed_split', 2, f"restart_file='{checkpoint}'", good=False, changed_split=True)
 if a.discharge:
     line = next(x for x in (continued / 'run.log').read_text().splitlines() if x.startswith('Injected inventory:'))
     impulse = float(line.split(':', 1)[1].split()[1])
