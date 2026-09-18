@@ -142,6 +142,7 @@ contains
     real(dp) :: khrt_b0,khrt_b1,khrt_c3
     logical :: khrt_enabled
     logical :: breakup_enabled
+    real(dp) :: outlet_pressure(6)
     real(dp) :: wall_temperature(6),wall_velocity(3,6),wall_dt
     real(dp) :: acceleration(3)
     real(dp), allocatable :: source_totals(:),source_step(:)
@@ -164,7 +165,7 @@ contains
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
       mixture_boiling_models,mixture_critical_temperatures, &
-      cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration, &
+      cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration,outlet_pressure, &
       breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed, &
       liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
@@ -229,6 +230,7 @@ contains
     liquid_viscosity_model='constant';liquid_viscosity_coefficients=0;liquid_viscosity_temperature_range=0
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
     acceleration=0
+    outlet_pressure=0
     boundary_faces="periodic";wall_temperature=300;wall_velocity=0
     cells=[4,4,4]; domain_length=0.004_dp
     hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'
@@ -294,6 +296,9 @@ contains
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
     if (.not.all(ieee_is_finite(acceleration))) call fail('Invalid acceleration')
     if (maxval(abs(acceleration))>1e6_dp) call fail('Excessive acceleration')
+    if (.not.all(ieee_is_finite(outlet_pressure))) call fail('Invalid outlet pressure')
+    if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) call fail('Invalid outlet pressure')
+    if (any(outlet_pressure>0.and.boundary_faces/='outflow')) call fail('Outlet pressure requires outflow face')
     physical_boundaries=any(boundary_faces/='periodic')
     impact_enabled=any(wall_impact_faces)
     wall_options%evolve=wall_film_evolution;wall_options%liquid_conductivity=wall_liquid_conductivity
@@ -849,6 +854,10 @@ contains
       context=trim(context)//' dynamic-les-filter-v1 '//trim(les_test_filter)
       call append_reals([real(les_test_ratio,dp),real(les_grid_ratio,dp)])
     end if
+    if (any(outlet_pressure>0)) then
+      context=trim(context)//' pressure-outlet-v1'
+      call append_reals(outlet_pressure)
+    end if
     if (les_ci/=0) then
       context=trim(context)//' les-ci-v1'
       call append_reals([les_ci])
@@ -1277,7 +1286,7 @@ contains
           mixture_components=mixture_components,component_mass=component_mass, &
           wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci)
+          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure)
         else
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
@@ -1285,7 +1294,7 @@ contains
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
           breakup_options,wall_options,wall_films,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci)
+          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure)
         end if
         if (ok) exit
         dt=0.5_dp*dt

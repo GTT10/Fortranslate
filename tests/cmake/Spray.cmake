@@ -519,6 +519,10 @@ if(PELEF_ENABLE_SPRAY)
         --les-model wale --les-isotropic --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_isotropic_restart")
     set_tests_properties(spray_mpi_isotropic_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
   endif()
+  add_test(NAME spray_pressure_outlet_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --sgs .17 --les-model wale --les-isotropic --pressure-outlet
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_pressure_outlet_restart")
+  set_tests_properties(spray_pressure_outlet_restart PROPERTIES LABELS "spray" TIMEOUT 600)
   add_executable(test_spray_core spray/test_spray_core.F90)
   target_link_libraries(test_spray_core PRIVATE pelef_spray_runtime)
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")

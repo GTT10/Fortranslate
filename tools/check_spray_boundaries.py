@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
+    parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
@@ -45,6 +46,12 @@ def main():
     kinds = ('thermal_wall',) if args.thermal_wall else (('inflow',) if args.inflow else ('wall', 'outflow'))
     if args.les_model == 'dynamic':
         kinds = ('periodic',)
+    if args.pressure_outlet:
+        if args.les_model == 'dynamic' or args.inflow or args.thermal_wall:
+            parser.error('--pressure-outlet requires the static outflow fixture')
+        kinds = ('outflow',)
+        template = template.replace('&spray', '&spray\n outlet_pressure(6)=100000,')
+        template = template.replace('transport_enabled=.false.', 'transport_enabled=.true.')
     for kind in kinds:
         def run(name, extra=''):
             tag = kind + '_' + name
@@ -113,6 +120,21 @@ def main():
             (work / 'changed_faces.log').write_text(result.stdout + result.stderr)
             assert result.returncode != 0 and 'incompatible spray checkpoint' in result.stdout + result.stderr
             assert not (work / 'changed_faces.history.csv').exists()
+        if args.pressure_outlet:
+            original = (work / (resumed + '.nml')).read_text()
+            for label, replacement, diagnostic in [
+                ('changed_pressure', 'outlet_pressure(6)=100100,', 'incompatible spray checkpoint'),
+                ('removed_pressure', '', 'incompatible spray checkpoint'),
+                ('invalid_pressure', 'outlet_pressure(6)=-1,', 'Invalid outlet pressure'),
+            ]:
+                config = original.replace('outlet_pressure(6)=100000,', replacement).replace(resumed, label)
+                path = work / (label + '.nml')
+                path.write_text(config)
+                result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                        text=True, capture_output=True, timeout=30)
+                (work / (label + '.log')).write_text(result.stdout + result.stderr)
+                assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
+                assert not (work / (label + '.history.csv')).exists()
         if args.les_model:
             original = (work / (resumed + '.nml')).read_text()
             for label, replacement, diagnostic in [

@@ -104,7 +104,7 @@ contains
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
       mixture_components,component_mass,film_component_mass,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-      les_harmonic_mean,les_ci)
+      les_harmonic_mean,les_ci,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -124,6 +124,7 @@ contains
     logical, intent(in) :: chemistry_enabled,transport_enabled
     character(len=*), optional, intent(in) :: les_model,les_test_filter
     integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: les_ci
     real(dp) :: isotropic
     logical, optional, intent(in) :: les_harmonic_mean
@@ -162,6 +163,11 @@ contains
       message='External acceleration requires a source ledger'; return
     end if
     if (present(boundary_faces)) faces=boundary_faces
+    if (present(outlet_pressure)) then
+      if (.not.all(ieee_is_finite(outlet_pressure))) return
+      if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+      if (any(outlet_pressure>0.and.faces/='outflow')) return
+    end if
     if (present(boundary_change)) boundary_change=0
     selected_les='smagorinsky';selected_filter='box';test_ratio=2;grid_ratio=1;harmonic=.false.
     isotropic=0
@@ -279,7 +285,7 @@ contains
           spacing(1),spacing(2),spacing(3),dt,trim(selected_riemann),.false.,rtol,atol,transport_enabled, &
           .true.,.true.,.true.,.false.,theta,local_ok,trim(selected_reconstruction),'mc',chemistry_integrator='implicit', &
           boundary_faces=faces,boundary_change=exchange,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
-          wall_temperature=wall_temperature,wall_velocity=wall_velocity)
+          wall_temperature=wall_temperature,wall_velocity=wall_velocity,outlet_pressure=outlet_pressure)
         if (.not. local_ok) then
           message='Hydro/molecular transport step rejected'; return
         end if
@@ -322,7 +328,8 @@ contains
           test_ratio,.5_dp*dt,local_ok,grid_ratio,harmonic)
       else
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,.5_dp*dt,local_ok,faces,exchange, &
-          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=selected_les,ci=isotropic)
+          inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=selected_les,ci=isotropic, &
+          outlet_pressure=outlet_pressure)
       end if
     end subroutine
 
