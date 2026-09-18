@@ -507,6 +507,12 @@ if(PELEF_ENABLE_MPI)
     set_tests_properties(unit_mpi_amr_patch_tree_chemistry_3d_${tree_ranks} PROPERTIES
       TIMEOUT 120 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
+  add_test(NAME unit_mpi_amr_patch_tree_pressure_strang_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_amr_patch_tree_chemistry_3d> --pressure-only ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_amr_patch_tree_pressure_strang_3d_2 PROPERTIES
+    TIMEOUT 120 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+
 endif()
 
 if(PELEF_ENABLE_MPI)

@@ -102,7 +102,7 @@ contains
 
   subroutine advance_mpi_amr_tree_strang_3d(tree,owners,species,reactions,state,temperature,root_spacing,dt,faces, &
       reconstruction,limiter,solver,rtol,atol,boundary_change,maximum_correction,comm,ok, &
-      chemistry_integrator,inflow_state,inflow_temperature)
+      chemistry_integrator,inflow_state,inflow_temperature,outlet_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -114,7 +114,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: chemistry_integrator
-    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     type(amr_tree_state_3d) :: candidate,temps
     real(dp) :: budget(size(boundary_change)),largest
     integer :: rank
@@ -130,7 +130,7 @@ contains
     if (.not.valid) return
     budget=0;largest=0
     call advance_mpi_amr_tree_hydro_3d(tree,owners,species,candidate,temps,root_spacing,dt,faces, &
-      reconstruction,limiter,solver,budget,largest,comm,valid,inflow_state,inflow_temperature)
+      reconstruction,limiter,solver,budget,largest,comm,valid,inflow_state,inflow_temperature,outlet_pressure)
     if (.not.valid) return
     call advance_mpi_amr_tree_chemistry_3d(tree,owners,species,reactions,candidate,temps,.5_dp*dt,rtol,atol, &
       comm,valid,chemistry_integrator)

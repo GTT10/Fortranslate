@@ -20,6 +20,9 @@ program test_mpi_amr_patch_tree_chemistry_3d
   type(amr_tree_state_3d) :: global,reference,local,temperature,saved,oracle,oracle_t,saved_t
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
+  integer :: first_mode,last_mode
+  character(len=32) :: test_mode
+  real(dp) :: pressure(6)
   character(len=32) :: faces(6),reconstruction,integrator
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   logical :: ok
@@ -60,7 +63,12 @@ program test_mpi_amr_patch_tree_chemistry_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
-  do mode=1,3
+  first_mode=1;last_mode=3
+  call get_command_argument(1,test_mode)
+  if (trim(test_mode)=='--pressure-only') then
+    first_mode=4;last_mode=4
+  end if
+  do mode=first_mode,last_mode
     owners=[0,1,0]
     if (mode==3) owners=0
     if (mode==4) owners=mod([0,1,2],nranks)
@@ -71,7 +79,9 @@ program test_mpi_amr_patch_tree_chemistry_3d
     end if
     if (mode==3) faces(1)='inflow'
     integrator='explicit'
-    if (mode==2) integrator='implicit'
+    if (mod(mode,2)==0) integrator='implicit'
+    pressure=0
+    if (mode==4) pressure([1,6])=203650
     allocate(local%fields(3),temperature%fields(3))
     do node=1,3
       if (owners(node)/=rank) cycle
@@ -79,6 +89,7 @@ program test_mpi_amr_patch_tree_chemistry_3d
       temperature%fields(node)=reference%fields(node)
     end do
     oracle=global;oracle_t=reference;dt=1e-9_dp
+    if (mode==4) dt=1e-10_dp
     call advance_amr_patch_tree_chemistry_3d(tree,species,reactions,oracle,oracle_t,dt,1e-6_dp,1e-14_dp,ok,integrator)
     call require(ok,'serial exposed-cell chemistry')
     call advance_mpi_amr_tree_chemistry_3d(tree,owners,species,reactions,local,temperature,dt,1e-6_dp,1e-14_dp, &
@@ -94,16 +105,19 @@ program test_mpi_amr_patch_tree_chemistry_3d
       temperature%fields(node)=reference%fields(node)
     end do
     call advance_amr_patch_tree_strang_3d(tree,species,reactions,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc','hllc', &
-      1e-6_dp,1e-14_dp,serial_budget,serial_largest,ok,integrator,inlet,inlet_t)
+      1e-6_dp,1e-14_dp,serial_budget,serial_largest,ok,integrator,inlet,inlet_t, &
+      outlet_pressure=pressure)
     call require(ok,'serial reaction-hydro composition')
     call advance_mpi_amr_tree_strang_3d(tree,owners,species,reactions,local,temperature,spacing,dt,faces, &
-      reconstruction,'mc','hllc',1e-6_dp,1e-14_dp,budget,largest,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t)
+      reconstruction,'mc','hllc',1e-6_dp,1e-14_dp,budget,largest,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t, &
+      outlet_pressure=pressure)
     call require(ok,'distributed reaction-hydro composition')
     call compare_state()
     call require(all(budget==serial_budget).and.largest==serial_largest,'exact coupled diagnostics')
     saved=local;saved_t=temperature
     call advance_mpi_amr_tree_strang_3d(tree,owners,species,reactions,local,temperature,spacing,dt,faces, &
-      reconstruction,'mc','bad',1e-6_dp,1e-14_dp,budget,largest,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t)
+      reconstruction,'mc','bad',1e-6_dp,1e-14_dp,budget,largest,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t, &
+      outlet_pressure=pressure)
     call require(.not.ok,'hydro failure after chemistry rolls back whole split')
     call unchanged()
     bad=reactions
