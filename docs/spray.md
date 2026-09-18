@@ -2951,3 +2951,11 @@ arithmetic face interpolation and preserves RHS on rejection; mass/species SGS
 fluxes are zero as in the pinned dynamic model. Time integration, application
 selection and nonperiodic/MPI/AMR paths remain open. See
 [dynamic spatial flux checks](validation/les-dynamic-flux-20260918.md).
+
+`advance_dynamic_les_ssprk2_3d` now advances the periodic dynamic operator with
+stage-wise coefficient recomputation, EOS recovery and transactional publication.
+Each stage applies a frozen-coefficient diffusion estimate with a 0.2 diffusion
+number gate, including isotropic stress and thermal transport. This estimate is
+not a general nonlinear stability proof. Coupled-spray/application selection,
+MPI and nonperiodic paths remain open. See
+[time-integration evidence and initial-test diagnosis](validation/les-dynamic-step-20260918.md).
