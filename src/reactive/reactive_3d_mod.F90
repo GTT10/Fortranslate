@@ -1,6 +1,7 @@
 module reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d, &
+    characteristic_pressure_ghost_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -1194,8 +1195,8 @@ contains
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
       faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature, &
-      flux_x,flux_y,flux_z)
-    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
+      flux_x,flux_y,flux_z,outlet_pressure)
+    real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     ! Optional SSPRK2 mean fluxes: upper faces, or all faces including index zero.
     real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     real(dp), allocatable :: mean_x(:,:,:,:),mean_y(:,:,:,:),mean_z(:,:,:,:)
@@ -1214,6 +1215,11 @@ contains
     if (present(flux_y)) flux_y=0
     if (present(flux_z)) flux_z=0
     if ((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    if(present(outlet_pressure)) then
+      if(.not.all(ieee_is_finite(outlet_pressure))) return
+      if(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+      if(any(outlet_pressure>0.and.faces/='outflow')) return
+    end if
     full_faces=.false.
     n=shape(temperature)
     if (present(flux_x)) then
@@ -1260,7 +1266,7 @@ contains
       real(dp), intent(out) :: du(:,:,:,:),rate(:)
       logical, intent(out) :: success
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-      integer :: dims(3),i,j,k,nv
+      integer :: dims(3),i,j,k,nv,face,axis,layer,idx(3),donor(3)
       success=.false.; du=0.0_dp; rate=0.0_dp
       dims=n+4; nv=size(u,1)
       allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
@@ -1268,6 +1274,30 @@ contains
       call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,success, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       if (.not.success) return
+      if(present(outlet_pressure)) then
+        do face=1,6
+          if(outlet_pressure(face)<=0) cycle
+          axis=(face+1)/2
+          do k=1,n(3)
+          do j=1,n(2)
+          do i=1,n(1)
+            donor=[i,j,k]
+            if(donor(axis)/=1) cycle
+            if(modulo(face,2)==0) donor(axis)=n(axis)
+            do layer=1,2
+              idx=donor+2
+              idx(axis)=3-layer
+              if(modulo(face,2)==0) idx(axis)=n(axis)+2+layer
+              call characteristic_pressure_ghost_3d(species,u(:,donor(1),donor(2),donor(3)), &
+                t(donor(1),donor(2),donor(3)),face,outlet_pressure(face),real(2*layer,dp), &
+                ghost(:,idx(1),idx(2),idx(3)),gt(idx(1),idx(2),idx(3)),success)
+              if(.not.success) return
+            end do
+          end do
+          end do
+          end do
+        end do
+      end if
       if (reconstruction=='pcm') then
         call compute_reactive_face_fluxes_3d(species,ghost,gt,dims(1),dims(2),dims(3), &
           riemann_solver,fx,fy,fz,success)

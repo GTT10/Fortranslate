@@ -18,6 +18,7 @@ program test_reactive_boundaries_3d
   integer :: i,j,k,r,b,s
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
+  call check_pressure_outlet()
   call check_pressure_ghost()
   call check_inflow()
   config%boundary_condition='isothermal_wall'
@@ -86,6 +87,38 @@ program test_reactive_boundaries_3d
   end do
   print *, 'PASS: six-face PCM/PLM, three solvers, surface balance, wall flux and rollback'
 contains
+  subroutine check_pressure_outlet()
+    real(dp) :: outlet(6)
+    integer :: face,order
+    q=0;q(1)=.3_dp;q(5)=101325;q(6)=.03_dp;q(9)=.22_dp;q(12)=.75_dp
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      call reactive_primitive_to_conserved(species,q,before(:,i,j,k),bt(i,j,k),sound,ok)
+      call require(ok,'pressure outlet base state')
+    end do
+    end do
+    end do
+    faces='outflow'
+    do order=1,2
+      reconstruction='pcm'
+      if(order==2) reconstruction='characteristic_plm'
+      do face=1,6
+        outlet=0;outlet(face)=102325;u=before;t=bt
+        call reactive_integrals_3d(u,4,4,4,1._dp,1._dp,1._dp,total0,ok)
+        call advance_reactive_boundary_hydro_3d(species,u,t,[1._dp,1._dp,1._dp],1e-5_dp, &
+          faces,reconstruction,'mc','hllc',change,ok,outlet_pressure=outlet)
+        call require(ok.and.any(change/=0),'pressure outlet PCM PLM six faces')
+        call reactive_integrals_3d(u,4,4,4,1._dp,1._dp,1._dp,total1,ok)
+        call require(all(abs(total1-total0-change)<=3e-12_dp*max(abs(total0),abs(total1),1._dp)), &
+          'pressure outlet flux inventory')
+      end do
+    end do
+    outlet=0;outlet(2)=1;u=before;t=bt
+    call advance_reactive_boundary_hydro_3d(species,u,t,[1._dp,1._dp,1._dp],1e-5_dp, &
+      faces,'pcm','mc','hllc',change,ok,outlet_pressure=outlet)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'pressure ghost failure preserves fluid')
+  end subroutine
   subroutine check_pressure_ghost()
     real(dp) :: qi(12),ui(12),ug(12),qg(12),ti,tg,ci,cg,expected(12),normal
     integer :: face,axis
