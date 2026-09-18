@@ -2883,6 +2883,13 @@ See [focused evidence](validation/spray-mpi-eb-acceleration-20260918.md).
 `les_smagorinsky_3d_mod` now exports `wale_stress` and `vreman_stress` with the
 same gradient/density/spacing/coefficient/output layout as `smagorinsky_stress`.
 These implement the pinned deviatoric WALE and Vreman algebra; zero gradients
-return zero safely. They are library kernels only: grid fluxes and application
-model selection still use Smagorinsky. See
+return zero safely. See
 [reference and focused algebra checks](validation/les-algebraic-closures-20260918.md).
+
+The regular LES RHS, supplied-halo RHS and SSPRK2 library APIs now accept an
+optional trailing `model='smagorinsky'|'wale'|'vreman'`. Omission retains
+Smagorinsky. The coefficient argument `cs` means Cw for WALE and Cs otherwise.
+The selected viscosity drives stress, heat/species fluxes and the diffusion
+stability bound. Invalid names reject even when coefficient or dt is zero.
+Spray/MPI/application controls still use the default; see
+[grid integration checks](validation/les-alternative-grid-20260918.md).
