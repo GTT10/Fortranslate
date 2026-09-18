@@ -6,13 +6,15 @@ program test_les_mpi_dynamic
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use spray_partition_mod, only: spray_cartesian_block
-  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_coefficients_3d
-  use les_mpi_dynamic_mod, only: compute_mpi_dynamic_les_coefficients_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_coefficients_3d,compute_dynamic_les_rhs_3d
+  use les_mpi_dynamic_mod, only: compute_mpi_dynamic_les_coefficients_3d,compute_mpi_dynamic_les_rhs_3d
   implicit none
   integer, parameter :: cells(3)=[5,3,2]
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: full(15,5,3,2),temps(5,3,2),reference(3,5,3,2),q(15),sound,spacing(3)
   real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),coeff(:,:,:,:),saved(:,:,:,:)
+  real(dp) :: serial_rhs(15,5,3,2),diffusion,serial_diffusion,local_budget(15),budget(15)
+  real(dp), allocatable :: rhs(:,:,:,:),saved_rhs(:,:,:,:)
   integer :: rank,nranks,ierr,i,j,k,first(3),extent(3),lo,hi,m,ratio,grid
   character(len=8) :: model
   logical :: ok
@@ -35,7 +37,7 @@ program test_les_mpi_dynamic
     end do
   end do
   state=full(:,lo:hi,:,:);temperature=temps(lo:hi,:,:)
-  allocate(coeff(3,extent(1),3,2))
+  allocate(coeff(3,extent(1),3,2),rhs(15,extent(1),3,2))
   do m=1,2
     model='box';ratio=2;grid=1
     if (m==2) then
@@ -47,9 +49,22 @@ program test_les_mpi_dynamic
       model,ratio,coeff,ok,grid)
     call require(ok.and.all(coeff==reference(:,lo:hi,:,:)),'exact serial dynamic coefficient parity')
     call require(maxval(reference)>1e-6_dp,'nontrivial coefficients')
+    call compute_dynamic_les_rhs_3d(species,full,temps,spacing,model,ratio,serial_rhs,ok,grid,serial_diffusion)
+    call require(ok,'serial dynamic flux')
+    call compute_mpi_dynamic_les_rhs_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells,model,ratio, &
+      rhs,ok,grid,diffusion)
+    call require(ok.and.all(rhs==serial_rhs(:,lo:hi,:,:)),'exact serial flux parity')
+    call require(diffusion==serial_diffusion,'global diffusion estimate parity')
+    do i=1,15
+      local_budget(i)=sum(rhs(i,:,:,:))
+    end do
+    call MPI_Allreduce(local_budget,budget,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    do i=1,15
+      call require(abs(budget(i))<=1e-12_dp*max(1._dp,sum(abs(serial_rhs(i,:,:,:)))),'global flux balance')
+    end do
   end do
   call require(all(state==full(:,lo:hi,:,:)).and.all(temperature==temps(lo:hi,:,:)),'inputs preserved')
-  saved=coeff
+  saved=coeff;saved_rhs=rhs
   grid=1
   if (rank==nranks-1) grid=2
   call compute_mpi_dynamic_les_coefficients_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
@@ -64,6 +79,9 @@ program test_les_mpi_dynamic
   call compute_mpi_dynamic_les_coefficients_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells, &
     'box',2,coeff,ok)
   call require(.not.ok.and.all(coeff==saved),'remote EOS failure collective rollback')
+  call compute_mpi_dynamic_les_rhs_3d(MPI_COMM_WORLD,species,state,temperature,spacing,cells,'box',2,rhs,ok, &
+    maximum_diffusivity=diffusion)
+  call require(.not.ok.and.all(rhs==saved_rhs).and.diffusion==0,'remote flux failure collective rollback')
   if (rank==0) print *, 'PASS: distributed dynamic LES coefficient fields'
   call MPI_Finalize(ierr)
 contains

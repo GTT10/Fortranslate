@@ -55,7 +55,7 @@ contains
   ! Periodic dynamic SGS flux divergence, arithmetic cell-to-face interpolation.
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
-      grid_ratio,maximum_diffusivity)
+      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -64,6 +64,10 @@ contains
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     real(dp), optional, intent(out) :: maximum_diffusivity
+    real(dp), optional, intent(in) :: supplied_coefficients(:,:,:,:)
+    integer, optional, intent(in) :: active_x(2)
+    real(dp), allocatable :: checked_weights(:)
+    integer :: first_x,last_x,face_first
     real(dp), allocatable :: coeff(:,:,:,:),q(:,:,:,:),temps(:,:,:),aij(:,:,:,:,:),alpha(:,:,:),thermal(:,:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),face_flux(:,:,:,:),viscosity(:,:,:)
     real(dp) :: diffusion,face_viscosity,delta,strain(3,3)
@@ -75,10 +79,30 @@ contains
     if (present(maximum_diffusivity)) maximum_diffusivity=0
     if (present(grid_ratio)) ratio=grid_ratio
     if (any(shape(rhs)/=shape(state))) return
+    first_x=1;last_x=n(1)
+    if (present(active_x)) then
+      if (.not.present(supplied_coefficients)) return
+      if (active_x(1)<3.or.active_x(2)>n(1)-2.or.active_x(2)<active_x(1)) return
+      first_x=active_x(1);last_x=active_x(2)
+    end if
     allocate(coeff(3,n(1),n(2),n(3)))
-    call compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
-      coeff,local_ok,ratio)
-    if (.not.local_ok) return
+    if (present(supplied_coefficients)) then
+      if (any(n<2).or.ratio<1.or.ratio>64) return
+      if (size(state,1)/=reactive_nvar(size(species)).or.size(species)<1) return
+      if (any([size(state,2),size(state,3),size(state,4)]/=n)) return
+      if (any(shape(supplied_coefficients)/=shape(coeff))) return
+      if (.not.all(ieee_is_finite(spacing)).or..not.all(ieee_is_finite(supplied_coefficients))) return
+      if (any(spacing<1e-12_dp).or.any(spacing>1e9_dp)) return
+      if (any(supplied_coefficients<0).or.any(supplied_coefficients>1e100_dp)) return
+      if (any(supplied_coefficients(2,:,:,:)>1)) return
+      call les_filter_weights(test_model,test_ratio,checked_weights,local_ok)
+      if (.not.local_ok) return
+      coeff=supplied_coefficients
+    else
+      call compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
+        coeff,local_ok,ratio)
+      if (.not.local_ok) return
+    end if
     allocate(q(reactive_nprim(size(species)),n(1),n(2),n(3)),temps(n(1),n(2),n(3)))
     allocate(aij(3,3,n(1),n(2),n(3)),alpha(n(1),n(2),n(3)),thermal(3,n(1),n(2),n(3)))
     allocate(candidate(size(state,1),n(1),n(2),n(3)),source=0._dp)
@@ -89,13 +113,14 @@ contains
         do i=1,n(1)
           call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound,local_ok)
           if (.not.local_ok) return
+          if (maxval(abs(primitive(2:4)))>1e30_dp.or.primitive(1)>1e8_dp.or.t>1e8_dp) return
           q(:,i,j,k)=primitive;temps(i,j,k)=t
         end do
       end do
     end do
     do k=1,n(3)
       do j=1,n(2)
-        do i=1,n(1)
+        do i=max(1,first_x-1),min(n(1),last_x+1)
           cell=[i,j,k]
           do d=1,3
             lo=cell;hi=cell;lo(d)=modulo(cell(d)-2,n(d))+1;hi(d)=modulo(cell(d),n(d))+1
@@ -112,9 +137,11 @@ contains
       end do
     end do
     do d=1,3
+      face_first=first_x
+      if (d==1.and.present(active_x)) face_first=first_x-1
       do k=1,n(3)
         do j=1,n(2)
-          do i=1,n(1)
+          do i=face_first,last_x
             neighbor=[i,j,k];neighbor(d)=modulo(neighbor(d),n(d))+1
             c=.5_dp*(coeff(:,i,j,k)+coeff(:,neighbor(1),neighbor(2),neighbor(3)))
             stress=.5_dp*(aij(:,:,i,j,k)+aij(:,:,neighbor(1),neighbor(2),neighbor(3)))
@@ -141,7 +168,7 @@ contains
       end do
       do k=1,n(3)
         do j=1,n(2)
-          do i=1,n(1)
+          do i=first_x,last_x
             neighbor=[i,j,k];neighbor(d)=modulo(neighbor(d)-2,n(d))+1
             candidate(1:5,i,j,k)=candidate(1:5,i,j,k)+ &
               (face_flux(:,neighbor(1),neighbor(2),neighbor(3))-face_flux(:,i,j,k))/spacing(d)
