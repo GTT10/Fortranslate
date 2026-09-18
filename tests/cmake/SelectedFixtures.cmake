@@ -152,6 +152,22 @@ add_test(NAME regression_amr_tree_subcycle_restart_3d
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_subcycle_restart_3d" --subcycling)
 set_tests_properties(regression_amr_tree_subcycle_restart_3d PROPERTIES TIMEOUT 300)
 
+foreach(tree_pressure_mode IN ITEMS common subcycle)
+  set(tree_pressure_options --pressure-outlet)
+  if(tree_pressure_mode STREQUAL "subcycle")
+    list(APPEND tree_pressure_options --subcycling)
+  endif()
+  add_test(NAME regression_amr_tree_pressure_${tree_pressure_mode}_restart_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_tree_restart_3d.py"
+      --fixed "$<TARGET_FILE:pelef_amr_tree_reactive_3d>"
+      --selected "$<TARGET_FILE:test_selected_elementary_amr_tree_3d>"
+      --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_pressure_${tree_pressure_mode}_restart_3d"
+      ${tree_pressure_options})
+  set_tests_properties(regression_amr_tree_pressure_${tree_pressure_mode}_restart_3d PROPERTIES TIMEOUT 300)
+endforeach()
+
+
 add_test(
   NAME regression_selected_eb_two_level_3d
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_selected_eb_two_level_3d.py"

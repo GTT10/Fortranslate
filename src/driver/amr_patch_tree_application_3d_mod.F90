@@ -329,7 +329,8 @@ contains
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           change,correction,theta,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling)
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling, &
+          outlet_pressure=config%outlet_pressure)
         if (ok) exit
         dt=.5_dp*dt
       end do
