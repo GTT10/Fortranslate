@@ -1154,6 +1154,44 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
+  case('les_dynamic_flux')
+    block
+      real(dp) :: other(15,4,4,4),reference(15,4,4,4),sound,power
+      integer :: i,j,k,c
+      call make_gas(.false.)
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
+      call require(ok.and.all(rhs==0),'uniform dynamic flux zero')
+      do k=1,4
+        do j=1,4
+          do i=1,4
+            primitive=0;primitive(1)=.3_dp
+            primitive(2)=20*sin(2*pi*(j-1)/4);primitive(3)=15*cos(2*pi*(i-1)/4)
+            primitive(5)=101325;primitive(15)=1
+            call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),temp(i,j,k),sound,ok)
+            call require(ok,'dynamic flux fixture')
+          end do
+        end do
+      end do
+      saved=state;saved_t=temp
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
+      call require(ok.and.maxval(abs(rhs(2:5,:,:,:)))>0,'dynamic flux active')
+      call require(all(rhs(1,:,:,:)==0).and.all(rhs(6:,:,:,:)==0),'dynamic mass and species unchanged')
+      do c=1,15
+        call require(abs(sum(rhs(c,:,:,:)))<=1e-12_dp*max(1._dp,sum(abs(rhs(c,:,:,:)))), &
+          'dynamic periodic flux conservation')
+      end do
+      power=sum(state(2:4,:,:,:)*rhs(2:4,:,:,:)/spread(state(1,:,:,:),1,3))
+      call require(power<0,'dynamic shear kinetic energy dissipation')
+      call require(all(state==saved).and.all(temp==saved_t),'dynamic flux inputs preserved')
+      state=cshift(saved,1,dim=2);temp=cshift(saved_t,1,dim=1)
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,other,ok)
+      reference=cshift(rhs,1,dim=2)
+      call require(ok.and.maxval(abs(other-reference))<=1e-12_dp*maxval(abs(rhs)), &
+        'dynamic flux translation')
+      state=saved;temp=saved_t;reference=rhs;state(1,1,1,1)=-1
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
+      call require(.not.ok.and.all(rhs==reference),'dynamic flux rollback')
+    end block
   case('les_dynamic_field')
     block
       real(dp) :: coeff(3,4,4,4),other(3,4,4,4),reference(3,4,4,4),sound

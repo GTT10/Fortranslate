@@ -4,14 +4,105 @@ module les_dynamic_smagorinsky_mod
   use les_smagorinsky_3d_mod, only: smagorinsky_stress
   use les_filter_3d_mod, only: les_filter_weights,filter_les_field_3d
   use nasa7_thermo_mod, only: nasa7_species
+  use mixture_thermo_mod, only: mixture_mass_properties
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   implicit none
   private
+  public :: compute_dynamic_les_rhs_3d
   public :: compute_dynamic_les_coefficients_3d
   public :: dynamic_smagorinsky_quantities,dynamic_smagorinsky_coefficients
   ! Pinned PeleC Constants.H small_num(), including its coefficient floor.
   real(dp), parameter :: regularizer=1e-8_dp
 contains
+  ! Periodic dynamic SGS flux divergence, arithmetic cell-to-face interpolation.
+  ! Pinned model transports momentum/energy only; species and mass RHS are zero.
+  subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok,grid_ratio)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
+    character(len=*), intent(in) :: test_model
+    integer, intent(in) :: test_ratio
+    real(dp), intent(inout) :: rhs(:,:,:,:)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: grid_ratio
+    real(dp), allocatable :: coeff(:,:,:,:),q(:,:,:,:),temps(:,:,:),aij(:,:,:,:,:),alpha(:,:,:),thermal(:,:,:,:)
+    real(dp), allocatable :: candidate(:,:,:,:),face_flux(:,:,:,:)
+    real(dp) :: primitive(reactive_nprim(size(species))),g(3,3),gt(3),kij(3,3),rut(3),stress(3,3),a,ft(3)
+    real(dp) :: c(3),sigma(3),velocity(3),flux(5),y(size(species)),t,sound,mw,r,cp,cv,gamma,h,e,entropy
+    integer :: n(3),i,j,k,d,cell(3),lo(3),hi(3),neighbor(3),ratio
+    logical :: local_ok
+    ok=.false.;n=shape(temperature);ratio=1
+    if (present(grid_ratio)) ratio=grid_ratio
+    if (any(shape(rhs)/=shape(state))) return
+    allocate(coeff(3,n(1),n(2),n(3)))
+    call compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
+      coeff,local_ok,ratio)
+    if (.not.local_ok) return
+    allocate(q(reactive_nprim(size(species)),n(1),n(2),n(3)),temps(n(1),n(2),n(3)))
+    allocate(aij(3,3,n(1),n(2),n(3)),alpha(n(1),n(2),n(3)),thermal(3,n(1),n(2),n(3)))
+    allocate(candidate(size(state,1),n(1),n(2),n(3)),source=0._dp)
+    allocate(face_flux(5,n(1),n(2),n(3)))
+    do k=1,n(3)
+      do j=1,n(2)
+        do i=1,n(1)
+          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound,local_ok)
+          if (.not.local_ok) return
+          q(:,i,j,k)=primitive;temps(i,j,k)=t
+        end do
+      end do
+    end do
+    do k=1,n(3)
+      do j=1,n(2)
+        do i=1,n(1)
+          cell=[i,j,k]
+          do d=1,3
+            lo=cell;hi=cell;lo(d)=modulo(cell(d)-2,n(d))+1;hi(d)=modulo(cell(d),n(d))+1
+            g(:,d)=(q(2:4,hi(1),hi(2),hi(3))-q(2:4,lo(1),lo(2),lo(3)))/(2*spacing(d))
+            gt(d)=(temps(hi(1),hi(2),hi(3))-temps(lo(1),lo(2),lo(3)))/(2*spacing(d))
+          end do
+          call dynamic_smagorinsky_quantities(g,gt,q(1,i,j,k),q(2:4,i,j,k),temps(i,j,k),spacing,ratio, &
+            kij,rut,stress,a,ft,local_ok)
+          if (.not.local_ok) return
+          aij(:,:,i,j,k)=stress;alpha(i,j,k)=a;thermal(:,i,j,k)=ft
+        end do
+      end do
+    end do
+    do d=1,3
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            neighbor=[i,j,k];neighbor(d)=modulo(neighbor(d),n(d))+1
+            c=.5_dp*(coeff(:,i,j,k)+coeff(:,neighbor(1),neighbor(2),neighbor(3)))
+            stress=.5_dp*(aij(:,:,i,j,k)+aij(:,:,neighbor(1),neighbor(2),neighbor(3)))
+            a=.5_dp*(alpha(i,j,k)+alpha(neighbor(1),neighbor(2),neighbor(3)))
+            ft=.5_dp*(thermal(:,i,j,k)+thermal(:,neighbor(1),neighbor(2),neighbor(3)))
+            velocity=.5_dp*(q(2:4,i,j,k)+q(2:4,neighbor(1),neighbor(2),neighbor(3)))
+            y=.5_dp*(q(6:,i,j,k)+q(6:,neighbor(1),neighbor(2),neighbor(3)))
+            t=.5_dp*(temps(i,j,k)+temps(neighbor(1),neighbor(2),neighbor(3)))
+            call mixture_mass_properties(species,y,t,mw,r,cp,cv,gamma,h,e,entropy,local_ok)
+            if (.not.local_ok) return
+            ! Bound products before evaluation under floating-point traps.
+            if (maxval(abs(c))>1e100_dp.or.maxval(abs(stress))>1e100_dp.or.abs(a)>1e100_dp) return
+            if (maxval(abs(ft))>1e100_dp.or.cp>1e30_dp) return
+            sigma=c(1)*stress(:,d);sigma(d)=sigma(d)-c(2)*a/3
+            flux=0;flux(2:4)=-sigma;flux(5)=-dot_product(velocity,sigma)-cp*c(3)*ft(d)
+            face_flux(:,i,j,k)=flux
+          end do
+        end do
+      end do
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            neighbor=[i,j,k];neighbor(d)=modulo(neighbor(d)-2,n(d))+1
+            candidate(1:5,i,j,k)=candidate(1:5,i,j,k)+ &
+              (face_flux(:,neighbor(1),neighbor(2),neighbor(3))-face_flux(:,i,j,k))/spacing(d)
+          end do
+        end do
+      end do
+    end do
+    if (.not.all(ieee_is_finite(candidate))) return
+    rhs=candidate;ok=.true.
+  end subroutine
+
   ! Periodic regular grid. Filter conserved state before EOS recovery, not T or u.
   ! Coefficients are smoothed with the pinned box filter of ratio six.
   subroutine compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
