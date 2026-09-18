@@ -1419,8 +1419,12 @@ their mapped vapor-species losses with exterior mass/momentum/energy. Its existi
 five-entry boundary output continues to report EB wall exchange. Both ledgers,
 gas, particles and IDs commit only after the complete interval succeeds. KH
 eligibility checks stop at the first exterior crossing before querying the EB.
-This source mode currently rejects simultaneous impact-film arguments; reactive
-and application wiring are pending. See
+This source mode currently rejects simultaneous impact-film arguments. The
+allocated reactive wrapper and serial application expose `particle_outflow` for
+all exterior faces, matching the existing gas outflow convention. Source losses
+join the reactive boundary ledger and persist through checkpoint/restart. Other
+exterior particle modes remain at the source API level. See
+[application evidence](validation/spray-eb-outflow-application-20260918.md) and
 [source evidence](validation/spray-eb-outer-source-20260918.md).
 
 ## KH-RT representative-drop breakup

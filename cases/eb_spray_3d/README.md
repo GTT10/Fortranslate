@@ -101,8 +101,9 @@ without timestep retries for that model rejection. This remains an open model li
 qualified general wet-wall impact support. See
 [application evidence](../../docs/validation/spray-eb-impact-application-20260918.md).
 
-Physical outer-boundary particle events and distributed
-EB impact/film ownership remain open. Trial trajectories must stay in the root domain. The
+Particle outflow is opt-in as described below. Other physical outer-boundary
+particle modes and distributed EB impact/film ownership remain separate work.
+Without particle outflow, trial trajectories must stay in the root domain. The
 particle source/drift split is first order; this synthetic implementation case
 is not calibrated spray validation or a convergence study.
 
@@ -274,3 +275,20 @@ markers are `'inherit'` for strings, -1 for nonnegative numeric controls and
 `huge(real)` for signed swirl. Resolved values enter restart context; snapshots
 from before these fields fail context comparison. See
 [focused evidence](../../docs/validation/spray-eb-port-models-20260918.md).
+
+### Particle outflow
+
+`particle_outflow=.true.` allows parcels to leave through all six exterior faces,
+matching the existing extrapolated-outflow gas boundary convention. EB walls
+remain specular. The default is false and retains root-contained trajectories.
+The option currently rejects `wall_impacts=.true.` because combined exterior
+and non-specular EB impact/film flight is not yet connected.
+
+Escaped records retain their IDs with zero mass and zero component inventory.
+Mass, momentum, liquid internal plus kinetic energy and mapped species losses
+join `Boundary inventory`, separately from `Wall inventory`. KH children and
+computational splitting remain supported. The reactive update and its retries
+publish all state and ledgers together. Existing checkpoint fields persist the
+combined boundary history and dead records; the new mode flag enters restart
+context. Earlier contexts are rejected. See
+[focused evidence](../../docs/validation/spray-eb-outflow-application-20260918.md).
