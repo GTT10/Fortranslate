@@ -223,11 +223,35 @@ Unspecified ports inherit the shared injection settings. Per-port overrides are:
 one for each active port. Defaults use -1 for unspecified counts/scalars/fractions
 and the internal large-value sentinel for position/direction vectors.
 
-The shared nozzle shape, radius, size distribution, rate profile and discharge
-coefficient apply to every port. With a rate profile, its integrated dose replaces
+The nozzle shape and size distribution apply to every port. Radius, rate profile
+and discharge coefficient inherit the shared values unless overridden below.
+With a rate profile, its integrated dose replaces
 `port_masses`; rate-driven velocity uses each selected port's mixed density.
 Every parcel carries its port in `material_id`, now also included in particle CSV.
 Children and films retain that identity. Checkpoint restore validates port IDs
 and counts only positive-dose events using the selected port's population.
 All resolved port settings enter restart context; earlier contexts are rejected.
 See [focused evidence](../../docs/validation/spray-eb-ports-20260918.md).
+
+### Per-port rate profiles and outlets
+
+`port_profile_points(16)` defaults to -1, meaning inherit the common rate profile.
+Set a port to zero to use its prescribed event mass, or 2–64 to use
+`port_profile_times(64,16)` and `port_profile_rates(64,16)`. Explicit profile
+columns require their own point count; unused entries remain zero. Every event
+uses its selected port's profile and the existing `injection_end_times(i)`.
+A prescribed-mass event retains end time -1.
+
+`port_radii(16)` and `port_discharge_coefficients(16)` also default to -1 and
+inherit their shared values. Radius feeds both parcel positions and rate-derived
+speed. `velocity_from_rate` remains a common switch: when enabled, every active
+port requires a profile, positive radius and valid discharge coefficient. All
+resolved profiles and outlet settings enter restart context. Example overrides:
+
+```fortran
+ port_profile_points(2)=2
+ port_profile_times(1:2,2)=0.,4e-8, port_profile_rates(1:2,2)=.001,.003
+ port_radii(2)=2e-4, port_discharge_coefficients(2)=.5
+```
+
+See [focused evidence](../../docs/validation/spray-eb-port-profiles-20260918.md).
