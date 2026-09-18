@@ -275,8 +275,8 @@ output remains wall receipt. Exterior events share the per-lineage hit budget.
 All ranks receive the same inventory only after collective success. The tree
 migration wrapper `advance_mpi_eb_tree_impacts` accepts the same optional output
 and retains it privately until final particle and film migration both succeed.
-MPI source coupling now exposes the option below; reactive coupling and the MPI
-application do not yet expose it. See [MPI outflow evidence](validation/spray-mpi-eb-impact-outflow-20260918.md)
+MPI source and reactive coupling now expose the option below; the MPI
+application does not yet expose it. See [MPI outflow evidence](validation/spray-mpi-eb-impact-outflow-20260918.md)
 and [migration evidence](validation/spray-mpi-eb-outflow-migration-20260918.md).
 
 The MPI AMR source API accepts `eb_outflow_change(nvar)` with nodal EB geometry
@@ -289,6 +289,15 @@ migration succeed. KH eligibility clips the candidate flight at the root before
 querying the EB. The option currently requires impact films; it does not expose
 specular EB exterior modes. See
 [source evidence](validation/spray-mpi-eb-outflow-source-20260918.md).
+
+`advance_mpi_eb_spray_reactive` accepts `particle_outflow=.true.` together with
+impact films and the shared ID watermark. The effective flag must agree across
+ranks. Both particle halves collect their exterior inventories privately; these
+join the gas boundary output only after all particle, film, reaction, transport,
+hydro and optional splitting work succeeds. Wall exchange remains separate.
+This mode requires impact films. See
+[reactive evidence](validation/spray-mpi-eb-outflow-reactive-20260918.md).
+
 
 
 
