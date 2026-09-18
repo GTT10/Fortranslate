@@ -805,7 +805,7 @@ contains
       distribution, species, reactions, patch, hierarchy, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, chemistry_enabled, rtol, &
       atol, maximum_reflux_correction, ok, chemistry_integrator, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -823,6 +823,8 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp) :: candidate_boundary(reactive_nvar(size(species)))
     type(mpi_amr_sparse_hierarchy_3d) :: candidate
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: outlet_values(6)
     real(dp) :: contract_rtol, contract_atol
     logical :: local_ok, global_ok
     character(len=32) :: integrator_name
@@ -855,10 +857,17 @@ contains
       if (local_ok) local_ok = rtol > 0.0_dp .and. atol > 0.0_dp
     end if
     if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(candidate_boundary)
+    outlet_values=0
+    if (present(outlet_pressure)) outlet_values=outlet_pressure
+    local_ok=local_ok.and.all(ieee_is_finite(outlet_values)).and.all(outlet_values>=0).and.all(outlet_values<=1e15_dp)
+    if (any(outlet_values>0)) then
+      local_ok=local_ok.and.present(boundary_faces)
+      if (present(boundary_faces)) local_ok=local_ok.and..not.any(outlet_values>0.and.boundary_faces/='outflow')
+    end if
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, &
       [dx, dy, dz, dt, contract_rtol, contract_atol, &
-        merge(1.0_dp, 0.0_dp, chemistry_enabled)], &
+        merge(1.0_dp, 0.0_dp, chemistry_enabled),outlet_values], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
         trim(limiter) // "|" // trim(integrator_name)//merge("|physical","|periodic",present(boundary_faces)), &
       local_ok, global_ok)
@@ -874,7 +883,7 @@ contains
     call advance_mpi_amr_sparse_hydro_3d( &
       distribution, species, patch, candidate, dx, dy, dz, dt, &
       riemann_solver, reconstruction, limiter, &
-      maximum_reflux_correction, local_ok,boundary_faces,candidate_boundary,inflow_state,inflow_temperature)
+      maximum_reflux_correction, local_ok,boundary_faces,candidate_boundary,inflow_state,inflow_temperature,outlet_pressure)
     if (.not. local_ok) then
       maximum_reflux_correction = 0.0_dp
       return

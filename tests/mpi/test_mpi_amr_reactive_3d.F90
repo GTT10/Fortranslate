@@ -240,6 +240,13 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--pressure-strang-only') then
+      call check_physical_hierarchy(2,.true.,.true.)
+      if (distribution%rank==0) print *, 'PASS: sparse pressure Strang split'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--pressure-hierarchy-only') then
       call check_physical_hierarchy(0,.true.)
       call check_physical_hierarchy(1,.true.)
@@ -807,9 +814,10 @@ contains
     end do
   end subroutine check_boundary_distribution
 
-  subroutine check_physical_hierarchy(geometry,pressure_mode)
-    logical, optional, intent(in) :: pressure_mode
-    real(dp) :: outlet(6)
+  subroutine check_physical_hierarchy(geometry,pressure_mode,reaction_mode)
+    logical, optional, intent(in) :: pressure_mode,reaction_mode
+    real(dp) :: outlet(6),test_dt
+    integer :: first_mode
     integer, optional, intent(in) :: geometry
     type(amr_patch_3d) :: wall_patch
     type(mpi_amr_sparse_distribution_3d) :: dist
@@ -820,7 +828,7 @@ contains
     real(dp) :: r,rr,e0(3),e1(3),eb(3),tw(6),wv(3,6),th,thr
     character(len=32) :: faces(6),method
     integer :: i,j,k,mode,nv,lo,hi,nf,last_mode
-    lo=2;hi=3;last_mode=6
+    lo=2;hi=3;last_mode=6;first_mode=1;test_dt=1e-7_dp
     if (present(geometry)) then
       last_mode=6
       select case(geometry)
@@ -836,6 +844,11 @@ contains
     if (present(pressure_mode)) then
       if (pressure_mode) then
         last_mode=2;outlet(2)=102325;outlet(4)=102325;outlet(6)=102325
+      end if
+    end if
+    if (present(reaction_mode)) then
+      if (reaction_mode) then
+        first_mode=3;last_mode=4;test_dt=1e-10_dp
       end if
     end if
     nf=(hi-lo+1)*ratio
@@ -858,25 +871,25 @@ contains
     call composite_integrals_amr_3d(c0,f0,wall_patch,dx,dy,dz,before,ok)
     call require(ok,'physical hierarchy initial inventory')
     tw=600;tw(2)=900;wv=0;wv(2,1)=20;wv(3,2)=-10
-    do mode=1,last_mode
+    do mode=first_mode,last_mode
       method='pcm'
       if (modulo(mode,2)==0) method='characteristic_plm'
       if (mode>=5) faces(1:2)="isothermal_wall"
       c=c0;ct=ct0;f=f0;ft=ft0
       if (mode==5) then
-        call advance_amr_reactive_transport_3d(species,transport,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+        call advance_amr_reactive_transport_3d(species,transport,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           .true.,.true.,.true.,.true.,'mc',thr,rr,ok,faces,expected,inlet,it,tw,wv)
       else if (mode==6) then
-        call advance_amr_reactive_full_3d(species,reactions,transport,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+        call advance_amr_reactive_full_3d(species,reactions,transport,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,thr,rr,ok,method,'mc', &
           boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it, &
           wall_temperature=tw,wall_velocity=wv)
       else if (mode>2) then
-        call advance_amr_reactive_strang_3d(species,reactions,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+        call advance_amr_reactive_strang_3d(species,reactions,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,rr,ok,method,'mc', &
-          boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it)
+          boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet)
       else
-      call advance_amr_reactive_hydro_3d(species,wall_patch,c,ct,f,ft,dx,dy,dz,1e-7_dp, &
+      call advance_amr_reactive_hydro_3d(species,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
         config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it,outlet)
       end if
       call require(ok,'serial physical hierarchy advance')
@@ -884,19 +897,19 @@ contains
       call require(ok,'physical hierarchy scatter')
       saved=h
       if (mode==5) then
-        call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,test_dt, &
           .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv)
       else if (mode==6) then
-        call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
           wall_temperature=tw,wall_velocity=wv)
       else if (mode>2) then
-        call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
-          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet)
       else
-      call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
+      call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,test_dt, &
         config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet)
       end if
       call require(ok,'sparse physical hierarchy advance')
@@ -929,19 +942,19 @@ contains
       h=saved
       if (dist%rank==dist%nranks-1) inlet(1,3)=-1
       if (mode==5) then
-        call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        call advance_mpi_amr_sparse_transport_3d(dist,species,transport,wall_patch,h,dx,dy,dz,test_dt, &
           .true.,.true.,.true.,.true.,'mc',th,r,ok,faces,budget,inlet,it,tw,wv)
       else if (mode==6) then
-        call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
           wall_temperature=tw,wall_velocity=wv)
       else if (mode>2) then
-        call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,1e-7_dp, &
+        call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
-          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it)
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet)
       else
-      call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,1e-7_dp, &
+      call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,test_dt, &
         config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet)
       end if
       call require(.not.ok.and.sparse_hierarchies_bits_match(h,saved).and.r==0.and.all(budget==0), &
