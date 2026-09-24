@@ -134,6 +134,9 @@ Regular 3D hydro/chemistry/molecular transport now accepts per-face prescribed r
 with integrated boundary-flux accounting; see the [case guide](../cases/reactive_boundaries_3d/README.md).
 Mach-state inflow is connected for regular and patch-tree gas/spray paths;
 broader characteristic-boundary qualification and moving geometry remain open.
+EB tree halos and serial common-step hydro now also accept Mach inlets
+([focused evidence](validation/eb-mach-hydro-20260925.md)). EB recursive stepping,
+transport, MPI, timestep selection and application input remain to be connected.
 AMR-particle boundary coupling and stationary level-set EB applications are
 implemented within the documented subsets. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
