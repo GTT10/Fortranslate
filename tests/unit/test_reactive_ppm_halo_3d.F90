@@ -4,7 +4,7 @@ program test_reactive_ppm_halo_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: compute_reactive_ppm_ctu_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
-  use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d
+  use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -12,7 +12,8 @@ program test_reactive_ppm_halo_3d
   real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),hx(:,:,:,:),hy(:,:,:,:),hz(:,:,:,:)
   real(dp), allocatable :: saved(:,:,:,:),st(:,:,:),change(:),before(:)
   real(dp) :: speed,theta,halo_theta,phase,dt,mach(6),tin(6),pin(6),residual
-  integer :: nv,i,j,k,mode,n,face,m
+  integer :: nv,i,j,k,mode,n,face,m,policy
+  character(len=5) :: solver
   logical :: ok
   character(len=32) :: faces(6)
   call load_h2o2_elementary_thermo(species,ok)
@@ -20,6 +21,10 @@ program test_reactive_ppm_halo_3d
   nv=reactive_nvar(size(species));dt=1e-5_dp;faces='periodic'
   allocate(g(nv,12,12,12),gt(12,12,12),q(nv))
   allocate(hx(nv,0:4,4,4),hy(nv,4,0:4,4),hz(nv,4,4,0:4))
+  call check_pressure_work()
+  do policy=1,2
+  solver="hllc"
+  if (policy==2) solver="pelec"
   do mode=1,2
     n=4
     if (mode==2) n=12
@@ -28,7 +33,7 @@ program test_reactive_ppm_halo_3d
     do j=1,n
     do i=1,n
       phase=2*acos(-1._dp)*real(i+2*j+3*k,dp)/n
-      q=0;q(1)=1+.05_dp*sin(phase);q(2:4)=[20._dp,10._dp,-5._dp]
+      q=0;q(1)=1+.05_dp*sin(phase);q(2:4)=[20._dp,10._dp,-5._dp]*(1+.02_dp*sin(phase))
       q(5)=500000*(1+.01_dp*cos(phase));q(6)=.05_dp+.01_dp*cos(phase)
       q(9)=.1_dp;q(nv)=1-q(6)-q(9)
       call reactive_primitive_to_conserved(species,q,u(:,i,j,k),t(i,j,k),speed,ok)
@@ -37,7 +42,7 @@ program test_reactive_ppm_halo_3d
     end do
     end do
     call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
-      .true.,.true.,'hllc',fx,fy,fz,theta,ok)
+      .true.,.true.,solver,fx,fy,fz,theta,ok,pressure_tracing=policy==2)
     call require(ok,'periodic reference')
     if (mode==1) then
       call fill_reactive_boundary_ghosts_3d(u,t,faces,g,gt,ok,ghost_width=4)
@@ -48,7 +53,7 @@ program test_reactive_ppm_halo_3d
       g=u;gt=t
     end if
     call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
-      .true.,.true.,'hllc',hx,hy,hz,halo_theta,ok)
+      .true.,.true.,solver,hx,hy,hz,halo_theta,ok,pressure_tracing=policy==2)
     call require(ok.and.halo_theta==1,'halo CTU')
     if (mode==1) then
       call require(all(hx==fx).and.all(hy==fy).and.all(hz==fz),'exact periodic flux parity')
@@ -58,6 +63,13 @@ program test_reactive_ppm_halo_3d
     end if
     deallocate(u,t,fx,fy,fz)
   end do
+  end do
+  call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
+    .true.,.true.,"hllc",hx,hy,hz,halo_theta,ok,pressure_tracing=.true.)
+  call require(.not.ok.and.all(hx==0).and.all(hy==0).and.all(hz==0),"pressure solver mismatch rollback")
+  call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],1._dp, &
+    .true.,.true.,"pelec",hx,hy,hz,halo_theta,ok,pressure_tracing=.true.)
+  call require(.not.ok.and.all(hx==0).and.all(hy==0).and.all(hz==0),"pressure CFL rollback")
   ! Unused far-corner padding must not participate in EOS/CFL checks.
   g(:,1,1,1)=0;gt(1,1,1)=-1
   call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
@@ -107,6 +119,25 @@ program test_reactive_ppm_halo_3d
   call require(all(hx(1,:,:,:)==0).and.all(hy(1,:,:,:)==0).and.all(hz(1,:,:,:)==0),'impermeable wall flux')
   print *, 'test_reactive_ppm_halo_3d: PASS' 
 contains
+  subroutine check_pressure_work()
+    real(dp) :: normal(7),delta(7),primitive(7),e
+    ! Corrected rho=2, momentum=(2,4,0), rhoE=30; therefore rhoe=25.
+    normal=[3._dp,3._dp,6._dp,0._dp,40._dp,1._dp,2._dp]
+    delta=[1._dp,1._dp,2._dp,0._dp,10._dp,.25_dp,.75_dp]
+    call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
+      [10._dp],[20._dp],[2._dp],[3._dp],[.1_dp],primitive,e,ok)
+    call require(ok.and.abs(primitive(5)-95.4_dp)<1e-13_dp,'single transverse pressure work')
+    call require(e==25.and.all(primitive(1:4)==[2._dp,1._dp,2._dp,0._dp]),'independent energy and momentum')
+    call require(all(primitive(6:)==[.375_dp,.625_dp]),'conserved species correction')
+    call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
+      [10._dp,20._dp],[20._dp,10._dp],[2._dp,3._dp],[3._dp,2._dp], &
+      [.1_dp,.2_dp],primitive,e,ok)
+    call require(ok.and.abs(primitive(5)-104.6_dp)<1e-13_dp.and.e==25,'double transverse pressure work')
+    delta(1)=4
+    call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
+      [10._dp],[20._dp],[2._dp],[3._dp],[.1_dp],primitive,e,ok)
+    call require(.not.ok.and.all(primitive==0).and.e==0,'pressure correction rollback')
+  end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label

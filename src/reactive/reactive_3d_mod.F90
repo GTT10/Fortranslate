@@ -10,7 +10,7 @@ module reactive_3d_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_primitive_to_conserved, reactive_conserved_to_primitive, &
-    reactive_riemann_flux_x, characteristic_limited_slope
+    reactive_riemann_flux_x, reactive_pelec_primitive_flux_x, characteristic_limited_slope
   use reactive_2d_mod, only: &
     reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d, &
     apply_reactive_transverse_correction_2d
@@ -19,6 +19,7 @@ module reactive_3d_mod
   implicit none
   private
 
+  public :: reactive_ppm_transverse_pressure_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
@@ -41,6 +42,43 @@ module reactive_3d_mod
   public :: reactive_extrema_3d
 
 contains
+
+  ! Regular-cell pc_transdo/pc_transdd pressure work (no forcing sources).
+  ! Conserved flux differences and primitive pressure are evolved separately.
+  subroutine reactive_ppm_transverse_pressure_3d(normal,normal_pressure,delta,gamma, &
+      lower_pressure,upper_pressure,lower_velocity,upper_velocity,scale,primitive,internal_energy,ok)
+    real(dp), intent(in) :: normal(:),normal_pressure,delta(:),gamma
+    real(dp), intent(in) :: lower_pressure(:),upper_pressure(:),lower_velocity(:),upper_velocity(:),scale(:)
+    real(dp), intent(out) :: primitive(:),internal_energy
+    logical, intent(out) :: ok
+    real(dp) :: candidate(size(normal)),state(size(normal)),pressure,work,pav,du,floor_pressure
+    integer :: axis,nd
+    primitive=0;internal_energy=0;ok=.false.;nd=size(scale)
+    if (nd<1.or.nd>2.or.size(normal)<6.or.size(delta)/=size(normal).or.size(primitive)/=size(normal)) return
+    if (size(lower_pressure)/=nd.or.size(upper_pressure)/=nd.or. &
+        size(lower_velocity)/=nd.or.size(upper_velocity)/=nd) return
+    if (.not.all(ieee_is_finite(normal)).or..not.all(ieee_is_finite(delta))) return
+    if (.not.all(ieee_is_finite([normal_pressure,gamma,lower_pressure,upper_pressure, &
+        lower_velocity,upper_velocity,scale]))) return
+    if (normal(1)<=density_floor.or.normal_pressure<=0.or.gamma<=0.or.any(scale<0).or. &
+        any(lower_pressure<=0).or.any(upper_pressure<=0)) return
+    state=normal-delta
+    if (state(1)<=density_floor.or.any(state(6:)<0)) return
+    candidate(1)=state(1);candidate(2:4)=state(2:4)/state(1);candidate(6:)=state(6:)/state(1)
+    pressure=normal_pressure
+    do axis=1,nd
+      work=upper_pressure(axis)*upper_velocity(axis)-lower_pressure(axis)*lower_velocity(axis)
+      pav=.5_dp*(upper_pressure(axis)+lower_pressure(axis))
+      du=upper_velocity(axis)-lower_velocity(axis)
+      pressure=pressure-scale(axis)*(work+pav*du*(gamma-1))
+    end do
+    floor_pressure=tiny(1._dp)
+    if (nd==1) floor_pressure=epsilon(1._dp)*1e-100_dp
+    candidate(5)=max(pressure,floor_pressure)
+    work=state(5)-.5_dp*sum(state(2:4)**2)/state(1)
+    if (.not.all(ieee_is_finite(candidate)).or..not.ieee_is_finite(work)) return
+    primitive=candidate;internal_energy=work;ok=.true.
+  end subroutine reactive_ppm_transverse_pressure_3d
 
   ! Periodic time-centered normal PPM fluxes. These are predictors for a CTU
   ! update; transverse/corner corrections must be applied by the caller.
@@ -154,15 +192,19 @@ contains
 
   ! Twelve-solve CTU ordering: 3 normal, 6 single-transverse (dt/3),
   ! then 3 double-transverse (dt/2) solves. EOS recovery/positivity follows
-  ! PeleF's conservative transverse correction, not PeleC's separate p equation.
+  ! PeleF's conservative correction by default; pressure_tracing selects the
+  ! separate regular-cell PeleC pressure-work equation with the pelec solver.
   subroutine compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),dt
     logical, intent(in) :: steepening,flattening
     character(len=*), intent(in) :: solver
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: pressure_tracing
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    character(len=32) :: faces(6)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),nm(:,:,:,:,:),np(:,:,:,:,:)
     real(dp), allocatable :: ntm(:,:,:,:),ntp(:,:,:,:),normal(:,:,:,:,:),corner(:,:,:,:,:,:),final(:,:,:,:,:)
     real(dp), allocatable :: minus(:,:,:,:),plus(:,:,:,:),tm(:,:,:),tp(:,:,:),delta(:,:,:,:)
@@ -174,6 +216,18 @@ contains
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
     if (any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)])) return
     if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
+    if (present(pressure_tracing)) then
+      if (pressure_tracing) then
+        if (any(shape(state)/=[nv,n])) return
+        faces='periodic'
+        allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),gt(n(1)+8,n(2)+8,n(3)+8))
+        call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,ghost_width=4)
+        if (.not.valid) return
+        call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,steepening,flattening,solver, &
+          xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=.true.)
+        return
+      end if
+    end if
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
     call compute_reactive_ppm_normal_fluxes_3d(species,state,temperature,spacing,dt,steepening,flattening, &
       solver,fx,fy,fz,valid,nm,np,ntm,ntp)
@@ -261,7 +315,7 @@ contains
   ! Four supplied ghost layers; physical cells are 1:n. No periodic wrapping
   ! or ghost filling occurs here. Corner solves are bounded to their consumers.
   subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing)
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
@@ -269,6 +323,11 @@ contains
     character(len=*), intent(in) :: solver
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: pressure_tracing
+    logical :: trace_pressure
+    real(dp), allocatable :: pnminus(:,:,:,:),pnplus(:,:,:,:),normal_face(:,:,:,:,:),corner_face(:,:,:,:,:,:)
+    real(dp), allocatable :: face_result(:,:,:,:)
+    real(dp) :: pl(2),ph(2),vl(2),vh(2),weights(2),gamma,internal_energy
     real(dp), allocatable :: q(:,:,:,:),sound(:,:,:),nm(:,:,:,:,:),np(:,:,:,:,:)
     real(dp), allocatable :: ntm(:,:,:,:),ntp(:,:,:,:),normal(:,:,:,:,:),corner(:,:,:,:,:,:)
     real(dp), allocatable :: minus(:,:,:,:),plus(:,:,:,:),tm(:,:,:),tp(:,:,:),final(:,:,:,:,:)
@@ -278,6 +337,9 @@ contains
     integer :: nv,i,j,k,a,b,c,offset,idx(3),donor(3),lo(3),hi(3),lower(3),upper(3)
     logical :: valid
     ok=.false.;xflux=0;yflux=0;zflux=0;minimum_theta=0
+    trace_pressure=.false.
+    if (present(pressure_tracing)) trace_pressure=pressure_tracing
+    if (trace_pressure.and.solver/="pelec") return
     nv=reactive_nvar(size(species))
     ! Supplied halos support a single owned cell on an MPI slab.
     if (any(n<1)) return
@@ -307,6 +369,12 @@ contains
       corner(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3,3),final(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3))
     allocate(minus(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),plus(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1))
     allocate(tm(0:n(1)+1,0:n(2)+1,0:n(3)+1),tp(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+    if (trace_pressure) then
+      allocate(pnminus(0:n(1)+1,0:n(2)+1,0:n(3)+1,3),pnplus(0:n(1)+1,0:n(2)+1,0:n(3)+1,3))
+      allocate(normal_face(2,0:n(1)+1,0:n(2)+1,0:n(3)+1,3), &
+        corner_face(2,0:n(1)+1,0:n(2)+1,0:n(3)+1,3,3),face_result(2,0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      normal_face=0;corner_face=0
+    end if
     normal=0;corner=0;final=0;zero=0;theta=1
     do a=1,3
       do k=0,n(3)+1
@@ -324,6 +392,9 @@ contains
         if (.not.valid) return
         swap=qm(2);qm(2)=qm(a+1);qm(a+1)=swap
         swap=qp(2);qp(2)=qp(a+1);qp(a+1)=swap
+        if (trace_pressure) then
+          pnminus(i,j,k,a)=qm(5);pnplus(i,j,k,a)=qp(5)
+        end if
         call reactive_primitive_to_conserved(species,qm,nm(:,i,j,k,a),ntm(i,j,k,a),speed,valid)
         if (.not.valid) return
         call reactive_primitive_to_conserved(species,qp,np(:,i,j,k,a),ntp(i,j,k,a),speed,valid)
@@ -332,9 +403,14 @@ contains
       end do
       end do
       minus=nm(:,:,:,:,a);plus=np(:,:,:,:,a);tm=ntm(:,:,:,a);tp=ntp(:,:,:,a)
+      if (trace_pressure) then
+        call normal_primitives(a,valid)
+        if (.not.valid) return
+      end if
       lower=0;upper=n+1;upper(a)=n(a)
       call solve_faces(a,normal(:,:,:,:,a),valid)
       if (.not.valid) return
+      if (trace_pressure) normal_face(:,:,:,:,a)=face_result
     end do
     do a=1,3
       do b=1,3
@@ -345,6 +421,7 @@ contains
         upper(a)=n(a)
         call solve_faces(a,corner(:,:,:,:,a,b),valid)
         if (.not.valid) return
+        if (trace_pressure) corner_face(:,:,:,:,a,b)=face_result
       end do
     end do
     do a=1,3
@@ -361,6 +438,25 @@ contains
     zflux=final(:,1:n(1),1:n(2),0:n(3),3)
     minimum_theta=theta;ok=.true.
   contains
+    subroutine normal_primitives(direction,good)
+      integer, intent(in) :: direction
+      logical, intent(out) :: good
+      do k=0,n(3)+1
+      do j=0,n(2)+1
+      do i=0,n(1)+1
+        minus(1,i,j,k)=nm(1,i,j,k,direction)
+        minus(2:4,i,j,k)=nm(2:4,i,j,k,direction)/nm(1,i,j,k,direction)
+        minus(5,i,j,k)=pnminus(i,j,k,direction)
+        minus(6:,i,j,k)=nm(6:,i,j,k,direction)/nm(1,i,j,k,direction)
+        plus(1,i,j,k)=np(1,i,j,k,direction)
+        plus(2:4,i,j,k)=np(2:4,i,j,k,direction)/np(1,i,j,k,direction)
+        plus(5,i,j,k)=pnplus(i,j,k,direction)
+        plus(6:,i,j,k)=np(6:,i,j,k,direction)/np(1,i,j,k,direction)
+      end do
+      end do
+      end do
+      good=all(ieee_is_finite(minus)).and.all(ieee_is_finite(plus))
+    end subroutine normal_primitives
     subroutine correct_states(direction,transverse,second,good)
       integer, intent(in) :: direction,transverse,second
       logical, intent(out) :: good
@@ -379,6 +475,36 @@ contains
           delta=delta+(.5_dp*dt/spacing(second))*(corner(:,i,j,k,second,transverse)- &
             corner(:,lo(1),lo(2),lo(3),second,transverse))
         end if
+        if (trace_pressure) then
+          gamma=sound(i,j,k)**2*q(1,i,j,k)/q(5,i,j,k)
+          lo=idx;lo(transverse)=lo(transverse)-1
+          if (second==0) then
+            pl(1)=normal_face(1,lo(1),lo(2),lo(3),transverse)
+            ph(1)=normal_face(1,i,j,k,transverse)
+            vl(1)=normal_face(2,lo(1),lo(2),lo(3),transverse)
+            vh(1)=normal_face(2,i,j,k,transverse)
+            weights(1)=(dt/spacing(transverse))/3
+          else
+            pl(1)=corner_face(1,lo(1),lo(2),lo(3),transverse,second)
+            ph(1)=corner_face(1,i,j,k,transverse,second)
+            vl(1)=corner_face(2,lo(1),lo(2),lo(3),transverse,second)
+            vh(1)=corner_face(2,i,j,k,transverse,second)
+            lo=idx;lo(second)=lo(second)-1
+            pl(2)=corner_face(1,lo(1),lo(2),lo(3),second,transverse)
+            ph(2)=corner_face(1,i,j,k,second,transverse)
+            vl(2)=corner_face(2,lo(1),lo(2),lo(3),second,transverse)
+            vh(2)=corner_face(2,i,j,k,second,transverse)
+            weights=[.5_dp*dt/spacing(transverse),.5_dp*dt/spacing(second)]
+          end if
+          offset=merge(1,2,second==0)
+          call reactive_ppm_transverse_pressure_3d(nm(:,i,j,k,direction),pnminus(i,j,k,direction),delta,gamma, &
+            pl(:offset),ph(:offset),vl(:offset),vh(:offset),weights(:offset),minus(:,i,j,k),internal_energy,good)
+          if (.not.good) return
+          call reactive_ppm_transverse_pressure_3d(np(:,i,j,k,direction),pnplus(i,j,k,direction),delta,gamma, &
+            pl(:offset),ph(:offset),vl(:offset),vh(:offset),weights(:offset),plus(:,i,j,k),internal_energy,good)
+          if (.not.good) return
+          cycle
+        end if
         call apply_reactive_transverse_correction_2d(species,nm(:,i,j,k,direction),ntm(i,j,k,direction), &
           delta,zero,1._dp,minus(:,i,j,k),tm(i,j,k),theta_m,good)
         if (.not.good) return
@@ -396,10 +522,21 @@ contains
       real(dp), intent(out) :: flux(:,0:,0:,0:)
       logical, intent(out) :: good
       good=.false.;flux=0
+      if (trace_pressure) face_result=0
       do k=lower(3),upper(3)
       do j=lower(2),upper(2)
       do i=lower(1),upper(1)
         hi=[i,j,k];hi(direction)=hi(direction)+1
+        if (trace_pressure) then
+          qm=plus(:,i,j,k);qp=minus(:,hi(1),hi(2),hi(3))
+          swap=qm(2);qm(2)=qm(direction+1);qm(direction+1)=swap
+          swap=qp(2);qp(2)=qp(direction+1);qp(direction+1)=swap
+          call reactive_pelec_primitive_flux_x(species,qm,qp,.5_dp*(sound(i,j,k)+sound(hi(1),hi(2),hi(3))), &
+            flux(:,i,j,k),good,interface_velocity=face_result(2,i,j,k),interface_pressure=face_result(1,i,j,k))
+          if (.not.good) return
+          swap=flux(2,i,j,k);flux(2,i,j,k)=flux(direction+1,i,j,k);flux(direction+1,i,j,k)=swap
+          cycle
+        end if
         select case(direction)
         case(1)
           call reactive_riemann_flux_x(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
