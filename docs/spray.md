@@ -2971,9 +2971,19 @@ paths remain to be connected. See
 `compute_dynamic_les_rhs_3d` now forms periodic dynamic SGS momentum/energy flux
 divergence, including isotropic stress and dynamic thermal transport. It uses
 arithmetic face interpolation and preserves RHS on rejection; mass/species SGS
-fluxes are zero as in the pinned dynamic model. Time integration, application
-selection and nonperiodic/MPI/AMR paths remain open. See
+fluxes are zero as in the pinned dynamic model. Periodic serial/MPI stepping and
+application selection are connected below; nonperiodic and AMR paths remain open. See
 [dynamic spatial flux checks](validation/les-dynamic-flux-20260918.md).
+
+The periodic serial RHS also accepts optional `fx`, `fy`, `fz` arrays, supplied
+together with shapes `(nv,nx+1,ny,nz)`, `(nv,nx,ny+1,nz)`, `(nv,nx,ny,nz+1)`.
+Index 1 is the low face; periodic end faces are duplicated. These are flux
+densities, not time/area integrals. Mass/species fluxes are zero. RHS and faces
+publish only after successful evaluation; invalid requests preserve them.
+The cropped `active_x` MPI workspace mode cannot request full-domain faces.
+This exposes existing periodic fluxes for future conservative coupling; it does
+not yet supply AMR halos, reflux or Dynamic LES AMR stepping. See
+[face-output checks](validation/les-dynamic-face-output-20260925.md).
 
 `advance_dynamic_les_ssprk2_3d` now advances the periodic dynamic operator with
 stage-wise coefficient recomputation, EOS recovery and transactional publication.
