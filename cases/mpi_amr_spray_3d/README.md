@@ -507,3 +507,14 @@ excluding KH/splash children created earlier in the interval. See
 [focused evidence](../../docs/validation/spray-amr-split-20260918.md).
 The application now also has a focused
 [2-to-4 rank splitting restart check](../../docs/validation/spray-amr-split-application-20260918.md).
+
+## PPM gas reconstruction
+
+Fixed and selected MPI AMR spray executables accept
+`reconstruction='characteristic_ppm'` in the gas namelist. The gas stage uses
+four-layer CTU reconstruction with common or recursive level timesteps; the
+particle exchange remains in the existing split. Restart context binds the
+reconstruction selector. A focused fixed-mechanism periodic 2-to-4-rank
+continuation with injection and topology change passed; see the
+[PPM application evidence](../../docs/validation/ppm-amr-spray-20260925.md).
+Selected runtime and physical spray validation were not part of that check.

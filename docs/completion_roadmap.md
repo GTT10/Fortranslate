@@ -143,7 +143,9 @@ also matches serial fields, diagnostics and 1/2/6 step counts
 ([checks](validation/ppm-mpi-amr-recursive-20260925.md)). Fixed/selected
 serial/MPI AMR tree gas application input now enables PPM, with reacting
 transport and fixed changed-rank continuation
-[checks](validation/ppm-amr-application-20260925.md). Two-level AMR and spray
+[checks](validation/ppm-amr-application-20260925.md). MPI AMR spray input now also enables PPM,
+with fixed 2-to-4-rank particle/gas continuation
+[checks](validation/ppm-amr-spray-20260925.md). Two-level AMR and regular spray
 selection, broader coupling and reference-pressure fidelity remain open; the existing
 PCM/PLM solver remains available.
 
