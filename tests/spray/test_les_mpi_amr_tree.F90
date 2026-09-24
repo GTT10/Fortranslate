@@ -54,7 +54,7 @@ program test_les_mpi_amr_tree
       call initialize_amr_patch_tree_3d([4,4,4],[1,1,2,3,4],patches,tree,ok)
     end if
     call require(ok,'topology')
-    do m=1,3
+    do m=1,4
       select case(m)
       case(1)
         model='smagorinsky'
@@ -62,8 +62,11 @@ program test_les_mpi_amr_tree
         model='wale'
       case(3)
         model='vreman'
+      case(4)
+        model='dynamic'
       end select
       do mode=1,3
+        if(m==4.and.mode>1) cycle
         faces='periodic';wall_v=0;outlet=0
         if (mode>=2) faces='outflow'
         if (mode==3) then
@@ -133,6 +136,12 @@ program test_les_mpi_amr_tree
           call require(maxval(abs(mpi_budget-budget))<1e-14_dp,'MPI boundary parity')
           call require(abs(mpi_largest-largest)<1e-12_dp*max(1._dp,largest),'MPI correction parity')
           before=local;before_t=local_t;mpi_budget=-17;mpi_largest=-19
+          if(m==4) then
+            call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,dt,faces, &
+              .17_dp,.7_dp,.7_dp,mpi_budget,mpi_largest,MPI_COMM_WORLD,ok,model=model,test_ratio=2+2*rank)
+            call require(.not.ok,'rank dynamic filter ratio disagreement rejected')
+            call check_rollback()
+          end if
           trial_ci=.1_dp
           if (rank==nranks-1) trial_ci=.2_dp
           call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,dt,faces, &

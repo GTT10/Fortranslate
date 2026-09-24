@@ -6,6 +6,8 @@ module les_mpi_amr_tree_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_ghosted_3d
+  use les_filter_3d_mod, only: les_filter_weights
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
@@ -22,7 +24,8 @@ module les_mpi_amr_tree_mod
 contains
   subroutine compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,comm,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+      test_model,test_ratio,grid_ratio,harmonic_mean)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -35,6 +38,13 @@ contains
     character(len=*), optional, intent(in) :: model
     real(dp) :: isotropic
     character(len=16) :: selected_model
+    character(len=*), optional, intent(in) :: test_model
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    character(len=64) :: filter
+    integer :: filter_ratio,grid,width
+    logical :: dynamic,harmonic,filter_valid
+    real(dp), allocatable :: weights(:)
     real(dp), intent(inout) :: dt,maximum_diffusivity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
@@ -48,9 +58,9 @@ contains
     integer :: n(3),axis,level
     character(len=32) :: local_faces(6)
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(14),low(14),high(14)
+    real(dp) :: controls(17),low(17),high(17)
     real(dp), allocatable :: reference_inlet(:,:)
-    character(len=64) :: options(8),reference_options(8)
+    character(len=64) :: options(9),reference_options(9)
     integer :: flags(3),min_flags(3),max_flags(3)
     real(dp) :: walls(24),reference_walls(24)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -70,7 +80,20 @@ contains
     if (present(ci)) isotropic=ci
     selected_model='smagorinsky'
     if (present(model)) selected_model=model
-    controls=[root_spacing,cfl,pressure,cs,prt,sct,isotropic]
+    dynamic=selected_model=='dynamic';filter='box';filter_ratio=2;grid=1;harmonic=.false.;width=2
+    if(present(test_model)) filter=test_model
+    if(present(test_ratio)) filter_ratio=test_ratio
+    if(present(grid_ratio)) grid=grid_ratio
+    if(present(harmonic_mean)) harmonic=harmonic_mean
+    filter_valid=.true.
+    if(dynamic) then
+      call les_filter_weights(filter,filter_ratio,weights,filter_valid)
+      if(filter_valid) width=(size(weights)-1)/2+5
+      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(faces=='periodic').and.all(pressure==0)
+    else
+      if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
+    end if
+    controls=[root_spacing,cfl,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp),merge(1._dp,0._dp,harmonic)]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -79,7 +102,8 @@ contains
     valid=valid.and.valid_reactive_boundaries_3d(faces)
     valid=valid.and.cfl<=.2_dp.and.cs>=0.and.cs<=2.and.min(prt,sct)>=1e-6_dp.and.max(prt,sct)<=1e6_dp
     valid=valid.and.isotropic>=0.and.isotropic<=1
-    valid=valid.and.(selected_model=='smagorinsky'.or.selected_model=='wale'.or.selected_model=='vreman')
+    valid=valid.and.filter_valid.and. &
+      (selected_model=='smagorinsky'.or.selected_model=='wale'.or.selected_model=='vreman'.or.dynamic)
     if (present(coarse_limiter)) valid=valid.and.(coarse_limiter=='mc'.or.coarse_limiter=='minmod')
     if (present(wall_temperature)) then
       if (size(wall_temperature)/=6.or..not.all(ieee_is_finite(wall_temperature))) valid=.false.
@@ -94,9 +118,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,14,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,17,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,14,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,17,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
@@ -105,10 +129,10 @@ contains
     call MPI_Allreduce(flags,max_flags,3,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(min_flags/=max_flags)) return
-    options(:6)=faces;options(7)='pcm';options(8)=selected_model
+    options(:6)=faces;options(7)='pcm';options(8)=selected_model;options(9)=filter
     if (present(coarse_limiter)) options(7)=coarse_limiter
     reference_options=options
-    call MPI_Bcast(reference_options,64*8,MPI_CHARACTER,0,comm,status)
+    call MPI_Bcast(reference_options,64*9,MPI_CHARACTER,0,comm,status)
     if (status/=MPI_SUCCESS) return
     valid=all(options==reference_options)
     call agree(valid)
@@ -174,14 +198,14 @@ contains
     if (.not.valid) return
     call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,valid, &
       viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-      coarse_limiter=coarse_limiter,species_count=size(species))
+      coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
     if (.not.valid) return
     candidate_dt=1e6_dp;largest=0
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
       associate(ghost=>ghosts%fields(node)%values)
-        call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid)
+        if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid)
         if (.not.valid) exit
         local_faces='outflow';level=tree%nodes(node)%level+1
         do axis=1,3
@@ -192,9 +216,20 @@ contains
         if (ios/=0) then
           valid=.false.;exit
         end if
+        if(dynamic) then
+          block
+            real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+            allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)), &
+              fz(nvar,n(1),n(2),n(3)+1),stat=ios)
+            valid=ios==0
+            if(valid) call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+              h(:,node),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid,harmonic,diffusivity)
+          end block
+        else
         call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,node), &
           cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature, &
           model=selected_model,ci=isotropic)
+        end if
         if (.not.valid) exit
         rate=diffusivity*sum(1._dp/h(:,node)**2)
         if (rate>cfl/candidate_dt) candidate_dt=cfl/rate
@@ -244,7 +279,8 @@ contains
   end subroutine compute_mpi_amr_tree_les_timestep_3d
   subroutine advance_mpi_amr_tree_les_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,comm,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+      test_model,test_ratio,grid_ratio,harmonic_mean)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -257,6 +293,13 @@ contains
     character(len=*), optional, intent(in) :: model
     real(dp) :: isotropic
     character(len=16) :: selected_model
+    character(len=*), optional, intent(in) :: test_model
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    character(len=64) :: filter
+    integer :: filter_ratio,grid,width
+    logical :: dynamic,harmonic,filter_valid
+    real(dp), allocatable :: weights(:)
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
@@ -268,9 +311,9 @@ contains
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
       first_max,second_max
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(14),low(14),high(14)
+    real(dp) :: controls(17),low(17),high(17)
     real(dp), allocatable :: reference_inlet(:,:)
-    character(len=64) :: options(8),reference_options(8)
+    character(len=64) :: options(9),reference_options(9)
     integer :: flags(3),min_flags(3),max_flags(3)
     real(dp) :: walls(24),reference_walls(24)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -290,7 +333,20 @@ contains
     if (present(ci)) isotropic=ci
     selected_model='smagorinsky'
     if (present(model)) selected_model=model
-    controls=[root_spacing,dt,pressure,cs,prt,sct,isotropic]
+    dynamic=selected_model=='dynamic';filter='box';filter_ratio=2;grid=1;harmonic=.false.;width=2
+    if(present(test_model)) filter=test_model
+    if(present(test_ratio)) filter_ratio=test_ratio
+    if(present(grid_ratio)) grid=grid_ratio
+    if(present(harmonic_mean)) harmonic=harmonic_mean
+    filter_valid=.true.
+    if(dynamic) then
+      call les_filter_weights(filter,filter_ratio,weights,filter_valid)
+      if(filter_valid) width=(size(weights)-1)/2+5
+      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(faces=='periodic').and.all(pressure==0)
+    else
+      if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
+    end if
+    controls=[root_spacing,dt,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp),merge(1._dp,0._dp,harmonic)]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -299,7 +355,8 @@ contains
     valid=valid.and.size(boundary_change)==nvar.and.valid_reactive_boundaries_3d(faces)
     valid=valid.and.dt<=1e6_dp.and.cs>=0.and.cs<=2.and.min(prt,sct)>=1e-6_dp.and.max(prt,sct)<=1e6_dp
     valid=valid.and.isotropic>=0.and.isotropic<=1
-    valid=valid.and.(selected_model=='smagorinsky'.or.selected_model=='wale'.or.selected_model=='vreman')
+    valid=valid.and.filter_valid.and. &
+      (selected_model=='smagorinsky'.or.selected_model=='wale'.or.selected_model=='vreman'.or.dynamic)
     if (present(coarse_limiter)) valid=valid.and.(coarse_limiter=='mc'.or.coarse_limiter=='minmod')
     if (present(wall_temperature)) then
       if (size(wall_temperature)/=6.or..not.all(ieee_is_finite(wall_temperature))) valid=.false.
@@ -314,9 +371,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,14,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,17,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,14,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,17,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
@@ -325,10 +382,10 @@ contains
     call MPI_Allreduce(flags,max_flags,3,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(min_flags/=max_flags)) return
-    options(:6)=faces;options(7)='pcm';options(8)=selected_model
+    options(:6)=faces;options(7)='pcm';options(8)=selected_model;options(9)=filter
     if (present(coarse_limiter)) options(7)=coarse_limiter
     reference_options=options
-    call MPI_Bcast(reference_options,64*8,MPI_CHARACTER,0,comm,status)
+    call MPI_Bcast(reference_options,64*9,MPI_CHARACTER,0,comm,status)
     if (status/=MPI_SUCCESS) return
     valid=all(options==reference_options)
     call agree(valid)
@@ -439,14 +496,14 @@ contains
       if (.not.success) return
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-        coarse_limiter=coarse_limiter,species_count=size(species))
+        coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
       if (.not.success) return
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
         n=tree%nodes(peer)%shape;dims=n+4
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
-          call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success)
+          if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success)
           if (.not.success) exit
           allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)), &
             fz(nvar,n(1),n(2),n(3)+1),stat=allocation_status)
@@ -462,9 +519,14 @@ contains
           if (allocation_status/=0) then
             success=.false.;exit
           end if
+          if(dynamic) then
+            call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+              h(:,peer),filter,filter_ratio,width,les_rhs,fx,fy,fz,success,grid,harmonic,diffusivity)
+          else
           call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
             cs,prt,sct,les_rhs,diffusivity,success,boundary_faces=local_faces, &
             wall_temperature=wall_temperature,model=selected_model,ci=isotropic,fx=fx,fy=fy,fz=fz)
+          end if
           if (.not.success) exit
           success=dt*diffusivity*sum(1._dp/h(:,peer)**2)<=.2_dp
           if (.not.success) exit
