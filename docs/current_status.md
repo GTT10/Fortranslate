@@ -42,7 +42,9 @@ hydro now rebuilds Mach inlets for common and recursive level steps
 ([hydro checks](validation/mach-inlet-amr-hydro-20260925.md)). Distributed common
 and recursive hydro now forward collectively agreed Mach controls
 ([MPI hydro checks](validation/mach-inlet-mpi-amr-hydro-20260925.md)). AMR
-transport/LES, coupled dispatch and application input remain open.
+serial molecular transport also forwards Mach controls through common and
+recursive stages ([transport checks](validation/mach-inlet-amr-transport-20260925.md)).
+MPI transport, AMR LES, coupled dispatch and application input remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
