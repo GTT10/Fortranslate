@@ -12,11 +12,53 @@ module les_dynamic_smagorinsky_mod
   public :: les_face_mean
   public :: advance_dynamic_les_ssprk2_3d
   public :: compute_dynamic_les_rhs_3d
+  public :: compute_dynamic_les_rhs_ghosted_3d
   public :: compute_dynamic_les_coefficients_3d
   public :: dynamic_smagorinsky_quantities,dynamic_smagorinsky_coefficients
   ! Pinned PeleC Constants.H small_num(), including its coefficient floor.
   real(dp), parameter :: regularizer=1e-8_dp
 contains
+  ! Caller supplies ng valid donor cells on every side, all at the patch spacing.
+  ! The periodic workspace seam is outside the complete filter/gradient stencil.
+  subroutine compute_dynamic_les_rhs_ghosted_3d(species,state,temperature,spacing,test_model,test_ratio,ng, &
+      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
+    character(len=*), intent(in) :: test_model
+    integer, intent(in) :: test_ratio,ng
+    real(dp), intent(inout) :: rhs(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    real(dp), allocatable :: weights(:),full_rhs(:,:,:,:),x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
+    integer :: n(3),padded(3),nv,lo(3),hi(3)
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    n=[size(rhs,2),size(rhs,3),size(rhs,4)]
+    if(size(species)<1.or.size(rhs,1)/=nv.or.any(n<1)) return
+    call les_filter_weights(test_model,test_ratio,weights,valid)
+    if(.not.valid) return
+    ! Test filtering radius + one derivative + three smoothing cells + one face neighbor.
+    if(ng<(size(weights)-1)/2+5.or.ng>128) return
+    padded=shape(temperature)
+    if(any(padded/=n+2*ng).or.any(shape(state)/=[nv,padded])) return
+    if(any(shape(fx)/=[nv,n(1)+1,n(2),n(3)])) return
+    if(any(shape(fy)/=[nv,n(1),n(2)+1,n(3)])) return
+    if(any(shape(fz)/=[nv,n(1),n(2),n(3)+1])) return
+    allocate(full_rhs(nv,padded(1),padded(2),padded(3)))
+    allocate(x(nv,padded(1)+1,padded(2),padded(3)),y(nv,padded(1),padded(2)+1,padded(3)))
+    allocate(z(nv,padded(1),padded(2),padded(3)+1))
+    call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,full_rhs,valid, &
+      grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z)
+    if(.not.valid) return
+    lo=ng+1;hi=ng+n
+    rhs=full_rhs(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+    fx=x(:,lo(1):hi(1)+1,lo(2):hi(2),lo(3):hi(3))
+    fy=y(:,lo(1):hi(1),lo(2):hi(2)+1,lo(3):hi(3))
+    fz=z(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)+1)
+    ok=.true.
+  end subroutine
+
   pure elemental real(dp) function les_face_mean(a,b,harmonic) result(value)
     real(dp), intent(in) :: a,b
     logical, intent(in) :: harmonic

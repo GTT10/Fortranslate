@@ -1370,10 +1370,12 @@ program test_spray_core
     grad(2,1)=-3.0_dp
     call smagorinsky_stress(grad,2.0_dp,[0.1_dp,0.1_dp,0.1_dp],0.2_dp,mu,stress,ok)
     call require(ok .and. mu == 0.0_dp .and. all(stress == 0.0_dp),'rigid rotation zero stress')
-  case('les_dynamic_flux','les_dynamic_step')
+  case('les_dynamic_flux','les_dynamic_step','les_dynamic_ghosted')
     block
       real(dp) :: other(15,4,4,4),reference(15,4,4,4),sound,power,error_coarse,error_fine
       real(dp) :: fx(15,5,4,4),fy(15,4,5,4),fz(15,4,4,5)
+      real(dp) :: padded(15,18,18,18),padded_t(18,18,18)
+      real(dp) :: gx(15,5,4,4),gy(15,4,5,4),gz(15,4,4,5)
       integer :: i,j,k,c,substep
       call make_gas(.false.)
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
@@ -1442,6 +1444,30 @@ program test_spray_core
         all(fz(:,:,:,1)==fz(:,:,:,5)),'dynamic periodic face endpoints')
       call require(all(fx(6:,:,:,:)==0).and.all(fy(6:,:,:,:)==0).and.all(fz(6:,:,:,:)==0), &
         'dynamic species face flux zero')
+      if(test=='les_dynamic_ghosted') then
+        ! Seven donor layers: the padded workspace is not a multiple of the period.
+        do k=1,18
+          do j=1,18
+            do i=1,18
+              padded(:,i,j,k)=state(:,modulo(i-8,4)+1,modulo(j-8,4)+1,modulo(k-8,4)+1)
+              padded_t(i,j,k)=temp(modulo(i-8,4)+1,modulo(j-8,4)+1,modulo(k-8,4)+1)
+            end do
+          end do
+        end do
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,7, &
+          other,gx,gy,gz,ok)
+        call require(ok.and.all(other==rhs).and.all(gx==fx).and.all(gy==fy).and.all(gz==fz), &
+          'ghosted dynamic patch exact periodic reference')
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,5, &
+          other,gx,gy,gz,ok)
+        call require(.not.ok.and.all(other==rhs).and.all(gx==fx).and.all(gy==fy).and.all(gz==fz), &
+          'insufficient dynamic halo rollback')
+        padded(1,8,8,8)=-1
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,7, &
+          other,gx,gy,gz,ok)
+        call require(.not.ok.and.all(other==rhs).and.all(gx==fx).and.all(gy==fy).and.all(gz==fz), &
+          'invalid ghosted dynamic state rollback')
+      end if
       fx=7;fy=8;fz=9
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok,fx=fx)
       call require(.not.ok.and.all(fx==7).and.all(rhs==reference),'partial face request rollback')
