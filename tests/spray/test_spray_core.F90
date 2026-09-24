@@ -1373,6 +1373,7 @@ program test_spray_core
   case('les_dynamic_flux','les_dynamic_step')
     block
       real(dp) :: other(15,4,4,4),reference(15,4,4,4),sound,power,error_coarse,error_fine
+      real(dp) :: fx(15,5,4,4),fy(15,4,5,4),fz(15,4,4,5)
       integer :: i,j,k,c,substep
       call make_gas(.false.)
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
@@ -1431,6 +1432,19 @@ program test_spray_core
       end if
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
       call require(ok.and.maxval(abs(rhs(2:5,:,:,:)))>0,'dynamic flux active')
+      reference=rhs
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok,fx=fx,fy=fy,fz=fz)
+      call require(ok.and.all(rhs==reference),'face output leaves dynamic RHS unchanged')
+      other=(fx(:,:4,:,:)-fx(:,2:,:,:))/spacing(1)+ &
+        (fy(:,:,:4,:)-fy(:,:,2:,:))/spacing(2)+(fz(:,:,:,:4)-fz(:,:,:,2:))/spacing(3)
+      call require(all(other==rhs),'dynamic face divergence reproduces RHS')
+      call require(all(fx(:,1,:,:)==fx(:,5,:,:)).and.all(fy(:,:,1,:)==fy(:,:,5,:)).and. &
+        all(fz(:,:,:,1)==fz(:,:,:,5)),'dynamic periodic face endpoints')
+      call require(all(fx(6:,:,:,:)==0).and.all(fy(6:,:,:,:)==0).and.all(fz(6:,:,:,:)==0), &
+        'dynamic species face flux zero')
+      fx=7;fy=8;fz=9
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok,fx=fx)
+      call require(.not.ok.and.all(fx==7).and.all(rhs==reference),'partial face request rollback')
       call require(all(rhs(1,:,:,:)==0).and.all(rhs(6:,:,:,:)==0),'dynamic mass and species unchanged')
       do c=1,15
         call require(abs(sum(rhs(c,:,:,:)))<=1e-12_dp*max(1._dp,sum(abs(rhs(c,:,:,:)))), &
@@ -1445,8 +1459,9 @@ program test_spray_core
       call require(ok.and.maxval(abs(other-reference))<=1e-12_dp*maxval(abs(rhs)), &
         'dynamic flux translation')
       state=saved;temp=saved_t;reference=rhs;state(1,1,1,1)=-1
-      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
-      call require(.not.ok.and.all(rhs==reference),'dynamic flux rollback')
+      call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok,fx=fx,fy=fy,fz=fz)
+      call require(.not.ok.and.all(rhs==reference).and.all(fx==7).and.all(fy==8).and.all(fz==9), &
+        'dynamic flux and face rollback')
     end block
   case('les_dynamic_field')
     block

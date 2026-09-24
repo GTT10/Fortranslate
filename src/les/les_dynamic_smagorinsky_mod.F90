@@ -72,7 +72,7 @@ contains
   ! Periodic dynamic SGS flux divergence, arithmetic cell-to-face interpolation.
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
-      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean)
+      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean,fx,fy,fz)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -84,6 +84,10 @@ contains
     real(dp), optional, intent(out) :: maximum_diffusivity
     real(dp), optional, intent(in) :: supplied_coefficients(:,:,:,:)
     integer, optional, intent(in) :: active_x(2)
+    ! Full periodic face arrays, low face first, with duplicated periodic end faces.
+    ! Request all three together; cropped MPI work arrays do not define full faces.
+    real(dp), optional, intent(inout) :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp), allocatable :: faces(:,:,:,:,:)
     real(dp), allocatable :: checked_weights(:)
     integer :: first_x,last_x,face_first
     real(dp), allocatable :: coeff(:,:,:,:),q(:,:,:,:),temps(:,:,:),aij(:,:,:,:,:),alpha(:,:,:),thermal(:,:,:,:)
@@ -99,6 +103,14 @@ contains
     if (present(maximum_diffusivity)) maximum_diffusivity=0
     if (present(grid_ratio)) ratio=grid_ratio
     if (any(shape(rhs)/=shape(state))) return
+    if (present(fx).or.present(fy).or.present(fz)) then
+      if (.not.(present(fx).and.present(fy).and.present(fz))) return
+      if (present(active_x)) return
+      if (any(shape(fx)/=[size(state,1),n(1)+1,n(2),n(3)])) return
+      if (any(shape(fy)/=[size(state,1),n(1),n(2)+1,n(3)])) return
+      if (any(shape(fz)/=[size(state,1),n(1),n(2),n(3)+1])) return
+      allocate(faces(5,n(1),n(2),n(3),3))
+    end if
     first_x=1;last_x=n(1)
     if (present(active_x)) then
       if (.not.present(supplied_coefficients)) return
@@ -186,6 +198,7 @@ contains
           end do
         end do
       end do
+      if (allocated(faces)) faces(:,:,:,:,d)=face_flux
       do k=1,n(3)
         do j=1,n(2)
           do i=first_x,last_x
@@ -198,6 +211,13 @@ contains
     end do
     if (.not.all(ieee_is_finite(candidate))) return
     if (.not.ieee_is_finite(diffusion)) return
+    if (allocated(faces)) then
+      if (.not.all(ieee_is_finite(faces))) return
+      fx=0;fy=0;fz=0
+      fx(1:5,2:,:,:)=faces(:,:,:,:,1);fx(1:5,1,:,:)=faces(:,n(1),:,:,1)
+      fy(1:5,:,2:,:)=faces(:,:,:,:,2);fy(1:5,:,1,:)=faces(:,:,n(2),:,2)
+      fz(1:5,:,:,2:)=faces(:,:,:,:,3);fz(1:5,:,:,1)=faces(:,:,:,n(3),3)
+    end if
     if (present(maximum_diffusivity)) maximum_diffusivity=diffusion
     rhs=candidate;ok=.true.
   end subroutine
