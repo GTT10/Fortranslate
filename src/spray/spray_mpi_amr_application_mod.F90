@@ -14,6 +14,8 @@ module spray_mpi_amr_application_mod
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use mixture_thermo_mod, only: mixture_density,mass_fractions_from_mole_fractions
   use selected_composition_mod, only: resolve_selected_composition
+  use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
+  use mpi_amr_patch_tree_ghost_3d_mod, only: fill_mpi_amr_tree_ghosts_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
@@ -106,7 +108,7 @@ contains
     real(dp), allocatable :: measured_cost(:)
     logical :: sample_work,redistributed,periodic(3)
     real(dp), allocatable :: boundary(:),change(:),inlet(:,:),inlet_x(:),q(:),inlet_cube(:,:,:,:)
-    real(dp) :: inlet_t(6),sound,min_h(3),inlet_dt,face_dt,inlet_temperature(2,2,2)
+    real(dp) :: inlet_t(6),sound,min_h(3),inlet_dt,face_dt,inlet_temperature(2,2,2),mach_pressure(6)
     integer :: face,j,k
     character(len=512) :: message
     real(dp) :: temperature_thresholds(16)
@@ -466,7 +468,8 @@ contains
     allocate(state%fields(size(tree%nodes)),temperature%fields(size(tree%nodes)),mf(size(species)))
     allocate(ledger(nv),global_ledger(nv),boundary(nv),change(nv),inlet(nv,6),inlet_x(size(species)), &
       q(nv),inlet_cube(nv,2,2,2))
-    inlet=0;inlet_t=0
+    inlet=0;inlet_t=0;mach_pressure=0
+    where(config%inflow_mach>=0) mach_pressure=config%inflow_pressure
     call mass_fractions_from_mole_fractions(species,mole_fractions,mf,ok)
     if (.not.ok) call fatal('Invalid default inlet composition')
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
@@ -478,6 +481,10 @@ contains
     end if
     do face=1,6
       if (faces(face)/='inflow') cycle
+      if(config%inflow_mach(face)>=0) then
+        inlet_t(face)=config%inflow_temperature(face)
+        cycle
+      end if
       q=0;q(1)=mixture_density(species,mf,config%inflow_pressure(face),config%inflow_temperature(face),ok)
       if (.not.ok) call fatal('Invalid inflow density')
       q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mf
@@ -600,10 +607,12 @@ contains
           les_cs,les_prt,les_sct,les_dt,diffusivity,comm,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci, &
           outlet_pressure=config%outlet_pressure,test_model=dynamic_filter,test_ratio=dynamic_ratio, &
-          grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic,subcycle=subcycling)
+          grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic,subcycle=subcycling, &
+          inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
         if (.not.ok) call fatal('LES timestep failed')
         dt=min(dt,les_dt)
       end if
+      if(any(config%inflow_mach>=0)) call limit_mach_step()
       sample_work=.false.
       if (rebalance_interval>0) sample_work=mod(step+1,rebalance_interval)==0
       do attempt=1,20
@@ -627,7 +636,8 @@ contains
             les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure, &
             acceleration=acceleration,source_change=force_change, &
             les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
-            les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic)
+            les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
         else
           call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -641,7 +651,8 @@ contains
             les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure, &
             acceleration=acceleration,source_change=force_change, &
             les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
-            les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic)
+            les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
@@ -704,6 +715,53 @@ contains
       if (allocated(force_total)) write(*,'(a,*(es24.16,1x))') 'Source inventory: ',force_total
     end if
   contains
+    subroutine limit_mach_step()
+      type(amr_tree_state_3d) :: packed,halos
+      real(dp) :: bound,dmax,local_bound,global_bound,local_h(3)
+      integer :: peer,dims(3),nv,status
+      character(len=:), allocatable :: donor_limiter
+      nv=size(q)
+      if(config%reconstruction=='characteristic_plm') donor_limiter=config%limiter
+      allocate(packed%fields(size(tree%nodes)))
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        dims=tree%nodes(peer)%shape
+        allocate(packed%fields(peer)%values(nv+1,dims(1),dims(2),dims(3)))
+        packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
+        packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+      end do
+      call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nv+1,faces,halos,comm,ok,viscous_wall=.true., &
+        inflow_state=inlet_with_temperature(),wall_velocity=config%wall_velocity,coarse_limiter=donor_limiter, &
+        species_count=size(species),species=species,inflow_mach=config%inflow_mach, &
+        inflow_temperature=inlet_t,inflow_pressure=mach_pressure)
+      if(.not.ok) call fatal('Invalid MPI tree Mach inlet donors')
+      local_bound=dt
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        associate(ghost=>halos%fields(peer)%values)
+        dims=shape(ghost(1,:,:,:))
+        local_h=spacing*real(domain(:,1),dp)/real(domain(:,tree%nodes(peer)%level+1),dp)
+        call compute_reactive_cfl_timestep_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
+          dims(1),dims(2),dims(3),local_h(1),local_h(2),local_h(3),config%cfl,bound,ok)
+        if(.not.ok) call fatal('Invalid MPI tree Mach hydro timestep')
+        local_bound=min(local_bound,bound)
+        if(config%transport_enabled) then
+          call reactive_transport_timestep_3d(species,transport,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
+            dims(1),dims(2),dims(3),local_h(1),local_h(2),local_h(3),config%transport_cfl, &
+            config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled,bound,dmax,ok)
+          if(.not.ok) call fatal('Invalid MPI tree Mach transport timestep')
+          local_bound=min(local_bound,bound)
+        end if
+        end associate
+      end do
+      call MPI_Allreduce(local_bound,global_bound,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) call fatal('Cannot reduce MPI tree Mach timestep')
+      dt=global_bound
+    end subroutine
+    function inlet_with_temperature() result(packed_inlet)
+      real(dp) :: packed_inlet(size(q)+1,6)
+      packed_inlet(:size(q),:)=inlet;packed_inlet(size(q)+1,:)=inlet_t
+    end function
     subroutine write_films()
       integer :: f,c,out,status
       character(len=:), allocatable :: names,path
@@ -734,7 +792,7 @@ contains
       if (.not.ok) call fatal('Invalid inlet timestep layout')
       min_h=spacing*real(domain(:,1),dp)/real(domain(:,size(ratios)),dp)
       do face=1,6
-        if (faces(face)/='inflow') cycle
+        if (faces(face)/='inflow'.or.config%inflow_mach(face)>=0) cycle
         ! Recover sound speed from the already resolved reservoir composition.
         q=0;q(1)=inlet(1,face);q(2:4)=config%inflow_velocity(:,face)
         q(5)=config%inflow_pressure(face);q(6:)=inlet(6:,face)/inlet(1,face)

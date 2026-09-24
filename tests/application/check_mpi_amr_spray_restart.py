@@ -23,6 +23,7 @@ p.add_argument('--les', action='store_true')
 p.add_argument('--subcycling', action='store_true')
 p.add_argument('--dynamic', action='store_true')
 p.add_argument('--dynamic-open', action='store_true')
+p.add_argument('--mach-inlet', action='store_true')
 p.add_argument('--dynamic-walls', action='store_true')
 p.add_argument('--dynamic-pressure', action='store_true')
 p.add_argument('--pressure', action='store_true')
@@ -109,6 +110,11 @@ if a.dynamic_open:
     gas = gas.replace(' output_file=', " boundary_faces='inflow','outflow',4*'periodic'\n"
                       ' inflow_temperature=1000.,inflow_pressure=101325.,inflow_velocity(:,1)=25.,0.,0.\n output_file=')
 
+if a.mach_inlet:
+    assert a.dynamic_open and not a.dynamic_pressure
+    gas = gas.replace('inflow_pressure=101325.', 'inflow_pressure=0.,inflow_mach(1)=.2')
+    gas = gas.replace('inflow_velocity(:,1)=25.,0.,0.', 'inflow_velocity(:,1)=0.,0.,0.')
+
 if a.dynamic_pressure:
     assert a.dynamic_open
     gas = gas.replace(' output_file=', ' outlet_pressure(2)=100000.\n output_file=')
@@ -181,12 +187,17 @@ if a.rate_files:
     spray += "\n&amr_spray_rate_files profile_files='rate1.dat','rate2.dat' /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False):
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False, changed_mach=None):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
     if changed_pressure:
         local_gas = local_gas.replace('outlet_pressure(2)=100000.', 'outlet_pressure(2)=100100.')
+    if changed_mach:
+        old, new = {'mach': ('inflow_mach(1)=.2', 'inflow_mach(1)=.3'),
+                    'temperature': ('inflow_temperature=1000.', 'inflow_temperature=1001.'),
+                    'pressure': ('inflow_pressure=0.', 'inflow_pressure=120000.')}[changed_mach]
+        local_gas = local_gas.replace(old, new)
     (folder / 'gas.nml').write_text(local_gas)
     local_spray = spray
     if changed:
@@ -358,6 +369,9 @@ if a.subcycling:
     run('changed_subcycling', 2, f"restart_file='{checkpoint}'", good=False, changed_subcycling=True)
 if a.les:
     run('changed_les', 2, f"restart_file='{checkpoint}'", good=False, changed_les=True)
+if a.mach_inlet:
+    for control in ('mach', 'temperature', 'pressure'):
+        run('changed_inlet_' + control, 2, f"restart_file='{checkpoint}'", good=False, changed_mach=control)
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)
 if a.physical:
     run('changed_boundary', 2, f"restart_file='{checkpoint}'", good=False, changed_boundary=True)
