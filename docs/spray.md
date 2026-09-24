@@ -3221,6 +3221,12 @@ see [open-boundary checks](validation/les-dynamic-open-20260925.md).
 
 ### MPI AMR reacting-spray LES coupling
 
+The regular-grid `fill_reactive_boundary_ghosts_3d` helper now accepts 1..128
+layers with repeated moving-wall reflection; default width remains two
+([donor checks](validation/regular-wide-boundary-donors-20260925.md)).
+Connecting these donors to regular-grid Dynamic physical boundaries remains
+separate from the already-supported AMR path.
+
 The serial `advance_amr_patch_tree_les_level_3d` API advances one depth using
 temporal coarse donors and returns SSPRK2 time-integrated faces for later
 reflux. It preserves inactive levels and publishes outputs transactionally.
