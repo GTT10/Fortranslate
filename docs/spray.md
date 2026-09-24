@@ -2995,8 +2995,9 @@ face outputs use the shapes above and publish with RHS only on success.
 The implementation evaluates a padded periodic workspace and crops its interior;
 the checked halo keeps its artificial seam outside the requested stencil.
 Every workspace cell/filter state must remain thermodynamically admissible.
-This first implementation overcomputes the outer workspace and exposes no
-patch-local diffusion estimate. The caller still owns physical/coarse-fine
+This first implementation overcomputes the outer workspace. Optional
+`maximum_diffusivity` returns a conservative bound over the entire padded
+workspace, publishing only on success. The caller still owns physical/coarse-fine
 donor construction, flux synchronization/reflux and time stepping. See
 [ghosted-patch checks](validation/les-dynamic-ghosted-20260925.md).
 
@@ -3177,8 +3178,20 @@ owner-local ghosts and preserves both outputs on failure. LES subcycling
 remains open. The MPI AMR spray application connects the common-step API below. See
 [MPI timestep checks](validation/les-mpi-amr-timestep-20260918.md). See [distributed AMR evidence](validation/les-mpi-amr-tree-20260918.md).
 See [timestep evidence](validation/les-amr-timestep-20260918.md).
-Dynamic LES and EB grids are outside this API.
+Dynamic LES remains outside the MPI API; EB grids are outside both APIs.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
+
+The serial stepper and timestep selector now accept `model='dynamic'` on periodic
+trees. Optional `test_model`, `test_ratio`, `grid_ratio`, `harmonic_mean` default
+to `box`, 2, 1 and false. These controls are rejected for static models. Dynamic
+coefficients replace the static `cs/prt/sct/ci` parameters. Nonperiodic faces and
+nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
+wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
+down through the existing transaction. The diffusion bound includes padded
+cells and may restrict the interval more than an interior-only estimate.
+MPI, reacting-spray/application dispatch and Dynamic LES nonperiodic boundaries
+are not connected by this change. See
+[serial Dynamic AMR checks](validation/les-dynamic-amr-20260925.md).
 
 ### MPI AMR reacting-spray LES coupling
 
