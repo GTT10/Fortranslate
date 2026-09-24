@@ -128,8 +128,11 @@ primitive-pressure parity remains open. The periodic conservative CTU time
 update and full-split library dispatch now have multistep conservation and
 rollback [checks](validation/ppm-step-3d-20260925.md). Fixed/selected regular
 gas application input now selects periodic PPM
-([input checks](validation/ppm-input-3d-20260925.md)). Physical/AMR halos and MPI
-remain implementation work; the existing PCM/PLM solver remains available.
+([input checks](validation/ppm-input-3d-20260925.md)). Four-layer CTU halos and
+physical-boundary library stepping now have exact subdomain-flux and boundary
+ledger [checks](validation/ppm-halo-3d-20260925.md). Physical-boundary application
+selection and AMR/MPI integration remain implementation work; the existing
+PCM/PLM solver remains available.
 
 | Order | Work unit | Measurable exit gate |
 | --- | --- | --- |
