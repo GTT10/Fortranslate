@@ -180,7 +180,7 @@ contains
   end subroutine
 
   pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall, &
-      inflow_state,inflow_temperature,wall_velocity)
+      inflow_state,inflow_temperature,wall_velocity,ghost_width)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
@@ -188,6 +188,8 @@ contains
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:)
     logical, intent(in), optional :: viscous_wall
     real(dp), intent(in), optional :: wall_velocity(:,:)
+    integer, optional, intent(in) :: ghost_width
+    integer :: width,bounces,bounce,wall_faces(128)
     real(dp) :: shift(3), old_momentum(3),rho
     logical :: use_viscous_wall
     integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face,inlet
@@ -198,7 +200,12 @@ contains
     if (present(wall_velocity)) then
       if (.not.valid_wall_velocity_3d(faces,wall_velocity)) return
     end if
-    n=shape(t); dims=n+4
+    width=2
+    if (present(ghost_width)) width=ghost_width
+    if (width<1.or.width>128) return
+    n=shape(t)
+    if (any(n>huge(1)-2*width)) return
+    dims=n+2*width
     if (any(faces=='inflow')) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if (any(shape(inflow_state)/=[size(u,1),6]).or.size(inflow_temperature)/=6) return
@@ -210,24 +217,36 @@ contains
       do k=1,dims(3)
         do j=1,dims(2)
           do i=1,dims(1)
-            idx=[i,j,k]-2; q=idx; reflect=.false.; inlet=0; shift=0
+            idx=[i,j,k]-width; q=idx; reflect=.false.; inlet=0; shift=0
             do a=1,3
-              if (idx(a)>=1 .and. idx(a)<=n(a)) cycle
-              face=2*a
-              if (idx(a)<1) face=face-1
-              select case(trim(faces(face)))
-              case('periodic')
-                q(a)=modulo(idx(a)-1,n(a))+1
-              case('inflow')
-                inlet=face
-                q(a)=max(1,min(n(a),idx(a)))
-              case('outflow')
-                q(a)=max(1,min(n(a),idx(a)))
-              case('slip_wall','no_slip_wall','isothermal_wall')
-                q(a)=1-idx(a)
-                if (idx(a)>n(a)) q(a)=2*n(a)+1-idx(a)
-                ! Only diffusive fluxes impose tangential no-slip. Euler fluxes
-                ! keep mirror-normal states to avoid numerical wall shear.
+              bounces=0
+              do while (q(a)<1.or.q(a)>n(a))
+                face=2*a
+                if (q(a)<1) face=face-1
+                select case(trim(faces(face)))
+                case('periodic')
+                  q(a)=modulo(q(a)-1,n(a))+1
+                case('inflow')
+                  inlet=face
+                  q(a)=max(1,min(n(a),q(a)))
+                case('outflow')
+                  q(a)=max(1,min(n(a),q(a)))
+                case('slip_wall','no_slip_wall','isothermal_wall')
+                  bounces=bounces+1
+                  if (bounces>size(wall_faces)) return
+                  wall_faces(bounces)=face
+                  if (q(a)<1) then
+                    q(a)=1-q(a)
+                  else
+                    q(a)=n(a)+1-(q(a)-n(a))
+                  end if
+                end select
+              end do
+              ! Apply the encountered walls from the interior donor outward.
+              ! Reversing this order matters for distinct moving wall speeds.
+              do bounce=bounces,1,-1
+                face=wall_faces(bounce)
+                ! Euler reflects normal velocity only; diffusion imposes no-slip.
                 if (faces(face)/='slip_wall'.and.use_viscous_wall) then
                   reflect=.not.reflect
                   shift=-shift
@@ -236,7 +255,7 @@ contains
                   reflect(a)=.not.reflect(a)
                   shift(a)=-shift(a)
                 end if
-              end select
+              end do
             end do
             ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
             if (inlet>0) then

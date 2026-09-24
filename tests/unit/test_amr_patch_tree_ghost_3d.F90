@@ -130,7 +130,8 @@ contains
   subroutine wide_wall_checks()
     type(amr_patch_tree_3d) :: box
     type(amr_tree_state_3d) :: field
-    real(dp), allocatable :: halo(:,:,:,:)
+    real(dp), allocatable :: halo(:,:,:,:),dense_halo(:,:,:,:),dense_t(:,:,:)
+    real(dp) :: temperature(4,4,4)
     real(dp) :: walls(3,6),expected(6),momentum(3),offset
     character(len=32) :: bc(6)
     integer :: x,donor,slab,r,ix,iy,iz,kind
@@ -139,6 +140,8 @@ contains
     call require(success,'wide wall root geometry')
     call prolong_amr_patch_tree_3d(box,root,field,success)
     call require(success,'wide wall root state')
+    temperature=800
+    allocate(dense_halo(6,30,30,30),dense_t(30,30,30))
     do kind=1,3
       bc='periodic';bc(1:2)='no_slip_wall';walls=0
       walls(2,1)=1;walls(2,2)=3
@@ -150,6 +153,10 @@ contains
       call fill_amr_patch_tree_ghosts_3d(box,field,1,bc,halo,success, &
         viscous_wall=.true.,wall_velocity=walls,ghost_width=13)
       call require(success,'wide wall halo crosses domain repeatedly')
+      call fill_reactive_boundary_ghosts_3d(root,temperature,bc,dense_halo,dense_t,success, &
+        viscous_wall=.true.,wall_velocity=walls,ghost_width=13)
+      call require(success,'wide regular wall ghosts')
+      call require(all(dense_halo==halo).and.all(dense_t==800),'wide regular and tree donors agree exactly')
       do iz=1,30
         do iy=1,30
           do ix=1,30
@@ -182,6 +189,11 @@ contains
         end do
       end do
     end do
+    bc='periodic';walls=0
+    call fill_reactive_boundary_ghosts_3d(root,temperature,bc,dense_halo,dense_t,success,ghost_width=0)
+    call require(.not.success,'zero regular ghost width rejected')
+    call fill_reactive_boundary_ghosts_3d(root,temperature,bc,dense_halo,dense_t,success,ghost_width=129)
+    call require(.not.success,'excessive regular ghost width rejected')
   end subroutine wide_wall_checks
   subroutine temporal_checks()
     type(amr_tree_state_3d) :: future,incomplete
