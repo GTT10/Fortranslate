@@ -154,8 +154,12 @@ two-level application input, conservative regrid, transport and checkpoint
 selection now support PPM, with fixed reacting restart and exact selected output
 [checks](validation/ppm-two-level-application-20260925.md). Sparse two-level MPI coarse PPM and four-layer halos now match serial even with
 one owned cell per rank ([checks](validation/ppm-mpi-two-level-coarse-20260925.md)).
-Fine-level MPI PPM interpolation/subcycling and hierarchy/application connection,
-broader coupling and reference-pressure fidelity remain open. Regular MPI spray
+Fine-level MPI PPM now supports subcycling, reflux, reaction/transport splitting
+and exact serial hierarchy parity
+([checks](validation/ppm-mpi-two-level-hierarchy-20260925.md)). Fixed/selected MPI
+two-level input and regridding also enable PPM; fixed four-to-two-rank restart
+matches serial output ([checks](validation/ppm-mpi-two-level-application-20260925.md)).
+Broader coupling and reference-pressure fidelity remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
