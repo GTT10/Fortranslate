@@ -3071,20 +3071,21 @@ one-cell local slabs ([halo checks](validation/mpi-les-physical-halos-20260925.m
 `compute_mpi_dynamic_les_boundary_rhs_3d` and
 `advance_mpi_dynamic_les_ssprk2_3d` now connect physical fluxes, global boundary
 rates and SSPRK2 budgets ([operator checks](validation/mpi-dynamic-physical-20260925.md)).
-Regular MPI spray application dispatch remains to be connected.
+Regular MPI spray application dispatch now supplies these physical inputs and
+adds both LES exchanges to its boundary ledger
+([wall/restart checks](validation/mpi-dynamic-spray-walls-20260925.md)).
 
 `advance_mpi_dynamic_les_ssprk2_3d` now integrates owner-local periodic or physical-boundary dynamic
 LES with collective dt agreement, global diffusion checks and transactional EOS
 recovery after both stages. Two/four-rank variable-state checks match serial
-state and temperature exactly. MPI coupled-spray/application dispatch remains
-pending. See [distributed stepping evidence](validation/les-mpi-dynamic-step-20260918.md).
+state and temperature exactly. See [distributed stepping evidence](validation/les-mpi-dynamic-step-20260918.md).
 
 MPI mixed-spray coupling and both MPI applications now accept the dynamic model
 and filter controls. Controls agree collectively and enter restart identity;
 periodic SGS half steps use distributed coefficient, flux and SSPRK2 APIs.
 Same-rank exact continuation and 2-to-4-rank continuation pass for fixed/selected
-H2O2. Regular MPI nonperiodic Dynamic LES operators are connected, with
-spray application dispatch remaining; the MPI AMR path
+H2O2. Regular MPI physical-boundary Dynamic LES now reaches the spray application,
+with focused fixed-mechanism wall/restart evidence; the MPI AMR path
 now supports physical boundaries and recursive stepping as described below. See
 [MPI dynamic application evidence](validation/les-mpi-dynamic-application-20260918.md).
 
@@ -3245,7 +3246,8 @@ connect these donors to regular-grid Dynamic physical fluxes and boundary budget
 ([operator checks](validation/regular-dynamic-boundaries-20260925.md)).
 Regular serial spray application dispatch now includes these boundary exchanges
 ([application checks](validation/regular-dynamic-spray-20260925.md)). Regular MPI
-physical boundaries remain separate work; the AMR path already supports them.
+spray also connects physical boundaries
+([MPI application checks](validation/mpi-dynamic-spray-walls-20260925.md)).
 
 The serial `advance_amr_patch_tree_les_level_3d` API advances one depth using
 temporal coarse donors and returns SSPRK2 time-integrated faces for later

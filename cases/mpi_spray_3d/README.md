@@ -305,7 +305,7 @@ The coefficients and model are bound to checkpoint context. Changing or removing
 a nondefault model rejects restart. This supplies a modeled SGS
 stress/heat/species flux; it does not establish validated LES or near-wall behavior.
 
-### Dynamic LES on periodic slabs
+### Dynamic LES on regular slabs
 
 Set `les_model='dynamic'` and positive `les_cs` to enable the distributed dynamic
 model. `les_test_filter='box'`, `les_test_ratio=2`, `les_grid_ratio=1` are the
@@ -314,7 +314,12 @@ API's valid ratios. Positive `les_cs` is an enable switch here, not a fixed
 coefficient; `les_prt`/`les_sct` do not determine dynamic transport. Zero disables
 SGS. Dynamic SGS includes isotropic stress and heat flux, with no species flux.
 
-Only periodic faces are supported. Model and filter settings are bound to
+Periodic and supported physical faces (reservoir inflow, extrapolated or
+pressure-target outflow, slip and moving adiabatic/isothermal walls) are accepted.
+Both SGS half steps contribute to the boundary inventory. The physical kernel
+uses wide distributed donors; its padded diffusion bound can depend on partition.
+See [physical wall/restart evidence](../../docs/validation/mpi-dynamic-spray-walls-20260925.md).
+Model and filter settings are bound to
 checkpoint context. Both stages recalculate coefficients; the whole coupled
 candidate is discarded on failure. The diffusion estimate is a timestep
 heuristic, not a nonlinear stability proof. See

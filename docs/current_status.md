@@ -31,7 +31,9 @@ The MPI spray application now connects recursive LES half steps and the scaled
 diffusion selector ([coupling checks](validation/les-mpi-spray-subcycle-20260925.md)).
 The regular serial spray application also connects Dynamic physical-boundary
 fluxes and restart ([wall/restart check](validation/regular-dynamic-spray-20260925.md)).
-Regular MPI Dynamic physical boundaries remain separate work.
+Regular MPI spray also connects Dynamic physical-boundary exchange, with
+changed-rank wall/restart evidence
+([MPI application check](validation/mpi-dynamic-spray-walls-20260925.md)).
 Detailed-fuel Dynamic LES and physical qualification remain open.
 Non-regular EB LES is an extension beyond the pinned reference, which rejects
 such cells in all four closures ([source audit](validation/les-reference-scope-20260925.md)).
