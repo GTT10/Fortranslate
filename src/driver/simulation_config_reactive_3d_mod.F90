@@ -90,6 +90,7 @@ module simulation_config_reactive_3d_mod
   public :: reactive_3d_mole_fractions
   public :: resolve_reactive_3d_selected_composition
 
+  public :: map_reactive_boundary_donor_3d
 contains
 
   ! Frozen-composition acoustic pressure extrapolation, as in pinned
@@ -144,7 +145,7 @@ contains
     if(present(boundary_cells)) bounds=boundary_cells
     if(any(bounds<1).or.any(bounds(1,:)>dims).or.any(bounds(2,:)>dims)) return
     if(any(bounds(2,:)<bounds(1,:))) return
-    if(any(n<2).or.any(shape(gt)/=dims)) return
+    if(any(n<1).or.any(shape(gt)/=dims)) return
     if(any(shape(ghost)/=[5+size(species),dims])) return
     if(.not.present(pressure)) then
       ok=.true.;return
@@ -189,10 +190,10 @@ contains
     logical, intent(in), optional :: viscous_wall
     real(dp), intent(in), optional :: wall_velocity(:,:)
     integer, optional, intent(in) :: ghost_width
-    integer :: width,bounces,bounce,wall_faces(128)
+    integer :: width
     real(dp) :: shift(3), old_momentum(3),rho
     logical :: use_viscous_wall
-    integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),face,inlet
+    integer :: n(3),dims(3),i,j,k,a,idx(3),q(3),inlet
     logical :: reflect(3)
     ok=.false.; ghost=0.0_dp; gt=0.0_dp
     use_viscous_wall=.false.
@@ -217,46 +218,10 @@ contains
       do k=1,dims(3)
         do j=1,dims(2)
           do i=1,dims(1)
-            idx=[i,j,k]-width; q=idx; reflect=.false.; inlet=0; shift=0
-            do a=1,3
-              bounces=0
-              do while (q(a)<1.or.q(a)>n(a))
-                face=2*a
-                if (q(a)<1) face=face-1
-                select case(trim(faces(face)))
-                case('periodic')
-                  q(a)=modulo(q(a)-1,n(a))+1
-                case('inflow')
-                  inlet=face
-                  q(a)=max(1,min(n(a),q(a)))
-                case('outflow')
-                  q(a)=max(1,min(n(a),q(a)))
-                case('slip_wall','no_slip_wall','isothermal_wall')
-                  bounces=bounces+1
-                  if (bounces>size(wall_faces)) return
-                  wall_faces(bounces)=face
-                  if (q(a)<1) then
-                    q(a)=1-q(a)
-                  else
-                    q(a)=n(a)+1-(q(a)-n(a))
-                  end if
-                end select
-              end do
-              ! Apply the encountered walls from the interior donor outward.
-              ! Reversing this order matters for distinct moving wall speeds.
-              do bounce=bounces,1,-1
-                face=wall_faces(bounce)
-                ! Euler reflects normal velocity only; diffusion imposes no-slip.
-                if (faces(face)/='slip_wall'.and.use_viscous_wall) then
-                  reflect=.not.reflect
-                  shift=-shift
-                  if (present(wall_velocity)) shift=shift+2.0_dp*wall_velocity(:,face)
-                else
-                  reflect(a)=.not.reflect(a)
-                  shift(a)=-shift(a)
-                end if
-              end do
-            end do
+            idx=[i,j,k]-width
+            call map_reactive_boundary_donor_3d(idx,n,faces,use_viscous_wall,q,reflect,shift,inlet,ok,wall_velocity)
+            if (.not.ok) return
+            ok=.false.
             ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
             if (inlet>0) then
               ghost(:,i,j,k)=inflow_state(:,inlet); gt(i,j,k)=inflow_temperature(inlet)
@@ -278,6 +243,64 @@ contains
       end do
     ok=.true.
   end subroutine fill_reactive_boundary_ghosts_3d
+
+  pure subroutine map_reactive_boundary_donor_3d(idx,n,faces,viscous,q,reflect,shift,inlet,ok,wall_velocity)
+    integer, intent(in) :: idx(3),n(3)
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: viscous
+    integer, intent(out) :: q(3),inlet
+    logical, intent(out) :: reflect(3),ok
+    real(dp), intent(out) :: shift(3)
+    real(dp), optional, intent(in) :: wall_velocity(:,:)
+    integer :: a,face,bounces,bounce,wall_faces(128)
+    ok=.false.;q=idx;reflect=.false.;shift=0;inlet=0
+    if(any(n<1).or.any(n>huge(1)-256)) return
+    if(any(idx<1-128).or.any(idx>n+128)) return
+    if(.not.valid_reactive_boundaries_3d(faces)) return
+    if(present(wall_velocity)) then
+      if(.not.valid_wall_velocity_3d(faces,wall_velocity)) return
+    end if
+    do a=1,3
+      bounces=0
+      do while (q(a)<1.or.q(a)>n(a))
+        face=2*a
+        if (q(a)<1) face=face-1
+        select case(trim(faces(face)))
+        case('periodic')
+          q(a)=modulo(q(a)-1,n(a))+1
+        case('inflow')
+          inlet=face
+          q(a)=max(1,min(n(a),q(a)))
+        case('outflow')
+          q(a)=max(1,min(n(a),q(a)))
+        case('slip_wall','no_slip_wall','isothermal_wall')
+          bounces=bounces+1
+          if (bounces>size(wall_faces)) return
+          wall_faces(bounces)=face
+          if (q(a)<1) then
+            q(a)=1-q(a)
+          else
+            q(a)=n(a)+1-(q(a)-n(a))
+          end if
+        end select
+      end do
+      ! Apply the encountered walls from the interior donor outward.
+      ! Reversing this order matters for distinct moving wall speeds.
+      do bounce=bounces,1,-1
+        face=wall_faces(bounce)
+        ! Euler reflects normal velocity only; diffusion imposes no-slip.
+        if (faces(face)/='slip_wall'.and.viscous) then
+          reflect=.not.reflect
+          shift=-shift
+          if (present(wall_velocity)) shift=shift+2.0_dp*wall_velocity(:,face)
+        else
+          reflect(a)=.not.reflect(a)
+          shift(a)=-shift(a)
+        end if
+      end do
+    end do
+    ok=.true.
+  end subroutine map_reactive_boundary_donor_3d
 
   pure logical function valid_wall_velocity_3d(faces,velocity) result(ok)
     character(len=*), intent(in) :: faces(6)
