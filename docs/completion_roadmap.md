@@ -139,8 +139,10 @@ EB tree halos and serial common-step hydro now also accept Mach inlets
 transport, recursive hydro and full splitting now forward those controls
 ([split evidence](validation/eb-mach-split-20260925.md)). MPI halos, common and
 recursive hydro/transport and full splitting now also forward these controls
-([MPI evidence](validation/eb-mach-mpi-20260925.md)). Inlet-aware timestep selection
-and application input remain to be connected.
+([MPI evidence](validation/eb-mach-mpi-20260925.md)). Serial/MPI timestep selection
+now includes inlet signal speeds and diffusivity
+([bound checks](validation/eb-mach-timestep-20260925.md)). Application input and
+checkpoint wiring remain to be connected.
 AMR-particle boundary coupling and stationary level-set EB applications are
 implemented within the documented subsets. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
