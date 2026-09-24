@@ -13,7 +13,7 @@ cd build/tree-example
 
 The executable accepts `<reactive_3d.nml> <topology.dat> [schedule.dat]`. Flow input uses the
 existing `reactive_3d` configuration, including elementary/full-H2/O2 models,
-PCM/characteristic-PLM face reconstruction, physical boundaries, chemistry and
+PCM/characteristic-PLM/characteristic-PPM face reconstruction, physical boundaries, chemistry and
 molecular transport. Existing validation requires at least four root cells in
 each direction. The application is also registered for installation.
 
@@ -351,7 +351,7 @@ is not a demonstrated speedup. Whole-patch constraints still apply.
 
 This frontend supports static, scheduled or temperature-adapted topologies with serial ownership.
 The MPI frontend supports static/scheduled/automatic execution and restart with
-common or recursive timesteps. Characteristic-PLM hydro enables limited
+common or recursive timesteps. Characteristic-PLM and characteristic-PPM hydro enable limited
 linear coarse donors with the configured limiter for both hydro and transport.
 PCM reconstruction retains PCM donors. Common timesteps and recursive subcycling are available; globally second-order
 AMR convergence and large-tree scaling remain unqualified.
@@ -379,3 +379,19 @@ adaptation-check counter. Rank zero validates the configured depth, ratios, tile
 alignment and node budget before broadcasting geometry metadata and scattering
 payloads to the current owners. The saved step is not tagged again on restart.
 Changing adaptation thresholds or cadence changes checkpoint identity and is rejected.
+
+## Characteristic PPM
+
+Set `reconstruction='characteristic_ppm'` in `&reactive_3d` for fixed or
+selected serial/MPI tree gas applications. PPM uses four ghost layers and
+one time-centered CTU step per level interval, with flattening enabled and
+contact steepening disabled. Both common and recursive timesteps use
+integrated PPM fluxes for reflux. Molecular transport uses limited coarse
+donors, and Mach inlet timestep evaluation uses four-layer donors.
+
+Checkpoint context includes the reconstruction selector; switching to PCM
+or PLM on continuation is rejected. The
+[focused application checks](../../docs/validation/ppm-amr-application-20260925.md)
+cover reacting molecular transport, serial/MPI output equality and fixed
+mechanism rank-changing continuation. This does not establish convergence
+order or exact PeleC primitive-pressure parity.
