@@ -865,7 +865,7 @@ contains
       config%species_diffusion_enabled
     if (local_ok) then
       local_ok = trim(config%reconstruction) == "pcm" .or. &
-        trim(config%reconstruction) == "characteristic_plm"
+        trim(config%reconstruction) == "characteristic_plm" .or. trim(config%reconstruction) == "characteristic_ppm"
     end if
     if (local_ok) then
       local_ok = trim(config%limiter) == "minmod" .or. &

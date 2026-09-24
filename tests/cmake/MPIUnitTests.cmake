@@ -16,6 +16,14 @@ if(PELEF_ENABLE_MPI)
   foreach(flag IN LISTS MPIEXEC_POSTFLAGS)
     list(APPEND DYNAMIC_AMR_MPI_FLAGS "--mpiexec-postflag=${flag}")
   endforeach()
+  add_test(NAME mpi_amr_two_level_ppm_restart_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
+      --ppm --pressure-outlet --reacting --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"
+      --reference-executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+      --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
+      ${DYNAMIC_AMR_MPI_FLAGS} --ranks 4 --restart-ranks 2
+      --work-dir "${CMAKE_CURRENT_BINARY_DIR}/mpi_amr_two_level_ppm_restart_3d")
+  set_tests_properties(mpi_amr_two_level_ppm_restart_3d PROPERTIES TIMEOUT 300 PROCESSORS 4)
   add_test(NAME regression_mpi_dynamic_amr_3d_restart
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_dynamic_amr_3d_restart.py"
       --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"

@@ -461,7 +461,8 @@ contains
     local_ok=local_ok.and.hierarchy%nvar==reactive_nvar(size(species))
     local_ok=local_ok.and.all(n==[next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz])
     local_ok=local_ok.and.patch%refinement_ratio==next_patch%refinement_ratio
-    local_ok=local_ok.and.(reconstruction=='pcm'.or.reconstruction=='characteristic_plm')
+    local_ok=local_ok.and.(reconstruction=='pcm'.or.reconstruction=='characteristic_plm'.or. &
+      reconstruction=='characteristic_ppm')
     local_ok=local_ok.and.(limiter=='mc'.or.limiter=='minmod')
     if (present(boundary_faces)) then
       touched=[min(patch%coarse_i_lower,next_patch%coarse_i_lower)==1, &
@@ -566,7 +567,8 @@ contains
               min(next_patch%coarse_i_upper,distribution%coarse_last)
             li=distribution%coarse_local_index(ci);hi=li+2;hj=cj+shift;hk=ck+shift
             slope=0
-            if (reconstruction=='characteristic_plm') then
+            ! PPM shares the conservative limited-linear remap.
+            if (reconstruction/='pcm') then
               do v=1,hierarchy%nvar
                 call limited_slope(halo(v,hi,hj,hk)-halo(v,hi-1,hj,hk), &
                   halo(v,hi+1,hj,hk)-halo(v,hi,hj,hk),limiter,slope(v,1),cell_ok)
