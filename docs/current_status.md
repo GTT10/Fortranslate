@@ -15,8 +15,10 @@ interior composition and extrapolated or prescribed pressure
 now constructs its ghosts at both SSPRK2 stages
 ([hydro checks](validation/mach-inlet-hydro-20260925.md)). Molecular transport
 also rebuilds Mach inlet states per stage
-([transport checks](validation/mach-inlet-transport-20260925.md)); input, split,
-LES, AMR and MPI dispatch remain open.
+([transport checks](validation/mach-inlet-transport-20260925.md)). The full serial
+reaction/transport/hydro composition forwards the same controls
+([split checks](validation/mach-inlet-split-20260925.md)); input, LES, AMR and MPI
+dispatch remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
