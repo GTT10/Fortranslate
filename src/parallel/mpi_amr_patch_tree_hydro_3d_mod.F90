@@ -21,7 +21,7 @@ module mpi_amr_patch_tree_hydro_3d_mod
 contains
   subroutine advance_mpi_amr_tree_hydro_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
       reconstruction,limiter,solver,boundary_change,maximum_correction,comm,ok,inflow_state,inflow_temperature, &
-      outlet_pressure)
+      outlet_pressure,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -32,13 +32,13 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
-    real(dp) :: pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp) :: pressure(6),mach(6),pin(6),tin(6)
     type(amr_tree_state_3d) :: initial,candidate,temps,stage_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)),first_max,second_max
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(10),low(10),high(10)
+    real(dp) :: controls(28),low(28),high(28)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
     character(len=:), allocatable :: donor_limiter
@@ -53,7 +53,25 @@ contains
     if (status/=MPI_SUCCESS) return
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
-    controls=[root_spacing,dt,pressure]
+    mach=-1;pin=0;tin=0
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) pin=inflow_pressure
+    valid=.true.
+    if(present(inflow_temperature)) then
+      valid=size(inflow_temperature)==6
+      if(valid) then
+        where(mach>=0) tin=inflow_temperature
+      end if
+    end if
+    valid=valid.and.(.not.present(inflow_pressure).or.present(inflow_mach))
+    valid=valid.and.all(ieee_is_finite(mach)).and.all(mach<=100)
+    valid=valid.and..not.any(mach>=0.and.faces/='inflow')
+    valid=valid.and.all(ieee_is_finite(pin)).and.all(pin>=0).and.all(pin<=1e15_dp)
+    valid=valid.and..not.any(pin>0.and.mach<0)
+    valid=valid.and.all(ieee_is_finite(tin)).and..not.any(tin<=0.and.mach>=0)
+    call agree(valid)
+    if(.not.valid) return
+    controls=[root_spacing,dt,pressure,mach,tin,pin]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -69,9 +87,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,28,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,28,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     options(:6)=faces;options(7)=reconstruction;options(8)=limiter;options(9)=solver
@@ -81,7 +99,7 @@ contains
     valid=all(options==reference_options)
     call agree(valid)
     if (.not.valid) return
-    if (any(faces=='inflow')) then
+    if (any(faces=='inflow'.and.mach<0)) then
       valid=present(inflow_state).and.present(inflow_temperature)
       if (valid) then
         valid=all(shape(inflow_state)==[nvar,6]).and.size(inflow_temperature)==6
@@ -172,7 +190,8 @@ contains
       call copy_local(u,updated,success)
       if (.not.success) return
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
-        inflow_state=inlet,coarse_limiter=donor_limiter,species_count=size(species))
+        inflow_state=inlet,coarse_limiter=donor_limiter,species_count=size(species), &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
