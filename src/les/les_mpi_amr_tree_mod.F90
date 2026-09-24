@@ -90,7 +90,8 @@ contains
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
       if(filter_valid) width=(size(weights)-1)/2+5
       filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(pressure==0)
-      filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow')
+      filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow'.or. &
+        faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
@@ -224,7 +225,8 @@ contains
               fz(nvar,n(1),n(2),n(3)+1),stat=ios)
             valid=ios==0
             if(valid) call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
-              h(:,node),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid,harmonic,diffusivity)
+              h(:,node),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid,harmonic,diffusivity, &
+              boundary_faces=local_faces,wall_temperature=wall_temperature)
           end block
         else
         call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,node), &
@@ -344,7 +346,8 @@ contains
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
       if(filter_valid) width=(size(weights)-1)/2+5
       filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(pressure==0)
-      filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow')
+      filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow'.or. &
+        faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
@@ -523,7 +526,8 @@ contains
           end if
           if(dynamic) then
             call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
-              h(:,peer),filter,filter_ratio,width,les_rhs,fx,fy,fz,success,grid,harmonic,diffusivity)
+              h(:,peer),filter,filter_ratio,width,les_rhs,fx,fy,fz,success,grid,harmonic,diffusivity, &
+              boundary_faces=local_faces,wall_temperature=wall_temperature)
           else
           call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
             cs,prt,sct,les_rhs,diffusivity,success,boundary_faces=local_faces, &

@@ -98,7 +98,8 @@ contains
           real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
           allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
           call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
-            h(:,peer),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusivity)
+            h(:,peer),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusivity, &
+              boundary_faces=local_faces,wall_temperature=wall_temperature)
         end block
       else
       call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
@@ -241,7 +242,8 @@ contains
         allocate(les_rhs(nvar,n(1),n(2),n(3)))
         if(dynamic) then
           call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
-            h(:,peer),filter,filter_ratio,width,les_rhs,fx,fy,fz,success,grid_ratio,harmonic_mean,diffusivity)
+            h(:,peer),filter,filter_ratio,width,les_rhs,fx,fy,fz,success,grid_ratio,harmonic_mean,diffusivity, &
+              boundary_faces=local_faces,wall_temperature=wall_temperature)
         else
         call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
           cs,prt,sct,les_rhs,diffusivity,success,boundary_faces=local_faces, &
@@ -306,7 +308,8 @@ contains
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) return
       ok=.true.;return
     end if
-    if(any(faces/='periodic'.and.faces/='inflow'.and.faces/='outflow')) return
+    if(any(faces/='periodic'.and.faces/='inflow'.and.faces/='outflow'.and. &
+      faces/='slip_wall'.and.faces/='no_slip_wall'.and.faces/='isothermal_wall')) return
     if(present(test_model)) filter=test_model
     if(present(test_ratio)) ratio=test_ratio
     if(present(grid_ratio)) then

@@ -235,6 +235,12 @@ if(PELEF_ENABLE_SPRAY)
         --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_dynamic_open"
         --les --dynamic --dynamic-open)
     set_tests_properties(spray_mpi_amr_dynamic_open PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 300 PROCESSORS 4)
+    add_test(NAME spray_mpi_amr_dynamic_walls
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe "$<TARGET_FILE:pelef_mpi_amr_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_dynamic_walls"
+        --les --dynamic --dynamic-walls)
+    set_tests_properties(spray_mpi_amr_dynamic_walls PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 300 PROCESSORS 4)
     add_test(NAME spray_mpi_amr_les_application
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
         --exe "$<TARGET_FILE:pelef_mpi_amr_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
@@ -631,7 +637,7 @@ if(PELEF_ENABLE_SPRAY)
       add_test(NAME spray_les_mpi_amr_tree_${les_ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${les_ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_les_mpi_amr_tree> ${MPIEXEC_POSTFLAGS})
-      set_tests_properties(spray_les_mpi_amr_tree_${les_ranks} PROPERTIES LABELS "spray;amr;mpi" TIMEOUT 120 PROCESSORS ${les_ranks})
+      set_tests_properties(spray_les_mpi_amr_tree_${les_ranks} PROPERTIES LABELS "spray;amr;mpi" TIMEOUT 180 PROCESSORS ${les_ranks})
     endforeach()
   endif()
   add_executable(test_les_amr_tree spray/test_les_amr_tree.F90)

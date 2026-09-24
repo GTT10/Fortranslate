@@ -225,7 +225,8 @@ contains
     if(les_model=='dynamic') then
       call les_filter_weights(les_test_model,les_test_ratio,filter_weights,ok)
       if(.not.ok.or.les_grid_ratio<1.or.les_grid_ratio>64) call fatal('Invalid dynamic LES filter')
-      if(any(faces/='periodic'.and.faces/='inflow'.and.faces/='outflow')) &
+      if(any(faces/='periodic'.and.faces/='inflow'.and.faces/='outflow'.and. &
+      faces/='slip_wall'.and.faces/='no_slip_wall'.and.faces/='isothermal_wall')) &
         call fatal('Unsupported dynamic LES boundary')
       if(any(config%outlet_pressure/=0)) call fatal('Dynamic LES pressure outlet is not supported')
       dynamic_filter=trim(les_test_model)

@@ -67,7 +67,8 @@ program test_les_mpi_amr_tree
       case(4)
         model='dynamic'
       end select
-      do mode=1,3
+      do mode=1,4
+        if(mode==4.and.m/=4) cycle
         faces='periodic';wall_v=0;outlet=0
         if (mode>=2) faces='outflow'
         if (mode==3) then
@@ -76,6 +77,10 @@ program test_les_mpi_amr_tree
         end if
         if(m==4.and.mode==3) then
           faces='outflow';faces(1)='inflow';outlet=0;wall_v=0
+        end if
+        if(mode==4) then
+          faces(1:2)='slip_wall';faces(3:4)='no_slip_wall';faces(5:6)='isothermal_wall'
+          wall_v(1,3:6)=2;outlet=0
         end if
         call prolong_amr_patch_tree_3d(tree,root,state,ok)
         call require(ok,'state initialization')
