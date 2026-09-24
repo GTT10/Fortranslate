@@ -2985,6 +2985,21 @@ This exposes existing periodic fluxes for future conservative coupling; it does
 not yet supply AMR halos, reflux or Dynamic LES AMR stepping. See
 [face-output checks](validation/les-dynamic-face-output-20260925.md).
 
+`compute_dynamic_les_rhs_ghosted_3d` now evaluates one rectangular patch from
+caller-supplied conserved state/temperature with `ng` donor layers on all six
+sides. Supply donor values at the patch spacing. For filter radius `r`, require
+`ng >= r+5` (one derivative layer, three smoothing layers, one face-neighbor
+layer); `ng` is bounded to 128. RHS dimensions define the interior; state and
+temperature dimensions must be the interior plus `2*ng` on each axis. All three
+face outputs use the shapes above and publish with RHS only on success.
+The implementation evaluates a padded periodic workspace and crops its interior;
+the checked halo keeps its artificial seam outside the requested stencil.
+Every workspace cell/filter state must remain thermodynamically admissible.
+This first implementation overcomputes the outer workspace and exposes no
+patch-local diffusion estimate. The caller still owns physical/coarse-fine
+donor construction, flux synchronization/reflux and time stepping. See
+[ghosted-patch checks](validation/les-dynamic-ghosted-20260925.md).
+
 `advance_dynamic_les_ssprk2_3d` now advances the periodic dynamic operator with
 stage-wise coefficient recomputation, EOS recovery and transactional publication.
 Each stage applies a frozen-coefficient diffusion estimate with a 0.2 diffusion
