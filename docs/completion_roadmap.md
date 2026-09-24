@@ -168,8 +168,10 @@ The pressure-traced path now uses the minimum shock flattening across all three
 axes ([checks](validation/ppm-multidirectional-flattening-20260925.md)). Pinned
 normal tracing recomputes internal energy from pressure through the EOS, as does
 PeleF; independent normal internal-energy tracing is not an additional missing
-reference step. Application binding, external normal/CTU parity and broader
-coupling remain open. Regular MPI spray
+reference step. The existing `characteristic_ppm`/`pelec` application combination
+now selects this pressure policy through the common periodic/halo CTU entries
+([checks](validation/ppm-pressure-dispatch-20260925.md)). External normal/CTU
+parity and broader qualification remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity

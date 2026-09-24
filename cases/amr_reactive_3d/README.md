@@ -311,7 +311,10 @@ The fixed and selected serial/MPI two-level front ends accept
 `reconstruction="characteristic_ppm"`. This connects conservative CTU hydro,
 reaction/transport splitting, dynamic limited-linear remapping and checkpoint
 restart. The stored reconstruction must match on restart. Sparse MPI uses four-layer halos and the same fine CTU update with rank-local
-storage. Multi-patch tree MPI PPM is a separate path.
+storage. With `riemann_solver="pelec"`, CTU evolves transverse primitive pressure
+separately and uses multidirectional shock flattening. Other solvers retain the
+conservative/EOS correction. The stored solver must also match on restart.
+Multi-patch tree MPI PPM is a separate path.
 See [the focused application check](../../docs/validation/ppm-two-level-application-20260925.md)
 for the reacting, transporting physical-boundary/regrid fixture and its limits.
 The [MPI application check](../../docs/validation/ppm-mpi-two-level-application-20260925.md)
