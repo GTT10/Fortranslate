@@ -50,7 +50,9 @@ Serial AMR LES selectors and common/recursive stepping also accept Mach controls
 for all four models ([LES checks](validation/mach-inlet-amr-les-20260925.md)).
 MPI AMR LES selectors and common/recursive stepping now forward collectively
 agreed controls ([MPI LES checks](validation/mach-inlet-mpi-amr-les-20260925.md)).
-Coupled dispatch and application input remain open.
+Serial/MPI reacting transport/hydro composition now forwards Mach controls through
+common and recursive steps ([split checks](validation/mach-inlet-amr-split-20260925.md)).
+Spray coupling and application input/timestep integration remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
