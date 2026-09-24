@@ -3068,9 +3068,12 @@ outputs ([communication checks](validation/mpi-les-donor-planes-20260925.md)).
 `fill_mpi_les_boundary_ghosts_3d` now supplies the shared physical mapping,
 repeated moving-wall transforms and pressure-target correction, including
 one-cell local slabs ([halo checks](validation/mpi-les-physical-halos-20260925.md)).
-Regular MPI Dynamic flux/application dispatch remains to be connected.
+`compute_mpi_dynamic_les_boundary_rhs_3d` and
+`advance_mpi_dynamic_les_ssprk2_3d` now connect physical fluxes, global boundary
+rates and SSPRK2 budgets ([operator checks](validation/mpi-dynamic-physical-20260925.md)).
+Regular MPI spray application dispatch remains to be connected.
 
-`advance_mpi_dynamic_les_ssprk2_3d` now integrates periodic owner-local dynamic
+`advance_mpi_dynamic_les_ssprk2_3d` now integrates owner-local periodic or physical-boundary dynamic
 LES with collective dt agreement, global diffusion checks and transactional EOS
 recovery after both stages. Two/four-rank variable-state checks match serial
 state and temperature exactly. MPI coupled-spray/application dispatch remains
@@ -3080,7 +3083,8 @@ MPI mixed-spray coupling and both MPI applications now accept the dynamic model
 and filter controls. Controls agree collectively and enter restart identity;
 periodic SGS half steps use distributed coefficient, flux and SSPRK2 APIs.
 Same-rank exact continuation and 2-to-4-rank continuation pass for fixed/selected
-H2O2. Regular MPI nonperiodic Dynamic LES remains open; the MPI AMR path
+H2O2. Regular MPI nonperiodic Dynamic LES operators are connected, with
+spray application dispatch remaining; the MPI AMR path
 now supports physical boundaries and recursive stepping as described below. See
 [MPI dynamic application evidence](validation/les-mpi-dynamic-application-20260918.md).
 
