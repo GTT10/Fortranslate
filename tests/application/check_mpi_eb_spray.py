@@ -22,6 +22,7 @@ def main():
     p.add_argument('--regrid', action='store_true')
     p.add_argument('--ports', action='store_true')
     p.add_argument('--profiles', action='store_true')
+    p.add_argument('--mach', action='store_true')
     p.add_argument('--pelemp-cap', action='store_true')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
@@ -55,6 +56,9 @@ def main():
                       'regrid_lower(:,1,3)=1,1,1,regrid_upper(:,1,3)=2,4,4,')
         if a.selected:
             extra += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
+        if a.mach:
+            extra = ('inflow_mach(4)=.1,inflow_temperature(4)=400.,inflow_pressure(4)=120000.,'
+                     'automatic_timestep=.true.,subcycling=.true.,' + extra)
         (directory / 'tree.nml').write_text(text.replace('&eb_tree', '&eb_tree\n' + extra, 1))
         if a.ports:
             spray = directory / 'spray.nml'
@@ -172,6 +176,10 @@ def main():
                 assert abs(x-y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
         mismatch = run(2, 'context_mismatch', f"restart_file='{archive}',", success=False, altered=True)
         assert 'EB spray context mismatch' in (mismatch / 'run.log').read_text()
+        if a.mach:
+            mismatch = run(2, 'inlet_mismatch', f"restart_file='{archive}',inflow_mach(4)=.2,", success=False)
+            assert 'Restart inlet mismatch' in (mismatch / 'run.log').read_text()
+            assert not (mismatch / 'result.csv').exists()
         payload = Path(str(archive) + '.particles')
         original = payload.read_bytes()
         payload.write_bytes(original[:-40])

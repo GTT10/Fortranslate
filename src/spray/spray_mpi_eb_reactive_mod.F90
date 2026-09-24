@@ -31,7 +31,7 @@ contains
       chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
       films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow, &
-      acceleration,source_change)
+      acceleration,source_change,inflow_mach,inflow_temperature,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -49,6 +49,7 @@ contains
     logical, intent(in) :: chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion
     integer, intent(out) :: particle_steps
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemical_change(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     logical, optional, intent(in) :: subcycling
@@ -148,7 +149,8 @@ contains
     end if
     call advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
-      gas,temp,boundary,wall,chemical,theta,comm,valid,integrator,subcycling)
+      gas,temp,boundary,wall,chemical,theta,comm,valid,integrator,subcycling, &
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
     if(.not.valid) return
     if(present(films)) then
       call advance_mpi_amr_film_coupling(comm,species,transport,liquids,options,film_settings,gas,temp, &

@@ -194,9 +194,6 @@ program pelef_reactive_eb_tree_3d
   if (any(inflow_temperature<=0.and.inflow_mach>=0)) error stop 'Active inlet requires positive temperature'
   if (any((inflow_temperature/=0.or.inflow_pressure/=0).and.inflow_mach<0)) &
     error stop 'Inactive inlet has unused temperature or pressure'
-#ifdef PELEF_MPI_EB_SPRAY
-  if (any(inflow_mach>=0)) error stop 'Mach inlet is not connected to EB spray coupling'
-#endif
   if (any(inflow_mach>=0)) then
     active_mach=inflow_mach;active_temperature=inflow_temperature;active_pressure=inflow_pressure
   end if
@@ -418,7 +415,8 @@ program pelef_reactive_eb_tree_3d
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
         films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
-        acceleration=acceleration,source_change=step_force)
+        acceleration=acceleration,source_change=step_force, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -427,7 +425,8 @@ program pelef_reactive_eb_tree_3d
         chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
-        acceleration=acceleration,source_change=step_force)
+        acceleration=acceleration,source_change=step_force, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
