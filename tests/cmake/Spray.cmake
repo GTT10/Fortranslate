@@ -1,4 +1,9 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME spray_eb_rate_files_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray_nozzle.py"
+    --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_rate_files_application" --properties --ports --rate --rate-files)
+  set_tests_properties(spray_eb_rate_files_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
   add_test(NAME spray_eb_force_application COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"

@@ -15,7 +15,7 @@ module spray_eb_application_mod
   use reactive_eb_cfl_3d_mod, only: compute_reactive_eb_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
   use spray_parcel_mod
-  use spray_injection_profile_mod, only: integrate_spray_injection_profile
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod, only: liquid_mixture_properties
   use spray_eb_reactive_mod, only: advance_eb_spray_reactive_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
@@ -69,6 +69,8 @@ contains
     integer :: port_profile_points(16)
     real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),port_radii(16),port_discharge_coefficients(16)
     integer :: injection_profile_points=0
+    character(len=1024) :: profile_file,profile_files(16)
+    namelist /eb_spray_rate_files/ profile_file,profile_files
     real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,injection_end_times(1024)=-1
     logical :: velocity_from_rate=.false.
     real(dp) :: discharge_coefficient=1,event_masses(1024),event_speeds(1024),profile_mass,denominator
@@ -138,8 +140,31 @@ contains
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=status)
     if(status/=0) error stop 'Cannot open EB spray input'
     read(unit,nml=eb_spray,iostat=status)
+    if(status/=0) error stop 'Invalid EB spray namelist'
+    profile_file='';profile_files=''
+    rewind(unit)
+    read(unit,nml=eb_spray_rate_files,iostat=status)
+    if(status>0) error stop 'Invalid EB spray rate files input'
     close(unit,iostat=close_status)
-    if(status/=0.or.close_status/=0) error stop 'Invalid EB spray namelist'
+    if(close_status/=0) error stop 'Invalid EB spray namelist'
+    if(port_count<1.or.port_count>16) error stop 'Invalid port count'
+    if(any(profile_files(port_count+1:)/='')) error stop 'Unused EB rate files'
+    if(len_trim(profile_file)>0) then
+      if(injection_profile_points/=0.or.any(injection_profile_times/=0).or. &
+        any(injection_profile_rates/=0)) error stop 'Rate file conflicts with inline profile'
+      call read_spray_injection_profile(trim(profile_file),injection_profile_times, &
+        injection_profile_rates,injection_profile_points,ok)
+      if(.not.ok) error stop 'Invalid EB spray rate file'
+    end if
+    do port=1,port_count
+      if(len_trim(profile_files(port))==0) cycle
+      if((port_profile_points(port)/=-1.and.port_profile_points(port)/=0).or. &
+        any(port_profile_times(:,port)/=0).or.any(port_profile_rates(:,port)/=0)) &
+        error stop 'Rate file conflicts with inline profile'
+      call read_spray_injection_profile(trim(profile_files(port)),port_profile_times(:,port), &
+        port_profile_rates(:,port),port_profile_points(port),ok)
+      if(.not.ok) error stop 'Invalid EB spray rate file'
+    end do
     if(nc<1.or.nc>16.or.number<1.or.number>125000) error stop 'Invalid EB spray population or components'
     if(.not.ieee_is_finite(maximum_dt)) error stop 'Invalid EB spray maximum_dt'
     if(maximum_dt<=0.or.maximum_dt>1e6_dp) error stop 'Invalid EB spray maximum_dt'

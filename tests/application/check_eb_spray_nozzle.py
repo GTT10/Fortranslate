@@ -13,14 +13,17 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--properties', action='store_true')
 p.add_argument('--rate', action='store_true')
+p.add_argument('--rate-files', action='store_true')
 p.add_argument('--ports', action='store_true')
 p.add_argument('--models', action='store_true')
 a = p.parse_args()
+if a.rate_files and not (a.rate and a.ports):
+    p.error('--rate-files requires --rate --ports')
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
 
 
-def run(profile, label, extra='', invalid=False):
+def run(profile, label, extra='', invalid=False, changed=False, inline=False):
     directory = work / profile / label
     shutil.copytree(a.source / 'cases/eb_spray_3d', directory)
     gas = directory / 'gas.nml'
@@ -79,17 +82,29 @@ def run(profile, label, extra='', invalid=False):
             controls += ("port_nozzles(2)%profile='solid',port_nozzles(2)%spread=0.,"
                          "port_sizes(2)%distribution='weibull',port_sizes(2)%weighting='mass',"
                          "port_sizes(2)%shape=3.,port_sizes(2)%std=0.,")
-    if invalid and a.models:
+    file_group = ''
+    if a.rate_files and not inline:
+        controls = controls.replace(
+            'injection_profile_points=2,injection_profile_times=0.,4.e-8,injection_profile_rates=2*.002,', '')
+        controls = controls.replace(
+            'port_profile_points(2)=2,port_profile_times(1:2,2)=0.,4.e-8,'
+            'port_profile_rates(1:2,2)=.001,.003,', '')
+        first = 'renamed.dat' if label == 'resumed' else 'shared.dat'
+        rate = '-.002' if invalid else '.0021' if changed else '.002'
+        (directory / first).write_text(f'# {label}\n0 .002\n4.e-8 {rate}\n')
+        (directory / 'port2.dat').write_text('0\t.001\n\n4.e-8 .003 ! end\n')
+        file_group = f"\n&eb_spray_rate_files profile_file='{first}',profile_files(2)='port2.dat' /\n"
+    elif invalid and a.models:
         controls += "port_nozzles(2)%profile='invalid',"
     elif invalid and a.properties:
         controls = controls.replace('1100.,-.2,0.,0.', '-1100.,0.,0.,0.')
     elif invalid:
         controls = controls.replace('nozzle_radius=.0001', 'nozzle_radius=-.0001')
-    spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1))
+    spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1) + file_group)
     result = subprocess.run([str(a.exe.resolve()), 'gas.nml', 'spray.nml'], cwd=directory,
                             capture_output=True, text=True, timeout=30)
     (directory / 'run.log').write_text(result.stdout + result.stderr)
-    assert (result.returncode == 0) != invalid, (directory, result.stderr)
+    assert (result.returncode == 0) != (invalid or changed), (directory, result.stderr)
     return directory
 
 
@@ -155,11 +170,18 @@ for profile in ('solid', 'hollow'):
     resumed = run(profile, 'resumed', f"restart_file='{archive}',")
     for filename in ('gas.csv', 'gas.csv.particles.csv', 'gas.csv.films.csv'):
         assert (full / filename).read_bytes() == (resumed / filename).read_bytes()
+    if a.rate_files:
+        baseline = run(profile, 'inline', inline=True)
+        for filename in ('gas.csv', 'gas.csv.particles.csv', 'gas.csv.films.csv'):
+            assert (full / filename).read_bytes() == (baseline / filename).read_bytes()
+        rejected = run(profile, 'changed', f"restart_file='{archive}',", changed=True)
+        assert 'EB spray restart rejected' in (rejected / 'run.log').read_text()
+        assert not (rejected / 'gas.csv').exists()
     for label in ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', 'Chemistry inventory:'):
         before = next(x for x in (full / 'run.log').read_text().splitlines() if x.startswith(label))
         after = next(x for x in (resumed / 'run.log').read_text().splitlines() if x.startswith(label))
         assert before == after
     bad = run(profile, 'invalid', invalid=True)
-    assert ('Invalid scheduled EB injection' if a.models else 'Invalid injected liquid mixture' if a.properties else 'Invalid rate-driven outlet radius' if a.rate else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
+    assert ('Invalid EB spray rate file' if a.rate_files else 'Invalid scheduled EB injection' if a.models else 'Invalid injected liquid mixture' if a.properties else 'Invalid rate-driven outlet radius' if a.rate else 'Invalid scheduled EB injection') in (bad / 'run.log').read_text()
     assert not (bad / 'gas.csv').exists()
 print(f'PASS: serial EB finite nozzles, size weights and restart: {work}')
