@@ -3065,8 +3065,10 @@ stepping and coupled/application dispatch remain to be connected; see
 `sample_mpi_les_x_planes_3d` provides owner-routed raw donor planes for wide
 regular MPI physical halos, with unequal/zero request counts and transactional
 outputs ([communication checks](validation/mpi-les-donor-planes-20260925.md)).
-Physical coordinate mapping and wall transforms remain caller responsibilities;
-this helper alone does not enable MPI Dynamic physical boundaries.
+`fill_mpi_les_boundary_ghosts_3d` now supplies the shared physical mapping,
+repeated moving-wall transforms and pressure-target correction, including
+one-cell local slabs ([halo checks](validation/mpi-les-physical-halos-20260925.md)).
+Regular MPI Dynamic flux/application dispatch remains to be connected.
 
 `advance_mpi_dynamic_les_ssprk2_3d` now integrates periodic owner-local dynamic
 LES with collective dt agreement, global diffusion checks and transactional EOS
