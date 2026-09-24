@@ -17,6 +17,8 @@ module mpi_amr_patch_tree_application_3d_mod
   use selected_composition_mod, only: resolve_selected_composition
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved, &
     resolve_reactive_chemistry_integrator
+  use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
+  use mpi_amr_patch_tree_ghost_3d_mod, only: fill_mpi_amr_tree_ghosts_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
   use reactive_entropy_wave_3d_problem_mod, only: initialize_reactive_problem_3d
@@ -70,7 +72,7 @@ contains
     real(dp), allocatable :: x(:),y(:),z(:),root_h(:),h(:,:),mass_fractions(:),inlet_x(:)
     real(dp), allocatable :: initial(:),final(:),budget(:),change(:),inlet(:,:),q(:),inlet_cube(:,:,:,:)
     real(dp) :: time,dt,transport_dt,diffusivity,base_density,correction,theta,max_correction,min_theta,stop_time
-    real(dp) :: inlet_t(6),inlet_temperature(2,2,2),inlet_dt,face_dt,sound,min_h(3)
+    real(dp) :: inlet_t(6),inlet_temperature(2,2,2),inlet_dt,face_dt,sound,min_h(3),mach_pressure(6)
     integer :: count,unit,status,node,n(3),i,j,k,step,attempt,face,c,rank,nranks
     character(len=32) :: faces(6),partitioning
     character(len=1024) :: message
@@ -277,7 +279,8 @@ contains
     do event=1,nevents
       call include_event_spacing(events(event))
     end do
-    inlet=0;inlet_t=0;inlet_dt=huge(1.0_dp)
+    inlet=0;inlet_t=0;inlet_dt=huge(1.0_dp);mach_pressure=0
+    where(config%inflow_mach>=0) mach_pressure=config%inflow_pressure
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
       call resolve_selected_composition('Inflow',config%inflow_composition_count,config%inflow_composition_species, &
         config%inflow_composition_mole_fractions,species,inlet_x,ok,message)
@@ -287,6 +290,10 @@ contains
     end if
     do face=1,6
       if (faces(face)/='inflow') cycle
+      if(config%inflow_mach(face)>=0) then
+        inlet_t(face)=config%inflow_temperature(face)
+        cycle
+      end if
       q=0;q(1)=mixture_density(species,mass_fractions,config%inflow_pressure(face),config%inflow_temperature(face),ok)
       if (.not.ok) call fatal('Invalid inflow density')
       q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mass_fractions
@@ -370,6 +377,7 @@ contains
         if (.not.ok) call fatal('Invalid MPI tree transport timestep')
         dt=min(dt,transport_dt)
       end if
+      if(any(config%inflow_mach>=0)) call limit_mach_step()
       sample_work=.false.
       if (rebalance_interval_steps>0) sample_work=mod(step+1,rebalance_interval_steps)==0
       do attempt=1,20
@@ -383,7 +391,7 @@ contains
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           change,correction,theta,comm,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling, &
-          outlet_pressure=config%outlet_pressure)
+          outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
         dt=.5_dp*dt
@@ -425,6 +433,53 @@ contains
     call MPI_Barrier(comm,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot complete MPI tree output')
   contains
+    subroutine limit_mach_step()
+      type(amr_tree_state_3d) :: packed,halos
+      real(dp) :: bound,dmax,factor,local_bound,global_bound
+      integer :: peer,dims(3),nv
+      character(len=:), allocatable :: donor_limiter
+      nv=size(q)
+      if(config%reconstruction=='characteristic_plm') donor_limiter=config%limiter
+      allocate(packed%fields(size(tree%nodes)))
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        dims=tree%nodes(peer)%shape
+        allocate(packed%fields(peer)%values(nv+1,dims(1),dims(2),dims(3)))
+        packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
+        packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+      end do
+      call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nv+1,faces,halos,comm,ok,viscous_wall=.true., &
+        inflow_state=inlet_with_temperature(),wall_velocity=config%wall_velocity,coarse_limiter=donor_limiter, &
+        species_count=size(species),species=species,inflow_mach=config%inflow_mach, &
+        inflow_temperature=inlet_t,inflow_pressure=mach_pressure)
+      if(.not.ok) call fatal('Invalid MPI tree Mach inlet donors')
+      local_bound=dt
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        associate(ghost=>halos%fields(peer)%values)
+        dims=shape(ghost(1,:,:,:));factor=1
+        if(subcycling) factor=root_h(1)/h(1,peer)
+        call compute_reactive_cfl_timestep_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
+          dims(1),dims(2),dims(3),h(1,peer),h(2,peer),h(3,peer),config%cfl,bound,ok)
+        if(.not.ok) call fatal('Invalid MPI tree Mach hydro timestep')
+        local_bound=min(local_bound,factor*bound)
+        if(config%transport_enabled) then
+          call reactive_transport_timestep_3d(species,transport,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
+            dims(1),dims(2),dims(3),h(1,peer),h(2,peer),h(3,peer),config%transport_cfl, &
+            viscosity,conduction,diffusion,bound,dmax,ok)
+          if(.not.ok) call fatal('Invalid MPI tree Mach transport timestep')
+          local_bound=min(local_bound,factor**2*bound)
+        end if
+        end associate
+      end do
+      call MPI_Allreduce(local_bound,global_bound,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) call fatal('Cannot reduce MPI tree Mach timestep')
+      dt=global_bound
+    end subroutine
+    function inlet_with_temperature() result(packed_inlet)
+      real(dp) :: packed_inlet(size(q)+1,6)
+      packed_inlet(:size(q),:)=inlet;packed_inlet(size(q)+1,:)=inlet_t
+    end function
     subroutine fatal(reason)
       character(len=*), intent(in) :: reason
       integer :: ierr
