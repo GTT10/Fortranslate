@@ -1890,9 +1890,20 @@ and selected model are part of restart identity. The example
 `cases/spray_3d/water_surface_cap.nml` starts water droplets at 400 K.
 
 This is a near-boiling numerical vapor-state treatment, not a heat-limited
-boiling-rate, supercritical-fluid or bubble-growth model. The upstream Watson
-latent-property correlation is not added here; the supplied reference latent
-heat remains authoritative. See [source and evidence](validation/surface-cap-20260915.md).
+boiling-rate, supercritical-fluid or bubble-growth model. This application mode
+still uses the supplied constant reference latent heat.
+See [source and evidence](validation/surface-cap-20260915.md).
+
+The library now separately provides `watson_latent_heat` and
+`pelemp_boiling_temperature` in `spray_parcel_mod`. Both return zero and
+`ok=.false.` on invalid input. They accept distinct latent-reference and normal
+boiling temperatures; the latter is defined at 101325 Pa. Inputs use K, J/kg,
+Pa and kg/kmol. The Watson function accepts only subcritical temperatures;
+the boiling function caps the inferred temperature at Tc and rejects
+nonpositive inverse temperatures. These APIs do not yet participate in
+application liquid input, vapor pressure or restart. They do not replace the
+ordinary EOS enthalpy-based latent heat used by the pinned reference.
+See [kernel checks and limits](validation/watson-properties-20260925.md).
 
 ## Multiple injection ports
 

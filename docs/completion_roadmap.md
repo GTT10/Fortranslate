@@ -21,11 +21,12 @@ recursive intervals and flux synchronization now reach the MPI spray application
 establish parity with the reference time integrator or physical validation.
 See the [dated source audit](validation/les-reference-scope-20260925.md).
 
-The next liquid-property port unit is the PeleMP boiling-temperature path:
-separate the latent-heat reference temperature from the normal boiling point,
-evaluate Watson latent heat at that boiling point, and use it for the
-pressure-dependent boiling cap. The current constant-latent `surface-cap`
-remains the compatibility default. The ordinary EOS vapor-pressure path uses
+Watson latent heat and the PeleMP pressure-dependent boiling calculation now
+have independent library APIs with distinct reference and boiling temperatures
+([kernel evidence](validation/watson-properties-20260925.md)). The next unit
+connects those distinct inputs to liquid configuration, the vapor-state cap and
+restart identity. The current constant-latent `surface-cap` remains the
+compatibility default. The ordinary EOS vapor-pressure path uses
 enthalpy-derived latent heat, so replacing every latent heat with Watson would
 not match the reference. Exit checks must cover the reference-temperature
 identity, pressure dependence, invalid critical/boiling temperatures, unchanged
