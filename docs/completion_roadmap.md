@@ -130,8 +130,10 @@ rollback [checks](validation/ppm-step-3d-20260925.md). Fixed/selected regular
 gas application input now selects periodic PPM
 ([input checks](validation/ppm-input-3d-20260925.md)). Four-layer CTU halos and
 physical-boundary library stepping now have exact subdomain-flux and boundary
-ledger [checks](validation/ppm-halo-3d-20260925.md). Physical-boundary application
-selection and AMR/MPI integration remain implementation work; the existing
+ledger [checks](validation/ppm-halo-3d-20260925.md). Fixed/selected regular gas
+applications now also select physical-boundary PPM with multistep molecular
+transport [checks](validation/ppm-boundary-input-20260925.md). AMR/MPI
+integration remains implementation work; the existing
 PCM/PLM solver remains available.
 
 | Order | Work unit | Measurable exit gate |

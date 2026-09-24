@@ -15,11 +15,24 @@ validation. Its checker enforces physical fields, EOS and species identities,
 Euler conservation, H/O/N elemental conservation, and nonzero chemical
 evolution.
 
-## Periodic PPM
+## PPM
 
 The fixed and selected regular gas executables accept
-`reconstruction = "characteristic_ppm"` for six periodic faces. This selects
+`reconstruction = "characteristic_ppm"` with periodic or supported physical
+boundaries. This selects
 the conservative twelve-solve CTU step with flattening enabled and contact
-steepening disabled. Physical-boundary and AMR application selection remains
-unsupported. The regular gas application has no checkpoint/restart interface.
+steepening disabled. AMR application selection remains unsupported. The regular gas application has no checkpoint/restart interface.
 See the [focused input checks](../../docs/validation/ppm-input-3d-20260925.md).
+
+`ppm_mach.nml` is a small nonreacting H2/O2/N2 example with molecular transport,
+Mach inflow on low x, outflow on high x, and periodic y/z:
+
+```sh
+pelef_reactive_3d cases/reactive_hotspot_3d/ppm_mach.nml
+```
+
+For a selected H2/O2 build, set `thermo_model='selected'` and supply
+`composition_count=3`, `composition_species='H2','O2','N2'`, and
+`composition_mole_fractions=0.3,0.15,0.55`. This is an application coupling
+fixture, not a nozzle validation. See the
+[physical-boundary input checks](../../docs/validation/ppm-boundary-input-20260925.md).
