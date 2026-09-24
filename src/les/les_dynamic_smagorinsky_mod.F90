@@ -21,7 +21,7 @@ contains
   ! Caller supplies ng valid donor cells on every side, all at the patch spacing.
   ! The periodic workspace seam is outside the complete filter/gradient stencil.
   subroutine compute_dynamic_les_rhs_ghosted_3d(species,state,temperature,spacing,test_model,test_ratio,ng, &
-      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity)
+      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity,boundary_faces,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -30,6 +30,8 @@ contains
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     logical, optional, intent(in) :: harmonic_mean
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(:)
     real(dp), optional, intent(inout) :: maximum_diffusivity
     real(dp), allocatable :: weights(:),full_rhs(:,:,:,:),x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
     integer :: n(3),padded(3),nv,lo(3),hi(3)
@@ -51,7 +53,9 @@ contains
     allocate(x(nv,padded(1)+1,padded(2),padded(3)),y(nv,padded(1),padded(2)+1,padded(3)))
     allocate(z(nv,padded(1),padded(2),padded(3)+1))
     call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,full_rhs,valid, &
-      grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z,maximum_diffusivity=diffusion)
+      grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z,maximum_diffusivity=diffusion, &
+      boundary_faces=boundary_faces,wall_temperature=wall_temperature,wall_bounds=reshape([ng+1,ng+n(1), &
+      ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]))
     if(.not.valid) return
     lo=ng+1;hi=ng+n
     rhs=full_rhs(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
@@ -118,7 +122,8 @@ contains
   ! Periodic dynamic SGS flux divergence, arithmetic cell-to-face interpolation.
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
-      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean,fx,fy,fz)
+      grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean,fx,fy,fz, &
+      boundary_faces,wall_temperature,wall_bounds)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -129,6 +134,9 @@ contains
     integer, optional, intent(in) :: grid_ratio
     real(dp), optional, intent(out) :: maximum_diffusivity
     real(dp), optional, intent(in) :: supplied_coefficients(:,:,:,:)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(:)
+    integer, optional, intent(in) :: wall_bounds(2,3)
     integer, optional, intent(in) :: active_x(2)
     ! Full periodic face arrays, low face first, with duplicated periodic end faces.
     ! Request all three together; cropped MPI work arrays do not define full faces.
@@ -138,10 +146,10 @@ contains
     integer :: first_x,last_x,face_first
     real(dp), allocatable :: coeff(:,:,:,:),q(:,:,:,:),temps(:,:,:),aij(:,:,:,:,:),alpha(:,:,:),thermal(:,:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),face_flux(:,:,:,:),viscosity(:,:,:)
-    real(dp) :: diffusion,face_viscosity,delta,strain(3,3)
+    real(dp) :: diffusion,face_viscosity,delta,strain(3,3),heat
     real(dp) :: primitive(reactive_nprim(size(species))),g(3,3),gt(3),kij(3,3),rut(3),stress(3,3),a,ft(3)
     real(dp) :: c(3),sigma(3),velocity(3),flux(5),y(size(species)),t,sound,mw,r,cp,cv,gamma,h,e,entropy
-    integer :: n(3),i,j,k,d,cell(3),lo(3),hi(3),neighbor(3),ratio
+    integer :: n(3),i,j,k,d,cell(3),lo(3),hi(3),neighbor(3),ratio,wall_face,f
     logical :: local_ok,harmonic
     ok=.false.;n=shape(temperature);ratio=1;diffusion=0
     harmonic=.false.
@@ -156,6 +164,24 @@ contains
       if (any(shape(fy)/=[size(state,1),n(1),n(2)+1,n(3)])) return
       if (any(shape(fz)/=[size(state,1),n(1),n(2),n(3)+1])) return
       allocate(faces(5,n(1),n(2),n(3),3))
+    end if
+    ! Physical planes are meaningful only inside a caller-supplied donor halo.
+    if(present(boundary_faces)) then
+      if(.not.present(wall_bounds).or.present(active_x)) return
+      if(any(wall_bounds(1,:)<2).or.any(wall_bounds(2,:)>n-1)) return
+      if(any(wall_bounds(2,:)<wall_bounds(1,:))) return
+      do f=1,6
+        select case(boundary_faces(f))
+        case('periodic','inflow','outflow','slip_wall','no_slip_wall','isothermal_wall')
+        case default
+          return
+        end select
+        if(boundary_faces(f)/='isothermal_wall') cycle
+        if(.not.present(wall_temperature)) return
+        if(size(wall_temperature)/=6) return
+        if(.not.ieee_is_finite(wall_temperature(f))) return
+        if(wall_temperature(f)<=0.or.wall_temperature(f)>1e6_dp) return
+      end do
     end if
     first_x=1;last_x=n(1)
     if (present(active_x)) then
@@ -220,7 +246,8 @@ contains
       do k=1,n(3)
         do j=1,n(2)
           do i=face_first,last_x
-            neighbor=[i,j,k];neighbor(d)=modulo(neighbor(d),n(d))+1
+            cell=[i,j,k]
+            neighbor=cell;neighbor(d)=modulo(neighbor(d),n(d))+1
             c=les_face_mean(coeff(:,i,j,k),coeff(:,neighbor(1),neighbor(2),neighbor(3)),harmonic)
             stress=les_face_mean(aij(:,:,i,j,k),aij(:,:,neighbor(1),neighbor(2),neighbor(3)),harmonic)
             a=les_face_mean(alpha(i,j,k),alpha(neighbor(1),neighbor(2),neighbor(3)),harmonic)
@@ -239,7 +266,28 @@ contains
             diffusion=max(diffusion,face_viscosity*max(4*(c(1)+c(2)),cp/cv*c(3))/ &
               min(q(1,i,j,k),q(1,neighbor(1),neighbor(2),neighbor(3))))
             sigma=c(1)*stress(:,d);sigma(d)=sigma(d)-c(2)*a/3
-            flux=0;flux(2:4)=-sigma;flux(5)=-dot_product(velocity,sigma)-cp*c(3)*ft(d)
+            heat=-cp*c(3)*ft(d)
+            wall_face=0
+            if(present(boundary_faces)) then
+              if(cell(d)==wall_bounds(1,d)-1) wall_face=2*d-1
+              if(cell(d)==wall_bounds(2,d)) wall_face=2*d
+              if(wall_face>0) then
+                select case(boundary_faces(wall_face))
+                case('slip_wall','no_slip_wall')
+                  heat=0
+                case('isothermal_wall')
+                  if(modulo(wall_face,2)==1) then
+                    heat=-2*cp*c(3)*face_viscosity* &
+                      (temps(neighbor(1),neighbor(2),neighbor(3))-wall_temperature(wall_face))/spacing(d)
+                  else
+                    heat=-2*cp*c(3)*face_viscosity*(wall_temperature(wall_face)-temps(i,j,k))/spacing(d)
+                  end if
+                  diffusion=max(diffusion,2*face_viscosity*cp/cv*c(3)/ &
+                    min(q(1,i,j,k),q(1,neighbor(1),neighbor(2),neighbor(3))))
+                end select
+              end if
+            end if
+            flux=0;flux(2:4)=-sigma;flux(5)=-dot_product(velocity,sigma)+heat
             face_flux(:,i,j,k)=flux
           end do
         end do

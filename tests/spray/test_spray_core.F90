@@ -1375,7 +1375,8 @@ program test_spray_core
       real(dp) :: other(15,4,4,4),reference(15,4,4,4),sound,power,error_coarse,error_fine
       real(dp) :: fx(15,5,4,4),fy(15,4,5,4),fz(15,4,4,5)
       real(dp) :: padded(15,18,18,18),padded_t(18,18,18)
-      real(dp) :: gx(15,5,4,4),gy(15,4,5,4),gz(15,4,4,5)
+      real(dp) :: gx(15,5,4,4),gy(15,4,5,4),gz(15,4,4,5),wall_t(6),heat_rhs(15,4,4,4)
+      character(len=32) :: wall_faces(6)
       integer :: i,j,k,c,substep
       call make_gas(.false.)
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok)
@@ -1467,6 +1468,32 @@ program test_spray_core
           other,gx,gy,gz,ok)
         call require(.not.ok.and.all(other==rhs).and.all(gx==fx).and.all(gy==fy).and.all(gz==fz), &
           'invalid ghosted dynamic state rollback')
+        padded(1,8,8,8)=state(1,1,1,1)
+        wall_faces='no_slip_wall'
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,7, &
+          other,gx,gy,gz,ok,boundary_faces=wall_faces)
+        call require(ok.and.all(other==rhs),'adiabatic closure preserves uniform-temperature wall work')
+        wall_faces='isothermal_wall';wall_t=temp(1,1,1)+100
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,7, &
+          other,gx,gy,gz,ok,boundary_faces=wall_faces,wall_temperature=wall_t)
+        call require(ok.and.sum(other(5,:,:,:)-rhs(5,:,:,:))>0,'hot walls transfer energy into patch')
+        heat_rhs=other-rhs
+        call require(all(gx(2:4,:,:,:)==fx(2:4,:,:,:)).and.all(gy(2:4,:,:,:)==fy(2:4,:,:,:)).and. &
+          all(gz(2:4,:,:,:)==fz(2:4,:,:,:)),'thermal closure preserves wall stress')
+        other=(gx(:,:4,:,:)-gx(:,2:,:,:))/spacing(1)+ &
+          (gy(:,:,:4,:)-gy(:,:,2:,:))/spacing(2)+(gz(:,:,:,:4)-gz(:,:,:,2:))/spacing(3)
+        call require(maxval(abs(other-rhs-heat_rhs))<=1e-12_dp*maxval(abs(other)), &
+          'wall heat remains in conservative face divergence')
+        wall_t=temp(1,1,1)+200
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,7, &
+          other,gx,gy,gz,ok,boundary_faces=wall_faces,wall_temperature=wall_t)
+        call require(ok.and.maxval(abs(other-rhs-2*heat_rhs))<=1e-12_dp*maxval(abs(other)), &
+          'wall conduction scales with temperature difference')
+        other=7;gx=8;gy=9;gz=10;wall_t=-1
+        call compute_dynamic_les_rhs_ghosted_3d(species,padded,padded_t,spacing,'box',2,7, &
+          other,gx,gy,gz,ok,boundary_faces=wall_faces,wall_temperature=wall_t)
+        call require(.not.ok.and.all(other==7).and.all(gx==8).and.all(gy==9).and.all(gz==10), &
+          'invalid thermal wall preserves all ghosted outputs')
       end if
       fx=7;fy=8;fz=9
       call compute_dynamic_les_rhs_3d(species,state,temp,spacing,'box',2,rhs,ok,fx=fx)
