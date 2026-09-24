@@ -17,6 +17,7 @@ program test_les_amr_tree
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),serial(12,4,4,4),st(4,4,4),q(12),sound
   real(dp) :: spacing(3),dt,budget(12),serial_budget(12),largest,initial(12),final(12),wall_t(6),wall_v(3,6),outlet(6)
   real(dp) :: chosen,diffusivity,reference_diff,reference_rhs(12,4,4,4),half_dt,half_diff
+  real(dp) :: inlet(12,6),inlet_t(6)
   integer :: i,j,k,mode,geometry,node,m
   character(len=32) :: faces(6),model
   logical :: ok
@@ -39,6 +40,7 @@ program test_les_amr_tree
   call initialize_amr_patch_3d(4,4,8,3,4,1,2,1,2,2,patches(3),ok)
   call initialize_amr_patch_3d(4,4,8,1,2,1,2,1,2,2,patches(4),ok)
   call initialize_amr_patch_3d(4,4,4,3,4,1,2,1,2,2,patches(5),ok)
+  inlet=spread(root(:,1,1,1),2,6);inlet_t=rt(1,1,1,1)
   do geometry=1,2
     if (geometry==1) then
       call initialize_amr_patch_tree_3d([4,4,4],[integer::],patches(:0),tree,ok)
@@ -58,12 +60,14 @@ program test_les_amr_tree
         model='dynamic'
       end select
       do mode=1,3
-        if(m==4.and.mode>1) cycle
         faces='periodic';wall_v=0;outlet=0
         if (mode>=2) faces='outflow'
         if (mode==3) then
           faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
           outlet(2)=102325
+        end if
+        if(m==4.and.mode==3) then
+          faces='outflow';faces(1)='inflow';outlet=0;wall_v=0
         end if
         call prolong_amr_patch_tree_3d(tree,root,state,ok)
         call require(ok,'state initialization')
@@ -74,13 +78,13 @@ program test_les_amr_tree
         chosen=-1;diffusivity=-2
         call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,spacing,.05_dp,faces, &
           .17_dp,.7_dp,.7_dp,chosen,diffusivity,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
         call require(ok.and.chosen>0.and.diffusivity>0,'hierarchy LES interval')
         call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,spacing,.025_dp,faces, &
           .17_dp,.7_dp,.7_dp,half_dt,half_diff,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
         call require(ok.and.half_dt==.5_dp*chosen.and.half_diff==diffusivity,'CFL scales chosen interval')
-        if (geometry==1) then
+        if (geometry==1.and.(m/=4.or.mode==1)) then
           if(m==4) then
             call compute_dynamic_les_rhs_3d(species,root,rt(1,:,:,:),spacing,'box',2,reference_rhs,ok, &
               maximum_diffusivity=reference_diff)
@@ -98,10 +102,11 @@ program test_les_amr_tree
         saved=state
         call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,dt,faces, &
           .17_dp,.7_dp,.7_dp,budget,largest,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
         call require(ok.and.largest>=0,'AMR LES step')
+        if(m==4.and.mode>1) call require(maxval(abs(budget))>1e-25_dp,'dynamic open boundary transfers inventory')
         call require(any(state%fields(1)%values/=saved%fields(1)%values),'AMR LES evolves')
-        if (geometry==1) then
+        if (geometry==1.and.(m/=4.or.mode==1)) then
           serial=root;st=rt(1,:,:,:)
           if(m==4) then
             call advance_dynamic_les_ssprk2_3d(species,serial,st,spacing,'box',2,dt,ok)
@@ -126,7 +131,7 @@ program test_les_amr_tree
         saved=state;saved_t=temperature;budget=-17;largest=-19
         call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,1._dp,faces, &
           .17_dp,.7_dp,.7_dp,budget,largest,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
         call require(.not.ok,'excessive interval rejected')
         do node=1,size(tree%nodes)
           call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')

@@ -306,7 +306,7 @@ contains
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) return
       ok=.true.;return
     end if
-    if(any(faces/='periodic')) return
+    if(any(faces/='periodic'.and.faces/='inflow'.and.faces/='outflow')) return
     if(present(test_model)) filter=test_model
     if(present(test_ratio)) ratio=test_ratio
     if(present(grid_ratio)) then

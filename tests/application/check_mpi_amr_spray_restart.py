@@ -21,6 +21,7 @@ p.add_argument('--inflow', action='store_true')
 p.add_argument('--films', action='store_true')
 p.add_argument('--les', action='store_true')
 p.add_argument('--dynamic', action='store_true')
+p.add_argument('--dynamic-open', action='store_true')
 p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
@@ -96,6 +97,10 @@ if a.dynamic:
     assert a.les and not a.physical and not a.pressure
     spray = spray.replace("les_cs=.17,les_ci=.1,les_model='vreman'", "les_model='dynamic'")
     spray += "\n&amr_spray_dynamic les_test_model='gaussian',les_test_ratio=2,les_grid_ratio=1 /\n"
+if a.dynamic_open:
+    assert a.dynamic
+    gas = gas.replace(' output_file=', " boundary_faces='inflow','outflow',4*'periodic'\n"
+                      ' inflow_temperature=1000.,inflow_pressure=101325.,inflow_velocity(:,1)=25.,0.,0.\n output_file=')
 
 
 if a.force:

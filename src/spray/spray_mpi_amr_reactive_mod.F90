@@ -136,7 +136,8 @@ contains
     if(model=='dynamic') then
       call les_filter_weights(filter,filter_controls(1),weights,filter_ok)
       valid=valid.and.filter_ok.and.filter_controls(2)>=1.and.filter_controls(2)<=64
-      valid=valid.and.all(faces=='periodic').and.all(pressure==0)
+      valid=valid.and.all(pressure==0)
+      valid=valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow')
     else
       if(present(les_test_model).or.present(les_test_ratio).or. &
         present(les_grid_ratio).or.present(les_harmonic_mean)) valid=.false.

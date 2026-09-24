@@ -89,7 +89,8 @@ contains
     if(dynamic) then
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
       if(filter_valid) width=(size(weights)-1)/2+5
-      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(faces=='periodic').and.all(pressure==0)
+      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(pressure==0)
+      filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow')
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
@@ -342,7 +343,8 @@ contains
     if(dynamic) then
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
       if(filter_valid) width=(size(weights)-1)/2+5
-      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(faces=='periodic').and.all(pressure==0)
+      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(pressure==0)
+      filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow')
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
