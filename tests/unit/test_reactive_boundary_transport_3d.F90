@@ -9,6 +9,7 @@ program test_reactive_boundary_transport_3d
     reactive_isothermal_timestep_3d
   use mixture_thermo_mod, only: mixture_mass_properties
   use mixture_transport_mod, only: mixture_transport_coefficients
+  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -23,6 +24,7 @@ program test_reactive_boundary_transport_3d
   call load_h2o2_elementary_transport(transport,ok)
   call require(ok,'transport')
   call check_pressure_transport()
+  call check_mach_transport()
   call check_wall_shear()
   call check_wall_heat()
   do mode=1,4
@@ -77,6 +79,61 @@ program test_reactive_boundary_transport_3d
   end do
   print *, 'PASS: physical viscosity/conduction/diffusion, surface ledger, walls and rollback'
 contains
+  subroutine check_mach_transport()
+    real(dp) :: mach(6),target_t(6),target_p(6),inlet(12,6),it(6),ui(12),ti,ci,ug(12),tg
+    real(dp) :: reference(12,4,4,4),reference_t(4,4,4),reference_change(12),reference_theta
+    integer :: face
+    q=0;q(1)=.3_dp;q(5)=101325;q(6)=.03_dp;q(9)=.22_dp;q(12)=.75_dp
+    call reactive_primitive_to_conserved(species,q,ui,ti,ci,ok)
+    call require(ok,'Mach transport initial state')
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          before(:,i,j,k)=ui;bt(i,j,k)=ti
+        end do
+      end do
+    end do
+    target_t=700
+    do face=1,6
+      faces='outflow';faces(face)='inflow';mach=-1;mach(face)=.2_dp;target_p=0
+      if(modulo(face,2)==0) target_p(face)=120000
+      if(target_p(face)>0) then
+        call mach_inlet_ghost_3d(species,ui,ti,face,700._dp,.2_dp,ug,tg,ok,inlet_pressure=target_p(face))
+      else
+        call mach_inlet_ghost_3d(species,ui,ti,face,700._dp,.2_dp,ug,tg,ok)
+      end if
+      call require(ok,'equivalent initial reservoir')
+      inlet=spread(ug,2,6);it=tg
+      call reactive_transport_euler_update_3d(species,transport,before,bt,4,4,4,dx,dx,dx,1e-8_dp, &
+        .true.,.true.,.true.,.true.,reference,reference_t,reference_theta,ok,faces,reference_change, &
+        inflow_state=inlet,inflow_temperature=it)
+      call require(ok,'reservoir transport oracle')
+      call reactive_transport_euler_update_3d(species,transport,before,bt,4,4,4,dx,dx,dx,1e-8_dp, &
+        .true.,.true.,.true.,.true.,u,t,theta,ok,faces,change, &
+        inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=target_p)
+      call require(ok,'Mach Euler transport')
+      call require(all(u==reference).and.all(t==reference_t).and.theta==reference_theta.and. &
+        all(change==reference_change),'exact initial reservoir equivalence')
+      u=before;t=bt
+      call reactive_integrals_3d(u,4,4,4,dx,dx,dx,total0,ok)
+      call require(ok,'Mach transport initial inventory')
+      call advance_reactive_transport_3d(species,transport,u,t,4,4,4,dx,dx,dx,1e-8_dp, &
+        .true.,.true.,.true.,.true.,theta,ok,faces,change, &
+        inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=target_p)
+      call require(ok.and.any(u/=before),'Mach SSPRK2 transport')
+      call require(all(u(6:,:,:,:)>=0),'Mach transport positive species')
+      call require(maxval(abs(sum(u(6:,:,:,:),dim=1)-u(1,:,:,:)))<1e-12_dp,'Mach transport species closure')
+      call reactive_integrals_3d(u,4,4,4,dx,dx,dx,total1,ok)
+      call require(ok,'Mach transport final inventory')
+      call require(maxval(abs(total1-total0-change)/max(abs(total0),abs(total1),1e-12_dp))<2e-12_dp, &
+        'Mach transport surface budget')
+    end do
+    u=before;t=bt;target_t(6)=-1
+    call advance_reactive_transport_3d(species,transport,u,t,4,4,4,dx,dx,dx,1e-8_dp, &
+      .true.,.true.,.true.,.true.,theta,ok,faces,change,inflow_temperature=target_t,inflow_mach=mach)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'Mach transport temperature failure preserves fluid')
+  end subroutine check_mach_transport
+
   subroutine check_pressure_transport()
     real(dp) :: outlet(6)
     integer :: face
