@@ -23,8 +23,10 @@ input and per-step inlet timestep limits are connected
 WALE, Vreman and Dynamic LES operators also accept the Mach controls
 ([LES checks](validation/mach-inlet-les-20260925.md)). Regular fixed/selected spray
 now forwards Mach input through its coupled operators and binds restart context
-([spray checks](validation/mach-inlet-spray-20260925.md)); AMR and MPI dispatch
-remain open.
+([spray checks](validation/mach-inlet-spray-20260925.md)). Distributed wide Mach
+halos and regular MPI Dynamic LES now match serial operators
+([MPI LES checks](validation/mach-inlet-mpi-les-20260925.md)); MPI gas/spray
+application and AMR dispatch remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
