@@ -185,6 +185,7 @@ contains
     effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
     effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
     effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    effective%normal_boiling_temperature=0
     if (sum(weights)>0) skin%vapor_enthalpy=sum(weights*hv)
     call wall_film_transfer_rates(patch,effective,skin,conductivity,wall_temperature,options%heat,options%evaporation, &
       mdot,qg,qw,tdot,valid)
@@ -475,6 +476,7 @@ contains
     effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
     effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
     effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    effective%normal_boiling_temperature=0
     next=parent
     call impact_at_planar_wall(next,previous,effective,properties,molecular_weights(1),pressure,lower,upper,settings, &
       films,first_id,spawned,deposited,budget,crossed,valid,boiling_temperature=boil)
@@ -610,6 +612,7 @@ contains
     effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
     effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
     effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    effective%normal_boiling_temperature=0
     candidate=parent
     call resolve_wall_impact(candidate,effective,location,normal,kv,tstar,kcrit,film_ratio,weber,reynolds, &
       contact_angle,first_id,spawned,deposited,budget,kind,valid)

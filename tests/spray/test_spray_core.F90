@@ -723,6 +723,37 @@ program test_spray_core
     call require(.not.ok.and.value==0,'tiny latent denominator fails without overflow')
     call pelemp_boiling_temperature(2.5e6_dp,300.0_dp,373.15_dp,647.0_dp,18.015_dp,0.0_dp,value,ok)
     call require(.not.ok.and.value==0,'zero pressure rejected')
+  case('pelemp_cap')
+    liquid%boiling_model='pelemp-cap';liquid%critical_temperature=647
+    liquid%normal_boiling_temperature=373.15_dp
+    liquid%reference_temperature=300
+    call require(valid_spray_liquid(liquid),'distinct thermodynamic and boiling references')
+    td=.99_dp*373.15_dp
+    z=liquid_energy(liquid,td)+2e6_dp
+    call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok,vapor_enthalpy=z)
+    expected=exp(2e6_dp*18.015_dp/8314.46261815324_dp*(1/373.15_dp-1/td))
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'enthalpy-derived latent at capped surface')
+    call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
+    call require(.not.ok.and.value==0,'PeleMP Clausius requires vapor enthalpy')
+    mixture_components=liquid;mixture_y=[.4_dp,.6_dp];mw(1)=18.015_dp;vapor_h=z;surface_x=-1
+    do n=1,size(species)
+      if (species(n)%name/='H2O2') cycle
+      mixture_components(2)%vapor_name=species(n)%name;mixture_components(2)%vapor_index=n
+      mw(2)=species(n)%molecular_weight
+    end do
+    call liquid_mixture_surface(mixture_components,mixture_y,mw,400.0_dp,101325.0_dp,surface_x,ok,vapor_h)
+    mixture_rates=exp(2e6_dp*mw/8314.46261815324_dp*(1/373.15_dp-1/td))*(mixture_y/mw)/sum(mixture_y/mw)
+    call require(ok.and.maxval(abs(surface_x-mixture_rates))<2e-14_dp,'Raoult partition with PeleMP cap')
+    saved_mass=surface_x
+    call liquid_mixture_surface(mixture_components,mixture_y,mw,400.0_dp,101325.0_dp,surface_x,ok)
+    call require(.not.ok.and.all(surface_x==saved_mass),'missing enthalpy preserves mixture output')
+    liquid%vapor_pressure_model='antoine';liquid%antoine_coefficients=[5.40221_dp,1838.675_dp,-31.737_dp,1e5_dp]
+    liquid%antoine_temperature_range=[300.0_dp,390.0_dp]
+    call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
+    expected=1e5_dp/101325*10.0_dp**(5.40221_dp-1838.675_dp/(td-31.737_dp))
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'Antoine uses capped temperature and fit bounds')
+    liquid%normal_boiling_temperature=647
+    call require(.not.valid_spray_liquid(liquid),'reject supercritical normal boiling reference')
   case('surface_cap')
     call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
     call require(.not.ok,'default boiling rejection')

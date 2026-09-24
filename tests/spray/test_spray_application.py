@@ -714,6 +714,36 @@ class SprayApplication(unittest.TestCase):
         self.assertIn('incompatible spray checkpoint', result.stdout.lower())
         self.run_case('default_boiling', common='drop_temperature=400,', fail=True)
 
+    def test_pelemp_cap_restart(self):
+        variants = [
+            "reference_temperature=300,boiling_model='pelemp-cap',critical_temperature=647,"
+            "normal_boiling_temperature=373.15,drop_temperature=400,",
+            "injection_port_count=1,injection_port_centers=.001,.001,.001,"
+            "injection_port_axes=1,0,0,injection_port_fractions=1,reference_temperature=300,"
+            "port_boiling_models='pelemp-cap',port_critical_temperatures=647,"
+            "port_normal_boiling_temperatures=373.15,drop_temperature=400,",
+            "mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+            "mixture_densities=1000,800,mixture_cps=4184,2000,"
+            "mixture_reference_temperatures=300,300,mixture_latent_heats=2257000,1e6,"
+            "mixture_boiling_models='pelemp-cap','pelemp-cap',mixture_critical_temperatures=647,700,"
+            "mixture_normal_boiling_temperatures=373.15,450,drop_temperature=400,",
+        ]
+        for index, settings in enumerate(variants):
+            with self.subTest(variant=index):
+                name = f'pelemp{index}'
+                checkpoint = self.root / (name + '.chk')
+                self.run_case(name, common=settings)
+                self.check_balance(name)
+                self.run_case(name+'_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+                self.run_case(name+'_resumed', f"restart_file='{checkpoint}',", common=settings)
+                for suffix in ['gas.csv', 'parcels.csv']:
+                    self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                     (self.root/f'{name}_resumed.{suffix}').read_bytes())
+                result = self.run_case(name+'_changed', f"restart_file='{checkpoint}',", fail=True,
+                                       common=settings.replace('373.15', '374.15'))
+                self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+                self.run_case(name+'_invalid', common=settings.replace('373.15', '800'), fail=True)
+
     def test_viscosity_temperature_restart(self):
         settings = ("breakup_model='khrt',surface_tension=.072,"
                     "liquid_viscosity_model='inverse-temperature',liquid_viscosity_coefficients=.0002,.2,10,100,"

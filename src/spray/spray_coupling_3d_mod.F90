@@ -181,7 +181,13 @@ contains
     if (abs(sum(y)-1.0_dp) > 5.0e-12_dp) return
     ys=y(v)
     if (options%evaporation .and. y(v) < 1.0_dp-1.0e-12_dp) then
-      call saturation_mole_fraction(liquid,species(v)%molecular_weight,parcel%temperature,primitive(5),xs,ok)
+      h=0
+      if (liquid%boiling_model=='pelemp-cap') then
+        call nasa7_mass_properties(species(v),parcel%temperature,species_cp,cv,h,e,s,ok)
+        if (.not.ok) return
+      end if
+      call saturation_mole_fraction(liquid,species(v)%molecular_weight,parcel%temperature,primitive(5),xs,ok, &
+        vapor_enthalpy=h)
       if (.not. ok) return
       carrier_inverse=0.0_dp
       do k=1,size(species)
@@ -408,7 +414,7 @@ contains
             call nasa7_mass_properties(species(material%vapor_index),next%temperature,cp,cv,h,e,entropy,local_ok)
             if (local_ok .and. options%evaporation) then
               call saturation_mole_fraction(material,species(material%vapor_index)%molecular_weight, &
-                next%temperature,sampled_pressure,xsat,local_ok)
+                next%temperature,sampled_pressure,xsat,local_ok,vapor_enthalpy=h)
             end if
           end if
           if (local_ok) then
@@ -772,6 +778,7 @@ contains
         effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
         effective%reference_temperature=next%temperature;effective%reference_energy=e
         effective%boiling_model='reject';effective%critical_temperature=0
+        effective%normal_boiling_temperature=0
         old_mass=next%mass
         ! Restore the sampled primitive: the feedback recovery above used it as scratch.
         call reactive_conserved_to_primitive(species,sampled,guess,primitive,tg,sound,valid)

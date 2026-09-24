@@ -164,7 +164,7 @@ contains
     end do
     xs=0;active=.false.
     if (options%evaporation) then
-      call liquid_mixture_surface(components,y,mw_liq,parcel%temperature,primitive(5),xs,valid)
+      call liquid_mixture_surface(components,y,mw_liq,parcel%temperature,primitive(5),xs,valid,enthalpy)
       if (.not.valid) return
       do i=1,size(y)
         v=components(i)%vapor_index
@@ -321,10 +321,11 @@ contains
     parcel=candidate;component_mass=remaining;gas_change=exchange;ok=.true.
   end subroutine
 
-  subroutine liquid_mixture_surface(components,y,molecular_weights,temperature,pressure,surface_x,ok)
+  subroutine liquid_mixture_surface(components,y,molecular_weights,temperature,pressure,surface_x,ok,vapor_enthalpy)
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(in) :: y(:),molecular_weights(:),temperature,pressure
     real(dp), intent(inout) :: surface_x(:)
+    real(dp), intent(in), optional :: vapor_enthalpy(:)
     logical, intent(out) :: ok
     real(dp) :: liquid_x(size(y)),candidate(size(y)),inverse_weight
     integer :: i
@@ -334,11 +335,20 @@ contains
     if (size(molecular_weights)/=size(y).or.size(surface_x)/=size(y)) return
     if (.not.all(ieee_is_finite(molecular_weights))) return
     if (any(molecular_weights<1e-3_dp).or.any(molecular_weights>1e5_dp)) return
+    if (present(vapor_enthalpy)) then
+      if (size(vapor_enthalpy)/=size(y)) return
+      if (.not.all(ieee_is_finite(vapor_enthalpy))) return
+    end if
     inverse_weight=sum(y/molecular_weights);liquid_x=(y/molecular_weights)/inverse_weight
     candidate=0
     do i=1,size(y)
       if (y(i)==0) cycle
-      call saturation_mole_fraction(components(i),molecular_weights(i),temperature,pressure,candidate(i),valid,liquid_x(i))
+      if (present(vapor_enthalpy)) then
+        call saturation_mole_fraction(components(i),molecular_weights(i),temperature,pressure,candidate(i),valid, &
+          liquid_x(i),vapor_enthalpy(i))
+      else
+        call saturation_mole_fraction(components(i),molecular_weights(i),temperature,pressure,candidate(i),valid,liquid_x(i))
+      end if
       if (.not.valid) return
     end do
     if (sum(candidate)>=1) return

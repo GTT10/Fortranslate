@@ -88,12 +88,14 @@ contains
     real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
     real(dp) :: mixture_cp_coefficients(4,16),mixture_cp_temperature_ranges(2,16)
     real(dp) :: mixture_antoine_coefficients(4,16),mixture_antoine_temperature_ranges(2,16)
+    real(dp) :: mixture_normal_boiling_temperatures(16)
     real(dp) :: mixture_critical_temperatures(16)
     logical :: properties_present
     namelist /amr_spray_properties/ mixture_density_models,mixture_cp_models,mixture_vapor_pressure_models, &
       mixture_boiling_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_coefficients,mixture_cp_temperature_ranges,mixture_antoine_coefficients, &
-      mixture_antoine_temperature_ranges,mixture_critical_temperatures
+      mixture_antoine_temperature_ranges,mixture_normal_boiling_temperatures, &
+      mixture_critical_temperatures
     logical :: wall_active
     real(dp), allocatable :: masses(:,:),x(:),y(:),z(:),mf(:),ledger(:),global_ledger(:)
     integer, allocatable :: owners(:),assigned(:),ratios(:)
@@ -172,6 +174,7 @@ contains
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
+    mixture_normal_boiling_temperatures=0
     rate_velocity=.false.;discharge_coefficients=1
     profile_files=''
     profile_points=0;profile_times=0;profile_rates=0;event_end_times=-1
@@ -355,6 +358,7 @@ contains
     if(any(mixture_vapor_pressure_models(component_count+1:)/='clausius')) call fatal('Unused mixture property entries')
     if(any(mixture_boiling_models(component_count+1:)/='reject')) call fatal('Unused mixture property entries')
     if(any(mixture_critical_temperatures(component_count+1:)/=0)) call fatal('Unused mixture property entries')
+    if(any(mixture_normal_boiling_temperatures(component_count+1:)/=0)) call fatal('Unused mixture property entries')
     if(any(mixture_density_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
     if(any(mixture_density_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
     if(any(mixture_cp_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
@@ -375,6 +379,7 @@ contains
       liquids(i)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,i)
       liquids(i)%boiling_model=mixture_boiling_models(i)
       liquids(i)%critical_temperature=mixture_critical_temperatures(i)
+      liquids(i)%normal_boiling_temperature=mixture_normal_boiling_temperatures(i)
       if(.not.valid_spray_liquid(liquids(i))) call fatal('Invalid mixture component property model')
     end do
     if (any(rate_velocity(port_count+1:)).or.any(discharge_coefficients(port_count+1:)/=1)) &

@@ -1614,6 +1614,7 @@ contains
       effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
       effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=e
       effective%boiling_model='reject';effective%critical_temperature=0
+      effective%normal_boiling_temperature=0
       pending=spray_khrt_shedding_state(candidate(p)%khrt_initial_count,candidate(p)%khrt_shed_volume)
       call advance_khrt_shedding(candidate(p),effective,options,gas_density(p),gas_velocity(:,p),reynolds(p), &
         dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid)
@@ -1825,6 +1826,7 @@ contains
             effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
             effective%reference_temperature=trial(p)%temperature;effective%reference_energy=e
             effective%boiling_model='reject';effective%critical_temperature=0
+            effective%normal_boiling_temperature=0
             call build_mixture_film(species,transport,primitive(:,p),tg(p),trial(p),components,y,options, &
               film,rates,hv,valid)
             if (.not.valid) exit
@@ -1956,6 +1958,7 @@ contains
         effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
         effective%reference_temperature=trial(q)%temperature;effective%reference_energy=e
         effective%boiling_model='reject';effective%critical_temperature=0
+        effective%normal_boiling_temperature=0
         call apply_parcel_boundaries(trial(q),effective,lower,lower+length,faces,exchange,valid)
         if (.not.valid) return
         trial_ledger(:5)=trial_ledger(:5)+exchange
@@ -2311,6 +2314,7 @@ contains
           material%density_model='constant';material%density_coefficients=0;material%density_temperature_range=0
           material%heat_capacity_model='constant';material%heat_capacity_coefficients=0
           material%heat_capacity_temperature_range=0;material%boiling_model='reject';material%critical_temperature=0
+          material%normal_boiling_temperature=0
         end if
       end if
     else

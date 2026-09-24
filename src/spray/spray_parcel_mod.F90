@@ -24,6 +24,7 @@ module spray_parcel_mod
     real(dp) :: critical_temperature=0.0_dp
     character(len=16) :: heat_capacity_model='constant'
     real(dp) :: heat_capacity_coefficients(4)=0.0_dp,heat_capacity_temperature_range(2)=0.0_dp
+    real(dp) :: normal_boiling_temperature=0.0_dp
   end type
   type, public :: spray_nozzle_model
     character(len=16) :: profile='legacy'
@@ -189,13 +190,18 @@ contains
     case default
       return
     end select
-    if (.not.ieee_is_finite(l%critical_temperature)) return
+    if (.not.all(ieee_is_finite([l%critical_temperature,l%normal_boiling_temperature]))) return
     select case(trim(l%boiling_model))
     case('reject')
-      if (l%critical_temperature/=0) return
+      if (l%critical_temperature/=0.or.l%normal_boiling_temperature/=0) return
     case('surface-cap')
+      if (l%normal_boiling_temperature/=0) return
       if (trim(l%vapor_pressure_model)/='clausius') return
       if (l%critical_temperature<=l%reference_temperature.or.l%critical_temperature>1e5_dp) return
+    case('pelemp-cap')
+      if (l%critical_temperature<=l%reference_temperature.or.l%critical_temperature>1e5_dp) return
+      if (l%normal_boiling_temperature<1.or.l%normal_boiling_temperature>=l%critical_temperature) return
+      if (l%reference_pressure/=101325.0_dp) return
     case default
       return
     end select
@@ -433,13 +439,16 @@ contains
     totals(5) = m*(liquid_energy(l,p%temperature)+0.5_dp*sum(p%velocity**2))
   end function
 
-  subroutine saturation_mole_fraction(l, molecular_weight, temperature, pressure, fraction, ok, liquid_mole_fraction)
+  subroutine saturation_mole_fraction(l, molecular_weight, temperature, pressure, fraction, ok, &
+      liquid_mole_fraction,vapor_enthalpy)
     type(spray_liquid), intent(in) :: l
     real(dp), intent(in) :: molecular_weight, temperature, pressure
     real(dp), intent(out) :: fraction
     logical, intent(out) :: ok
-    real(dp), intent(in), optional :: liquid_mole_fraction
+    real(dp), intent(in), optional :: liquid_mole_fraction,vapor_enthalpy
     real(dp) :: log_fraction,surface_temperature,inverse_boiling_temperature,boiling_temperature,liquid_x
+    real(dp) :: latent,boiling_reference,pressure_temperature
+    logical :: valid
     fraction = 0.0_dp
     ok = .false.
     if (.not. valid_spray_liquid(l)) return
@@ -455,6 +464,7 @@ contains
       ok=.true.;return
     end if
     surface_temperature=temperature
+    latent=l%latent_heat;boiling_reference=l%reference_temperature
     if (trim(l%boiling_model)=='surface-cap') then
       inverse_boiling_temperature=1/l%reference_temperature+ &
         log(l%reference_pressure/pressure)*universal_gas_constant/(l%latent_heat*molecular_weight)
@@ -467,14 +477,32 @@ contains
       surface_temperature=min(temperature,.99_dp*boiling_temperature)
       if (surface_temperature<1) return
     end if
+    pressure_temperature=temperature
+    if (l%boiling_model=='pelemp-cap') then
+      call pelemp_boiling_temperature(l%latent_heat,l%reference_temperature,l%normal_boiling_temperature, &
+        l%critical_temperature,molecular_weight,pressure,boiling_temperature,valid)
+      if (.not.valid) return
+      surface_temperature=min(temperature,.99_dp*boiling_temperature)
+      if (surface_temperature<1) return
+      pressure_temperature=surface_temperature;boiling_reference=l%normal_boiling_temperature
+      if (l%vapor_pressure_model=='clausius') then
+        if (.not.present(vapor_enthalpy)) return
+        if (.not.ieee_is_finite(vapor_enthalpy)) return
+        ! Ordinary EOS reference: h_gas(Tdrop) minus liquid enthalpy at Ts.
+        if (liquid_heat_capacity_at_temperature(l,surface_temperature)<=0) return
+        latent=vapor_enthalpy-liquid_energy(l,surface_temperature)
+        if (.not.ieee_is_finite(latent)) return
+        if (latent<=0.or.latent>1e10_dp) return
+      end if
+    end if
     if (trim(l%vapor_pressure_model)=='antoine') then
-      if (temperature<l%antoine_temperature_range(1).or.temperature>l%antoine_temperature_range(2)) return
+      if (pressure_temperature<l%antoine_temperature_range(1).or.pressure_temperature>l%antoine_temperature_range(2)) return
       ! PelePhysics convention: psat = D*10**(A-B/(T+C)), with T in K.
       log_fraction=log(l%antoine_coefficients(4)/pressure)+log(10.0_dp)* &
-        (l%antoine_coefficients(1)-l%antoine_coefficients(2)/(temperature+l%antoine_coefficients(3)))
+        (l%antoine_coefficients(1)-l%antoine_coefficients(2)/(pressure_temperature+l%antoine_coefficients(3)))
     else
-    log_fraction = log(l%reference_pressure/pressure) + l%latent_heat*molecular_weight/universal_gas_constant * &
-      (1.0_dp/l%reference_temperature-1.0_dp/surface_temperature)
+    log_fraction = log(l%reference_pressure/pressure) + latent*molecular_weight/universal_gas_constant * &
+      (1.0_dp/boiling_reference-1.0_dp/surface_temperature)
     end if
     if (liquid_x/=1) log_fraction=log_fraction+log(liquid_x)
     if (.not.ieee_is_finite(log_fraction)) return

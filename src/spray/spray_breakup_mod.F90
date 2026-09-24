@@ -67,6 +67,7 @@ contains
       effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
       effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=e
       effective%boiling_model='reject';effective%critical_temperature=0
+      effective%normal_boiling_temperature=0
       pending=spray_khrt_shedding_state(candidate(p)%khrt_initial_count,candidate(p)%khrt_shed_volume)
       call advance_khrt_shedding(candidate(p),effective,options,gas_density(p),gas_velocity(:,p),reynolds(p), &
         dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid)
