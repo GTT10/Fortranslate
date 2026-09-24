@@ -3190,6 +3190,9 @@ nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
 wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
 down through the existing transaction. The diffusion bound includes padded
 cells and may restrict the interval more than an interior-only estimate.
+The shared donor sampler now supports repeated moving-wall reflections for
+halos wider than the domain, a prerequisite for subsequent Dynamic wall
+dispatch ([boundary-sampling evidence](validation/amr-wide-wall-ghosts-20260925.md)).
 Reacting-spray/application dispatch is described below. See
 [serial Dynamic AMR checks](validation/les-dynamic-amr-20260925.md).
 
