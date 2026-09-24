@@ -4,6 +4,7 @@ module eb_reactive_patch_tree_3d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
+  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use gas_transport_mod, only: gas_transport_species
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
@@ -568,14 +569,16 @@ contains
     tree=candidate;boundary_change=boundary;minimum_theta=theta;ok=.true.
   end subroutine advance_reactive_eb_tree_transport_3d
 
-  ! Serial common-interval Euler hydro, spatial PCM donors and outflow edges.
+  ! Serial common-interval Euler hydro, spatial PCM donors, outflow or Mach inlet edges.
   ! Every node reads the same averaged snapshot; all outputs commit together.
-  subroutine advance_reactive_eb_tree_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok)
+  subroutine advance_reactive_eb_tree_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
+      inflow_mach,inflow_temperature,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d) :: snapshot,candidate
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -595,7 +598,8 @@ contains
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
       allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
-      call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid)
+      call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.valid) return
       call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
         snapshot%nodes(node)%geometry,solver,dt,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
@@ -919,12 +923,15 @@ contains
     tree=candidate;flux=effective;ok=.true.
   end subroutine synchronize_reactive_eb_tree_flux_3d
 
+  ! Six-face Mach < 0 retains outflow; active entries require inlet temperature.
+  ! Pressure zero extrapolates the interior value; positive entries prescribe it.
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
-      ancestor_start,ancestor_end,ancestor_fraction)
+      ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
     real(dp), intent(inout) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
     real(dp), optional, intent(in) :: ancestor_fraction(:)
@@ -935,8 +942,20 @@ contains
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:)
     real(dp) :: area,guess,recovered,speed,fraction,value(reactive_nvar(size(species)))
     integer :: n(3),nv,level,depth,node,donor,index(3),inside(3),source(3),first(3),last(3),axis,side,i,j,k
-    logical :: valid
+    real(dp) :: mach(6),pin(6),tin(6),inlet_value(reactive_nvar(size(species))),inlet_t
+    logical :: valid,physical
     ok=.false.;nv=reactive_nvar(size(species))
+    mach=-1;pin=0;tin=0
+    if (present(inflow_temperature).or.present(inflow_pressure)) then
+      if (.not.present(inflow_mach)) return
+    end if
+    if (present(inflow_mach)) mach=inflow_mach
+    if (present(inflow_temperature)) tin=inflow_temperature
+    if (present(inflow_pressure)) pin=inflow_pressure
+    if (.not.all(ieee_is_finite(mach)).or.any(mach>100)) return
+    if (.not.all(ieee_is_finite(pin)).or.any(pin<0).or.any(pin>1e15_dp)) return
+    if (.not.all(ieee_is_finite(tin))) return
+    if (any(pin>0.and.mach<0).or.any(tin<=0.and.mach>=0)) return
     if (.not.valid_tree(tree,nv)) return
     if (target<1.or.target>size(tree%nodes)) return
     n=tree%topology%nodes(target)%shape;level=tree%topology%nodes(target)%level+1
@@ -971,8 +990,9 @@ contains
         if (area<=0._dp) cycle
         global=origin(:,target)+int(index-1,int64)
         donor=0
-        if (any(global<0_int64).or.any(global>=domain(:,level))) then
-          ! Physical outflow uses the target's adjacent interior cell.
+        physical=any(global<0_int64).or.any(global>=domain(:,level))
+        if (physical) then
+          ! Physical boundary starts from the target's adjacent interior cell.
           donor=target;source=inside
         else
           do depth=level,1,-1
@@ -1015,6 +1035,17 @@ contains
         call reactive_conserved_to_primitive(species,value, &
           guess,primitive,recovered,speed,valid)
         if (.not.valid) return
+        if (physical.and.mach(2*axis-1+side)>=0) then
+          if (pin(2*axis-1+side)>0) then
+            call mach_inlet_ghost_3d(species,value,recovered,2*axis-1+side,tin(2*axis-1+side), &
+              mach(2*axis-1+side),inlet_value,inlet_t,valid,inlet_pressure=pin(2*axis-1+side))
+          else
+            call mach_inlet_ghost_3d(species,value,recovered,2*axis-1+side,tin(2*axis-1+side), &
+              mach(2*axis-1+side),inlet_value,inlet_t,valid)
+          end if
+          if (.not.valid) return
+          value=inlet_value;recovered=inlet_t
+        end if
         candidate(:,i,j,k)=value
         temps(i,j,k)=recovered
       end do
