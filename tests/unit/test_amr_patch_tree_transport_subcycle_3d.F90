@@ -21,7 +21,7 @@ program test_amr_patch_tree_transport_subcycle_3d
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),q(12),sound,initial(12),final(12),budget(12),maximum
   real(dp) :: reference_budget(12),reference_max,dt,common_dt,diffusivity,theta,reference_theta,wall_t(6),wall_v(3,6)
   real(dp), parameter :: spacing(3)=[.001_dp,.0015_dp,.002_dp]
-  real(dp) :: outlet_pressure(6)
+  real(dp) :: outlet_pressure(6),mach(6),tin(6),pin(6)
   integer(int64), allocatable :: counts(:)
   integer :: geometry,mode,node,i,j,k
   character(len=32) :: faces(6),reconstruction
@@ -56,14 +56,18 @@ program test_amr_patch_tree_transport_subcycle_3d
     call require(ok,'tree')
     if (allocated(counts)) deallocate(counts)
     allocate(counts(tree%level_count()))
-    do mode=1,3
+    do mode=1,5
       faces='periodic';reconstruction='pcm';wall_v=0
       if (mode>=2) then
         faces='outflow';faces(3:4)='isothermal_wall';reconstruction='characteristic_plm'
         wall_v(1,3:4)=2
       end if
-      outlet_pressure=0
+      outlet_pressure=0;mach=-1;tin=700;pin=0
       if (mode==3) outlet_pressure([2,6])=102325
+      if(mode>3) then
+        outlet_pressure=0;faces(1)='inflow';mach(1)=.2_dp
+        if(mode==5) pin(1)=120000
+      end if
       call prolong_amr_patch_tree_3d(tree,root,state,ok)
       call require(ok,'initial state')
       call prolong_amr_patch_tree_3d(tree,rt,temp,ok)
@@ -87,12 +91,14 @@ program test_amr_patch_tree_transport_subcycle_3d
       if (geometry==1) then
         call advance_amr_patch_tree_transport_3d(tree,species,transport,reference,reference_t,spacing,dt,faces, &
           .true.,.true.,.true.,.true.,reference_budget,reference_max,reference_theta,ok, &
-          wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter='mc',outlet_pressure=outlet_pressure)
+          wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter='mc',outlet_pressure=outlet_pressure, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
         call require(ok,'root oracle')
       end if
       call advance_amr_patch_tree_subcycle_transport_3d(tree,species,transport,state,temp,spacing,dt,faces, &
         .true.,.true.,.true.,.true.,budget,maximum,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure)
+        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(ok,'recursive transport step')
       call require(theta>=0.and.theta<=1,'transport limiter bounds')
       if (geometry==1) then
@@ -118,7 +124,8 @@ program test_amr_patch_tree_transport_subcycle_3d
       saved=state;saved_t=temp;budget=-17;maximum=-19;counts=-23;theta=-29
       call advance_amr_patch_tree_subcycle_transport_3d(tree,species,transport,state,temp,spacing,1._dp,faces, &
         .true.,.true.,.true.,.true.,budget,maximum,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure)
+        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(.not.ok,'nonphysical step rejected')
       do node=1,size(tree%nodes)
         call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')
