@@ -35,8 +35,10 @@ input, timestep limits and rank-changing restart are connected
 abrupt-start timestep restriction from unused Dynamic filter padding is corrected
 ([startup checks](validation/dynamic-active-face-timestep-20260925.md)). The AMR
 ghost sampler now reconstructs Mach inlet states after donor interpolation
-([ghost checks](validation/mach-inlet-amr-ghosts-20260925.md)). AMR stepping,
-MPI dispatch and application input remain open.
+([ghost checks](validation/mach-inlet-amr-ghosts-20260925.md)). MPI AMR ghost
+exchange forwards the same controls with collective agreement and rollback
+([MPI ghost checks](validation/mach-inlet-mpi-amr-ghosts-20260925.md)). AMR
+stepping and application input remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
