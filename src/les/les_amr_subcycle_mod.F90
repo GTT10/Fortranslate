@@ -16,7 +16,7 @@ module les_amr_subcycle_mod
 contains
   subroutine compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -25,6 +25,7 @@ contains
     real(dp), intent(inout) :: dt,maximum_diffusivity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: outlet_pressure(6),ci
     character(len=*), optional, intent(in) :: coarse_limiter,model
     character(len=*), optional, intent(in) :: test_model
@@ -32,13 +33,14 @@ contains
     logical, optional, intent(in) :: harmonic_mean
     call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle=.true.)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle=.true., &
+      inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
   end subroutine
 
   subroutine advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temperature,spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,maximum_diffusivity,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure, &
-      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -54,6 +56,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction,maximum_diffusivity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: outlet_pressure(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
     type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint
@@ -117,7 +120,7 @@ contains
       call advance_amr_patch_tree_les_level_3d(tree,species,candidate,temps,depth,spacing,local_dt,faces, &
         cs,prt,sct,total,local_diffusivity,good,old_endpoint,new_endpoint,fraction0,fraction1, &
         inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure, &
-        model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+        model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
       if (.not.good) return
       diffusivity=max(diffusivity,local_diffusivity)
       executed(depth+1)=executed(depth+1)+1

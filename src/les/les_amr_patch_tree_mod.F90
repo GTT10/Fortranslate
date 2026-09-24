@@ -20,7 +20,7 @@ module les_amr_patch_tree_mod
 contains
   subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -29,6 +29,8 @@ contains
     real(dp), intent(inout) :: dt,maximum_diffusivity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
+    real(dp) :: mach(6)
     real(dp), optional, intent(in) :: outlet_pressure(6),ci
     character(len=*), optional, intent(in) :: coarse_limiter,model
     character(len=*), optional, intent(in) :: test_model
@@ -67,7 +69,12 @@ contains
       end if
     end if
     nvar=reactive_nvar(size(species))
-    if (any(faces=='inflow')) then
+    mach=-1
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_temperature)) then
+      if(size(inflow_temperature)/=6) return
+    end if
+    if (any(faces=='inflow'.and.mach<0)) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
       if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
@@ -92,7 +99,9 @@ contains
     do peer=1,size(tree%nodes)
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,viscous_wall=.true., &
-        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
+        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter, &
+        species_count=size(species),ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.valid) return
       call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width)
       if (.not.valid) return
@@ -126,7 +135,7 @@ contains
   subroutine advance_amr_patch_tree_les_3d(tree,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -136,6 +145,8 @@ contains
     character(len=*), optional, intent(in) :: model
     real(dp), optional, intent(in) :: ci
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
+    real(dp) :: mach(6)
     real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
@@ -166,7 +177,12 @@ contains
     if (dt<=0.or.dt>1e6_dp) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if (.not.valid) return
-    if (any(faces=='inflow')) then
+    mach=-1
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_temperature)) then
+      if(size(inflow_temperature)/=6) return
+    end if
+    if (any(faces=='inflow'.and.mach<0)) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
       if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
@@ -235,7 +251,8 @@ contains
         n=tree%nodes(peer)%shape;dims=n+4
         call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success, &
           viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-          coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
+          coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         if (.not.success) return
         call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success,ghost_width=width)
         if (.not.success) return
@@ -305,7 +322,7 @@ contains
       cs,prt,sct,integrated_flux,maximum_diffusivity,ok, &
       coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -328,6 +345,8 @@ contains
     character(len=32) :: local_faces(6)
     real(dp) :: largest,diffusivity
     type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
+    real(dp) :: mach(6)
     real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     ! Endpoints pack conserved components followed by a temperature guess.
@@ -375,7 +394,12 @@ contains
             .not.all(ieee_is_finite(coarse_end%fields(peer)%values))) return
       end do
     end if
-    if (any(faces=='inflow')) then
+    mach=-1
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_temperature)) then
+      if(size(inflow_temperature)/=6) return
+    end if
+    if (any(faces=='inflow'.and.mach<0)) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
       if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
@@ -481,7 +505,8 @@ contains
       end if
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
         coarse_future=coarse_end,coarse_fractions=fractions,coarse_limiter=coarse_limiter,species_count=size(species), &
-        viscous_wall=.true.,wall_velocity=wall_velocity,ghost_width=width)
+        viscous_wall=.true.,wall_velocity=wall_velocity,ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
       call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success,ghost_width=width)
     end subroutine

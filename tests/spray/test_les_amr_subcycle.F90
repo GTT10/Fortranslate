@@ -8,7 +8,8 @@ program test_les_amr_subcycle
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
   use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d
-  use les_amr_subcycle_mod, only: advance_amr_patch_tree_subcycle_les_3d
+  use les_amr_subcycle_mod, only: advance_amr_patch_tree_subcycle_les_3d, &
+    compute_amr_patch_tree_subcycle_les_timestep_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_tree_3d) :: tree
@@ -17,7 +18,7 @@ program test_les_amr_subcycle
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),q(12),sound,initial(12),final(12),budget(12),maximum
   real(dp) :: reference_budget(12),reference_max,dt,diffusivity,wall_t(6),wall_v(3,6)
   real(dp), parameter :: spacing(3)=[.001_dp,.0015_dp,.002_dp]
-  real(dp) :: outlet_pressure(6)
+  real(dp) :: outlet_pressure(6),mach(6),tin(6),pin(6),selected_dt,selected_d
   integer(int64), allocatable :: counts(:)
   integer :: geometry,mode,node,i,j,k,m
   character(len=32) :: faces(6),model
@@ -61,34 +62,46 @@ program test_les_amr_subcycle
     call require(ok,'tree')
     if (allocated(counts)) deallocate(counts)
     allocate(counts(tree%level_count()))
-    do mode=1,3
+    do mode=1,5
       faces='periodic';wall_v=0
       if (mode>=2) then
         faces='outflow';faces(3:4)='isothermal_wall'
         wall_v(1,3:4)=2
       end if
-      outlet_pressure=0
+      outlet_pressure=0;mach=-1;tin=700;pin=0
       if (mode==3) outlet_pressure([2,6])=102325
       ! Avoid repeated seven-layer corner extrapolation producing negative pressure.
       if (mode==3.and.m==4) outlet_pressure(6)=0
+      if(mode>=4) then
+        faces(1)='inflow';mach(1)=.2_dp
+        if(mode==5) pin(1)=120000
+      end if
       call prolong_amr_patch_tree_3d(tree,root,state,ok)
       call require(ok,'initial state')
       call prolong_amr_patch_tree_3d(tree,rt,temp,ok)
       call require(ok,'initial temperature')
       call composite_integrals_amr_patch_tree_3d(tree,state,spacing,initial,ok)
       call require(ok,'initial inventory')
+      if(mode>=4) then
+        call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temp,spacing,.05_dp,faces, &
+          .17_dp,.7_dp,.7_dp,selected_dt,selected_d,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
+          coarse_limiter='mc',model=model,inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+        call require(ok.and.selected_dt>0.and.selected_d>=0,'Mach subcycle timestep')
+      end if
       dt=1e-9_dp
       reference=state;reference_t=temp
       if (geometry==1) then
         call advance_amr_patch_tree_les_3d(tree,species,reference,reference_t,spacing,dt,faces, &
           .17_dp,.7_dp,.7_dp,reference_budget,reference_max,ok, &
-          wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter='mc',outlet_pressure=outlet_pressure,model=model)
+          wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter='mc',outlet_pressure=outlet_pressure,model=model, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
         if(.not.ok) print *, 'root oracle failure: ',trim(model),mode
         call require(ok,'root oracle')
       end if
       call advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temp,spacing,dt,faces, &
         .17_dp,.7_dp,.7_dp,budget,maximum,diffusivity,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure,model=model)
+        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure,model=model, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(ok,'recursive LES step')
       call require(diffusivity>=0,'LES diffusivity')
       if (geometry==1) then
@@ -116,7 +129,8 @@ program test_les_amr_subcycle
       saved=state;saved_t=temp;budget=-17;maximum=-19;counts=-23;diffusivity=-29
       call advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temp,spacing,1._dp,faces, &
         .17_dp,.7_dp,.7_dp,budget,maximum,diffusivity,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure,model=model)
+        coarse_limiter='mc',level_steps=counts,outlet_pressure=outlet_pressure,model=model, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(.not.ok,'nonphysical step rejected')
       do node=1,size(tree%nodes)
         call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')
