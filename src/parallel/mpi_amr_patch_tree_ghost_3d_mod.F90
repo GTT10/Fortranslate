@@ -21,7 +21,7 @@ module mpi_amr_patch_tree_ghost_3d_mod
 contains
   ! Collective ghost fill. Only owned selected-depth output fields allocate.
   subroutine fill_mpi_amr_tree_ghosts_3d(tree,owners,local,nvar,faces,ghosts,comm,ok, &
-      viscous_wall,inflow_state,wall_velocity,coarse_limiter,species_count,coarse_future,coarse_fractions,depth)
+      viscous_wall,inflow_state,wall_velocity,coarse_limiter,species_count,coarse_future,coarse_fractions,depth,ghost_width)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
     type(amr_tree_state_3d), intent(in) :: local
@@ -36,11 +36,12 @@ contains
     type(amr_tree_state_3d), optional, intent(in) :: coarse_future
     real(dp), optional, intent(in) :: coarse_fractions(:)
     integer, optional, intent(in) :: depth
+    integer, optional, intent(in) :: ghost_width
     type(amr_tree_state_3d) :: candidate
     type(cached_tree_source) :: reader
     real(dp), allocatable :: scratch(:,:,:,:),fractions(:),low_f(:),high_f(:),endpoint_values(:,:)
     integer, allocatable :: queries(:,:)
-    integer :: controls(3),low(3),high(3),active,levels,query,slot,endpoint
+    integer :: controls(4),low(4),high(4),active,levels,query,slot,endpoint,width
     logical :: use_future
     integer :: rank,nranks,status,ios,node,pass
     logical :: valid,ready
@@ -56,12 +57,15 @@ contains
     if (.not.ready) return
     active=-1
     if (present(depth)) active=depth
-    controls=[active,merge(1,0,present(coarse_future)),merge(1,0,present(coarse_fractions))]
-    call MPI_Allreduce(controls,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    width=2
+    if(present(ghost_width)) width=ghost_width
+    controls=[active,merge(1,0,present(coarse_future)),merge(1,0,present(coarse_fractions)),width]
+    call MPI_Allreduce(controls,low,4,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,4,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high).or.controls(2)/=controls(3)) return
+    if(width<1.or.width>128) return
     if (active< -1.or.active>=tree%level_count()) return
     call validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ready)
     if (.not.ready) return
@@ -169,11 +173,12 @@ contains
       if (use_future) then
         call sample_amr_patch_tree_ghosts_3d(tree,nvar,peer,faces,reader,output,success, &
           viscous_wall,inflow_state,wall_velocity,coarse_fractions=fractions(:tree%nodes(peer)%level), &
-          coarse_limiter=coarse_limiter,species_count=species_count,planning=planning,validate_only=validate_only)
+          coarse_limiter=coarse_limiter,species_count=species_count,planning=planning,validate_only=validate_only, &
+          ghost_width=width)
       else
         call sample_amr_patch_tree_ghosts_3d(tree,nvar,peer,faces,reader,output,success, &
           viscous_wall,inflow_state,wall_velocity,coarse_limiter=coarse_limiter, &
-          species_count=species_count,planning=planning,validate_only=validate_only)
+          species_count=species_count,planning=planning,validate_only=validate_only,ghost_width=width)
       end if
     end subroutine
     subroutine agree(condition,result)

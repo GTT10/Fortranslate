@@ -81,6 +81,26 @@ program test_mpi_amr_patch_tree_ghost_3d
         call require(all(shape(oracle)==shape(ghosts%fields(node)%values)),'halo shape')
         call require(all(oracle==ghosts%fields(node)%values),'exact serial halo parity')
       end do
+      if(mode==1) then
+        call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
+          coarse_limiter=limiter,species_count=2,ghost_width=7)
+        call require(ok,'wide collective halo fill')
+        do node=1,4
+          call require(allocated(ghosts%fields(node)%values).eqv.(owners(node)==rank),'only owned wide halos')
+          if(owners(node)/=rank) cycle
+          call fill_amr_patch_tree_ghosts_3d(tree,global,node,faces,oracle,ok, &
+            coarse_limiter=limiter,species_count=2,ghost_width=7)
+          call require(ok.and.all(oracle==ghosts%fields(node)%values),'wide exact serial halo parity')
+        end do
+        saved=ghosts
+        call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
+          coarse_limiter=limiter,species_count=2,ghost_width=7+rank)
+        call require(.not.ok,'rank-disagreeing halo width rejected')
+        do node=1,4
+          if(owners(node)/=rank) cycle
+          call require(all(ghosts%fields(node)%values==saved%fields(node)%values),'wide halo mismatch rollback')
+        end do
+      end if
     end do
     do scheme=1,3
       if (allocated(limiter)) deallocate(limiter)
