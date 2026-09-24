@@ -135,7 +135,7 @@ The full normalized port configuration and event selections are bound into the
 checkpoint context. CSV `material_id` records the port number. The old single
 port input remains valid; checkpoints produced before this input/context extension
 are rejected by the strict context comparison. Events are specified in one
-ordered table; separate per-port rate-curve files are not connected here.
+ordered table; each port can also load a separate rate-curve file.
 
 ## Port mass-flow tables
 
@@ -156,8 +156,25 @@ The entire interval's mass is injected at its start time, including an event
 starting at final time. This is discrete packet injection; choose event spacing
 for the desired temporal resolution. Intervals may overlap if explicitly
 specified. A profile does not create events automatically. Profiles and interval
-ends are part of the restart context. The arrays are supplied in the namelist;
-external rate-curve file loading is not provided here.
+ends are part of the restart context.
+
+Alternatively, append a separate optional group to `spray.nml`:
+
+```fortran
+&eb_spray_rate_files
+  profile_files(1)='rate1.dat',profile_files(2)='rate2.dat'
+/
+```
+
+Each file contains 2--64 whitespace-separated `time_seconds rate_kg_per_second`
+pairs. Blank lines and `#`/`!` comments are allowed. The same profile bounds
+apply. Leave that port's inline point count and tables at zero; supplying both
+forms is rejected. Paths for unused ports are rejected. Paths are relative to
+the process working directory; all MPI ranks must see consistent files.
+Files load at startup, including restart. Loaded numbers enter the existing
+checkpoint context, so changed values reject continuation while changed paths
+or comments do not. Event times and interval ends must still be supplied.
+See [focused checks](../../docs/validation/spray-eb-rate-files-20260925.md).
 
 ## EB wall impacts and stationary films
 
