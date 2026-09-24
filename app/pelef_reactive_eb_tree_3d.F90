@@ -17,7 +17,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
-  use spray_injection_profile_mod, only: integrate_spray_injection_profile
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mpi_eb_remap_mod, only: remap_mpi_eb_spray
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
@@ -528,6 +528,8 @@ contains
     real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
     real(dp) :: mixture_critical_temperatures(16)=0
     character(len=4096) :: context_line
+    character(len=1024) :: profile_files(16)
+    namelist /eb_spray_rate_files/ profile_files
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
     real(dp) :: reference_pressures(16),latent_heats(16),fractions(16)
@@ -555,8 +557,23 @@ contains
     open(newunit=stream,file=trim(spray_input),status='old',action='read',iostat=code)
     if(code/=0) error stop 'Cannot read MPI EB spray input'
     read(stream,nml=eb_spray,iostat=code)
+    if(code/=0) error stop 'Invalid MPI EB spray input'
+    profile_files=''
+    rewind(stream)
+    read(stream,nml=eb_spray_rate_files,iostat=code)
+    if(code>0) error stop 'Invalid EB spray rate files input'
     close(stream,iostat=closed)
-    if(code/=0.or.closed/=0) error stop 'Invalid MPI EB spray input'
+    if(closed/=0) error stop 'Invalid MPI EB spray input'
+    if(port_count<1.or.port_count>16) error stop 'Invalid port count'
+    if(any(profile_files(port_count+1:)/='')) error stop 'Unused EB rate files'
+    do port=1,port_count
+      if(len_trim(profile_files(port))==0) cycle
+      if(port_profile_points(port)/=0.or.any(port_profile_times(:,port)/=0).or. &
+        any(port_profile_rates(:,port)/=0)) error stop 'Rate file conflicts with inline profile'
+      call read_spray_injection_profile(trim(profile_files(port)),port_profile_times(:,port), &
+        port_profile_rates(:,port),port_profile_points(port),ok)
+      if(.not.ok) error stop 'Invalid EB spray rate file'
+    end do
     if(nc<1.or.nc>16.or.number<1.or.number>125000) error stop 'Invalid MPI EB spray dimensions'
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Invalid fraction sum'

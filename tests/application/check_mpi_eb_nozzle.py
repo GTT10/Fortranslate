@@ -14,8 +14,11 @@ p.add_argument('--mpiexec', type=Path, required=True)
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--rate', action='store_true')
+p.add_argument('--rate-files', action='store_true')
 p.add_argument('--properties', action='store_true')
 a = p.parse_args()
+if a.rate_files and not a.rate:
+    p.error('--rate-files requires --rate')
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='nozzle_', dir=a.work.resolve()))
 env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
@@ -40,7 +43,7 @@ def compare(left, right):
             assert abs(u-v) <= 3e-12 * max(abs(u), abs(v), 1e-30), (key, u, v)
 
 
-def run(label, ranks, extra='', invalid=False):
+def run(label, ranks, extra='', invalid=False, changed=False, inline=False):
     directory = work / label
     shutil.copytree(a.source / 'cases/mpi_eb_spray_3d', directory)
     tree = directory / 'tree.nml'
@@ -79,16 +82,28 @@ def run(label, ranks, extra='', invalid=False):
                      "mixture_vapor_pressure_models(1)='antoine',"
                      "mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,"
                      "mixture_antoine_temperature_ranges(:,1)=300.,450.,")
-    if invalid and a.properties:
+    file_group = ''
+    if a.rate_files and not inline:
+        controls = controls.replace(
+            'port_profile_points=2,2,port_profile_times(:,1)=0.,4.e-8,62*0.,'
+            'port_profile_times(:,2)=0.,4.e-8,62*0.,port_profile_rates(:,1)=2*.002,62*0.,'
+            'port_profile_rates(:,2)=.001,.003,62*0.,', '')
+        # Renamed files and comments on continuation must not change checkpoint identity.
+        first = 'renamed.dat' if label == 'resumed' else 'rate1.dat'
+        rate = '-.002' if invalid else '.0021' if changed else '.002'
+        (directory / first).write_text(f'# {label}\n0 .002\n4.e-8 {rate} ! end\n')
+        (directory / 'rate2.dat').write_text('0\t.001\n\n4.e-8 .003\n')
+        file_group = f"\n&eb_spray_rate_files profile_files='{first}','rate2.dat' /\n"
+    elif invalid and a.properties:
         controls = controls.replace('1100.,-.2,0.,0.', '-1100.,0.,0.,0.')
     elif invalid:
         controls = controls.replace('port_radii=2*.0001', 'port_radii=2*-.0001')
-    spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1))
+    spray.write_text(values.replace('&eb_spray', '&eb_spray\n' + controls, 1) + file_group)
     result = subprocess.run([str(a.mpiexec.resolve()), '-n', str(ranks), str(a.exe.resolve()), 'tree.nml', 'spray.nml'],
                             cwd=directory, env=env, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=60)
     (directory / 'run.log').write_text(result.stdout)
-    assert (result.returncode == 0) != invalid, result.stdout
+    assert (result.returncode == 0) != (invalid or changed), result.stdout
     return directory
 
 
@@ -134,8 +149,16 @@ stopped = run('stopped', 2, "checkpoint_file='saved',checkpoint_interval_steps=1
 resumed = run('resumed', 4, f"restart_file='{stopped / 'saved.step1'}',")
 compare(rows(full[1] / 'result.csv'), rows(resumed / 'result.csv'))
 compare(particles(full[1]), particles(resumed))
+if a.rate_files:
+    baseline = run('inline', 2, inline=True)
+    compare(rows(full[0] / 'result.csv'), rows(baseline / 'result.csv'))
+    compare(particles(full[0]), particles(baseline))
+    rejected = run('changed', 2, f"restart_file='{stopped / 'saved.step1'}',", changed=True)
+    assert 'EB spray context mismatch' in (rejected / 'run.log').read_text()
+    assert not (rejected / 'result.csv').exists()
 invalid = run('invalid', 2, invalid=True)
-expected_error = ('Invalid injected port mixture' if a.properties else
+expected_error = ('Invalid EB spray rate file' if a.rate_files else
+                  'Invalid injected port mixture' if a.properties else
                   'Rate-driven outlet requires positive radius' if a.rate else 'Invalid injection port template')
 assert expected_error in (invalid / 'run.log').read_text()
 assert not (invalid / 'result.csv').exists()
