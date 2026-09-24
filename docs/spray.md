@@ -3193,6 +3193,10 @@ cells and may restrict the interval more than an interior-only estimate.
 The shared donor sampler now supports repeated moving-wall reflections for
 halos wider than the domain, a prerequisite for subsequent Dynamic wall
 dispatch ([boundary-sampling evidence](validation/amr-wide-wall-ghosts-20260925.md)).
+The ghosted Dynamic kernel also accepts local adiabatic/isothermal wall faces
+and applies their heat flux before face-divergence publication
+([kernel checks](validation/les-dynamic-wall-flux-20260925.md)); AMR/application
+wall dispatch is not yet enabled.
 Reacting-spray/application dispatch is described below. See
 [serial Dynamic AMR checks](validation/les-dynamic-amr-20260925.md).
 
