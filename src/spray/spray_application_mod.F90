@@ -38,6 +38,7 @@ contains
     real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
     real(dp) :: mixture_cp_coefficients(4,16),mixture_cp_temperature_ranges(2,16)
     real(dp) :: mixture_antoine_coefficients(4,16),mixture_antoine_temperature_ranges(2,16)
+    real(dp) :: mixture_molecular_weights(16)=0
     real(dp) :: mixture_normal_boiling_temperatures(16)
     real(dp) :: mixture_critical_temperatures(16)
     type(spray_liquid), allocatable :: mixture_components(:)
@@ -94,6 +95,7 @@ contains
     real(dp) :: mole_amounts(mechanism_species_capacity),liquid_density,liquid_cp
     character(len=16) :: boiling_model
     real(dp) :: normal_boiling_temperature,port_normal_boiling_temperatures(16)
+    real(dp) :: liquid_molecular_weight,port_molecular_weights(16)
     real(dp) :: critical_temperature
     character(len=16) :: liquid_density_model
     real(dp) :: liquid_density_coefficients(4),liquid_density_temperature_range(2)
@@ -169,7 +171,8 @@ contains
       mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
-      mixture_boiling_models,mixture_normal_boiling_temperatures, &
+      mixture_boiling_models,mixture_molecular_weights, &
+      mixture_normal_boiling_temperatures, &
       mixture_critical_temperatures, &
       cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration,outlet_pressure,inflow_mach, &
       breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed, &
@@ -179,7 +182,7 @@ contains
       inflow_composition_species,inflow_composition_mole_fractions, &
       hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
-      boiling_model,critical_temperature,normal_boiling_temperature, &
+      boiling_model,critical_temperature,normal_boiling_temperature,liquid_molecular_weight, &
       liquid_density_model,liquid_density_coefficients,liquid_density_temperature_range, &
       vapor_pressure_model,antoine_coefficients,antoine_temperature_range, &
       vapor_name,liquid_density,liquid_cp,reference_temperature,reference_pressure,latent_heat,drop_temperature, &
@@ -199,7 +202,7 @@ contains
       port_surface_tensions,port_liquid_viscosities,port_viscosity_models, &
       port_viscosity_coefficients,port_viscosity_temperature_ranges, &
       port_density_models,port_vapor_pressure_models,port_boiling_models,port_critical_temperatures, &
-      port_normal_boiling_temperatures, &
+      port_normal_boiling_temperatures,port_molecular_weights, &
       port_density_coefficients,port_density_temperature_ranges,port_antoine_coefficients,port_antoine_temperature_ranges, &
       port_vapor_names,port_liquid_densities,port_liquid_cps,port_reference_temperatures, &
       port_reference_pressures,port_latent_heats, &
@@ -247,6 +250,7 @@ contains
     mole_amounts=0.0_dp; mole_amounts(1:3)=[2.0_dp,1.0_dp,3.76_dp]
     boiling_model='reject';critical_temperature=0;normal_boiling_temperature=0
     port_normal_boiling_temperatures=0
+    liquid_molecular_weight=0;port_molecular_weights=0
     liquid_density_model='constant';liquid_density_coefficients=0;liquid_density_temperature_range=0
     vapor_pressure_model='clausius';antoine_coefficients=0;antoine_temperature_range=0
     vapor_name='H2O'; liquid_density=1000.0_dp; liquid_cp=4184.0_dp
@@ -260,6 +264,7 @@ contains
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
     mixture_antoine_coefficients=0;mixture_antoine_temperature_ranges=0;mixture_critical_temperatures=0
     mixture_normal_boiling_temperatures=0
+    mixture_molecular_weights=0
     port_mixture_fractions=0
     mixture_count=0;mixture_vapor_names='';mixture_fractions=0;mixture_densities=0;mixture_cps=0
     mixture_reference_temperatures=0;mixture_reference_pressures=101325;mixture_latent_heats=0
@@ -578,6 +583,7 @@ contains
     if (any(mixture_boiling_models(mixture_count+1:)/='reject')) call fail('Unused mixture property entries')
     if (any(mixture_critical_temperatures(mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (any(mixture_normal_boiling_temperatures(mixture_count+1:)/=0)) call fail('Unused mixture property entries')
+    if (any(mixture_molecular_weights(mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (any(mixture_density_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (any(mixture_density_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
     if (any(mixture_cp_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture property entries')
@@ -610,6 +616,7 @@ contains
         mixture_components(i)%boiling_model=mixture_boiling_models(i)
         mixture_components(i)%critical_temperature=mixture_critical_temperatures(i)
         mixture_components(i)%normal_boiling_temperature=mixture_normal_boiling_temperatures(i)
+        mixture_components(i)%molecular_weight=mixture_molecular_weights(i)
         if (.not.valid_spray_liquid(mixture_components(i))) call fail('Invalid mixture component property model')
       end do
       liquid=mixture_injection_liquid(drop_temperature)
@@ -622,6 +629,7 @@ contains
     liquid%heat_capacity_temperature_range=liquid_cp_temperature_range
     liquid%boiling_model=boiling_model;liquid%critical_temperature=critical_temperature
     liquid%normal_boiling_temperature=normal_boiling_temperature
+    liquid%molecular_weight=liquid_molecular_weight
     liquid%density_model=liquid_density_model;liquid%density_coefficients=liquid_density_coefficients
     liquid%density_temperature_range=liquid_density_temperature_range
     if (.not.valid_spray_liquid(liquid)) call fail('Invalid liquid property model')
@@ -640,6 +648,8 @@ contains
         .not.all(ieee_is_finite(port_critical_temperatures))) call fail('Nonfinite port property model')
     if (.not.all(ieee_is_finite(port_normal_boiling_temperatures))) call fail('Nonfinite port boiling point')
     if (any(port_normal_boiling_temperatures(injection_port_count+1:)/=0)) call fail('Unused port boiling point')
+    if (.not.all(ieee_is_finite(port_molecular_weights))) call fail('Nonfinite port molecular weight')
+    if (any(port_molecular_weights(injection_port_count+1:)/=0)) call fail('Unused port molecular weight')
     if (any(port_density_models(injection_port_count+1:)/='constant').or. &
         any(port_vapor_pressure_models(injection_port_count+1:)/='clausius').or. &
         any(port_boiling_models(injection_port_count+1:)/='reject').or. &
@@ -652,7 +662,7 @@ contains
       any(port_boiling_models/='reject').or.any(port_density_coefficients/=0).or. &
       any(port_density_temperature_ranges/=0).or.any(port_antoine_coefficients/=0).or. &
       any(port_antoine_temperature_ranges/=0).or.any(port_critical_temperatures/=0).or. &
-      any(port_normal_boiling_temperatures/=0)
+      any(port_normal_boiling_temperatures/=0).or.any(port_molecular_weights/=0)
     if (.not.all(ieee_is_finite(port_surface_tensions)).or. &
         .not.all(ieee_is_finite(port_liquid_viscosities)).or. &
         .not.all(ieee_is_finite(port_viscosity_coefficients)).or. &
@@ -707,6 +717,7 @@ contains
         materials(port)%boiling_model=port_boiling_models(port)
         materials(port)%critical_temperature=port_critical_temperatures(port)
         materials(port)%normal_boiling_temperature=port_normal_boiling_temperatures(port)
+        materials(port)%molecular_weight=port_molecular_weights(port)
         if (.not.valid_spray_liquid(materials(port))) call fail('Invalid port property model')
       end do
     end if
@@ -954,6 +965,13 @@ contains
         context=trim(context)//' '//trim(materials(port)%heat_capacity_model)
         call append_reals([materials(port)%heat_capacity_coefficients,materials(port)%heat_capacity_temperature_range])
       end do
+    end if
+    if (boiling_model=='pelemp-cap'.or.any(port_boiling_models=='pelemp-cap').or. &
+        any(mixture_boiling_models=='pelemp-cap')) context=trim(context)//' pelemp-impact-boiling-v1'
+    if (liquid_molecular_weight/=0.or.any(port_molecular_weights/=0).or.any(mixture_molecular_weights/=0)) then
+      context=trim(context)//' liquid-molecular-weights-v1'
+      call append_reals([liquid_molecular_weight,port_molecular_weights(:injection_port_count), &
+        mixture_molecular_weights(:mixture_count)])
     end if
     if (port_property_models) then
       context=trim(context)//' port-property-models-v1'

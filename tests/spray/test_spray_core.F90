@@ -119,6 +119,44 @@ program test_spray_core
     call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
       options,1e-9_dp,totals0,ok)
     call require(ok.and.all(component_mass==saved_mass).and.p%mass==q%mass,'evaporation disabled preserves small drops')
+  case('liquid_mw')
+    mixture_components=liquid;mixture_components%molecular_weight=[18.0_dp,36.0_dp]
+    mixture_y=.5_dp;mw=species(liquid%vapor_index)%molecular_weight;surface_x=-1
+    call liquid_mixture_surface(mixture_components,mixture_y,mw,373.15_dp,202650.0_dp,surface_x,ok)
+    call require(ok.and.maxval(abs(surface_x-[1.0_dp/3,1.0_dp/6]))<2e-14_dp,'independent liquid mole fractions')
+    call saturation_mole_fraction(mixture_components(2),mw(2),350.0_dp,101325.0_dp,value,ok)
+    expected=exp(liquid%latent_heat*36/8314.46261815324_dp*(1/373.15_dp-1/350.0_dp))
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'liquid molecular weight in Clausius exponent')
+    p%temperature=373.15_dp
+    primitive=0;primitive(1)=1;primitive(5)=202650;primitive(15)=1
+    call build_mixture_film(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+      film,mixture_rates,vapor_h,ok)
+    expected=.5_dp*mw(1)/(12+.5_dp*species(10)%molecular_weight)
+    call require(ok.and.abs(film%surface_fraction/expected-1)<2e-14_dp, &
+      'liquid vapor mean weight and mapped gas numerator')
+    call require(maxval(abs(mixture_rates-[2.0_dp/3,1.0_dp/3]))<2e-14_dp,'component diffusion weights')
+    call mixture_impact_boiling_temperature(mixture_components,mixture_y,mw,202650.0_dp,value,ok)
+    expected=0
+    do n=1,2
+      expected=expected+.5_dp/(1/373.15_dp-log(2.0_dp)*8314.46261815324_dp/ &
+        (liquid%latent_heat*mixture_components(n)%molecular_weight))
+    end do
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'independent molecular weights in impact boiling')
+    mixture_components%boiling_model='pelemp-cap';mixture_components%normal_boiling_temperature=373.15_dp
+    mixture_components%critical_temperature=647;mixture_components%reference_temperature=300
+    expected=0
+    do n=1,2
+      call pelemp_boiling_temperature(liquid%latent_heat,300.0_dp,373.15_dp,647.0_dp, &
+        mixture_components(n)%molecular_weight,202650.0_dp,td,ok)
+      call require(ok,'impact boiling oracle')
+      expected=expected+.5_dp*td
+    end do
+    call mixture_impact_boiling_temperature(mixture_components,mixture_y,mw,202650.0_dp,value,ok)
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'PeleMP impact boiling dispatch')
+    liquid%molecular_weight=-1
+    call require(.not.valid_spray_liquid(liquid),'negative molecular weight rejected')
+    liquid%molecular_weight=ieee_value(0.0_dp,ieee_quiet_nan)
+    call require(.not.valid_spray_liquid(liquid),'nonfinite molecular weight rejected')
   case('many_to_one')
     mixture_components=liquid;mixture_y=[.4_dp,.6_dp]
     primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1

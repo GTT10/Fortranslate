@@ -410,6 +410,7 @@ contains
     real(dp), intent(out) :: temperature
     logical, intent(out) :: ok
     real(dp) :: denom,boil,total
+    logical :: valid
     integer :: i
     temperature=0;ok=.false.
     if (size(molecular_weights)/=size(components).or.size(y)/=size(components)) return
@@ -422,14 +423,19 @@ contains
     do i=1,size(y)
       if (.not.valid_spray_liquid(components(i))) return
       if (y(i)==0) cycle
-      if (components(i)%vapor_pressure_model=='antoine') then
+      if (components(i)%boiling_model=='pelemp-cap') then
+        call pelemp_boiling_temperature(components(i)%latent_heat,components(i)%reference_temperature, &
+          components(i)%normal_boiling_temperature,components(i)%critical_temperature, &
+          resolved_liquid_molecular_weight(components(i),molecular_weights(i)),pressure,boil,valid)
+        if (.not.valid) return
+      else if (components(i)%vapor_pressure_model=='antoine') then
         denom=components(i)%antoine_coefficients(1)-log10(pressure/components(i)%antoine_coefficients(4))
         if (denom<=0) return
         boil=components(i)%antoine_coefficients(2)/denom-components(i)%antoine_coefficients(3)
         if (boil<components(i)%antoine_temperature_range(1).or.boil>components(i)%antoine_temperature_range(2)) return
       else
         denom=1/components(i)%reference_temperature-log(pressure/components(i)%reference_pressure)* &
-          universal_gas_constant/(components(i)%latent_heat*molecular_weights(i))
+          universal_gas_constant/(components(i)%latent_heat*resolved_liquid_molecular_weight(components(i),molecular_weights(i)))
         if (denom<=0) return
         boil=1/denom
       end if
@@ -509,6 +515,7 @@ contains
     logical, intent(out) :: hit,ok
     real(dp) :: fraction,earliest,location(3),normal(3),delta(3),boundary,boil,denom,rho,mu,d,un,we,re,kv,kcrit,thickness
     integer :: a,face,f,regime
+    logical :: valid
     wall=0;hit=.false.;ok=.false.;deposit=spray_wall_film()
     if (.not.all(ieee_is_finite([previous,lower,upper,pressure,molecular_weight]))) return
     if (any(upper<=lower).or.pressure<1.or.pressure>1e10_dp.or.molecular_weight<=0) return
@@ -533,12 +540,17 @@ contains
     if (.not.settings%enabled(face).or.parent%mass<=0) then
       ok=.true.;return
     end if
+    if (.not.valid_spray_liquid(liquid)) return
     location=previous+earliest*delta;normal=0;a=(face+1)/2
     normal(a)=merge(1.0_dp,-1.0_dp,modulo(face,2)==1)
     location(a)=merge(lower(a),upper(a),modulo(face,2)==1)
     if (present(boiling_temperature)) then
       if (.not.ieee_is_finite(boiling_temperature)) return
       boil=boiling_temperature
+    else if (liquid%boiling_model=='pelemp-cap') then
+      call pelemp_boiling_temperature(liquid%latent_heat,liquid%reference_temperature,liquid%normal_boiling_temperature, &
+        liquid%critical_temperature,resolved_liquid_molecular_weight(liquid,molecular_weight),pressure,boil,valid)
+      if (.not.valid) return
     else if (liquid%vapor_pressure_model=='antoine') then
       denom=liquid%antoine_coefficients(1)-log10(pressure/liquid%antoine_coefficients(4))
       if (denom<=0) return
@@ -546,7 +558,7 @@ contains
       if (boil<liquid%antoine_temperature_range(1).or.boil>liquid%antoine_temperature_range(2)) return
     else
       denom=1/liquid%reference_temperature-log(pressure/liquid%reference_pressure)* &
-        universal_gas_constant/(liquid%latent_heat*molecular_weight)
+        universal_gas_constant/(liquid%latent_heat*resolved_liquid_molecular_weight(liquid,molecular_weight))
       if (denom<=0) return
       boil=1/denom
     end if

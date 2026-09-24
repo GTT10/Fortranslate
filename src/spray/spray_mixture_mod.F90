@@ -159,7 +159,7 @@ contains
       v=components(i)%vapor_index
       if (v>size(species)) return
       if (trim(components(i)%vapor_name)/=trim(species(v)%name)) return
-      mw_liq(i)=mw_g(v)
+      mw_liq(i)=resolved_liquid_molecular_weight(components(i),mw_g(v))
       call nasa7_mass_properties(species(v),parcel%temperature,cp_i,cv,h,e,entropy,valid)
       if (.not.valid) return
       enthalpy(i)=h
@@ -191,7 +191,7 @@ contains
       denom=sum(xs*mw_liq)+(1-sum_x)*carrier_mw
       do i=1,size(y)
         v=components(i)%vapor_index
-        ys(v)=ys(v)+xs(i)*mw_liq(i)/denom
+        ys(v)=ys(v)+xs(i)*mw_g(v)/denom
       end do
       where (active) yf=(2*ys+yg)/3
       where (.not.active) yf=yg*(1-sum(yf,mask=active))/carrier_y
@@ -337,7 +337,7 @@ contains
     real(dp), intent(inout) :: surface_x(:)
     real(dp), intent(in), optional :: vapor_enthalpy(:)
     logical, intent(out) :: ok
-    real(dp) :: liquid_x(size(y)),candidate(size(y)),inverse_weight
+    real(dp) :: liquid_x(size(y)),candidate(size(y)),inverse_weight,weights(size(y))
     integer :: i
     logical :: valid
     ok=.false.
@@ -349,7 +349,10 @@ contains
       if (size(vapor_enthalpy)/=size(y)) return
       if (.not.all(ieee_is_finite(vapor_enthalpy))) return
     end if
-    inverse_weight=sum(y/molecular_weights);liquid_x=(y/molecular_weights)/inverse_weight
+    do i=1,size(y)
+      weights(i)=resolved_liquid_molecular_weight(components(i),molecular_weights(i))
+    end do
+    inverse_weight=sum(y/weights);liquid_x=(y/weights)/inverse_weight
     candidate=0
     do i=1,size(y)
       if (y(i)==0) cycle

@@ -25,6 +25,7 @@ module spray_parcel_mod
     character(len=16) :: heat_capacity_model='constant'
     real(dp) :: heat_capacity_coefficients(4)=0.0_dp,heat_capacity_temperature_range(2)=0.0_dp
     real(dp) :: normal_boiling_temperature=0.0_dp
+    real(dp) :: molecular_weight=0.0_dp ! zero uses the mapped gas species
   end type
   type, public :: spray_nozzle_model
     character(len=16) :: profile='legacy'
@@ -72,11 +73,18 @@ module spray_parcel_mod
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
   public :: liquid_heat_capacity_at_temperature
-  public :: watson_latent_heat, pelemp_boiling_temperature
+  public :: watson_latent_heat, pelemp_boiling_temperature,resolved_liquid_molecular_weight
   public :: select_spray_liquid
   public :: inject_cone_ports
   public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
 contains
+  pure real(dp) function resolved_liquid_molecular_weight(liquid,gas_molecular_weight) result(weight)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: gas_molecular_weight
+    weight=gas_molecular_weight
+    if (liquid%molecular_weight/=0) weight=liquid%molecular_weight
+  end function
+
   pure subroutine watson_latent_heat(latent_reference, reference_temperature, critical_temperature, &
       temperature, latent, ok)
     ! PelePhysics MPLiqProps::latent_correlation_i; SI, subcritical states only.
@@ -175,6 +183,10 @@ contains
     ok = .false.
     if (.not. all(ieee_is_finite([l%density, l%heat_capacity, l%reference_temperature, &
         l%reference_pressure, l%latent_heat, l%reference_energy]))) return
+    if (.not.ieee_is_finite(l%molecular_weight)) return
+    if (l%molecular_weight/=0) then
+      if (l%molecular_weight<1e-3_dp.or.l%molecular_weight>1e5_dp) return
+    end if
     if (.not.all(ieee_is_finite(l%antoine_coefficients))) return
     if (.not.all(ieee_is_finite(l%antoine_temperature_range))) return
     select case(trim(l%vapor_pressure_model))
@@ -447,7 +459,7 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: liquid_mole_fraction,vapor_enthalpy
     real(dp) :: log_fraction,surface_temperature,inverse_boiling_temperature,boiling_temperature,liquid_x
-    real(dp) :: latent,boiling_reference,pressure_temperature
+    real(dp) :: latent,boiling_reference,pressure_temperature,liquid_weight
     logical :: valid
     fraction = 0.0_dp
     ok = .false.
@@ -456,6 +468,7 @@ contains
     if (molecular_weight < 1.0e-3_dp .or. molecular_weight > 1.0e5_dp) return
     if (temperature < 1.0_dp .or. temperature > 1.0e5_dp) return
     if (pressure < 1.0e-6_dp .or. pressure > 1.0e12_dp) return
+    liquid_weight=resolved_liquid_molecular_weight(l,molecular_weight)
     liquid_x=1
     if (present(liquid_mole_fraction)) liquid_x=liquid_mole_fraction
     if (.not.ieee_is_finite(liquid_x)) return
@@ -467,7 +480,7 @@ contains
     latent=l%latent_heat;boiling_reference=l%reference_temperature
     if (trim(l%boiling_model)=='surface-cap') then
       inverse_boiling_temperature=1/l%reference_temperature+ &
-        log(l%reference_pressure/pressure)*universal_gas_constant/(l%latent_heat*molecular_weight)
+        log(l%reference_pressure/pressure)*universal_gas_constant/(l%latent_heat*liquid_weight)
       if (inverse_boiling_temperature<=0) return
       if (inverse_boiling_temperature<1/l%critical_temperature) then
         boiling_temperature=l%critical_temperature
@@ -480,7 +493,7 @@ contains
     pressure_temperature=temperature
     if (l%boiling_model=='pelemp-cap') then
       call pelemp_boiling_temperature(l%latent_heat,l%reference_temperature,l%normal_boiling_temperature, &
-        l%critical_temperature,molecular_weight,pressure,boiling_temperature,valid)
+        l%critical_temperature,liquid_weight,pressure,boiling_temperature,valid)
       if (.not.valid) return
       surface_temperature=min(temperature,.99_dp*boiling_temperature)
       if (surface_temperature<1) return
@@ -501,7 +514,7 @@ contains
       log_fraction=log(l%antoine_coefficients(4)/pressure)+log(10.0_dp)* &
         (l%antoine_coefficients(1)-l%antoine_coefficients(2)/(pressure_temperature+l%antoine_coefficients(3)))
     else
-    log_fraction = log(l%reference_pressure/pressure) + latent*molecular_weight/universal_gas_constant * &
+    log_fraction = log(l%reference_pressure/pressure) + latent*liquid_weight/universal_gas_constant * &
       (1.0_dp/boiling_reference-1.0_dp/surface_temperature)
     end if
     if (liquid_x/=1) log_fraction=log_fraction+log(liquid_x)

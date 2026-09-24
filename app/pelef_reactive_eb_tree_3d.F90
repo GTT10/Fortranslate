@@ -526,6 +526,7 @@ contains
     real(dp) :: mixture_density_coefficients(4,16)=0,mixture_density_temperature_ranges(2,16)=0
     real(dp) :: mixture_cp_coefficients(4,16)=0,mixture_cp_temperature_ranges(2,16)=0
     real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
+    real(dp) :: mixture_molecular_weights(16)=0
     real(dp) :: mixture_critical_temperatures(16)=0,mixture_normal_boiling_temperatures(16)=0
     character(len=4096) :: context_line
     character(len=1024) :: profile_files(16)
@@ -545,7 +546,8 @@ contains
       mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
-      mixture_boiling_models,mixture_critical_temperatures,mixture_normal_boiling_temperatures
+      mixture_boiling_models,mixture_critical_temperatures,mixture_molecular_weights, &
+      mixture_normal_boiling_temperatures
     port_profile_points=0;port_profile_times=0;port_profile_rates=0;injection_end_times=-1
     port_count=1;event_ports=1;port_numbers=-1
     port_centers=huge(1._dp);port_axes=huge(1._dp)
@@ -605,6 +607,7 @@ contains
     if(any(mixture_boiling_models(nc+1:)/='reject')) error stop 'Unused mixture property entries'
     if(any(mixture_critical_temperatures(nc+1:)/=0)) error stop 'Unused mixture property entries'
     if(any(mixture_normal_boiling_temperatures(nc+1:)/=0)) error stop 'Unused mixture property entries'
+    if(any(mixture_molecular_weights(nc+1:)/=0)) error stop 'Unused mixture property entries'
     if(any(mixture_density_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
     if(any(mixture_density_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
     if(any(mixture_cp_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
@@ -626,6 +629,7 @@ contains
       liquids(c)%boiling_model=mixture_boiling_models(c)
       liquids(c)%critical_temperature=mixture_critical_temperatures(c)
       liquids(c)%normal_boiling_temperature=mixture_normal_boiling_temperatures(c)
+      liquids(c)%molecular_weight=mixture_molecular_weights(c)
       if(.not.valid_spray_liquid(liquids(c))) error stop 'Invalid mixture component property model'
     end do
     if(port_count<1.or.port_count>16) error stop 'Invalid injection port count'

@@ -714,6 +714,32 @@ class SprayApplication(unittest.TestCase):
         self.assertIn('incompatible spray checkpoint', result.stdout.lower())
         self.run_case('default_boiling', common='drop_temperature=400,', fail=True)
 
+    def test_molecular_weights_restart(self):
+        variants = [
+            'liquid_molecular_weight=36.,',
+            'injection_port_count=1,injection_port_centers=.001,.001,.001,'
+            'injection_port_axes=1,0,0,injection_port_fractions=1,port_molecular_weights=36.,',
+            "mixture_count=2,mixture_vapor_names='H2O','H2O',mixture_fractions=.6,.4,"
+            'mixture_densities=1000,800,mixture_cps=4184,2000,'
+            'mixture_reference_temperatures=373.15,373.15,mixture_latent_heats=2257000,2e6,'
+            'mixture_molecular_weights=18.,36.,',
+        ]
+        for index, settings in enumerate(variants):
+            with self.subTest(variant=index):
+                name = f'liquid_mw{index}'
+                checkpoint = self.root/(name+'.chk')
+                self.run_case(name, common=settings)
+                self.check_balance(name)
+                self.run_case(name+'_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+                self.run_case(name+'_resumed', f"restart_file='{checkpoint}',", common=settings)
+                for suffix in ['gas.csv', 'parcels.csv']:
+                    self.assertEqual((self.root/f'{name}.{suffix}').read_bytes(),
+                                     (self.root/f'{name}_resumed.{suffix}').read_bytes())
+                result = self.run_case(name+'_changed', f"restart_file='{checkpoint}',", fail=True,
+                                       common=settings.replace('36.', '37.'))
+                self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+                self.run_case(name+'_invalid', fail=True, common=settings.replace('36.', '-1.'))
+
     def test_many_to_one_restart(self):
         settings = ("mixture_count=2,mixture_vapor_names='H2O','H2O',mixture_fractions=.6,.4,"
                     "mixture_densities=1000,800,mixture_cps=4184,2000,"
