@@ -141,8 +141,11 @@ transport, recursive hydro and full splitting now forward those controls
 recursive hydro/transport and full splitting now also forward these controls
 ([MPI evidence](validation/eb-mach-mpi-20260925.md)). Serial/MPI timestep selection
 now includes inlet signal speeds and diffusivity
-([bound checks](validation/eb-mach-timestep-20260925.md)). Application input and
-checkpoint wiring remain to be connected.
+([bound checks](validation/eb-mach-timestep-20260925.md)). Fixed/selected gas
+application input and checkpoint binding are connected; fixed serial/2/3-rank
+execution and rank-changing restart have
+[focused evidence](validation/eb-mach-application-20260925.md). The EB spray
+coupling path still needs inlet forwarding and explicitly rejects active inlets.
 AMR-particle boundary coupling and stationary level-set EB applications are
 implemented within the documented subsets. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted

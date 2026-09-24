@@ -13,6 +13,30 @@ Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 
 ## MPI execution
 
+### Mach inlet
+
+Gas-only fixed/selected serial and MPI executables accept six-face inlet arrays
+in `&eb_tree`, ordered low-x, high-x, low-y, high-y, low-z, high-z. For example:
+
+```fortran
+ inflow_mach(1)=0.2,
+ inflow_temperature(1)=400,
+ inflow_pressure(1)=120000,
+```
+
+Mach 0..100 enables an inward normal inlet with the adjacent gas composition.
+Temperature must be positive and EOS-valid. Pressure zero (default) extrapolates
+the adjacent pressure; a positive value prescribes it. Negative Mach (default
+-1) keeps outflow; temperature and pressure must remain zero on inactive faces.
+All values must be finite. Common and recursive gas stepping, molecular boundary
+fluxes and automatic timestep selection use the controls. Active inlet controls
+are saved and compared during restart, including rank-changing continuation.
+The MPI EB spray executable currently rejects active Mach inlets because its
+coupling path has not yet been connected. See
+[application evidence](../../docs/validation/eb-mach-application-20260925.md).
+
+### Launch
+
 With `PELEF_ENABLE_MPI=ON`, the fixed-mechanism executable
 `pelef_mpi_reactive_eb_tree_3d` accepts the same `input.nml` and output/checkpoint
 paths:
