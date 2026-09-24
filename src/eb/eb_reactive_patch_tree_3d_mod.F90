@@ -8,7 +8,7 @@ module eb_reactive_patch_tree_3d_mod
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use gas_transport_mod, only: gas_transport_species
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
-    reactive_eb_transport_patch_timestep_3d
+    reactive_eb_transport_patch_timestep_3d,reactive_eb_halo_bounds_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
@@ -364,20 +364,23 @@ contains
   ! Bound every patch update, including hidden parent cells which are advanced
   ! before restriction. Global donor maxima cover peer and ancestor halos.
   subroutine reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl, &
-      transport_enabled,viscosity,conduction,diffusion,dt,ok,subcycling)
+      transport_enabled,viscosity,conduction,diffusion,dt,ok,subcycling, &
+      inflow_mach,inflow_temperature,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     real(dp), intent(in) :: hydro_cfl,transport_cfl
     logical, intent(in) :: transport_enabled,viscosity,conduction,diffusion
     real(dp), intent(inout) :: dt
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: subcycling
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     type(eb_reactive_tree_3d) :: snapshot
     real(dp) :: speeds(4),donors(4),diffusivity,maximum_diffusivity,interval,candidate,factor
-    integer :: node,level
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    integer :: node,level,n(3)
     logical :: valid,active,recursive
     ok=.false.
     if (.not.all(ieee_is_finite([hydro_cfl,transport_cfl]))) return
@@ -400,6 +403,18 @@ contains
       call reactive_eb_signal_speeds_3d(species,u,t,g,speeds,valid)
       if (.not.valid) return
       donors=max(donors,speeds)
+      if (present(inflow_mach).or.present(inflow_temperature).or.present(inflow_pressure)) then
+        n=tree%topology%nodes(node)%shape
+        allocate(ghost(size(u,1),0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+        call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
+          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        if (.not.valid) return
+        call reactive_eb_halo_bounds_3d(species,transport,g,ghost,gt,transport_enabled, &
+          viscosity,conduction,diffusion,speeds,diffusivity,valid)
+        if (.not.valid) return
+        donors=max(donors,speeds);maximum_diffusivity=max(maximum_diffusivity,diffusivity)
+        deallocate(ghost,gt)
+      end if
       if (transport_enabled) then
         call reactive_eb_transport_patch_timestep_3d(species,transport,u,t,g,transport_cfl, &
           viscosity,conduction,diffusion,interval,diffusivity,valid)

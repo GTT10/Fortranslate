@@ -19,6 +19,7 @@ module eb_reactive_transport_3d_mod
 
   real(dp), parameter :: species_safety = 0.90_dp
 
+  public :: reactive_eb_halo_bounds_3d
   public :: reactive_eb_transport_timestep_3d,reactive_eb_transport_patch_timestep_3d
   public :: reactive_eb_transport_fluxes_rhs_3d
   public :: reactive_eb_transport_rhs_3d
@@ -26,6 +27,55 @@ module eb_reactive_transport_3d_mod
   public :: advance_reactive_eb_transport_3d,advance_reactive_eb_transport_patch_euler_3d
 
 contains
+  ! Bounds from open face donors only. Edge/corner and covered-face padding may
+  ! be zero or nonfinite and must never enter the physical timestep estimate.
+  subroutine reactive_eb_halo_bounds_3d(species,transport,geometry,ghost,temperature, &
+      transport_enabled,viscosity,conduction,diffusion,speeds,maximum_diffusivity,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: ghost(:,0:,0:,0:),temperature(0:,0:,0:)
+    logical, intent(in) :: transport_enabled,viscosity,conduction,diffusion
+    real(dp), intent(out) :: speeds(4),maximum_diffusivity
+    logical, intent(out) :: ok
+    real(dp) :: q(reactive_nprim(size(species))),recovered,sound,area,dt,dmax,candidate(4),maximum
+    real(dp) :: u(reactive_nvar(size(species)),1,1,1),t(1,1,1)
+    integer :: n(3),axis,side,first(3),last(3),i,j,k
+    logical :: valid
+    speeds=0;maximum_diffusivity=0;ok=.false.;candidate=0;maximum=0
+    if (.not.geometry%is_valid()) return
+    n=[geometry%nx,geometry%ny,geometry%nz]
+    if (any(shape(ghost)/=[size(u,1),n+2]).or.any(shape(temperature)/=n+2)) return
+    do axis=1,3
+    do side=0,1
+      first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
+      do k=first(3),last(3)
+      do j=first(2),last(2)
+      do i=first(1),last(1)
+        select case(axis)
+        case(1);area=geometry%x_face_fraction(side*n(1),j,k)
+        case(2);area=geometry%y_face_fraction(i,side*n(2),k)
+        case(3);area=geometry%z_face_fraction(i,j,side*n(3))
+        end select
+        if (area<=0) cycle
+        call reactive_conserved_to_primitive(species,ghost(:,i,j,k),temperature(i,j,k),q,recovered,sound,valid)
+        if (.not.valid) return
+        candidate(:3)=max(candidate(:3),abs(q(2:4))+sound)
+        candidate(4)=max(candidate(4),sum(abs(q(2:4)))+sound)
+        if (transport_enabled) then
+          u(:,1,1,1)=ghost(:,i,j,k);t(1,1,1)=recovered
+          call reactive_transport_timestep_3d(species,transport,u,t,1,1,1,1._dp,1._dp,1._dp,.5_dp, &
+            viscosity,conduction,diffusion,dt,dmax,valid)
+          if (.not.valid) return
+          maximum=max(maximum,dmax)
+        end if
+      end do
+      end do
+      end do
+    end do
+    end do
+    speeds=candidate;maximum_diffusivity=maximum;ok=.true.
+  end subroutine reactive_eb_halo_bounds_3d
   ! Conservative Euler update without redistribution, for flux-synchronized
   ! patches. The caller supplies a small-cell-limited diffusion timestep.
   subroutine advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry,dt,viscosity,conduction, &

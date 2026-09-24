@@ -108,6 +108,7 @@ contains
   subroutine check_mpi_transport()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)
+    real(dp) :: mach(6),tin(6),pin(6),old_dt
     real(dp) :: b(nv),limiter,inventory(nv),error,dt,expected_dt,actual_dt,hcfl,tcfl
     integer :: owners(count),p,mode,failure,estimate_mode,recursive_mode
     logical :: good,visc
@@ -135,6 +136,23 @@ contains
         call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,estimate_mode/=1, &
           .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good,subcycling=recursive_mode==1)
         call require(good.and.actual_dt==expected_dt,'exact MPI hydro/diffusion bound')
+        if (axis==3.and.count==5) then
+          old_dt=expected_dt;mach=10;tin=2000;pin=101325
+          call reactive_eb_tree_timestep_3d(species,transport,saved,hcfl,tcfl,estimate_mode/=1, &
+            .true.,.true.,.true.,expected_dt,good,subcycling=recursive_mode==1, &
+            inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+          call require(good.and.expected_dt<old_dt,'hot fast inlet tightens hydro and diffusion bound')
+          call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,estimate_mode/=1, &
+            .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good,subcycling=recursive_mode==1, &
+            inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+          call require(good.and.actual_dt==expected_dt,'exact MPI inlet timestep')
+          actual_dt=17
+          if (rank==0) pin(1)=101326
+          call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,hcfl,tcfl,estimate_mode/=1, &
+            .true.,.true.,.true.,actual_dt,MPI_COMM_WORLD,good,subcycling=recursive_mode==1, &
+            inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+          call require(.not.good.and.actual_dt==17,'rank-dependent inlet preserves timestep')
+        end if
       end do
       end do
       actual_dt=17._dp
