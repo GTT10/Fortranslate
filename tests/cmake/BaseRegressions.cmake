@@ -951,3 +951,7 @@ add_test(NAME amr_pressure_outlet_restart_3d
     --pressure-outlet --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_pressure_outlet_restart_3d")
 set_tests_properties(amr_pressure_outlet_restart_3d PROPERTIES TIMEOUT 300)
+
+add_executable(test_amr_pressure_halo_3d unit/test_amr_pressure_halo_3d.F90)
+target_link_libraries(test_amr_pressure_halo_3d PRIVATE pelef_core)
+add_test(NAME unit_amr_pressure_halo_3d COMMAND test_amr_pressure_halo_3d)

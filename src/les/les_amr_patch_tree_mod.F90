@@ -48,9 +48,6 @@ contains
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
       dynamic,filter,filter_ratio,width,valid)
     if(.not.valid) return
-    if(dynamic.and.present(outlet_pressure)) then
-      if(any(outlet_pressure/=0)) return
-    end if
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     if (.not.ieee_is_finite(cfl)) return
@@ -85,7 +82,7 @@ contains
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,viscous_wall=.true., &
         inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
       if (.not.valid) return
-      if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width)
       if (.not.valid) return
       local_faces='outflow';level=tree%nodes(peer)%level+1
       do axis=1,3
@@ -149,9 +146,6 @@ contains
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
       dynamic,filter,filter_ratio,width,valid)
     if(.not.valid) return
-    if(dynamic.and.present(outlet_pressure)) then
-      if(any(outlet_pressure/=0)) return
-    end if
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))
@@ -231,7 +225,7 @@ contains
           viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
           coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
         if (.not.success) return
-        if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
+        call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success,ghost_width=width)
         if (.not.success) return
         allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
         local_faces='outflow';level=tree%nodes(peer)%level+1

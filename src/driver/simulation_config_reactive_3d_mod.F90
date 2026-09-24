@@ -123,16 +123,27 @@ contains
   end subroutine
 
   ! Apply after ordinary ghost filling; face order defines corner composition.
-  subroutine fill_pressure_outlet_ghosts_3d(species,n,faces,pressure,ghost,gt,ok)
+  ! boundary_cells gives the first/last physical-domain cell indices in the
+  ! padded buffer. Unspecified bounds use the patch interior and width=2.
+  subroutine fill_pressure_outlet_ghosts_3d(species,n,faces,pressure,ghost,gt,ok,ghost_width,boundary_cells)
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     character(len=*), intent(in) :: faces(6)
     real(dp), optional, intent(in) :: pressure(6)
     real(dp), intent(inout) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
-    integer :: face,axis,layer,i,j,k,idx(3),donor(3),dims(3)
+    integer, optional, intent(in) :: ghost_width,boundary_cells(2,3)
+    integer :: face,axis,layer,i,j,k,idx(3),donor(3),dims(3),width,bounds(2,3),layers
     real(dp) :: state(size(ghost,1)),temperature
-    ok=.false.;dims=n+4
+    ok=.false.;width=2
+    if(present(ghost_width)) width=ghost_width
+    if(width<1.or.width>128) return
+    if(any(n>huge(1)-2*width)) return
+    dims=n+2*width
+    bounds(1,:)=width+1;bounds(2,:)=width+n
+    if(present(boundary_cells)) bounds=boundary_cells
+    if(any(bounds<1).or.any(bounds(1,:)>dims).or.any(bounds(2,:)>dims)) return
+    if(any(bounds(2,:)<bounds(1,:))) return
     if(any(n<2).or.any(shape(gt)/=dims)) return
     if(any(shape(ghost)/=[5+size(species),dims])) return
     if(.not.present(pressure)) then
@@ -149,12 +160,14 @@ contains
       do i=1,dims(1)
         donor=[i,j,k]
         if(donor(axis)/=1) cycle
-        donor(axis)=3
-        if(modulo(face,2)==0) donor(axis)=n(axis)+2
+        donor(axis)=bounds(1,axis);layers=donor(axis)-1
+        if(modulo(face,2)==0) then
+          donor(axis)=bounds(2,axis);layers=dims(axis)-donor(axis)
+        end if
         state=ghost(:,donor(1),donor(2),donor(3));temperature=gt(donor(1),donor(2),donor(3))
-        do layer=1,2
-          idx=donor;idx(axis)=3-layer
-          if(modulo(face,2)==0) idx(axis)=n(axis)+2+layer
+        do layer=1,layers
+          idx=donor;idx(axis)=donor(axis)-layer
+          if(modulo(face,2)==0) idx(axis)=donor(axis)+layer
           call characteristic_pressure_ghost_3d(species,state,temperature,face,pressure(face),real(2*layer,dp), &
             ghost(:,idx(1),idx(2),idx(3)),gt(idx(1),idx(2),idx(3)),ok)
           if(.not.ok) return

@@ -228,7 +228,6 @@ contains
       if(any(faces/='periodic'.and.faces/='inflow'.and.faces/='outflow'.and. &
       faces/='slip_wall'.and.faces/='no_slip_wall'.and.faces/='isothermal_wall')) &
         call fatal('Unsupported dynamic LES boundary')
-      if(any(config%outlet_pressure/=0)) call fatal('Dynamic LES pressure outlet is not supported')
       dynamic_filter=trim(les_test_model)
       allocate(dynamic_ratio,dynamic_grid,dynamic_harmonic)
       dynamic_ratio=les_test_ratio;dynamic_grid=les_grid_ratio;dynamic_harmonic=les_harmonic_mean

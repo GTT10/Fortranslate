@@ -89,7 +89,7 @@ contains
     if(dynamic) then
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
       if(filter_valid) width=(size(weights)-1)/2+5
-      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(pressure==0)
+      filter_valid=filter_valid.and.grid>=1.and.grid<=64
       filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow'.or. &
         faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
     else
@@ -207,7 +207,7 @@ contains
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
       associate(ghost=>ghosts%fields(node)%values)
-        if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid)
+        call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid,ghost_width=width)
         if (.not.valid) exit
         local_faces='outflow';level=tree%nodes(node)%level+1
         do axis=1,3
@@ -345,7 +345,7 @@ contains
     if(dynamic) then
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
       if(filter_valid) width=(size(weights)-1)/2+5
-      filter_valid=filter_valid.and.grid>=1.and.grid<=64.and.all(pressure==0)
+      filter_valid=filter_valid.and.grid>=1.and.grid<=64
       filter_valid=filter_valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow'.or. &
         faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
     else
@@ -508,7 +508,7 @@ contains
         n=tree%nodes(peer)%shape;dims=n+4
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
-          if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success)
+          call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success,ghost_width=width)
           if (.not.success) exit
           allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)), &
             fz(nvar,n(1),n(2),n(3)+1),stat=allocation_status)

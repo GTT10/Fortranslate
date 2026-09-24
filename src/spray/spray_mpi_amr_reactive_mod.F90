@@ -136,7 +136,6 @@ contains
     if(model=='dynamic') then
       call les_filter_weights(filter,filter_controls(1),weights,filter_ok)
       valid=valid.and.filter_ok.and.filter_controls(2)>=1.and.filter_controls(2)<=64
-      valid=valid.and.all(pressure==0)
       valid=valid.and.all(faces=='periodic'.or.faces=='inflow'.or.faces=='outflow'.or. &
         faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
     else

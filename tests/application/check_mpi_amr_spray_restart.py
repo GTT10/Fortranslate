@@ -23,6 +23,7 @@ p.add_argument('--les', action='store_true')
 p.add_argument('--dynamic', action='store_true')
 p.add_argument('--dynamic-open', action='store_true')
 p.add_argument('--dynamic-walls', action='store_true')
+p.add_argument('--dynamic-pressure', action='store_true')
 p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
@@ -102,6 +103,10 @@ if a.dynamic_open:
     assert a.dynamic
     gas = gas.replace(' output_file=', " boundary_faces='inflow','outflow',4*'periodic'\n"
                       ' inflow_temperature=1000.,inflow_pressure=101325.,inflow_velocity(:,1)=25.,0.,0.\n output_file=')
+
+if a.dynamic_pressure:
+    assert a.dynamic_open
+    gas = gas.replace(' output_file=', ' outlet_pressure(2)=100000.\n output_file=')
 
 if a.dynamic_walls:
     assert a.dynamic and not a.dynamic_open

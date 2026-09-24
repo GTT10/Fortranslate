@@ -76,7 +76,8 @@ program test_les_mpi_amr_tree
           outlet(2)=102325
         end if
         if(m==4.and.mode==3) then
-          faces='outflow';faces(1)='inflow';outlet=0;wall_v=0
+          ! Keep the seven-layer acoustic extrapolation thermodynamically admissible.
+          faces='outflow';faces(1)='inflow';outlet=0;outlet(2)=110000;wall_v=0
         end if
         if(mode==4) then
           faces(1:2)='slip_wall';faces(3:4)='no_slip_wall';faces(5:6)='isothermal_wall'

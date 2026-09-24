@@ -34,7 +34,7 @@ module amr_patch_tree_ghost_3d_mod
 contains
   ! Packed ghosts hold conserved components followed by one temperature guess.
   ! Call on a private buffer after ordinary tree ghost sampling.
-  subroutine apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,ok)
+  subroutine apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,ok,ghost_width)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: node
@@ -44,7 +44,8 @@ contains
     logical, intent(out) :: ok
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    integer :: n(3),nv,axis,level
+    integer, optional, intent(in) :: ghost_width
+    integer :: n(3),nv,axis,level,width,bounds(2,3)
     real(dp) :: local_pressure(6)
     ok=.true.
     if (.not.present(pressure)) return
@@ -57,13 +58,27 @@ contains
     ok=.false.
     if (node<1.or.node>size(tree%nodes)) return
     n=tree%nodes(node)%shape;nv=5+size(species)
-    if (any(shape(ghost)/=[nv+1,n+4])) return
+    width=2
+    if(present(ghost_width)) width=ghost_width
+    if(width<1.or.width>128) return
+    if(any(n>huge(1)-2*width)) return
+    if (any(shape(ghost)/=[nv+1,n+2*width])) return
+    bounds(1,:)=width+1;bounds(2,:)=width+n
     level=tree%nodes(node)%level+1;local_pressure=0
+    ! A wide halo can cross the physical boundary even for an interior patch.
+    ! Locate the domain's adjacent interior cell in this patch's padded array.
     do axis=1,3
-      if (origin(axis,node)==0) local_pressure(2*axis-1)=pressure(2*axis-1)
-      if (origin(axis,node)+int(n(axis),int64)==domain(axis,level)) local_pressure(2*axis)=pressure(2*axis)
+      if (origin(axis,node)<int(width,int64)) then
+        local_pressure(2*axis-1)=pressure(2*axis-1)
+        bounds(1,axis)=width+1-int(origin(axis,node))
+      end if
+      if (domain(axis,level)-origin(axis,node)-int(n(axis),int64)<int(width,int64)) then
+        local_pressure(2*axis)=pressure(2*axis)
+        bounds(2,axis)=int(domain(axis,level)-origin(axis,node))+width
+      end if
     end do
-    call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),ok)
+    call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),ok, &
+      ghost_width=width,boundary_cells=bounds)
   end subroutine
 
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
