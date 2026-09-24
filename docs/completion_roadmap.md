@@ -12,6 +12,12 @@ The reference is PeleC `development`
 [the manifest](../references/pelec_baseline.json). Changing that baseline must
 identify affected numerical signatures and acceptance criteria.
 
+The pinned reference rejects non-regular EB cells for Smagorinsky, Dynamic,
+WALE and Vreman LES. Cut-cell LES is therefore a future model extension, not a
+missing reference operator; the implemented regular-grid AMR LES path remains
+the usable alternative. LES level/subcycle source and flux-register integration
+does remain reference work. See the [dated source audit](validation/les-reference-scope-20260925.md).
+
 ## Consolidation versus solver completion
 
 The source-provenance repair, documentation ownership, CMake module split,

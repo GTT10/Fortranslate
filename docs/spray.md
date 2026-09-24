@@ -3178,7 +3178,9 @@ owner-local ghosts and preserves both outputs on failure. LES subcycling
 remains open. The MPI AMR spray application connects the common-step API below. See
 [MPI timestep checks](validation/les-mpi-amr-timestep-20260918.md). See [distributed AMR evidence](validation/les-mpi-amr-tree-20260918.md).
 See [timestep evidence](validation/les-amr-timestep-20260918.md).
-EB grids are outside both APIs.
+EB grids are outside both APIs. The pinned PeleC reference also rejects
+non-regular EB cells in all four LES closures; cut-cell LES would require a
+separate model extension ([source audit](validation/les-reference-scope-20260925.md)).
 See [AMR evidence](validation/les-amr-tree-20260918.md).
 
 The serial stepper and timestep selector accept `model='dynamic'` on periodic,
