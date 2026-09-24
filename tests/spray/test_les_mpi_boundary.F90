@@ -8,11 +8,13 @@ program test_les_mpi_boundary
   use les_mpi_dynamic_mod, only: compute_mpi_dynamic_les_boundary_rhs_3d,advance_mpi_dynamic_les_ssprk2_3d
   use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_boundary_rhs_3d,advance_dynamic_les_ssprk2_3d
   use les_mpi_boundary_mod, only: fill_mpi_les_boundary_ghosts_3d
-  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,fill_pressure_outlet_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,fill_pressure_outlet_ghosts_3d, &
+    fill_mach_inlet_boundary_ghosts_3d
   implicit none
   integer, parameter :: cells(3)=[5,3,2],width=7,nv=12
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: full(nv,5,3,2),temperature(5,3,2),q(nv),sound,walls(3,6),pressure(6),inlet(nv,6),inlet_t(6)
+  real(dp) :: mach(6),pin(6)
   real(dp) :: reference(nv,19,17,16),reference_t(19,17,16)
   real(dp), allocatable :: local(:,:,:,:),local_t(:,:,:),ghost(:,:,:,:),gt(:,:,:),saved(:,:,:,:),saved_t(:,:,:)
   real(dp) :: rhs_full(nv,5,3,2),serial_rate(nv),rate(nv),diffusion,serial_diffusion,h(3),wall_t(6)
@@ -42,8 +44,8 @@ program test_les_mpi_boundary
   inlet=spread(full(:,1,1,1),2,6);inlet_t=temperature(1,1,1)
   allocate(rhs,mold=local)
   h=[.001_dp,.0015_dp,.002_dp];wall_t=1100
-  do mode=1,6
-    walls=0;pressure=0;faces='periodic'
+  do mode=1,8
+    walls=0;pressure=0;faces='periodic';mach=-1;pin=0
     select case(mode)
     case(2)
       faces='outflow';faces(1)='inflow'
@@ -55,24 +57,28 @@ program test_les_mpi_boundary
       faces='isothermal_wall';walls(2,1)=1;walls(2,2)=3;walls(1,3)=2
     case(6)
       faces='outflow';faces(3:4)='no_slip_wall';walls(1,3)=2;pressure(2)=101000
+    case(7)
+      faces='outflow';faces(1)='inflow';faces(3:4)='no_slip_wall';walls(1,3)=2;mach(1)=.2_dp
+    case(8)
+      faces='outflow';faces(1)='inflow';faces(6)='inflow';mach(6)=.3_dp;pin(6)=120000
     end select
-    call fill_reactive_boundary_ghosts_3d(full,temperature,faces,reference,reference_t,ok,viscous_wall=.true., &
-      inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=walls,ghost_width=width)
+    call fill_mach_inlet_boundary_ghosts_3d(species,full,temperature,faces,mach,reference,reference_t,ok,viscous_wall=.true., &
+      inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=walls,ghost_width=width,inflow_pressure=pin)
     call require(ok,'serial ordinary donors')
     call fill_pressure_outlet_ghosts_3d(species,cells,faces,pressure,reference,reference_t,ok,ghost_width=width)
     call require(ok,'serial pressure donors')
     call fill_mpi_les_boundary_ghosts_3d(MPI_COMM_WORLD,species,local,local_t,cells,faces,width,ghost,gt,ok, &
-      inlet,inlet_t,walls,pressure)
+      inlet,inlet_t,walls,pressure,mach,pin)
     call require(ok,'distributed boundary donors')
     call require(all(ghost==reference(:,lo:hi+2*width,:,:)),'exact full-width serial states')
     call require(all(gt==reference_t(lo:hi+2*width,:,:)),'exact full-width serial temperatures')
     call compute_dynamic_les_boundary_rhs_3d(species,full,temperature,h,'box',2,rhs_full,serial_diffusion,ok, &
       boundary_faces=faces,boundary_rate=serial_rate,inflow_state=inlet,inflow_temperature=inlet_t, &
-      wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+      wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'serial physical RHS')
     call compute_mpi_dynamic_les_boundary_rhs_3d(MPI_COMM_WORLD,species,local,local_t,h,cells,'box',2, &
       rhs,diffusion,ok,boundary_faces=faces,boundary_rate=rate,inflow_state=inlet,inflow_temperature=inlet_t, &
-      wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+      wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'distributed physical RHS')
     call require(all(rhs==rhs_full(:,lo:hi,:,:)),'exact serial RHS')
     scale=max(maxval(abs(serial_rate)),1e-30_dp)
@@ -81,11 +87,11 @@ program test_les_mpi_boundary
       serial_u=full;serial_t=temperature;u=local;t=local_t
       call advance_dynamic_les_ssprk2_3d(species,serial_u,serial_t,h,'box',2,1e-9_dp,ok, &
         boundary_faces=faces,boundary_change=serial_budget,inflow_state=inlet,inflow_temperature=inlet_t, &
-        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'serial physical step')
       call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,u,t,h,cells,'box',2,1e-9_dp,ok, &
         boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=inlet_t, &
-        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'distributed physical step')
       call require(all(u==serial_u(:,lo:hi,:,:)).and.all(t==serial_t(lo:hi,:,:)),'exact serial SSPRK2')
       scale=max(maxval(abs(serial_budget)),1e-30_dp)
@@ -93,13 +99,36 @@ program test_les_mpi_boundary
       saved_budget=budget
       call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,u,t,h,cells,'box',2,1._dp,ok, &
         boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=inlet_t, &
-        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin)
       call require(.not.ok,'excessive dt rejects')
       call require(all(u==serial_u(:,lo:hi,:,:)).and.all(t==serial_t(lo:hi,:,:)).and. &
         all(budget==saved_budget),'step rollback')
     end if
   end do
-  saved=ghost;saved_t=gt;requested_width=width
+  saved=ghost;saved_t=gt
+  if(rank==nranks-1) mach(6)=.4_dp
+  call fill_mpi_les_boundary_ghosts_3d(MPI_COMM_WORLD,species,local,local_t,cells,faces,width,ghost,gt,ok, &
+    inlet,inlet_t,walls,pressure,mach,pin)
+  call require(.not.ok.and.all(ghost==saved).and.all(gt==saved_t),'Mach disagreement rollback')
+  mach(6)=.3_dp
+  if(rank==nranks-1) pin(6)=121000
+  rhs=123;diffusion=456;rate=789
+  call compute_mpi_dynamic_les_boundary_rhs_3d(MPI_COMM_WORLD,species,local,local_t,h,cells,'box',2, &
+    rhs,diffusion,ok,boundary_faces=faces,boundary_rate=rate,inflow_state=inlet,inflow_temperature=inlet_t, &
+    inflow_mach=mach,inflow_pressure=pin)
+  call require(.not.ok.and.all(rhs==123).and.diffusion==456.and.all(rate==789),'Mach pressure disagreement rollback')
+  pin=0;mach=-1;mach(1)=.2_dp;faces='outflow';faces(1)='inflow'
+  call fill_mpi_les_boundary_ghosts_3d(MPI_COMM_WORLD,species,local,local_t,cells,faces,width,ghost,gt,ok, &
+    inflow_temperature=inlet_t,inflow_mach=mach)
+  call require(ok,'Mach-only inlet needs no reservoir table')
+  saved=ghost;saved_t=gt
+  if(rank==nranks-1) inlet_t(1)=-1
+  call fill_mpi_les_boundary_ghosts_3d(MPI_COMM_WORLD,species,local,local_t,cells,faces,width,ghost,gt,ok, &
+    inflow_temperature=inlet_t,inflow_mach=mach)
+  call require(.not.ok.and.all(ghost==saved).and.all(gt==saved_t),'Mach temperature disagreement rollback')
+  inlet_t=temperature(1,1,1)
+  faces='outflow';faces(3:4)='no_slip_wall';walls=0;walls(1,3)=2;pressure=0;pressure(2)=101000
+  requested_width=width
   if(rank==nranks-1) requested_width=width-1
   call fill_mpi_les_boundary_ghosts_3d(MPI_COMM_WORLD,species,local,local_t,cells,faces,requested_width,ghost,gt,ok, &
     inlet,inlet_t,walls,pressure)

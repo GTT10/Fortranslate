@@ -20,7 +20,8 @@ module les_mpi_dynamic_mod
 contains
   subroutine advance_mpi_dynamic_les_ssprk2_3d(comm,species,state,temperature,spacing,cells,test_model, &
       test_ratio,dt,ok,grid_ratio,harmonic_mean, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -31,7 +32,7 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(inout) :: boundary_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: rate0(size(state,1)),rate1(size(state,1))
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
@@ -55,7 +56,8 @@ contains
     if (.not.global_valid) return
     call compute_mpi_dynamic_les_boundary_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
       rhs,diffusion,valid,grid_ratio,harmonic_mean,boundary_faces,rate0, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     call agree()
     if (.not.global_valid) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
@@ -69,7 +71,8 @@ contains
     if (.not.global_valid) return
     call compute_mpi_dynamic_les_boundary_rhs_3d(comm,species,stage,t1,spacing,cells,test_model,test_ratio, &
       rhs,diffusion,valid,grid_ratio,harmonic_mean,boundary_faces,rate1, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     call agree()
     if (.not.global_valid) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
@@ -89,7 +92,8 @@ contains
 
   subroutine compute_mpi_dynamic_les_boundary_rhs_3d(comm,species,state,temperature,spacing,cells,test_model, &
       test_ratio,rhs,maximum_diffusivity,ok,grid_ratio,harmonic_mean,boundary_faces,boundary_rate, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
@@ -102,7 +106,7 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(inout) :: boundary_rate(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),candidate(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),weights(:)
     real(dp) :: diffusion,global_diffusion,rate(size(state,1)),global_rate(size(state,1)),walls(6)
     real(dp) :: controls(9),minimum(9),maximum(9)
@@ -126,6 +130,16 @@ contains
     valid=valid.and.all(shape(rhs)==shape(state)).and.nv==reactive_nvar(size(species))
     valid=valid.and.all(ieee_is_finite(spacing)).and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp)
     if(present(boundary_rate)) valid=valid.and.size(boundary_rate)==nv
+    if(present(inflow_pressure)) valid=valid.and.present(inflow_mach)
+    if(present(inflow_mach)) then
+      valid=valid.and.all(ieee_is_finite(inflow_mach)).and.all(inflow_mach<=100)
+      valid=valid.and..not.any(inflow_mach>=0.and.faces/='inflow')
+      if(present(inflow_pressure)) then
+        valid=valid.and.all(ieee_is_finite(inflow_pressure))
+        valid=valid.and.all(inflow_pressure>=0).and.all(inflow_pressure<=1e15_dp)
+        valid=valid.and..not.any(inflow_pressure>0.and.inflow_mach<0)
+      end if
+    end if
     if(present(outlet_pressure)) then
       valid=valid.and.all(ieee_is_finite(outlet_pressure))
       valid=valid.and.all(outlet_pressure>=0).and.all(outlet_pressure<=1e15_dp)
@@ -163,7 +177,8 @@ contains
       if(.not.agreed) return
       width=(size(weights)-1)/2+5
       call fill_mpi_les_boundary_ghosts_3d(comm,species,state,temperature,cells,faces,width,ghost,gt,valid, &
-        inflow_state,inflow_temperature,wall_velocity,outlet_pressure)
+        inflow_state,inflow_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
       if(.not.valid) return
       allocate(fx(nv,n(1)+1,n(2),n(3)),fy(nv,n(1),n(2)+1,n(3)),fz(nv,n(1),n(2),n(3)+1),stat=ios)
       valid=ios==0;call agree()
