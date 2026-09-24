@@ -20,6 +20,7 @@ program test_reactive_boundaries_3d
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   call check_pressure_input()
+  call check_mach_input()
   call check_pressure_outlet()
   call check_pressure_ghost()
   call check_mach_inlet()
@@ -101,6 +102,38 @@ program test_reactive_boundaries_3d
   end do
   print *, 'PASS: six-face PCM/PLM, three solvers, surface balance, wall flux and rollback'
 contains
+  subroutine check_mach_input()
+    integer :: unit
+    type(reactive_3d_config) :: input_config
+    open(newunit=unit,file='mach_inlet_input_test.nml',status='replace',action='write')
+    write(unit,'(a)') "&reactive_3d boundary_condition='outflow', boundary_faces(1)='inflow', "
+    write(unit,'(a)') "inflow_mach(1)=.2, inflow_pressure(1)=0, outlet_pressure(2)=101325 /"
+    close(unit)
+    call read_reactive_3d_configuration('mach_inlet_input_test.nml',input_config,ok,message, &
+      allow_pressure_outlet=.true.)
+    call require(.not.ok.and.index(message,'Mach inlet input is not connected')>0,'Mach input capability gate')
+    call read_reactive_3d_configuration('mach_inlet_input_test.nml',input_config,ok,message, &
+      allow_pressure_outlet=.true.,allow_mach_inlet=.true.)
+    call require(ok.and.input_config%inflow_mach(1)==.2_dp.and.input_config%inflow_pressure(1)==0, &
+      'Mach input accepts extrapolated pressure')
+    call read_reactive_3d_configuration('mach_inlet_input_test.nml',input_config,ok,message,allow_mach_inlet=.true.)
+    call require(.not.ok.and.index(message,'Pressure outlet input is not connected')>0,'Mach gate retains outlet gate')
+    input_config%inflow_pressure(1)=120000
+    call validate_reactive_3d_configuration(input_config,ok,message)
+    call require(ok,'Mach input prescribed pressure')
+    input_config%inflow_velocity(1,1)=1
+    call validate_reactive_3d_configuration(input_config,ok,message)
+    call require(.not.ok,'Mach input rejects conflicting velocity')
+    input_config%inflow_velocity=0;input_config%inflow_mach(2)=0
+    call validate_reactive_3d_configuration(input_config,ok,message)
+    call require(.not.ok,'Mach input requires inflow face')
+    input_config%inflow_mach(2)=-1;input_config%inflow_mach(1)=101
+    call validate_reactive_3d_configuration(input_config,ok,message)
+    call require(.not.ok,'Mach input upper bound')
+    open(newunit=unit,file='mach_inlet_input_test.nml',status='old')
+    close(unit,status='delete')
+  end subroutine check_mach_input
+
   subroutine check_pressure_input()
     integer :: unit
     type(reactive_3d_config) :: input_config

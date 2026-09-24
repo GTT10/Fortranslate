@@ -29,7 +29,7 @@ program pelef_reactive_3d
     error stop 2
   end if
   call get_command_argument(1, input_path)
-  call read_reactive_3d_configuration(trim(input_path), config, ok, message, allow_pressure_outlet=.true.)
+  call read_reactive_3d_configuration(trim(input_path), config, ok, message, allow_pressure_outlet=.true.,allow_mach_inlet=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2

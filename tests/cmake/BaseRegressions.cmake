@@ -858,7 +858,7 @@ endif()
 add_executable(test_reactive_boundaries_3d unit/test_reactive_boundaries_3d.F90)
 target_link_libraries(test_reactive_boundaries_3d PRIVATE pelef_core)
 add_test(NAME unit_reactive_boundaries_3d COMMAND test_reactive_boundaries_3d)
-foreach(boundary_case outflow closed_reacting transport no_slip inflow isothermal moving_wall pressure_outlet)
+foreach(boundary_case outflow closed_reacting transport no_slip inflow isothermal moving_wall pressure_outlet mach_inlet)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_3d_${boundary_case}")
   add_test(NAME reactive_boundary_3d_${boundary_case}
     COMMAND pelef_reactive_3d "${PROJECT_SOURCE_DIR}/cases/reactive_boundaries_3d/${boundary_case}.nml")

@@ -32,6 +32,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: boundary_condition = "periodic"
     character(len=32) :: boundary_faces(6) = ""
     real(dp) :: wall_temperature(6)=300.0_dp
+    real(dp) :: inflow_mach(6)=-1.0_dp
     real(dp) :: outlet_pressure(6)=0.0_dp
     real(dp) :: wall_velocity(3,6)=0.0_dp
     real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
@@ -464,12 +465,12 @@ contains
   end function
 
   subroutine read_reactive_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_pressure_outlet)
+      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected, allow_pressure_outlet
+    logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
 
     integer :: nx, ny, nz, maximum_steps, unit, io_status
     integer :: wave_number_x, wave_number_y, wave_number_z
@@ -485,7 +486,7 @@ contains
     real(dp) :: x_ho2, x_h2o2, x_ar, x_n2
     real(dp) :: composition_mole_fractions(reactive_3d_max_species)
     integer :: composition_count,inflow_composition_count
-    real(dp) :: wall_temperature(6),wall_velocity(3,6),outlet_pressure(6)
+    real(dp) :: wall_temperature(6),wall_velocity(3,6),outlet_pressure(6),inflow_mach(6)
     real(dp) :: inflow_temperature(6),inflow_pressure(6),inflow_velocity(3,6)
     real(dp) :: inflow_composition_mole_fractions(reactive_3d_max_species)
     character(len=selected_composition_name_length) :: inflow_composition_species(reactive_3d_max_species)
@@ -506,7 +507,7 @@ contains
       final_time, cfl, problem, reconstruction, limiter, &
       thermo_model, riemann_solver, &
       boundary_condition, boundary_faces, wall_temperature, wall_velocity, inflow_temperature, inflow_pressure, inflow_velocity, &
-      outlet_pressure, inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
+      outlet_pressure, inflow_mach, inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, transport_enabled, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
@@ -546,6 +547,7 @@ contains
     inflow_composition_species = config%inflow_composition_species
     inflow_composition_mole_fractions = config%inflow_composition_mole_fractions
     wall_temperature=config%wall_temperature
+    inflow_mach=config%inflow_mach
     outlet_pressure=config%outlet_pressure
     wall_velocity=config%wall_velocity
     boundary_faces = config%boundary_faces
@@ -630,6 +632,7 @@ contains
     config%inflow_composition_species = inflow_composition_species
     config%inflow_composition_mole_fractions = inflow_composition_mole_fractions
     config%wall_temperature=wall_temperature
+    config%inflow_mach=inflow_mach
     config%outlet_pressure=outlet_pressure
     config%wall_velocity=wall_velocity
     config%boundary_faces = boundary_faces
@@ -673,6 +676,13 @@ contains
     call validate_reactive_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
     if (.not.ok) return
+    if (any(config%inflow_mach>=0.0_dp)) then
+      ok=.false.
+      if (present(allow_mach_inlet)) ok=allow_mach_inlet
+      if (.not.ok) then
+        message='Mach inlet input is not connected in this application'; return
+      end if
+    end if
     if (any(config%outlet_pressure>0.0_dp)) then
       if (present(allow_pressure_outlet)) then
         if (allow_pressure_outlet) return
@@ -700,6 +710,12 @@ contains
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
+    if (.not.all(ieee_is_finite(config%inflow_mach))) then
+      message='Inflow Mach numbers must be finite'; return
+    end if
+    if (any(config%inflow_mach>100).or.any(config%inflow_mach>=0.and.faces/='inflow')) then
+      message='Active Mach numbers must be at most 100 and assigned to inflow faces'; return
+    end if
     if (.not.all(ieee_is_finite(config%outlet_pressure))) then
       message='Outlet pressure must be finite'; return
     end if
@@ -734,7 +750,15 @@ contains
           config%inflow_velocity(:,face)]))) then
         message='Inflow thermodynamic state and velocity must be finite'; return
       end if
-      if (min(config%inflow_temperature(face),config%inflow_pressure(face))<=0.0_dp) then
+      if (config%inflow_mach(face)>=0) then
+        if (config%inflow_temperature(face)<=0.or.config%inflow_pressure(face)<0.or. &
+            config%inflow_pressure(face)>1e15_dp) then
+          message='Mach inlet requires positive temperature and pressure between zero and 1e15 Pa'; return
+        end if
+        if (any(config%inflow_velocity(:,face)/=0)) then
+          message='Mach inlet sets inward normal velocity; inflow_velocity must be zero'; return
+        end if
+      else if (min(config%inflow_temperature(face),config%inflow_pressure(face))<=0.0_dp) then
         message='Inflow temperature and pressure must be positive'; return
       end if
     end do

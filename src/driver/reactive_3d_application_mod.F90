@@ -10,7 +10,8 @@ module reactive_3d_application_mod
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, reactive_primitive_to_conserved
   use mixture_thermo_mod, only: mixture_density, mass_fractions_from_mole_fractions
   use selected_composition_mod, only: resolve_selected_composition
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d, &
+    fill_mach_inlet_boundary_ghosts_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
   use reactive_3d_mod, only: &
@@ -42,6 +43,8 @@ contains
     real(dp), allocatable :: initial_totals(:), final_totals(:), boundary_totals(:), step_boundary_change(:)
     character(len=32) :: faces(6)
     real(dp), allocatable :: inflow_state(:,:),inflow_y(:),inflow_x(:),inlet_cube(:,:,:,:)
+    real(dp), allocatable :: inlet_ghost(:,:,:,:),inlet_ghost_t(:,:,:)
+    real(dp) :: mach_pressure(6)
     real(dp) :: inflow_t(6),inlet_temperature(2,2,2)
     real(dp) :: inlet_dt,inlet_transport_dt,inlet_diffusivity,face_dt,face_diffusivity,wall_dt
     real(dp), allocatable :: mass_fractions(:), primitive(:)
@@ -90,7 +93,12 @@ contains
 
     allocate(inflow_state(nvar,6),inflow_y(size(species)),inflow_x(size(species)))
     allocate(inlet_cube(nvar,2,2,2))
-    inflow_state=0.0_dp; inflow_t=0.0_dp
+    inflow_state=0.0_dp; inflow_t=config%inflow_temperature
+    mach_pressure=merge(config%inflow_pressure,0.0_dp,config%inflow_mach>=0)
+    if (any(config%inflow_mach>=0)) then
+      allocate(inlet_ghost(nvar,config%nx+4,config%ny+4,config%nz+4))
+      allocate(inlet_ghost_t(config%nx+4,config%ny+4,config%nz+4))
+    end if
     inlet_dt=huge(1.0_dp); inlet_transport_dt=huge(1.0_dp); inlet_diffusivity=0.0_dp
     inflow_y=mass_fractions
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
@@ -104,7 +112,7 @@ contains
       if (.not.ok) error stop 'Invalid inflow mass fractions'
     end if
     do face=1,6
-      if (faces(face)/='inflow') cycle
+      if (faces(face)/='inflow'.or.config%inflow_mach(face)>=0) cycle
       primitive=0.0_dp
       primitive(1)=mixture_density(species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
       if (.not.ok) error stop 'Invalid inflow density'
@@ -184,6 +192,22 @@ contains
         species, state, temperature, config%nx, config%ny, config%nz, &
         dx, dy, dz, config%cfl, hydro_dt, ok)
       if (.not. ok) error stop "Failed to compute reactive 3D CFL timestep"
+      if (any(config%inflow_mach>=0)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,config%inflow_mach, &
+          inlet_ghost,inlet_ghost_t,ok,inflow_state=inflow_state,inflow_temperature=inflow_t, &
+          inflow_pressure=mach_pressure,viscous_wall=.true.,wall_velocity=config%wall_velocity)
+        if (.not.ok) error stop 'Failed to construct Mach inlet timestep states'
+        call compute_reactive_cfl_timestep_3d(species,inlet_ghost,inlet_ghost_t, &
+          config%nx+4,config%ny+4,config%nz+4,dx,dy,dz,config%cfl,inlet_dt,ok)
+        if (.not.ok) error stop 'Failed to compute Mach inlet CFL timestep'
+        if (config%transport_enabled) then
+          call reactive_transport_timestep_3d(species,transport,inlet_ghost,inlet_ghost_t, &
+            config%nx+4,config%ny+4,config%nz+4,dx,dy,dz,config%transport_cfl, &
+            config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
+            inlet_transport_dt,inlet_diffusivity,ok)
+          if (.not.ok) error stop 'Failed to compute Mach inlet transport timestep'
+        end if
+      end if
       dt = min(hydro_dt,inlet_dt)
       if (config%transport_enabled) then
         call reactive_transport_timestep_3d( &
@@ -220,7 +244,8 @@ contains
         step_transport_theta, ok, config%reconstruction, config%limiter, &
         chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change, &
         inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
+        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if
