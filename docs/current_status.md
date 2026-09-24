@@ -25,7 +25,9 @@ domain coordinates ([pressure integration](validation/les-dynamic-amr-pressure-2
 Serial LES subcycling now has a recursive driver with interval-weighted reflux
 ([focused checks](validation/les-amr-subcycle-20260925.md)) and a
 [scaled timestep selector](validation/les-subcycle-timestep-20260925.md).
-MPI/application subcycle dispatch, detailed-fuel Dynamic LES and physical
+MPI LES now also schedules recursive owner-local intervals and synchronizes
+accumulated fluxes ([MPI recursion checks](validation/les-mpi-amr-subcycle-20260925.md)).
+Coupled application subcycle dispatch, detailed-fuel Dynamic LES and physical
 qualification remain open.
 Non-regular EB LES is an extension beyond the pinned reference, which rejects
 such cells in all four closures ([source audit](validation/les-reference-scope-20260925.md)).

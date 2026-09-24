@@ -3231,14 +3231,19 @@ composite boundary change and maximum correction/diffusivity transactionally.
 `compute_amr_patch_tree_subcycle_les_timestep_3d` selects the coarse interval by
 scaling each patch's diffusion rate with the cumulative squared refinement ratio
 ([selector checks](validation/les-subcycle-timestep-20260925.md)). Stage bounds
-remain enforced during stepping. MPI/application subcycle dispatch remains work.
+remain enforced during stepping. Coupled application subcycle dispatch remains work.
 The MPI timestep API accepts `subcycle=.true.` for the same coarse-interval
 scaling, with collective agreement and owner-local diffusion evaluation
 ([MPI selector checks](validation/les-mpi-subcycle-timestep-20260925.md)).
 `advance_mpi_amr_tree_les_level_3d` now supplies owner-local level stepping,
 temporal coarse donors and integrated faces with collective rollback
-([MPI level checks](validation/les-mpi-amr-level-20260925.md)). Recursive MPI
-scheduling and coupled application dispatch remain to be connected.
+([MPI level checks](validation/les-mpi-amr-level-20260925.md)).
+`advance_mpi_amr_tree_subcycle_les_3d` connects ratio-squared recursive intervals,
+owner-local coarse endpoints and accumulated flux synchronization. It publishes
+state, temperature, boundary budget, maximum correction/diffusivity and optional
+level counts only after the complete tree step succeeds
+([MPI recursion checks](validation/les-mpi-amr-subcycle-20260925.md)).
+Coupled application dispatch remains to be connected.
 See [level integration checks](validation/les-amr-level-20260925.md) and
 [recursive integration checks](validation/les-amr-subcycle-20260925.md).
 
