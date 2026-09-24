@@ -6,7 +6,7 @@ program test_reactive_boundaries_3d
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d, reactive_integrals_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, &
     validate_reactive_3d_configuration, resolved_reactive_boundaries_3d,characteristic_pressure_ghost_3d, &
-    read_reactive_3d_configuration
+    read_reactive_3d_configuration,mach_inlet_ghost_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(reactive_3d_config) :: config
@@ -22,6 +22,7 @@ program test_reactive_boundaries_3d
   call check_pressure_input()
   call check_pressure_outlet()
   call check_pressure_ghost()
+  call check_mach_inlet()
   call check_inflow()
   config%boundary_condition='isothermal_wall'
   call validate_reactive_3d_configuration(config,ok,message)
@@ -145,6 +146,48 @@ contains
     call advance_reactive_boundary_hydro_3d(species,u,t,[1._dp,1._dp,1._dp],1e-5_dp, &
       faces,'pcm','mc','hllc',change,ok,outlet_pressure=outlet)
     call require(.not.ok.and.all(u==before).and.all(t==bt),'pressure ghost failure preserves fluid')
+  end subroutine
+  subroutine check_mach_inlet()
+    real(dp) :: qi(12),ui(12),ug(12),qg(12),ti,tg,ci,cg,recovered,target_p,expected_v(3),normal
+    integer :: face,axis,mode
+    qi=0;qi(1)=.3_dp;qi(2:4)=[20._dp,30._dp,40._dp];qi(5)=101325
+    qi(6)=.03_dp;qi(9)=.22_dp;qi(12)=.75_dp
+    call reactive_primitive_to_conserved(species,qi,ui,ti,ci,ok)
+    call require(ok,'Mach inlet interior')
+    do face=1,6
+      axis=(face+1)/2;normal=merge(1._dp,-1._dp,modulo(face,2)==1)
+      do mode=1,3
+        target_p=qi(5)
+        select case(mode)
+        case(1)
+          call mach_inlet_ghost_3d(species,ui,ti,face,700._dp,.2_dp,ug,tg,ok)
+        case(2)
+          target_p=120000
+          call mach_inlet_ghost_3d(species,ui,ti,face,700._dp,.2_dp,ug,tg,ok, &
+            inlet_pressure=target_p,velocity_fluctuation=[1._dp,2._dp,3._dp])
+        case(3)
+          call mach_inlet_ghost_3d(species,ui,ti,face,700._dp,.2_dp,ug,tg,ok,total_velocity=[4._dp,5._dp,6._dp])
+        end select
+        call require(ok,'Mach inlet modes and six faces')
+        call reactive_conserved_to_primitive(species,ug,tg,qg,recovered,cg,ok)
+        call require(ok,'Mach inlet recovery')
+        expected_v=0;expected_v(axis)=normal*.2_dp*cg
+        if(mode==2) expected_v=expected_v+[1._dp,2._dp,3._dp]
+        if(mode==3) expected_v=[4._dp,5._dp,6._dp]
+        call require(maxval(abs(qg(2:4)-expected_v))<=3e-12_dp*maxval(abs(expected_v)),'Mach inlet velocity')
+        call require(abs(qg(5)-target_p)<=3e-12_dp*target_p.and.abs(tg-700)<=3e-12_dp*700,'Mach inlet pressure and T')
+        call require(all(abs(qg(6:)-qi(6:))<=3e-12_dp*max(qi(6:),1e-30_dp)),'Mach inlet frozen composition')
+        call require(abs(qg(1)/qi(1)-(target_p/qi(5))*ti/700)<=3e-12_dp,'Mach inlet ideal-gas density')
+      end do
+    end do
+    ug=42;tg=43
+    call mach_inlet_ghost_3d(species,ui,ti,1,700._dp,.2_dp,ug,tg,ok,inlet_pressure=-1._dp)
+    call require(.not.ok.and.all(ug==42).and.tg==43,'Mach inlet bad pressure rollback')
+    call mach_inlet_ghost_3d(species,ui,ti,1,700._dp,.2_dp,ug,tg,ok, &
+      velocity_fluctuation=[1._dp,2._dp,3._dp],total_velocity=[4._dp,5._dp,6._dp])
+    call require(.not.ok.and.all(ug==42).and.tg==43,'Mach inlet conflicting velocity rollback')
+    call mach_inlet_ghost_3d(species,ui,ti,1,-1._dp,.2_dp,ug,tg,ok)
+    call require(.not.ok.and.all(ug==42).and.tg==43,'Mach inlet bad temperature rollback')
   end subroutine
   subroutine check_pressure_ghost()
     real(dp) :: qi(12),ui(12),ug(12),qg(12),ti,tg,ci,cg,expected(12),normal

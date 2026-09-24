@@ -90,11 +90,57 @@ module simulation_config_reactive_3d_mod
   public :: reactive_3d_mole_fractions
   public :: resolve_reactive_3d_selected_composition
 
+  public :: mach_inlet_ghost_3d
   public :: map_reactive_boundary_donor_3d
 contains
 
   ! Frozen-composition acoustic pressure extrapolation, as in pinned
   ! PeleC EB-ConvergingNozzle/prob.H. distance_ratio=2 is the first ghost center.
+  ! Pinned EB-ConvergingNozzle inlet: interior composition, prescribed T/Mach,
+  ! extrapolated pressure by default, or an explicit pressure target.
+  subroutine mach_inlet_ghost_3d(species,interior,temperature,face,inlet_temperature,mach,ghost,ghost_temperature,ok, &
+      inlet_pressure,velocity_fluctuation,total_velocity)
+    use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
+    use mixture_thermo_mod, only: mixture_mass_properties
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: interior(:),temperature,inlet_temperature,mach
+    integer, intent(in) :: face
+    real(dp), intent(inout) :: ghost(:),ghost_temperature
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inlet_pressure,velocity_fluctuation(3),total_velocity(3)
+    real(dp) :: q(reactive_nvar(size(species))),candidate(reactive_nvar(size(species)))
+    real(dp) :: recovered,sound,pressure,mw,r,cp,cv,gamma,h,e,entropy,new_t,new_sound
+    integer :: axis
+    logical :: valid
+    ok=.false.
+    if(face<1.or.face>6.or.size(interior)/=size(q).or.size(ghost)/=size(q)) return
+    if(.not.all(ieee_is_finite([inlet_temperature,mach]))) return
+    if(inlet_temperature<=0.or.mach<0.or.mach>100) return
+    if(present(velocity_fluctuation).and.present(total_velocity)) return
+    if(present(velocity_fluctuation)) then
+      if(.not.all(ieee_is_finite(velocity_fluctuation))) return
+    end if
+    if(present(total_velocity)) then
+      if(.not.all(ieee_is_finite(total_velocity))) return
+    end if
+    call reactive_conserved_to_primitive(species,interior,temperature,q,recovered,sound,valid)
+    if(.not.valid) return
+    pressure=q(5)
+    if(present(inlet_pressure)) pressure=inlet_pressure
+    if(.not.ieee_is_finite(pressure)) return
+    if(pressure<=0.or.pressure>1e15_dp) return
+    call mixture_mass_properties(species,q(6:),inlet_temperature,mw,r,cp,cv,gamma,h,e,entropy,valid)
+    if(.not.valid) return
+    q(1)=pressure/(r*inlet_temperature);q(5)=pressure;q(2:4)=0
+    axis=(face+1)/2
+    q(axis+1)=merge(1._dp,-1._dp,modulo(face,2)==1)*mach*sqrt(gamma*r*inlet_temperature)
+    if(present(velocity_fluctuation)) q(2:4)=q(2:4)+velocity_fluctuation
+    if(present(total_velocity)) q(2:4)=total_velocity
+    call reactive_primitive_to_conserved(species,q,candidate,new_t,new_sound,valid)
+    if(.not.valid) return
+    ghost=candidate;ghost_temperature=new_t;ok=.true.
+  end subroutine mach_inlet_ghost_3d
+
   subroutine characteristic_pressure_ghost_3d(species,interior,temperature,face,pressure,distance_ratio, &
       ghost,ghost_temperature,ok)
     use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
