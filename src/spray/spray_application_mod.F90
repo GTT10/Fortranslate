@@ -13,7 +13,7 @@ module spray_application_mod
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
   use simulation_config_reactive_3d_mod, only: valid_wall_velocity_3d
   use spray_wall_impact_mod
-  use spray_injection_profile_mod, only: integrate_spray_injection_profile
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, mixture_system_totals, valid_spray_boundary_faces
@@ -84,6 +84,8 @@ contains
     integer :: port_profile_points(16),profile_batches
     real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),profile_dose
     integer :: injection_profile_points,expected_batches,profile_event
+    character(len=1024) :: profile_file,profile_files(16)
+    namelist /spray_rate_files/ profile_file,profile_files
     real(dp) :: injection_profile_times(64),injection_profile_rates(64),profile_start
     integer :: cells(3),parcel_count,maximum_steps,stop_after_steps,maximum_substeps
     integer :: unit,ios,i,j,k,s,steps,event,retry,history_unit,gas_unit,parcel_unit,nvar
@@ -281,8 +283,29 @@ contains
     open(newunit=unit,file=trim(input_path),status='old',action='read',iostat=ios)
     if (ios/=0) call fail('Cannot open spray input')
     read(unit,nml=spray,iostat=ios,iomsg=message)
-    close(unit)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
+    profile_file='';profile_files=''
+    rewind(unit)
+    read(unit,nml=spray_rate_files,iostat=ios)
+    if(ios>0) call fail('Invalid spray_rate_files namelist')
+    close(unit)
+    if(injection_port_count<0.or.injection_port_count>16) call fail('Invalid injection port count')
+    if(any(profile_files(injection_port_count+1:)/='')) call fail('Unused rate files')
+    if(len_trim(profile_file)>0) then
+      if(injection_profile_points/=0.or.any(injection_profile_times/=0).or. &
+        any(injection_profile_rates/=0)) call fail('Rate file conflicts with inline profile')
+      call read_spray_injection_profile(trim(profile_file),injection_profile_times, &
+        injection_profile_rates,injection_profile_points,ok)
+      if(.not.ok) call fail('Invalid spray rate file')
+    end if
+    do port=1,injection_port_count
+      if(len_trim(profile_files(port))==0) cycle
+      if(port_profile_points(port)/=0.or.any(port_profile_times(:,port)/=0).or. &
+        any(port_profile_rates(:,port)/=0)) call fail('Rate file conflicts with inline profile')
+      call read_spray_injection_profile(trim(profile_files(port)),port_profile_times(:,port), &
+        port_profile_rates(:,port),port_profile_points(port),ok)
+      if(.not.ok) call fail('Invalid spray rate file')
+    end do
     if (diameter_distribution/='weibull'.and.diameter_distribution/='normal'.and. &
         diameter_distribution/='lognormal'.and.diameter_distribution/='chi-squared') &
       call fail('Invalid diameter distribution')

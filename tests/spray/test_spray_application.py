@@ -24,7 +24,7 @@ class SprayApplication(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def run_case(self, name, extra='', fail=False, common=''):
+    def run_case(self, name, extra='', fail=False, common='', file_group=''):
         path = self.root / (name + '.nml')
         path.write_text(f'''&spray
  cells=2,2,2, hydro_reconstruction='pcm', chemistry_enabled=.false.,
@@ -32,7 +32,7 @@ class SprayApplication(unittest.TestCase):
  output_prefix='{self.root / name}',
  {common}
  {extra}
-/\n''')
+/\n''' + file_group)
         result = subprocess.run([str(EXE), str(path)], cwd=self.root,
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=90)
         (self.root / (name+'.log')).write_text(result.stdout)
@@ -879,6 +879,50 @@ class SprayApplication(unittest.TestCase):
         self.run_case('port_rate_conflict', common=variants[0]+'port_mass_flow_rates(1)=1e-4,', fail=True)
         self.run_case('port_rate_unused', common=variants[0]+'port_profile_points(3)=2,', fail=True)
         self.run_case('port_rate_bad_times', common=variants[0].replace('0,2e-7,4e-7', '0,0,4e-7'), fail=True)
+
+    def test_external_rate_files(self):
+        curve = '0 0\n2e-7 1e-4\n4e-7 0\n6e-7 0\n8e-7 2e-4\n'
+        common = ('initial_liquid_mass=0,drag_enabled=.false.,heat_enabled=.false.,'
+                  'evaporation_enabled=.false.,')
+        for mode in ('shared', 'port'):
+            if mode == 'shared':
+                controls = 'injection_start=0,injection_end=8e-7,injection_interval=1e-7,'
+                table = ('injection_profile_points=5,injection_profile_times=0,2e-7,4e-7,6e-7,8e-7,'
+                         'injection_profile_rates=0,1e-4,0,0,2e-4,')
+                field = 'profile_file'
+            else:
+                controls = ('injection_port_count=1,independent_port_schedules=.true.,'
+                            'injection_port_centers=.001,.001,.001,injection_port_axes=1,0,0,'
+                            'injection_port_fractions=1,port_injection_starts=0,'
+                            'port_injection_ends=8e-7,port_injection_intervals=1e-7,')
+                table = ('port_profile_points=5,port_profile_times(:,1)=0,2e-7,4e-7,6e-7,8e-7,'
+                         'port_profile_rates(:,1)=0,1e-4,0,0,2e-4,')
+                field = 'profile_files(1)'
+            group = f"\n&spray_rate_files {field}='rate.dat' /\n"
+            (self.root/'rate.dat').write_text('# original\n' + curve)
+            base = common + controls
+            self.run_case(mode+'inline', common=base+table)
+            self.run_case(mode+'file', common=base, file_group=group)
+            self.check_balance(mode+'file')
+            checkpoint = self.root/f'{mode}.chk'
+            self.run_case(mode+'stop', f"stop_after_steps=6,checkpoint_file='{checkpoint}',",
+                          common=base, file_group=group)
+            (self.root/'renamed.dat').write_text(curve+'! renamed\n')
+            self.run_case(mode+'resume', f"restart_file='{checkpoint}',", common=base,
+                          file_group=group.replace('rate.dat', 'renamed.dat'))
+            for suffix in ('gas.csv', 'parcels.csv'):
+                expected = (self.root/f'{mode}inline.{suffix}').read_bytes()
+                for label in ('file', 'resume'):
+                    self.assertEqual(expected, (self.root/f'{mode}{label}.{suffix}').read_bytes())
+            (self.root/'rate.dat').write_text(curve.replace('1e-4', '1.1e-4'))
+            result = self.run_case(mode+'changed', f"restart_file='{checkpoint}',", common=base,
+                                   file_group=group, fail=True)
+            self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+            result = self.run_case(mode+'conflict', common=base+table, file_group=group, fail=True)
+            self.assertIn('Rate file conflicts with inline profile', result.stdout)
+            (self.root/'rate.dat').write_text(curve.replace('1e-4', '-1e-4'))
+            result = self.run_case(mode+'invalid', common=base, file_group=group, fail=True)
+            self.assertIn('Invalid spray rate file', result.stdout)
 
     def test_piecewise_injection_profile(self):
         base = ("initial_liquid_mass=0,injection_profile_points=5,"

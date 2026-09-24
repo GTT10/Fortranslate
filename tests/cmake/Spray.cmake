@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME spray_rate_files_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/spray/test_spray_application.py" --exe "$<TARGET_FILE:pelef_spray_3d>"
+    SprayApplication.test_external_rate_files SprayApplication.test_piecewise_injection_profile)
+  set_tests_properties(spray_rate_files_application PROPERTIES LABELS "spray;application" TIMEOUT 120)
   add_test(NAME spray_eb_rate_files_application COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray_nozzle.py"
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
