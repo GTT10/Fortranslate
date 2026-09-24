@@ -44,6 +44,36 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  ! Validate and agree controls before periodic/no-op dispatch in coupled entries.
+  subroutine validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,faces,ok)
+    type(MPI_Comm), intent(in) :: comm
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: faces(6)
+    logical, intent(out) :: ok
+    real(dp) :: mach(6),pressure(6),controls(12),minimum(12),maximum(12)
+    character(len=32) :: resolved(6)
+    logical :: valid
+    integer :: ierr
+    ok=.false.;mach=-1;pressure=0;resolved='periodic'
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) pressure=inflow_pressure
+    if(present(faces)) resolved=faces
+    valid=all(ieee_is_finite(mach)).and.all(mach<=100)
+    valid=valid.and..not.any(mach>=0.and.resolved/='inflow')
+    valid=valid.and.all(ieee_is_finite(pressure)).and.all(pressure>=0).and.all(pressure<=1e15_dp)
+    valid=valid.and..not.any(pressure>0.and.mach<0)
+    if(present(inflow_pressure)) valid=valid.and.present(inflow_mach)
+    call MPI_Allreduce(valid,ok,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS) ok=.false.
+    if(.not.ok) return
+    ok=.false.;controls=[mach,pressure]
+    call MPI_Allreduce(controls,minimum,12,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,12,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(minimum/=maximum)) return
+    ok=.true.
+  end subroutine validate_mpi_mach_controls
+
   subroutine fill_mpi_spray_ghosts(comm,state,temperature,cells,faces,ghost,ghost_temperature,ok, &
       viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure,inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
@@ -717,9 +747,10 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_transport(comm,species,transport,state,temperature,spacing,cells,dt,enabled,minimum_theta,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -747,6 +778,8 @@ contains
     if (present(outlet_pressure)) pressure=outlet_pressure
     if (present(boundary_change)) boundary_change=0
     ok=.false.;minimum_theta=1;accepted_theta=1;nvar=size(state,1)
+    call validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,faces,agreed)
+    if(.not.agreed) return
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
@@ -792,7 +825,8 @@ contains
     if (present(faces)) then
       call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
-          species=species,outlet_pressure=pressure)
+          species=species,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
       call agree()
       if (.not.agreed) return
       local_faces=faces;velocity=0
@@ -816,7 +850,8 @@ contains
       if (present(faces)) then
         call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
-          species=species,outlet_pressure=pressure)
+          species=species,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         call agree()
         if (.not.agreed) return
         call physical_transport_ghosted_fluxes_3d(species,transport,gas,temp,halo,halo_t,extent,spacing,dt, &
@@ -917,7 +952,8 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_les(comm,species,state,temperature,spacing,cells,dt,cs,prt,sct,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure)
+      faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -926,7 +962,7 @@ contains
     real(dp), intent(in) :: cs,prt,sct
     character(len=*), optional, intent(in) :: model
     character(len=16) :: selected_model
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6)
     real(dp), optional, intent(in) :: ci
     real(dp) :: isotropic
@@ -952,6 +988,8 @@ contains
     change=0
     if (present(boundary_change)) boundary_change=0
     ok=.false.;nvar=size(state,1)
+    call validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,faces,agreed)
+    if(.not.agreed) return
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
@@ -1016,7 +1054,8 @@ contains
       if (present(faces)) then
         call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid,viscous_wall=.true., &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
-          species=species,outlet_pressure=pressure)
+          species=species,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         call agree()
         if (.not.agreed) return
         call compute_les_ghosted_rhs_3d(species,halo,halo_t,[nx,ny,nz],spacing,cs,prt,sct,rhs,diffusivity,valid, &
@@ -1069,9 +1108,9 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_hydro(comm,species,state,temperature,spacing,cells,dt,solver,limiter,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
+      faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -1104,6 +1143,8 @@ contains
     case('minmod');limiter_code=1
     case('mc');limiter_code=2
     end select
+    call validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,faces,agreed)
+    if(.not.agreed) return
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
@@ -1196,7 +1237,8 @@ contains
   contains
     subroutine physical_stage()
       call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=pressure)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
       call agree()
       if (.not.agreed) return
       call compute_reactive_plm_face_fluxes_3d(species,halo,halo_t,nx+4,ny+4,nz+4, &
@@ -1246,7 +1288,7 @@ contains
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-      les_harmonic_mean,les_ci,outlet_pressure)
+      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1260,7 +1302,7 @@ contains
     integer, intent(in) :: cells(3),parts(3)
     character(len=*), optional, intent(in) :: les_model,les_test_filter
     integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6)
     real(dp), optional, intent(in) :: les_ci
     real(dp) :: isotropic
@@ -1349,10 +1391,15 @@ contains
       case('mc');limit_code=2
       end select
     end if
+    call validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,boundary_faces,agreed)
+    if(.not.agreed) return
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(parcels).and.allocated(component_mass).and.method_code>0.and.les_code>0.and.filter_valid
     valid=valid.and.(.not.harmonic.or.les_code==4)
+    if(present(inflow_mach)) then
+      if(any(inflow_mach>=0)) valid=valid.and.present(hydro_solver)
+    end if
     valid=valid.and.all(ieee_is_finite(pressure))
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     if (any(pressure>0)) valid=valid.and.present(boundary_faces).and.present(hydro_solver)
@@ -1416,7 +1463,8 @@ contains
       if (any(enabled)) then
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
           enabled,transport_theta,valid,boundary_faces,stage_change,inflow_state,inflow_temperature, &
-          wall_temperature,wall_velocity,outlet_pressure=pressure)
+          wall_temperature,wall_velocity,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
@@ -1425,17 +1473,19 @@ contains
           if (allocated(stage_change)) stage_change=0
           call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
             .5_dp*interval,valid,grid_ratio,harmonic,boundary_faces,stage_change, &
-            inflow_state,inflow_temperature,wall_temperature,wall_velocity,pressure)
+            inflow_state,inflow_temperature,wall_temperature,wall_velocity,pressure,inflow_mach,inflow_pressure)
         else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
           boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-          model=les_model,ci=isotropic,outlet_pressure=pressure)
+          model=les_model,ci=isotropic,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         end if
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
       call advance_mpi_spray_hydro(comm,species,gas,temp,spacing,cells,interval,hydro_solver,hydro_limiter,valid, &
-        boundary_faces,stage_change,inflow_state,inflow_temperature,outlet_pressure=pressure)
+        boundary_faces,stage_change,inflow_state,inflow_temperature,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
       if (.not.valid) return
       if (allocated(stage_change)) ledger=ledger+stage_change
       if (sgs(1)>0.or.isotropic>0) then
@@ -1443,11 +1493,12 @@ contains
           if (allocated(stage_change)) stage_change=0
           call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
             .5_dp*interval,valid,grid_ratio,harmonic,boundary_faces,stage_change, &
-            inflow_state,inflow_temperature,wall_temperature,wall_velocity,pressure)
+            inflow_state,inflow_temperature,wall_temperature,wall_velocity,pressure,inflow_mach,inflow_pressure)
         else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
           boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-          model=les_model,ci=isotropic,outlet_pressure=pressure)
+          model=les_model,ci=isotropic,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         end if
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
@@ -1455,7 +1506,8 @@ contains
       if (any(enabled)) then
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
           enabled,transport_theta,valid,boundary_faces,stage_change,inflow_state,inflow_temperature, &
-          wall_temperature,wall_velocity,outlet_pressure=pressure)
+          wall_temperature,wall_velocity,outlet_pressure=pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if

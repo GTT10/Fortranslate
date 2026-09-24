@@ -1,6 +1,6 @@
 program test_spray_mpi
   use mpi_f08
-  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,fill_mach_inlet_boundary_ghosts_3d
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use nasa7_thermo_mod, only: nasa7_species
@@ -581,7 +581,7 @@ contains
     type(spray_parcel), allocatable :: drops(:)
     type(spray_options) :: settings
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),u0(:,:,:,:),t0(:,:,:),cm(:,:)
-    real(dp) :: ledger(15),local_before(15),local_after(15),total_before(15),total_after(15),wall_t(6)
+    real(dp) :: ledger(15),local_before(15),local_after(15),total_before(15),total_after(15),wall_t(6),mach(6),inlet_t(6)
     character(len=32) :: boundary(6)
     integer :: np,nstep
     integer(int64) :: mark
@@ -594,12 +594,13 @@ contains
     end if
     settings%drag=.false.;settings%heat=.false.;settings%evaporation=.false.
     boundary='periodic';boundary(1:2)='outflow';boundary(3)='no_slip_wall';boundary(4)='isothermal_wall'
+    boundary(1)='inflow';mach=-1;mach(1)=.2_dp;inlet_t=800
     wall_t=600
     if (rank==nranks-1) wall_t(4)=-1
     call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,settings,u,t,drops,cm, &
       [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-5_dp,1e-7_dp,1e-12_dp, &
       'implicit',nstep,ok,'hllc','mc',[.true.,.true.,.true.,.true.],mark,[.1_dp,.7_dp,.7_dp], &
-      boundary,ledger,wall_temperature=wall_t)
+      boundary,ledger,wall_temperature=wall_t,inflow_mach=mach,inflow_temperature=inlet_t)
     call require(.not.ok.and.nstep==0.and.all(u==u0).and.all(t==t0).and.mark==17.and.all(ledger==0), &
       'late boundary transport failure rolls back whole split gas ID and ledger')
     call require(size(drops)==np,'late boundary failure restores escaped particle')
@@ -612,7 +613,7 @@ contains
     call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,settings,u,t,drops,cm, &
       [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-5_dp,1e-7_dp,1e-12_dp, &
       'implicit',nstep,ok,'hllc','mc',[.true.,.true.,.true.,.true.],mark,[.1_dp,.7_dp,.7_dp], &
-      boundary,ledger,wall_temperature=wall_t)
+      boundary,ledger,wall_temperature=wall_t,inflow_mach=mach,inflow_temperature=inlet_t)
     call require(ok.and.nstep>=2.and.size(drops)==0.and.mark==17,'complete nonperiodic split with escaped parcel')
     call mixture_system_totals(u,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local_after,ok)
     call require(ok,'boundary split final inventory')
@@ -628,7 +629,7 @@ contains
     real(dp), allocatable :: serial_u(:,:,:,:),serial_t(:,:,:),local_u(:,:,:,:),local_temp(:,:,:)
     real(dp) :: velocity(3,6),inlet(15,6),inlet_t(6),serial_change(15),change(15),delta(15),total_delta(15),inventory(15)
     real(dp) :: theta_serial,theta_mpi
-    real(dp) :: wall_t(6)
+    real(dp) :: wall_t(6),mach(6),pin(6),step
     real(dp), allocatable :: transport_initial(:,:,:,:)
     character(len=32) :: boundaries(6)
     real(dp), parameter :: spacing(3)=[1.0_dp,1.0_dp,1.0_dp]
@@ -637,30 +638,34 @@ contains
     u=reference(:,first(1)+1:first(1)+dims(1),:,:)
     t=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
     inlet=spread(reference(:,1,1,1),2,6);inlet_t=reference_temperature(1,1,1)
-    do mode=1,3
-      boundaries='periodic';velocity=0
+    do mode=1,4
+      boundaries='periodic';velocity=0;mach=-1;pin=0;step=1e-5_dp
       if (mode/=1) then
         boundaries(1)='slip_wall';boundaries(2)='outflow'
         boundaries(3)='no_slip_wall';boundaries(4)='isothermal_wall'
         velocity(1,3)=2;velocity(1,4)=-1
       end if
-      if (mode==3) boundaries(1)='inflow'
-      call fill_reactive_boundary_ghosts_3d(reference,reference_temperature,boundaries,global_ghost,global_t,ok, &
-        viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity)
+      if (mode>=3) boundaries(1)='inflow'
+      if(mode==4) then
+        mach(1)=.2_dp;step=1e-7_dp
+      end if
+      call fill_mach_inlet_boundary_ghosts_3d(species,reference,reference_temperature,boundaries,mach,global_ghost,global_t,ok, &
+        viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity,inflow_pressure=pin)
       call require(ok,'serial boundary ghost reference')
       call fill_mpi_spray_ghosts(MPI_COMM_WORLD,u,t,cells,boundaries,local_ghost,local_t,ok, &
-        viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity)
+        viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=velocity, &
+        species=species,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'MPI boundary ghost exchange')
       call require(all(local_ghost==global_ghost(:,first(1)+1:first(1)+dims(1)+4,:,:)), &
         'MPI ghost states exactly match serial including corners')
       call require(all(local_t==global_t(first(1)+1:first(1)+dims(1)+4,:,:)), &
         'MPI ghost temperatures exactly match serial')
       serial_u=reference;serial_t=reference_temperature;local_u=u;local_temp=t
-      call advance_reactive_boundary_hydro_3d(species,serial_u,serial_t,spacing,1e-5_dp,boundaries, &
-        'characteristic_plm','mc','hllc',serial_change,ok,inlet,inlet_t)
+      call advance_reactive_boundary_hydro_3d(species,serial_u,serial_t,spacing,step,boundaries, &
+        'characteristic_plm','mc','hllc',serial_change,ok,inlet,inlet_t,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'serial physical-boundary hydro reference')
-      call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,1e-5_dp, &
-        'hllc','mc',ok,boundaries,change,inlet,inlet_t)
+      call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,local_u,local_temp,spacing,cells,step, &
+        'hllc','mc',ok,boundaries,change,inlet,inlet_t,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'MPI physical-boundary hydro')
       call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
         max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
@@ -691,12 +696,12 @@ contains
       local_temp=serial_t(first(1)+1:first(1)+dims(1),:,:);transport_initial=local_u
       inventory=sum(sum(sum(abs(serial_u),dim=4),dim=3),dim=2)
       call advance_reactive_transport_3d(species,transport,serial_u,serial_t,cells(1),3,3, &
-        .001_dp,.001_dp,.001_dp,1e-5_dp,.true.,.true.,.true.,.true.,theta_serial,ok, &
-        boundaries,serial_change,inlet,inlet_t,wall_t,velocity)
+        .001_dp,.001_dp,.001_dp,step,.true.,.true.,.true.,.true.,theta_serial,ok, &
+        boundaries,serial_change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'serial physical-boundary transport reference')
       call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,local_u,local_temp, &
-        [.001_dp,.001_dp,.001_dp],cells,1e-5_dp,[.true.,.true.,.true.,.true.],theta_mpi,ok, &
-        boundaries,change,inlet,inlet_t,wall_t,velocity)
+        [.001_dp,.001_dp,.001_dp],cells,step,[.true.,.true.,.true.,.true.],theta_mpi,ok, &
+        boundaries,change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'MPI physical-boundary transport')
       call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
         max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
@@ -712,10 +717,10 @@ contains
       transport_initial=local_u
       inventory=sum(sum(sum(abs(serial_u),dim=4),dim=3),dim=2)
       call advance_les_ssprk2_3d(species,serial_u,serial_t,[.001_dp,.001_dp,.001_dp],.1_dp,.7_dp,.7_dp, &
-        1e-5_dp,ok,boundaries,serial_change,inlet,inlet_t,wall_t,velocity)
+        step,ok,boundaries,serial_change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'serial physical-boundary SGS reference')
       call advance_mpi_spray_les(MPI_COMM_WORLD,species,local_u,local_temp,[.001_dp,.001_dp,.001_dp],cells, &
-        1e-5_dp,.1_dp,.7_dp,.7_dp,ok,boundaries,change,inlet,inlet_t,wall_t,velocity)
+        step,.1_dp,.7_dp,.7_dp,ok,boundaries,change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin)
       call require(ok,'MPI physical-boundary SGS')
       call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
         max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
