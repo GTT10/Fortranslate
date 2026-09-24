@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--rate-files', action='store_true')
+    parser.add_argument('--ppm', action='store_true')
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--dynamic-walls', action='store_true')
@@ -32,6 +33,8 @@ def main():
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     source = args.input.read_text()
+    if args.ppm:
+        source = source.replace('&mpi_spray', "&mpi_spray\n hydro_reconstruction='characteristic_ppm',")
     input_path = args.input.resolve()
     if args.pressure_outlet:
         if args.les_model not in ('wale', 'vreman'):
@@ -62,6 +65,9 @@ def main():
         if args.les_model == 'dynamic':
             source = source.replace('&mpi_spray', "&mpi_spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
         input_path = work / 'les.nml'
+        input_path.write_text(source)
+    if args.ppm:
+        input_path = work / 'ppm.nml'
         input_path.write_text(source)
     command = [str(args.mpiexec.resolve()), '-n', str(args.ranks),
                str(args.executable.resolve()), str(input_path)]
@@ -191,6 +197,10 @@ def main():
             assert 'Restart rejected' in (work / f'{label}.log').read_text()
             assert not (work / f'{label}.history.csv').exists()
         source = original_source
+    if args.ppm:
+        run_variant('changed_reconstruction', args.ranks,
+                    " restart_path='split.chk', hydro_reconstruction='characteristic_plm'", expect_success=False)
+        assert 'Restart rejected' in (work / 'changed_reconstruction.log').read_text()
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
     if args.les_model:

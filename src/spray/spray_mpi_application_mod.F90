@@ -83,6 +83,7 @@ contains
   real(dp) :: outlet_pressure(6)=0
   real(dp) :: les_ci=0,les_cs=0,les_prt=.7_dp,les_sct=.7_dp
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
+  character(len=32) :: hydro_reconstruction='characteristic_plm'
   character(len=16) :: solver='hllc',limiter='mc',les_model='smagorinsky',les_test_filter='box'
   integer :: les_test_ratio=2,les_grid_ratio=1
   logical :: les_harmonic_mean=.false.
@@ -100,7 +101,7 @@ contains
   namelist /mpi_spray/ cells,spacing,lower,gas_density,gas_temperature,gas_velocity,gas_fractions, &
     number,total_mass,center,axis,speed,half_angle,diameter,drop_temperature,fractions, &
     liquid_density,liquid_cp,boiling_temperature,latent_heat,liquid_species,final_time,dt_max,cfl, &
-    rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,output_prefix,restart_path,checkpoint_path, &
+    rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,hydro_reconstruction,output_prefix,restart_path,checkpoint_path, &
     injection_events,injection_start,injection_interval,injection_profile_points, &
     injection_profile_times,injection_profile_rates,port_count,port_events,port_number,port_start,port_interval, &
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
@@ -232,6 +233,8 @@ contains
       boiling_temperature(n),101325.0_dp,latent_heat(n),liquids(n),ok)
     call require(ok,'Invalid liquid properties')
   end do
+  call require(hydro_reconstruction=='characteristic_plm'.or.hydro_reconstruction=='characteristic_ppm', &
+    'Invalid hydro reconstruction')
   ! Bind all physical/evolution inputs, excluding rank count, paths, stop time
   ! and the maximum-step guard, which may change when continuing a run.
   write(checkpoint_context,'(*(g0,1x))',iostat=status) 'mpi-spray-application-v2', &
@@ -240,6 +243,10 @@ contains
     diameter,drop_temperature,fractions,liquid_species,liquid_density,liquid_cp,boiling_temperature,latent_heat, &
     dt_max,cfl,rtol,atol,chemistry,solver,limiter,transport_flags,injection_events,injection_start,injection_interval
   call require(status==0,'Checkpoint context serialization failed')
+  if(hydro_reconstruction=='characteristic_ppm') then
+    call require(len_trim(checkpoint_context)+31<=len(checkpoint_context),'Hydro context too long')
+    checkpoint_context=trim(checkpoint_context)//' mpi-hydro-characteristic-ppm-v1'
+  end if
   if (injection_profile_points>0) then
     write(profile_context,'(*(g0,1x))',iostat=status) 'linear-injection-profile-v1',injection_profile_points, &
       injection_profile_times(:injection_profile_points),injection_profile_rates(:injection_profile_points)
@@ -472,7 +479,7 @@ contains
         les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
         les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
+        inflow_mach=inflow_mach,inflow_pressure=mach_pressure,hydro_reconstruction=hydro_reconstruction)
       else
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
@@ -480,7 +487,7 @@ contains
         inlet_state,inlet_temperature,wall_temperature,wall_velocity,les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
         les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
+        inflow_mach=inflow_mach,inflow_pressure=mach_pressure,hydro_reconstruction=hydro_reconstruction)
       end if
       if (ok) exit
       dt=.5_dp*dt

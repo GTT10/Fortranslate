@@ -1349,7 +1349,7 @@ contains
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure)
+      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure,hydro_reconstruction)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1375,7 +1375,7 @@ contains
     logical :: filter_valid
     integer :: les_code
     character(len=*), intent(in) :: method
-    character(len=*), intent(in), optional :: hydro_solver,hydro_limiter
+    character(len=*), intent(in), optional :: hydro_solver,hydro_limiter,hydro_reconstruction
     logical, intent(in), optional :: transport_flags(4)
     real(dp), intent(in), optional :: les_settings(3)
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -1396,11 +1396,17 @@ contains
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(27),minimum(27),maximum(27),chemistry_interval,transport_theta
-    integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks
+    real(dp) :: controls(28),minimum(28),maximum(28),chemistry_interval,transport_theta
+    integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks,reconstruction_code
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
     ok=.false.;substeps=0;method_code=0;ledger=0
+    reconstruction_code=1
+    if(present(hydro_reconstruction)) then
+      reconstruction_code=0
+      if(hydro_reconstruction=='characteristic_plm') reconstruction_code=1
+      if(hydro_reconstruction=='characteristic_ppm') reconstruction_code=2
+    end if
     first_film_steps=0;last_film_steps=0
     if (present(boundary_change)) boundary_change=0
     if (present(boundary_faces)) allocate(stage_change(size(state,1)))
@@ -1480,15 +1486,18 @@ contains
     if (present(hydro_solver)) then
       valid=valid.and.hydro_code>0.and.limit_code>0.and.all(parts==[nranks,1,1])
     end if
+    valid=valid.and.reconstruction_code>0
+    if(present(hydro_reconstruction)) valid=valid.and.present(hydro_solver)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (.not.agreed) return
     controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
       merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces)),merge(1.0_dp,0.0_dp,present(wall_films)), &
-      real(les_code,dp),real(filter_code,dp),real(test_ratio,dp),real(grid_ratio,dp),merge(1._dp,0._dp,harmonic),isotropic,pressure]
-    call MPI_Allreduce(controls,minimum,27,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      real(les_code,dp),real(filter_code,dp),real(test_ratio,dp),real(grid_ratio,dp),&
+      merge(1._dp,0._dp,harmonic),isotropic,pressure,real(reconstruction_code,dp)]
+    call MPI_Allreduce(controls,minimum,28,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,27,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,28,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
@@ -1546,7 +1555,7 @@ contains
       end if
       call advance_mpi_spray_hydro(comm,species,gas,temp,spacing,cells,interval,hydro_solver,hydro_limiter,valid, &
         boundary_faces,stage_change,inflow_state,inflow_temperature,outlet_pressure=pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,reconstruction=hydro_reconstruction)
       if (.not.valid) return
       if (allocated(stage_change)) ledger=ledger+stage_change
       if (sgs(1)>0.or.isotropic>0) then
