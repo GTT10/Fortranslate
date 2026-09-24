@@ -465,12 +465,13 @@ contains
   end function
 
   subroutine read_reactive_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet)
+      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
+    logical, intent(in), optional :: allow_characteristic_ppm
 
     integer :: nx, ny, nz, maximum_steps, unit, io_status
     integer :: wave_number_x, wave_number_y, wave_number_z
@@ -676,6 +677,14 @@ contains
     call validate_reactive_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
     if (.not.ok) return
+    if (trim(config%reconstruction) == "characteristic_ppm") then
+      ok = .false.
+      if (present(allow_characteristic_ppm)) ok = allow_characteristic_ppm
+      if (.not. ok) then
+        message = 'Characteristic PPM input is not connected in this application'
+        return
+      end if
+    end if
     if (any(config%inflow_mach>=0.0_dp)) then
       ok=.false.
       if (present(allow_mach_inlet)) ok=allow_mach_inlet
@@ -839,8 +848,12 @@ contains
       message = &
         "Reactive 3D thermo_model must be elementary, full_h2o2, or selected"
     else if (trim(config%reconstruction) /= "pcm" .and. &
-             trim(config%reconstruction) /= "characteristic_plm") then
-      message = "Reactive 3D reconstruction must be pcm or characteristic_plm"
+             trim(config%reconstruction) /= "characteristic_plm" .and. &
+             trim(config%reconstruction) /= "characteristic_ppm") then
+      message = "Reactive 3D reconstruction must be pcm, characteristic_plm, or characteristic_ppm"
+    else if (trim(config%reconstruction) == "characteristic_ppm" .and. &
+             any(faces /= "periodic")) then
+      message = "Reactive 3D characteristic_ppm requires periodic boundaries"
     else if (trim(config%reconstruction) == "characteristic_plm" .and. &
              min(config%nx, config%ny, config%nz) < 3) then
       message = "Reactive 3D characteristic_plm requires nx, ny, nz >= 3"
