@@ -104,9 +104,6 @@ reimplemented. Their restrictions remain explicit in current status.
 
 Regular 3D hydro/chemistry/molecular transport now accepts per-face prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip conditions with prescribed tangential wall velocity
 with integrated boundary-flux accounting; see the [case guide](../cases/reactive_boundaries_3d/README.md).
-Investigate severe Dynamic LES timestep reductions at an abrupt Mach-inlet startup;
-the compatible-initial-state MPI restart check does not qualify that regime
-([observed limitation](validation/mach-inlet-mpi-application-20260925.md)).
 Characteristic inflow and moving geometry, general EB and AMR-particle boundary coupling
 remain part of the completion work. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted

@@ -3023,8 +3023,10 @@ The implementation evaluates a padded periodic workspace and crops its interior;
 the checked halo keeps its artificial seam outside the requested stencil.
 Every workspace cell/filter state must remain thermodynamically admissible.
 This first implementation overcomputes the outer workspace. Optional
-`maximum_diffusivity` returns a conservative bound over the entire padded
-workspace, publishing only on success. The caller still owns physical/coarse-fine
+`maximum_diffusivity` bounds the faces that contribute to the returned interior
+divergence, including its physical boundary faces, publishing only on success.
+The unused outer workspace is excluded from this timestep estimate
+([startup correction](validation/dynamic-active-face-timestep-20260925.md)). The caller still owns physical/coarse-fine
 donor construction, flux synchronization/reflux and time stepping. See
 [ghosted-patch checks](validation/les-dynamic-ghosted-20260925.md).
 
@@ -3239,8 +3241,9 @@ Large pressure differences can make an outer donor inadmissible and reject the
 transaction. See [pressure integration checks](validation/les-dynamic-amr-pressure-20260925.md).
 Each stage builds sufficiently
 wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
-down through the existing transaction. The diffusion bound includes padded
-cells and may restrict the interval more than an interior-only estimate.
+down through the existing transaction. The diffusion bound uses the faces
+contributing to each patch interior, including the boundary faces; unused outer
+padding does not restrict the timestep.
 The shared donor sampler now supports repeated moving-wall reflections for
 halos wider than the domain, used by Dynamic wall
 dispatch ([boundary-sampling evidence](validation/amr-wide-wall-ghosts-20260925.md)).

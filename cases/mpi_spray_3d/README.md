@@ -317,7 +317,9 @@ SGS. Dynamic SGS includes isotropic stress and heat flux, with no species flux.
 Periodic and supported physical faces (reservoir inflow, extrapolated or
 pressure-target outflow, slip and moving adiabatic/isothermal walls) are accepted.
 Both SGS half steps contribute to the boundary inventory. The physical kernel
-uses wide distributed donors; its padded diffusion bound can depend on partition.
+uses wide distributed donors. Its timestep bound includes faces contributing to
+active cells and excludes unused outer padding
+([startup correction](../../docs/validation/dynamic-active-face-timestep-20260925.md)).
 See [physical wall/restart evidence](../../docs/validation/mpi-dynamic-spray-walls-20260925.md).
 Model and filter settings are bound to
 checkpoint context. Both stages recalculate coefficients; the whole coupled
