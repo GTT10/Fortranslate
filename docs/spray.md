@@ -3221,6 +3221,12 @@ see [open-boundary checks](validation/les-dynamic-open-20260925.md).
 
 ### MPI AMR reacting-spray LES coupling
 
+The serial `advance_amr_patch_tree_les_level_3d` API advances one depth using
+temporal coarse donors and returns SSPRK2 time-integrated faces for later
+reflux. It preserves inactive levels and publishes outputs transactionally.
+Recursive scheduling and MPI/application dispatch remain separate work; see
+[level integration checks](validation/les-amr-level-20260925.md).
+
 `advance_mpi_amr_spray_reactive` accepts optional `les_settings` containing
 `[eddy coefficient, PrT, ScT, CI]` and `les_model` (`smagorinsky`, `wale` or
 `vreman`). Defaults disable LES. Two common LES half steps surround the gas
