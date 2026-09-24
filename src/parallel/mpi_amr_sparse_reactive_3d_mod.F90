@@ -857,7 +857,7 @@ contains
     if (local_ok) local_ok = hierarchy%nvar == reactive_nvar(size(species))
     if (local_ok) local_ok = hierarchy%is_valid(distribution, patch)
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
-      trim(reconstruction) == "characteristic_plm"
+      trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     if (chemistry_enabled) then
@@ -1111,7 +1111,7 @@ contains
     if (local_ok) local_ok = hierarchy%nvar == reactive_nvar(size(species))
     if (local_ok) local_ok = hierarchy%is_valid(distribution, patch)
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
-      trim(reconstruction) == "characteristic_plm"
+      trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     if (chemistry_enabled) then
@@ -2365,7 +2365,7 @@ contains
     real(dp) :: local_boundary(reactive_nvar(size(species))), reflux_boundary(reactive_nvar(size(species)))
     integer :: covered_nx, covered_ny, covered_nz
     real(dp) :: outlet_values(6)
-    integer :: ratio, substep, ierr
+    integer :: ratio, substep, ierr, width
 
     maximum_reflux_correction = 0.0_dp
     ok = .false.;candidate_boundary=0
@@ -2383,7 +2383,7 @@ contains
       if (present(boundary_faces)) local_ok=local_ok.and..not.any(touched.and.boundary_faces=='periodic')
     end if
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
-      trim(reconstruction) == "characteristic_plm"
+      trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     if (present(boundary_change)) local_ok=local_ok.and.size(boundary_change)==size(candidate_boundary)
@@ -2400,6 +2400,8 @@ contains
         trim(limiter)//merge("|physical","|periodic",present(boundary_faces)), local_ok, global_ok)
     if (.not. global_ok) return
 
+    width=2
+    if (reconstruction=="characteristic_ppm") width=4
     ratio = patch%refinement_ratio
     covered_nx = patch%coarse_i_upper - patch%coarse_i_lower + 1
     covered_ny = patch%coarse_j_upper - patch%coarse_j_lower + 1
@@ -2414,7 +2416,7 @@ contains
     call sparse_collective_logical_and_3d( &
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
-    candidate%coarse_temperature = coarse_start_temperature
+    if (reconstruction/="characteristic_ppm") candidate%coarse_temperature = coarse_start_temperature
     if (present(boundary_faces)) then
       call advance_mpi_amr_sparse_boundary_hydro_3d(distribution,species,patch,candidate%coarse_state, &
         candidate%coarse_temperature,dx,dy,dz,dt,riemann_solver,reconstruction,limiter,coarse_flux_x, &
@@ -2423,11 +2425,13 @@ contains
       coarse_flux_y=full_y(:,:,1:,:);coarse_flux_z=full_z(:,:,:,1:)
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,coarse_start,coarse_start_temperature, &
         boundary_faces,coarse_start_halo,coarse_start_halo_temperature,local_ok, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure, &
+        ghost_width=width)
       if (.not.local_ok) return
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,candidate%coarse_state,candidate%coarse_temperature, &
         boundary_faces,coarse_end_halo,coarse_end_halo_temperature,local_ok, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure, &
+        ghost_width=width)
       if (.not.local_ok) return
     else
     call advance_mpi_amr_sparse_periodic_hydro_3d( &
@@ -2440,11 +2444,11 @@ contains
     if (.not. global_ok) return
     call build_mpi_amr_sparse_periodic_halos_3d( &
       distribution, coarse_start, coarse_start_temperature, &
-      coarse_start_halo, coarse_start_halo_temperature, local_ok)
+      coarse_start_halo, coarse_start_halo_temperature, local_ok,ghost_width=width)
     if (.not. local_ok) return
     call build_mpi_amr_sparse_periodic_halos_3d( &
       distribution, candidate%coarse_state, candidate%coarse_temperature, &
-      coarse_end_halo, coarse_end_halo_temperature, local_ok)
+      coarse_end_halo, coarse_end_halo_temperature, local_ok,ghost_width=width)
     if (.not. local_ok) return
 
     end if
@@ -3092,6 +3096,9 @@ contains
     real(dp), allocatable :: second_flux_x(:, :, :, :)
     real(dp), allocatable :: second_flux_y(:, :, :, :)
     real(dp), allocatable :: second_flux_z(:, :, :, :)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    real(dp) :: theta
+    integer :: i,j,k
     logical :: local_ok
     integer :: nvar, local_count, ny, nz
 
@@ -3113,6 +3120,37 @@ contains
     if (size(state, 1) /= nvar .or. size(state, 2) /= local_count .or. &
         size(state, 3) /= ny .or. size(state, 4) /= nz .or. &
         any(shape(temperature) /= [local_count, ny, nz])) return
+
+    if (reconstruction=='characteristic_ppm') then
+      call build_sparse_fine_extended_state_3d(distribution,species,patch,coarse_start,coarse_start_temperature, &
+        coarse_end,coarse_end_temperature,state,temperature,alpha_start,reconstruction,limiter,ghost,gt,local_ok, &
+        boundary_faces,inflow_state,inflow_temperature,outlet_pressure=outlet_pressure)
+      if (.not.local_ok) return
+      allocate(first_flux_x(nvar,0:local_count,ny,nz),first_flux_y(nvar,local_count,0:ny,nz), &
+        first_flux_z(nvar,local_count,ny,0:nz))
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[local_count,ny,nz],[dx,dy,dz],dt, &
+        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok)
+      if (.not.local_ok) return
+      allocate(candidate_state,mold=state)
+      allocate(candidate_temperature,mold=temperature)
+      do k=1,nz
+      do j=1,ny
+      do i=1,local_count
+        candidate_state(:,i,j,k)=state(:,i,j,k)-(dt/dx)*(first_flux_x(:,i,j,k)-first_flux_x(:,i-1,j,k))- &
+          (dt/dy)*(first_flux_y(:,i,j,k)-first_flux_y(:,i,j-1,k))- &
+          (dt/dz)*(first_flux_z(:,i,j,k)-first_flux_z(:,i,j,k-1))
+      end do
+      end do
+      end do
+      call recover_reactive_temperatures_3d(species,candidate_state,temperature,local_count,ny,nz, &
+        candidate_temperature,local_ok)
+      if (.not.local_ok) return
+      call move_alloc(first_flux_x,face_flux_x)
+      call move_alloc(first_flux_y,face_flux_y)
+      call move_alloc(first_flux_z,face_flux_z)
+      state=candidate_state;temperature=candidate_temperature;ok=.true.
+      return
+    end if
 
     old_state = state
     allocate(old_temperature(local_count, ny, nz))
@@ -3336,8 +3374,10 @@ contains
     logical :: local_ok
     integer :: i, j, k, fine_i, fine_j, fine_k
     integer :: coarse_i, coarse_j, coarse_k
-    integer :: local_count, ny, nz, ratio, nvar
+    integer :: local_count, ny, nz, ratio, nvar, width
 
+    width=2
+    if (reconstruction=="characteristic_ppm") width=4
     ok = .false.
     viscous=.false.
     if (present(viscous_wall)) viscous=viscous_wall
@@ -3369,27 +3409,27 @@ contains
     if (alpha < 0.0_dp .or. alpha > 1.0_dp) return
     if (.not. all(ieee_is_finite(state))) return
     if (.not. all(ieee_is_finite(temperature))) return
-    allocate(fine_x_halo_state(nvar, local_count + 4, ny, nz))
-    allocate(fine_x_halo_temperature(local_count + 4, ny, nz))
+    allocate(fine_x_halo_state(nvar, local_count + 2*width, ny, nz))
+    allocate(fine_x_halo_temperature(local_count + 2*width, ny, nz))
     fine_x_halo_state = 0.0_dp
     fine_x_halo_temperature = 0.0_dp
-    fine_x_halo_state(:, 3:local_count + 2, :, :) = state
-    fine_x_halo_temperature(3:local_count + 2, :, :) = temperature
+    fine_x_halo_state(:, width+1:local_count + width, :, :) = state
+    fine_x_halo_temperature(width+1:local_count + width, :, :) = temperature
     call exchange_sparse_x_halos_3d( &
       distribution%comm, distribution%previous_fine_rank, &
       distribution%next_fine_rank, fine_x_halo_state, &
-      fine_x_halo_temperature, local_count, local_ok, .false.)
+      fine_x_halo_temperature, local_count, local_ok, .false.,ghost_width=width)
     if (.not. local_ok) return
 
-    allocate(extended_state(nvar, local_count + 4, ny + 4, nz + 4))
-    allocate(extended_temperature(local_count + 4, ny + 4, nz + 4))
+    allocate(extended_state(nvar, local_count + 2*width, ny + 2*width, nz + 2*width))
+    allocate(extended_temperature(local_count + 2*width, ny + 2*width, nz + 2*width))
     allocate(primitive(reactive_nprim(size(species))))
     extended_state = 0.0_dp
     extended_temperature = 0.0_dp
-    do k = 1, nz + 4
-      do j = 1, ny + 4
-        do i = 1, local_count + 4
-          q=[distribution%fine_first+i-3,j-2,k-2]
+    do k = 1, nz + 2*width
+      do j = 1, ny + 2*width
+        do i = 1, local_count + 2*width
+          q=[distribution%fine_first+i-width-1,j-width,k-width]
           reflect=.false.;inlet=0;shift=0
           if (present(boundary_faces)) then
             do a=1,3
@@ -3423,8 +3463,8 @@ contains
             extended_state(:,i,j,k)=inflow_state(:,inlet)
             extended_temperature(i,j,k)=inflow_temperature(inlet)
           else if (all(q>=1).and.all(q<=n)) then
-            halo_i=fine_i-distribution%fine_first+3
-            if (halo_i<1.or.halo_i>local_count+4) return
+            halo_i=fine_i-distribution%fine_first+width+1
+            if (halo_i<1.or.halo_i>local_count+2*width) return
             extended_state(:,i,j,k)=fine_x_halo_state(:,halo_i,fine_j,fine_k)
             extended_temperature(i,j,k)=fine_x_halo_temperature(halo_i,fine_j,fine_k)
           else
@@ -3433,7 +3473,7 @@ contains
           coarse_i = patch%coarse_i_lower + &
             floor(real(fine_i - 1, dp) / real(ratio, dp))
           select case (trim(reconstruction))
-          case ("characteristic_plm")
+          case ("characteristic_plm","characteristic_ppm")
             call interpolate_sparse_coarse_fine_ghost_plm_3d( &
               distribution, species, patch, coarse_start, &
               coarse_start_temperature, coarse_end, coarse_end_temperature, &
@@ -3476,15 +3516,15 @@ contains
         do face=1,6
           if (.not.touched(face).or.outlet_pressure(face)<=0) cycle
           a=(face+1)/2
-          do k=1,nz+4
-          do j=1,ny+4
-          do i=1,local_count+4
-            global_q=[distribution%fine_first+i-3,j-2,k-2]
+          do k=1,nz+2*width
+          do j=1,ny+2*width
+          do i=1,local_count+2*width
+            global_q=[distribution%fine_first+i-width-1,j-width,k-width]
             distance=1-global_q(a)
             if (modulo(face,2)==0) distance=global_q(a)-n(a)
-            if (distance<1.or.distance>2) cycle
-            donor=[i,j,k];donor(a)=3
-            if (modulo(face,2)==0) donor(a)=n(a)+2
+            if (distance<1.or.distance>width) cycle
+            donor=[i,j,k];donor(a)=width+1
+            if (modulo(face,2)==0) donor(a)=n(a)+width
             if (a==1) donor(a)=donor(a)-distribution%fine_first+1
             if (any(donor<1).or.any(donor>shape(extended_temperature))) return
             donor_state=extended_state(:,donor(1),donor(2),donor(3))
@@ -3560,17 +3600,19 @@ contains
     logical, intent(out) :: ok
 
     real(dp) :: temperature_guess, sound_speed
-    integer :: local_i, wrapped_j, wrapped_k
+    integer :: local_i, wrapped_j, wrapped_k, width
 
-    if (size(coarse_start,3)==patch%coarse_ny+4.and.size(coarse_start,4)==patch%coarse_nz+4) then
+    width=(size(coarse_start,2)-distribution%coarse_count)/2
+    if (size(coarse_start,3)==patch%coarse_ny+2*width.and. &
+        size(coarse_start,4)==patch%coarse_nz+2*width) then
       ! Padded physical slabs use actual global indices, including boundary ghosts.
-      local_i=coarse_i-distribution%coarse_first+3
-      wrapped_j=coarse_j+2;wrapped_k=coarse_k+2
+      local_i=coarse_i-distribution%coarse_first+width+1
+      wrapped_j=coarse_j+width;wrapped_k=coarse_k+width
       ok=local_i>=1.and.local_i<=size(coarse_start,2).and.wrapped_j>=1.and. &
         wrapped_j<=size(coarse_start,3).and.wrapped_k>=1.and.wrapped_k<=size(coarse_start,4)
     else
     local_i = sparse_halo_local_x_index_3d( &
-      distribution, patch%coarse_nx, coarse_i)
+      distribution, patch%coarse_nx, coarse_i,ghost_width=width)
     wrapped_j = 1 + modulo(coarse_j - 1, patch%coarse_ny)
     wrapped_k = 1 + modulo(coarse_k - 1, patch%coarse_nz)
     ok = local_i >= 1 .and. local_i <= size(coarse_start, 2)
@@ -3641,7 +3683,7 @@ contains
 
     ok = .false.
     ratio = patch%refinement_ratio
-    if (size(coarse_start,3)==patch%coarse_ny+4.and.size(coarse_start,4)==patch%coarse_nz+4) then
+    if (size(coarse_start,3)>patch%coarse_ny.and.size(coarse_start,4)>patch%coarse_nz) then
       im=coarse_i-1;ip=coarse_i+1;jm=coarse_j-1;jp=coarse_j+1;km=coarse_k-1;kp=coarse_k+1
     else
     im = 1 + modulo(coarse_i - 2, patch%coarse_nx)
@@ -3762,21 +3804,25 @@ contains
   end function sparse_positive_increment_scale_3d
 
   pure integer function sparse_halo_local_x_index_3d( &
-      distribution, global_nx, global_i) result(local_i)
+      distribution, global_nx, global_i,ghost_width) result(local_i)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     integer, intent(in) :: global_nx, global_i
 
-    integer :: wrapped_i, delta
+    integer, optional, intent(in) :: ghost_width
+    integer :: wrapped_i, delta, width
+
+    width=2
+    if (present(ghost_width)) width=ghost_width
 
     wrapped_i = 1 + modulo(global_i - 1, global_nx)
     delta = wrapped_i - distribution%coarse_first
-    do while (delta < -2)
+    do while (delta < -width)
       delta = delta + global_nx
     end do
-    do while (delta > distribution%coarse_count + 1)
+    do while (delta > distribution%coarse_count + width - 1)
       delta = delta - global_nx
     end do
-    local_i = delta + 3
+    local_i = delta + width + 1
   end function sparse_halo_local_x_index_3d
 
   subroutine accumulate_sparse_fine_interface_fluxes_3d( &

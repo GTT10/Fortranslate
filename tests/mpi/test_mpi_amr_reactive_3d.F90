@@ -240,6 +240,18 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--ppm-hierarchy-only') then
+      call check_periodic_ppm_hierarchy()
+      call check_physical_hierarchy(0,ppm_mode=.true.)
+      call check_physical_hierarchy(1,ppm_mode=.true.)
+      call check_physical_hierarchy(2,pressure_mode=.true.,ppm_mode=.true.)
+      call check_physical_hierarchy(3,ppm_mode=.true.)
+      call check_physical_hierarchy(1,transport_mode=.true.,ppm_mode=.true.)
+      if (distribution%rank==0) print *, 'PASS: sparse PPM hierarchy and full split'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--ppm-coarse-only') then
       call check_physical_halos(4)
       call check_physical_coarse_hydro(.true.)
@@ -829,8 +841,32 @@ contains
     end do
   end subroutine check_boundary_distribution
 
-  subroutine check_physical_hierarchy(geometry,pressure_mode,reaction_mode,transport_mode)
-    logical, optional, intent(in) :: pressure_mode,reaction_mode,transport_mode
+  subroutine check_periodic_ppm_hierarchy()
+    type(mpi_amr_sparse_hierarchy_3d) :: h,saved
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:)
+    real(dp) :: r,rr
+    c=coarse_state;ct=coarse_temperature;f=fine_state;ft=fine_temperature
+    h=sparse_hierarchy;saved=h
+    call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,dx,dy,dz,1e-7_dp,config%riemann_solver,rr,ok, &
+      'characteristic_ppm','mc')
+    call require(ok,'serial periodic PPM hierarchy')
+    call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1e-7_dp, &
+      config%riemann_solver,'characteristic_ppm','mc',r,ok)
+    call require(ok,'MPI periodic PPM hierarchy')
+    call gather_mpi_amr_sparse_hierarchy_3d(sparse_distribution,patch,0,h,gc,gt,gf,gft,ok)
+    call require(ok,'periodic PPM hierarchy gather')
+    if (sparse_distribution%rank==0) then
+      call require(all(gc==c).and.all(gt==ct).and.all(gf==f).and.all(gft==ft).and.r==rr, &
+        'periodic PPM hierarchy state temperature and reflux exactly match serial')
+    end if
+    h=saved
+    call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1._dp, &
+      config%riemann_solver,'characteristic_ppm','mc',r,ok)
+    call require(.not.ok.and.r==0.and.sparse_hierarchies_bits_match(h,saved),'periodic PPM hierarchy CFL rollback')
+  end subroutine check_periodic_ppm_hierarchy
+
+  subroutine check_physical_hierarchy(geometry,pressure_mode,reaction_mode,transport_mode,ppm_mode)
+    logical, optional, intent(in) :: pressure_mode,reaction_mode,transport_mode,ppm_mode
     real(dp) :: outlet(6),test_dt
     integer :: first_mode
     integer, optional, intent(in) :: geometry
@@ -871,6 +907,13 @@ contains
         first_mode=5;last_mode=6;test_dt=1e-10_dp;outlet(2)=0
       end if
     end if
+    if (present(ppm_mode)) then
+      if (ppm_mode) then
+        if (last_mode==6.and.first_mode==1) last_mode=2
+        first_mode=last_mode
+        outlet(4:6)=0
+      end if
+    end if
     nf=(hi-lo+1)*ratio
     call initialize_amr_patch_3d(n,n,n,lo,hi,lo,hi,lo,hi,ratio,wall_patch,ok)
     call require(ok,'physical hierarchy near-wall patch')
@@ -894,6 +937,9 @@ contains
     do mode=first_mode,last_mode
       method='pcm'
       if (modulo(mode,2)==0) method='characteristic_plm'
+      if (present(ppm_mode)) then
+        if (ppm_mode) method='characteristic_ppm'
+      end if
       if (mode>=5) faces(1:2)="isothermal_wall"
       c=c0;ct=ct0;f=f0;ft=ft0
       if (mode==5) then
