@@ -336,6 +336,29 @@ composition on every inlet face. `wall_temperature(6)` defaults to 600 K;
 Isothermal walls require molecular conduction; nonzero wall velocity requires
 viscosity. Gas wall data pass through molecular transport and optional SGS.
 
+Regular fixed/selected MPI spray inputs accept `inflow_mach(6)` (default -1).
+An active value from 0 through 100 requires an `inflow` face and sets inward
+normal velocity using the inlet sound speed. `inflow_temperature(6)` defaults
+to 1200 K; `inflow_pressure(6)` defaults to 101325 Pa, with zero selecting current
+interior pressure and positive values up to 1e15 Pa selecting fixed pressure.
+Mach faces use the current interior composition and replace the initial-gas
+velocity at that face. Other inlet faces keep the initial-gas reservoir above.
+For example:
+
+```fortran
+boundary_faces='inflow','outflow','periodic','periodic','periodic','periodic'
+inflow_mach(1)=0.2
+inflow_temperature(1)=900
+inflow_pressure(1)=0
+```
+
+These controls reach hydro, molecular transport, static/Dynamic LES and mixture
+coupling. Current distributed inlet ghosts contribute to the hydro and molecular
+timestep limits before the MPI minimum reduction. Active settings bind checkpoint
+context: changing/removing Mach or changing its temperature/pressure rejects
+continuation. Inactive defaults retain the preceding context format.
+See [Mach MPI application evidence](../../docs/validation/mach-inlet-mpi-application-20260925.md).
+
 Particles leaving an inlet/outlet are removed. Wall crossings use stationary
 specular reflection; tangential gas-wall motion does not introduce moving-wall
 particle impact. Enable mixed deposition/splash and film evolution through `impact` below.

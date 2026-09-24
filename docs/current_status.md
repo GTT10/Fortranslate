@@ -29,8 +29,10 @@ halos and regular MPI Dynamic LES now match serial operators
 two-layer ghost entry also supports inviscid and viscous Mach donors
 ([ghost checks](validation/mach-inlet-mpi-spray-ghosts-20260925.md)). MPI hydro,
 molecular transport, static LES and mixture splitting now forward the controls
-([step checks](validation/mach-inlet-mpi-stepping-20260925.md)); MPI application
-input/restart and AMR dispatch remain open.
+([step checks](validation/mach-inlet-mpi-stepping-20260925.md)). Regular MPI spray
+input, timestep limits and rank-changing restart are connected
+([application checks](validation/mach-inlet-mpi-application-20260925.md)). AMR
+Mach dispatch and abrupt-start Dynamic timestep behavior remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
