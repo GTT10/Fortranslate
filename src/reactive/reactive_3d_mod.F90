@@ -12,12 +12,13 @@ module reactive_3d_mod
     reactive_primitive_to_conserved, reactive_conserved_to_primitive, &
     reactive_riemann_flux_x, characteristic_limited_slope
   use reactive_2d_mod, only: &
-    reactive_riemann_flux_y, advance_reactive_chemistry_2d
+    reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   private
 
+  public :: compute_reactive_ppm_normal_fluxes_3d
   public :: advance_reactive_boundary_hydro_3d
   public :: compute_reactive_cfl_timestep_3d
   public :: compute_reactive_euler_rhs_3d
@@ -36,6 +37,99 @@ module reactive_3d_mod
   public :: reactive_extrema_3d
 
 contains
+
+  ! Periodic time-centered normal PPM fluxes. These are predictors for a CTU
+  ! update; transverse/corner corrections must be applied by the caller.
+  subroutine compute_reactive_ppm_normal_fluxes_3d(species,state,temperature,spacing,dt, &
+      steepening,flattening,solver,xflux,yflux,zflux,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),dt
+    logical, intent(in) :: steepening,flattening
+    character(len=*), intent(in) :: solver
+    real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: q(:,:,:,:),sound(:,:,:),minus(:,:,:,:),plus(:,:,:,:),tm(:,:,:),tp(:,:,:)
+    real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp) :: stencil(reactive_nprim(size(species)),-3:3)
+    real(dp) :: qm(reactive_nprim(size(species))),qp(reactive_nprim(size(species)))
+    real(dp) :: recovered,speed,swap,flux(reactive_nvar(size(species)))
+    integer :: n(3),nv,axis,i,j,k,offset,index(3),donor(3),left(3),face(3)
+    logical :: valid
+    xflux=0;yflux=0;zflux=0;ok=.false.;nv=reactive_nvar(size(species))
+    n=shape(temperature)
+    if (any(n<2).or.any(shape(state)/=[nv,n])) return
+    if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
+    if (any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)])) return
+    if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
+    if (.not.all(ieee_is_finite(spacing)).or..not.ieee_is_finite(dt)) return
+    if (any(spacing<=0).or.dt<0) return
+    allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    allocate(q(nv,n(1),n(2),n(3)),sound(n(1),n(2),n(3)))
+    allocate(minus(nv,n(1),n(2),n(3)),plus(nv,n(1),n(2),n(3)),tm(n(1),n(2),n(3)),tp(n(1),n(2),n(3)))
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k), &
+        q(:,i,j,k),recovered,sound(i,j,k),valid)
+      if (.not.valid) return
+    end do
+    end do
+    end do
+    do axis=1,3
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        index=[i,j,k]
+        do offset=-3,3
+          donor=index;donor(axis)=modulo(index(axis)-1+offset,n(axis))+1
+          stencil(:,offset)=q(:,donor(1),donor(2),donor(3))
+          swap=stencil(2,offset);stencil(2,offset)=stencil(axis+1,offset);stencil(axis+1,offset)=swap
+        end do
+        if (dt>spacing(axis)/(abs(stencil(2,0))+sound(i,j,k))) return
+        call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(axis), &
+          steepening,flattening,qm,qp,valid)
+        if (.not.valid) return
+        swap=qm(2);qm(2)=qm(axis+1);qm(axis+1)=swap
+        swap=qp(2);qp(2)=qp(axis+1);qp(axis+1)=swap
+        call reactive_primitive_to_conserved(species,qm,minus(:,i,j,k),tm(i,j,k),speed,valid)
+        if (.not.valid) return
+        call reactive_primitive_to_conserved(species,qp,plus(:,i,j,k),tp(i,j,k),speed,valid)
+        if (.not.valid) return
+      end do
+      end do
+      end do
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        index=[i,j,k];left=index;left(axis)=modulo(index(axis)-2,n(axis))+1
+        select case(axis)
+        case(1)
+          call reactive_riemann_flux_x(species,plus(:,left(1),left(2),left(3)),minus(:,i,j,k), &
+            tp(left(1),left(2),left(3)),tm(i,j,k),solver,flux,valid)
+        case(2)
+          call reactive_riemann_flux_y(species,plus(:,left(1),left(2),left(3)),minus(:,i,j,k), &
+            tp(left(1),left(2),left(3)),tm(i,j,k),solver,flux,valid)
+        case(3)
+          call reactive_riemann_flux_z(species,plus(:,left(1),left(2),left(3)),minus(:,i,j,k), &
+            tp(left(1),left(2),left(3)),tm(i,j,k),solver,flux,valid)
+        end select
+        if (.not.valid) return
+        face=index;face(axis)=face(axis)-1
+        select case(axis)
+        case(1);fx(:,face(1),j,k)=flux
+        case(2);fy(:,i,face(2),k)=flux
+        case(3);fz(:,i,j,face(3))=flux
+        end select
+      end do
+      end do
+      end do
+    end do
+    fx(:,n(1),:,:)=fx(:,0,:,:)
+    fy(:,:,n(2),:)=fy(:,:,0,:)
+    fz(:,:,:,n(3))=fz(:,:,:,0)
+    xflux=fx;yflux=fy;zflux=fz
+    ok=.true.
+  end subroutine compute_reactive_ppm_normal_fluxes_3d
 
   subroutine compute_reactive_cfl_timestep_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, cfl, dt, ok)

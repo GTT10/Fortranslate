@@ -825,3 +825,7 @@ add_test(NAME regression_eb_tree_subcycle_auto_3d
     --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/input.nml"
     --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_subcycle_auto_3d" --automatic --subcycling)
 set_tests_properties(regression_eb_tree_subcycle_auto_3d PROPERTIES TIMEOUT 180)
+
+add_executable(test_reactive_ppm_normal_3d unit/test_reactive_ppm_normal_3d.F90)
+target_link_libraries(test_reactive_ppm_normal_3d PRIVATE pelef_core)
+add_test(NAME unit_reactive_ppm_normal_3d COMMAND test_reactive_ppm_normal_3d)
