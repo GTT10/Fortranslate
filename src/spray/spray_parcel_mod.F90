@@ -71,10 +71,67 @@ module spray_parcel_mod
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
   public :: liquid_heat_capacity_at_temperature
+  public :: watson_latent_heat, pelemp_boiling_temperature
   public :: select_spray_liquid
   public :: inject_cone_ports
   public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
 contains
+  pure subroutine watson_latent_heat(latent_reference, reference_temperature, critical_temperature, &
+      temperature, latent, ok)
+    ! PelePhysics MPLiqProps::latent_correlation_i; SI, subcritical states only.
+    ! The reference temperature belongs to the supplied latent heat, not to
+    ! the independently specified normal boiling point.
+    real(dp), intent(in) :: latent_reference,reference_temperature,critical_temperature,temperature
+    real(dp), intent(out) :: latent
+    logical, intent(out) :: ok
+    real(dp) :: candidate
+    latent=0;ok=.false.
+    if (.not.all(ieee_is_finite([latent_reference,reference_temperature,critical_temperature,temperature]))) return
+    if (latent_reference<=0.or.latent_reference>1e10_dp) return
+    if (reference_temperature<1.or.reference_temperature>=critical_temperature) return
+    if (critical_temperature>1e5_dp) return
+    if (temperature<1.or.temperature>=critical_temperature) return
+    candidate=latent_reference*((critical_temperature-reference_temperature)/ &
+      (critical_temperature-temperature))**(-.38_dp)
+    if (.not.ieee_is_finite(candidate)) return
+    if (candidate<=0) return
+    latent=candidate;ok=.true.
+  end subroutine
+
+  pure subroutine pelemp_boiling_temperature(latent_reference, reference_temperature, normal_boiling_temperature, &
+      critical_temperature, molecular_weight, pressure, boiling_temperature, ok)
+    ! PelePhysics SprayData::calcBoilT with MPLiqProps. Normal boiling point is
+    ! at 101325 Pa; molecular weight is kg/kmol and latent heat is J/kg.
+    ! Reject nonphysical inverse temperatures instead of returning a negative
+    ! boiling point. This does not change stored liquid energy or vapor pressure.
+    real(dp), intent(in) :: latent_reference,reference_temperature,normal_boiling_temperature,critical_temperature
+    real(dp), intent(in) :: molecular_weight,pressure
+    real(dp), intent(out) :: boiling_temperature
+    logical, intent(out) :: ok
+    real(dp) :: latent,denominator,numerator,inverse_temperature,candidate
+    logical :: valid
+    boiling_temperature=0;ok=.false.
+    if (.not.all(ieee_is_finite([molecular_weight,pressure]))) return
+    if (molecular_weight<1e-3_dp.or.molecular_weight>1e5_dp) return
+    if (pressure<1e-6_dp.or.pressure>1e12_dp) return
+    call watson_latent_heat(latent_reference,reference_temperature,critical_temperature, &
+      normal_boiling_temperature,latent,valid)
+    if (.not.valid) return
+    denominator=latent*molecular_weight
+    numerator=log(101325.0_dp/pressure)*universal_gas_constant
+    if (denominator<=0) return
+    if (denominator<abs(numerator)/huge(1.0_dp)) return
+    inverse_temperature=1/normal_boiling_temperature+numerator/denominator
+    if (.not.ieee_is_finite(inverse_temperature)) return
+    if (inverse_temperature<=0.or.inverse_temperature>1) return
+    if (inverse_temperature<1/critical_temperature) then
+      candidate=critical_temperature
+    else
+      candidate=1/inverse_temperature
+    end if
+    boiling_temperature=candidate;ok=.true.
+  end subroutine
+
   subroutine initialize_spray_liquid(species, name, density, cp, tref, pref, latent, liquid, ok, &
       vapor_pressure_model, antoine_coefficients, antoine_temperature_range)
     type(nasa7_species), intent(in) :: species(:)

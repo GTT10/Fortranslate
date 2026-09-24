@@ -23,6 +23,12 @@ program test_spray_core
   integer(int64) :: split_watermark
   real(dp) :: port_centers(3,2),port_axes(3,2),port_fractions(2)
   real(dp) :: value,td,omega,wer,initial_mass,z,tkh,wavelength,tau,acceleration
+  real(dp) :: property_input(6)
+  real(dp), parameter :: watson_temperatures(4)=[250.0_dp,300.0_dp,373.15_dp,600.0_dp]
+  real(dp), parameter :: watson_expected(4)=[2631208.1205871335658_dp,2500000.0_dp, &
+    2284912.9098340806911_dp,1169531.6904902340281_dp]
+  real(dp), parameter :: boiling_pressures(4)=[10132.5_dp,101325.0_dp,1013250.0_dp,101325000.0_dp]
+  real(dp), parameter :: boiling_expected(4)=[317.96633475289287337_dp,373.15_dp,451.51051260794673609_dp,647.0_dp]
   real(dp), parameter :: pi=acos(-1.0_dp)
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -682,6 +688,41 @@ program test_spray_core
     call inject_cone_ports(liquid,1e-9_dp,3,11_int64,port_centers,port_axes,port_fractions, &
       10.0_dp,0.0_dp,1e-4_dp,350.0_dp,drops,ok)
     call require(.not.ok,'port fractions must close')
+  case('watson_properties')
+    ! Independent 60-digit Decimal evaluation; Tref deliberately differs from Tb.
+    do n=1,4
+      call watson_latent_heat(2.5e6_dp,300.0_dp,647.0_dp,watson_temperatures(n),value,ok)
+      call require(ok.and.abs(value/watson_expected(n)-1)<2e-14_dp,'Watson reference values')
+      call pelemp_boiling_temperature(2.5e6_dp,300.0_dp,373.15_dp,647.0_dp,18.015_dp, &
+        boiling_pressures(n),value,ok)
+      call require(ok.and.abs(value/boiling_expected(n)-1)<2e-14_dp,'PeleMP pressure-dependent boiling')
+    end do
+    call watson_latent_heat(2.5e6_dp,300.0_dp,647.0_dp,300.0_dp,value,ok)
+    call require(ok.and.value==2.5e6_dp,'Watson reference identity')
+    call watson_latent_heat(2.5e6_dp,300.0_dp,647.0_dp,647.0_dp,value,ok)
+    call require(.not.ok.and.value==0,'critical Watson state rejected')
+    call watson_latent_heat(2.5e6_dp,647.0_dp,647.0_dp,300.0_dp,value,ok)
+    call require(.not.ok.and.value==0,'invalid Watson reference rejected')
+    do n=1,7
+      property_input=[2.5e6_dp,300.0_dp,373.15_dp,647.0_dp,18.015_dp,101325.0_dp]
+      if (n<=6) then
+        property_input(n)=ieee_value(0.0_dp,ieee_quiet_nan)
+      else
+        property_input(1)=0
+      end if
+      value=-1
+      call pelemp_boiling_temperature(property_input(1),property_input(2),property_input(3),property_input(4), &
+        property_input(5),property_input(6),value,ok)
+      call require(.not.ok.and.value==0,'invalid property fails with zero output')
+    end do
+    call pelemp_boiling_temperature(2.5e6_dp,300.0_dp,647.0_dp,647.0_dp,18.015_dp,101325.0_dp,value,ok)
+    call require(.not.ok.and.value==0,'normal boiling point must be subcritical')
+    call pelemp_boiling_temperature(2.5e6_dp,300.0_dp,373.15_dp,647.0_dp,18.015_dp,1e12_dp,value,ok)
+    call require(.not.ok.and.value==0,'nonpositive inverse boiling temperature rejected')
+    call pelemp_boiling_temperature(tiny(1.0_dp),300.0_dp,373.15_dp,647.0_dp,1e-3_dp,1.0_dp,value,ok)
+    call require(.not.ok.and.value==0,'tiny latent denominator fails without overflow')
+    call pelemp_boiling_temperature(2.5e6_dp,300.0_dp,373.15_dp,647.0_dp,18.015_dp,0.0_dp,value,ok)
+    call require(.not.ok.and.value==0,'zero pressure rejected')
   case('surface_cap')
     call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
     call require(.not.ok,'default boiling rejection')
