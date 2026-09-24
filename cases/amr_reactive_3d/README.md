@@ -143,7 +143,7 @@ of the fine level is not implemented.
 The previous fine solution is averaged into the coarse grid before remapping.
 Overlapping fine cells are copied exactly. Newly refined cells use constant
 prolongation for PCM, or conservative component-wise limited-linear prolongation
-for characteristic PLM. Density slopes equal the sum of species slopes;
+for characteristic PLM and serial characteristic PPM. Density slopes equal the sum of species slopes;
 a common per-parent slope factor is reduced until every child is nonnegative
 and thermodynamically admissible. The symmetric child offsets preserve parent
 averages. This transfer is not a new characteristic reconstruction scheme.
@@ -304,3 +304,13 @@ Restart rejects changed or removed targets. MPI restart can change rank count;
 see [MPI evidence](../../docs/validation/pressure-outlet-mpi-application-20260918.md).
 Patch-tree pressure input remains unconnected and is rejected by its readers. See
 [application/restart evidence](../../docs/validation/pressure-outlet-amr-application-20260918.md).
+
+## Serial PPM application
+
+The fixed and selected serial two-level front ends accept
+`reconstruction="characteristic_ppm"`. This connects conservative CTU hydro,
+reaction/transport splitting, dynamic limited-linear remapping and checkpoint
+restart. The stored reconstruction must match on restart. The two-level MPI
+front end still uses PCM/PLM; multi-patch tree MPI PPM is a separate path.
+See [the focused application check](../../docs/validation/ppm-two-level-application-20260925.md)
+for the reacting, transporting physical-boundary/regrid fixture and its limits.
