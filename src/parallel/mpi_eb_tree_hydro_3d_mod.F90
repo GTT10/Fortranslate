@@ -19,7 +19,8 @@ module mpi_eb_tree_hydro_3d_mod
 contains
   ! Common Euler interval, PCM face donors and physical outflow, matching serial.
   subroutine advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,state,temperature, &
-      boundary_change,wall_change,comm,ok)
+      boundary_change,wall_change,comm,ok, &
+      inflow_mach,inflow_temperature,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -29,6 +30,7 @@ contains
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     type(MPI_Comm), intent(in) :: comm
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     type(amr_tree_state_3d) :: snapshot,st,candidate,ct,ghost,gt
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -56,7 +58,8 @@ contains
     snapshot=state;st=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
     if (.not.ready) return
-    call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready)
+    call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return

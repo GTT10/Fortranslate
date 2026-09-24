@@ -113,7 +113,8 @@ contains
   ! Transactional R/2 T/2 H T/2 R/2, common or recursive H/T, owner-local fields.
   subroutine advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
-      state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator,subcycling)
+      state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator,subcycling, &
+      inflow_mach,inflow_temperature,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -126,6 +127,7 @@ contains
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
     type(MPI_Comm), intent(in) :: comm
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     logical, optional, intent(in) :: subcycling
@@ -157,10 +159,12 @@ contains
       if (transport_enabled) then
         if (recursive_steps) then
           call advance_mpi_eb_tree_subcycle_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
-            viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid)
+            viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid, &
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         else
           call advance_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
-            viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid)
+            viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid, &
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         end if
         if (.not.valid) return
         transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)
@@ -168,9 +172,11 @@ contains
       if (half==1) then
         if (recursive_steps) then
           call advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct, &
-            boundary,wall,comm,valid)
+            boundary,wall,comm,valid, &
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         else
-          call advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct,boundary,wall,comm,valid)
+          call advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct,boundary,wall,comm,valid, &
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         end if
         if (.not.valid) return
       else if (chemistry_enabled) then

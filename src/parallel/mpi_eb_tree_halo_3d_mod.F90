@@ -4,6 +4,7 @@ module mpi_eb_tree_halo_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
@@ -14,11 +15,12 @@ module mpi_eb_tree_halo_3d_mod
   private
   public :: fill_mpi_eb_tree_halo_3d
 contains
-  ! Collective PCM/outflow halos, optionally interpolating ancestor time endpoints.
+  ! Collective PCM halos with outflow/Mach inlet and optional ancestor time interpolation.
   ! Only face donors are exchanged; interior, solid faces, edges and corners are zero.
   ! Geometry is replicated. Output fields have spatial lower bounds zero.
   subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
-      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_mach,inflow_temperature,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -26,6 +28,7 @@ contains
     type(amr_tree_state_3d), intent(in) :: state,temperature
     type(amr_tree_state_3d), intent(inout) :: ghost,ghost_temperature
     type(MPI_Comm), intent(in) :: comm
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
     ! One fraction per ancestor depth (root first), length max tree level.
@@ -42,8 +45,30 @@ contains
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
     integer :: i,j,k,donor,source(3),count,q
+    real(dp) :: controls(18),low_controls(18),high_controls(18),inlet(reactive_nvar(size(species)))
+    real(dp) :: inlet_t
+    integer :: inlet_face
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
+    ! Agree on finite inlet controls before any rank starts donor exchange.
+    controls(:6)=-1;controls(7:)=0;valid=.true.
+    if (present(inflow_temperature).or.present(inflow_pressure)) valid=present(inflow_mach)
+    if (present(inflow_mach)) controls(:6)=inflow_mach
+    if (present(inflow_temperature)) controls(7:12)=inflow_temperature
+    if (present(inflow_pressure)) controls(13:18)=inflow_pressure
+    valid=valid.and.all(ieee_is_finite(controls))
+    call agree(valid,ready)
+    if (.not.ready) return
+    valid=all(controls(:6)<=100).and.all(controls(13:)>=0).and.all(controls(13:)<=1e15_dp)
+    valid=valid.and..not.any(controls(13:)>0.and.controls(:6)<0)
+    valid=valid.and..not.any(controls(7:12)<=0.and.controls(:6)>=0)
+    call agree(valid,ready)
+    if (.not.ready) return
+    call MPI_Allreduce(controls,low_controls,18,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high_controls,18,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if (status/=MPI_SUCCESS) return
+    if (any(low_controls/=high_controls)) return
     ! Average only a private owner-local snapshot. This also validates geometry,
     ! topology, owners and both input container shapes collectively.
     snapshot=state;st=temperature
@@ -230,6 +255,27 @@ contains
         valid=.false.;cycle
       end if
       node=destination(1,q);i=destination(2,q);j=destination(3,q);k=destination(4,q)
+      level=tree%nodes(node)%level+1
+      global=origin(:,node)+int([i,j,k]-1,int64);inlet_face=0
+      do axis=1,3
+        if (global(axis)<0) inlet_face=2*axis-1
+        if (global(axis)>=domain(axis,level)) inlet_face=2*axis
+      end do
+      if (inlet_face>0) then
+        if (controls(inlet_face)>=0) then
+          if (controls(12+inlet_face)>0) then
+            call mach_inlet_ghost_3d(species,values(:,q),recovered,inlet_face,controls(6+inlet_face), &
+              controls(inlet_face),inlet,inlet_t,ready,inlet_pressure=controls(12+inlet_face))
+          else
+            call mach_inlet_ghost_3d(species,values(:,q),recovered,inlet_face,controls(6+inlet_face), &
+              controls(inlet_face),inlet,inlet_t,ready)
+          end if
+          if (.not.ready) then
+            valid=.false.;cycle
+          end if
+          values(:,q)=inlet;recovered=inlet_t
+        end if
+      end if
       candidate%fields(node)%values(:,i,j,k)=values(:,q)
       ct%fields(node)%values(1,i,j,k)=recovered
     end do

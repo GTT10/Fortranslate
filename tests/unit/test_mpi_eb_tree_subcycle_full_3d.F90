@@ -1,5 +1,6 @@
 program test_mpi_eb_tree_subcycle_full_3d
   use mpi_f08
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -30,8 +31,16 @@ program test_mpi_eb_tree_subcycle_full_3d
   real(dp) :: residual,theta,speed
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,rank,nranks,status
-  logical :: ok,chemistry_on,transport_on
+  logical :: ok,chemistry_on,transport_on,recursive_steps
+  real(dp) :: mach(6),tin(6),pin(6)
+  character(len=16) :: test_mode
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
+  call get_command_argument(1,test_mode)
+  recursive_steps=trim(test_mode)/='mach-common'
+  mach=-1;tin=400;pin=0
+  if (index(test_mode,'mach')==1) then
+    mach(1)=.2_dp;mach(4)=.1_dp;pin(4)=120000
+  end if
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
@@ -92,13 +101,14 @@ program test_mpi_eb_tree_subcycle_full_3d
   call require(ok,'initial inventory')
   saved=tree
   do integrator_index=1,2
-  do mode=0,3
+  do mode=merge(3,0,any(mach>=0)),3
     if (integrator_index==2.and.mode/=3) cycle
     chemistry_on=btest(mode,0);transport_on=btest(mode,1)
     tree=saved
     call advance_reactive_eb_tree_full_3d(species,reactions,transport,'hllc',1.e-8_dp,chemistry_on, &
       2.e-7_dp,1.e-12_dp,transport_on,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
-      integrators(integrator_index),subcycling=.true.)
+      integrators(integrator_index),subcycling=recursive_steps, &
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
     call require(ok,'combined step')
     call integrate_reactive_eb_tree_3d(tree,after,ok)
     call require(ok,'final inventory')
@@ -140,7 +150,8 @@ contains
     initial=local;it=lt
     call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,'hllc',1.e-8_dp, &
       chemistry_on,2.e-7_dp,1.e-12_dp,transport_on,.true.,.true.,.true.,.true., &
-      local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,integrators(integrator_index),subcycling=.true.)
+      local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,integrators(integrator_index),subcycling=recursive_steps, &
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
     call require(good,'MPI full step')
     do p=1,count
       call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'owner-local full U')
@@ -160,7 +171,8 @@ contains
       local=initial;lt=it;b=17._dp;w=19._dp;chem=23._dp;limiter=29._dp
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,'invalid',1.e-8_dp, &
         .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
-        local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=.true.)
+        local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
+        inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(.not.good,'late hydro rejection after reaction and transport')
       do p=1,count
         if (owners(p)/=rank) cycle
@@ -168,10 +180,33 @@ contains
         call require(all(lt%fields(p)%values==it%fields(p)%values),'full T rollback')
       end do
       call require(all(b==17._dp).and.all(w==19._dp).and.all(chem==23._dp).and.limiter==29._dp,'full ledger rollback')
+      if (any(mach>=0)) then
+        if (rank==0) pin(4)=120001
+        call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,'hllc',1.e-8_dp, &
+          .false.,2.e-7_dp,1.e-12_dp,.false.,.true.,.true.,.true.,.true., &
+          local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+        call require(.not.good,'rank-dependent inlet pressure rejected')
+        pin(4)=120000
+        if (rank==0) tin(1)=ieee_value(0._dp,ieee_quiet_nan)
+        call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,'hllc',1.e-8_dp, &
+          .false.,2.e-7_dp,1.e-12_dp,.false.,.true.,.true.,.true.,.true., &
+          local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+        call require(.not.good,'one-rank invalid inlet collectively rejected')
+        tin=400
+        do p=1,count
+          if (owners(p)/=rank) cycle
+          call require(all(local%fields(p)%values==initial%fields(p)%values),'inlet U rollback')
+          call require(all(lt%fields(p)%values==it%fields(p)%values),'inlet T rollback')
+        end do
+        call require(all(b==17).and.all(w==19).and.all(chem==23).and.limiter==29,'inlet ledger rollback')
+      end if
       enabled=rank==0
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,'hllc',1.e-8_dp, &
         enabled,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
-        local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=.true.)
+        local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
+        inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(.not.good,'different chemistry flags rejected')
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,'hllc',1.e-8_dp, &
         .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
