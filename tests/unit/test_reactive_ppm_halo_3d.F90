@@ -2,7 +2,8 @@ program test_reactive_ppm_halo_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_ppm_flattening_coefficient
+  use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_3d_mod, only: compute_reactive_ppm_ctu_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
@@ -22,6 +23,7 @@ program test_reactive_ppm_halo_3d
   allocate(g(nv,12,12,12),gt(12,12,12),q(nv))
   allocate(hx(nv,0:4,4,4),hy(nv,4,0:4,4),hz(nv,4,4,0:4))
   call check_pressure_work()
+  call check_transverse_flattening()
   do policy=1,2
   solver="hllc"
   if (policy==2) solver="pelec"
@@ -35,6 +37,11 @@ program test_reactive_ppm_halo_3d
       phase=2*acos(-1._dp)*real(i+2*j+3*k,dp)/n
       q=0;q(1)=1+.05_dp*sin(phase);q(2:4)=[20._dp,10._dp,-5._dp]*(1+.02_dp*sin(phase))
       q(5)=500000*(1+.01_dp*cos(phase));q(6)=.05_dp+.01_dp*cos(phase)
+      if (policy==2) then
+        ! Transverse compression must flatten normal pencils too.
+        if (j>n/2) q(5)=2*q(5)
+        q(3)=merge(40._dp,-40._dp,j<=n/2)
+      end if
       q(9)=.1_dp;q(nv)=1-q(6)-q(9)
       call reactive_primitive_to_conserved(species,q,u(:,i,j,k),t(i,j,k),speed,ok)
       call require(ok,'initial state')
@@ -119,6 +126,34 @@ program test_reactive_ppm_halo_3d
   call require(all(hx(1,:,:,:)==0).and.all(hy(1,:,:,:)==0).and.all(hz(1,:,:,:)==0),'impermeable wall flux')
   print *, 'test_reactive_ppm_halo_3d: PASS' 
 contains
+  subroutine check_transverse_flattening()
+    real(dp) :: stencil(nv,-3:3),qm(nv),qp(nv),dummy(nv),temp,c,flat
+    real(dp) :: pressure(-3:3),velocity(-3:3)
+    integer :: offset
+    logical :: valid
+    do offset=-3,3
+      stencil(:,offset)=0
+      stencil(1,offset)=1+.02_dp*offset
+      stencil(2,offset)=20
+      stencil(5,offset)=500000
+      stencil(nv,offset)=1
+      pressure(offset)=merge(500000._dp,1000000._dp,offset<=0)
+      velocity(offset)=merge(40._dp,-40._dp,offset<=0)
+    end do
+    call reactive_primitive_to_conserved(species,stencil(:,0),dummy,temp,c,valid)
+    call require(valid,'flattening center EOS')
+    flat=reactive_ppm_flattening_coefficient(pressure,velocity)
+    call require(flat==0,'transverse compressive shock detected')
+    call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,c,1e-5_dp, &
+      .false.,.true.,qm,qp,valid)
+    call require(valid.and.any(qm/=stencil(:,0)).and.any(qp/=stencil(:,0)),'unflattened normal gradient')
+    call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,c,1e-5_dp, &
+      .false.,.true.,qm,qp,valid,flattening_override=flat)
+    call require(valid.and.all(qm==stencil(:,0)).and.all(qp==stencil(:,0)),'transverse shock flattens normal states')
+    call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,c,1e-5_dp, &
+      .false.,.true.,qm,qp,valid,flattening_override=-1._dp)
+    call require(.not.valid.and.all(qm==0).and.all(qp==0),'invalid flattening rollback')
+  end subroutine
   subroutine check_pressure_work()
     real(dp) :: normal(7),delta(7),primitive(7),e
     ! Corrected rho=2, momentum=(2,4,0), rhoE=30; therefore rhoe=25.

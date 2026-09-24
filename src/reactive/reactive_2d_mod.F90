@@ -212,13 +212,14 @@ contains
 
   subroutine reconstruct_reactive_characteristic_ppm_cell_2d( &
       species, stencil, sound_speed, dtdn, use_contact_steepening, &
-      use_shock_flattening, minus_state, plus_state, ok)
+      use_shock_flattening, minus_state, plus_state, ok, flattening_override)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: stencil(:, -3:)
     real(dp), intent(in) :: sound_speed, dtdn
     logical, intent(in) :: use_contact_steepening, use_shock_flattening
     real(dp), intent(out) :: minus_state(:), plus_state(:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: flattening_override
 
     real(dp), allocatable :: edge_minus(:), edge_plus(:)
     real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
@@ -250,6 +251,12 @@ contains
       end do
       flattening = reactive_ppm_flattening_coefficient( &
         pressure_wide, velocity_wide)
+    end if
+
+    if (present(flattening_override)) then
+      if (.not.ieee_is_finite(flattening_override)) return
+      if (flattening_override<0.or.flattening_override>1) return
+      flattening=flattening_override
     end if
 
     do component = 1, nprimitive

@@ -10,7 +10,8 @@ module reactive_3d_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_primitive_to_conserved, reactive_conserved_to_primitive, &
-    reactive_riemann_flux_x, reactive_pelec_primitive_flux_x, characteristic_limited_slope
+    reactive_riemann_flux_x, reactive_pelec_primitive_flux_x, characteristic_limited_slope, &
+    reactive_ppm_flattening_coefficient
   use reactive_2d_mod, only: &
     reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d, &
     apply_reactive_transverse_correction_2d
@@ -324,6 +325,8 @@ contains
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
     logical, optional, intent(in) :: pressure_tracing
+    real(dp), allocatable :: cell_flat(:,:,:)
+    real(dp) :: pressure_pencil(-3:3),velocity_pencil(-3:3)
     logical :: trace_pressure
     real(dp), allocatable :: pnminus(:,:,:,:),pnplus(:,:,:,:),normal_face(:,:,:,:,:),corner_face(:,:,:,:,:,:)
     real(dp), allocatable :: face_result(:,:,:,:)
@@ -374,6 +377,26 @@ contains
       allocate(normal_face(2,0:n(1)+1,0:n(2)+1,0:n(3)+1,3), &
         corner_face(2,0:n(1)+1,0:n(2)+1,0:n(3)+1,3,3),face_result(2,0:n(1)+1,0:n(2)+1,0:n(3)+1))
       normal_face=0;corner_face=0
+      allocate(cell_flat(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      cell_flat=1
+      ! PeleC trace_ppm uses the minimum flattening over all spatial axes.
+      if (flattening) then
+        do k=0,n(3)+1
+        do j=0,n(2)+1
+        do i=0,n(1)+1
+          do b=1,3
+            do offset=-3,3
+              donor=[i,j,k];donor(b)=donor(b)+offset
+              pressure_pencil(offset)=q(5,donor(1),donor(2),donor(3))
+              velocity_pencil(offset)=q(b+1,donor(1),donor(2),donor(3))
+            end do
+            cell_flat(i,j,k)=min(cell_flat(i,j,k), &
+              reactive_ppm_flattening_coefficient(pressure_pencil,velocity_pencil))
+          end do
+        end do
+        end do
+        end do
+      end if
     end if
     normal=0;corner=0;final=0;zero=0;theta=1
     do a=1,3
@@ -387,8 +410,13 @@ contains
           swap=stencil(2,offset);stencil(2,offset)=stencil(a+1,offset);stencil(a+1,offset)=swap
         end do
         if (dt>spacing(a)/(abs(stencil(2,0))+sound(i,j,k))) return
-        call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(a), &
-          steepening,flattening,qm,qp,valid)
+        if (trace_pressure) then
+          call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(a), &
+            steepening,flattening,qm,qp,valid,flattening_override=cell_flat(i,j,k))
+        else
+          call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(a), &
+            steepening,flattening,qm,qp,valid)
+        end if
         if (.not.valid) return
         swap=qm(2);qm(2)=qm(a+1);qm(a+1)=swap
         swap=qp(2);qp(2)=qp(a+1);qp(a+1)=swap
