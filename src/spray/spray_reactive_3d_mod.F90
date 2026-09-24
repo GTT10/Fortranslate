@@ -190,9 +190,6 @@ contains
       message='Fixed LES CI requires a static model';return
     end if
     if (selected_les=='dynamic') then
-      if (any(faces/='periodic')) then
-        message='Dynamic LES requires periodic boundaries';return
-      end if
       if (present(les_test_filter)) selected_filter=les_test_filter
       if (present(les_test_ratio)) test_ratio=les_test_ratio
       if (present(les_grid_ratio)) grid_ratio=les_grid_ratio
@@ -325,7 +322,9 @@ contains
         ! cs=0 retains the existing disabled convention. A positive cs enables
         ! dynamic coefficients; its magnitude and fixed prt/sct do not set them.
         if (cs>0) call advance_dynamic_les_ssprk2_3d(species,candidate,temp,spacing,selected_filter, &
-          test_ratio,.5_dp*dt,local_ok,grid_ratio,harmonic)
+          test_ratio,.5_dp*dt,local_ok,grid_ratio,harmonic,boundary_faces=faces,boundary_change=exchange, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
+          wall_velocity=wall_velocity,outlet_pressure=outlet_pressure)
       else
         call advance_les_ssprk2_3d(species,candidate,temp,spacing,cs,prt,sct,.5_dp*dt,local_ok,faces,exchange, &
           inflow_state,inflow_temperature,wall_temperature,wall_velocity,model=selected_les,ci=isotropic, &

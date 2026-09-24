@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
+    parser.add_argument('--dynamic-physical', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -36,19 +37,22 @@ def main():
         template = template.replace('&spray', '&spray\n les_harmonic_mean=.true.,')
     if args.les_model:
         template = template.replace('&spray', f"&spray\n les_model='{args.les_model}',")
+    if args.dynamic_physical and args.les_model != 'dynamic':
+        parser.error('--dynamic-physical requires --les-model dynamic')
     if args.les_model == 'dynamic':
-        template = template.replace("'slip_wall'", "'periodic'")
+        if not args.dynamic_physical:
+            template = template.replace("'slip_wall'", "'periodic'")
         template = template.replace('&spray', "&spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
     if args.acceleration:
         template = template.replace('&spray', f'&spray\n acceleration(3)={args.acceleration},')
     if args.sgs:
         template = template.replace('&spray', '&spray\n shear_velocity=10,')
     kinds = ('thermal_wall',) if args.thermal_wall else (('inflow',) if args.inflow else ('wall', 'outflow'))
-    if args.les_model == 'dynamic':
+    if args.les_model == 'dynamic' and not args.dynamic_physical:
         kinds = ('periodic',)
     if args.pressure_outlet:
-        if args.les_model == 'dynamic' or args.inflow or args.thermal_wall:
-            parser.error('--pressure-outlet requires the static outflow fixture')
+        if (args.les_model == 'dynamic' and not args.dynamic_physical) or args.inflow or args.thermal_wall:
+            parser.error('--pressure-outlet requires a physical outflow fixture')
         kinds = ('outflow',)
         template = template.replace('&spray', '&spray\n outlet_pressure(6)=100000,')
         template = template.replace('transport_enabled=.false.', 'transport_enabled=.true.')
@@ -176,8 +180,10 @@ def main():
                 ('removed_ratio', 'les_test_ratio=4,', '', 'incompatible spray checkpoint'),
                 ('removed_grid', 'les_grid_ratio=2,', '', 'incompatible spray checkpoint'),
                 ('bad_filter', 'les_test_ratio=4', 'les_test_ratio=3', 'Invalid dynamic LES filter'),
-                ('boundary', "'periodic'", "'outflow'", 'Dynamic LES requires periodic boundaries'),
+                ('boundary', "'periodic'", "'outflow'", 'incompatible spray checkpoint'),
             ]
+            if args.dynamic_physical:
+                guards = [guard for guard in guards if guard[0] != 'boundary']
             if args.les_harmonic:
                 guards += [
                     ('harmonic', 'les_harmonic_mean=.true.', 'les_harmonic_mean=.false.', 'incompatible spray checkpoint'),

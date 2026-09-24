@@ -379,7 +379,6 @@ contains
     if (les_ci/=0.and.les_model=='dynamic') call fail('Fixed LES CI requires a static model')
     if (les_harmonic_mean.and.les_model/='dynamic') call fail('Harmonic LES interpolation requires dynamic model')
     if (les_model=='dynamic') then
-      if (any(boundary_faces/='periodic')) call fail('Dynamic LES requires periodic boundaries')
       call les_filter_weights(les_test_filter,les_test_ratio,les_weights,ok)
       if (.not.ok.or.les_grid_ratio<1.or.les_grid_ratio>64) call fail('Invalid dynamic LES filter')
     else
