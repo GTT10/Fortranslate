@@ -296,8 +296,10 @@ them rejects restart. Static/default context serialization is preserved.
 The same particle/gas transaction, two LES half steps and retry logic apply.
 The diffusion estimate includes padded donor cells and can be conservative.
 Fixed/selected builds pass. Focused fixed-mechanism MPI parity and 2-to-4-rank
-restart checks now pass; selected execution and physical validation remain
-outside this evidence. See [runtime checks](../../docs/validation/mpi-dynamic-amr-runtime-20260925.md).
+restart checks pass ([runtime checks](../../docs/validation/mpi-dynamic-amr-runtime-20260925.md)).
+Dynamic LES with adaptive regridding/rebalancing and selected H2O2 continuation
+also pass focused checks ([combined evidence](../../docs/validation/les-dynamic-adaptive-20260925.md)).
+Detailed-fuel and physical validation remain outside this evidence.
 
 ### Uniform acceleration
 

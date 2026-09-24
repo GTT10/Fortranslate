@@ -3224,9 +3224,12 @@ before particle work, and all state still publishes only on full success.
 The application selects it in `amr_spray_les` and reads filter settings from a
 separate `amr_spray_dynamic` group, preserving older static context serialization.
 Fixed-mechanism continuous/restarted MPI application checks now pass, including
-2-to-4-rank continuation and rejection of changed filter settings. Selected
-execution and physical validation remain outside this evidence
+2-to-4-rank continuation and rejection of changed filter settings. Physical
+validation remains outside this evidence
 ([runtime record](validation/mpi-dynamic-amr-runtime-20260925.md)).
+Adaptive grid changes/rebalancing and selected H2O2 continuation also pass
+[focused checks](validation/les-dynamic-adaptive-20260925.md); this does not
+qualify arbitrary selected mechanisms or detailed-fuel ignition.
 
 ### MPI AMR uniform acceleration
 
