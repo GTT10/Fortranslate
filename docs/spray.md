@@ -3224,8 +3224,11 @@ see [open-boundary checks](validation/les-dynamic-open-20260925.md).
 The regular-grid `fill_reactive_boundary_ghosts_3d` helper now accepts 1..128
 layers with repeated moving-wall reflection; default width remains two
 ([donor checks](validation/regular-wide-boundary-donors-20260925.md)).
-Connecting these donors to regular-grid Dynamic physical boundaries remains
-separate from the already-supported AMR path.
+`compute_dynamic_les_boundary_rhs_3d` and `advance_dynamic_les_ssprk2_3d` now
+connect these donors to regular-grid Dynamic physical fluxes and boundary budgets
+([operator checks](validation/regular-dynamic-boundaries-20260925.md)).
+Regular spray application dispatch and regular MPI physical boundaries remain
+separate work; the AMR path already supports them.
 
 The serial `advance_amr_patch_tree_les_level_3d` API advances one depth using
 temporal coarse donors and returns SSPRK2 time-integrated faces for later
