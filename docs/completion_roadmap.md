@@ -138,8 +138,10 @@ AMR tree hydro now connects PPM and reflux
 stepping also supports PPM with integrated fluxes and 1/2/6-step synchronization
 ([checks](validation/ppm-amr-recursive-20260925.md)). MPI common-step PPM now
 matches serial fields and diagnostics, including empty ranks
-([checks](validation/ppm-mpi-amr-common-20260925.md)). Recursive MPI stepping
-and AMR application selection remain implementation work; the existing
+([checks](validation/ppm-mpi-amr-common-20260925.md)). Recursive MPI PPM now
+also matches serial fields, diagnostics and 1/2/6 step counts
+([checks](validation/ppm-mpi-amr-recursive-20260925.md)). AMR application
+selection and coupled qualification remain implementation work; the existing
 PCM/PLM solver remains available.
 
 | Order | Work unit | Measurable exit gate |
