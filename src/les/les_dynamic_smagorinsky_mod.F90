@@ -1,6 +1,8 @@
 module les_dynamic_smagorinsky_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
+    fill_pressure_outlet_ghosts_3d,valid_reactive_boundaries_3d
   use les_smagorinsky_3d_mod, only: smagorinsky_stress
   use les_filter_3d_mod, only: les_filter_weights,filter_les_field_3d
   use nasa7_thermo_mod, only: nasa7_species
@@ -11,6 +13,7 @@ module les_dynamic_smagorinsky_mod
   private
   public :: les_face_mean
   public :: advance_dynamic_les_ssprk2_3d
+  public :: compute_dynamic_les_boundary_rhs_3d
   public :: compute_dynamic_les_rhs_3d
   public :: compute_dynamic_les_rhs_ghosted_3d
   public :: compute_dynamic_les_coefficients_3d
@@ -67,6 +70,88 @@ contains
     ok=.true.
   end subroutine
 
+  ! Regular-grid physical donors and outward boundary budget, published atomically.
+  subroutine compute_dynamic_les_boundary_rhs_3d(species,state,temperature,spacing,test_model,test_ratio, &
+      rhs,maximum_diffusivity,ok,grid_ratio,harmonic_mean,boundary_faces,boundary_rate, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
+    character(len=*), intent(in) :: test_model
+    integer, intent(in) :: test_ratio
+    real(dp), intent(inout) :: rhs(:,:,:,:),maximum_diffusivity
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: boundary_rate(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), allocatable :: candidate(:,:,:,:),ghost(:,:,:,:),gt(:,:,:),weights(:)
+    real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp) :: diffusion,rate(size(state,1))
+    character(len=32) :: faces(6)
+    integer :: n(3),nv,width,i,j,k
+    logical :: valid
+    ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species));faces='periodic';rate=0
+    if (present(boundary_faces)) faces=boundary_faces
+    if (.not.valid_reactive_boundaries_3d(faces)) return
+    if (any(n<1).or.any(shape(state)/=[nv,n]).or.any(shape(rhs)/=shape(state))) return
+    if (present(boundary_rate)) then
+      if (size(boundary_rate)/=nv) return
+    end if
+    if (present(outlet_pressure)) then
+      if (.not.all(ieee_is_finite(outlet_pressure))) return
+      if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
+      if (any(outlet_pressure>0.and.faces/='outflow')) return
+    end if
+    allocate(candidate,mold=rhs)
+    if (all(faces=='periodic')) then
+      call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,candidate,valid, &
+        grid_ratio,maximum_diffusivity=diffusion,harmonic_mean=harmonic_mean)
+    else
+      call les_filter_weights(test_model,test_ratio,weights,valid)
+      if (.not.valid) return
+      width=(size(weights)-1)/2+5
+      if (width>128.or.any(n>huge(1)-2*width)) return
+      allocate(ghost(nv,n(1)+2*width,n(2)+2*width,n(3)+2*width))
+      allocate(gt(n(1)+2*width,n(2)+2*width,n(3)+2*width))
+      allocate(fx(nv,n(1)+1,n(2),n(3)),fy(nv,n(1),n(2)+1,n(3)),fz(nv,n(1),n(2),n(3)+1))
+      call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,viscous_wall=.true., &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity,ghost_width=width)
+      if (.not.valid) return
+      call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,valid,ghost_width=width)
+      if (.not.valid) return
+      call compute_dynamic_les_rhs_ghosted_3d(species,ghost,gt,spacing,test_model,test_ratio,width, &
+        candidate,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusion,faces,wall_temperature)
+      if (.not.valid) return
+      if (faces(1)/='periodic') then
+        do k=1,n(3)
+          do j=1,n(2)
+            rate=rate+(fx(:,1,j,k)-fx(:,n(1)+1,j,k))*spacing(2)*spacing(3)
+          end do
+        end do
+      end if
+      if (faces(3)/='periodic') then
+        do k=1,n(3)
+          do i=1,n(1)
+            rate=rate+(fy(:,i,1,k)-fy(:,i,n(2)+1,k))*spacing(1)*spacing(3)
+          end do
+        end do
+      end if
+      if (faces(5)/='periodic') then
+        do j=1,n(2)
+          do i=1,n(1)
+            rate=rate+(fz(:,i,j,1)-fz(:,i,j,n(3)+1))*spacing(1)*spacing(2)
+          end do
+        end do
+      end if
+    end if
+    if (.not.valid.or..not.all(ieee_is_finite(rate))) return
+    rhs=candidate;maximum_diffusivity=diffusion
+    if (present(boundary_rate)) boundary_rate=rate
+    ok=.true.
+  end subroutine
+
   pure elemental real(dp) function les_face_mean(a,b,harmonic) result(value)
     real(dp), intent(in) :: a,b
     logical, intent(in) :: harmonic
@@ -80,7 +165,8 @@ contains
     value=sign(small/(.5_dp+.5_dp*(small/large)),a)
   end function
 
-  subroutine advance_dynamic_les_ssprk2_3d(species,state,temperature,spacing,test_model,test_ratio,dt,ok,grid_ratio,harmonic_mean)
+  subroutine advance_dynamic_les_ssprk2_3d(species,state,temperature,spacing,test_model,test_ratio,dt,ok,grid_ratio,harmonic_mean, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
@@ -88,35 +174,46 @@ contains
     integer, intent(in) :: test_ratio
     integer, optional, intent(in) :: grid_ratio
     logical, optional, intent(in) :: harmonic_mean
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
     logical, intent(out) :: ok
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
-    real(dp) :: diffusion
+    real(dp) :: diffusion,rate0(size(state,1)),rate1(size(state,1))
     integer :: n(3)
     logical :: local_ok
     ok=.false.;n=shape(temperature)
     if (.not.ieee_is_finite(dt)) return
     if (dt<0.or.dt>1e6_dp) return
+    if (present(boundary_change)) then
+      if (size(boundary_change)/=size(state,1)) return
+    end if
     allocate(rhs,mold=state);allocate(stage,mold=state);allocate(candidate,mold=state)
     allocate(t1,mold=temperature);allocate(t2,mold=temperature)
-    call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,local_ok, &
-      grid_ratio,diffusion, &
-      harmonic_mean=harmonic_mean)
+    call compute_dynamic_les_boundary_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs, &
+      diffusion,local_ok,grid_ratio,harmonic_mean,boundary_faces,rate0, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     if (.not.local_ok) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     if (dt==0) then
+      if (present(boundary_change)) boundary_change=0
       ok=.true.;return
     end if
     stage=state+dt*rhs
     call recover_reactive_temperatures_3d(species,stage,temperature,n(1),n(2),n(3),t1,local_ok)
     if (.not.local_ok) return
-    call compute_dynamic_les_rhs_3d(species,stage,t1,spacing,test_model,test_ratio,rhs,local_ok,grid_ratio,diffusion, &
-      harmonic_mean=harmonic_mean)
+    call compute_dynamic_les_boundary_rhs_3d(species,stage,t1,spacing,test_model,test_ratio,rhs, &
+      diffusion,local_ok,grid_ratio,harmonic_mean,boundary_faces,rate1, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     if (.not.local_ok) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     candidate=.5_dp*state+.5_dp*stage+.5_dp*dt*rhs
     call recover_reactive_temperatures_3d(species,candidate,t1,n(1),n(2),n(3),t2,local_ok)
     if (.not.local_ok) return
-    state=candidate;temperature=t2;ok=.true.
+    state=candidate;temperature=t2
+    if (present(boundary_change)) boundary_change=.5_dp*dt*(rate0+rate1)
+    ok=.true.
   end subroutine
 
   ! Periodic dynamic SGS flux divergence, arithmetic cell-to-face interpolation.
