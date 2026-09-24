@@ -600,7 +600,7 @@ contains
           les_cs,les_prt,les_sct,les_dt,diffusivity,comm,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci, &
           outlet_pressure=config%outlet_pressure,test_model=dynamic_filter,test_ratio=dynamic_ratio, &
-          grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic)
+          grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic,subcycle=subcycling)
         if (.not.ok) call fatal('LES timestep failed')
         dt=min(dt,les_dt)
       end if

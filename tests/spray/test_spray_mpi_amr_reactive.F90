@@ -195,6 +195,13 @@ program test_spray_mpi_amr_reactive
     call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(q==6,'split doubles three parcels')
   end if
+  if (argument=='les') then
+    local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+    faces='periodic';recursive=rank==nranks-1;chemistry=.false.;last_id=3
+    call coupled()
+    call require(.not.ok,'rank-disagreeing subcycling rejects before LES dispatch')
+    call unchanged()
+  end if
   if (argument=='force') then
     allocate(source(nv));source=123
     local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass

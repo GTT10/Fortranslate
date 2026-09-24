@@ -1,6 +1,7 @@
 module spray_mpi_amr_reactive_mod
   use les_filter_3d_mod, only: les_filter_weights
   use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d
+  use les_mpi_amr_subcycle_mod, only: advance_mpi_amr_tree_subcycle_les_3d
   use spray_mpi_mod, only: split_mpi_spray_parcels
   use mpi_f08
   use precision_mod, only: dp
@@ -91,7 +92,8 @@ contains
     real(dp) :: first_boundary(reactive_nvar(size(species))),second_boundary(reactive_nvar(size(species)))
     integer(int64) :: candidate_id
     integer :: first_steps,second_steps,ierr
-    logical :: valid,agreed
+    logical :: valid,agreed,recursive
+    integer :: recursive_flag,recursive_low,recursive_high
     character(len=32) :: faces(6)
     ok=.false.;particle_steps=0;film_first=0;film_second=0;film_ledger=0
     if (present(split_created)) split_created=0
@@ -183,6 +185,13 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.low_flag/=high_flag) return
+    recursive=.false.
+    if (present(subcycling)) recursive=subcycling
+    recursive_flag=merge(1,0,recursive)
+    call MPI_Allreduce(recursive_flag,recursive_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if (ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(recursive_flag,recursive_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if (ierr/=MPI_SUCCESS.or.recursive_low/=recursive_high) return
     gas=state;temp=temperature;drops=parcels;masses=component_mass
     if (present(wall_films)) then
       patches=wall_films;patch_mass=film_mass
@@ -321,13 +330,23 @@ contains
       valid=all(ieee_is_finite(local))
     end subroutine
     subroutine les_half_step()
+      real(dp) :: maximum_diffusivity
       valid=.true.
       if (sgs(1)==0.and.sgs(4)==0.and.model/='dynamic') return
-      call advance_mpi_amr_tree_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
-        sgs(1),sgs(2),sgs(3),les_boundary,les_correction,comm,valid, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
-        wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure, &
-        test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean)
+      if (recursive) then
+        maximum_diffusivity=0
+        call advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
+          sgs(1),sgs(2),sgs(3),les_boundary,les_correction,maximum_diffusivity,comm,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+          wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure, &
+          test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean)
+      else
+        call advance_mpi_amr_tree_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
+          sgs(1),sgs(2),sgs(3),les_boundary,les_correction,comm,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+          wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure, &
+          test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean)
+      end if
       if (.not.valid) return
       les_ledger=les_ledger+les_boundary;les_max=max(les_max,les_correction)
     end subroutine

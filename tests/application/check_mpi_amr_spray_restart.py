@@ -20,6 +20,7 @@ p.add_argument('--physical', action='store_true')
 p.add_argument('--inflow', action='store_true')
 p.add_argument('--films', action='store_true')
 p.add_argument('--les', action='store_true')
+p.add_argument('--subcycling', action='store_true')
 p.add_argument('--dynamic', action='store_true')
 p.add_argument('--dynamic-open', action='store_true')
 p.add_argument('--dynamic-walls', action='store_true')
@@ -44,6 +45,10 @@ if a.selected:
 spray = (case / 'spray.nml').read_text().replace('\n/\n',
     f"\n regrid_time=1.e-8,regrid_topology='{case / 'root.dat'}'\n"
     ' injection_events=3,injection_times=0.,1.e-8,1.5e-8,event_parcels=4,4,4,event_mass=3.e-11,3.e-11,4.e-11\n/\n')
+
+if a.subcycling:
+    assert spray.count('subcycling=.false.') == 1
+    spray = spray.replace('subcycling=.false.', 'subcycling=.true.')
 
 if a.multiport:
     spray = spray.replace('injection_events=3,injection_times=0.,1.e-8,1.5e-8,event_parcels=4,4,4,event_mass=3.e-11,3.e-11,4.e-11',
@@ -176,7 +181,7 @@ if a.rate_files:
     spray += "\n&amr_spray_rate_files profile_files='rate1.dat','rate2.dat' /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False):
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
@@ -187,6 +192,8 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
     if changed:
         local_spray = (spray.replace('port_temperatures=350.', 'port_temperatures=351.') if a.multiport
                        else spray.replace('speed=20.', 'speed=21.'))
+    if changed_subcycling:
+        local_spray = local_spray.replace('subcycling=.true.', 'subcycling=.false.')
     if changed_les:
         local_spray = local_spray.replace('les_ci=.1', 'les_ci=.2')
         if a.dynamic:
@@ -347,6 +354,8 @@ if a.force:
     run('changed_force', 2, f"restart_file='{checkpoint}'", good=False, changed_force=True)
 if a.pressure:
     run('changed_pressure', 2, f"restart_file='{checkpoint}'", good=False, changed_pressure=True)
+if a.subcycling:
+    run('changed_subcycling', 2, f"restart_file='{checkpoint}'", good=False, changed_subcycling=True)
 if a.les:
     run('changed_les', 2, f"restart_file='{checkpoint}'", good=False, changed_les=True)
 run('changed', 2, f"restart_file='{checkpoint}'", good=False, changed=True)
