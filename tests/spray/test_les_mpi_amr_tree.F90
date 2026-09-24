@@ -18,7 +18,7 @@ program test_les_mpi_amr_tree
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),serial(12,4,4,4),st(4,4,4),q(12),sound
   real(dp) :: spacing(3),dt,budget(12),serial_budget(12),largest,initial(12),final(12),wall_t(6),wall_v(3,6),outlet(6)
   real(dp) :: chosen,diffusivity,reference_diff,reference_rhs(12,4,4,4),half_dt,half_diff
-  real(dp) :: inlet(12,6),inlet_t(6)
+  real(dp) :: inlet(12,6),inlet_t(6),mach(6),pin(6)
   integer :: i,j,k,mode,geometry,node,m
   character(len=32) :: faces(6),model
   type(amr_tree_state_3d) :: local,local_t,before,before_t
@@ -67,9 +67,9 @@ program test_les_mpi_amr_tree
       case(4)
         model='dynamic'
       end select
-      do mode=1,4
+      do mode=1,5
         if(mode==4.and.m/=4) cycle
-        faces='periodic';wall_v=0;outlet=0
+        faces='periodic';wall_v=0;outlet=0;mach=-1;pin=0
         if (mode>=2) faces='outflow'
         if (mode==3) then
           faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
@@ -83,6 +83,9 @@ program test_les_mpi_amr_tree
           faces(1:2)='slip_wall';faces(3:4)='no_slip_wall';faces(5:6)='isothermal_wall'
           wall_v(1,3:6)=2;outlet=0
         end if
+        if(mode==5) then
+          faces(1)='inflow';mach(1)=.2_dp;pin(1)=120000
+        end if
         call prolong_amr_patch_tree_3d(tree,root,state,ok)
         call require(ok,'state initialization')
         call prolong_amr_patch_tree_3d(tree,rt,temperature,ok)
@@ -92,7 +95,8 @@ program test_les_mpi_amr_tree
         saved=state;saved_t=temperature
         call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,dt,faces, &
           .17_dp,.7_dp,.7_dp,budget,largest,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t, &
+          inflow_mach=mach,inflow_pressure=pin)
         call require(ok.and.largest>=0,'AMR LES step')
         if(m==4.and.mode>1) call require(maxval(abs(budget))>1e-25_dp,'dynamic open boundary transfers inventory')
         call require(any(state%fields(1)%values/=saved%fields(1)%values),'AMR LES evolves')
@@ -117,11 +121,13 @@ program test_les_mpi_amr_tree
           end do
           call compute_amr_patch_tree_les_timestep_3d(tree,species,saved,saved_t,spacing,.05_dp,faces, &
             .17_dp,.7_dp,.7_dp,chosen,diffusivity,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
+            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t, &
+          inflow_mach=mach,inflow_pressure=pin)
           call require(ok,'serial timestep oracle')
           call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,.05_dp,faces, &
             .17_dp,.7_dp,.7_dp,half_dt,half_diff,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
+            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t, &
+          inflow_mach=mach,inflow_pressure=pin)
           call require(ok,'MPI timestep')
           call require(abs(half_dt-chosen)<=2e-12_dp*chosen,'MPI timestep parity')
           call require(abs(half_diff-diffusivity)<=2e-12_dp*diffusivity,'MPI diffusivity parity')
@@ -147,7 +153,8 @@ program test_les_mpi_amr_tree
           call require(.not.ok.and.half_dt==-7.and.half_diff==-9,'CFL disagreement preserves outputs')
           call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,dt,faces, &
             .17_dp,.7_dp,.7_dp,mpi_budget,mpi_largest,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
+            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t, &
+          inflow_mach=mach,inflow_pressure=pin)
           call require(ok,'MPI AMR LES')
           do node=1,size(tree%nodes)
             if (owners(node)/=rank) then
@@ -176,14 +183,16 @@ program test_les_mpi_amr_tree
           call check_rollback()
           call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,1._dp,faces, &
             .17_dp,.7_dp,.7_dp,mpi_budget,mpi_largest,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
+            coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t, &
+          inflow_mach=mach,inflow_pressure=pin)
           call require(.not.ok,'MPI interval rejected')
           call check_rollback()
         end do
         saved=state;saved_t=temperature;budget=-17;largest=-19
         call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,1._dp,faces, &
           .17_dp,.7_dp,.7_dp,budget,largest,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
-          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t)
+          coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp,inflow_state=inlet,inflow_temperature=inlet_t, &
+          inflow_mach=mach,inflow_pressure=pin)
         call require(.not.ok,'excessive interval rejected')
         do node=1,size(tree%nodes)
           call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')

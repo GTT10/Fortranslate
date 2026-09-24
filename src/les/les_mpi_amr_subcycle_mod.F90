@@ -20,7 +20,7 @@ contains
   subroutine advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,state,temperature,spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,maximum_diffusivity,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure, &
-      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -34,7 +34,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction,maximum_diffusivity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model,test_model
     integer, optional, intent(in) :: test_ratio,grid_ratio
@@ -120,7 +120,7 @@ contains
         faces,cs,prt,sct,total,local_diffusivity,comm,good, &
         old_endpoint,new_endpoint,fraction0,fraction1,inflow_state,inflow_temperature, &
         wall_temperature,wall_velocity,coarse_limiter,outlet_pressure, &
-        model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+        model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
       if (.not.good) return
       diffusivity=max(diffusivity,local_diffusivity)
       executed(depth+1)=executed(depth+1)+1

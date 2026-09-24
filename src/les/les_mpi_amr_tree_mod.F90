@@ -25,7 +25,7 @@ contains
   subroutine compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean,subcycle)
+      test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -48,8 +48,8 @@ contains
     real(dp), intent(inout) :: dt,maximum_diffusivity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
-    real(dp) :: pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp) :: pressure(6),mach(6),tin(6),pin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,temps,packed,ghosts
     real(dp), allocatable :: h(:,:),inlet(:,:)
@@ -58,7 +58,7 @@ contains
     integer :: n(3),axis,level
     character(len=32) :: local_faces(6)
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(18),low(18),high(18)
+    real(dp) :: controls(36),low(36),high(36)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
     integer :: flags(3),min_flags(3),max_flags(3)
@@ -98,8 +98,26 @@ contains
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
+    mach=-1;pin=0;tin=0
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) pin=inflow_pressure
+    valid=.true.
+    if(present(inflow_temperature)) then
+      valid=size(inflow_temperature)==6
+      if(valid) then
+        where(mach>=0) tin=inflow_temperature
+      end if
+    end if
+    valid=valid.and.(.not.present(inflow_pressure).or.present(inflow_mach))
+    valid=valid.and.all(ieee_is_finite(mach)).and.all(mach<=100)
+    valid=valid.and..not.any(mach>=0.and.faces/='inflow')
+    valid=valid.and.all(ieee_is_finite(pin)).and.all(pin>=0).and.all(pin<=1e15_dp)
+    valid=valid.and..not.any(pin>0.and.mach<0)
+    valid=valid.and.all(ieee_is_finite(tin)).and..not.any(tin<=0.and.mach>=0)
+    call agree(valid)
+    if(.not.valid) return
     controls=[root_spacing,cfl,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp), &
-      merge(1._dp,0._dp,harmonic),merge(1._dp,0._dp,subcycling)]
+      merge(1._dp,0._dp,harmonic),merge(1._dp,0._dp,subcycling),mach,tin,pin]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -124,9 +142,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,18,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,36,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,18,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,36,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
@@ -143,7 +161,7 @@ contains
     valid=all(options==reference_options)
     call agree(valid)
     if (.not.valid) return
-    if (any(faces=='inflow')) then
+    if (any(faces=='inflow'.and.mach<0)) then
       valid=present(inflow_state).and.present(inflow_temperature)
       if (valid) then
         valid=all(shape(inflow_state)==[nvar,6]).and.size(inflow_temperature)==6
@@ -219,7 +237,8 @@ contains
     if (.not.valid) return
     call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,valid, &
       viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-      coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
+      coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
     if (.not.valid) return
     candidate_dt=1e6_dp;largest=0
     do node=1,size(tree%nodes)
@@ -302,7 +321,7 @@ contains
   subroutine advance_mpi_amr_tree_les_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -325,15 +344,15 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
-    real(dp) :: pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp) :: pressure(6),mach(6),tin(6),pin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
       first_max,second_max
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(17),low(17),high(17)
+    real(dp) :: controls(35),low(35),high(35)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
     integer :: flags(3),min_flags(3),max_flags(3)
@@ -370,7 +389,26 @@ contains
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
-    controls=[root_spacing,dt,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp),merge(1._dp,0._dp,harmonic)]
+    mach=-1;pin=0;tin=0
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) pin=inflow_pressure
+    valid=.true.
+    if(present(inflow_temperature)) then
+      valid=size(inflow_temperature)==6
+      if(valid) then
+        where(mach>=0) tin=inflow_temperature
+      end if
+    end if
+    valid=valid.and.(.not.present(inflow_pressure).or.present(inflow_mach))
+    valid=valid.and.all(ieee_is_finite(mach)).and.all(mach<=100)
+    valid=valid.and..not.any(mach>=0.and.faces/='inflow')
+    valid=valid.and.all(ieee_is_finite(pin)).and.all(pin>=0).and.all(pin<=1e15_dp)
+    valid=valid.and..not.any(pin>0.and.mach<0)
+    valid=valid.and.all(ieee_is_finite(tin)).and..not.any(tin<=0.and.mach>=0)
+    call agree(valid)
+    if(.not.valid) return
+    controls=[root_spacing,dt,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp),merge(1._dp, &
+      0._dp,harmonic),mach,tin,pin]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -395,9 +433,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,17,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,35,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,17,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,35,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
@@ -414,7 +452,7 @@ contains
     valid=all(options==reference_options)
     call agree(valid)
     if (.not.valid) return
-    if (any(faces=='inflow')) then
+    if (any(faces=='inflow'.and.mach<0)) then
       valid=present(inflow_state).and.present(inflow_temperature)
       if (valid) then
         valid=all(shape(inflow_state)==[nvar,6]).and.size(inflow_temperature)==6
@@ -520,7 +558,8 @@ contains
       if (.not.success) return
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-        coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
+        coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
