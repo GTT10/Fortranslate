@@ -1186,8 +1186,16 @@ surface-mole-weighted average; component evaporation shares are proportional to
 Ranz–Marshall/Abramzon–Sirignano correlations using the actual mixed-liquid density
 and heat capacity. It returns inverse drag time, heat coefficient in W/K,
 component mass rates in kg/s **per physical droplet**, and vapor enthalpies.
-It retains PeleF's binary diffusivity convention and film-cp heat correction;
-this is not exact upstream coefficient parity. The ambient-mixture conversion
+For Abramzon–Sirignano heat correction, the builders supply skin-temperature Cp
+averaged over mapped fuel gas species only, including inactive mapped species
+present in the skin. Aliases of one gas species are counted once. Manually supplied
+`spray_film` values retain the skin-Cp fallback when `vapor_cp=0`.
+The mass Spalding number is capped at 20 for Abramzon–Sirignano and wall-film
+evaporation; the selectable Ranz–Marshall path is unchanged. PeleF retains its
+binary diffusivity convention and damped Nusselt iteration, so this is not exact
+upstream coefficient or integrator parity. See
+[fuel-Cp evidence](validation/vapor-cp-20260925.md).
+The ambient-mixture conversion
 and wet-gas restart checks are recorded in
 [the skin-state evidence](validation/ambient-vapor-skin-20260925.md). Regular
 checkpoint context and mixture evolution identity changed with this numerical
