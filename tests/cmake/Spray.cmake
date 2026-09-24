@@ -218,6 +218,11 @@ if(PELEF_ENABLE_SPRAY)
         --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_pressure_application"
         --multiport --physical --les --pressure)
     set_tests_properties(spray_mpi_amr_pressure_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 180 PROCESSORS 4)
+    add_test(NAME spray_mpi_amr_dynamic_application
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
+        --exe "$<TARGET_FILE:pelef_mpi_amr_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_amr_dynamic_application" --les --dynamic)
+    set_tests_properties(spray_mpi_amr_dynamic_application PROPERTIES LABELS "spray;mpi;amr" TIMEOUT 300 PROCESSORS 4)
     add_test(NAME spray_mpi_amr_les_application
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_amr_spray_restart.py"
         --exe "$<TARGET_FILE:pelef_mpi_amr_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"

@@ -1,4 +1,5 @@
 module spray_mpi_amr_application_mod
+  use les_filter_3d_mod, only: les_filter_weights
   use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod, only: liquid_mixture_properties
@@ -68,6 +69,14 @@ contains
     real(dp), allocatable :: film_mass(:,:)
     real(dp) :: les_cs,les_prt,les_sct,les_ci,les_cfl,les_dt
     character(len=16) :: les_model
+    character(len=64) :: les_test_model
+    integer :: les_test_ratio,les_grid_ratio
+    logical :: les_harmonic_mean
+    character(len=:), allocatable :: dynamic_filter
+    integer, allocatable :: dynamic_ratio,dynamic_grid
+    logical, allocatable :: dynamic_harmonic
+    real(dp), allocatable :: filter_weights(:)
+    namelist /amr_spray_dynamic/ les_test_model,les_test_ratio,les_grid_ratio,les_harmonic_mean
     namelist /amr_spray_les/ les_cs,les_prt,les_sct,les_ci,les_cfl,les_model
     real(dp) :: acceleration(3)
     real(dp), allocatable :: force_total(:),force_change(:)
@@ -166,6 +175,7 @@ contains
     profile_points=0;profile_times=0;profile_rates=0;event_end_times=-1
     port_sizes=spray_size_options()
     acceleration=0
+    les_test_model='box';les_test_ratio=2;les_grid_ratio=1;les_harmonic_mean=.false.
     les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
@@ -178,6 +188,9 @@ contains
     rewind(unit)
     read(unit,nml=amr_spray_les,iostat=ios)
     if (ios>0) call fatal('Invalid amr_spray_les namelist')
+    rewind(unit)
+    read(unit,nml=amr_spray_dynamic,iostat=ios)
+    if(ios>0) call fatal('Invalid amr_spray_dynamic namelist')
     rewind(unit)
     read(unit,nml=amr_spray_force,iostat=ios)
     if (ios>0) call fatal('Invalid amr_spray_force namelist')
@@ -207,7 +220,19 @@ contains
     if (les_cs<0.or.les_cs>2.or.les_ci<0.or.les_ci>1) call fatal('Invalid LES coefficients')
     if (min(les_prt,les_sct)<1e-6_dp.or.max(les_prt,les_sct)>1e6_dp) call fatal('Invalid LES PrT/ScT')
     if (les_cfl<=0.or.les_cfl>.2_dp) call fatal('Invalid LES diffusion CFL')
-    if (les_model/='smagorinsky'.and.les_model/='wale'.and.les_model/='vreman') call fatal('Invalid LES model')
+    if (les_model/='smagorinsky'.and.les_model/='wale'.and.les_model/='vreman'.and.les_model/='dynamic') &
+      call fatal('Invalid LES model')
+    if(les_model=='dynamic') then
+      call les_filter_weights(les_test_model,les_test_ratio,filter_weights,ok)
+      if(.not.ok.or.les_grid_ratio<1.or.les_grid_ratio>64) call fatal('Invalid dynamic LES filter')
+      if(any(faces/='periodic')) call fatal('Dynamic LES requires periodic boundaries')
+      dynamic_filter=trim(les_test_model)
+      allocate(dynamic_ratio,dynamic_grid,dynamic_harmonic)
+      dynamic_ratio=les_test_ratio;dynamic_grid=les_grid_ratio;dynamic_harmonic=les_harmonic_mean
+    else
+      if(les_test_model/='box'.or.les_test_ratio/=2.or.les_grid_ratio/=1.or.les_harmonic_mean) &
+        call fatal('Dynamic filter controls require dynamic LES')
+    end if
     if (.not.ieee_is_finite(checkpoint_time)) call fatal('Invalid checkpoint time')
     if ((checkpoint_time>=0).neqv.(len_trim(checkpoint_file)>0)) call fatal('Checkpoint requires path and time')
     if (stop_after_checkpoint.and.checkpoint_time<0) call fatal('Stop requires a checkpoint')
@@ -387,6 +412,10 @@ contains
       write(unit,nml=amr_spray_les,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize LES context')
     end if
+    if(les_model=='dynamic') then
+      write(unit,nml=amr_spray_dynamic,iostat=ios)
+      if(ios/=0) call fatal('Cannot serialize dynamic LES context')
+    end if
     if (any(acceleration/=0)) then
       write(unit,nml=amr_spray_force,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize force context')
@@ -564,11 +593,12 @@ contains
         if (.not.ok) call fatal('Transport timestep failed')
         dt=min(dt,transport_dt)
       end if
-      if (les_cs>0.or.les_ci>0) then
+      if (les_cs>0.or.les_ci>0.or.les_model=='dynamic') then
         call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,spacing,les_cfl,faces, &
           les_cs,les_prt,les_sct,les_dt,diffusivity,comm,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci, &
-          outlet_pressure=config%outlet_pressure)
+          outlet_pressure=config%outlet_pressure,test_model=dynamic_filter,test_ratio=dynamic_ratio, &
+          grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic)
         if (.not.ok) call fatal('LES timestep failed')
         dt=min(dt,les_dt)
       end if
@@ -593,7 +623,9 @@ contains
             config%wall_temperature,config%wall_velocity, &
             wall_films=films,film_mass=film_mass,film_settings=walls, &
             les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure, &
-            acceleration=acceleration,source_change=force_change)
+            acceleration=acceleration,source_change=force_change, &
+            les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
+            les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic)
         else
           call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -605,7 +637,9 @@ contains
             ok,last_id,chemistry_integrator,subcycling,faces,change,inlet,inlet_t, &
             config%wall_temperature,config%wall_velocity, &
             les_settings=[les_cs,les_prt,les_sct,les_ci],les_model=les_model,outlet_pressure=config%outlet_pressure, &
-            acceleration=acceleration,source_change=force_change)
+            acceleration=acceleration,source_change=force_change, &
+            les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
+            les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic)
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit

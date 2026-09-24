@@ -1,4 +1,5 @@
 module spray_mpi_amr_reactive_mod
+  use les_filter_3d_mod, only: les_filter_weights
   use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d
   use spray_mpi_mod, only: split_mpi_spray_parcels
   use mpi_f08
@@ -28,7 +29,9 @@ contains
       chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol,particle_steps, &
       maximum_correction,minimum_theta,ok,last_id,chemistry_integrator,subcycling, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      wall_films,film_mass,film_settings,film_steps,les_settings,les_model,outlet_pressure,acceleration,source_change,split_created)
+      wall_films,film_mass,film_settings,film_steps,les_settings,les_model,outlet_pressure, &
+      acceleration,source_change,split_created, &
+      les_test_model,les_test_ratio,les_grid_ratio,les_harmonic_mean)
     integer(int64), optional, intent(out) :: split_created
     integer(int64) :: before_split
     real(dp) :: low_multiplicity,high_multiplicity
@@ -37,9 +40,15 @@ contains
     real(dp) :: accel(3),low_accel(3),high_accel(3)
     real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp) :: pressure(6),pressure_min(6),pressure_max(6)
-    ! LES settings are [eddy coefficient, PrT, ScT, CI]; zero eddy/CI disables.
+    ! Static LES settings are [eddy coefficient, PrT, ScT, CI]; dynamic is enabled by model.
     real(dp), optional, intent(in) :: les_settings(4)
-    character(len=*), optional, intent(in) :: les_model
+    character(len=*), optional, intent(in) :: les_model,les_test_model
+    integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
+    logical, optional, intent(in) :: les_harmonic_mean
+    character(len=64) :: filter,reference_filter
+    integer :: filter_controls(3),filter_low(3),filter_high(3)
+    real(dp), allocatable :: weights(:)
+    logical :: filter_ok
     real(dp) :: sgs(4),sgs_min(4),sgs_max(4),les_correction,les_max
     character(len=16) :: model,reference_model
     type(MPI_Comm), intent(in) :: comm
@@ -95,7 +104,7 @@ contains
     valid=valid.and.all(ieee_is_finite(sgs))
     valid=valid.and.sgs(1)>=0.and.sgs(1)<=2.and.sgs(4)>=0.and.sgs(4)<=1
     valid=valid.and.minval(sgs(2:3))>=1e-6_dp.and.maxval(sgs(2:3))<=1e6_dp
-    valid=valid.and.(model=='smagorinsky'.or.model=='wale'.or.model=='vreman')
+    valid=valid.and.(model=='smagorinsky'.or.model=='wale'.or.model=='vreman'.or.model=='dynamic')
     valid=valid.and.valid_spray_options(options)
     valid=valid.and.(options%maximum_multiplicity==0.or.present(last_id))
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
@@ -119,6 +128,19 @@ contains
     valid=valid.and.all(ieee_is_finite(pressure))
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     valid=valid.and..not.any(pressure>0.and.faces/='outflow')
+    filter='box';filter_controls=[2,1,0]
+    if(present(les_test_model)) filter=les_test_model
+    if(present(les_test_ratio)) filter_controls(1)=les_test_ratio
+    if(present(les_grid_ratio)) filter_controls(2)=les_grid_ratio
+    if(present(les_harmonic_mean)) filter_controls(3)=merge(1,0,les_harmonic_mean)
+    if(model=='dynamic') then
+      call les_filter_weights(filter,filter_controls(1),weights,filter_ok)
+      valid=valid.and.filter_ok.and.filter_controls(2)>=1.and.filter_controls(2)<=64
+      valid=valid.and.all(faces=='periodic').and.all(pressure==0)
+    else
+      if(present(les_test_model).or.present(les_test_ratio).or. &
+        present(les_grid_ratio).or.present(les_harmonic_mean)) valid=.false.
+    end if
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS.or..not.agreed) return
     call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
@@ -139,6 +161,16 @@ contains
     call MPI_Allreduce(sgs,sgs_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(sgs_min/=sgs_max)) return
+    call MPI_Allreduce(filter_controls,filter_low,3,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(filter_controls,filter_high,3,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(filter_low/=filter_high)) return
+    reference_filter=filter
+    call MPI_Bcast(reference_filter,len(reference_filter),MPI_CHARACTER,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=filter==reference_filter
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
     reference_model=model
     call MPI_Bcast(reference_model,len(reference_model),MPI_CHARACTER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -289,11 +321,12 @@ contains
     end subroutine
     subroutine les_half_step()
       valid=.true.
-      if (sgs(1)==0.and.sgs(4)==0) return
+      if (sgs(1)==0.and.sgs(4)==0.and.model/='dynamic') return
       call advance_mpi_amr_tree_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
         sgs(1),sgs(2),sgs(3),les_boundary,les_correction,comm,valid, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
-        wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure)
+        wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure, &
+        test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean)
       if (.not.valid) return
       les_ledger=les_ledger+les_boundary;les_max=max(les_max,les_correction)
     end subroutine

@@ -20,6 +20,7 @@ p.add_argument('--physical', action='store_true')
 p.add_argument('--inflow', action='store_true')
 p.add_argument('--films', action='store_true')
 p.add_argument('--les', action='store_true')
+p.add_argument('--dynamic', action='store_true')
 p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
@@ -91,6 +92,10 @@ if a.films:
 
 if a.les:
     spray += "\n&amr_spray_les les_cs=.17,les_ci=.1,les_model='vreman' /\n"
+if a.dynamic:
+    assert a.les and not a.physical and not a.pressure
+    spray = spray.replace("les_cs=.17,les_ci=.1,les_model='vreman'", "les_model='dynamic'")
+    spray += "\n&amr_spray_dynamic les_test_model='gaussian',les_test_ratio=2,les_grid_ratio=1 /\n"
 
 
 if a.force:
@@ -167,6 +172,8 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
                        else spray.replace('speed=20.', 'speed=21.'))
     if changed_les:
         local_spray = local_spray.replace('les_ci=.1', 'les_ci=.2')
+        if a.dynamic:
+            local_spray = local_spray.replace('les_grid_ratio=1', 'les_grid_ratio=2')
     if changed_force:
         local_spray = local_spray.replace('acceleration=100.', 'acceleration=101.')
     if changed_properties:
