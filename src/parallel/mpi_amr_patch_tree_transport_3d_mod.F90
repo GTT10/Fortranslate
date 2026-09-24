@@ -150,7 +150,7 @@ contains
   end subroutine
   subroutine advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,state,temperature,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,comm,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -163,15 +163,15 @@ contains
     real(dp), intent(inout) :: boundary_change(:),maximum_correction,minimum_theta
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
-    real(dp) :: pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp) :: pressure(6),mach(6),pin(6),tin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,candidate,temps,initial_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
       first_max,second_max,first_theta,second_theta
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(10),low(10),high(10)
+    real(dp) :: controls(28),low(28),high(28)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(7),reference_options(7)
     integer :: flags(7),min_flags(7),max_flags(7)
@@ -189,7 +189,25 @@ contains
     if (status/=MPI_SUCCESS) return
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
-    controls=[root_spacing,dt,pressure]
+    mach=-1;pin=0;tin=0
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) pin=inflow_pressure
+    valid=.true.
+    if(present(inflow_temperature)) then
+      valid=size(inflow_temperature)==6
+      if(valid) then
+        where(mach>=0) tin=inflow_temperature
+      end if
+    end if
+    valid=valid.and.(.not.present(inflow_pressure).or.present(inflow_mach))
+    valid=valid.and.all(ieee_is_finite(mach)).and.all(mach<=100)
+    valid=valid.and..not.any(mach>=0.and.faces/='inflow')
+    valid=valid.and.all(ieee_is_finite(pin)).and.all(pin>=0).and.all(pin<=1e15_dp)
+    valid=valid.and..not.any(pin>0.and.mach<0)
+    valid=valid.and.all(ieee_is_finite(tin)).and..not.any(tin<=0.and.mach>=0)
+    call agree(valid)
+    if(.not.valid) return
+    controls=[root_spacing,dt,pressure,mach,tin,pin]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -211,9 +229,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,28,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,28,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,viscosity),merge(1,0,conduction),merge(1,0,diffusion),merge(1,0,barodiffusion), &
@@ -231,7 +249,7 @@ contains
     valid=all(options==reference_options)
     call agree(valid)
     if (.not.valid) return
-    if (any(faces=='inflow')) then
+    if (any(faces=='inflow'.and.mach<0)) then
       valid=present(inflow_state).and.present(inflow_temperature)
       if (valid) then
         valid=all(shape(inflow_state)==[nvar,6]).and.size(inflow_temperature)==6
@@ -337,7 +355,8 @@ contains
       if (.not.success) return
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-        coarse_limiter=coarse_limiter,species_count=size(species))
+        coarse_limiter=coarse_limiter,species_count=size(species), &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
