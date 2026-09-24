@@ -11,7 +11,7 @@ module spray_application_mod
   use reactive_3d_mod, only: compute_reactive_cfl_timestep_3d
   use selected_composition_mod, only: resolve_selected_composition
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d,reactive_isothermal_timestep_3d
-  use simulation_config_reactive_3d_mod, only: valid_wall_velocity_3d
+  use simulation_config_reactive_3d_mod, only: valid_wall_velocity_3d,fill_mach_inlet_boundary_ghosts_3d
   use spray_wall_impact_mod
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod
@@ -144,7 +144,8 @@ contains
     real(dp) :: khrt_b0,khrt_b1,khrt_c3
     logical :: khrt_enabled
     logical :: breakup_enabled
-    real(dp) :: outlet_pressure(6)
+    real(dp) :: outlet_pressure(6),inflow_mach(6),mach_pressure(6)
+    real(dp), allocatable :: inlet_ghost(:,:,:,:),inlet_ghost_t(:,:,:)
     real(dp) :: wall_temperature(6),wall_velocity(3,6),wall_dt
     real(dp) :: acceleration(3)
     real(dp), allocatable :: source_totals(:),source_step(:)
@@ -167,7 +168,7 @@ contains
       mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
       mixture_boiling_models,mixture_critical_temperatures, &
-      cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration,outlet_pressure, &
+      cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration,outlet_pressure,inflow_mach, &
       breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed, &
       liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
@@ -232,6 +233,7 @@ contains
     liquid_viscosity_model='constant';liquid_viscosity_coefficients=0;liquid_viscosity_temperature_range=0
     breakup_model="none"; surface_tension=0; liquid_viscosity=0
     acceleration=0
+    inflow_mach=-1
     outlet_pressure=0
     boundary_faces="periodic";wall_temperature=300;wall_velocity=0
     cells=[4,4,4]; domain_length=0.004_dp
@@ -319,6 +321,9 @@ contains
     if (.not.valid_spray_boundary_faces(boundary_faces)) call fail('Invalid spray boundary faces')
     if (.not.all(ieee_is_finite(acceleration))) call fail('Invalid acceleration')
     if (maxval(abs(acceleration))>1e6_dp) call fail('Excessive acceleration')
+    if (.not.all(ieee_is_finite(inflow_mach))) call fail('Nonfinite inlet Mach number')
+    if (any(inflow_mach>100).or.any(inflow_mach>=0.and.boundary_faces/='inflow')) &
+      call fail('Active inlet Mach number requires an inflow face and value at most 100')
     if (.not.all(ieee_is_finite(outlet_pressure))) call fail('Invalid outlet pressure')
     if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) call fail('Invalid outlet pressure')
     if (any(outlet_pressure>0.and.boundary_faces/='outflow')) call fail('Outlet pressure requires outflow face')
@@ -793,7 +798,12 @@ contains
       end do
     end do
     allocate(inflow_state(nvar,6),inlet_x(size(species)),inlet_y(size(species)),inlet_cube(nvar,2,2,2))
-    inflow_state=0;inflow_t=0;inlet_dt=huge(1.0_dp);inlet_x=x
+    inflow_state=0;inflow_t=inflow_temperature;inlet_dt=huge(1.0_dp);inlet_x=x
+    mach_pressure=merge(inflow_pressure,0._dp,inflow_mach>=0)
+    if (any(inflow_mach>=0)) then
+      allocate(inlet_ghost(nvar,cells(1)+4,cells(2)+4,cells(3)+4))
+      allocate(inlet_ghost_t(cells(1)+4,cells(2)+4,cells(3)+4))
+    end if
     if (any(boundary_faces=='inflow')) then
       if (inflow_composition_count/=0) then
         call resolve_selected_composition('Spray inflow',inflow_composition_count,inflow_composition_species, &
@@ -808,6 +818,12 @@ contains
         if (boundary_faces(face)/='inflow') cycle
         if (.not.all(ieee_is_finite([inflow_temperature(face),inflow_pressure(face),inflow_velocity(:,face)]))) &
           call fail('Nonfinite inlet state')
+        if (inflow_mach(face)>=0) then
+          if (inflow_temperature(face)<=0.or.inflow_pressure(face)<0.or.inflow_pressure(face)>1e15_dp) &
+            call fail('Invalid Mach inlet temperature or pressure')
+          if (any(inflow_velocity(:,face)/=0)) call fail('Mach inlet requires zero inflow_velocity')
+          cycle
+        end if
         if (min(inflow_temperature(face),inflow_pressure(face))<=0.or.maxval(abs(inflow_velocity(:,face)))>1e7_dp) &
           call fail('Invalid inlet state')
         primitive=0
@@ -875,6 +891,10 @@ contains
       if (len_trim(context)+23+len_trim(les_test_filter)>len(context)) call fail('Dynamic LES context too long')
       context=trim(context)//' dynamic-les-filter-v1 '//trim(les_test_filter)
       call append_reals([real(les_test_ratio,dp),real(les_grid_ratio,dp)])
+    end if
+    if (any(inflow_mach>=0)) then
+      context=trim(context)//' mach-inlet-v1'
+      call append_reals(inflow_mach)
     end if
     if (any(outlet_pressure>0)) then
       context=trim(context)//' pressure-outlet-v1'
@@ -1288,6 +1308,22 @@ contains
       call compute_reactive_cfl_timestep_3d(species,state,temperature,cells(1),cells(2),cells(3), &
         spacing(1),spacing(2),spacing(3),cfl,cfl_dt,ok)
       if (.not. ok) call fail('Cannot compute gas CFL step')
+      if (any(inflow_mach>=0)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,boundary_faces,inflow_mach, &
+          inlet_ghost,inlet_ghost_t,ok,inflow_state=inflow_state,inflow_temperature=inflow_t, &
+          inflow_pressure=mach_pressure,viscous_wall=.true.,wall_velocity=wall_velocity)
+        if (.not.ok) call fail('Cannot construct Mach inlet timestep states')
+        call compute_reactive_cfl_timestep_3d(species,inlet_ghost,inlet_ghost_t,cells(1)+4,cells(2)+4,cells(3)+4, &
+          spacing(1),spacing(2),spacing(3),cfl,inlet_dt,ok)
+        if (.not.ok) call fail('Cannot compute Mach inlet CFL step')
+        if (transport_enabled) then
+          call reactive_transport_timestep_3d(species,transport,inlet_ghost,inlet_ghost_t, &
+            cells(1)+4,cells(2)+4,cells(3)+4,spacing(1),spacing(2),spacing(3), &
+            .2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok)
+          if (.not.ok) call fail('Cannot compute Mach inlet transport step')
+          inlet_dt=min(inlet_dt,face_dt)
+        end if
+      end if
       dt=min(maximum_dt,cfl_dt,inlet_dt,final_time-time)
       if (any(acceleration/=0)) dt=min(dt,0.5_dp*cfl_dt,sqrt(cfl*minval(spacing)/maxval(abs(acceleration))))
       if (any(boundary_faces=='isothermal_wall')) then
@@ -1308,7 +1344,8 @@ contains
           mixture_components=mixture_components,component_mass=component_mass, &
           wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure)
+          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
         else
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
@@ -1316,7 +1353,8 @@ contains
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
           breakup_options,wall_options,wall_films,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure)
+          les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
+          inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
         end if
         if (ok) exit
         dt=0.5_dp*dt

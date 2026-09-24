@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--inflow', action='store_true')
+    parser.add_argument('--mach-inlet', action='store_true')
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
     parser.add_argument('--sgs', type=float, default=0.0)
@@ -43,6 +44,14 @@ def main():
         if not args.dynamic_physical:
             template = template.replace("'slip_wall'", "'periodic'")
         template = template.replace('&spray', "&spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
+    if args.mach_inlet:
+        if not args.inflow or args.thermal_wall:
+            parser.error('--mach-inlet requires --inflow without --thermal-wall')
+        if args.les_model == 'dynamic' and not args.dynamic_physical:
+            parser.error('--mach-inlet with dynamic requires --dynamic-physical')
+        template = template.replace('inflow_velocity(:,1)=200,0,0', 'inflow_velocity(:,1)=0,0,0')
+        template = template.replace('inflow_pressure(1)=101325', 'inflow_pressure(1)=0')
+        template = template.replace('&spray', '&spray\n inflow_mach(1)=0.2,')
     if args.acceleration:
         template = template.replace('&spray', f'&spray\n acceleration(3)={args.acceleration},')
     if args.sgs:
@@ -94,7 +103,11 @@ def main():
         if kind == 'inflow':
             assert float(row['boundary_mass']) > 0
             with (work / (ref + '.gas.csv')).open() as stream:
-                assert sum(float(cell['rhoY_H2']) for cell in csv.DictReader(stream)) > 0
+                h2 = sum(float(cell['rhoY_H2']) for cell in csv.DictReader(stream))
+                if args.mach_inlet:
+                    assert h2 == 0, 'Mach inlet uses interior composition, not the H2 reservoir'
+                else:
+                    assert h2 > 0
         elif kind == 'thermal_wall':
             assert float(row['boundary_energy']) > 0
             assert int(row['live_parcels']) == 2
@@ -124,6 +137,24 @@ def main():
             (work / 'changed_faces.log').write_text(result.stdout + result.stderr)
             assert result.returncode != 0 and 'incompatible spray checkpoint' in result.stdout + result.stderr
             assert not (work / 'changed_faces.history.csv').exists()
+        if args.mach_inlet:
+            original = (work / (resumed + '.nml')).read_text()
+            for label, changed, diagnostic in [
+                ('changed_mach', original.replace('inflow_mach(1)=0.2', 'inflow_mach(1)=0.3'),
+                 'incompatible spray checkpoint'),
+                ('changed_mach_pressure', original.replace('inflow_pressure(1)=0', 'inflow_pressure(1)=101325'),
+                 'incompatible spray checkpoint'),
+                ('invalid_mach', original.replace('inflow_mach(1)=0.2', 'inflow_mach(1)=101'),
+                 'Active inlet Mach number'),
+            ]:
+                changed = changed.replace(resumed, label)
+                path = work / (label + '.nml')
+                path.write_text(changed)
+                result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                        text=True, capture_output=True, timeout=30)
+                (work / (label + '.log')).write_text(result.stdout + result.stderr)
+                assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
+                assert not (work / (label + '.history.csv')).exists()
         if args.pressure_outlet:
             original = (work / (resumed + '.nml')).read_text()
             for label, replacement, diagnostic in [
