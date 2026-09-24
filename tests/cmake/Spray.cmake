@@ -453,6 +453,13 @@ if(PELEF_ENABLE_SPRAY)
     set_tests_properties(spray_rate_file PROPERTIES LABELS "spray" TIMEOUT 20)
     add_executable(test_spray_mpi spray/test_spray_mpi.F90)
     target_link_libraries(test_spray_mpi PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
+    add_executable(test_spray_mpi_ppm spray/test_spray_mpi_ppm.F90)
+    target_link_libraries(test_spray_mpi_ppm PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
+    add_test(NAME spray_mpi_ppm_4 COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 4
+      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_spray_mpi_ppm> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(spray_mpi_ppm_4 PROPERTIES LABELS "spray;mpi" TIMEOUT 120 PROCESSORS 4
+      ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+
     foreach(ranks 2 4)
       add_test(NAME spray_mpi_amr_balance_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}

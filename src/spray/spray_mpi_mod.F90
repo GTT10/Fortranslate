@@ -17,7 +17,7 @@ module spray_mpi_mod
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d, &
-    compute_reactive_plm_face_fluxes_3d
+    compute_reactive_plm_face_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
@@ -1108,7 +1108,7 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_hydro(comm,species,state,temperature,spacing,cells,dt,solver,limiter,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure)
+      faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,reconstruction)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6)
@@ -1117,6 +1117,8 @@ contains
     real(dp), intent(in) :: spacing(3),dt
     integer, intent(in) :: cells(3)
     character(len=*), intent(in) :: solver,limiter
+    character(len=*), optional, intent(in) :: reconstruction
+    character(len=32) :: hydro,ppm_faces(6)
     character(len=*), optional, intent(in) :: faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
@@ -1126,9 +1128,14 @@ contains
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: controls(10),minimum(10),maximum(10),rhs(size(state,1))
     real(dp) :: local_change(size(state,1)),global_change(size(state,1)),rate(size(state,1))
-    integer :: config(7),minconfig(7),maxconfig(7),rank,nranks,ierr,first(3),extent(3)
-    integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next,solver_code,limiter_code
+    integer :: config(8),minconfig(8),maxconfig(8),rank,nranks,ierr,first(3),extent(3)
+    integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next,solver_code,limiter_code,reconstruction_code
     logical :: valid,agreed
+    hydro='characteristic_plm'
+    if(present(reconstruction)) hydro=reconstruction
+    reconstruction_code=0
+    if(hydro=='characteristic_plm') reconstruction_code=1
+    if(hydro=='characteristic_ppm') reconstruction_code=2
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
     if (present(boundary_change)) boundary_change=0
@@ -1149,7 +1156,7 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
-    valid=all(ieee_is_finite([spacing,dt])).and.solver_code>0.and.limiter_code>0
+    valid=all(ieee_is_finite([spacing,dt])).and.solver_code>0.and.limiter_code>0.and.reconstruction_code>0
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.dt>=0.and.dt<=1e6_dp
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==nvar.and.present(faces)
     valid=valid.and.all(ieee_is_finite(pressure))
@@ -1158,10 +1165,10 @@ contains
     if (present(faces)) valid=valid.and..not.any(pressure>0.and.faces/='outflow')
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,solver_code,limiter_code,merge(1,0,present(faces))];controls=[spacing,dt,pressure]
-    call MPI_Allreduce(config,minconfig,7,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,nvar,solver_code,limiter_code,merge(1,0,present(faces)),reconstruction_code];controls=[spacing,dt,pressure]
+    call MPI_Allreduce(config,minconfig,8,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,maxconfig,7,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,maxconfig,8,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,minimum,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -1180,6 +1187,10 @@ contains
     call recover_reactive_temperatures_3d(species,gas,temperature,nx,ny,nz,temp,valid)
     call agree()
     if (.not.agreed) return
+    if (hydro=='characteristic_ppm') then
+      call ppm_step()
+      return
+    end if
     if (.not.present(faces)) then
       allocate(halo(nvar,nx+4,ny,nz),halo_t(nx+4,ny,nz))
       allocate(send(nvar+1,2,ny,nz),left(nvar+1,2,ny,nz),right(nvar+1,2,ny,nz))
@@ -1235,6 +1246,56 @@ contains
     end if
     state=gas;temperature=temp;ok=.true.
   contains
+    subroutine ppm_step()
+      real(dp) :: theta
+      ppm_faces='periodic'
+      if(present(faces)) ppm_faces=faces
+      call fill_mpi_les_boundary_ghosts_3d(comm,species,gas,temp,cells,ppm_faces,4,halo,halo_t,valid, &
+        inflow_state,inflow_temperature,outlet_pressure=pressure,inflow_mach=inflow_mach, &
+        inflow_pressure=inflow_pressure,viscous_wall=.false.)
+      call agree()
+      if (.not.agreed) return
+      allocate(fx(nvar,0:nx,ny,nz),fy(nvar,nx,0:ny,nz),fz(nvar,nx,ny,0:nz))
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,halo_t,extent,spacing,dt,.false.,.true., &
+        solver,fx,fy,fz,theta,valid)
+      call agree()
+      if (.not.agreed) return
+      do k=1,nz
+      do j=1,ny
+      do i=1,nx
+        candidate(:,i,j,k)=gas(:,i,j,k)-(dt/spacing(1))*(fx(:,i,j,k)-fx(:,i-1,j,k))- &
+          (dt/spacing(2))*(fy(:,i,j,k)-fy(:,i,j-1,k))-(dt/spacing(3))*(fz(:,i,j,k)-fz(:,i,j,k-1))
+      end do
+      end do
+      end do
+      call recover_reactive_temperatures_3d(species,candidate,temp,nx,ny,nz,next_temp,valid)
+      call agree()
+      if (.not.agreed) return
+      rate=0
+      do k=1,nz
+      do j=1,ny
+        if(rank==0) rate=rate+fx(:,0,j,k)*spacing(2)*spacing(3)
+        if(rank==nranks-1) rate=rate-fx(:,nx,j,k)*spacing(2)*spacing(3)
+      end do
+      end do
+      do k=1,nz
+      do i=1,nx
+        rate=rate+(fy(:,i,0,k)-fy(:,i,ny,k))*spacing(1)*spacing(3)
+      end do
+      end do
+      do j=1,ny
+      do i=1,nx
+        rate=rate+(fz(:,i,j,0)-fz(:,i,j,nz))*spacing(1)*spacing(2)
+      end do
+      end do
+      local_change=dt*rate
+      call MPI_Allreduce(local_change,global_change,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      if(.not.all(ieee_is_finite(global_change))) return
+      state=candidate;temperature=next_temp
+      if(present(boundary_change)) boundary_change=global_change
+      ok=.true.
+    end subroutine ppm_step
     subroutine physical_stage()
       call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=pressure, &
