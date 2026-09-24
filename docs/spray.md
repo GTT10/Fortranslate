@@ -3005,17 +3005,19 @@ donor construction, flux synchronization/reflux and time stepping. See
 stage-wise coefficient recomputation, EOS recovery and transactional publication.
 Each stage applies a frozen-coefficient diffusion estimate with a 0.2 diffusion
 number gate, including isotropic stress and thermal transport. This estimate is
-not a general nonlinear stability proof. Coupled-spray/application selection,
-MPI and nonperiodic paths remain open. See
+not a general nonlinear stability proof. Regular physical boundaries and their
+SSPRK2 budgets are now connected; see
+[physical operator checks](validation/regular-dynamic-boundaries-20260925.md) and
 [time-integration evidence and initial-test diagnosis](validation/les-dynamic-step-20260918.md).
 
 The serial coupled `advance_spray_reactive_3d` API accepts `les_model='dynamic'`
-with periodic boundaries. Optional `les_test_filter`, `les_test_ratio` and
+with periodic or supported physical boundaries. Optional `les_test_filter`, `les_test_ratio` and
 `les_grid_ratio` default to box, two and one. Dynamic SGS runs in both half steps;
 `cs=0` disables it and positive cs enables it without scaling the computed
 coefficients. Fixed prt/sct do not set dynamic heat/species transport. Invalid
-filters and nonperiodic faces reject even when cs is zero. Application input,
-restart identity and MPI dynamic dispatch remain pending. See
+filters reject even when cs is zero. Both LES half steps return their boundary
+exchange into the coupled ledger, with whole-step rollback. See
+[physical application checks](validation/regular-dynamic-spray-20260925.md) and
 [coupled dynamic checks](validation/les-dynamic-coupled-20260918.md).
 
 ### Serial dynamic LES input and restart
@@ -3027,7 +3029,8 @@ Both serial spray executables now accept these `spray` namelist entries:
  les_test_filter='box', les_test_ratio=2, les_grid_ratio=1,
 ```
 
-Only periodic boundaries are supported. Positive `smagorinsky_constant` enables
+Periodic, reservoir-inflow, outflow/pressure-target, slip-wall and
+adiabatic/isothermal moving-wall boundaries are supported. Positive `smagorinsky_constant` enables
 this model; its magnitude and fixed turbulent Prandtl/Schmidt values do not set
 the dynamic coefficients. Zero disables SGS. Box/Gaussian/identity test kernels
 use the filter API's valid ratios; the grid ratio is 1–64. Nondefault filter
@@ -3069,7 +3072,8 @@ MPI mixed-spray coupling and both MPI applications now accept the dynamic model
 and filter controls. Controls agree collectively and enter restart identity;
 periodic SGS half steps use distributed coefficient, flux and SSPRK2 APIs.
 Same-rank exact continuation and 2-to-4-rank continuation pass for fixed/selected
-H2O2. Nonperiodic and AMR dynamic LES remain open; see
+H2O2. Regular MPI nonperiodic Dynamic LES remains open; the MPI AMR path
+now supports physical boundaries and recursive stepping as described below. See
 [MPI dynamic application evidence](validation/les-mpi-dynamic-application-20260918.md).
 
 ### Approximate LES filters
@@ -3227,8 +3231,9 @@ layers with repeated moving-wall reflection; default width remains two
 `compute_dynamic_les_boundary_rhs_3d` and `advance_dynamic_les_ssprk2_3d` now
 connect these donors to regular-grid Dynamic physical fluxes and boundary budgets
 ([operator checks](validation/regular-dynamic-boundaries-20260925.md)).
-Regular spray application dispatch and regular MPI physical boundaries remain
-separate work; the AMR path already supports them.
+Regular serial spray application dispatch now includes these boundary exchanges
+([application checks](validation/regular-dynamic-spray-20260925.md)). Regular MPI
+physical boundaries remain separate work; the AMR path already supports them.
 
 The serial `advance_amr_patch_tree_les_level_3d` API advances one depth using
 temporal coarse donors and returns SSPRK2 time-integrated faces for later

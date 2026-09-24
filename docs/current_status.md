@@ -29,6 +29,9 @@ MPI LES now also schedules recursive owner-local intervals and synchronizes
 accumulated fluxes ([MPI recursion checks](validation/les-mpi-amr-subcycle-20260925.md)).
 The MPI spray application now connects recursive LES half steps and the scaled
 diffusion selector ([coupling checks](validation/les-mpi-spray-subcycle-20260925.md)).
+The regular serial spray application also connects Dynamic physical-boundary
+fluxes and restart ([wall/restart check](validation/regular-dynamic-spray-20260925.md)).
+Regular MPI Dynamic physical boundaries remain separate work.
 Detailed-fuel Dynamic LES and physical qualification remain open.
 Non-regular EB LES is an extension beyond the pinned reference, which rejects
 such cells in all four closures ([source audit](validation/les-reference-scope-20260925.md)).
