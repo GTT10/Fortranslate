@@ -1,0 +1,18 @@
+&reactive_3d
+ nx=4, ny=4, nz=4, final_time=1e-6,
+ x_upper=0.01, y_upper=0.01, z_upper=0.01,
+ problem='reactive_hotspot', reconstruction='characteristic_ppm',
+ thermo_model='full_h2o2', riemann_solver='hllc',
+ chemistry_enabled=.false., transport_enabled=.true.,
+ initial_temperature=1200, initial_pressure=101325,
+ initial_velocity_x=20, initial_velocity_y=0, initial_velocity_z=0,
+ hotspot_temperature_rise=100, hotspot_center_x=0.005,
+ hotspot_center_y=0.005, hotspot_center_z=0.005, hotspot_width=0.002,
+ x_h2=0.3, x_o2=0.15, x_n2=0.55,
+ x_h=0, x_o=0, x_oh=0, x_h2o=0, x_ho2=0, x_h2o2=0, x_ar=0,
+ boundary_faces='inflow','outflow','periodic','periodic','periodic','periodic',
+ inflow_mach=0.1,-1,-1,-1,-1,-1,
+ inflow_temperature=1000,0,0,0,0,0,
+ inflow_pressure=101325,0,0,0,0,0,
+ output_file='ppm_mach.csv'
+/

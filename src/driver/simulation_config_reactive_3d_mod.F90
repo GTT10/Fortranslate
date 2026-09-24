@@ -851,9 +851,6 @@ contains
              trim(config%reconstruction) /= "characteristic_plm" .and. &
              trim(config%reconstruction) /= "characteristic_ppm") then
       message = "Reactive 3D reconstruction must be pcm, characteristic_plm, or characteristic_ppm"
-    else if (trim(config%reconstruction) == "characteristic_ppm" .and. &
-             any(faces /= "periodic")) then
-      message = "Reactive 3D characteristic_ppm requires periodic boundaries"
     else if (trim(config%reconstruction) == "characteristic_plm" .and. &
              min(config%nx, config%ny, config%nz) < 3) then
       message = "Reactive 3D characteristic_plm requires nx, ny, nz >= 3"
