@@ -132,8 +132,10 @@ gas application input now selects periodic PPM
 physical-boundary library stepping now have exact subdomain-flux and boundary
 ledger [checks](validation/ppm-halo-3d-20260925.md). Fixed/selected regular gas
 applications now also select physical-boundary PPM with multistep molecular
-transport [checks](validation/ppm-boundary-input-20260925.md). AMR/MPI
-integration remains implementation work; the existing
+transport [checks](validation/ppm-boundary-input-20260925.md). Serial common-step
+AMR tree hydro now connects PPM and reflux
+([checks](validation/ppm-amr-common-20260925.md)). Recursive level stepping,
+MPI and AMR application selection remain implementation work; the existing
 PCM/PLM solver remains available.
 
 | Order | Work unit | Measurable exit gate |
