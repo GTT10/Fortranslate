@@ -90,6 +90,7 @@ module simulation_config_reactive_3d_mod
   public :: reactive_3d_mole_fractions
   public :: resolve_reactive_3d_selected_composition
 
+  public :: fill_mach_inlet_boundary_ghosts_3d
   public :: mach_inlet_ghost_3d
   public :: map_reactive_boundary_donor_3d
 contains
@@ -140,6 +141,76 @@ contains
     if(.not.valid) return
     ghost=candidate;ghost_temperature=new_t;ok=.true.
   end subroutine mach_inlet_ghost_3d
+
+  ! Mach >= 0 enables this inlet; negative entries retain ordinary face behavior.
+  subroutine fill_mach_inlet_boundary_ghosts_3d(species,u,t,faces,mach,ghost,gt,ok, &
+      inflow_state,inflow_temperature,inflow_pressure,ghost_width,viscous_wall,wall_velocity)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),mach(6)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(inout) :: ghost(:,:,:,:),gt(:,:,:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),inflow_pressure(6),wall_velocity(:,:)
+    integer, optional, intent(in) :: ghost_width
+    logical, optional, intent(in) :: viscous_wall
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:)
+    real(dp) :: pressure(6),shift(3),momentum(3),rho
+    character(len=32) :: ordinary(6)
+    integer :: n(3),dims(3),width,i,j,k,q(3),inlet,axis
+    logical :: valid,reflect(3),viscous
+    ok=.false.;n=shape(t);width=2;pressure=0;viscous=.false.
+    if(present(ghost_width)) width=ghost_width
+    if(present(inflow_pressure)) pressure=inflow_pressure
+    if(present(viscous_wall)) viscous=viscous_wall
+    if(width<1.or.width>128.or.any(n<2).or.any(n>huge(1)-256)) return
+    dims=n+2*width
+    if(any(shape(u)/=[5+size(species),n]).or.any(shape(ghost)/=[5+size(species),dims])) return
+    if(any(shape(gt)/=dims)) return
+    if(.not.all(ieee_is_finite(mach)).or..not.all(ieee_is_finite(pressure))) return
+    if(any(mach>100).or.any(mach>=0.and.faces/='inflow')) return
+    if(any(pressure<0).or.any(pressure>1e15_dp).or.any(pressure>0.and.mach<0)) return
+    if(any(mach>=0)) then
+      if(.not.present(inflow_temperature)) return
+      if(size(inflow_temperature)/=6) return
+      if(.not.all(ieee_is_finite(inflow_temperature))) return
+      if(any(inflow_temperature<=0.and.mach>=0)) return
+    end if
+    ordinary=faces
+    where(mach>=0) ordinary='outflow'
+    allocate(candidate,mold=ghost);allocate(temps,mold=gt)
+    call fill_reactive_boundary_ghosts_3d(u,t,ordinary,candidate,temps,valid,viscous_wall=viscous, &
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity,ghost_width=width)
+    if(.not.valid) return
+    do k=1,dims(3)
+      do j=1,dims(2)
+        do i=1,dims(1)
+          call map_reactive_boundary_donor_3d([i,j,k]-width,n,faces,viscous,q,reflect,shift,inlet,valid,wall_velocity)
+          if(.not.valid) return
+          if(inlet==0) cycle
+          if(mach(inlet)<0) cycle
+          if(pressure(inlet)>0) then
+            call mach_inlet_ghost_3d(species,u(:,q(1),q(2),q(3)),t(q(1),q(2),q(3)),inlet, &
+              inflow_temperature(inlet),mach(inlet),candidate(:,i,j,k),temps(i,j,k),valid,inlet_pressure=pressure(inlet))
+          else
+            call mach_inlet_ghost_3d(species,u(:,q(1),q(2),q(3)),t(q(1),q(2),q(3)),inlet, &
+              inflow_temperature(inlet),mach(inlet),candidate(:,i,j,k),temps(i,j,k),valid)
+          end if
+          if(.not.valid) return
+          momentum=candidate(2:4,i,j,k)
+          do axis=1,3
+            if(reflect(axis)) candidate(axis+1,i,j,k)=-candidate(axis+1,i,j,k)
+          end do
+          if(any(abs(shift)>0)) then
+            rho=candidate(1,i,j,k)
+            candidate(2:4,i,j,k)=candidate(2:4,i,j,k)+rho*shift
+            candidate(5,i,j,k)=candidate(5,i,j,k)+(sum(candidate(2:4,i,j,k)**2)-sum(momentum**2))/(2*rho)
+          end if
+        end do
+      end do
+    end do
+    if(.not.all(ieee_is_finite(candidate)).or..not.all(ieee_is_finite(temps))) return
+    ghost=candidate;gt=temps;ok=.true.
+  end subroutine fill_mach_inlet_boundary_ghosts_3d
 
   subroutine characteristic_pressure_ghost_3d(species,interior,temperature,face,pressure,distance_ratio, &
       ghost,ghost_temperature,ok)

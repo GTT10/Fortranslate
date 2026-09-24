@@ -6,7 +6,7 @@ program test_reactive_boundaries_3d
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d, reactive_integrals_3d
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, &
     validate_reactive_3d_configuration, resolved_reactive_boundaries_3d,characteristic_pressure_ghost_3d, &
-    read_reactive_3d_configuration,mach_inlet_ghost_3d
+    read_reactive_3d_configuration,mach_inlet_ghost_3d,fill_mach_inlet_boundary_ghosts_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(reactive_3d_config) :: config
@@ -23,6 +23,7 @@ program test_reactive_boundaries_3d
   call check_pressure_outlet()
   call check_pressure_ghost()
   call check_mach_inlet()
+  call check_mach_inlet_hydro()
   call check_inflow()
   config%boundary_condition='isothermal_wall'
   call validate_reactive_3d_configuration(config,ok,message)
@@ -146,6 +147,57 @@ contains
     call advance_reactive_boundary_hydro_3d(species,u,t,[1._dp,1._dp,1._dp],1e-5_dp, &
       faces,'pcm','mc','hllc',change,ok,outlet_pressure=outlet)
     call require(.not.ok.and.all(u==before).and.all(t==bt),'pressure ghost failure preserves fluid')
+  end subroutine
+  subroutine check_mach_inlet_hydro()
+    real(dp) :: mach(6),target_t(6),target_p(6),ui(12),ti,ci,expected(12),et
+    real(dp) :: halo(12,18,18,18),halo_t(18,18,18)
+    integer :: face,axis,point(3),layer,method
+    q=0;q(1)=.3_dp;q(5)=101325;q(6)=.03_dp;q(9)=.22_dp;q(12)=.75_dp
+    call reactive_primitive_to_conserved(species,q,ui,ti,ci,ok)
+    call require(ok,'Mach hydro initial state')
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          before(:,i,j,k)=ui;bt(i,j,k)=ti
+        end do
+      end do
+    end do
+    target_t=700
+    do face=1,6
+      faces='outflow';faces(face)='inflow';mach=-1;mach(face)=.2_dp;target_p=0
+      call fill_mach_inlet_boundary_ghosts_3d(species,before,bt,faces,mach,halo,halo_t,ok, &
+        inflow_temperature=target_t,ghost_width=7)
+      call require(ok,'Mach wide ghost fill without reservoir state')
+      call mach_inlet_ghost_3d(species,ui,ti,face,700._dp,.2_dp,expected,et,ok)
+      axis=(face+1)/2
+      do layer=1,7
+        point=9;point(axis)=8-layer
+        if(modulo(face,2)==0) point(axis)=11+layer
+        call require(all(halo(:,point(1),point(2),point(3))==expected),'Mach layers use boundary interior')
+        call require(halo_t(point(1),point(2),point(3))==et,'Mach ghost temperature')
+      end do
+      call require(all(halo(:,8:11,8:11,8:11)==before),'Mach ghosts preserve interior')
+      do method=1,2
+        reconstruction='pcm'
+        if(method==2) then
+          reconstruction='characteristic_plm';target_p(face)=120000
+        end if
+        u=before;t=bt
+        call reactive_integrals_3d(u,4,4,4,1._dp,1._dp,1._dp,total0,ok)
+        call require(ok,'Mach hydro initial integral')
+        call advance_reactive_boundary_hydro_3d(species,u,t,[1._dp,1._dp,1._dp],1e-5_dp, &
+          faces,reconstruction,'mc','hllc',change,ok,inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=target_p)
+        call require(ok.and.change(1)>0,'Mach inlet supplies gas')
+        call reactive_integrals_3d(u,4,4,4,1._dp,1._dp,1._dp,total1,ok)
+        call require(ok,'Mach hydro final integral')
+        call require(all(abs(total1-total0-change)<=3e-12_dp*max(abs(total0),abs(total1),1._dp)), &
+          'Mach hydro surface-flux inventory')
+      end do
+    end do
+    u=before;t=bt;target_t(6)=-1
+    call advance_reactive_boundary_hydro_3d(species,u,t,[1._dp,1._dp,1._dp],1e-5_dp, &
+      faces,'pcm','mc','hllc',change,ok,inflow_temperature=target_t,inflow_mach=mach)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'Mach boundary failure preserves fluid')
   end subroutine
   subroutine check_mach_inlet()
     real(dp) :: qi(12),ui(12),ug(12),qg(12),ti,tg,ci,cg,recovered,target_p,expected_v(3),normal

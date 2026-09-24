@@ -1,7 +1,7 @@
 module reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d, fill_reactive_boundary_ghosts_3d, &
-    fill_pressure_outlet_ghosts_3d
+    fill_pressure_outlet_ghosts_3d,fill_mach_inlet_boundary_ghosts_3d
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
@@ -1201,8 +1201,9 @@ contains
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
       faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature, &
-      flux_x,flux_y,flux_z,outlet_pressure)
+      flux_x,flux_y,flux_z,outlet_pressure,inflow_mach,inflow_pressure)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
+    real(dp), intent(in), optional :: inflow_mach(6),inflow_pressure(6)
     ! Optional SSPRK2 mean fluxes: upper faces, or all faces including index zero.
     real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     real(dp), allocatable :: mean_x(:,:,:,:),mean_y(:,:,:,:),mean_z(:,:,:,:)
@@ -1226,6 +1227,7 @@ contains
       if(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
       if(any(outlet_pressure>0.and.faces/='outflow')) return
     end if
+    if(present(inflow_pressure).and..not.present(inflow_mach)) return
     full_faces=.false.
     n=shape(temperature)
     if (present(flux_x)) then
@@ -1277,8 +1279,13 @@ contains
       dims=n+4; nv=size(u,1)
       allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
       allocate(fx,mold=ghost); allocate(fy,mold=ghost); allocate(fz,mold=ghost)
+      if(present(inflow_mach)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,u,t,faces,inflow_mach,ghost,gt,success, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      else
       call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,success, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      end if
       if (.not.success) return
       call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,success)
       if(.not.success) return
