@@ -18,7 +18,7 @@ particle solver, binding gas and particle geometry. `level_set.dat` begins with
 cell counts and then nodal values in Fortran order (x fastest); positive is fluid.
 The supplied plane is x=1.25 mm in a 4 mm cube with 1 mm cells.
 
-`spray.nml` has one `eb_spray` group:
+`spray.nml` has an `eb_spray` group:
 
 - `nc` (1–16), `vapor_names`, `densities`, `heat_capacities`,
   `reference_temperatures`, `reference_pressures`, `latent_heats` and `fractions`
@@ -50,6 +50,29 @@ reports accepted steps/time, processed events and cumulative injected, exterior,
 wall and chemistry inventories. CSVs are analysis outputs, not restart files. Output paths must
 not alias the gas, spray or geometry inputs; checks normalize lexical absolute
 paths, not filesystem symlinks.
+
+## External rate files
+
+Rate tables can also come from a separate optional group in `spray.nml`:
+
+```fortran
+&eb_spray_rate_files
+  profile_file='shared.dat',profile_files(2)='port2.dat'
+/
+```
+
+`profile_file` supplies the shared profile; `profile_files(p)` overrides it for
+port `p`. Files contain 2--64 whitespace-separated pairs of time in seconds and
+rate in kg/s, with blank lines and `#`/`!` comments allowed. Times must strictly
+increase within 0--1e6 seconds; rates must be within 0--1 kg/s. Leave the
+corresponding inline tables empty and counts at their defaults (port count zero
+is also accepted). Conflicting inline/file data and unused port paths reject.
+Existing event intervals and scaling still apply; files do not create events.
+
+Paths are relative to the process working directory. Files load at startup,
+including restart. Loaded numbers enter checkpoint identity; file paths and
+comments do not. The shared file follows the same inheritance rules as the
+shared inline profile. See [focused checks](../../docs/validation/spray-serial-eb-rate-files-20260925.md).
 
 ## Save and resume
 
