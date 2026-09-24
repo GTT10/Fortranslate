@@ -19,6 +19,16 @@ each direction. The application is also registered for installation.
 
 ## Pressure outlets
 
+The serial fixed/selected tree frontends also accept `inflow_mach(6)` in
+`reactive_3d`. Negative values retain reservoir inflow. A value from 0 to 100
+activates Mach inflow on that `inflow` face, with positive
+`inflow_temperature` and zero `inflow_velocity`. `inflow_pressure=0` extrapolates
+interior pressure; a positive value prescribes pressure in Pa. Composition comes
+from the current interior donor. Each step limits hydro and molecular transport
+using the generated ghosts, with the existing refinement scaling for subcycling.
+Checkpoint context binds these controls. MPI tree input remains gated until its
+application integration is complete.
+
 The serial and MPI fixed/selected frontends accept `outlet_pressure(6)` in `reactive_3d`.
 For example, `outlet_pressure(2)=102325` sets a 102325 Pa target on an `outflow`
 x-high face; zero retains extrapolation. Targets must be finite, positive only

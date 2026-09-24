@@ -54,7 +54,10 @@ Serial/MPI reacting transport/hydro composition now forwards Mach controls throu
 common and recursive steps ([split checks](validation/mach-inlet-amr-split-20260925.md)).
 AMR spray coupling forwards the controls through the gas composition and both
 LES half steps ([spray checks](validation/mach-inlet-amr-spray-20260925.md)).
-Application input, timestep and restart-context integration remain open.
+Serial fixed/selected AMR gas application input, current-donor timestep limits
+and restart checks are connected
+([application checks](validation/mach-inlet-amr-application-20260925.md)). MPI gas
+and spray application integration remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
