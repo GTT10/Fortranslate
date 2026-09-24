@@ -119,6 +119,46 @@ program test_spray_core
     call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
       options,1e-9_dp,totals0,ok)
     call require(ok.and.all(component_mass==saved_mass).and.p%mass==q%mass,'evaporation disabled preserves small drops')
+  case('many_to_one')
+    mixture_components=liquid;mixture_y=[.4_dp,.6_dp]
+    primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+    do n=1,2
+      if (n==2) then
+        primitive(15)=.8_dp;primitive(5+liquid%vapor_index)=.2_dp
+      end if
+      call build_spray_film(species,transport,primitive,600.0_dp,p,liquid,options,film,ok)
+      call require(ok,'single liquid reference film')
+      value=film%surface_fraction;td=film%ambient_fraction;z=film%diffusivity
+      call build_mixture_film(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+        film,mixture_rates,vapor_h,ok)
+      call require(ok,'shared vapor film')
+      call require(abs(film%surface_fraction-value)<2e-14_dp,'shared vapor collapses before skin interpolation')
+      call require(film%ambient_fraction==td,'shared ambient counted once')
+      call require(abs(film%diffusivity/z-1)<2e-13_dp,'shared diffusion matches pure liquid')
+      call require(maxval(abs(mixture_rates-mixture_y))<2e-14_dp,'component transfer weights remain separate')
+    end do
+    mixture_components(2)%reference_pressure=1e-6_dp
+    call build_mixture_film(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+      film,mixture_rates,vapor_h,ok)
+    call require(ok.and.film%surface_fraction>0.and.mixture_rates(1)==1.and.mixture_rates(2)==0, &
+      'inactive later component does not clear shared active species')
+    mixture_components=liquid
+    p%mass=1e-9_dp;p%multiplicity=10;q=p;component_mass=p%mass*mixture_y;saved_mass=component_mass
+    evaporated_mass=.01_dp*component_mass;vapor_h=liquid_energy(liquid,p%temperature)
+    call advance_mixture_evaporation(p,mixture_components,component_mass,evaporated_mass,vapor_h,0.0_dp,totals0,ok)
+    expected=q%multiplicity*sum(evaporated_mass)
+    call require(ok.and.abs(totals0(5+liquid%vapor_index)-expected)<1e-24_dp,'shared parcel gas source is additive')
+    call require(totals0(1)==totals0(5+liquid%vapor_index),'shared parcel species closes total mass')
+    call require(all(component_mass==saved_mass-evaporated_mass),'shared parcel component inventories retained')
+    wall_patch=spray_wall_film([0.0_dp,0.0_dp,0.0_dp],[0.0_dp,0.0_dp,1.0_dp],1e-8_dp,350.0_dp, &
+      1e-3_dp,1e-8_dp/(1000*.25_dp*pi*1e-6_dp),1)
+    saved_patch=wall_patch;component_mass=wall_patch%mass*mixture_y;saved_mass=component_mass
+    evaporated_mass=.01_dp*component_mass
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,evaporated_mass,vapor_h, &
+      0.0_dp,0.0_dp,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.abs(totals0(5+liquid%vapor_index)-sum(evaporated_mass))<1e-24_dp,'shared film source is additive')
+    call require(totals0(1)==totals0(5+liquid%vapor_index),'shared film species closes total mass')
+    call require(all(component_mass==saved_mass-evaporated_mass),'shared film component inventories retained')
   case('mixture_rates')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
@@ -179,7 +219,14 @@ program test_spray_core
     primitive(15)=.1_dp;primitive(5+mixture_components(2)%vapor_index)=.9_dp
     call mixture_transfer_rates(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
       inverse_tau,heat,mixture_rates,vapor_h,ok)
-    call require(ok.and.mixture_rates(1)>0.and.mixture_rates(2)==0,'ambient vapor suppresses one component')
+    ! Pinned gate compares pure psat to X_liquid*X_gas for unique mappings.
+    ! Both components remain in the vapor state here, whose total Y is below
+    ! the ambient total; the aggregate no-condensation limiter suppresses loss.
+    call require(ok.and.all(mixture_rates==0),'wet ambient suppresses aggregate evaporation')
+    call build_mixture_film(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+      film,mixture_rates,vapor_h,ok)
+    call require(ok.and.all(mixture_rates>0),'reference vapor gate retains both components')
+    call require(film%surface_fraction<film%ambient_fraction,'wet reference Spalding number is negative')
   case('mixture_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
@@ -416,8 +463,10 @@ program test_spray_core
     primitive(5+liquid%vapor_index)=.001_dp;primitive(15)=.999_dp
     call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
       options,.6_dp,400.0_dp,1e-10_dp,1e-15_dp,totals0,heat,ok)
-    call require(ok.and.component_mass(1)==saved_mass(1),'ambient-suppressed film trace retained')
-    call require(totals0(5+liquid%vapor_index)==0,'suppressed trace has no gas source')
+    ! Unlike the old partial-pressure gate, the pinned pure-psat comparison
+    ! retains this dilute component: X_liquid*X_gas is much smaller than psat/P.
+    call require(ok.and.component_mass(1)==0,'reference gate releases active film trace in humid gas')
+    call require(totals0(5+liquid%vapor_index)==saved_mass(1),'humid trace retains complete species budget')
   case('mixture_wall_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &

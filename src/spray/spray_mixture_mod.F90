@@ -12,7 +12,7 @@ module spray_mixture_mod
   implicit none
   private
   real(dp), parameter, public :: mixture_trace_fraction=1e-12_dp
-  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v2-terminal'
+  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v3-vapor-mapping'
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
   public :: liquid_mixture_surface, advance_mixture_evaporation
   public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas, valid_component_inventory
@@ -39,7 +39,8 @@ contains
     do i=1,size(y)
       if (.not.valid_spray_liquid(components(i))) return
       do j=1,i-1
-        if (components(i)%vapor_index==components(j)%vapor_index) return
+        if (components(i)%vapor_index==components(j)%vapor_index.and. &
+            components(i)%vapor_name/=components(j)%vapor_name) return
       end do
     end do
     ok=.true.
@@ -139,6 +140,7 @@ contains
     real(dp) :: yf(size(species)),yg(size(species)),xg(size(species)),ys(size(species)),mw_g(size(species))
     real(dp) :: diffusion(size(species)),binary(size(species),size(species)),tf,r,mw,cp,cv,gamma,h,e,entropy
     real(dp) :: carrier_mw,carrier_y,denom,sum_x,carrier_sum,resistance,di,cp_i
+    real(dp) :: liquid_x(size(y)),group_x(size(species)),ambient_component
     logical :: active(size(species)),valid
     type(spray_film) :: candidate
     integer :: i,j,v
@@ -166,11 +168,19 @@ contains
     if (options%evaporation) then
       call liquid_mixture_surface(components,y,mw_liq,parcel%temperature,primitive(5),xs,valid,enthalpy)
       if (.not.valid) return
+      liquid_x=(y/mw_liq)/sum(y/mw_liq);group_x=0
       do i=1,size(y)
         v=components(i)%vapor_index
-        ! No condensation: retain only components with outward vapor driving force.
-        if (xs(i)<=xg(v)) xs(i)=0
-        active(v)=xs(i)>0
+        group_x(v)=group_x(v)+liquid_x(i)
+      end do
+      do i=1,size(y)
+        v=components(i)%vapor_index
+        ! Pinned Drag.H: distribute ambient mole fraction to liquid species,
+        ! compare pure-component psat to its share, then retain Raoult vapor.
+        ambient_component=liquid_x(i)*xg(v)
+        if (group_x(v)>liquid_x(i)) ambient_component=ambient_component/group_x(v)
+        if (xs(i)<=liquid_x(i)*ambient_component) xs(i)=0
+        active(v)=active(v).or.xs(i)>0
       end do
     end if
     sum_x=sum(xs);yf=yg;ys=0
@@ -181,9 +191,9 @@ contains
       denom=sum(xs*mw_liq)+(1-sum_x)*carrier_mw
       do i=1,size(y)
         v=components(i)%vapor_index
-        ys(v)=xs(i)*mw_liq(i)/denom
-        if (active(v)) yf(v)=(2*ys(v)+yg(v))/3
+        ys(v)=ys(v)+xs(i)*mw_liq(i)/denom
       end do
+      where (active) yf=(2*ys+yg)/3
       where (.not.active) yf=yg*(1-sum(yf,mask=active))/carrier_y
     end if
     tf=(2*parcel%temperature+gas_temperature)/3
@@ -400,7 +410,8 @@ contains
     exchange=0
     do i=1,n
       if (components(i)%vapor_index>size(exchange)-5) return
-      exchange(5+components(i)%vapor_index)=parcel%multiplicity*evaporated_mass(i)
+      exchange(5+components(i)%vapor_index)=exchange(5+components(i)%vapor_index)+ &
+        parcel%multiplicity*evaporated_mass(i)
     end do
     exchange(1)=sum(exchange(6:));exchange(2:4)=exchange(1)*parcel%velocity
     kinetic=.5_dp*sum(parcel%velocity**2)

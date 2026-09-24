@@ -714,6 +714,22 @@ class SprayApplication(unittest.TestCase):
         self.assertIn('incompatible spray checkpoint', result.stdout.lower())
         self.run_case('default_boiling', common='drop_temperature=400,', fail=True)
 
+    def test_many_to_one_restart(self):
+        settings = ("mixture_count=2,mixture_vapor_names='H2O','H2O',mixture_fractions=.6,.4,"
+                    "mixture_densities=1000,800,mixture_cps=4184,2000,"
+                    "mixture_reference_temperatures=373.15,373.15,mixture_latent_heats=2257000,2e6,")
+        checkpoint = self.root/'shared.chk'
+        self.run_case('shared', common=settings)
+        self.check_balance('shared')
+        self.run_case('shared_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+        self.run_case('shared_resumed', f"restart_file='{checkpoint}',", common=settings)
+        for suffix in ['gas.csv', 'parcels.csv']:
+            self.assertEqual((self.root/f'shared.{suffix}').read_bytes(),
+                             (self.root/f'shared_resumed.{suffix}').read_bytes())
+        result = self.run_case('shared_changed', f"restart_file='{checkpoint}',", fail=True,
+                               common=settings.replace('1000,800', '1000,801'))
+        self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+
     def test_pelemp_cap_restart(self):
         variants = [
             "reference_temperature=300,boiling_model='pelemp-cap',critical_temperature=647,"

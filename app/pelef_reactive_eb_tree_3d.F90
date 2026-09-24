@@ -22,7 +22,7 @@ program pelef_reactive_eb_tree_3d
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
-  use spray_mixture_mod, only: liquid_mixture_properties
+  use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
   use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
 #endif
@@ -713,7 +713,7 @@ contains
       if(code==0) write(stream,'(es27.18e3)',iostat=code) nodal_phi
       if(code/=0) error stop 'Cannot serialize spray context'
       rewind(stream)
-      spray_context=''
+      spray_context=mixture_evolution_id//'|'
       do
         read(stream,'(a)',iostat=code) context_line
         if(code==iostat_end) exit

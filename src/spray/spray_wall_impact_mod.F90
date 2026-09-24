@@ -295,7 +295,7 @@ contains
     end if
     loss=component_mass-remaining;exchange=0
     do i=1,n
-      exchange(5+components(i)%vapor_index)=loss(i)
+      exchange(5+components(i)%vapor_index)=exchange(5+components(i)%vapor_index)+loss(i)
     end do
     exchange(1)=sum(loss);exchange(5)=patch%mass*old_e-next%mass*new_e+wall_heat
     if (.not.all(ieee_is_finite(exchange))) return

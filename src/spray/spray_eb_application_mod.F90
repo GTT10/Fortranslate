@@ -16,7 +16,7 @@ module spray_eb_application_mod
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
   use spray_parcel_mod
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
-  use spray_mixture_mod, only: liquid_mixture_properties
+  use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
   use spray_eb_reactive_mod, only: advance_eb_spray_reactive_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_wall_impact_mod, only: spray_wall_film
@@ -467,7 +467,7 @@ contains
       if(present(mole_fractions)) composition=mole_fractions
       open(newunit=scratch,status='scratch',form='formatted',delim='quote',iostat=ios)
       if(ios/=0) error stop 'Cannot prepare EB checkpoint context'
-      write(scratch,'(a)',iostat=ios) 'EB_SPRAY_CONTEXT_V2'
+      write(scratch,'(a)',iostat=ios) 'EB_SPRAY_CONTEXT_V2',mixture_evolution_id
       if(ios==0) write(scratch,*,iostat=ios) canonical
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)

@@ -2,7 +2,7 @@ module spray_mpi_amr_application_mod
   use les_filter_3d_mod, only: les_filter_weights
   use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
-  use spray_mixture_mod, only: liquid_mixture_properties
+  use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
   use mpi_f08
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
@@ -445,7 +445,7 @@ contains
       write(unit,nml=amr_spray_velocity,iostat=ios)
       if (ios/=0) call fatal('Cannot serialize rate velocity context')
     end if
-    rewind(unit);spray_context=''
+    rewind(unit);spray_context=mixture_evolution_id//achar(10)
     do
       read(unit,'(a)',iostat=ios) context_line
       if (ios<0) exit
