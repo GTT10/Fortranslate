@@ -17,7 +17,9 @@ now constructs its ghosts at both SSPRK2 stages
 also rebuilds Mach inlet states per stage
 ([transport checks](validation/mach-inlet-transport-20260925.md)). The full serial
 reaction/transport/hydro composition forwards the same controls
-([split checks](validation/mach-inlet-split-20260925.md)); input, LES, AMR and MPI
+([split checks](validation/mach-inlet-split-20260925.md)). Regular fixed/selected
+input and per-step inlet timestep limits are connected
+([input checks](validation/mach-inlet-input-20260925.md)); LES, AMR and MPI
 dispatch remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping

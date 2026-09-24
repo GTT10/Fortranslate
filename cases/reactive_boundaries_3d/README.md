@@ -28,6 +28,28 @@ z-low, z-high**. Empty entries inherit `boundary_condition` (default
   ghosts; wall reflections then apply. Avoid conflicting reservoir states at
   adjacent inlets unless this corner convention is intended. The timestep
   also accounts for inlet wave speeds and inlet transport diffusivity.
+  To use the pinned nozzle-style Mach inlet instead, set `inflow_mach(face)`
+  between 0 and 100 (default -1 retains the reservoir). The velocity points
+  inward along the face normal with magnitude Mach times the inlet sound speed;
+  `inflow_velocity(:,face)` must remain zero. Temperature is prescribed by
+  `inflow_temperature`; composition comes from each stage's interior donor,
+  including when a shared reservoir composition is supplied for other faces.
+  `inflow_pressure(face)=0` extrapolates interior pressure; a positive value
+  prescribes pressure (default 101325 Pa, maximum 1e15 Pa). For example:
+
+  ```fortran
+  inflow_mach(1)=0.2
+  inflow_temperature(1)=1200
+  inflow_pressure(1)=0
+  ```
+
+  Both regular fixed/selected front ends connect this mode through reaction,
+  molecular transport and hydro. Before each step, padded current inlet states
+  contribute to the hydro and diffusion timestep limits. This adds padded-grid
+  work only when a Mach inlet is active. `mach_inlet.nml` combines extrapolated
+  and prescribed-pressure Mach faces with chemistry and molecular transport.
+  Other applications reject active Mach inputs until their dispatch is connected.
+  This is a prescribed Mach ghost state, not GC-NSCBC or nozzle validation.
 - `outflow`: copy the nearest physical cell into ghost cells (zero-gradient
   extrapolation). Optional `outlet_pressure(6)` entries select characteristic
   pressure extrapolation on these faces: zero keeps the default, positive
