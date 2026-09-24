@@ -19,6 +19,7 @@ module reactive_3d_mod
   implicit none
   private
 
+  public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
   public :: compute_reactive_ppm_normal_fluxes_3d
   public :: advance_reactive_boundary_hydro_3d
@@ -255,6 +256,48 @@ contains
       good=.true.
     end subroutine
   end subroutine compute_reactive_ppm_ctu_fluxes_3d
+
+  ! One conservative CTU step. A failed final EOS recovery rolls back the
+  ! complete field and limiter diagnostic; the caller can retry a smaller dt.
+  subroutine advance_reactive_euler_ppm_ctu_3d(species,state,temperature,spacing,dt, &
+      steepening,flattening,solver,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),minimum_theta
+    real(dp), intent(in) :: spacing(3),dt
+    logical, intent(in) :: steepening,flattening
+    character(len=*), intent(in) :: solver
+    logical, intent(out) :: ok
+    real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),candidate(:,:,:,:),ct(:,:,:)
+    real(dp) :: theta
+    integer :: n(3),nv,i,j,k
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species));n=shape(temperature)
+    if (any(n<2).or.any(shape(state)/=[nv,n])) return
+    if (.not.all(ieee_is_finite(spacing)).or..not.ieee_is_finite(dt)) return
+    if (any(spacing<=0).or.dt<0) return
+    allocate(ct(n(1),n(2),n(3)))
+    if (dt==0) then
+      call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
+      if (.not.valid) return
+      minimum_theta=1;ok=.true.;return
+    end if
+    allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,steepening,flattening, &
+      solver,fx,fy,fz,theta,valid)
+    if (.not.valid) return
+    candidate=state
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      candidate(:,i,j,k)=state(:,i,j,k)-(dt/spacing(1))*(fx(:,i,j,k)-fx(:,i-1,j,k))- &
+        (dt/spacing(2))*(fy(:,i,j,k)-fy(:,i,j-1,k))-(dt/spacing(3))*(fz(:,i,j,k)-fz(:,i,j,k-1))
+    end do
+    end do
+    end do
+    call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
+    if (.not.valid) return
+    state=candidate;temperature=ct;minimum_theta=theta;ok=.true.
+  end subroutine advance_reactive_euler_ppm_ctu_3d
 
   subroutine compute_reactive_cfl_timestep_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, cfl, dt, ok)
@@ -1306,7 +1349,7 @@ contains
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
     real(dp) :: change(size(state,1)),hydro_change(size(state,1)),transport_change(size(state,1))
-    real(dp) :: stage_transport_theta
+    real(dp) :: stage_transport_theta,transverse_theta
     logical :: local_ok
     integer :: nvar
     character(len=32) :: selected_reconstruction, selected_limiter
@@ -1356,7 +1399,9 @@ contains
     end if
     if (transport_enabled .and. size(transport) /= size(species)) return
     if (trim(selected_reconstruction) /= "pcm" .and. &
-        trim(selected_reconstruction) /= "characteristic_plm") return
+        trim(selected_reconstruction) /= "characteristic_plm" .and. &
+        trim(selected_reconstruction) /= "characteristic_ppm") return
+    if (selected_reconstruction=="characteristic_ppm".and.any(faces/="periodic")) return
     if (trim(selected_limiter) /= "minmod" .and. &
         trim(selected_limiter) /= "mc") return
 
@@ -1393,6 +1438,9 @@ contains
         call advance_reactive_euler_ssprk2_3d( &
           species, candidate_state, candidate_temperature, nx, ny, nz, &
           dx, dy, dz, dt, riemann_solver, local_ok)
+      case ("characteristic_ppm")
+        call advance_reactive_euler_ppm_ctu_3d(species,candidate_state,candidate_temperature,[dx,dy,dz],dt, &
+          .false.,.true.,riemann_solver,transverse_theta,local_ok)
       case ("characteristic_plm")
         call advance_reactive_euler_ssprk2_plm_3d( &
           species, candidate_state, candidate_temperature, nx, ny, nz, &

@@ -829,3 +829,7 @@ set_tests_properties(regression_eb_tree_subcycle_auto_3d PROPERTIES TIMEOUT 180)
 add_executable(test_reactive_ppm_normal_3d unit/test_reactive_ppm_normal_3d.F90)
 target_link_libraries(test_reactive_ppm_normal_3d PRIVATE pelef_core)
 add_test(NAME unit_reactive_ppm_normal_3d COMMAND test_reactive_ppm_normal_3d)
+
+add_executable(test_reactive_ppm_step_3d unit/test_reactive_ppm_step_3d.F90)
+target_link_libraries(test_reactive_ppm_step_3d PRIVATE pelef_core)
+add_test(NAME unit_reactive_ppm_step_3d COMMAND test_reactive_ppm_step_3d)
