@@ -1170,10 +1170,14 @@ See [component-exchange evidence](validation/spray-mixture-exchange-20260916.md)
 
 ### Mixed-liquid film transport and frozen-gas update
 
-`build_mixture_film` combines the liquid surface fractions with the ambient gas.
-A component with surface mole fraction no greater than its ambient fraction has
-zero outward flux. The remaining gas species provide the carrier molecular weight;
-the one-third film rule supplies temperature and composition. Each vapor uses the
+`build_mixture_film` combines liquid surface fractions with the ambient gas.
+The pinned pure-saturation-pressure gate described above selects vapor components.
+The complete ambient mixture, including existing fuel vapor, supplies the mean
+molecular weight in the vapor-to-mass conversion. The one-third film rule supplies
+droplet skin temperature and composition; wall film uses its one-half rule.
+Inactive gas species are renormalized to close the skin mass fractions. Single
+liquid and mixture builders use the same conversion and activity ordering.
+Each vapor uses the
 existing carrier-mole harmonic binary diffusivity. Effective diffusivity is the
 surface-mole-weighted average; component evaporation shares are proportional to
 `X_surface_i * D_i`, following the reference's component weighting structure.
@@ -1182,8 +1186,12 @@ surface-mole-weighted average; component evaporation shares are proportional to
 Ranz–Marshall/Abramzon–Sirignano correlations using the actual mixed-liquid density
 and heat capacity. It returns inverse drag time, heat coefficient in W/K,
 component mass rates in kg/s **per physical droplet**, and vapor enthalpies.
-It uses PeleF's carrier molecular weight, binary diffusivities and film-cp heat
-correction; this is not exact upstream coefficient parity.
+It retains PeleF's binary diffusivity convention and film-cp heat correction;
+this is not exact upstream coefficient parity. The ambient-mixture conversion
+and wet-gas restart checks are recorded in
+[the skin-state evidence](validation/ambient-vapor-skin-20260925.md). Regular
+checkpoint context and mixture evolution identity changed with this numerical
+correction, so older model contexts are rejected.
 
 `advance_mixture_frozen_gas` combines exponential drag, trapezoidal flight,
 heat transfer and component evaporation over a supplied interval. Gas state is

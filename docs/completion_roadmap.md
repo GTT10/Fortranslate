@@ -40,6 +40,9 @@ component vapor and sources conservatively
 liquid molecular-weight inputs now feed liquid mole fractions, vapor pressure,
 boiling and restart identity
 ([integration evidence](validation/liquid-molecular-weights-20260925.md)).
+Single/mixed vapor-state conversion now uses the complete ambient mean molecular
+weight and reference activity ordering
+([skin-state evidence](validation/ambient-vapor-skin-20260925.md)).
 GCM is excluded from this pinned PeleC port because upstream restricts it to
 PeleLMeX; PeleMP is the available alternative. See the
 [property source audit](validation/spray-property-scope-20260925.md).
