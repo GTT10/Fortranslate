@@ -19,8 +19,11 @@ from `/mnt/sn850/Projects/gtt2/external/PeleC`. Header SHA256:
 `1bf575907a03764f17d7fe1580c5f546755846d6c9ee4badb42d8499fb4a9f27`.
 Single pressure floor is `epsilon*1e-100`; double floor is `tiny`.
 This covers regular cells without forcing sources. Normal conserved predictors
-still come from reconstructed primitive states through the EOS: separate normal
-internal-energy tracing and full reference parity are not established.
+come from reconstructed primitive states through the EOS. Follow-up inspection
+confirmed that the pinned reference also recomputes normal internal energy this
+way; its independent energy projection is commented out. See the
+[normal-tracing correction](ppm-multidirectional-flattening-20260925.md). Full
+reference parity remains unestablished.
 
 ## Completed checks
 
