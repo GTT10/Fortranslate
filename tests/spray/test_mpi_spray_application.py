@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--pressure-outlet', action='store_true')
+    parser.add_argument('--rate-files', action='store_true')
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
@@ -85,13 +86,13 @@ def main():
     assert repeated.returncode != 0
     assert (work / 'periodic_mixture.history.csv').read_bytes() == original
 
-    def run_variant(name, rank_count, additions, stop=None, expect_success=True):
+    def run_variant(name, rank_count, additions, stop=None, expect_success=True, file_group=''):
         text = source.replace("output_prefix='periodic_mixture'", f"output_prefix='{name}'")
         if stop is not None:
             text = text.replace('final_time=2e-8', f'final_time={stop}')
         text = text.replace('\n/', '\n' + additions + '\n/')
         path = work / f'{name}.nml'
-        path.write_text(text)
+        path.write_text(text + file_group)
         invocation = [str(args.mpiexec.resolve()), '-n', str(rank_count),
                       str(args.executable.resolve()), str(path)]
         output = subprocess.run(invocation, cwd=work, capture_output=True, text=True, timeout=90)
@@ -101,6 +102,42 @@ def main():
     def snapshots(prefix, suffix, keys):
         records = [row for path in sorted(work.glob(f'{prefix}.rank*.{suffix}.csv')) for row in rows(path)]
         return {tuple(int(row[key]) for key in keys): row for row in records}
+
+    if args.rate_files:
+        ports = ('port_count=2,port_events=2,2,port_start=0,7.5e-9,'
+                 'port_interval=2*7.5e-9,port_number=2,3,')
+        inline = (ports + 'injection_profile_points=2,injection_profile_times=0,1.5e-8,'
+                  'injection_profile_rates=.01,.01,port_profile_points=0,3,'
+                  'port_profile_times(:,2)=7.5e-9,1.5e-8,2.25e-8,port_profile_rates(:,2)=0,0,.04,')
+        (work / 'shared.dat').write_text('# common\n0 .01\n1.5e-8 .01\n')
+        (work / 'port2.dat').write_text('7.5e-9 0\n1.5e-8\t0\n2.25e-8 .04 ! end\n')
+        group = "\n&mpi_spray_rate_files profile_file='shared.dat',profile_files(2)='port2.dat' /\n"
+        run_variant('inline', args.ranks, inline)
+        run_variant('files', args.ranks, ports, file_group=group)
+        run_variant('split_files', args.ranks, ports + "checkpoint_path='files.chk'",
+                    stop='7.5e-9', file_group=group)
+        (work / 'renamed.dat').write_text('0 .01\n1.5e-8 .01 # renamed\n')
+        run_variant('resume_files', 6 - args.ranks, ports + "restart_path='files.chk'",
+                    file_group=group.replace('shared.dat', 'renamed.dat'))
+        for name in ('files', 'resume_files'):
+            for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+                reference, actual = snapshots('inline', suffix, keys), snapshots(name, suffix, keys)
+                assert reference.keys() == actual.keys()
+                for key, record in reference.items():
+                    for column, value in record.items():
+                        assert math.isclose(float(value), float(actual[key][column]), rel_tol=2e-11, abs_tol=1e-25)
+        history = rows(work / 'files.history.csv')
+        assert math.isclose(float(history[-1]['injected_mass']), 3e-10, rel_tol=1e-14)
+        (work / 'shared.dat').write_text('0 .01\n1.5e-8 .02\n')
+        run_variant('changed', args.ranks, ports + "restart_path='files.chk'", expect_success=False, file_group=group)
+        assert 'Restart rejected' in (work / 'changed.log').read_text()
+        (work / 'shared.dat').write_text('0 .01\n1.5e-8 -.01\n')
+        run_variant('invalid_file', args.ranks, ports, expect_success=False, file_group=group)
+        assert 'Invalid spray rate file' in (work / 'invalid_file.log').read_text()
+        for name in ('changed', 'invalid_file'):
+            assert not (work / f'{name}.history.csv').exists()
+        print(f'PASS MPI rate files, inline parity and changed-rank restart: {work}')
+        return
 
     run_variant('split', args.ranks, " checkpoint_path='split.chk'", stop='1e-8')
     assert (work / 'split.chk').is_file()

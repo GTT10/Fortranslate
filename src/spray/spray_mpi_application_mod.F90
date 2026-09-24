@@ -18,7 +18,7 @@ module spray_mpi_application_mod
   use spray_coupling_3d_mod, only: mixture_system_totals
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
   use spray_checkpoint_mod, only: spray_checkpoint_context_capacity
-  use spray_injection_profile_mod, only: integrate_spray_injection_profile
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod, only: mixture_evolution_id
   use spray_mpi_mod
   implicit none
@@ -55,6 +55,8 @@ contains
   integer :: cells(3)=[8,4,4],number=4,max_steps=10000,injection_events=1
   real(dp) :: injection_start=0,injection_interval=1e-8_dp
   integer :: injection_profile_points=0
+  character(len=1024) :: profile_file='',profile_files(16)=''
+  namelist /mpi_spray_rate_files/ profile_file,profile_files
   real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,profile_mass
   character(len=4096) :: profile_context
   integer :: port_profile_points(16)=0
@@ -122,7 +124,27 @@ contains
     call require(status==0,'Cannot open input')
     read(unit,nml=mpi_spray,iostat=status)
     call require(status==0,'Invalid mpi_spray namelist')
+    rewind(unit)
+    read(unit,nml=mpi_spray_rate_files,iostat=status)
+    call require(status<=0,'Invalid mpi_spray_rate_files namelist')
     close(unit)
+    call require(port_count>=0.and.port_count<=16,'Invalid port count')
+    call require(all(profile_files(port_count+1:)==''),'Unused rate files')
+    if(len_trim(profile_file)>0) then
+      call require(injection_profile_points==0.and.all(injection_profile_times==0).and. &
+        all(injection_profile_rates==0),'Rate file conflicts with inline profile')
+      call read_spray_injection_profile(trim(profile_file),injection_profile_times, &
+        injection_profile_rates,injection_profile_points,ok)
+      call require(ok,'Invalid spray rate file')
+    end if
+    do p=1,port_count
+      if(len_trim(profile_files(p))==0) cycle
+      call require(port_profile_points(p)==0.and.all(port_profile_times(:,p)==0).and. &
+        all(port_profile_rates(:,p)==0),'Rate file conflicts with inline profile')
+      call read_spray_injection_profile(trim(profile_files(p)),port_profile_times(:,p), &
+        port_profile_rates(:,p),port_profile_points(p),ok)
+      call require(ok,'Invalid spray rate file')
+    end do
     write(input_record,nml=mpi_spray,iostat=status)
     call require(status==0,'Input serialization failed')
   end if
