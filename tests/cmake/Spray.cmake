@@ -637,6 +637,12 @@ if(PELEF_ENABLE_SPRAY)
     set_tests_properties(spray_mpi_pressure_outlet_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
   endif()
   if(PELEF_ENABLE_MPI)
+    add_executable(test_les_mpi_amr_level spray/test_les_mpi_amr_level.F90)
+    target_link_libraries(test_les_mpi_amr_level PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
+    add_test(NAME spray_les_mpi_amr_level_2
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_les_mpi_amr_level> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(spray_les_mpi_amr_level_2 PROPERTIES LABELS "spray;amr;mpi" TIMEOUT 120 PROCESSORS 2)
     add_executable(test_les_mpi_amr_tree spray/test_les_mpi_amr_tree.F90)
     target_link_libraries(test_les_mpi_amr_tree PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     foreach(les_ranks 2 4)
