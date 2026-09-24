@@ -19,8 +19,10 @@ also rebuilds Mach inlet states per stage
 reaction/transport/hydro composition forwards the same controls
 ([split checks](validation/mach-inlet-split-20260925.md)). Regular fixed/selected
 input and per-step inlet timestep limits are connected
-([input checks](validation/mach-inlet-input-20260925.md)); LES, AMR and MPI
-dispatch remain open.
+([input checks](validation/mach-inlet-input-20260925.md)). Regular Smagorinsky,
+WALE, Vreman and Dynamic LES operators also accept the Mach controls
+([LES checks](validation/mach-inlet-les-20260925.md)); spray application, AMR and
+MPI dispatch remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
