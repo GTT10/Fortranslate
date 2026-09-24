@@ -33,8 +33,10 @@ molecular transport, static LES and mixture splitting now forward the controls
 input, timestep limits and rank-changing restart are connected
 ([application checks](validation/mach-inlet-mpi-application-20260925.md)). The
 abrupt-start timestep restriction from unused Dynamic filter padding is corrected
-([startup checks](validation/dynamic-active-face-timestep-20260925.md)). AMR Mach
-dispatch remains open.
+([startup checks](validation/dynamic-active-face-timestep-20260925.md)). The AMR
+ghost sampler now reconstructs Mach inlet states after donor interpolation
+([ghost checks](validation/mach-inlet-amr-ghosts-20260925.md)). AMR stepping,
+MPI dispatch and application input remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
