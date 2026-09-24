@@ -240,6 +240,14 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--ppm-coarse-only') then
+      call check_physical_halos(4)
+      call check_physical_coarse_hydro(.true.)
+      if (distribution%rank==0) print *, 'PASS: sparse PPM coarse hydro and four-layer halos'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--pressure-transport-only') then
       call check_physical_hierarchy(2,.true.,transport_mode=.true.)
       if (distribution%rank==0) print *, 'PASS: sparse pressure transport and full split'
@@ -976,12 +984,16 @@ contains
     end do
   end subroutine check_physical_hierarchy
 
-  subroutine check_physical_coarse_hydro()
+  subroutine check_physical_coarse_hydro(ppm)
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),reference(:,:,:,:),rt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp), allocatable :: inlet(:,:),it(:),ledger(:),expected(:),sx(:,:,:,:),sy(:,:,:,:),sz(:,:,:,:)
+    logical, optional, intent(in) :: ppm
+    logical :: use_ppm
     character(len=32) :: faces(6),method
     real(dp) :: pressure(6)
     integer :: mode,lo,hi,nv,trial
+    use_ppm=.false.
+    if (present(ppm)) use_ppm=ppm
     lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last;nv=size(coarse_state,1)
     allocate(inlet(nv,6),it(6),ledger(nv),expected(nv))
     allocate(sx,mold=coarse_state);allocate(sy,mold=coarse_state);allocate(sz,mold=coarse_state)
@@ -989,6 +1001,7 @@ contains
     inlet(:,3)=1.1_dp*inlet(:,3)
     faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
     do trial=1,4
+      if (use_ppm.and.trial>3) cycle
       mode=modulo(trial-1,2)+1
       pressure=0
       if (trial>2) then
@@ -996,6 +1009,11 @@ contains
       end if
       method='pcm'
       if (mode==2) method='characteristic_plm'
+      if (use_ppm) then
+        method='characteristic_ppm';pressure=0
+        if (trial==2) pressure(2)=102325
+        if (trial==3) faces='periodic'
+      end if
       reference=coarse_state;rt=coarse_temperature
       call advance_reactive_boundary_hydro_3d(species,reference,rt,[dx,dy,dz],1e-7_dp, &
         faces,method,'mc',config%riemann_solver,expected,ok,inlet,it,sx,sy,sz,pressure)
@@ -1008,9 +1026,20 @@ contains
         'sparse physical coarse state and temperature exactly match serial')
       call require(all(fx(:,1:,:,:)==sx(:,lo:hi,:,:)).and.all(fy(:,:,1:,:)==sy(:,lo:hi,:,:)).and. &
         all(fz(:,:,:,1:)==sz(:,lo:hi,:,:)),'physical coarse mean reflux fluxes exactly match serial')
-      call require(all(abs(ledger-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
-        'physical boundary reduction matches serial surface ledger')
-      call require(maxval(abs(ledger))>1e-12_dp,'physical boundary flux is exercised')
+      if (.not.all(faces=='periodic')) &
+        call require(all(abs(ledger-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
+          'physical boundary reduction matches serial surface ledger')
+      if (.not.all(faces=='periodic')) &
+        call require(maxval(abs(ledger))>1e-12_dp,'physical boundary flux is exercised')
+      if (use_ppm.and.trial==3) then
+        u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
+        call advance_mpi_amr_sparse_periodic_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,method,'mc',fx,fy,fz,ok)
+        call require(ok.and.all(u==reference(:,lo:hi,:,:)).and.all(t==rt(lo:hi,:,:)), &
+          'PPM periodic coarse update matches serial exactly')
+        call require(all(fx(:,1:,:,:)==sx(:,lo:hi,:,:)).and.all(fy==sy(:,lo:hi,:,:)).and. &
+          all(fz==sz(:,lo:hi,:,:)),'PPM periodic coarse flux interface matches serial')
+      end if
       u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
       if (sparse_distribution%rank==0) inlet(1,3)=-1
       call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
@@ -1020,18 +1049,35 @@ contains
         'physical hydro rank-local invalid inlet rolls back collectively')
       inlet(1,3)=1.1_dp*coarse_state(1,1,1,1)
     end do
+    if (use_ppm) then
+      u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
+      call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1._dp, &
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok)
+      call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
+        all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0),'PPM coarse CFL rollback')
+      if (sparse_distribution%rank==0) method='characteristic_plm'
+      if (sparse_distribution%nranks>1) then
+        call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
+          config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok)
+        call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
+          all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0),'PPM rank selector mismatch rollback')
+      end if
+    end if
   end subroutine check_physical_coarse_hydro
 
-  subroutine check_physical_halos()
+  subroutine check_physical_halos(ghost_width)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),reference(:,:,:,:),rt(:,:,:),saved(:,:,:,:),st(:,:,:)
     real(dp), allocatable :: inlet(:,:),it(:)
     real(dp) :: velocity(3,6),pressure(6)
     character(len=32) :: faces(6)
-    integer :: mode,lo,hi
-    allocate(reference(size(coarse_state,1),n+4,n+4,n+4),rt(n+4,n+4,n+4))
+    integer, optional, intent(in) :: ghost_width
+    integer :: mode,lo,hi,width,trial_width
+    width=2
+    if (present(ghost_width)) width=ghost_width
+    allocate(reference(size(coarse_state,1),n+2*width,n+2*width,n+2*width),rt(n+2*width,n+2*width,n+2*width))
     allocate(inlet(size(coarse_state,1),6),it(6))
     inlet=spread(coarse_state(:,1,1,1),2,6);it=coarse_temperature(1,1,1)
-    lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last+4
+    lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last+2*width
     do mode=1,3
       faces='periodic';velocity=0
       if (mode==1) then
@@ -1043,37 +1089,42 @@ contains
         faces(1)='inflow';faces(2)='outflow';faces(3)='no_slip_wall';faces(4)='no_slip_wall'
       end if
       call fill_reactive_boundary_ghosts_3d(coarse_state,coarse_temperature,faces,reference,rt,ok, &
-        viscous_wall=mode==2,inflow_state=inlet,inflow_temperature=it,wall_velocity=velocity)
+        viscous_wall=mode==2,inflow_state=inlet,inflow_temperature=it,wall_velocity=velocity,ghost_width=width)
       call require(ok,'serial physical halo reference')
       call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
-        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity)
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,ghost_width=width)
       call require(ok,'sparse physical halo fill')
       call require(all(ghost==reference(:,lo:hi,:,:)).and.all(gt==rt(lo:hi,:,:)), &
         'sparse physical ghost faces and corners exactly match serial')
       pressure=0
       where(faces=='outflow') pressure=102325
-      call fill_pressure_outlet_ghosts_3d(species,[n,n,n],faces,pressure,reference,rt,ok)
+      call fill_pressure_outlet_ghosts_3d(species,[n,n,n],faces,pressure,reference,rt,ok,ghost_width=width)
       call require(ok,'serial pressure halo reference')
       call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
-        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,species,pressure)
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,species,pressure,ghost_width=width)
       call require(ok,'MPI pressure halos accepted')
       call require(all(ghost==reference(:,lo:hi,:,:)).and.all(gt==rt(lo:hi,:,:)), &
         'MPI pressure halos exactly equal serial')
       saved=ghost;st=gt
       if (sparse_distribution%rank==0) pressure=pressure+1
       call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
-        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,species,pressure)
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,species,pressure,ghost_width=width)
       call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'rank-local pressure rejection preserves halos')
       if (sparse_distribution%rank==0) it(1)=ieee_value(0.0_dp,ieee_quiet_nan)
       call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
-        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity)
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,mode==2,inlet,it,velocity,ghost_width=width)
       call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'one-rank invalid metadata preserves ghost outputs')
       it=coarse_temperature(1,1,1)
     end do
     if (sparse_distribution%nranks>1) then
+      trial_width=width
+      if (sparse_distribution%rank==0) trial_width=6-width
+      call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,.false.,inlet,it,velocity,ghost_width=trial_width)
+      call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'mismatched halo widths reject collectively')
       if (sparse_distribution%rank==0) faces(1)='outflow'
       call build_mpi_amr_sparse_boundary_halos_3d(sparse_distribution,sparse_hierarchy%coarse_state, &
-        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,.false.,inlet,it,velocity)
+        sparse_hierarchy%coarse_temperature,faces,ghost,gt,ok,.false.,inlet,it,velocity,ghost_width=width)
       call require(.not.ok.and.all(ghost==saved).and.all(gt==st),'mismatched physical faces reject collectively')
     end if
   end subroutine check_physical_halos

@@ -279,7 +279,8 @@ contains
     logical :: valid
     ok=.false.;xflux=0;yflux=0;zflux=0;minimum_theta=0
     nv=reactive_nvar(size(species))
-    if (any(n<2)) return
+    ! Supplied halos support a single owned cell on an MPI slab.
+    if (any(n<1)) return
     if (any(shape(ghost)/=[nv,n+8]).or.any(shape(gt)/=n+8)) return
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
     if (any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)])) return

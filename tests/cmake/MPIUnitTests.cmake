@@ -1,4 +1,9 @@
 if(PELEF_ENABLE_MPI)
+  add_test(NAME mpi_amr_ppm_coarse_3d_np8
+    COMMAND "${MPIEXEC_EXECUTABLE}" ${MPIEXEC_NUMPROC_FLAG} 8 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_amr_reactive_3d> --ppm-coarse-only ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(mpi_amr_ppm_coarse_3d_np8 PROPERTIES TIMEOUT 180 PROCESSORS 8
+    PASS_REGULAR_EXPRESSION "PASS: sparse PPM coarse hydro and four-layer halos")
   set(DYNAMIC_AMR_MPI_FLAGS)
   foreach(flag IN LISTS MPIEXEC_PREFLAGS)
     list(APPEND DYNAMIC_AMR_MPI_FLAGS "--mpiexec-preflag=${flag}")

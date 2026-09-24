@@ -25,7 +25,7 @@ module mpi_amr_sparse_reactive_3d_mod
   use reactive_3d_mod, only: &
     recover_reactive_temperatures_3d, &
     compute_reactive_plm_slab_face_fluxes_3d,compute_reactive_face_fluxes_3d, &
-    compute_reactive_plm_face_fluxes_3d, &
+    compute_reactive_plm_face_fluxes_3d, compute_reactive_ppm_halo_ctu_fluxes_3d, &
     advance_reactive_chemistry_3d
   use reactive_transport_3d_mod, only: &
     reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d, &
@@ -2596,7 +2596,7 @@ contains
     if (local_ok) local_ok = all(ieee_is_finite(temperature))
     if (local_ok) local_ok = minval(temperature) > 0.0_dp
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
-      trim(reconstruction) == "characteristic_plm"
+      trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     call sparse_collective_contract_matches_3d( &
@@ -2604,6 +2604,11 @@ contains
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
         trim(limiter), local_ok, global_ok)
     if (.not. global_ok) return
+
+    if (reconstruction=="characteristic_ppm") then
+      call ppm_step()
+      return
+    end if
 
     old_state = state
     allocate(old_temperature(local_count, ny, nz))
@@ -2668,6 +2673,46 @@ contains
     temperature = candidate_temperature
     ok = .true.
   contains
+    subroutine ppm_step()
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+      real(dp) :: theta
+      integer :: i,j,k
+      call build_mpi_amr_sparse_boundary_halos_3d(distribution,state,temperature,faces,ghost,gt,local_ok, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species, &
+        outlet_pressure=outlet_pressure,ghost_width=4)
+      if (.not.local_ok) return
+      allocate(first_flux_x(nvar,0:local_count,ny,nz),first_flux_y(nvar,local_count,0:ny,nz), &
+        first_flux_z(nvar,local_count,ny,0:nz))
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[local_count,ny,nz],[dx,dy,dz],dt, &
+        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+      allocate(candidate_state,mold=state)
+      allocate(candidate_temperature,mold=temperature)
+      do k=1,nz
+      do j=1,ny
+      do i=1,local_count
+        candidate_state(:,i,j,k)=state(:,i,j,k)-(dt/dx)*(first_flux_x(:,i,j,k)-first_flux_x(:,i-1,j,k))- &
+          (dt/dy)*(first_flux_y(:,i,j,k)-first_flux_y(:,i,j-1,k))- &
+          (dt/dz)*(first_flux_z(:,i,j,k)-first_flux_z(:,i,j,k-1))
+      end do
+      end do
+      end do
+      call recover_reactive_temperatures_3d(species,candidate_state,temperature,local_count,ny,nz, &
+        candidate_temperature,local_ok)
+      call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
+      if (.not.global_ok) return
+      call boundary_budget(first_flux_x,first_flux_y,first_flux_z,local_budget)
+      call MPI_Allreduce(local_budget,global_budget,nvar,MPI_DOUBLE_PRECISION,MPI_SUM,distribution%comm,ierr)
+      if (ierr/=MPI_SUCCESS) return
+      if (.not.all(ieee_is_finite(global_budget))) return
+      call move_alloc(first_flux_x,face_flux_x)
+      call move_alloc(first_flux_y,face_flux_y)
+      call move_alloc(first_flux_z,face_flux_z)
+      state=candidate_state;temperature=candidate_temperature;boundary_change=global_budget
+      ok=.true.
+    end subroutine ppm_step
+
     subroutine physical_fluxes(u,t,solver,recon,lim,fx,fy,fz,success)
       real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
       character(len=*), intent(in) :: solver,recon,lim
@@ -2765,6 +2810,8 @@ contains
     real(dp), allocatable :: second_flux_x(:, :, :, :)
     real(dp), allocatable :: second_flux_y(:, :, :, :)
     real(dp), allocatable :: second_flux_z(:, :, :, :)
+    character(len=32) :: faces(6)
+    real(dp) :: boundary_change(size(state,1))
     logical :: local_ok, global_ok
     integer :: nvar, local_count, ny, nz
 
@@ -2785,7 +2832,7 @@ contains
     if (local_ok) local_ok = all(ieee_is_finite(temperature))
     if (local_ok) local_ok = minval(temperature) > 0.0_dp
     if (local_ok) local_ok = trim(reconstruction) == "pcm" .or. &
-      trim(reconstruction) == "characteristic_plm"
+      trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
     call sparse_collective_contract_matches_3d( &
@@ -2793,6 +2840,17 @@ contains
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
         trim(limiter), local_ok, global_ok)
     if (.not. global_ok) return
+
+    if (reconstruction=='characteristic_ppm') then
+      faces='periodic'
+      call advance_mpi_amr_sparse_boundary_hydro_3d(distribution,species,patch,state,temperature,dx,dy,dz,dt, &
+        riemann_solver,reconstruction,limiter,first_flux_x,first_flux_y,first_flux_z,faces,boundary_change,ok)
+      if (.not.ok) return
+      call move_alloc(first_flux_x,face_flux_x)
+      allocate(face_flux_y,source=first_flux_y(:,:,1:,:))
+      allocate(face_flux_z,source=first_flux_z(:,:,:,1:))
+      return
+    end if
 
     old_state = state
     allocate(old_temperature(local_count, ny, nz))
@@ -4364,7 +4422,7 @@ contains
   ! then replace only columns outside the global domain, including on a rank
   ! one column inward from a wall. No full-level gather is required.
   subroutine build_mpi_amr_sparse_boundary_halos_3d(distribution,state,temperature,faces, &
-      halo_state,halo_temperature,ok,viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure)
+      halo_state,halo_temperature,ok,viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure,ghost_width)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
     character(len=*), intent(in) :: faces(6)
@@ -4379,17 +4437,22 @@ contains
     real(dp) :: pressure(6),local_pressure(6)
     real(dp) :: velocities(3,6),edge_velocities(3,6)
     character(len=32) :: canonical(6),local_faces(6),edge_faces(6)
-    integer :: options(6),low(6),high(6),ierr,n,ny,nz,nv,total,first,g,i,start,offset,count
+    integer, optional, intent(in) :: ghost_width
+    integer :: width,edge_count
+    integer :: options(7),low(7),high(7),ierr,n,ny,nz,nv,total,first,g,i,start,offset,count
     logical :: local_ok,global_ok,viscous
     ok=.false.;viscous=.false.
     if (present(viscous_wall)) viscous=viscous_wall
+    width=2
+    if (present(ghost_width)) width=ghost_width
     options=[merge(1,0,viscous),merge(1,0,present(inflow_state)), &
       merge(1,0,present(inflow_temperature)),merge(1,0,present(wall_velocity)), &
-      merge(1,0,present(species)),merge(1,0,present(outlet_pressure))]
-    call MPI_Allreduce(options,low,6,MPI_INTEGER,MPI_MIN,distribution%comm,ierr)
+      merge(1,0,present(species)),merge(1,0,present(outlet_pressure)),width]
+    call MPI_Allreduce(options,low,7,MPI_INTEGER,MPI_MIN,distribution%comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(options,high,6,MPI_INTEGER,MPI_MAX,distribution%comm,ierr)
+    call MPI_Allreduce(options,high,7,MPI_INTEGER,MPI_MAX,distribution%comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    if (width/=2.and.width/=4) return
     canonical=faces
     call MPI_Bcast(canonical,192,MPI_CHARACTER,0,distribution%comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -4418,7 +4481,7 @@ contains
     call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
     if (.not.global_ok) return
     ! Validate transverse shapes and exchange before allocating replicated metadata.
-    call build_mpi_amr_sparse_periodic_halos_3d(distribution,state,temperature,raw,rt,global_ok)
+    call build_mpi_amr_sparse_periodic_halos_3d(distribution,state,temperature,raw,rt,global_ok,ghost_width=width)
     if (.not.global_ok) return
     total=sum(distribution%coarse_counts);first=distribution%coarse_first
     local_ok=total>=2
@@ -4443,52 +4506,65 @@ contains
     velocities=0
     if (present(wall_velocity)) velocities=wall_velocity
     local_faces=faces;local_faces(1:2)='periodic';edge_velocities=velocities;edge_velocities(:,1:2)=0
-    allocate(extended(nv,n+8,ny+4,nz+4),et(n+8,ny+4,nz+4))
+    allocate(extended(nv,n+4*width,ny+2*width,nz+2*width),et(n+4*width,ny+2*width,nz+2*width))
     call fill_reactive_boundary_ghosts_3d(raw,rt,local_faces,extended,et,local_ok,viscous, &
-      inflow_state,inflow_temperature,edge_velocities)
+      inflow_state,inflow_temperature,edge_velocities,ghost_width=width)
     call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
     if (.not.global_ok) return
     if (present(outlet_pressure)) then
       local_pressure=pressure;local_pressure(1:2)=0
-      call fill_pressure_outlet_ghosts_3d(species,[n+4,ny,nz],local_faces,local_pressure,extended,et,local_ok)
+      call fill_pressure_outlet_ghosts_3d(species,[n+2*width,ny,nz],local_faces,local_pressure, &
+        extended,et,local_ok,ghost_width=width)
       call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
       if (.not.global_ok) return
     end if
-    allocate(candidate,source=extended(:,3:n+6,:,:));allocate(ct,source=et(3:n+6,:,:))
-    allocate(edge(nv,6,ny+4,nz+4),edge_t(6,ny+4,nz+4))
-    if (first<=2.and.faces(1)/='periodic') then
-      start=4-first
-      edge_faces=faces;edge_faces(2)='outflow';edge_velocities=velocities;edge_velocities(:,2)=0
-      call fill_reactive_boundary_ghosts_3d(raw(:,start:start+1,:,:),rt(start:start+1,:,:),edge_faces, &
-        edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities)
+    allocate(candidate,source=extended(:,width+1:n+3*width,:,:));allocate(ct,source=et(width+1:n+3*width,:,:))
+    edge_count=min(width,total)
+    allocate(edge(nv,edge_count+2*width,ny+2*width,nz+2*width), &
+      edge_t(edge_count+2*width,ny+2*width,nz+2*width))
+    if (first<=width.and.faces(1)/='periodic') then
+      start=width+2-first
+      edge_faces=faces;edge_velocities=velocities
+      if (edge_count>=width) then
+        edge_faces(2)='outflow';edge_velocities(:,2)=0
+      end if
+      call fill_reactive_boundary_ghosts_3d(raw(:,start:start+edge_count-1,:,:),rt(start:start+edge_count-1,:,:),edge_faces, &
+        edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities,ghost_width=width)
       if (local_ok.and.present(outlet_pressure)) then
-        local_pressure=pressure;local_pressure(2)=0
-        call fill_pressure_outlet_ghosts_3d(species,[2,ny,nz],edge_faces,local_pressure,edge,edge_t,local_ok)
+        local_pressure=pressure
+        if (edge_count>=width) local_pressure(2)=0
+        call fill_pressure_outlet_ghosts_3d(species,[edge_count,ny,nz],edge_faces,local_pressure, &
+          edge,edge_t,local_ok,ghost_width=width)
       end if
       if (local_ok) then
-        do i=1,2
-          g=first+i-3
+        do i=1,width
+          g=first+i-width-1
           if (g>=1) cycle
-          candidate(:,i,:,:)=edge(:,g+2,:,:);ct(i,:,:)=edge_t(g+2,:,:)
+          candidate(:,i,:,:)=edge(:,g+width,:,:);ct(i,:,:)=edge_t(g+width,:,:)
         end do
       end if
     end if
     call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
     if (.not.global_ok) return
-    if (first+n-1>=total-1.and.faces(2)/='periodic') then
-      start=total-first+2
-      edge_faces=faces;edge_faces(1)='outflow';edge_velocities=velocities;edge_velocities(:,1)=0
-      call fill_reactive_boundary_ghosts_3d(raw(:,start:start+1,:,:),rt(start:start+1,:,:),edge_faces, &
-        edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities)
+    if (first+n-1>=total-width+1.and.faces(2)/='periodic') then
+      start=total-edge_count-first+width+2
+      edge_faces=faces;edge_velocities=velocities
+      if (edge_count>=width) then
+        edge_faces(1)='outflow';edge_velocities(:,1)=0
+      end if
+      call fill_reactive_boundary_ghosts_3d(raw(:,start:start+edge_count-1,:,:),rt(start:start+edge_count-1,:,:),edge_faces, &
+        edge,edge_t,local_ok,viscous,inflow_state,inflow_temperature,edge_velocities,ghost_width=width)
       if (local_ok.and.present(outlet_pressure)) then
-        local_pressure=pressure;local_pressure(1)=0
-        call fill_pressure_outlet_ghosts_3d(species,[2,ny,nz],edge_faces,local_pressure,edge,edge_t,local_ok)
+        local_pressure=pressure
+        if (edge_count>=width) local_pressure(1)=0
+        call fill_pressure_outlet_ghosts_3d(species,[edge_count,ny,nz],edge_faces,local_pressure, &
+          edge,edge_t,local_ok,ghost_width=width)
       end if
       if (local_ok) then
-        do i=n+3,n+4
-          g=first+i-3
+        do i=n+width+1,n+2*width
+          g=first+i-width-1
           if (g<=total) cycle
-          candidate(:,i,:,:)=edge(:,g-total+4,:,:);ct(i,:,:)=edge_t(g-total+4,:,:)
+          candidate(:,i,:,:)=edge(:,g-total+width+edge_count,:,:);ct(i,:,:)=edge_t(g-total+width+edge_count,:,:)
         end do
       end if
     end if
@@ -4498,20 +4574,24 @@ contains
   end subroutine build_mpi_amr_sparse_boundary_halos_3d
 
   subroutine build_mpi_amr_sparse_periodic_halos_3d( &
-      distribution, state, temperature, halo_state, halo_temperature, ok)
+      distribution, state, temperature, halo_state, halo_temperature, ok,ghost_width)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     real(dp), allocatable, intent(out) :: halo_state(:, :, :, :)
     real(dp), allocatable, intent(out) :: halo_temperature(:, :, :)
     logical, intent(out) :: ok
 
+    integer, optional, intent(in) :: ghost_width
+    integer :: width
     logical :: local_ok, global_ok
     integer :: local_count, left_rank, right_rank, ierr
-    integer :: local_shape(3), minimum_shape(3), maximum_shape(3)
+    integer :: local_shape(4), minimum_shape(4), maximum_shape(4)
 
     ok = .false.
+    width=2
+    if (present(ghost_width)) width=ghost_width
     local_count = size(state, 2)
-    local_shape = [size(state, 1), size(state, 3), size(state, 4)]
+    local_shape = [size(state, 1), size(state, 3), size(state, 4),width]
     call MPI_Allreduce( &
       local_shape, minimum_shape, size(local_shape), MPI_INTEGER, MPI_MIN, &
       distribution%comm, ierr)
@@ -4524,7 +4604,7 @@ contains
     call sparse_collective_mpi_success_3d( &
       distribution%comm, ierr, global_ok)
     if (.not. global_ok) return
-    local_ok = local_count >= 1 .and. &
+    local_ok = (width==2.or.width==4).and.local_count >= 1 .and. &
       all(local_shape == minimum_shape) .and. &
       all(local_shape == maximum_shape) .and. &
       all(shape(temperature) == [ &
@@ -4536,20 +4616,20 @@ contains
       distribution%comm, local_ok, global_ok)
     if (.not. global_ok) return
     allocate(halo_state( &
-      size(state, 1), local_count + 2 * mpi_amr_sparse_ghost_width_3d, &
+      size(state, 1), local_count + 2 * width, &
       size(state, 3), size(state, 4)))
     allocate(halo_temperature( &
-      local_count + 2 * mpi_amr_sparse_ghost_width_3d, &
+      local_count + 2 * width, &
       size(state, 3), size(state, 4)))
     halo_state = 0.0_dp
     halo_temperature = 0.0_dp
-    halo_state(:, 3:local_count + 2, :, :) = state
-    halo_temperature(3:local_count + 2, :, :) = temperature
+    halo_state(:, width+1:local_count + width, :, :) = state
+    halo_temperature(width+1:local_count + width, :, :) = temperature
     left_rank = modulo(distribution%rank - 1, distribution%nranks)
     right_rank = modulo(distribution%rank + 1, distribution%nranks)
     call exchange_sparse_x_halos_3d( &
       distribution%comm, left_rank, right_rank, halo_state, &
-      halo_temperature, local_count, local_ok)
+      halo_temperature, local_count, local_ok,ghost_width=width)
     call sparse_collective_logical_and_3d( &
       distribution%comm, local_ok, global_ok)
     ok = global_ok
@@ -4557,13 +4637,15 @@ contains
 
   subroutine exchange_sparse_x_halos_3d( &
       comm, left_rank, right_rank, halo_state, halo_temperature, &
-      local_count, ok, require_complete)
+      local_count, ok, require_complete,ghost_width)
     type(MPI_Comm), intent(in) :: comm
     integer, intent(in) :: left_rank, right_rank, local_count
     real(dp), intent(inout) :: halo_state(:, :, :, :)
     real(dp), intent(inout) :: halo_temperature(:, :, :)
     logical, intent(out) :: ok
     logical, intent(in), optional :: require_complete
+    integer, optional, intent(in) :: ghost_width
+    integer :: width
 
     real(dp), allocatable :: send_values(:), receive_values(:)
     integer :: depth, payload_size, send_index, receive_index, ierr
@@ -4571,14 +4653,16 @@ contains
     logical :: complete
 
     ok = .false.
+    width=2
+    if (present(ghost_width)) width=ghost_width
     complete = .true.
     if (present(require_complete)) complete = require_complete
     payload_size = (size(halo_state, 1) + 1) * &
       size(halo_state, 3) * size(halo_state, 4)
     allocate(send_values(payload_size), receive_values(payload_size))
-    do depth = 1, mpi_amr_sparse_ghost_width_3d
-      send_index = 3 + depth - 1
-      receive_index = local_count + 2 + depth
+    do depth = 1, width
+      send_index = width + depth
+      receive_index = local_count + width + depth
       call pack_sparse_x_plane_3d( &
         halo_state, halo_temperature, send_index, send_values)
       receive_values = 0.0_dp
@@ -4591,8 +4675,8 @@ contains
       call unpack_sparse_x_plane_3d( &
         receive_values, halo_state, halo_temperature, receive_index)
 
-      send_index = local_count + 2 - depth + 1
-      receive_index = 3 - depth
+      send_index = local_count + width - depth + 1
+      receive_index = width + 1 - depth
       call pack_sparse_x_plane_3d( &
         halo_state, halo_temperature, send_index, send_values)
       receive_values = 0.0_dp
