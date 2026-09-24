@@ -932,8 +932,10 @@ the erroneous molecular-weight conversion and guards the corrected binary limit.
 
 Drag uses the [Schiller--Naumann sphere correlation](https://cpp.openfoam.org/dev/SchillerNaumann_8C_source.html) (`Cd*Re=24*(1+0.15*Re^0.687)`
 below Re=1000; `Cd=0.44` above). Transfer supports Ranz--Marshall or an
-Abramzon--Sirignano-style blowing correction. The latter iterates Nu/Bt,
-uses the film mixture heat capacity, and fails on nonconvergence. See the
+Abramzon--Sirignano-style blowing correction. The latter uses the pinned direct
+B_T iteration with absolute tolerance 1e-7 and fuel-only skin heat capacity
+(supplied-film zero-field fallback uses film Cp), and fails on nonconvergence.
+See the [iteration checks](validation/heat-iteration-20260925.md),
 [PeleMP equations](https://amrex-combustion.github.io/PeleMP/Equations.html) and
 [Abramzon and Sirignano (1989)](https://doi.org/10.1016/0017-9310(89)90043-4).
 The constant-latent saturation law, drag correlation and regular-grid CIC
@@ -1192,8 +1194,9 @@ present in the skin. Aliases of one gas species are counted once. Manually suppl
 `spray_film` values retain the skin-Cp fallback when `vapor_cp=0`.
 The mass Spalding number is capped at 20 for Abramzon–Sirignano and wall-film
 evaporation; the selectable Ranz–Marshall path is unchanged. PeleF retains its
-binary diffusivity convention and damped Nusselt iteration, so this is not exact
-upstream coefficient or integrator parity. See
+binary diffusivity convention, guarded small-B limit and nonconvergence rejection;
+the direct B_T iteration follows the reference for ordinary positive B_M.
+This is not full upstream coefficient or integrator parity. See
 [fuel-Cp evidence](validation/vapor-cp-20260925.md).
 The ambient-mixture conversion
 and wet-gas restart checks are recorded in
