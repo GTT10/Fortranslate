@@ -7,8 +7,117 @@ module les_mpi_filter_mod
   use les_filter_3d_mod, only: filter_les_field_3d
   implicit none
   private
-  public :: filter_mpi_les_field_3d
+  public :: filter_mpi_les_field_3d,sample_mpi_les_x_planes_3d
 contains
+  ! Fetch requested global (one-based) x planes from their slab owners.
+  ! Coordinates may repeat and request counts may differ, including zero.
+  ! Physical mapping/reflection belongs to the caller; no global field gather.
+  subroutine sample_mpi_les_x_planes_3d(comm,field,cells,coordinates,planes,ok)
+    type(MPI_Comm), intent(in) :: comm
+    real(dp), intent(in) :: field(:,:,:,:)
+    integer, intent(in) :: cells(3),coordinates(:)
+    real(dp), allocatable, intent(inout) :: planes(:,:,:,:)
+    logical, intent(out) :: ok
+    integer :: rank,nranks,ierr,ios,nc,nrequest,first(3),extent(3),config(4),low(4),high(4)
+    integer :: peer,i,j,owner,slot,received,plane_size,local_x
+    integer, allocatable :: send_count(:),recv_count(:),send_offset(:),recv_offset(:),cursor(:)
+    integer, allocatable :: requested(:),incoming(:),permutation(:),starts(:),ends(:)
+    real(dp), allocatable :: answers(:),returned(:),candidate(:,:,:,:)
+    logical :: valid,agreed
+    ok=.false.;nc=size(field,1);nrequest=size(coordinates)
+    call MPI_Comm_rank(comm,rank,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    config=[cells,nc]
+    call MPI_Allreduce(config,low,4,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(config,high,4,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(low==high).and.all(cells>=1).and.nc>=1.and.nc<=1024.and.nrequest<=256
+    valid=valid.and.all(coordinates>=1).and.all(coordinates<=cells(1))
+    call agree()
+    if(.not.agreed) return
+    call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
+    valid=valid.and.all(extent>=1).and.all(shape(field)==[nc,extent])
+    valid=valid.and.all(ieee_is_finite(field))
+    ! Bound products before forming default-integer MPI counts/displacements.
+    valid=valid.and.int(nc,int64)*cells(2)<=huge(1)/int(cells(3),int64)
+    call agree()
+    if(.not.agreed) return
+    plane_size=nc*cells(2)*cells(3)
+    valid=int(nrequest,int64)*plane_size<=huge(1)
+    call agree()
+    if(.not.agreed) return
+    allocate(send_count(nranks),recv_count(nranks),send_offset(nranks),recv_offset(nranks), &
+      cursor(nranks),starts(nranks),ends(nranks),requested(nrequest),permutation(nrequest),stat=ios)
+    valid=ios==0;call agree()
+    if(.not.agreed) return
+    send_count=0
+    do peer=1,nranks
+      call spray_cartesian_block(cells,[nranks,1,1],peer-1,first,extent,valid)
+      if(.not.valid) exit
+      starts(peer)=first(1)+1;ends(peer)=first(1)+extent(1)
+    end do
+    call agree()
+    if(.not.agreed) return
+    do i=1,nrequest
+      do peer=1,nranks
+        if(coordinates(i)<starts(peer).or.coordinates(i)>ends(peer)) cycle
+        send_count(peer)=send_count(peer)+1
+        exit
+      end do
+    end do
+    call MPI_Alltoall(send_count,1,MPI_INTEGER,recv_count,1,MPI_INTEGER,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=sum(int(recv_count,int64))<=huge(1)/int(plane_size,int64)
+    call agree()
+    if(.not.agreed) return
+    send_offset(1)=0;recv_offset(1)=0
+    do peer=2,nranks
+      send_offset(peer)=send_offset(peer-1)+send_count(peer-1)
+      recv_offset(peer)=recv_offset(peer-1)+recv_count(peer-1)
+    end do
+    received=sum(recv_count);cursor=send_offset
+    do i=1,nrequest
+      do owner=1,nranks
+        if(coordinates(i)<starts(owner).or.coordinates(i)>ends(owner)) cycle
+        cursor(owner)=cursor(owner)+1;slot=cursor(owner)
+        requested(slot)=coordinates(i);permutation(slot)=i
+        exit
+      end do
+    end do
+    allocate(incoming(received),answers(received*plane_size),returned(nrequest*plane_size), &
+      candidate(nc,nrequest,cells(2),cells(3)),stat=ios)
+    valid=ios==0;call agree()
+    if(.not.agreed) return
+    call MPI_Alltoallv(requested,send_count,send_offset,MPI_INTEGER, &
+      incoming,recv_count,recv_offset,MPI_INTEGER,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(incoming>=starts(rank+1)).and.all(incoming<=ends(rank+1))
+    call agree()
+    if(.not.agreed) return
+    do i=1,received
+      local_x=incoming(i)-starts(rank+1)+1
+      answers((i-1)*plane_size+1:i*plane_size)=reshape(field(:,local_x,:,:),[plane_size])
+    end do
+    send_count=send_count*plane_size;recv_count=recv_count*plane_size
+    send_offset=send_offset*plane_size;recv_offset=recv_offset*plane_size
+    call MPI_Alltoallv(answers,recv_count,recv_offset,MPI_DOUBLE_PRECISION, &
+      returned,send_count,send_offset,MPI_DOUBLE_PRECISION,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    do i=1,nrequest
+      j=permutation(i)
+      candidate(:,j,:,:)=reshape(returned((i-1)*plane_size+1:i*plane_size),[nc,cells(2),cells(3)])
+    end do
+    call move_alloc(candidate,planes);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine sample_mpi_les_x_planes_3d
+
   ! Periodic x slabs. One-plane propagation handles widths exceeding local or
   ! global x extent without gathering the global field on any rank.
   subroutine filter_mpi_les_field_3d(comm,field,cells,weights,filtered,ok)

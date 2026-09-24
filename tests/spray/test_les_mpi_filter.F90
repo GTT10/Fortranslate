@@ -3,12 +3,14 @@ program test_les_mpi_filter
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use les_filter_3d_mod, only: les_filter_weights,filter_les_field_3d
-  use les_mpi_filter_mod, only: filter_mpi_les_field_3d
+  use les_mpi_filter_mod, only: filter_mpi_les_field_3d,sample_mpi_les_x_planes_3d
   use spray_partition_mod, only: spray_cartesian_block
   implicit none
   integer, parameter :: cells(3)=[5,3,2]
   real(dp) :: full(2,5,3,2),reference(2,5,3,2)
   real(dp), allocatable :: local(:,:,:,:),filtered(:,:,:,:),saved(:,:,:,:),weights(:)
+  integer, allocatable :: coordinates(:)
+  real(dp), allocatable :: planes(:,:,:,:),saved_planes(:,:,:,:)
   integer :: rank,nranks,ierr,i,j,k,first(3),extent(3),lo,hi,m,ratio
   character(len=8) :: model
   logical :: ok
@@ -26,6 +28,36 @@ program test_les_mpi_filter
     end do
   end do
   local=full(:,lo:hi,:,:);allocate(filtered,mold=local)
+  ! Thirteen-layer periodic/reflected requests cross multiple uneven slabs.
+  allocate(coordinates(26))
+  do m=1,2
+    do i=1,26
+      j=lo-14+i
+      if(m==1) then
+        coordinates(i)=modulo(j-1,cells(1))+1
+      else
+        k=modulo(j-1,2*cells(1))
+        coordinates(i)=min(k+1,2*cells(1)-k)
+      end if
+    end do
+    call sample_mpi_les_x_planes_3d(MPI_COMM_WORLD,local,cells,coordinates,planes,ok)
+    call require(ok,'wide x donor exchange')
+    do i=1,size(coordinates)
+      call require(all(planes(:,i,:,:)==full(:,coordinates(i),:,:)),'exact mapped donor planes')
+    end do
+  end do
+  saved_planes=planes
+  if(rank==nranks-1) coordinates(1)=0
+  call sample_mpi_les_x_planes_3d(MPI_COMM_WORLD,local,cells,coordinates,planes,ok)
+  call require(.not.ok.and.all(planes==saved_planes),'remote invalid coordinate preserves planes')
+  deallocate(coordinates)
+  allocate(coordinates(rank))
+  coordinates=cells(1)
+  call sample_mpi_les_x_planes_3d(MPI_COMM_WORLD,local,cells,coordinates,planes,ok)
+  call require(ok.and.size(planes,2)==rank,'unequal and zero request counts')
+  do i=1,rank
+    call require(all(planes(:,i,:,:)==full(:,cells(1),:,:)),'repeated last-owner donors')
+  end do
   do m=1,4
     model='box';ratio=2
     if (m==2) ratio=6
