@@ -17,8 +17,10 @@ program test_amr_patch_tree_hydro_3d
   real(dp) :: spacing(3),dt,root_dt,expected_dt,local_dt,h(3),budget(12),serial_budget(12),largest,initial(12),final(12)
   real(dp) :: outlet(6),mach(6),tin(6),pin(6)
   integer :: i,j,k,mode,geometry,node,n(3)
-  logical :: ok
-  character(len=32) :: faces(6),reconstruction
+  logical :: ok,ppm
+  character(len=32) :: faces(6),reconstruction,arg
+  call get_command_argument(1,arg)
+  ppm=trim(arg)=='ppm'
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   spacing=[.001_dp,.0015_dp,.002_dp]
@@ -46,6 +48,7 @@ program test_amr_patch_tree_hydro_3d
     end if
     call require(ok,'topology')
     do mode=1,8
+      if (ppm.and.(mode==2.or.mode==4.or.mode==6)) cycle
       outlet=0;mach=-1;tin=700;pin=0
       if (mode>4) then
         outlet(2)=102325;outlet(6)=102325
@@ -62,6 +65,7 @@ program test_amr_patch_tree_hydro_3d
         reconstruction='pcm'
         if(mode==8) reconstruction='characteristic_plm'
       end if
+      if (ppm) reconstruction='characteristic_ppm'
       call prolong_amr_patch_tree_3d(tree,root,state,ok)
       call require(ok,'state initialization')
       call prolong_amr_patch_tree_3d(tree,rt,temperature,ok)

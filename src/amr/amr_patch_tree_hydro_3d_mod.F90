@@ -4,7 +4,7 @@ module amr_patch_tree_hydro_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_cfl_timestep_3d, &
-    compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d
+    compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,average_down_amr_patch_tree_3d
   use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d,apply_amr_tree_pressure_ghosts_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
@@ -62,7 +62,8 @@ contains
     nvar=reactive_nvar(size(species))
     if (size(boundary_change)/=nvar.or..not.valid_reactive_boundaries_3d(faces)) return
     if (.not.ieee_is_finite(dt)) return
-    if (dt<=0.or.(reconstruction/='pcm'.and.reconstruction/='characteristic_plm')) return
+    if (dt<=0.or.(reconstruction/='pcm'.and.reconstruction/='characteristic_plm'.and. &
+        reconstruction/='characteristic_ppm')) return
     if (limiter/='mc'.and.limiter/='minmod') return
     mach=-1
     if(present(inflow_mach)) mach=inflow_mach
@@ -83,6 +84,11 @@ contains
     candidate=initial
     call euler_stage(candidate,temps,first_budget,first_max,valid)
     if (.not.valid) return
+    if (reconstruction=='characteristic_ppm') then
+      state=candidate;temperature=temps
+      boundary_change=first_budget;maximum_correction=first_max;ok=.true.
+      return
+    end if
     stage_temperature=temps
     call euler_stage(candidate,temps,second_budget,second_max,valid)
     if (.not.valid) return
@@ -122,8 +128,8 @@ contains
       type(amr_tree_state_3d) :: packed,updated
       type(amr_tree_flux_3d), allocatable :: flux(:)
       real(dp), allocatable :: ghost(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-      real(dp) :: correction(nvar),rhs(nvar)
-      integer :: peer,n(3),dims(3),i,j,k
+      real(dp) :: correction(nvar),rhs(nvar),theta
+      integer :: peer,n(3),dims(3),i,j,k,width
       success=.false.;budget=0;largest=0;correction=0
       allocate(packed%fields(size(tree%nodes)),flux(size(tree%nodes)))
       do peer=1,size(tree%nodes)
@@ -135,19 +141,26 @@ contains
       updated=u
       do peer=1,size(tree%nodes)
         n=tree%nodes(peer)%shape;dims=n+4
+        width=2
+        if (reconstruction=='characteristic_ppm') width=4
         if (reconstruction=='pcm') then
           call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
             species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         else
           call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
-            coarse_limiter=limiter,species_count=size(species),species=species,inflow_mach=inflow_mach, &
+            coarse_limiter=limiter,species_count=size(species),ghost_width=width,species=species,inflow_mach=inflow_mach, &
             inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
         end if
         if (.not.success) return
-        call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
+        call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success,ghost_width=width)
         if (.not.success) return
         allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)),fz(nvar,dims(1),dims(2),dims(3)))
-        if (reconstruction=='pcm') then
+        if (reconstruction=='characteristic_ppm') then
+          fx=0;fy=0;fz=0
+          call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+            n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
+            fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success)
+        else if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             dims(1),dims(2),dims(3),solver,fx,fy,fz,success)
         else
