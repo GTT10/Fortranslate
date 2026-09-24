@@ -25,7 +25,7 @@ contains
   subroutine compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean)
+      test_model,test_ratio,grid_ratio,harmonic_mean,subcycle)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -40,10 +40,10 @@ contains
     character(len=16) :: selected_model
     character(len=*), optional, intent(in) :: test_model
     integer, optional, intent(in) :: test_ratio,grid_ratio
-    logical, optional, intent(in) :: harmonic_mean
+    logical, optional, intent(in) :: harmonic_mean,subcycle
     character(len=64) :: filter
     integer :: filter_ratio,grid,width
-    logical :: dynamic,harmonic,filter_valid
+    logical :: dynamic,harmonic,filter_valid,subcycling
     real(dp), allocatable :: weights(:)
     real(dp), intent(inout) :: dt,maximum_diffusivity
     logical, intent(out) :: ok
@@ -58,13 +58,14 @@ contains
     integer :: n(3),axis,level
     character(len=32) :: local_faces(6)
     integer :: node,nvar,rank,status,ios,parent
-    real(dp) :: controls(17),low(17),high(17)
+    real(dp) :: controls(18),low(18),high(18)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
     integer :: flags(3),min_flags(3),max_flags(3)
     real(dp) :: walls(24),reference_walls(24)
-    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
     integer, allocatable :: ratios(:)
+    integer(int64) :: factor
     logical :: valid
     ok=.false.
     nvar=reactive_nvar(size(species))
@@ -85,6 +86,8 @@ contains
     if(present(test_ratio)) filter_ratio=test_ratio
     if(present(grid_ratio)) grid=grid_ratio
     if(present(harmonic_mean)) harmonic=harmonic_mean
+    subcycling=.false.
+    if(present(subcycle)) subcycling=subcycle
     filter_valid=.true.
     if(dynamic) then
       call les_filter_weights(filter,filter_ratio,weights,filter_valid)
@@ -95,7 +98,8 @@ contains
     else
       if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) filter_valid=.false.
     end if
-    controls=[root_spacing,cfl,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp),merge(1._dp,0._dp,harmonic)]
+    controls=[root_spacing,cfl,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp), &
+      merge(1._dp,0._dp,harmonic),merge(1._dp,0._dp,subcycling)]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
@@ -120,9 +124,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,17,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,18,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,17,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,18,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
@@ -168,6 +172,21 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree(valid)
     if (.not.valid) return
+    allocate(counts(size(ratios)),stat=ios)
+    valid=ios==0;call agree(valid)
+    if(.not.valid) return
+    counts=1
+    if(subcycling) then
+      do level=2,size(ratios)
+        factor=int(ratios(level),int64)**2
+        if(counts(level-1)>huge(1_int64)/factor) then
+          valid=.false.;exit
+        end if
+        counts(level)=counts(level-1)*factor
+      end do
+    end if
+    call agree(valid)
+    if(.not.valid) return
     allocate(h(3,size(tree%nodes)),stat=ios)
     valid=ios==0;call agree(valid)
     if (.not.valid) return
@@ -234,7 +253,7 @@ contains
           model=selected_model,ci=isotropic)
         end if
         if (.not.valid) exit
-        rate=diffusivity*sum(1._dp/h(:,node)**2)
+        rate=diffusivity*sum(1._dp/h(:,node)**2)/real(counts(level),dp)
         if (rate>cfl/candidate_dt) candidate_dt=cfl/rate
         largest=max(largest,diffusivity)
         deallocate(rhs)

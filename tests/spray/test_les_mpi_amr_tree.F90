@@ -125,6 +125,21 @@ program test_les_mpi_amr_tree
           call require(ok,'MPI timestep')
           call require(abs(half_dt-chosen)<=2e-12_dp*chosen,'MPI timestep parity')
           call require(abs(half_diff-diffusivity)<=2e-12_dp*diffusivity,'MPI diffusivity parity')
+          if(mode==1) then
+            call compute_amr_patch_tree_les_timestep_3d(tree,species,saved,saved_t,spacing,.05_dp,faces, &
+              .17_dp,.7_dp,.7_dp,chosen,diffusivity,ok,model=model,ci=.1_dp,coarse_limiter='mc',subcycle=.true.)
+            call require(ok,'serial subcycle interval')
+            call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,.05_dp,faces, &
+              .17_dp,.7_dp,.7_dp,half_dt,half_diff,MPI_COMM_WORLD,ok,model=model,ci=.1_dp, &
+              coarse_limiter='mc',subcycle=.true.)
+            call require(ok.and.abs(half_dt-chosen)<=2e-12_dp*chosen,'MPI subcycle timestep parity')
+            call require(abs(half_diff-diffusivity)<=2e-12_dp*diffusivity,'MPI subcycle diffusivity parity')
+            half_dt=-7;half_diff=-9
+            call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,.05_dp,faces, &
+              .17_dp,.7_dp,.7_dp,half_dt,half_diff,MPI_COMM_WORLD,ok,model=model,subcycle=rank==0)
+            call require(.not.ok.and.half_dt==-7.and.half_diff==-9,'subcycle disagreement preserves outputs')
+          end if
+
           half_dt=-7;half_diff=-9;trial_ci=.05_dp
           if (rank==nranks-1) trial_ci=.1_dp
           call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,trial_ci,faces, &
