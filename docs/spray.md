@@ -839,6 +839,17 @@ A different rank count, including one rank, is supported by the library. The
 application passes these arrays when any `walls%enabled` face is active.
 
 
+## PPM reconstruction
+
+The fixed/selected serial spray application accepts
+`hydro_reconstruction='characteristic_ppm'` in `&spray`. PPM uses the existing
+particle/gas split, and checkpoint context binds the reconstruction selector.
+A fixed Mach-inlet fixture with molecular transport, Smagorinsky and evaporating
+parcels has exact restart evidence
+([focused checks](validation/ppm-regular-spray-20260925.md)). The regular MPI
+spray application is a separate implementation and does not yet expose PPM.
+MPI AMR spray instead uses the gas namelist's `reconstruction` selector.
+
 ## Build and run
 
 A fixed H2/O2 gas mechanism with water droplets requires no new dependencies:

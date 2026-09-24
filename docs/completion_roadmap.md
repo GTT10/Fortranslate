@@ -145,8 +145,10 @@ serial/MPI AMR tree gas application input now enables PPM, with reacting
 transport and fixed changed-rank continuation
 [checks](validation/ppm-amr-application-20260925.md). MPI AMR spray input now also enables PPM,
 with fixed 2-to-4-rank particle/gas continuation
-[checks](validation/ppm-amr-spray-20260925.md). Two-level AMR and regular spray
-selection, broader coupling and reference-pressure fidelity remain open; the existing
+[checks](validation/ppm-amr-spray-20260925.md). Regular serial spray also exposes PPM with Mach-boundary/transport/Smagorinsky
+restart [checks](validation/ppm-regular-spray-20260925.md). Two-level AMR and
+regular MPI spray selection, broader coupling and reference-pressure fidelity
+remain open; the existing
 PCM/PLM solver remains available.
 
 | Order | Work unit | Measurable exit gate |
