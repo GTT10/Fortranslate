@@ -59,7 +59,10 @@ and restart checks are connected
 ([application checks](validation/mach-inlet-amr-application-20260925.md)). MPI gas
 input and collective inlet bounds also support rank-changing and serial/MPI restart
 ([MPI application checks](validation/mach-inlet-mpi-amr-application-20260925.md)).
-AMR spray application integration remains open.
+AMR spray input, timestep selection and context-bound restart are also connected
+([spray application checks](validation/mach-inlet-amr-spray-application-20260925.md)).
+This completes Mach dispatch for these regular and patch-tree gas/spray paths;
+it does not establish physical nozzle validation or complete PeleC parity.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.

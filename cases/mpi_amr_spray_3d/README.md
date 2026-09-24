@@ -192,6 +192,14 @@ order; unset entries inherit `boundary_condition`. For example:
  boundary_faces='slip_wall','outflow','periodic','periodic','periodic','periodic'
 ```
 
+Fixed and selected gas inputs accept `inflow_mach(6)`: negative values retain
+reservoir inflow; 0 through 100 select Mach inflow on an `inflow` face. Set a
+positive `inflow_temperature` and zero `inflow_velocity` for active faces.
+`inflow_pressure=0` uses interior pressure; a positive value prescribes Pa.
+Composition comes from the current donor gas. Hydro/molecular timestep limits
+use current distributed ghosts and the finest-level bounds; LES uses its own
+Mach-aware selector. The checkpoint context binds the inlet controls.
+
 Particles reflect specularly at gas wall types and leave at inflow/outflow
 faces. Gas reservoir state uses `inflow_temperature`, `inflow_pressure`,
 `inflow_velocity` and optional named inflow composition. Without that composition,
