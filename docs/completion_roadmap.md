@@ -36,8 +36,10 @@ continuation now also have [focused evidence](validation/pelemp-eb-tree-input-20
 MPI AMR execution of this option, broader transfer-integrator parity and physical
 qualification remain separate. Shared gas-species mapping now accumulates
 component vapor and sources conservatively
-([mapping evidence](validation/shared-vapor-mapping-20260925.md)); independent
-liquid molecular-weight inputs remain open.
+([mapping evidence](validation/shared-vapor-mapping-20260925.md)). Independent
+liquid molecular-weight inputs now feed liquid mole fractions, vapor pressure,
+boiling and restart identity
+([integration evidence](validation/liquid-molecular-weights-20260925.md)).
 GCM is excluded from this pinned PeleC port because upstream restricts it to
 PeleLMeX; PeleMP is the available alternative. See the
 [property source audit](validation/spray-property-scope-20260925.md).

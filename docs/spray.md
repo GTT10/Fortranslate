@@ -1089,14 +1089,30 @@ license and deliberate scope differences are recorded in
 components of one liquid droplet, distinct from the existing per-port pure liquids.
 Multiple components may name the same gas species. Their liquid properties and
 component masses remain separate, while surface vapor and gas mass sources are
-summed by gas species. Components mapped to one gas species currently use that
-species' molecular weight; independently specified liquid molecular weights are
-not supported. Ambient vapor partitioning follows the pinned `Drag.H` gate,
+summed by gas species. Independent liquid molecular weights are supported as
+described below. Ambient vapor partitioning follows the pinned `Drag.H` gate,
 which compares pure-component saturation pressure with the allocated ambient
 partial pressure before applying Raoult weighting. This changes humid/dilute
 mixture behavior from the former gate. The updated mixture evolution identity
 rejects continuation from the former model. See
 [mapping evidence](validation/shared-vapor-mapping-20260925.md).
+
+Use `liquid_molecular_weight`, `port_molecular_weights(port)` or
+`mixture_molecular_weights(component)` in regular spray input, in kg/kmol.
+Zero uses the mapped gas species' molecular weight; a nonzero override must
+be finite and within 1e-3–1e5 kg/kmol. Zero in a port entry also means the gas
+value, independently of the scalar override. MPI AMR's `amr_spray_properties`
+and both EB drivers' `eb_spray` groups accept `mixture_molecular_weights`.
+Unused array entries must be zero. The settings participate in restart context.
+
+Liquid mole fractions, Clausius pressure and pressure-dependent boiling use
+the liquid molecular weight. Surface vapor conversion retains the mapped gas
+species' weight in its numerator, as in the reference. Gas thermodynamics,
+conservative mass exchange and liquid energy references keep their existing
+definitions. This is a surrogate mapping, not a declaration or validation of
+independent liquid elemental formulas. The `pelemp-cap` boiling calculation
+also supplies the wall-impact temperature estimate. See
+[molecular-weight integration](validation/liquid-molecular-weights-20260925.md).
 It accepts pure-component property records and normalized mass fractions.
 Density uses additive specific volume, `1/rho = sum(Y_i/rho_i)`; heat capacity
 and stored liquid energy use `sum(Y_i*cp_i)` and `sum(Y_i*e_i)`. Each component's

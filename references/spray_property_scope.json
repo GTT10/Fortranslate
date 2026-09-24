@@ -21,6 +21,10 @@
     {
       "path": "Source/Spray/Drag.H",
       "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345"
+    },
+    {
+      "path": "Source/Spray/SprayProperties.H",
+      "sha256": "9fc95260ec730e91d9e4555ad3000e5084bc5e31edf2329f1efa180fabc22550"
     }
   ],
   "license_path": "references/pelephysics-spray-license.txt",
