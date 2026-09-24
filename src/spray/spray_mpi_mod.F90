@@ -11,6 +11,7 @@ module spray_mpi_mod
   use spray_reactive_3d_mod, only: advance_spray_chemistry_3d
   use reactive_transport_3d_mod, only: reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
+  use les_mpi_boundary_mod, only: fill_mpi_les_boundary_ghosts_3d
   use les_mpi_dynamic_mod, only: advance_mpi_dynamic_les_ssprk2_3d
   use les_filter_3d_mod, only: les_filter_weights,les_filter_code
   use gas_transport_mod, only: gas_transport_species
@@ -44,10 +45,10 @@ module spray_mpi_mod
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
   subroutine fill_mpi_spray_ghosts(comm,state,temperature,cells,faces,ghost,ghost_temperature,ok, &
-      viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure)
+      viscous_wall,inflow_state,inflow_temperature,wall_velocity,species,outlet_pressure,inflow_mach,inflow_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), optional, intent(in) :: species(:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6),local_pressure(6),minpressure(6),maxpressure(6)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
     integer, intent(in) :: cells(3)
@@ -57,7 +58,7 @@ contains
     logical, optional, intent(in) :: viscous_wall
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
-    real(dp) :: local_velocity(3,6)
+    real(dp) :: local_velocity(3,6),mach(6),pin(6),mach_controls(12),mach_min(12),mach_max(12)
     integer :: rank,nranks,ierr,first(3),extent(3),nx,ny,nz,nvar,previous,next,f,config(11),low(11),high(11)
     character(len=32) :: local_faces(6)
     logical :: valid,agreed,viscous
@@ -67,6 +68,9 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
+    mach=-1;pin=0
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) pin=inflow_pressure
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
     nvar=size(state,1);config(:4)=[cells,nvar];config(11)=merge(1,0,viscous)
@@ -77,6 +81,15 @@ contains
     if (any(pressure>0)) then
       valid=valid.and.present(species)
       if (present(species)) valid=valid.and.nvar==5+size(species)
+    end if
+    valid=valid.and.all(ieee_is_finite(mach)).and.all(mach<=100)
+    valid=valid.and..not.any(mach>=0.and.faces/='inflow')
+    valid=valid.and.all(ieee_is_finite(pin)).and.all(pin>=0).and.all(pin<=1e15_dp)
+    valid=valid.and..not.any(pin>0.and.mach<0)
+    if(present(inflow_pressure)) valid=valid.and.present(inflow_mach)
+    if(any(mach>=0)) then
+      valid=valid.and.present(species)
+      if(present(species)) valid=valid.and.nvar==5+size(species)
     end if
     do f=1,6
       select case(trim(faces(f)))
@@ -105,6 +118,16 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(config,high,11,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    mach_controls=[mach,pin]
+    call MPI_Allreduce(mach_controls,mach_min,12,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(mach_controls,mach_max,12,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(mach_min/=mach_max)) return
+    if(any(mach>=0)) then
+      call fill_mpi_les_boundary_ghosts_3d(comm,species,state,temperature,cells,faces,2,ghost,ghost_temperature,ok, &
+        inflow_state,inflow_temperature,wall_velocity,outlet_pressure,mach,pin,viscous_wall=viscous)
+      return
+    end if
     call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
     valid=valid.and.all(extent>=2).and.all(shape(state)==[nvar,extent]).and.all(shape(temperature)==extent)
     call agree()

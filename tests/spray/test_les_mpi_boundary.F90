@@ -1,5 +1,6 @@
 program test_les_mpi_boundary
   use mpi_f08
+  use spray_mpi_mod, only: fill_mpi_spray_ghosts
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -21,7 +22,7 @@ program test_les_mpi_boundary
   real(dp) :: serial_u(nv,5,3,2),serial_t(5,3,2),serial_budget(nv),budget(nv),saved_budget(nv),scale
   real(dp), allocatable :: rhs(:,:,:,:),u(:,:,:,:),t(:,:,:)
   character(len=32) :: faces(6)
-  integer :: rank,nranks,ierr,first(3),extent(3),i,j,k,mode,lo,hi,requested_width
+  integer :: rank,nranks,ierr,first(3),extent(3),i,j,k,mode,lo,hi,requested_width,iv
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -72,6 +73,20 @@ program test_les_mpi_boundary
     call require(ok,'distributed boundary donors')
     call require(all(ghost==reference(:,lo:hi+2*width,:,:)),'exact full-width serial states')
     call require(all(gt==reference_t(lo:hi+2*width,:,:)),'exact full-width serial temperatures')
+    if(mode>=7) then
+      do iv=0,1
+        call fill_mach_inlet_boundary_ghosts_3d(species,full,temperature,faces,mach, &
+          reference(:,1:9,1:7,1:6),reference_t(1:9,1:7,1:6),ok,viscous_wall=iv==1, &
+          inflow_state=inlet,inflow_temperature=inlet_t,inflow_pressure=pin,wall_velocity=walls)
+        call require(ok,'serial two-layer Mach donors')
+        call fill_mpi_spray_ghosts(MPI_COMM_WORLD,local,local_t,cells,faces,ghost,gt,ok,viscous_wall=iv==1, &
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_velocity=walls,species=species, &
+          inflow_mach=mach,inflow_pressure=pin)
+        call require(ok,'MPI spray Mach donors')
+        call require(all(ghost==reference(:,lo:hi+4,1:7,1:6)),'exact inviscid/viscous spray Mach states')
+        call require(all(gt==reference_t(lo:hi+4,1:7,1:6)),'exact inviscid/viscous spray Mach temperatures')
+      end do
+    end if
     call compute_dynamic_les_boundary_rhs_3d(species,full,temperature,h,'box',2,rhs_full,serial_diffusion,ok, &
       boundary_faces=faces,boundary_rate=serial_rate,inflow_state=inlet,inflow_temperature=inlet_t, &
       wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin)

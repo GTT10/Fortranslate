@@ -12,7 +12,7 @@ module les_mpi_boundary_mod
   public :: fill_mpi_les_boundary_ghosts_3d
 contains
   subroutine fill_mpi_les_boundary_ghosts_3d(comm,species,state,temperature,cells,faces,width,ghost,gt,ok, &
-      inflow_state,inflow_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure,viscous_wall)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
@@ -20,25 +20,28 @@ contains
     character(len=*), intent(in) :: faces(6)
     real(dp), allocatable, intent(inout) :: ghost(:,:,:,:),gt(:,:,:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: viscous_wall
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:),outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6)
     real(dp), allocatable :: packed(:,:,:,:),planes(:,:,:,:),donors(:,:,:,:),candidate(:,:,:,:),temps(:,:,:)
     real(dp), allocatable :: inlet(:,:),reference_inlet(:,:)
     integer, allocatable :: coordinates(:)
-    integer :: rank,nranks,ierr,ios,nv,first(3),extent(3),dims(3),config(5),low(5),high(5)
+    integer :: rank,nranks,ierr,ios,nv,first(3),extent(3),dims(3),config(6),low(6),high(6)
     integer :: i,j,k,q(3),idx(3),inlet_face,a,bounds(2,3)
     real(dp) :: walls(3,6),pressure(6),controls(36),minimum(36),maximum(36),mach(6),pin(6),shift(3),momentum(3),rho
     character(len=32) :: reference_faces(6)
-    logical :: valid,agreed,reflect(3)
+    logical :: valid,agreed,reflect(3),viscous
     ok=.false.;nv=5+size(species);walls=0;pressure=0;mach=-1;pin=0
     call MPI_Comm_rank(comm,rank,ierr)
     if(ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if(ierr/=MPI_SUCCESS) return
-    config=[cells,width,nv]
-    call MPI_Allreduce(config,low,5,MPI_INTEGER,MPI_MIN,comm,ierr)
+    viscous=.true.
+    if(present(viscous_wall)) viscous=viscous_wall
+    config=[cells,width,nv,merge(1,0,viscous)]
+    call MPI_Allreduce(config,low,6,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,high,5,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,high,6,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
     valid=all(low==high).and.all(cells>=2).and.all(cells<=huge(1)-256).and.width>=1.and.width<=128
     valid=valid.and.valid_reactive_boundaries_3d(faces)
@@ -110,7 +113,7 @@ contains
       j=i
       if(i>width) j=i+extent(1)
       idx=[first(1)+j-width,1,1]
-      call map_reactive_boundary_donor_3d(idx,cells,faces,.true.,q,reflect,shift,inlet_face,valid,walls)
+      call map_reactive_boundary_donor_3d(idx,cells,faces,viscous,q,reflect,shift,inlet_face,valid,walls)
       if(.not.valid) exit
       coordinates(i)=q(1)
     end do
@@ -125,7 +128,7 @@ contains
       do j=1,dims(2)
         do i=1,dims(1)
           idx=[first(1)+i-width,j-width,k-width]
-          call map_reactive_boundary_donor_3d(idx,cells,faces,.true.,q,reflect,shift,inlet_face,valid,walls)
+          call map_reactive_boundary_donor_3d(idx,cells,faces,viscous,q,reflect,shift,inlet_face,valid,walls)
           if(.not.valid) exit
           candidate(:,i,j,k)=donors(:nv,i,q(2),q(3));temps(i,j,k)=donors(nv+1,i,q(2),q(3))
           if(inlet_face>0) then
