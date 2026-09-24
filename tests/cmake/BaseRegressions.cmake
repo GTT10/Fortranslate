@@ -102,6 +102,8 @@ add_test(
   COMMAND test_amr_reactive_chemistry_3d
 )
 set_tests_properties(unit_amr_reactive_chemistry_3d PROPERTIES TIMEOUT 300)
+add_test(NAME unit_amr_two_level_ppm_periodic_3d COMMAND test_amr_reactive_chemistry_3d ppm_periodic)
+set_tests_properties(unit_amr_two_level_ppm_periodic_3d PROPERTIES TIMEOUT 60)
 
 add_executable(
   test_amr_reactive_3d_checkpoint

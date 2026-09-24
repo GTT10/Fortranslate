@@ -43,6 +43,7 @@ program test_amr_reactive_chemistry_3d
   real(dp) :: chemistry_change, element_error
   real(dp) :: reflux, reference_reflux
   logical :: ok
+  character(len=32) :: test_mode
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "elementary thermodynamics load")
@@ -52,6 +53,12 @@ program test_amr_reactive_chemistry_3d
     nx, ny, nz, 3, 6, 2, 3, 2, 3, ratio, patch, ok)
   call require(ok .and. patch%is_strictly_interior(), &
     "strictly interior chemistry patch")
+  call get_command_argument(1,test_mode)
+  if (trim(test_mode)=="ppm_periodic") then
+    call check_periodic_ppm()
+    write(*,*) "test_amr_reactive_chemistry_3d periodic PPM: PASS"
+    stop
+  end if
   call initialize_uniform_hierarchy( &
     species, patch, coarse_state, coarse_temperature, &
     fine_state, fine_temperature, ok)
@@ -188,6 +195,43 @@ program test_amr_reactive_chemistry_3d
 
 contains
 
+  subroutine check_periodic_ppm()
+    real(dp), allocatable :: c(:,:,:,:),t(:,:,:),f(:,:,:,:),ft(:,:,:)
+    real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:),before(:),after(:)
+    real(dp) :: velocity(3),r,scale
+    integer :: i,j,k
+    call initialize_uniform_hierarchy(species,patch,c,t,f,ft,ok)
+    call require(ok,'periodic PPM hierarchy')
+    velocity=[30._dp,-20._dp,10._dp]
+    do k=1,size(f,4)
+      do j=1,size(f,3)
+        do i=1,size(f,2)
+          f(:,i,j,k)=f(:,i,j,k)*(1+.02_dp*sin(real(i+2*j+3*k,dp)))
+          f(2:4,i,j,k)=f(1,i,j,k)*velocity
+          f(5,i,j,k)=f(5,i,j,k)+.5_dp*f(1,i,j,k)*sum(velocity**2)
+        end do
+      end do
+    end do
+    call average_down_3d(c,f,patch,ok)
+    call require(ok,'periodic PPM synchronization')
+    c0=c;t0=t;f0=f;ft0=ft
+    allocate(before(size(c,1)),after(size(c,1)))
+    call composite_integrals_amr_3d(c,f,patch,dx,dy,dz,before,ok)
+    call require(ok,'periodic PPM initial inventory')
+    call advance_amr_reactive_hydro_3d(species,patch,c,t,f,ft,dx,dy,dz,1e-8_dp,'hllc',r,ok, &
+      'characteristic_ppm','mc')
+    call require(ok,'periodic PPM advance')
+    call composite_integrals_amr_3d(c,f,patch,dx,dy,dz,after,ok)
+    scale=maxval(abs(before))
+    call require(ok.and.all(abs(after-before)<=2e-13_dp*max(abs(before),scale*1e-12_dp)), &
+      'periodic PPM conservation')
+    call require(any(f/=f0),'periodic PPM nontrivial update')
+    c=c0;t=t0;f=f0;ft=ft0
+    call advance_amr_reactive_hydro_3d(species,patch,c,t,f,ft,dx,dy,dz,1._dp,'hllc',r,ok, &
+      'characteristic_ppm','mc')
+    call require(.not.ok.and.r==0.and.hierarchy_matches(c,t,f,ft,c0,t0,f0,ft0),'periodic PPM CFL rollback')
+  end subroutine check_periodic_ppm
+
   subroutine check_boundary_touching_hydro()
     type(amr_patch_3d) :: p
     real(dp), allocatable :: c0(:,:,:,:),t0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
@@ -242,9 +286,10 @@ contains
         'outflow                         ','slip_wall                       ']
       call composite_integrals_amr_3d(c0,f0,p,dx,dy,dz,before,ok)
       call require(ok,'boundary touching initial inventory')
-      do scheme=1,2
+      do scheme=1,3
         method='pcm'
         if (scheme==2) method='characteristic_plm'
+        if (scheme==3) method='characteristic_ppm'
         c=c0;t=t0;f=f0;ft=ft0
         call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
           method,'mc',faces,ledger,inlet,it)
@@ -265,9 +310,25 @@ contains
           call require(all(abs(total_ledger-ledger)<=2e-11_dp*scale),'full refinement boundary transfer')
         end if
         outlet=0;outlet(2)=102325.0_dp;outlet(5)=outlet(2)
+        if (mode==7.and.scheme==3) then
+          ! Two prescribed-pressure faces compound the four-layer corner
+          ! extrapolation beyond admissibility for this 5% density variation.
+          ! Both regular and AMR paths must reject it transactionally.
+          c=c0;t=t0;f=f0;ft=ft0;ref=f0;rt=ft0
+          call advance_reactive_boundary_hydro_3d(species,ref,rt,[dx,dy,dz]/rr,interval/rr, &
+            faces,method,'mc','rusanov',rl,ok,inlet,it,outlet_pressure=outlet)
+          call require(.not.ok.and.all(ref==f0).and.all(rt==ft0).and.all(rl==0), &
+            'PPM inadmissible pressure corner regular rollback')
+          call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
+            method,'mc',faces,ledger,inlet,it,outlet)
+          call require(.not.ok.and.hierarchy_matches(c,t,f,ft,c0,t0,f0,ft0).and.r==0.and.all(ledger==0), &
+            'PPM inadmissible pressure corner AMR rollback')
+          outlet(5)=0
+        end if
         c=c0;t=t0;f=f0;ft=ft0
         call advance_amr_reactive_hydro_3d(species,p,c,t,f,ft,dx,dy,dz,interval,'rusanov',r,ok, &
           method,'mc',faces,ledger,inlet,it,outlet)
+        if (.not.ok) write(*,*) 'pressure outlet case:',mode,trim(method)
         call require(ok,'AMR pressure outlet hydro accepted')
         call composite_integrals_amr_3d(c,f,p,dx,dy,dz,after,ok)
         scale=max(abs(before),abs(ledger),1e-20_dp);scale(2:4)=maxval(scale(2:4))
@@ -329,9 +390,10 @@ contains
     call require(ok,'physical split initial conserved inventory')
     call element_integrals_from_reactive_integrals_3d(species,before,e0,ok)
     call require(ok,'physical split initial elements')
-    do mode=1,2
+    do mode=1,3
       method='pcm'
       if (mode==2) method='characteristic_plm'
+      if (mode==3) method='characteristic_ppm'
       c=c0;ct=ct0;f=f0;ft=ft0
       call advance_amr_reactive_strang_3d(species,reactions,test_patch,c,ct,f,ft,dx,dy,dz, &
         chemistry_interval,'rusanov',.true.,2e-7_dp,1e-12_dp,r,ok,method,'mc', &

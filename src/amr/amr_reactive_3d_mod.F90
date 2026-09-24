@@ -20,7 +20,7 @@ module amr_reactive_3d_mod
     compute_reactive_cfl_timestep_3d,advance_reactive_boundary_hydro_3d, &
     advance_reactive_euler_ssprk2_with_fluxes_3d, &
     advance_reactive_euler_ssprk2_plm_with_fluxes_3d, &
-    compute_reactive_plm_slab_face_fluxes_3d, &
+    compute_reactive_plm_slab_face_fluxes_3d, compute_reactive_ppm_halo_ctu_fluxes_3d, &
     advance_reactive_chemistry_3d, &
     recover_reactive_temperatures_3d
   use amr_hierarchy_3d_mod, only: &
@@ -622,7 +622,8 @@ contains
     logical :: local_ok
     logical, allocatable :: touched(:)
     real(dp) :: surface_correction(size(coarse_state,1)),candidate_reflux
-    integer :: face
+    integer :: face, coarse_width
+    character(len=32) :: periodic_faces(6)
     integer :: nvar, ratio, substep
     integer :: covered_nx, covered_ny, covered_nz
     character(len=32) :: selected_reconstruction, selected_limiter
@@ -665,7 +666,8 @@ contains
     if (dx <= 0.0_dp .or. dy <= 0.0_dp .or. dz <= 0.0_dp .or. &
         dt <= 0.0_dp) return
     if (trim(selected_reconstruction) /= "pcm" .and. &
-        trim(selected_reconstruction) /= "characteristic_plm") return
+        trim(selected_reconstruction) /= "characteristic_plm" .and. &
+        trim(selected_reconstruction) /= "characteristic_ppm") return
     if (trim(selected_limiter) /= "minmod" .and. &
         trim(selected_limiter) /= "mc") return
 
@@ -700,6 +702,11 @@ contains
         inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z,outlet_pressure)
     else
     select case (trim(selected_reconstruction))
+    case ("characteristic_ppm")
+      periodic_faces="periodic"
+      call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
+        periodic_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
+        flux_x=coarse_flux_x,flux_y=coarse_flux_y,flux_z=coarse_flux_z)
     case ("pcm")
       call advance_reactive_euler_ssprk2_with_fluxes_3d( &
         species, coarse_candidate, coarse_candidate_temperature, &
@@ -735,29 +742,32 @@ contains
     fine_z_lower = 0.0_dp
     fine_z_upper = 0.0_dp
 
-    ! Shift the patch into two physical coarse ghost layers so interpolation
+    ! Shift the patch into physical coarse ghost layers so interpolation
     ! slopes near a wall do not wrap to the opposite coarse boundary.
+    coarse_width=2
+    if (selected_reconstruction=="characteristic_ppm") coarse_width=4
     interpolation_patch=patch
     if (present(boundary_faces)) then
-      allocate(start_ghost(nvar,patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4))
+      allocate(start_ghost(nvar,patch%coarse_nx+2*coarse_width,patch%coarse_ny+2*coarse_width,patch%coarse_nz+2*coarse_width))
       allocate(end_ghost,mold=start_ghost)
-      allocate(start_gt(patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4))
+      allocate(start_gt(patch%coarse_nx+2*coarse_width,patch%coarse_ny+2*coarse_width,patch%coarse_nz+2*coarse_width))
       allocate(end_gt,mold=start_gt)
       call fill_reactive_boundary_ghosts_3d(coarse_start,coarse_start_temperature,boundary_faces,start_ghost,start_gt, &
-        local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=coarse_width)
       if (.not.local_ok) return
       call fill_reactive_boundary_ghosts_3d(coarse_candidate,coarse_candidate_temperature,boundary_faces,end_ghost,end_gt, &
-        local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=coarse_width)
       if (.not.local_ok) return
       call fill_pressure_outlet_ghosts_3d(species,[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz], &
-        boundary_faces,outlet_pressure,start_ghost,start_gt,local_ok)
+        boundary_faces,outlet_pressure,start_ghost,start_gt,local_ok,ghost_width=coarse_width)
       if (.not.local_ok) return
       call fill_pressure_outlet_ghosts_3d(species,[patch%coarse_nx,patch%coarse_ny,patch%coarse_nz], &
-        boundary_faces,outlet_pressure,end_ghost,end_gt,local_ok)
+        boundary_faces,outlet_pressure,end_ghost,end_gt,local_ok,ghost_width=coarse_width)
       if (.not.local_ok) return
-      call initialize_amr_patch_3d(patch%coarse_nx+4,patch%coarse_ny+4,patch%coarse_nz+4, &
-        patch%coarse_i_lower+2,patch%coarse_i_upper+2,patch%coarse_j_lower+2,patch%coarse_j_upper+2, &
-        patch%coarse_k_lower+2,patch%coarse_k_upper+2,ratio,interpolation_patch,local_ok)
+      call initialize_amr_patch_3d(patch%coarse_nx+2*coarse_width,patch%coarse_ny+2*coarse_width,patch%coarse_nz+2*coarse_width, &
+        patch%coarse_i_lower+coarse_width,patch%coarse_i_upper+coarse_width, &
+        patch%coarse_j_lower+coarse_width,patch%coarse_j_upper+coarse_width, &
+        patch%coarse_k_lower+coarse_width,patch%coarse_k_upper+coarse_width,ratio,interpolation_patch,local_ok)
       if (.not.local_ok) return
     end if
     fine_dt = dt / real(ratio, dp)
@@ -867,8 +877,12 @@ contains
     real(dp), allocatable :: old_temperature(:, :, :)
     real(dp), allocatable :: stage_temperature(:, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    real(dp) :: minimum_theta
+    logical :: physical_touch(6)
+    character(len=32) :: physical_faces(6)
     logical :: local_ok
-    integer :: nvar, nx, ny, nz
+    integer :: nvar, nx, ny, nz, i, j, k
 
     face_flux_x = 0.0_dp
     face_flux_y = 0.0_dp
@@ -890,9 +904,14 @@ contains
 
     old_state = state
     allocate(old_temperature(nx, ny, nz))
-    call recover_reactive_temperatures_3d( &
-      species, old_state, temperature, nx, ny, nz, old_temperature, local_ok)
-    if (.not. local_ok) return
+    if (reconstruction=="characteristic_ppm") then
+      ! The CTU kernel validates and recovers the supplied cell temperatures.
+      old_temperature=temperature
+    else
+      call recover_reactive_temperatures_3d( &
+        species, old_state, temperature, nx, ny, nz, old_temperature, local_ok)
+      if (.not. local_ok) return
+    end if
     allocate(stage_state(nvar, nx, ny, nz))
     allocate(candidate_state(nvar, nx, ny, nz))
     allocate(rhs(nvar, nx, ny, nz))
@@ -904,6 +923,43 @@ contains
     allocate(second_flux_x(nvar, 0:nx, ny, nz))
     allocate(second_flux_y(nvar, nx, 0:ny, nz))
     allocate(second_flux_z(nvar, nx, ny, 0:nz))
+
+    if (reconstruction=='characteristic_ppm') then
+      physical_touch=.false.;physical_faces='periodic'
+      if (present(faces)) physical_faces=faces
+      if (present(touched)) then
+        if (.not.present(faces)) return
+        physical_touch=touched
+      end if
+      allocate(ghost(nvar,nx+8,ny+8,nz+8),gt(nx+8,ny+8,nz+8))
+      ! CTU traces from the start of this fine substep; coarse donors are
+      ! interpolated in time before the characteristic prediction.
+      call build_boundary_fine_ghosts_3d(species,patch,coarse_start,coarse_start_temperature, &
+        coarse_end,coarse_end_temperature,old_state,old_temperature,alpha_start,'characteristic_plm',limiter, &
+        physical_touch,physical_faces,ghost,gt,local_ok,inflow_state,inflow_temperature, &
+        outlet_pressure=outlet_pressure,ghost_width=4)
+      if (.not.local_ok) return
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[nx,ny,nz],[dx,dy,dz],dt, &
+        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,minimum_theta,local_ok)
+      if (.not.local_ok) return
+      ! Match the regular-grid CTU conservative update, including operation order.
+      do k=1,nz
+      do j=1,ny
+      do i=1,nx
+        candidate_state(:,i,j,k)=old_state(:,i,j,k)-(dt/dx)*(first_flux_x(:,i,j,k)-first_flux_x(:,i-1,j,k))- &
+          (dt/dy)*(first_flux_y(:,i,j,k)-first_flux_y(:,i,j-1,k))- &
+          (dt/dz)*(first_flux_z(:,i,j,k)-first_flux_z(:,i,j,k-1))
+      end do
+      end do
+      end do
+      call recover_reactive_temperatures_3d(species,candidate_state,old_temperature,nx,ny,nz, &
+        candidate_temperature,local_ok)
+      if (.not.local_ok) return
+      face_flux_x=first_flux_x;face_flux_y=first_flux_y;face_flux_z=first_flux_z
+      state=candidate_state;temperature=candidate_temperature
+      ok=.true.
+      return
+    end if
 
     if (present(touched)) then
       if (.not.present(faces)) return
@@ -961,7 +1017,7 @@ contains
   end subroutine advance_fine_patch_ssprk2_3d
 
   subroutine build_boundary_fine_ghosts_3d(species,patch,c0,t0,c1,t1,u,t,alpha,reconstruction,limiter, &
-      touched,faces,ghost,gt,ok,inflow_state,inflow_temperature,viscous_wall,wall_velocity,outlet_pressure)
+      touched,faces,ghost,gt,ok,inflow_state,inflow_temperature,viscous_wall,wall_velocity,outlet_pressure,ghost_width)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: c0(:,:,:,:),t0(:,:,:),c1(:,:,:,:),t1(:,:,:),u(:,:,:,:),t(:,:,:),alpha
@@ -971,6 +1027,8 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6)
+    integer, optional, intent(in) :: ghost_width
+    integer :: width
     real(dp) :: local_pressure(6)
     logical, optional, intent(in) :: viscous_wall
     real(dp) :: primitive(reactive_nprim(size(species))),shift(3),old_momentum(3),rho
@@ -979,7 +1037,10 @@ contains
     ok=.false.;ghost=0;gt=0
     viscous=.false.
     if (present(viscous_wall)) viscous=viscous_wall
-    n=shape(t);ex=n+4
+    width=2
+    if (present(ghost_width)) width=ghost_width
+    if (width/=2.and.width/=4) return
+    n=shape(t);ex=n+2*width
     if (.not.valid_amr_reactive_shapes(species,patch,c0,t0,u,t)) return
     if (any(shape(c1)/=shape(c0)).or.any(shape(t1)/=shape(t0))) return
     if (any(shape(ghost)/=[size(u,1),ex]).or.any(shape(gt)/=ex)) return
@@ -999,7 +1060,7 @@ contains
     do k=1,ex(3)
       do j=1,ex(2)
         do i=1,ex(1)
-          q=[i,j,k]-2;reflect=.false.;inlet=0;shift=0
+          q=[i,j,k]-width;reflect=.false.;inlet=0;shift=0
           ! Map physical ghost coordinates into the fine state first. Other
           ! coordinates may remain coarse/fine ghosts, including at corners.
           do a=1,3
@@ -1033,6 +1094,9 @@ contains
             ghost(:,i,j,k)=u(:,q(1),q(2),q(3));gt(i,j,k)=t(q(1),q(2),q(3))
           else
             ci=lower+floor(real(q-1,dp)/real(patch%refinement_ratio,dp))
+            ! Four fine layers can cross the periodic coarse domain. Physical
+            ! boundaries instead supply a padded coarse interpolation patch.
+            ci=1+modulo(ci-1,[size(c0,2),size(c0,3),size(c0,4)])
             if (reconstruction=='pcm') then
               call interpolate_coarse_cell(species,c0,t0,c1,t1,ci(1),ci(2),ci(3),alpha,primitive, &
                 ghost(:,i,j,k),gt(i,j,k),local_ok)
@@ -1068,7 +1132,7 @@ contains
       end if
       local_pressure=0
       where(touched) local_pressure=outlet_pressure
-      call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost,gt,ok)
+      call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost,gt,ok,ghost_width=width)
     end if
   end subroutine build_boundary_fine_ghosts_3d
 
@@ -2041,9 +2105,9 @@ contains
     if (coarse_i < 1 .or. coarse_i > nx .or. &
         coarse_j < 1 .or. coarse_j > ny .or. &
         coarse_k < 1 .or. coarse_k > nz) return
-    if (local_i < -1 .or. local_i > ratio * nx + 2 .or. &
-        local_j < -1 .or. local_j > ratio * ny + 2 .or. &
-        local_k < -1 .or. local_k > ratio * nz + 2) return
+    if (local_i < -3 .or. local_i > ratio * nx + 4 .or. &
+        local_j < -3 .or. local_j > ratio * ny + 4 .or. &
+        local_k < -3 .or. local_k > ratio * nz + 4) return
     if (.not. ieee_is_finite(alpha)) return
     if (alpha < 0.0_dp .or. alpha > 1.0_dp) return
     if (trim(limiter) /= "minmod" .and. trim(limiter) /= "mc") return
