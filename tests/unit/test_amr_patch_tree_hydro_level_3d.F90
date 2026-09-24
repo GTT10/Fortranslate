@@ -17,8 +17,10 @@ program test_amr_patch_tree_hydro_level_3d
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),q(12),sound,budget(12),correction,expected(12),h(3)
   real(dp), parameter :: spacing(3)=[.001_dp,.001_dp,.001_dp],dt=1e-9_dp
   integer :: i,j,k,node,mode
-  character(len=32) :: faces(6),reconstruction
-  logical :: ok
+  character(len=32) :: faces(6),reconstruction,arg
+  logical :: ok,ppm
+  call get_command_argument(1,arg)
+  ppm=trim(arg)=='ppm'
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   do k=1,4
@@ -38,6 +40,7 @@ program test_amr_patch_tree_hydro_level_3d
     if (mode==2) then
       faces='outflow';faces(3:4)='slip_wall';reconstruction='characteristic_plm'
     end if
+    if (ppm) reconstruction='characteristic_ppm'
     call initialize()
     reference=state;reference_t=temp
     call advance_amr_patch_tree_hydro_3d(tree,species,reference,reference_t,spacing,dt,faces, &
@@ -62,8 +65,10 @@ program test_amr_patch_tree_hydro_level_3d
   start%fields(1)%values(:12,:,:,:)=root;start%fields(1)%values(13,:,:,:)=rt(1,:,:,:)
   finish=start;finish%fields(1)%values(:12,:,:,:)=1.01_dp*root
   faces='periodic'
+  reconstruction='characteristic_plm'
+  if (ppm) reconstruction='characteristic_ppm'
   call advance_amr_patch_tree_hydro_level_3d(tree,species,state,temp,1,spacing,dt,faces, &
-    'characteristic_plm','mc','hllc',flux,ok,start,finish,[.25_dp],[.5_dp])
+    reconstruction,'mc','hllc',flux,ok,start,finish,[.25_dp],[.5_dp])
   call require(ok,'fine interval with coarse endpoints')
   call require(all(state%fields(1)%values==initial%fields(1)%values),'inactive root unchanged')
   call require(all(temp%fields(1)%values==initial_t%fields(1)%values),'inactive temperature unchanged')
@@ -74,19 +79,19 @@ program test_amr_patch_tree_hydro_level_3d
   call require(maxval(abs(flux(2)%x(:,5,:,:)-flux(3)%x(:,1,:,:)))<1e-12_dp,'synchronous peer flux')
   reference=initial;reference_t=initial_t
   call advance_amr_patch_tree_hydro_level_3d(tree,species,reference,reference_t,1,spacing,dt,faces, &
-    'characteristic_plm','mc','hllc',saved_flux,ok,start,finish,[0._dp],[0._dp])
+    reconstruction,'mc','hllc',saved_flux,ok,start,finish,[0._dp],[0._dp])
   call require(ok,'frozen donor comparison')
   call require(maxval(abs(reference%fields(2)%values-state%fields(2)%values))>1e-8_dp,'coarse time affects fine solution')
   saved=state;saved_t=temp;saved_flux=flux
   call advance_amr_patch_tree_hydro_level_3d(tree,species,state,temp,1,spacing,dt,faces, &
-    'pcm','mc','hllc',flux,ok,start,finish,[.5_dp],[.25_dp])
+    reconstruction,'mc','hllc',flux,ok,start,finish,[.5_dp],[.25_dp])
   call require(.not.ok,'backward time interval rejected')
   call unchanged()
   call advance_amr_patch_tree_hydro_level_3d(tree,species,state,temp,1,spacing,1._dp,faces, &
-    'pcm','mc','hllc',flux,ok,start,finish,[0._dp],[1._dp])
+    reconstruction,'mc','hllc',flux,ok,start,finish,[0._dp],[1._dp])
   call require(.not.ok,'failed stage rejected')
   call unchanged()
-  print *, 'PASS: level RK2 root oracle, peer updates, time donors, integrated flux divergence and rollback'
+  print *, 'PASS: level hydro root oracle, peer updates, time donors, integrated flux divergence and rollback'
 contains
   subroutine initialize()
     call prolong_amr_patch_tree_3d(tree,root,state,ok)

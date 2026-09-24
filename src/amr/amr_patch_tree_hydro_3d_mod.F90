@@ -207,7 +207,7 @@ contains
       u=updated
     end subroutine
   end subroutine advance_amr_patch_tree_hydro_3d
-  ! Advance all peers at one depth synchronously. Return integrated RK fluxes
+  ! Advance all peers at one depth synchronously. Return integrated RK/CTU fluxes
   ! without restriction/reflux; the subcycle owner must synchronize levels.
   subroutine advance_amr_patch_tree_hydro_level_3d(tree,species,state,temperature,depth,root_spacing,dt,faces, &
       reconstruction,limiter,solver,integrated_flux,ok,coarse_start,coarse_end,fractions_start,fractions_end, &
@@ -228,15 +228,16 @@ contains
     type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature,packed,updated
     type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),recovered(:,:,:)
-    real(dp) :: rhs(reactive_nvar(size(species)))
-    integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint
+    real(dp) :: rhs(reactive_nvar(size(species))),theta,flux_weight
+    integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint,width,stage_count
     logical :: valid
     ok=.false.
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     if (depth<0.or.depth>=tree%level_count()) return
     if (.not.valid_reactive_boundaries_3d(faces).or..not.ieee_is_finite(dt)) return
-    if (dt<=0.or.(reconstruction/='pcm'.and.reconstruction/='characteristic_plm')) return
+    if (dt<=0.or.(reconstruction/='pcm'.and.reconstruction/='characteristic_plm'.and. &
+        reconstruction/='characteristic_ppm')) return
     if (limiter/='mc'.and.limiter/='minmod') return
     nvar=reactive_nvar(size(species))
     if (depth>0) then
@@ -275,7 +276,11 @@ contains
     end if
     initial=state;candidate=state;temps=temperature
     allocate(flux(size(tree%nodes)),packed%fields(size(tree%nodes)))
-    do stage=1,2
+    width=2;stage_count=2;flux_weight=.5_dp*dt
+    if (reconstruction=='characteristic_ppm') then
+      width=4;stage_count=1;flux_weight=dt
+    end if
+    do stage=1,stage_count
       do peer=1,size(tree%nodes)
         n=tree%nodes(peer)%shape
         if (.not.allocated(packed%fields(peer)%values)) allocate(packed%fields(peer)%values(nvar+1,n(1),n(2),n(3)))
@@ -291,7 +296,12 @@ contains
         call stage_ghost(peer,valid)
         if (.not.valid) return
         allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)),fz(nvar,dims(1),dims(2),dims(3)))
-        if (reconstruction=='pcm') then
+        if (reconstruction=='characteristic_ppm') then
+          fx=0;fy=0;fz=0
+          call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+            n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
+            fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,valid)
+        else if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             dims(1),dims(2),dims(3),solver,fx,fy,fz,valid)
         else
@@ -310,13 +320,13 @@ contains
           end do
         end do
         if (stage==1) then
-          flux(peer)%x=.5_dp*dt*fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
-          flux(peer)%y=.5_dp*dt*fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
-          flux(peer)%z=.5_dp*dt*fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
+          flux(peer)%x=flux_weight*fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
+          flux(peer)%y=flux_weight*fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
+          flux(peer)%z=flux_weight*fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
         else
-          flux(peer)%x=flux(peer)%x+.5_dp*dt*fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
-          flux(peer)%y=flux(peer)%y+.5_dp*dt*fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
-          flux(peer)%z=flux(peer)%z+.5_dp*dt*fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
+          flux(peer)%x=flux(peer)%x+flux_weight*fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
+          flux(peer)%y=flux(peer)%y+flux_weight*fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
+          flux(peer)%z=flux(peer)%z+flux_weight*fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
         end if
         deallocate(fx,fy,fz)
       end do
@@ -350,7 +360,7 @@ contains
       logical, intent(out) :: success
       character(len=:), allocatable :: donor_limiter
       real(dp), allocatable :: fractions(:)
-      if (reconstruction=='characteristic_plm') donor_limiter=limiter
+      if (reconstruction/='pcm') donor_limiter=limiter
       if (present(fractions_start)) then
         if (endpoint==1) then
           fractions=fractions_start
@@ -360,9 +370,10 @@ contains
       end if
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success,inflow_state=inlet, &
         coarse_future=coarse_end,coarse_fractions=fractions,coarse_limiter=donor_limiter,species_count=size(species), &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        ghost_width=width,species=species,inflow_mach=inflow_mach, &
+        inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
-      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success,ghost_width=width)
     end subroutine
   end subroutine advance_amr_patch_tree_hydro_level_3d
 

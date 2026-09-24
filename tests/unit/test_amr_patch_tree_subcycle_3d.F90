@@ -19,8 +19,10 @@ program test_amr_patch_tree_subcycle_3d
   real(dp), parameter :: spacing(3)=[.001_dp,.0015_dp,.002_dp]
   integer(int64), allocatable :: counts(:)
   integer :: geometry,mode,node,i,j,k
-  character(len=32) :: faces(6),reconstruction
-  logical :: ok
+  character(len=32) :: faces(6),reconstruction,arg
+  logical :: ok,ppm
+  call get_command_argument(1,arg)
+  ppm=trim(arg)=='ppm'
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   do k=1,4
@@ -49,6 +51,7 @@ program test_amr_patch_tree_subcycle_3d
     if (allocated(counts)) deallocate(counts)
     allocate(counts(tree%level_count()))
     do mode=1,6
+      if (ppm.and.mode==4) cycle
       outlet=0;mach=-1;tin=700;pin=0
       if (mode>2) then
         outlet(2)=102325;outlet(6)=102325
@@ -64,6 +67,7 @@ program test_amr_patch_tree_subcycle_3d
         reconstruction='pcm'
         if(mode==6) reconstruction='characteristic_plm'
       end if
+      if (ppm) reconstruction='characteristic_ppm'
       call prolong_amr_patch_tree_3d(tree,root,state,ok)
       call require(ok,'initial state')
       call prolong_amr_patch_tree_3d(tree,rt,temp,ok)
