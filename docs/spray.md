@@ -2481,6 +2481,27 @@ nonzero-batch parcel counts. See
 [independent profile checks](validation/spray-port-rate-profiles-20260916.md).
 
 
+### External rate files
+
+The regular serial application's shared or independent tables can alternatively
+be loaded from an optional group after `&spray`:
+
+```fortran
+&spray_rate_files
+ profile_file='shared.dat'
+/
+```
+
+For independent schedules, use `profile_files(p)='port.dat'` instead of the
+shared `profile_file`. The shared and independent modes remain mutually
+exclusive. Leave the corresponding inline count/arrays at zero. Each file has
+2--64 whitespace-separated time/rate pairs; blank lines and `#`/`!` comments
+are allowed. Existing 0--1000 s, 0--1 kg/s and event-coverage bounds still apply.
+Unused port paths and inline/file conflicts reject. Relative paths use the
+working directory. Files load at startup, including restart; loaded numerical
+tables, not paths/comments, bind checkpoint identity. Existing event scheduling
+is unchanged. See [serial file checks](validation/spray-serial-rate-files-20260925.md).
+
 ### Velocity from injection rate
 
 `velocity_from_rate=.true.` derives scheduled injection speed from
