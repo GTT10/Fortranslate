@@ -2212,7 +2212,8 @@ contains
       patch%refinement_ratio == amr_config%refinement_ratio .and. &
       valid_reactive_boundaries_3d(resolved_reactive_boundaries_3d(flow_config)) .and. &
       (trim(flow_config%reconstruction) == "pcm" .or. &
-       trim(flow_config%reconstruction) == "characteristic_plm") .and. &
+       trim(flow_config%reconstruction) == "characteristic_plm" .or. &
+       trim(flow_config%reconstruction) == "characteristic_ppm") .and. &
       (trim(flow_config%limiter) == "minmod" .or. &
        trim(flow_config%limiter) == "mc") .and. physics_matches
   end function checkpoint_configuration_matches

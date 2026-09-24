@@ -91,7 +91,8 @@ contains
     if (any(n/=[next_patch%coarse_nx,next_patch%coarse_ny,next_patch%coarse_nz])) return
     if (patch%refinement_ratio/=next_patch%refinement_ratio) return
     if (.not.allocated(fine).or..not.allocated(ft)) return
-    if (reconstruction/='pcm'.and.reconstruction/='characteristic_plm') return
+    if (reconstruction/='pcm'.and.reconstruction/='characteristic_plm'.and. &
+        reconstruction/='characteristic_ppm') return
     if (limiter/='mc'.and.limiter/='minmod') return
     allocate(tc,mold=ct); allocate(old_tc,mold=ct); allocate(old_tf,mold=ft)
     call recover_reactive_temperatures_3d(species,coarse,ct,n(1),n(2),n(3),tc,local_ok)
@@ -128,7 +129,8 @@ contains
       do cj=next_patch%coarse_j_lower,next_patch%coarse_j_upper
         do ci=next_patch%coarse_i_lower,next_patch%coarse_i_upper
           slope=0.0_dp
-          if (reconstruction=='characteristic_plm') then
+          ! PPM time tracing uses conservative limited linear regrid donors.
+          if (reconstruction/='pcm') then
             do v=1,size(c,1)
               call limited_slope(slope_state(v,ci+shift,cj+shift,ck+shift)-slope_state(v,ci+shift-1,cj+shift,ck+shift), &
                 slope_state(v,ci+shift+1,cj+shift,ck+shift)-slope_state(v,ci+shift,cj+shift,ck+shift), &

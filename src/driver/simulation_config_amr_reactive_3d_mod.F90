@@ -149,8 +149,9 @@ contains
     if (.not.physical_allowed.and.any(resolved_reactive_boundaries_3d(base_config) /= "periodic")) then
       message = "Static 3D AMR currently requires periodic boundaries"
     else if (trim(base_config%reconstruction) /= "pcm" .and. &
-             trim(base_config%reconstruction) /= "characteristic_plm") then
-      message = "Static 3D AMR reconstruction must be pcm or characteristic_plm"
+             trim(base_config%reconstruction) /= "characteristic_plm" .and. &
+             trim(base_config%reconstruction) /= "characteristic_ppm") then
+      message = "Static 3D AMR reconstruction must be pcm, characteristic_plm or characteristic_ppm"
     else if (trim(base_config%limiter) /= "minmod" .and. &
              trim(base_config%limiter) /= "mc") then
       message = "Static 3D AMR limiter must be minmod or mc"

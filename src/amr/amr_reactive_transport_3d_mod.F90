@@ -282,7 +282,8 @@ contains
     end if
     if ((barodiffusion_enabled .and. .not. species_diffusion_enabled) .or. &
         (trim(selected_reconstruction) /= "pcm" .and. &
-          trim(selected_reconstruction) /= "characteristic_plm") .or. &
+          trim(selected_reconstruction) /= "characteristic_plm" .and. &
+          trim(selected_reconstruction) /= "characteristic_ppm") .or. &
         (trim(selected_limiter) /= "minmod" .and. &
           trim(selected_limiter) /= "mc")) return
 

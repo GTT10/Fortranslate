@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--reacting', action='store_true')
+    parser.add_argument('--ppm', action='store_true')
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--touching', action='store_true')
     parser.add_argument('--dynamic-touching', action='store_true')
@@ -63,6 +64,8 @@ def main() -> None:
         labels = ('wall',)
     for label in labels:
         source = template
+        if args.ppm:
+            source = source.replace('characteristic_plm', 'characteristic_ppm')
         if args.reacting:
             source = source.replace('chemistry_enabled = .false.', 'chemistry_enabled = .true.')
             source = source.replace('final_time = 1.0e-8', 'final_time = 1.0e-10')
@@ -110,6 +113,10 @@ def main() -> None:
         if label == 'dynamic' or args.dynamic_touching or args.pressure_outlet:
             assert 'Regrid at step 0:' in stopped
         resumed = run(f'{label}_resumed', source, f"restart_file='{label}.chk',")
+        if args.ppm:
+            assert 'Reconstruction: characteristic_ppm' in reference
+            changed_scheme = source.replace('characteristic_ppm', 'characteristic_plm')
+            run(f'{label}_changed_scheme', changed_scheme, f"restart_file='{label}.chk',", success=False)
         if args.pressure_outlet:
             assert 'PRESSURE_OUTLET_V1' in (work / f'{label}.chk').read_text()
             steps = lambda log: int(next(line.split(':')[1] for line in log.splitlines()
