@@ -21,6 +21,19 @@ recursive intervals and flux synchronization now reach the MPI spray application
 establish parity with the reference time integrator or physical validation.
 See the [dated source audit](validation/les-reference-scope-20260925.md).
 
+The next liquid-property port unit is the PeleMP boiling-temperature path:
+separate the latent-heat reference temperature from the normal boiling point,
+evaluate Watson latent heat at that boiling point, and use it for the
+pressure-dependent boiling cap. The current constant-latent `surface-cap`
+remains the compatibility default. The ordinary EOS vapor-pressure path uses
+enthalpy-derived latent heat, so replacing every latent heat with Watson would
+not match the reference. Exit checks must cover the reference-temperature
+identity, pressure dependence, invalid critical/boiling temperatures, unchanged
+default behavior and restart identity for any new inputs.
+GCM is excluded from this pinned PeleC port because upstream restricts it to
+PeleLMeX; PeleMP is the available alternative. See the
+[property source audit](validation/spray-property-scope-20260925.md).
+
 ## Consolidation versus solver completion
 
 The source-provenance repair, documentation ownership, CMake module split,
@@ -49,8 +62,10 @@ production diesel chemistry qualification remain open. Lu n-dodecane (53 species
 268 reactions) now imports with extended Troe coefficients and completes a
 lean constant-volume ignition comparison; Newton trial-state handling preserves
 accepted-state checks. See [focused evidence](validation/dodecane-20260915.md). See [scope and commands](spray.md) and [acceptance gates](validation/0.246.0.md).
-These are bounded implemented capabilities, not completion of diesel chemistry,
-multicomponent liquids, general dispersion/collision, characteristic inlet models and near-wall turbulence qualification or MPI/AMR particles.
+These are bounded implemented capabilities. Multicomponent liquids and MPI/AMR
+particle coupling are implemented; detailed-fuel physical qualification,
+mixture boiling, general dispersion/collision and near-wall turbulence
+qualification remain open.
 Regular wall reflection and outflow now include gas/particle surface budgets
 and restart persistence; isothermal/tangentially moving gas walls include molecular
 and SGS heat/work budgets. The Ahamed impact-regime, splash-velocity, mass-distribution, four-child construction and deposited-film geometry kernels are connected by a transactional impact event with explicit wall impulse/energy budgets; regular coupled-step boundary handling now retains deposition patches, advances splash children and evolves stationary film temperature/mass with per-material constant or cubic conductivity; the CLI and coupled checkpoint retain these states, while physical qualification remains open. Lateral film transport is a future model extension beyond the pinned stationary-film path, not an omitted reference transport operator ([source audit](validation/film-reference-scope-20260918.md)). ETAB and KH-RT representative-drop
@@ -104,23 +119,28 @@ reimplemented. Their restrictions remain explicit in current status.
 
 Regular 3D hydro/chemistry/molecular transport now accepts per-face prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip conditions with prescribed tangential wall velocity
 with integrated boundary-flux accounting; see the [case guide](../cases/reactive_boundaries_3d/README.md).
-Characteristic inflow and moving geometry, general EB and AMR-particle boundary coupling
-remain part of the completion work. A three-axis extrusion API now maps
+Mach-state inflow is connected for regular and patch-tree gas/spray paths;
+broader characteristic-boundary qualification and moving geometry remain open.
+AMR-particle boundary coupling and stationary level-set EB applications are
+implemented within the documented subsets. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
 normal integrals and uniform-pressure balance. Nonplanar section-file geometry now connects
 to fixed/selected application inputs and geometry-bound restart. Outward-neighbor StateRedist connects
 nonplanar hydro/transport/reaction updates in a focused extruded-section case.
 A 3D nodal level-set builder now supplies tetrahedrally reconstructed cell/face
 metrics and pressure balance. Nodal-file geometry now connects to fixed/selected
-application/restart and coupled reaction/transport/hydro updates; broader small-cell
-stabilization and EB-AMR-MPI coupling remain open.
+application/restart and coupled reaction/transport/hydro updates. MPI EB spray
+regridding and changed-rank restart are connected
+([dated evidence](validation/spray-mpi-eb-regrid-application-20260918.md)); broader
+small-cell stabilization, convergence and physical qualification remain open.
 
 Serial/MPI 3D temperature-tagged patch movement/resizing is implemented with conservative
 remapping, overlap reuse and geometry-aware changed-rank restart, including
 physical-boundary tagging and boundary-touching patches. Remapping now runs
 within fixed coarse slabs without full-level root aggregation. General
-patch-tree evolution and integration, measured workload/scaling qualification, broader distributed I/O qualification
-and EB coupling remain open. Two-level MPI AMR CSV output and final diagnostics now
+patch-tree evolution and integration are implemented as described below;
+measured scaling and broader distributed I/O qualification remain open.
+Two-level MPI AMR CSV output and final diagnostics now
 operate on local slabs, as do analytic coarse/fine initialization and checkpoint read/write; see the [AMR case guide](../cases/amr_reactive_3d/README.md).
 
 The regular 3D patch-tree geometry/state foundation now supports multiple children,
@@ -152,8 +172,9 @@ Direct same-geometry owner migration now transfers U/T without interpolation or
 a root gather. A cost-driven rebalance API now accepts owner-reported patch costs
 and migrates only for a sufficient predicted peak-load reduction. Scheduled recursive full-split execution now has a focused combined regrid,
 rebalance and V2 changed-rank restart check. Temperature-triggered full-split
-refinement also has this combined check. Large-tree scaling, general EB coupling
-and particle/AMR integration remain open. Owner-local kernel timing
+refinement also has this combined check. Particle/AMR application integration is
+connected; large-tree scaling and broader EB/particle qualification remain open.
+Owner-local kernel timing
 and opt-in application rebalance cadence are now connected. Recursive MPI
 reaction/transport/hydro composition is connected. MPI recursive transport now connects
 ratio-squared steps, interval reflux and scaled diffusion/wall bounds. MPI recursive
@@ -188,13 +209,14 @@ Tree snapshot I/O, application stop/restart and schedule-position checks are imp
 and automatic-geometry restart are connected for serial and MPI ownership. See the
 [tree design](design_decisions/amr-patch-tree-3d.md).
 
-Particle Cartesian MPI migration now preserves parcel/component payloads and
-restores local ID ordering, with collective input/capacity rejection. Distributed
-gas feedback, film ownership and application restart remain. A collective ID
-reservation, collective computational splitting and cone injection are implemented;
-distributed scheduling and aerodynamic-breakup driver wiring remain. Owner-routed
-particle field sampling and feedback deposition are implemented; coupled
-thermodynamic stepping remains.
+Particle Cartesian MPI migration preserves parcel/component payloads and local
+ID ordering, with collective input/capacity rejection. Distributed gas feedback,
+thermodynamic stepping, scheduled injection, breakup and rank-changing restart
+are connected to applications. AMR film ownership, regridding/rebalancing and
+restart are also connected
+([dated film evidence](validation/spray-amr-film-application-20260918.md)). These
+implementation results do not establish experimental spray/film validation,
+production scaling or complete reference-solver parity.
 
 ## Contract for every increment
 

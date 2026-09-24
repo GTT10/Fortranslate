@@ -1,0 +1,28 @@
+{
+  "repository": "https://github.com/Pele-Suite/PelePhysics",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "files": [
+    {
+      "path": "Source/Spray/SprayPropertiesPeleMP.H",
+      "sha256": "c75d5f7acc53c58ce2bf8ea56aadd603bef965bfa54b89ca0b817e7cb2a979dd"
+    },
+    {
+      "path": "Source/Spray/SprayPropertiesGCM.H",
+      "sha256": "ca7e00ea0d8df9dcdcb3aa453105b58a1ea47fa0ff8b526d7437143340e2b96b"
+    },
+    {
+      "path": "Source/Spray/SprayFuelData.H",
+      "sha256": "9f096c69d0132ad516db5dae4e7786a6d3f3126b2f3cf627ef8745e18b783c32"
+    },
+    {
+      "path": "Source/Spray/SprayParticles.cpp",
+      "sha256": "0e376f77df434ae7eec9fba39ab67af5ad4c20fb4c46529a9ff35b6d978b4d05"
+    },
+    {
+      "path": "Source/Spray/Drag.H",
+      "sha256": "bcc2bcb2f01b8cedfeb92d0bfc9ae2c8e723e77285f7011aeb77d5b138a29345"
+    }
+  ],
+  "license_path": "references/pelephysics-spray-license.txt",
+  "scope": "Source audit of PeleMP latent heat and boiling-temperature calculation, and the PeleLMeX-only GCM compile constraint; no new numerical parity claim."
+}
