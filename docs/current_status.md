@@ -15,7 +15,10 @@ Focused fixed-mechanism MPI parity and 2-to-4-rank continuation passed on
 2026-09-25 ([runtime evidence](validation/mpi-dynamic-amr-runtime-20260925.md)).
 Adaptive regridding/rebalancing with Dynamic LES and selected H2O2 restart now
 also have focused execution evidence ([combined checks](validation/les-dynamic-adaptive-20260925.md)).
-Dynamic physical/EB boundaries, LES subcycling, detailed-fuel Dynamic LES and
+Prescribed reservoir inflow and extrapolated outflow also run through Dynamic
+AMR LES, including changed-rank spray restart
+([focused checks](validation/les-dynamic-open-20260925.md)).
+Dynamic wall/pressure-outlet/EB boundaries, LES subcycling, detailed-fuel Dynamic LES and
 physical qualification remain open.
 
 | Area | Implemented subset | Still open |

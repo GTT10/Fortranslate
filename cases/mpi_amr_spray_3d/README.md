@@ -278,7 +278,7 @@ See [application evidence](../../docs/validation/les-amr-application-20260918.md
 
 ### Dynamic LES
 
-Periodic cases can select the new dynamic path:
+Periodic cases and prescribed reservoir inflow/extrapolated outflow cases can select the dynamic path:
 
 ```fortran
 &amr_spray_les les_model='dynamic',les_cfl=.1 /
@@ -290,7 +290,7 @@ Periodic cases can select the new dynamic path:
 The second group is optional with the shown defaults. Dynamic mode is active
 even with `les_cs=les_ci=0`; its computed coefficients replace static
 `les_cs/les_prt/les_sct/les_ci`. Filter models/ratios follow the regular Dynamic
-LES kernel. Nonperiodic boundaries reject; nondefault dynamic filter controls
+LES kernel. Wall boundaries and pressure-target outlets still reject; nondefault dynamic filter controls
 on a static model reject. Dynamic settings enter checkpoint identity, so changing
 them rejects restart. Static/default context serialization is preserved.
 The same particle/gas transaction, two LES half steps and retry logic apply.
@@ -300,6 +300,7 @@ restart checks pass ([runtime checks](../../docs/validation/mpi-dynamic-amr-runt
 Dynamic LES with adaptive regridding/rebalancing and selected H2O2 continuation
 also pass focused checks ([combined evidence](../../docs/validation/les-dynamic-adaptive-20260925.md)).
 Detailed-fuel and physical validation remain outside this evidence.
+See also [inflow/outflow checks](../../docs/validation/les-dynamic-open-20260925.md).
 
 ### Uniform acceleration
 

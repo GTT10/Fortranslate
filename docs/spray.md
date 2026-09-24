@@ -3181,24 +3181,26 @@ See [timestep evidence](validation/les-amr-timestep-20260918.md).
 EB grids are outside both APIs.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
 
-The serial stepper and timestep selector now accept `model='dynamic'` on periodic
-trees. Optional `test_model`, `test_ratio`, `grid_ratio`, `harmonic_mean` default
+The serial stepper and timestep selector accept `model='dynamic'` on periodic,
+prescribed reservoir inflow and extrapolated outflow trees.
+Optional `test_model`, `test_ratio`, `grid_ratio`, `harmonic_mean` default
 to `box`, 2, 1 and false. These controls are rejected for static models. Dynamic
-coefficients replace the static `cs/prt/sct/ci` parameters. Nonperiodic faces and
+coefficients replace the static `cs/prt/sct/ci` parameters. Wall faces and
 nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
 wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
 down through the existing transaction. The diffusion bound includes padded
 cells and may restrict the interval more than an interior-only estimate.
-Reacting-spray/application dispatch and Dynamic LES nonperiodic boundaries
-are not connected by this change. See
+Reacting-spray/application dispatch is described below. See
 [serial Dynamic AMR checks](validation/les-dynamic-amr-20260925.md).
 
-The MPI selector and stepper now have the same periodic dynamic dispatch and
+The MPI selector and stepper have the same dynamic boundary dispatch and
 filter controls. They agree on filter/model options before distributed donor
 queries and retain owner-local fields and collective publication. Focused
 two-rank serial/MPI state, temperature, timestep and ledger comparisons now pass,
 including empty ranks and distributed ownership. See
 [runtime record](validation/mpi-dynamic-amr-runtime-20260925.md).
+Inflow/outflow boundary ledgers use the existing conservative reflux transaction;
+see [open-boundary checks](validation/les-dynamic-open-20260925.md).
 
 ### MPI AMR reacting-spray LES coupling
 
@@ -3217,7 +3219,7 @@ handle later nonlinear rejection. See the
 [application checks](validation/les-amr-application-20260918.md). See
 [coupled evidence](validation/les-amr-coupled-20260918.md).
 
-The coupled API also accepts periodic `les_model='dynamic'` and optional
+The coupled API also accepts `les_model='dynamic'` with periodic/inflow/outflow faces and optional
 `les_test_model`, `les_test_ratio`, `les_grid_ratio`, `les_harmonic_mean`.
 Dynamic mode runs with zero static coefficients. Effective settings are agreed
 before particle work, and all state still publishes only on full success.
