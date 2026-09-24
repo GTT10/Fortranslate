@@ -22,6 +22,7 @@ def main():
     p.add_argument('--regrid', action='store_true')
     p.add_argument('--ports', action='store_true')
     p.add_argument('--profiles', action='store_true')
+    p.add_argument('--pelemp-cap', action='store_true')
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -74,9 +75,18 @@ def main():
             values = values.replace('injection_scales=1.,0.,1.,.5,2.,1.,',
                                     'injection_scales=1.,1.,1.,.5,2.,1.,')
             spray.write_text(values)
+        if a.pelemp_cap:
+            assert not a.ports, 'PeleMP cap fixture uses one liquid component'
+            spray = directory / 'spray.nml'
+            spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n'
+                "reference_temperatures(1)=300.,mixture_boiling_models(1)='pelemp-cap',"
+                'mixture_critical_temperatures(1)=647.,mixture_normal_boiling_temperatures(1)=330.,', 1))
         if altered:
             spray = directory / 'spray.nml'
-            spray.write_text(spray.read_text().replace('liquid_temperature=350.', 'liquid_temperature=351.'))
+            if a.pelemp_cap:
+                spray.write_text(spray.read_text().replace('temperatures(1)=330.', 'temperatures(1)=331.'))
+            else:
+                spray.write_text(spray.read_text().replace('liquid_temperature=350.', 'liquid_temperature=351.'))
         command = [str(a.mpiexec.resolve()), '-n', str(ranks), str(a.exe.resolve()), 'tree.nml', 'spray.nml']
         result = subprocess.run(command, cwd=directory, env=env, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=90)
