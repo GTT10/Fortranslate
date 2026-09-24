@@ -276,7 +276,7 @@ context, so changing them on restart is rejected. Default settings retain the
 previous context serialization. EB grids are not supported here.
 See [application evidence](../../docs/validation/les-amr-application-20260918.md).
 
-### Dynamic LES (runtime checks pending)
+### Dynamic LES
 
 Periodic cases can select the new dynamic path:
 
@@ -295,9 +295,9 @@ on a static model reject. Dynamic settings enter checkpoint identity, so changin
 them rejects restart. Static/default context serialization is preserved.
 The same particle/gas transaction, two LES half steps and retry logic apply.
 The diffusion estimate includes padded donor cells and can be conservative.
-Fixed/selected builds pass, but MPI numerical and changed-rank restart tests
-have not run for this path because of the stalled launcher. See
-[build and pending-test record](../../docs/validation/les-dynamic-amr-application-20260925.md).
+Fixed/selected builds pass. Focused fixed-mechanism MPI parity and 2-to-4-rank
+restart checks now pass; selected execution and physical validation remain
+outside this evidence. See [runtime checks](../../docs/validation/mpi-dynamic-amr-runtime-20260925.md).
 
 ### Uniform acceleration
 

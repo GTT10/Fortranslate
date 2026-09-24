@@ -45,7 +45,7 @@ Periodic wrapping supports multiple domain crossings. Along axes with reflecting
 walls the width must not exceed the domain extent at that level, since wall
 mapping uses one reflection. Output remains unchanged on rejection.
 The pressure-outlet correction still requires two layers. The MPI wrapper now
-forwards configurable widths, with runtime verification pending as noted below.
+forwards configurable widths, with focused runtime verification noted below.
 See [wide-halo evidence](../validation/amr-wide-ghosts-20260925.md). The sampler
 constructs checked 64-bit global integer coordinates at every depth, searches
 all peer boxes at the requested resolution (including different parents), and
@@ -517,8 +517,8 @@ the returned values; distributed evolution still requires further integration. W
 array by default, including its interior. Optional `ghost_width=1..128` changes
 the padding to twice that width along each axis. Width is checked for agreement
 on all ranks before request planning and is forwarded through planning, payload
-fetch and publication. This extension builds, but its added MPI runtime checks
-remain pending ([record](../validation/mpi-amr-wide-ghosts-20260925.md)).
+fetch and publication. Seven-layer serial/MPI parity and rank-disagreement
+rollback checks pass ([runtime record](../validation/mpi-dynamic-amr-runtime-20260925.md)).
 Only owned output slots allocate. The API accepts
 the same viscous-wall, inflow, wall-velocity, coarse-limiter and species-count
 options as the serial fill, plus coarse-time endpoints/fractions and a depth selector.

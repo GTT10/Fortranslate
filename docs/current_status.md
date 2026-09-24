@@ -9,6 +9,13 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
+and the MPI AMR reacting-spray application, including filter-bound restart.
+Focused fixed-mechanism MPI parity and 2-to-4-rank continuation passed on
+2026-09-25 ([runtime evidence](validation/mpi-dynamic-amr-runtime-20260925.md)).
+Dynamic physical/EB boundaries, LES subcycling, selected-mechanism runtime and
+physical qualification remain outside that evidence.
+
 | Area | Implemented subset | Still open |
 | --- | --- | --- |
 | Reactive flow and transport | 1D/2D paths; regular 3D NASA7 hydro/chemistry/molecular transport with per-face periodic, prescribed reservoir inflow, outflow, slip-wall and adiabatic/isothermal no-slip boundaries with prescribed tangential wall motion | Characteristic inflow and moving geometry, general 3D boundary/coupling qualification |

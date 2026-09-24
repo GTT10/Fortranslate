@@ -3195,10 +3195,10 @@ are not connected by this change. See
 
 The MPI selector and stepper now have the same periodic dynamic dispatch and
 filter controls. They agree on filter/model options before distributed donor
-queries and retain owner-local fields and collective publication. Implementation
-and fixed/selected builds are complete, but Dynamic MPI AMR numerical checks are
-pending because the MPI launcher is stalled. Do not treat this as tested MPI
-support yet. See [build and pending-test record](validation/les-dynamic-mpi-amr-20260925.md).
+queries and retain owner-local fields and collective publication. Focused
+two-rank serial/MPI state, temperature, timestep and ledger comparisons now pass,
+including empty ranks and distributed ownership. See
+[runtime record](validation/mpi-dynamic-amr-runtime-20260925.md).
 
 ### MPI AMR reacting-spray LES coupling
 
@@ -3223,8 +3223,10 @@ Dynamic mode runs with zero static coefficients. Effective settings are agreed
 before particle work, and all state still publishes only on full success.
 The application selects it in `amr_spray_les` and reads filter settings from a
 separate `amr_spray_dynamic` group, preserving older static context serialization.
-Implementation and fixed/selected builds are complete; MPI coupled/restart
-verification remains pending ([record](validation/les-dynamic-amr-application-20260925.md)).
+Fixed-mechanism continuous/restarted MPI application checks now pass, including
+2-to-4-rank continuation and rejection of changed filter settings. Selected
+execution and physical validation remain outside this evidence
+([runtime record](validation/mpi-dynamic-amr-runtime-20260925.md)).
 
 ### MPI AMR uniform acceleration
 
