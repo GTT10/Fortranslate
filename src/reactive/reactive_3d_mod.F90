@@ -19,6 +19,7 @@ module reactive_3d_mod
   implicit none
   private
 
+  public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
   public :: compute_reactive_ppm_normal_fluxes_3d
@@ -256,6 +257,166 @@ contains
       good=.true.
     end subroutine
   end subroutine compute_reactive_ppm_ctu_fluxes_3d
+
+  ! Four supplied ghost layers; physical cells are 1:n. No periodic wrapping
+  ! or ghost filling occurs here. Corner solves are bounded to their consumers.
+  subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    integer, intent(in) :: n(3)
+    real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
+    logical, intent(in) :: steepening,flattening
+    character(len=*), intent(in) :: solver
+    real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
+    logical, intent(out) :: ok
+    real(dp), allocatable :: q(:,:,:,:),sound(:,:,:),nm(:,:,:,:,:),np(:,:,:,:,:)
+    real(dp), allocatable :: ntm(:,:,:,:),ntp(:,:,:,:),normal(:,:,:,:,:),corner(:,:,:,:,:,:)
+    real(dp), allocatable :: minus(:,:,:,:),plus(:,:,:,:),tm(:,:,:),tp(:,:,:),final(:,:,:,:,:)
+    real(dp) :: stencil(reactive_nprim(size(species)),-3:3),qm(reactive_nprim(size(species)))
+    real(dp) :: qp(reactive_nprim(size(species))),delta(reactive_nvar(size(species)))
+    real(dp) :: zero(reactive_nvar(size(species))),theta,theta_m,theta_p,recovered,speed,swap
+    integer :: nv,i,j,k,a,b,c,offset,idx(3),donor(3),lo(3),hi(3),lower(3),upper(3)
+    logical :: valid
+    ok=.false.;xflux=0;yflux=0;zflux=0;minimum_theta=0
+    nv=reactive_nvar(size(species))
+    if (any(n<2)) return
+    if (any(shape(ghost)/=[nv,n+8]).or.any(shape(gt)/=n+8)) return
+    if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
+    if (any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)])) return
+    if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
+    if (.not.all(ieee_is_finite(spacing)).or..not.ieee_is_finite(dt)) return
+    if (any(spacing<=0).or.dt<0) return
+    allocate(q(nv,-3:n(1)+4,-3:n(2)+4,-3:n(3)+4),sound(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+    ! Only the union of normal reconstruction pencils needs EOS recovery.
+    q=0
+    do k=-3,n(3)+4
+    do j=-3,n(2)+4
+    do i=-3,n(1)+4
+      idx=[i,j,k]
+      if (count(idx<0.or.idx>n+1)>1) cycle
+      call reactive_conserved_to_primitive(species,ghost(:,i,j,k),gt(i,j,k),q(:,i,j,k),recovered,speed,valid)
+      if (.not.valid) return
+      if (all(idx>=0.and.idx<=n+1)) sound(i,j,k)=speed
+    end do
+    end do
+    end do
+    allocate(nm(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3),np(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3))
+    allocate(ntm(0:n(1)+1,0:n(2)+1,0:n(3)+1,3),ntp(0:n(1)+1,0:n(2)+1,0:n(3)+1,3))
+    allocate(normal(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3), &
+      corner(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3,3),final(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1,3))
+    allocate(minus(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),plus(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1))
+    allocate(tm(0:n(1)+1,0:n(2)+1,0:n(3)+1),tp(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+    normal=0;corner=0;final=0;zero=0;theta=1
+    do a=1,3
+      do k=0,n(3)+1
+      do j=0,n(2)+1
+      do i=0,n(1)+1
+        idx=[i,j,k]
+        do offset=-3,3
+          donor=idx;donor(a)=donor(a)+offset
+          stencil(:,offset)=q(:,donor(1),donor(2),donor(3))
+          swap=stencil(2,offset);stencil(2,offset)=stencil(a+1,offset);stencil(a+1,offset)=swap
+        end do
+        if (dt>spacing(a)/(abs(stencil(2,0))+sound(i,j,k))) return
+        call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(a), &
+          steepening,flattening,qm,qp,valid)
+        if (.not.valid) return
+        swap=qm(2);qm(2)=qm(a+1);qm(a+1)=swap
+        swap=qp(2);qp(2)=qp(a+1);qp(a+1)=swap
+        call reactive_primitive_to_conserved(species,qm,nm(:,i,j,k,a),ntm(i,j,k,a),speed,valid)
+        if (.not.valid) return
+        call reactive_primitive_to_conserved(species,qp,np(:,i,j,k,a),ntp(i,j,k,a),speed,valid)
+        if (.not.valid) return
+      end do
+      end do
+      end do
+      minus=nm(:,:,:,:,a);plus=np(:,:,:,:,a);tm=ntm(:,:,:,a);tp=ntp(:,:,:,a)
+      lower=0;upper=n+1;upper(a)=n(a)
+      call solve_faces(a,normal(:,:,:,:,a),valid)
+      if (.not.valid) return
+    end do
+    do a=1,3
+      do b=1,3
+        if (a==b) cycle
+        lower=0;upper=n+1;lower(b)=1;upper(b)=n(b)
+        call correct_states(a,b,0,valid)
+        if (.not.valid) return
+        upper(a)=n(a)
+        call solve_faces(a,corner(:,:,:,:,a,b),valid)
+        if (.not.valid) return
+      end do
+    end do
+    do a=1,3
+      b=modulo(a,3)+1;c=modulo(a+1,3)+1
+      lower=1;upper=n;lower(a)=0;upper(a)=n(a)+1
+      call correct_states(a,b,c,valid)
+      if (.not.valid) return
+      upper(a)=n(a)
+      call solve_faces(a,final(:,:,:,:,a),valid)
+      if (.not.valid) return
+    end do
+    xflux=final(:,0:n(1),1:n(2),1:n(3),1)
+    yflux=final(:,1:n(1),0:n(2),1:n(3),2)
+    zflux=final(:,1:n(1),1:n(2),0:n(3),3)
+    minimum_theta=theta;ok=.true.
+  contains
+    subroutine correct_states(direction,transverse,second,good)
+      integer, intent(in) :: direction,transverse,second
+      logical, intent(out) :: good
+      good=.false.
+      do k=lower(3),upper(3)
+      do j=lower(2),upper(2)
+      do i=lower(1),upper(1)
+        idx=[i,j,k];lo=idx;lo(transverse)=lo(transverse)-1
+        if (second==0) then
+          delta=(dt/spacing(transverse))/3*(normal(:,i,j,k,transverse)- &
+            normal(:,lo(1),lo(2),lo(3),transverse))
+        else
+          delta=(.5_dp*dt/spacing(transverse))*(corner(:,i,j,k,transverse,second)- &
+            corner(:,lo(1),lo(2),lo(3),transverse,second))
+          lo=idx;lo(second)=lo(second)-1
+          delta=delta+(.5_dp*dt/spacing(second))*(corner(:,i,j,k,second,transverse)- &
+            corner(:,lo(1),lo(2),lo(3),second,transverse))
+        end if
+        call apply_reactive_transverse_correction_2d(species,nm(:,i,j,k,direction),ntm(i,j,k,direction), &
+          delta,zero,1._dp,minus(:,i,j,k),tm(i,j,k),theta_m,good)
+        if (.not.good) return
+        call apply_reactive_transverse_correction_2d(species,np(:,i,j,k,direction),ntp(i,j,k,direction), &
+          delta,zero,1._dp,plus(:,i,j,k),tp(i,j,k),theta_p,good)
+        if (.not.good) return
+        theta=min(theta,theta_m,theta_p)
+      end do
+      end do
+      end do
+      good=.true.
+    end subroutine
+    subroutine solve_faces(direction,flux,good)
+      integer, intent(in) :: direction
+      real(dp), intent(out) :: flux(:,0:,0:,0:)
+      logical, intent(out) :: good
+      good=.false.;flux=0
+      do k=lower(3),upper(3)
+      do j=lower(2),upper(2)
+      do i=lower(1),upper(1)
+        hi=[i,j,k];hi(direction)=hi(direction)+1
+        select case(direction)
+        case(1)
+          call reactive_riemann_flux_x(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
+            tp(i,j,k),tm(hi(1),hi(2),hi(3)),solver,flux(:,i,j,k),good)
+        case(2)
+          call reactive_riemann_flux_y(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
+            tp(i,j,k),tm(hi(1),hi(2),hi(3)),solver,flux(:,i,j,k),good)
+        case(3)
+          call reactive_riemann_flux_z(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
+            tp(i,j,k),tm(hi(1),hi(2),hi(3)),solver,flux(:,i,j,k),good)
+        end select
+        if (.not.good) return
+      end do
+      end do
+      end do
+      good=.true.
+    end subroutine
+  end subroutine compute_reactive_ppm_halo_ctu_fluxes_3d
 
   ! One conservative CTU step. A failed final EOS recovery rolls back the
   ! complete field and limiter diagnostic; the caller can retry a smaller dt.
@@ -1401,7 +1562,6 @@ contains
     if (trim(selected_reconstruction) /= "pcm" .and. &
         trim(selected_reconstruction) /= "characteristic_plm" .and. &
         trim(selected_reconstruction) /= "characteristic_ppm") return
-    if (selected_reconstruction=="characteristic_ppm".and.any(faces/="periodic")) return
     if (trim(selected_limiter) /= "minmod" .and. &
         trim(selected_limiter) /= "mc") return
 
@@ -1477,7 +1637,8 @@ contains
 
 
   ! Physical face ordering: x-low, x-high, y-low, y-high, z-low, z-high.
-  ! Ghosts are reconstructed at each RK stage. Two layers contain the entire
+  ! PPM uses four supplied layers and one CTU update. For PCM/PLM,
+  ! ghosts are reconstructed at each RK stage. Two layers contain the entire
   ! PLM stencil at the physical face, so periodic wrapping outside the padded
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
@@ -1485,7 +1646,7 @@ contains
       flux_x,flux_y,flux_z,outlet_pressure,inflow_mach,inflow_pressure)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     real(dp), intent(in), optional :: inflow_mach(6),inflow_pressure(6)
-    ! Optional SSPRK2 mean fluxes: upper faces, or all faces including index zero.
+    ! Optional time-centered fluxes: upper faces, or all faces including index zero.
     real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     real(dp), allocatable :: mean_x(:,:,:,:),mean_y(:,:,:,:),mean_z(:,:,:,:)
     type(nasa7_species), intent(in) :: species(:)
@@ -1527,8 +1688,14 @@ contains
     if (any(n<2) .or. .not. valid_reactive_boundaries_3d(faces)) return
     if (.not. all(ieee_is_finite([spacing,dt]))) return
     if (minval(spacing)<=0.0_dp .or. dt<=0.0_dp) return
-    if (reconstruction/="pcm" .and. reconstruction/="characteristic_plm") return
+    if (reconstruction/="pcm" .and. reconstruction/="characteristic_plm" .and. &
+        reconstruction/="characteristic_ppm") return
     if (limiter/="mc" .and. limiter/="minmod") return
+    if (reconstruction=="characteristic_ppm") then
+      call boundary_ppm(local_ok)
+      ok=local_ok
+      return
+    end if
     allocate(candidate,source=state); allocate(temp,mold=temperature)
     allocate(recovered,mold=temperature); allocate(rhs,mold=state)
     call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),temp,local_ok)
@@ -1550,6 +1717,68 @@ contains
     end if
     state=candidate; temperature=recovered; ok=.true.
   contains
+    subroutine boundary_ppm(success)
+      logical, intent(out) :: success
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+      real(dp) :: theta,change(size(state,1))
+      integer :: i,j,k,nv
+      success=.false.;nv=size(state,1)
+      allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),gt(n(1)+8,n(2)+8,n(3)+8))
+      allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+      if (present(inflow_mach)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,inflow_mach,ghost,gt,success, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_width=4)
+      else
+        call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,success, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=4)
+      end if
+      if (.not.success) return
+      call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,success,ghost_width=4)
+      if (.not.success) return
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,.false.,.true., &
+        riemann_solver,fx,fy,fz,theta,success)
+      if (.not.success) return
+      success=.false.
+      candidate=state
+      allocate(recovered,mold=temperature)
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        candidate(:,i,j,k)=state(:,i,j,k)-(dt/spacing(1))*(fx(:,i,j,k)-fx(:,i-1,j,k))- &
+          (dt/spacing(2))*(fy(:,i,j,k)-fy(:,i,j-1,k))-(dt/spacing(3))*(fz(:,i,j,k)-fz(:,i,j,k-1))
+      end do
+      end do
+      end do
+      call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),recovered,success)
+      if (.not.success) return
+      change=0
+      do k=1,n(3)
+      do j=1,n(2)
+        change=change+(fx(:,0,j,k)-fx(:,n(1),j,k))*spacing(2)*spacing(3)
+      end do
+      end do
+      do k=1,n(3)
+      do i=1,n(1)
+        change=change+(fy(:,i,0,k)-fy(:,i,n(2),k))*spacing(1)*spacing(3)
+      end do
+      end do
+      do j=1,n(2)
+      do i=1,n(1)
+        change=change+(fz(:,i,j,0)-fz(:,i,j,n(3)))*spacing(1)*spacing(2)
+      end do
+      end do
+      change=dt*change
+      success=all(ieee_is_finite(change))
+      if (.not.success) return
+      if (present(flux_x)) then
+        if (full_faces) then
+          flux_x=fx;flux_y=fy;flux_z=fz
+        else
+          flux_x=fx(:,1:,:,:);flux_y=fy(:,:,1:,:);flux_z=fz(:,:,:,1:)
+        end if
+      end if
+      state=candidate;temperature=recovered;boundary_change=change
+    end subroutine boundary_ppm
     subroutine boundary_rhs(u,t,du,rate,success)
       real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
       real(dp), intent(out) :: du(:,:,:,:),rate(:)

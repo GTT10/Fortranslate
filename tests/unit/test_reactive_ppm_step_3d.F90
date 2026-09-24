@@ -5,13 +5,13 @@ program test_reactive_ppm_step_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
-  use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d
+  use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(elementary_reaction), allocatable :: reactions(:)
-  real(dp), allocatable :: u(:,:,:,:),t(:,:,:),saved(:,:,:,:),st(:,:,:),reference(:,:,:,:),rt(:,:,:),q(:),before(:)
+  real(dp), allocatable :: u(:,:,:,:),t(:,:,:),saved(:,:,:,:),st(:,:,:),reference(:,:,:,:),rt(:,:,:),q(:),before(:),change(:)
   real(dp) :: theta,stage_theta,speed,phase,dt,residual,after
   integer :: nv,i,j,k,m,step
   logical :: ok
@@ -21,7 +21,7 @@ program test_reactive_ppm_step_3d
   call load_h2o2_elementary_transport(transport,ok)
   call require(ok,'transport')
   allocate(reactions(0));nv=reactive_nvar(size(species))
-  allocate(u(nv,4,4,4),t(4,4,4),q(nv),before(nv));dt=1e-5_dp
+  allocate(u(nv,4,4,4),t(4,4,4),q(nv),before(nv),change(nv));dt=1e-5_dp
   do k=1,4
   do j=1,4
   do i=1,4
@@ -69,10 +69,20 @@ program test_reactive_ppm_step_3d
     .false.,1e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,theta,ok,reconstruction='characteristic_ppm')
   call require(ok.and.all(u==reference).and.all(t==rt),'exact transport PPM split dispatch')
   u=saved;t=st;faces='outflow'
+  reference=saved;rt=st
+  call advance_reactive_transport_3d(species,transport,reference,rt,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
+    .true.,.true.,.true.,.true.,stage_theta,ok,faces)
+  call require(ok,'physical first transport half')
+  call advance_reactive_boundary_hydro_3d(species,reference,rt,[.25_dp,.25_dp,.25_dp],dt, &
+    faces,'characteristic_ppm','mc','hllc',change,ok)
+  call require(ok,'physical PPM hydro')
+  call advance_reactive_transport_3d(species,transport,reference,rt,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
+    .true.,.true.,.true.,.true.,stage_theta,ok,faces)
+  call require(ok,'physical second transport half')
   call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,.25_dp,.25_dp,.25_dp,dt,'hllc', &
     .false.,1e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,theta,ok, &
     reconstruction='characteristic_ppm',boundary_faces=faces)
-  call require(.not.ok.and.all(u==saved).and.all(t==st),'unsupported physical boundary rejected transactionally')
+  call require(ok.and.all(u==reference).and.all(t==rt),'exact physical transport PPM split dispatch')
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
   subroutine require(condition,label)

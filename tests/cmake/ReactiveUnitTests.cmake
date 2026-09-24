@@ -833,3 +833,7 @@ add_test(NAME unit_reactive_ppm_normal_3d COMMAND test_reactive_ppm_normal_3d)
 add_executable(test_reactive_ppm_step_3d unit/test_reactive_ppm_step_3d.F90)
 target_link_libraries(test_reactive_ppm_step_3d PRIVATE pelef_core)
 add_test(NAME unit_reactive_ppm_step_3d COMMAND test_reactive_ppm_step_3d)
+
+add_executable(test_reactive_ppm_halo_3d unit/test_reactive_ppm_halo_3d.F90)
+target_link_libraries(test_reactive_ppm_halo_3d PRIVATE pelef_core)
+add_test(NAME unit_reactive_ppm_halo_3d COMMAND test_reactive_ppm_halo_3d)
