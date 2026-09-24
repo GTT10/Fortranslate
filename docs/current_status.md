@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The pinned nozzle Mach-inlet state kernel is now available for six faces, with
+interior composition and extrapolated or prescribed pressure. Solver/input
+dispatch remains open ([state-kernel checks](validation/mach-inlet-state-20260925.md)).
+
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
 Focused fixed-mechanism MPI parity and 2-to-4-rank continuation passed on
