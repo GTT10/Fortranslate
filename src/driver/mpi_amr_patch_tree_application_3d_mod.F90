@@ -436,10 +436,12 @@ contains
     subroutine limit_mach_step()
       type(amr_tree_state_3d) :: packed,halos
       real(dp) :: bound,dmax,factor,local_bound,global_bound
-      integer :: peer,dims(3),nv
+      integer :: peer,dims(3),nv,width
       character(len=:), allocatable :: donor_limiter
       nv=size(q)
-      if(config%reconstruction=='characteristic_plm') donor_limiter=config%limiter
+      if(config%reconstruction/='pcm') donor_limiter=config%limiter
+      width=2
+      if(config%reconstruction=='characteristic_ppm') width=4
       allocate(packed%fields(size(tree%nodes)))
       do peer=1,size(tree%nodes)
         if(owners(peer)/=rank) cycle
@@ -450,7 +452,7 @@ contains
       end do
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nv+1,faces,halos,comm,ok,viscous_wall=.true., &
         inflow_state=inlet_with_temperature(),wall_velocity=config%wall_velocity,coarse_limiter=donor_limiter, &
-        species_count=size(species),species=species,inflow_mach=config%inflow_mach, &
+        species_count=size(species),ghost_width=width,species=species,inflow_mach=config%inflow_mach, &
         inflow_temperature=inlet_t,inflow_pressure=mach_pressure)
       if(.not.ok) call fatal('Invalid MPI tree Mach inlet donors')
       local_bound=dt

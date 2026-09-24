@@ -42,7 +42,7 @@ contains
     ok=.false.
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0.or.(barodiffusion.and..not.diffusion)) return
-    if (reconstruction=='characteristic_plm') transport_limiter=limiter
+    if (reconstruction=='characteristic_plm'.or.reconstruction=='characteristic_ppm') transport_limiter=limiter
     recursive_steps=.false.
     if (present(subcycling)) recursive_steps=subcycling
     candidate=state;temps=temperature

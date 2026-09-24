@@ -56,7 +56,7 @@ contains
     call MPI_Allreduce(flags,high,6,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
-    if (reconstruction=='characteristic_plm') transport_limiter=limiter
+    if (reconstruction=='characteristic_plm'.or.reconstruction=='characteristic_ppm') transport_limiter=limiter
     call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
     if (.not.valid) return
     budget=0;largest=0;theta=1

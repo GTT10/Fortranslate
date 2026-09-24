@@ -401,10 +401,12 @@ contains
       type(amr_tree_state_3d) :: packed
       real(dp), allocatable :: ghost(:,:,:,:)
       real(dp) :: bound,dmax,factor
-      integer :: peer,dims(3),nv
+      integer :: peer,dims(3),nv,width
       character(len=:), allocatable :: donor_limiter
       nv=size(q)
-      if(config%reconstruction=='characteristic_plm') donor_limiter=config%limiter
+      if(config%reconstruction/='pcm') donor_limiter=config%limiter
+      width=2
+      if(config%reconstruction=='characteristic_ppm') width=4
       allocate(packed%fields(size(tree%nodes)))
       do peer=1,size(tree%nodes)
         dims=tree%nodes(peer)%shape
@@ -415,7 +417,7 @@ contains
       do peer=1,size(tree%nodes)
         call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,ok,viscous_wall=.true., &
           inflow_state=inlet_with_temperature(),wall_velocity=config%wall_velocity,coarse_limiter=donor_limiter, &
-          species_count=size(species),species=species,inflow_mach=config%inflow_mach, &
+          species_count=size(species),ghost_width=width,species=species,inflow_mach=config%inflow_mach, &
           inflow_temperature=inlet_t,inflow_pressure=mach_pressure)
         if(.not.ok) error stop 'Invalid tree Mach inlet donors'
         dims=shape(ghost(1,:,:,:));factor=1
