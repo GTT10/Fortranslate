@@ -3182,21 +3182,24 @@ EB grids are outside both APIs.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
 
 The serial stepper and timestep selector accept `model='dynamic'` on periodic,
-prescribed reservoir inflow and extrapolated outflow trees.
+prescribed reservoir inflow, extrapolated outflow and slip/adiabatic/isothermal wall trees.
 Optional `test_model`, `test_ratio`, `grid_ratio`, `harmonic_mean` default
 to `box`, 2, 1 and false. These controls are rejected for static models. Dynamic
-coefficients replace the static `cs/prt/sct/ci` parameters. Wall faces and
-nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
+coefficients replace the static `cs/prt/sct/ci` parameters.
+Nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
 wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
 down through the existing transaction. The diffusion bound includes padded
 cells and may restrict the interval more than an interior-only estimate.
 The shared donor sampler now supports repeated moving-wall reflections for
-halos wider than the domain, a prerequisite for subsequent Dynamic wall
+halos wider than the domain, used by Dynamic wall
 dispatch ([boundary-sampling evidence](validation/amr-wide-wall-ghosts-20260925.md)).
 The ghosted Dynamic kernel also accepts local adiabatic/isothermal wall faces
 and applies their heat flux before face-divergence publication
-([kernel checks](validation/les-dynamic-wall-flux-20260925.md)); AMR/application
-wall dispatch is not yet enabled.
+([kernel checks](validation/les-dynamic-wall-flux-20260925.md)). AMR selectors,
+SSPRK2 and the coupled application forward local wall faces and temperatures;
+interior/coarse-fine faces retain their donor fluxes. Moving walls retain the
+existing molecular-viscosity requirement. See
+[wall integration checks](validation/les-dynamic-amr-walls-20260925.md).
 Reacting-spray/application dispatch is described below. See
 [serial Dynamic AMR checks](validation/les-dynamic-amr-20260925.md).
 
@@ -3226,7 +3229,7 @@ handle later nonlinear rejection. See the
 [application checks](validation/les-amr-application-20260918.md). See
 [coupled evidence](validation/les-amr-coupled-20260918.md).
 
-The coupled API also accepts `les_model='dynamic'` with periodic/inflow/outflow faces and optional
+The coupled API also accepts `les_model='dynamic'` with periodic/inflow/outflow or slip/adiabatic/isothermal wall faces and optional
 `les_test_model`, `les_test_ratio`, `les_grid_ratio`, `les_harmonic_mean`.
 Dynamic mode runs with zero static coefficients. Effective settings are agreed
 before particle work, and all state still publishes only on full success.

@@ -18,7 +18,9 @@ also have focused execution evidence ([combined checks](validation/les-dynamic-a
 Prescribed reservoir inflow and extrapolated outflow also run through Dynamic
 AMR LES, including changed-rank spray restart
 ([focused checks](validation/les-dynamic-open-20260925.md)).
-Dynamic wall/pressure-outlet/EB boundaries, LES subcycling, detailed-fuel Dynamic LES and
+Dynamic wall faces are connected through the AMR selector, stepper and spray application
+([wall integration](validation/les-dynamic-amr-walls-20260925.md)).
+Dynamic pressure-outlet/EB boundaries, LES subcycling, detailed-fuel Dynamic LES and
 physical qualification remain open.
 
 | Area | Implemented subset | Still open |
