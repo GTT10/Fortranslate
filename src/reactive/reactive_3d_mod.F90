@@ -192,9 +192,9 @@ contains
   end subroutine compute_reactive_ppm_normal_fluxes_3d
 
   ! Twelve-solve CTU ordering: 3 normal, 6 single-transverse (dt/3),
-  ! then 3 double-transverse (dt/2) solves. EOS recovery/positivity follows
-  ! PeleF's conservative correction by default; pressure_tracing selects the
-  ! separate regular-cell PeleC pressure-work equation with the pelec solver.
+  ! then 3 double-transverse (dt/2) solves.
+  ! The pelec solver uses separate primitive pressure work; other solvers use
+  ! conservative/EOS correction. An explicit override supports kernel audits.
   subroutine compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt, &
       steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing)
     type(nasa7_species), intent(in) :: species(:)
@@ -204,6 +204,7 @@ contains
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
     logical, optional, intent(in) :: pressure_tracing
+    logical :: trace_pressure
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
     character(len=32) :: faces(6)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),nm(:,:,:,:,:),np(:,:,:,:,:)
@@ -217,17 +218,17 @@ contains
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
     if (any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)])) return
     if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
-    if (present(pressure_tracing)) then
-      if (pressure_tracing) then
-        if (any(shape(state)/=[nv,n])) return
-        faces='periodic'
-        allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),gt(n(1)+8,n(2)+8,n(3)+8))
-        call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,ghost_width=4)
-        if (.not.valid) return
-        call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,steepening,flattening,solver, &
-          xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=.true.)
-        return
-      end if
+    trace_pressure=solver=="pelec"
+    if (present(pressure_tracing)) trace_pressure=pressure_tracing
+    if (trace_pressure) then
+      if (any(shape(state)/=[nv,n])) return
+      faces='periodic'
+      allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),gt(n(1)+8,n(2)+8,n(3)+8))
+      call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,ghost_width=4)
+      if (.not.valid) return
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,steepening,flattening,solver, &
+        xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=.true.)
+      return
     end if
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
     call compute_reactive_ppm_normal_fluxes_3d(species,state,temperature,spacing,dt,steepening,flattening, &
@@ -340,7 +341,7 @@ contains
     integer :: nv,i,j,k,a,b,c,offset,idx(3),donor(3),lo(3),hi(3),lower(3),upper(3)
     logical :: valid
     ok=.false.;xflux=0;yflux=0;zflux=0;minimum_theta=0
-    trace_pressure=.false.
+    trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
     if (trace_pressure.and.solver/="pelec") return
     nv=reactive_nvar(size(species))

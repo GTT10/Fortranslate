@@ -68,6 +68,14 @@ program test_reactive_ppm_halo_3d
       call require(all(hx==fx(:,4:8,5:8,5:8)).and.all(hy==fy(:,5:8,4:8,5:8)).and. &
         all(hz==fz(:,5:8,5:8,4:8)),'exact interior subdomain flux parity')
     end if
+    if (policy==2.and.mode==1) then
+      call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
+        .true.,.true.,solver,fx,fy,fz,theta,ok)
+      call require(ok.and.all(hx==fx).and.all(hy==fy).and.all(hz==fz),'default pelec uses pressure tracing')
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
+        .true.,.true.,solver,hx,hy,hz,halo_theta,ok)
+      call require(ok.and.all(hx==fx).and.all(hy==fy).and.all(hz==fz),'halo default uses pressure tracing')
+    end if
     deallocate(u,t,fx,fy,fz)
   end do
   end do

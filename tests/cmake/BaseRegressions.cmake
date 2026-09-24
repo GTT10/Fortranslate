@@ -964,6 +964,6 @@ add_test(NAME unit_amr_patch_tree_ppm_subcycle_3d COMMAND test_amr_patch_tree_su
 
 add_test(NAME amr_two_level_ppm_restart_3d
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
-    --ppm --pressure-outlet --reacting --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
+    --ppm --riemann-solver pelec --pressure-outlet --reacting --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_two_level_ppm_restart_3d")
 set_tests_properties(amr_two_level_ppm_restart_3d PROPERTIES TIMEOUT 300)

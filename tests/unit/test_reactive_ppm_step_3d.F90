@@ -13,7 +13,8 @@ program test_reactive_ppm_step_3d
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),saved(:,:,:,:),st(:,:,:),reference(:,:,:,:),rt(:,:,:),q(:),before(:),change(:)
   real(dp) :: theta,stage_theta,speed,phase,dt,residual,after
-  integer :: nv,i,j,k,m,step
+  integer :: nv,i,j,k,m,step,policy
+  character(len=5) :: solver
   logical :: ok
   character(len=8) :: faces(6)
   call load_h2o2_elementary_thermo(species,ok)
@@ -37,9 +38,13 @@ program test_reactive_ppm_step_3d
   do m=1,nv
     before(m)=sum(u(m,:,:,:))
   end do
+  do policy=1,2
+  solver="hllc"
+  if (policy==2) solver="pelec"
+  u=saved;t=st
   do step=1,4
     call advance_reactive_euler_ppm_ctu_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
-      .false.,.true.,'hllc',theta,ok)
+      .false.,.true.,solver,theta,ok)
     call require(ok.and.theta>=0.and.theta<=1.and.all(t>0),'accepted CTU step')
     do m=1,nv
       after=sum(u(m,:,:,:));residual=abs(after-before(m))/max(1._dp,abs(before(m)))
@@ -50,22 +55,22 @@ program test_reactive_ppm_step_3d
   call require(any(u/=saved),'nontrivial time evolution')
   u=saved;t=st;theta=17
   call advance_reactive_euler_ppm_ctu_3d(species,u,t,[.25_dp,.25_dp,.25_dp],1._dp, &
-    .false.,.true.,'hllc',theta,ok)
+    .false.,.true.,solver,theta,ok)
   call require(.not.ok.and.all(u==saved).and.all(t==st).and.theta==17,'excessive dt complete rollback')
   call advance_reactive_euler_ppm_ctu_3d(species,u,t,[.25_dp,.25_dp,.25_dp],0._dp, &
-    .false.,.true.,'hllc',theta,ok)
+    .false.,.true.,solver,theta,ok)
   call require(ok.and.all(u==saved).and.all(t==st).and.theta==1,'zero step exact identity')
   reference=saved;rt=st
   call advance_reactive_transport_3d(species,transport,reference,rt,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
     .true.,.true.,.true.,.true.,stage_theta,ok)
   call require(ok,'first transport half')
   call advance_reactive_euler_ppm_ctu_3d(species,reference,rt,[.25_dp,.25_dp,.25_dp],dt, &
-    .false.,.true.,'hllc',theta,ok)
+    .false.,.true.,solver,theta,ok)
   call require(ok,'reference PPM hydro')
   call advance_reactive_transport_3d(species,transport,reference,rt,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
     .true.,.true.,.true.,.true.,stage_theta,ok)
   call require(ok,'second transport half')
-  call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,.25_dp,.25_dp,.25_dp,dt,'hllc', &
+  call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,.25_dp,.25_dp,.25_dp,dt,solver, &
     .false.,1e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,theta,ok,reconstruction='characteristic_ppm')
   call require(ok.and.all(u==reference).and.all(t==rt),'exact transport PPM split dispatch')
   u=saved;t=st;faces='outflow'
@@ -74,15 +79,16 @@ program test_reactive_ppm_step_3d
     .true.,.true.,.true.,.true.,stage_theta,ok,faces)
   call require(ok,'physical first transport half')
   call advance_reactive_boundary_hydro_3d(species,reference,rt,[.25_dp,.25_dp,.25_dp],dt, &
-    faces,'characteristic_ppm','mc','hllc',change,ok)
+    faces,'characteristic_ppm','mc',solver,change,ok)
   call require(ok,'physical PPM hydro')
   call advance_reactive_transport_3d(species,transport,reference,rt,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
     .true.,.true.,.true.,.true.,stage_theta,ok,faces)
   call require(ok,'physical second transport half')
-  call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,.25_dp,.25_dp,.25_dp,dt,'hllc', &
+  call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,.25_dp,.25_dp,.25_dp,dt,solver, &
     .false.,1e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,theta,ok, &
     reconstruction='characteristic_ppm',boundary_faces=faces)
   call require(ok.and.all(u==reference).and.all(t==rt),'exact physical transport PPM split dispatch')
+  end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
   subroutine require(condition,label)

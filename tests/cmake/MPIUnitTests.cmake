@@ -18,7 +18,7 @@ if(PELEF_ENABLE_MPI)
   endforeach()
   add_test(NAME mpi_amr_two_level_ppm_restart_3d
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_amr_physical_boundary_restart.py"
-      --ppm --pressure-outlet --reacting --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"
+      --ppm --riemann-solver pelec --pressure-outlet --reacting --executable "$<TARGET_FILE:pelef_mpi_amr_reactive_3d>"
       --reference-executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
       --mpiexec "${MPIEXEC_EXECUTABLE}" "--numproc-flag=${MPIEXEC_NUMPROC_FLAG}"
       ${DYNAMIC_AMR_MPI_FLAGS} --ranks 4 --restart-ranks 2

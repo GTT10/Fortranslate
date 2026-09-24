@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--reacting', action='store_true')
     parser.add_argument('--ppm', action='store_true')
+    parser.add_argument('--riemann-solver', choices=('hllc', 'pelec'), default='hllc')
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--touching', action='store_true')
     parser.add_argument('--dynamic-touching', action='store_true')
@@ -63,7 +64,8 @@ def main() -> None:
     if args.pressure_outlet:
         labels = ('wall',)
     for label in labels:
-        source = template
+        source = template.replace('riemann_solver = "hllc"',
+                                  f'riemann_solver = "{args.riemann_solver}"')
         if args.ppm:
             source = source.replace('characteristic_plm', 'characteristic_ppm')
         if args.reacting:
@@ -115,6 +117,9 @@ def main() -> None:
         resumed = run(f'{label}_resumed', source, f"restart_file='{label}.chk',")
         if args.ppm:
             assert 'Reconstruction: characteristic_ppm' in reference
+            if args.riemann_solver == 'pelec':
+                changed_solver = source.replace('riemann_solver = "pelec"', 'riemann_solver = "hllc"')
+                run(f'{label}_changed_solver', changed_solver, f"restart_file='{label}.chk',", success=False)
             changed_scheme = source.replace('characteristic_ppm', 'characteristic_plm')
             run(f'{label}_changed_scheme', changed_scheme, f"restart_file='{label}.chk',", success=False)
         if args.pressure_outlet:
