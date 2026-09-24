@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--inflow', action='store_true')
+    parser.add_argument('--ppm', action='store_true')
     parser.add_argument('--mach-inlet', action='store_true')
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
@@ -27,6 +28,8 @@ def main():
     work = Path(tempfile.mkdtemp(prefix='spray-boundaries-', dir=args.work_dir.resolve()))
     case = 'thermal_moving_wall.nml' if args.thermal_wall else ('inflow.nml' if args.inflow else 'wall_reflection.nml')
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
+    if args.ppm:
+        template = template.replace('&spray', "&spray\n hydro_reconstruction='characteristic_ppm',")
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
     if args.les_isotropic:
         if args.les_model not in ('wale', 'vreman'):
@@ -137,6 +140,17 @@ def main():
             (work / 'changed_faces.log').write_text(result.stdout + result.stderr)
             assert result.returncode != 0 and 'incompatible spray checkpoint' in result.stdout + result.stderr
             assert not (work / 'changed_faces.history.csv').exists()
+        if args.ppm:
+            changed = (work / (resumed + '.nml')).read_text().replace(
+                "hydro_reconstruction='characteristic_ppm'", "hydro_reconstruction='characteristic_plm'")
+            changed = changed.replace(resumed, 'changed_reconstruction')
+            path = work / 'changed_reconstruction.nml'
+            path.write_text(changed)
+            result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                    text=True, capture_output=True, timeout=30)
+            (work / 'changed_reconstruction.log').write_text(result.stdout + result.stderr)
+            assert result.returncode != 0 and 'incompatible spray checkpoint' in result.stdout + result.stderr
+            assert not (work / 'changed_reconstruction.history.csv').exists()
         if args.mach_inlet:
             original = (work / (resumed + '.nml')).read_text()
             for label, changed, diagnostic in [

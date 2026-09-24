@@ -630,6 +630,10 @@ if(PELEF_ENABLE_SPRAY)
       --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_${les_model}_boundaries")
     set_tests_properties(spray_${les_model}_boundary_restart PROPERTIES LABELS "spray" TIMEOUT 600)
   endforeach()
+  add_test(NAME spray_ppm_mach_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --ppm --inflow --mach-inlet
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_ppm_mach_restart")
+  set_tests_properties(spray_ppm_mach_restart PROPERTIES LABELS "spray" TIMEOUT 300)
   add_test(NAME spray_dynamic_mach_restart COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --inflow --mach-inlet --sgs .17
     --les-model dynamic --dynamic-physical

@@ -366,7 +366,8 @@ contains
     nvar=reactive_nvar(size(species))
     if (nvar<7) call fail('Spray requires 2--128 gas species')
     if (.not. compatible_transport_database(species,transport)) call fail('Incompatible gas transport database')
-    if (trim(hydro_reconstruction)/='pcm' .and. trim(hydro_reconstruction)/='characteristic_plm') &
+    if (trim(hydro_reconstruction)/='pcm' .and. trim(hydro_reconstruction)/='characteristic_plm' .and. &
+        trim(hydro_reconstruction)/='characteristic_ppm') &
       call fail('Invalid hydro reconstruction')
     if (trim(hydro_reconstruction)=='characteristic_plm' .and. any(cells<3)) &
       call fail('Characteristic PLM requires at least three cells per direction')
