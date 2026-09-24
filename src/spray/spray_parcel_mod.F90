@@ -68,6 +68,7 @@ module spray_parcel_mod
     real(dp) :: gas_temperature = 0.0_dp, gas_velocity(3) = 0.0_dp
     real(dp) :: surface_fraction = 0.0_dp, ambient_fraction = 0.0_dp
     real(dp) :: vapor_enthalpy = 0.0_dp
+    real(dp) :: vapor_cp = 0.0_dp ! zero retains the supplied-film cp fallback
   end type
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
@@ -533,19 +534,20 @@ contains
     real(dp), intent(out) :: inverse_tau, heat_coefficient, mass_coefficient
     logical, intent(out) :: ok
     real(dp) :: rho
-    real(dp) :: d, re, cdre, pr, sc, bm, bt, logbm, sh0, nu0, sh, nu, next_nu, phi, factor, f2
+    real(dp) :: d, re, cdre, pr, sc, bm, bt, logbm, sh0, nu0, sh, nu, next_nu, phi, factor, f2,heat_cp
     integer :: iteration
     inverse_tau=0.0_dp; heat_coefficient=0.0_dp; mass_coefficient=0.0_dp
     ok = .false.
     if (.not. valid_spray_liquid(l) .or. .not. valid_spray_parcel(p)) return
     if (.not. valid_spray_options(o)) return
     if (.not. all(ieee_is_finite([f%density,f%viscosity,f%conductivity,f%diffusivity,f%cp, &
-        f%gas_temperature,f%gas_velocity,f%surface_fraction,f%ambient_fraction,f%vapor_enthalpy]))) return
+        f%gas_temperature,f%gas_velocity,f%surface_fraction,f%ambient_fraction,f%vapor_enthalpy,f%vapor_cp]))) return
     if (f%density <= 0.0_dp .or. f%density > 1.0e8_dp) return
     if (f%viscosity < 1.0e-15_dp .or. f%viscosity > 1.0e5_dp) return
     if (f%conductivity < 1.0e-15_dp .or. f%conductivity > 1.0e8_dp) return
     if (f%diffusivity < 1.0e-20_dp .or. f%diffusivity > 1.0e8_dp) return
     if (f%cp <= 0.0_dp .or. f%cp > 1.0e10_dp) return
+    if (f%vapor_cp<0.or.f%vapor_cp>1e10_dp) return
     if (f%gas_temperature < 1.0_dp .or. f%gas_temperature > 1.0e5_dp) return
     if (maxval(abs(f%gas_velocity)) > 1.0e7_dp .or. abs(f%vapor_enthalpy) > 1.0e12_dp) return
     if (f%surface_fraction < 0.0_dp .or. f%surface_fraction >= 1.0_dp) return
@@ -587,12 +589,15 @@ contains
     end if
     bm=0.0_dp
     if (o%evaporation) bm=max(0.0_dp,(f%surface_fraction-f%ambient_fraction)/(1.0_dp-f%surface_fraction))
+    if (o%abramzon_sirignano) bm=min(20.0_dp,bm)
+    heat_cp=f%cp
+    if (f%vapor_cp>0) heat_cp=f%vapor_cp
     logbm=log(1.0_dp+bm)
     sh=sh0; nu=nu0; factor=1.0_dp
     if (o%abramzon_sirignano .and. bm > 1.0e-12_dp) then
       sh=2.0_dp+(sh0-2.0_dp)/blowing_factor(bm)
       do iteration=1,100
-        phi=f%cp*f%density*f%diffusivity*sh/(f%conductivity*nu)
+        phi=heat_cp*f%density*f%diffusivity*sh/(f%conductivity*nu)
         if (phi*logbm > 100.0_dp) return
         bt=exp(phi*logbm)-1.0_dp
         next_nu=2.0_dp+(nu0-2.0_dp)/blowing_factor(bt)

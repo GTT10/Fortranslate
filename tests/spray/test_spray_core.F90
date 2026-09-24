@@ -2,7 +2,7 @@ program test_spray_core
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_is_finite
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_mass_properties
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
@@ -1218,6 +1218,59 @@ program test_spray_core
     call require(ok .and. q%mass == 0.0_dp,'complete evaporation')
     call exchange_check(p,q,transfer)
     call near(transfer(1),p%mass*p%multiplicity,1.0e-14_dp,'no discarded residue')
+  case('vapor_cp')
+    options%abramzon_sirignano=.true.;p%velocity=0;film%vapor_cp=2000
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    ! Re=0: Nu=Sh=2 and B_T=1.25**(5/3)-1. Independent 60-digit Decimal factor.
+    expected=2*pi*film%conductivity*parcel_diameter(p,liquid)*.8255467249700694809652765372_dp
+    call require(ok.and.abs(heat/expected-1)<2e-13_dp,'fuel cp controls Stefan heat correction')
+    film%cp=3000
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok.and.abs(heat/expected-1)<2e-13_dp,'skin cp does not replace fuel cp in zero-Re heat ratio')
+    film%vapor_cp=0
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok.and.heat<expected,'explicit frozen film keeps zero-field cp fallback')
+    film%vapor_cp=-1
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(.not.ok,'negative vapor cp rejected')
+    film%vapor_cp=ieee_value(0.0_dp,ieee_quiet_nan)
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(.not.ok,'nonfinite vapor cp rejected')
+    film%vapor_cp=2000;film%cp=1000;film%surface_fraction=.99_dp
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    expected=2*pi*film%density*film%diffusivity*log(21.0_dp)
+    call require(ok.and.abs(masscoef/expected-1)<2e-13_dp,'reference mass Spalding cap')
+    wall_patch=spray_wall_film([0.0_dp,0.0_dp,0.0_dp],[0.0_dp,0.0_dp,1.0_dp],1e-8_dp,350.0_dp, &
+      1e-3_dp,1e-8_dp/(1000*.25_dp*pi*1e-6_dp),1)
+    call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.true.,masscoef, &
+      heat,value,td,ok)
+    call require(ok,'capped film rate');expected=masscoef;film%surface_fraction=.999_dp
+    call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.true.,masscoef, &
+      heat,value,td,ok)
+    call require(ok.and.masscoef==expected,'same Spalding cap in wall film')
+    primitive=0;primitive(1)=1;primitive(5)=101325;primitive(5+liquid%vapor_index)=.1_dp;primitive(15)=.9_dp
+    call build_spray_film(species,transport,primitive,500.0_dp,p,liquid,options,film,ok)
+    call require(ok,'single vapor cp film')
+    call nasa7_mass_properties(species(liquid%vapor_index),400.0_dp,value,inverse_tau,heat,masscoef,expected,ok)
+    call require(ok.and.abs(film%vapor_cp/value-1)<2e-14_dp,'vapor cp evaluated at skin temperature')
+    mixture_components(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
+      mixture_components(2),ok)
+    call require(ok,'inactive vapor component')
+    primitive(15)=.7_dp;primitive(5+mixture_components(2)%vapor_index)=.2_dp
+    mixture_y=[1.0_dp,0.0_dp]
+    call build_mixture_film(species,transport,primitive,500.0_dp,p,mixture_components,mixture_y,options, &
+      film,mixture_rates,vapor_h,ok)
+    call require(ok,'mapped fuel skin cp includes inactive component')
+    call nasa7_mass_properties(species(mixture_components(2)%vapor_index),400.0_dp,td, &
+      inverse_tau,heat,masscoef,expected,ok)
+    omega=(2*film%surface_fraction+.1_dp)/3;z=.2_dp*(1-omega)/.9_dp
+    expected=(omega*value+z*td)/(omega+z)
+    call require(ok.and.abs(film%vapor_cp/expected-1)<2e-14_dp,'fuel-only skin mass-weighted cp')
+    mixture_components=liquid;mixture_y=[.4_dp,.6_dp]
+    call build_mixture_film(species,transport,primitive,500.0_dp,p,mixture_components,mixture_y,options, &
+      film,mixture_rates,vapor_h,ok)
+    call require(ok.and.abs(film%vapor_cp/value-1)<2e-14_dp,'shared gas species cp counted once')
   case('abramzon')
     options%abramzon_sirignano=.true.
     call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)

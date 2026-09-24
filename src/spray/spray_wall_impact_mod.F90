@@ -141,7 +141,7 @@ contains
       wall_heat=2*area*conductivity*(wall_temperature-patch%temperature)/patch%height
     end if
     if (evaporation) then
-      bm=max(0.0_dp,(gas%surface_fraction-gas%ambient_fraction)/(1-gas%surface_fraction))
+      bm=min(20.0_dp,max(0.0_dp,(gas%surface_fraction-gas%ambient_fraction)/(1-gas%surface_fraction)))
       mass_rate=area*h*(gas%conductivity/gas%cp)**(1.0_dp/3)*log(1+bm)/gas%conductivity* &
         (gas%density*gas%diffusivity)**(2.0_dp/3)
     end if

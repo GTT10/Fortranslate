@@ -888,7 +888,7 @@ contains
     ! The checkpoint contract includes every physical, injection and step-control
     ! input. Paths, requested stop time/count and output scheduling are not physics.
     write(context,'(a,1x,a,1x,*(i0,1x))',iostat=ios) &
-      'spray-v2-ambient-skin/'//pelef_version,trim(mechanism_id),cells,parcel_count,maximum_substeps
+      'spray-v3-vapor-cp/'//pelef_version,trim(mechanism_id),cells,parcel_count,maximum_substeps
     if (ios/=0) call fail('Cannot encode checkpoint context')
     do i=1,size(species)
       context=trim(context)//' '//trim(species(i)%name)

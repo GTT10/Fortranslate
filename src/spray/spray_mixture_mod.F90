@@ -12,7 +12,7 @@ module spray_mixture_mod
   implicit none
   private
   real(dp), parameter, public :: mixture_trace_fraction=1e-12_dp
-  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v4-ambient-skin'
+  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v5-vapor-cp'
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
   public :: liquid_mixture_surface, advance_mixture_evaporation
   public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas, valid_component_inventory
@@ -141,7 +141,7 @@ contains
     real(dp) :: diffusion(size(species)),binary(size(species),size(species)),tf,r,mw,cp,cv,gamma,h,e,entropy
     real(dp) :: ambient_mw,carrier_y,denom,sum_x,carrier_sum,resistance,di,cp_i
     real(dp) :: liquid_x(size(y)),group_x(size(species)),ambient_component
-    logical :: active(size(species)),valid
+    logical :: active(size(species)),fuel_species(size(species)),valid
     type(spray_film) :: candidate
     integer :: i,j,v
     ok=.false.;film=spray_film();mass_weights=0;vapor_h=0
@@ -154,11 +154,12 @@ contains
     if (any(yg<0).or.abs(sum(yg)-1)>5e-12_dp) return
     if (.not.all(ieee_is_finite(mw_g))) return
     if (any(mw_g<1e-3_dp).or.any(mw_g>1e5_dp)) return
-    xg=(yg/mw_g)/sum(yg/mw_g)
+    xg=(yg/mw_g)/sum(yg/mw_g);fuel_species=.false.
     do i=1,size(y)
       v=components(i)%vapor_index
       if (v>size(species)) return
       if (trim(components(i)%vapor_name)/=trim(species(v)%name)) return
+      fuel_species(v)=.true.
       mw_liq(i)=resolved_liquid_molecular_weight(components(i),mw_g(v))
       call nasa7_mass_properties(species(v),parcel%temperature,cp_i,cv,h,e,entropy,valid)
       if (.not.valid) return
@@ -213,6 +214,19 @@ contains
     call mixture_mass_properties(species,yf,tf,mw,r,cp,cv,gamma,h,e,entropy,valid)
     if (.not.valid) return
     candidate%density=primitive(5)/(r*tf);candidate%cp=cp
+    if (sum_x>0) then
+      ! Pinned Drag.H normalizes skin Y over all mapped fuel species, including
+      ! non-evaporating components. Loop over gas species to avoid alias duplication.
+      denom=sum(yf,mask=fuel_species)
+      if (denom<=0) return
+      do j=1,size(species)
+        if (.not.fuel_species(j)) cycle
+        call nasa7_mass_properties(species(j),tf,cp_i,cv,h,e,entropy,valid)
+        if (.not.valid) return
+        candidate%vapor_cp=candidate%vapor_cp+yf(j)*cp_i
+      end do
+      candidate%vapor_cp=candidate%vapor_cp/denom
+    end if
     call mixture_transport_coefficients(species,transport,yf,tf,primitive(5), &
       candidate%viscosity,candidate%conductivity,diffusion,valid)
     if (.not.valid) return

@@ -241,6 +241,11 @@ contains
     end do
     film%diffusivity=diffusion(v)
     if (carrier_sum>0.0_dp .and. resistance>0.0_dp) film%diffusivity=carrier_sum/resistance
+    if (vapor_active) then
+      call nasa7_mass_properties(species(v),tf,species_cp,cv,h,e,s,ok)
+      if (.not.ok) return
+      film%vapor_cp=species_cp
+    end if
     ! At pure vapor the mass flux is zero; diffusivity has no mass-transfer role.
     call nasa7_mass_properties(species(v),parcel%temperature,species_cp,cv,h,e,s,ok)
     if (.not. ok) return
