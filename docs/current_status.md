@@ -23,8 +23,9 @@ Dynamic wall faces are connected through the AMR selector, stepper and spray app
 Dynamic pressure-target outlets now correct all donor layers using physical
 domain coordinates ([pressure integration](validation/les-dynamic-amr-pressure-20260925.md)).
 Serial LES subcycling now has a recursive driver with interval-weighted reflux
-([focused checks](validation/les-amr-subcycle-20260925.md)). Subcycle timestep
-selection, MPI/application dispatch, detailed-fuel Dynamic LES and physical
+([focused checks](validation/les-amr-subcycle-20260925.md)) and a
+[scaled timestep selector](validation/les-subcycle-timestep-20260925.md).
+MPI/application subcycle dispatch, detailed-fuel Dynamic LES and physical
 qualification remain open.
 Non-regular EB LES is an extension beyond the pinned reference, which rejects
 such cells in all four closures ([source audit](validation/les-reference-scope-20260925.md)).

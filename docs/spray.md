@@ -3228,7 +3228,10 @@ The serial `advance_amr_patch_tree_subcycle_les_3d` driver now schedules
 ratio-squared child intervals, interpolates coarse endpoints and synchronizes
 time-integrated fluxes after each child cycle. It returns per-level step counts,
 composite boundary change and maximum correction/diffusivity transactionally.
-Automatic subcycle timestep selection and MPI/application dispatch remain work.
+`compute_amr_patch_tree_subcycle_les_timestep_3d` selects the coarse interval by
+scaling each patch's diffusion rate with the cumulative squared refinement ratio
+([selector checks](validation/les-subcycle-timestep-20260925.md)). Stage bounds
+remain enforced during stepping. MPI/application subcycle dispatch remains work.
 See [level integration checks](validation/les-amr-level-20260925.md) and
 [recursive integration checks](validation/les-amr-subcycle-20260925.md).
 
