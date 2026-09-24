@@ -15,7 +15,7 @@ program test_amr_patch_tree_subcycle_3d
   type(amr_patch_3d) :: patches(3)
   type(amr_tree_state_3d) :: state,temp,reference,reference_t,saved,saved_t,synchronized
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),q(12),sound,initial(12),final(12),budget(12),maximum
-  real(dp) :: reference_budget(12),reference_max,dt,common_dt,outlet(6)
+  real(dp) :: reference_budget(12),reference_max,dt,common_dt,outlet(6),mach(6),tin(6),pin(6)
   real(dp), parameter :: spacing(3)=[.001_dp,.0015_dp,.002_dp]
   integer(int64), allocatable :: counts(:)
   integer :: geometry,mode,node,i,j,k
@@ -48,8 +48,8 @@ program test_amr_patch_tree_subcycle_3d
     call require(ok,'tree')
     if (allocated(counts)) deallocate(counts)
     allocate(counts(tree%level_count()))
-    do mode=1,4
-      outlet=0
+    do mode=1,6
+      outlet=0;mach=-1;tin=700;pin=0
       if (mode>2) then
         outlet(2)=102325;outlet(6)=102325
       end if
@@ -58,6 +58,12 @@ program test_amr_patch_tree_subcycle_3d
         faces='outflow';faces(3:4)='slip_wall';reconstruction='characteristic_plm'
       end if
       if (mode==3) reconstruction='pcm'
+      if(mode>4) then
+        outlet=0;faces(1)='inflow';mach(1)=.2_dp
+        if(mode==6) pin(1)=120000
+        reconstruction='pcm'
+        if(mode==6) reconstruction='characteristic_plm'
+      end if
       call prolong_amr_patch_tree_3d(tree,root,state,ok)
       call require(ok,'initial state')
       call prolong_amr_patch_tree_3d(tree,rt,temp,ok)
@@ -77,11 +83,13 @@ program test_amr_patch_tree_subcycle_3d
       reference=state;reference_t=temp
       if (geometry==1) then
         call advance_amr_patch_tree_hydro_3d(tree,species,reference,reference_t,spacing,dt,faces, &
-          reconstruction,'mc','hllc',reference_budget,reference_max,ok,outlet_pressure=outlet)
+          reconstruction,'mc','hllc',reference_budget,reference_max,ok,outlet_pressure=outlet, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
         call require(ok,'root oracle')
       end if
       call advance_amr_patch_tree_subcycle_hydro_3d(tree,species,state,temp,spacing,dt,faces, &
-        reconstruction,'mc','hllc',budget,maximum,ok,level_steps=counts,outlet_pressure=outlet)
+        reconstruction,'mc','hllc',budget,maximum,ok,level_steps=counts,outlet_pressure=outlet, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(ok,'recursive hydro step')
       if (geometry==1) then
         call require(all(counts==1),'root step count')
@@ -104,7 +112,8 @@ program test_amr_patch_tree_subcycle_3d
       end do
       saved=state;saved_t=temp;budget=-17;maximum=-19;counts=-23
       call advance_amr_patch_tree_subcycle_hydro_3d(tree,species,state,temp,spacing,1._dp,faces, &
-        reconstruction,'mc','hllc',budget,maximum,ok,level_steps=counts,outlet_pressure=outlet)
+        reconstruction,'mc','hllc',budget,maximum,ok,level_steps=counts,outlet_pressure=outlet, &
+          inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
       call require(.not.ok,'nonphysical step rejected')
       do node=1,size(tree%nodes)
         call require(all(state%fields(node)%values==saved%fields(node)%values),'state rollback')
