@@ -3062,6 +3062,12 @@ unequal-slab tests. Publication is collective and transactional. MPI dynamic
 stepping and coupled/application dispatch remain to be connected; see
 [MPI dynamic flux evidence](validation/les-mpi-dynamic-flux-20260918.md).
 
+`sample_mpi_les_x_planes_3d` provides owner-routed raw donor planes for wide
+regular MPI physical halos, with unequal/zero request counts and transactional
+outputs ([communication checks](validation/mpi-les-donor-planes-20260925.md)).
+Physical coordinate mapping and wall transforms remain caller responsibilities;
+this helper alone does not enable MPI Dynamic physical boundaries.
+
 `advance_mpi_dynamic_les_ssprk2_3d` now integrates periodic owner-local dynamic
 LES with collective dt agreement, global diffusion checks and transactional EOS
 recovery after both stages. Two/four-rank variable-state checks match serial
