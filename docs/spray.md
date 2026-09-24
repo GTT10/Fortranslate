@@ -3217,6 +3217,15 @@ handle later nonlinear rejection. See the
 [application checks](validation/les-amr-application-20260918.md). See
 [coupled evidence](validation/les-amr-coupled-20260918.md).
 
+The coupled API also accepts periodic `les_model='dynamic'` and optional
+`les_test_model`, `les_test_ratio`, `les_grid_ratio`, `les_harmonic_mean`.
+Dynamic mode runs with zero static coefficients. Effective settings are agreed
+before particle work, and all state still publishes only on full success.
+The application selects it in `amr_spray_les` and reads filter settings from a
+separate `amr_spray_dynamic` group, preserving older static context serialization.
+Implementation and fixed/selected builds are complete; MPI coupled/restart
+verification remains pending ([record](validation/les-dynamic-amr-application-20260925.md)).
+
 ### MPI AMR uniform acceleration
 
 `advance_mpi_amr_spray_reactive` also accepts `acceleration(3)` and

@@ -273,8 +273,31 @@ estimate limits the application interval; subsequent particle feedback and
 nonlinear stages can still require the existing retry/halving path. Recursive
 gas stepping does not subcycle LES. Nondefault LES settings bind the checkpoint
 context, so changing them on restart is rejected. Default settings retain the
-previous context serialization. Dynamic LES and EB grids are not supported here.
+previous context serialization. EB grids are not supported here.
 See [application evidence](../../docs/validation/les-amr-application-20260918.md).
+
+### Dynamic LES (runtime checks pending)
+
+Periodic cases can select the new dynamic path:
+
+```fortran
+&amr_spray_les les_model='dynamic',les_cfl=.1 /
+&amr_spray_dynamic
+ les_test_model='box',les_test_ratio=2,les_grid_ratio=1,les_harmonic_mean=.false.
+/
+```
+
+The second group is optional with the shown defaults. Dynamic mode is active
+even with `les_cs=les_ci=0`; its computed coefficients replace static
+`les_cs/les_prt/les_sct/les_ci`. Filter models/ratios follow the regular Dynamic
+LES kernel. Nonperiodic boundaries reject; nondefault dynamic filter controls
+on a static model reject. Dynamic settings enter checkpoint identity, so changing
+them rejects restart. Static/default context serialization is preserved.
+The same particle/gas transaction, two LES half steps and retry logic apply.
+The diffusion estimate includes padded donor cells and can be conservative.
+Fixed/selected builds pass, but MPI numerical and changed-rank restart tests
+have not run for this path because of the stalled launcher. See
+[build and pending-test record](../../docs/validation/les-dynamic-amr-application-20260925.md).
 
 ### Uniform acceleration
 
