@@ -154,7 +154,7 @@ contains
     real(dp) :: endpoint(nvar)
     real(dp) :: shift(3),old_momentum(3),rho,fraction
     logical :: reflect(3),viscous,found,valid,plan
-    integer :: nspecies,width
+    integer :: nspecies,width,bounces,bounce,wall_faces(128)
     ok=.false.
     plan=.false.
     if (present(planning)) plan=planning
@@ -195,13 +195,6 @@ contains
     if (.not.ok) return
     ok=.false.
     level=tree%nodes(node)%level+1;extent=domain(:,level);dims=tree%nodes(node)%shape+2*width
-    ! Single wall reflection requires no more than one full domain of donor cells.
-    do axis=1,3
-      if(any(faces(2*axis-1:2*axis)=='slip_wall').or.any(faces(2*axis-1:2*axis)=='no_slip_wall').or. &
-        any(faces(2*axis-1:2*axis)=='isothermal_wall')) then
-        if(int(width,int64)>extent(axis)) return
-      end if
-    end do
     allocate(candidate(nvar,dims(1),dims(2),dims(3)),stat=ios)
     if (ios/=0) return
     do k=1,dims(3)
@@ -210,28 +203,41 @@ contains
           coordinate=origin(:,node)+int([i,j,k]-width-1,int64)
           mapped=coordinate;reflect=.false.;shift=0;inlet=0
           do axis=1,3
-            if (coordinate(axis)>=0.and.coordinate(axis)<extent(axis)) cycle
-            face=2*axis
-            if (coordinate(axis)<0) face=face-1
-            select case(trim(faces(face)))
-            case('periodic')
-              mapped(axis)=modulo(coordinate(axis),extent(axis))
-            case('inflow')
-              inlet=face
-              mapped(axis)=max(0_int64,min(extent(axis)-1,coordinate(axis)))
-            case('outflow')
-              mapped(axis)=max(0_int64,min(extent(axis)-1,coordinate(axis)))
-            case('slip_wall','no_slip_wall','isothermal_wall')
-              mapped(axis)=-coordinate(axis)-1
-              if (coordinate(axis)>=extent(axis)) &
-                mapped(axis)=extent(axis)-1-(coordinate(axis)-extent(axis))
+            bounces=0
+            do while(mapped(axis)<0.or.mapped(axis)>=extent(axis))
+              face=2*axis
+              if (mapped(axis)<0) face=face-1
+              select case(trim(faces(face)))
+              case('periodic')
+                mapped(axis)=modulo(mapped(axis),extent(axis))
+              case('inflow')
+                inlet=face
+                mapped(axis)=max(0_int64,min(extent(axis)-1,mapped(axis)))
+              case('outflow')
+                mapped(axis)=max(0_int64,min(extent(axis)-1,mapped(axis)))
+              case('slip_wall','no_slip_wall','isothermal_wall')
+                bounces=bounces+1
+                if(bounces>size(wall_faces)) return
+                wall_faces(bounces)=face
+                if(mapped(axis)<0) then
+                  mapped(axis)=-mapped(axis)-1
+                else
+                  mapped(axis)=extent(axis)-1-(mapped(axis)-extent(axis))
+                end if
+              end select
+            end do
+            ! Mapping visits the outer ghost first. Reconstruct its velocity
+            ! from the interior donor in reverse order, especially when the
+            ! two walls prescribe different tangential velocities.
+            do bounce=bounces,1,-1
+              face=wall_faces(bounce)
               if (faces(face)/='slip_wall'.and.viscous) then
                 reflect=.not.reflect;shift=-shift
                 if (present(wall_velocity)) shift=shift+2.0_dp*wall_velocity(:,face)
               else
                 reflect(axis)=.not.reflect(axis);shift(axis)=-shift(axis)
               end if
-            end select
+            end do
           end do
           ! Search all peers at this resolution, including children of other parents.
           ! If no peer covers this cell, coarsen its global index until a donor exists.

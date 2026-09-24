@@ -102,6 +102,7 @@ program test_amr_patch_tree_ghost_3d
     end do
     deallocate(dense)
   end do
+  call wide_wall_checks()
   call temporal_checks()
   saved=ghost
   call fill_amr_patch_tree_ghosts_3d(tree,state,5,faces,ghost,ok)
@@ -126,6 +127,62 @@ program test_amr_patch_tree_ghost_3d
   call require(.not.ok.and.all(ghost==saved),'global integer-coordinate overflow rejects before allocation')
   print '(a)','test_amr_patch_tree_ghost_3d: PASS'
 contains
+  subroutine wide_wall_checks()
+    type(amr_patch_tree_3d) :: box
+    type(amr_tree_state_3d) :: field
+    real(dp), allocatable :: halo(:,:,:,:)
+    real(dp) :: walls(3,6),expected(6),momentum(3),offset
+    character(len=32) :: bc(6)
+    integer :: x,donor,slab,r,ix,iy,iz,kind
+    logical :: success
+    call initialize_amr_patch_tree_3d([4,4,4],[integer::],patches(:0),box,success)
+    call require(success,'wide wall root geometry')
+    call prolong_amr_patch_tree_3d(box,root,field,success)
+    call require(success,'wide wall root state')
+    do kind=1,3
+      bc='periodic';bc(1:2)='no_slip_wall';walls=0
+      walls(2,1)=1;walls(2,2)=3
+      if(kind==2) then
+        bc(1:2)='slip_wall';walls=0
+      else if(kind==3) then
+        bc(2)='outflow';walls(:,2)=0
+      end if
+      call fill_amr_patch_tree_ghosts_3d(box,field,1,bc,halo,success, &
+        viscous_wall=.true.,wall_velocity=walls,ghost_width=13)
+      call require(success,'wide wall halo crosses domain repeatedly')
+      do iz=1,30
+        do iy=1,30
+          do ix=1,30
+            x=ix-14;slab=floor(real(x,dp)/4);r=modulo(x,4)
+            donor=r+1
+            if(modulo(slab,2)==1) donor=4-r
+            if(kind==3) donor=max(1,min(4,x+1))
+            if(kind==3.and.x<0) donor=min(4,-x)
+            expected=root(:,donor,modulo(iy-14,4)+1,modulo(iz-14,4)+1)
+            momentum=expected(2:4)
+            if(kind<=2) then
+              if(modulo(slab,2)==1) then
+                expected(2)=-expected(2)
+                if(kind==1) expected(3:4)=-expected(3:4)
+              end if
+              if(kind==1) then
+                ! Analytic extension between walls v_y=1 and v_y=3:
+                ! every pair of reflections translates v_y by four.
+                offset=4._dp*floor(real(slab,dp)/2)
+                if(modulo(slab,2)==1) offset=offset+6
+                expected(3)=expected(3)+expected(1)*offset
+              end if
+            else if(x<0) then
+              expected(2:4)=-expected(2:4)
+              expected(3)=expected(3)+2*expected(1)
+            end if
+            expected(5)=expected(5)+(sum(expected(2:4)**2)-sum(momentum**2))/(2*expected(1))
+            call require(all(halo(:,ix,iy,iz)==expected),'analytic repeated wall donor, momentum and energy')
+          end do
+        end do
+      end do
+    end do
+  end subroutine wide_wall_checks
   subroutine temporal_checks()
     type(amr_tree_state_3d) :: future,incomplete
     real(dp), allocatable :: full(:,:,:,:),refined(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:),snapshot(:,:,:,:)

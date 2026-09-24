@@ -50,9 +50,9 @@ program test_mpi_amr_patch_tree_ghost_3d
     end if
   end do
   inlet=spread([3.0_dp,4.0_dp,5.0_dp,6.0_dp,2000.0_dp,1.0_dp,2.0_dp],2,6)
-  do mode=1,4
+  do mode=1,6
     owners=[0,1,0,1]
-    if (mode==4) owners=0
+    if (mode==4.or.mode==6) owners=0
     allocate(local%fields(4),local_future%fields(4))
     do node=1,4
       if (owners(node)==rank) then
@@ -64,6 +64,10 @@ program test_mpi_amr_patch_tree_ghost_3d
     if (mode>=2) faces=[character(len=32)::'slip_wall','outflow','inflow','no_slip_wall','isothermal_wall','inflow']
     if (mode>=3) then
       velocity(1,4)=.2_dp;velocity(2,5)=.3_dp
+    end if
+    if(mode>=5) then
+      faces='periodic';faces(1:2)='no_slip_wall';velocity=0
+      velocity(2,1)=1;velocity(2,2)=3
     end if
     do scheme=1,3
       if (allocated(limiter)) deallocate(limiter)
@@ -81,26 +85,29 @@ program test_mpi_amr_patch_tree_ghost_3d
         call require(all(shape(oracle)==shape(ghosts%fields(node)%values)),'halo shape')
         call require(all(oracle==ghosts%fields(node)%values),'exact serial halo parity')
       end do
-      if(mode==1) then
+      block
         call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
+          viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity, &
           coarse_limiter=limiter,species_count=2,ghost_width=7)
         call require(ok,'wide collective halo fill')
         do node=1,4
           call require(allocated(ghosts%fields(node)%values).eqv.(owners(node)==rank),'only owned wide halos')
           if(owners(node)/=rank) cycle
           call fill_amr_patch_tree_ghosts_3d(tree,global,node,faces,oracle,ok, &
+            viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity, &
             coarse_limiter=limiter,species_count=2,ghost_width=7)
           call require(ok.and.all(oracle==ghosts%fields(node)%values),'wide exact serial halo parity')
         end do
         saved=ghosts
         call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
+          viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity, &
           coarse_limiter=limiter,species_count=2,ghost_width=7+rank)
         call require(.not.ok,'rank-disagreeing halo width rejected')
         do node=1,4
           if(owners(node)/=rank) cycle
           call require(all(ghosts%fields(node)%values==saved%fields(node)%values),'wide halo mismatch rollback')
         end do
-      end if
+      end block
     end do
     do scheme=1,3
       if (allocated(limiter)) deallocate(limiter)
