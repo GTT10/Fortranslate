@@ -57,7 +57,9 @@ LES half steps ([spray checks](validation/mach-inlet-amr-spray-20260925.md)).
 Serial fixed/selected AMR gas application input, current-donor timestep limits
 and restart checks are connected
 ([application checks](validation/mach-inlet-amr-application-20260925.md)). MPI gas
-and spray application integration remain open.
+input and collective inlet bounds also support rank-changing and serial/MPI restart
+([MPI application checks](validation/mach-inlet-mpi-amr-application-20260925.md)).
+AMR spray application integration remains open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
