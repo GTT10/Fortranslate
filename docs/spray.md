@@ -3231,7 +3231,7 @@ composite boundary change and maximum correction/diffusivity transactionally.
 `compute_amr_patch_tree_subcycle_les_timestep_3d` selects the coarse interval by
 scaling each patch's diffusion rate with the cumulative squared refinement ratio
 ([selector checks](validation/les-subcycle-timestep-20260925.md)). Stage bounds
-remain enforced during stepping. Coupled application subcycle dispatch remains work.
+remain enforced during stepping.
 The MPI timestep API accepts `subcycle=.true.` for the same coarse-interval
 scaling, with collective agreement and owner-local diffusion evaluation
 ([MPI selector checks](validation/les-mpi-subcycle-timestep-20260925.md)).
@@ -3243,16 +3243,18 @@ owner-local coarse endpoints and accumulated flux synchronization. It publishes
 state, temperature, boundary budget, maximum correction/diffusivity and optional
 level counts only after the complete tree step succeeds
 ([MPI recursion checks](validation/les-mpi-amr-subcycle-20260925.md)).
-Coupled application dispatch remains to be connected.
+The MPI spray application now dispatches this recursive driver when
+`subcycling=.true.` ([coupling checks](validation/les-mpi-spray-subcycle-20260925.md)).
 See [level integration checks](validation/les-amr-level-20260925.md) and
 [recursive integration checks](validation/les-amr-subcycle-20260925.md).
 
 `advance_mpi_amr_spray_reactive` accepts optional `les_settings` containing
 `[eddy coefficient, PrT, ScT, CI]` and `les_model` (`smagorinsky`, `wale` or
-`vreman`). Defaults disable LES. Two common LES half steps surround the gas
-reaction/transport/hydro split, inside the particle half steps. Gas subcycling
-remains available; LES itself uses common steps. Coefficients and model must
-agree across ranks. Gas, particles, optional films, IDs and boundary/correction
+`vreman`). Defaults disable LES. Two LES half steps surround the gas
+reaction/transport/hydro split, inside the particle half steps. `subcycling=.true.`
+selects recursive gas and LES stepping; false retains common stepping. The
+application also selects the scaled LES diffusion bound in recursive mode.
+Subcycling, coefficients and model must agree across ranks. Gas, particles, optional films, IDs and boundary/correction
 diagnostics publish together after the entire coupled interval succeeds.
 The fixed/selected MPI AMR spray application exposes these controls through
 `&amr_spray_les`, binds nondefault settings to restart identity and applies the

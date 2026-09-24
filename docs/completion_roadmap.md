@@ -15,8 +15,11 @@ identify affected numerical signatures and acceptance criteria.
 The pinned reference rejects non-regular EB cells for Smagorinsky, Dynamic,
 WALE and Vreman LES. Cut-cell LES is therefore a future model extension, not a
 missing reference operator; the implemented regular-grid AMR LES path remains
-the usable alternative. LES level/subcycle source and flux-register integration
-does remain reference work. See the [dated source audit](validation/les-reference-scope-20260925.md).
+the usable alternative. Independent serial/MPI SSPRK2 LES level stepping,
+recursive intervals and flux synchronization now reach the MPI spray application
+([coupling evidence](validation/les-mpi-spray-subcycle-20260925.md)). This does not
+establish parity with the reference time integrator or physical validation.
+See the [dated source audit](validation/les-reference-scope-20260925.md).
 
 ## Consolidation versus solver completion
 

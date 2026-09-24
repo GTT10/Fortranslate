@@ -25,7 +25,9 @@ ID watermark and component inventories follow particles through migration and
 breakup. `maximum_parcels` bounds per-rank storage. Existing `spray_options`
 fields can be set as namelist components, e.g. `options%breakup_model='etab'`,
 with the required liquid viscosity/surface tension. `subcycling=.true.` selects
-recursive gas steps; the driver retains a conservative finest-grid CFL bound.
+recursive gas steps and, when enabled, recursive LES half steps. The driver
+retains a conservative finest-grid hydro/molecular-transport bound and selects
+the scaled LES diffusion bound.
 
 For timed injection, set `injection_events` (1 through 1024), nondecreasing
 nonnegative `injection_times`, and matching `event_parcels` and `event_mass`
@@ -268,10 +270,11 @@ model's eddy coefficient in `[0,2]`; `les_ci` controls isotropic stress in
 lie in `[1e-6,1e6]`. The diffusion CFL defaults to 0.1 and must be in `(0,0.2]`.
 These example coefficients are implementation fixtures, not calibrated values.
 
-LES runs as two common half steps around the gas split. Its initial diffusion
-estimate limits the application interval; subsequent particle feedback and
-nonlinear stages can still require the existing retry/halving path. Recursive
-gas stepping does not subcycle LES. Nondefault LES settings bind the checkpoint
+LES runs as two half steps around the gas split, using common stepping by
+default or ratio-squared level intervals with `subcycling=.true.`. Its initial
+diffusion estimate follows the same mode and limits the application interval;
+subsequent particle feedback and nonlinear stages can still require the existing
+retry/halving path. The subcycling flag and nondefault LES settings bind the checkpoint
 context, so changing them on restart is rejected. Default settings retain the
 previous context serialization. EB grids are not supported here.
 See [application evidence](../../docs/validation/les-amr-application-20260918.md).
