@@ -726,6 +726,7 @@ class SprayApplication(unittest.TestCase):
         ]
         for index, settings in enumerate(variants):
             with self.subTest(variant=index):
+                settings += "mole_names='H2O','N2','',mole_amounts=1,9,0,"
                 name = f'liquid_mw{index}'
                 checkpoint = self.root/(name+'.chk')
                 self.run_case(name, common=settings)

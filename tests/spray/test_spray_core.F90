@@ -119,6 +119,40 @@ program test_spray_core
     call advance_mixture_frozen_gas(species,transport,primitive,600.0_dp,p,mixture_components,component_mass, &
       options,1e-9_dp,totals0,ok)
     call require(ok.and.all(component_mass==saved_mass).and.p%mass==q%mass,'evaporation disabled preserves small drops')
+  case('vapor_skin')
+    p%temperature=373.15_dp;mw=[species(liquid%vapor_index)%molecular_weight,species(10)%molecular_weight]
+    do n=1,4
+      liquid%molecular_weight=0
+      if (n==2) liquid%molecular_weight=36
+      if (n==3) liquid%molecular_weight=1000
+      primitive=0;primitive(1)=1;primitive(5)=202650
+      primitive(5+liquid%vapor_index)=merge(.9_dp,.2_dp,n==4)
+      primitive(15)=1-primitive(5+liquid%vapor_index)
+      omega=1/(primitive(5+liquid%vapor_index)/mw(1)+primitive(15)/mw(2))
+      expected=.5_dp*mw(1)/(.5_dp*resolved_liquid_molecular_weight(liquid,mw(1))+.5_dp*omega)
+      if (n==4) expected=0
+      do jcell=1,2
+        call build_spray_film(species,transport,primitive,600.0_dp,p,liquid,options,film,ok,wall_skin=jcell==2)
+        call require(ok.and.abs(film%surface_fraction-expected)<2e-14_dp,'reference ambient mean molecular weight')
+        call require(film%ambient_fraction==merge(primitive(5+liquid%vapor_index),0.0_dp,n/=4), &
+          'reference activity gate')
+        if (jcell==1) then
+          value=(2*expected+primitive(5+liquid%vapor_index))/3
+          td=(2*p%temperature+600)/3
+        else
+          value=.5_dp*(expected+primitive(5+liquid%vapor_index))
+          td=.5_dp*(p%temperature+600)
+        end if
+        if (n==4) value=primitive(5+liquid%vapor_index)
+        z=primitive(5)/(8314.46261815324_dp*td*(value/mw(1)+(1-value)/mw(2)))
+        call require(abs(film%density/z-1)<2e-14_dp,'reference gas skin composition and temperature')
+        mixture_components=liquid;mixture_y=[1.0_dp,0.0_dp]
+        call build_mixture_film(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
+          film,mixture_rates,vapor_h,ok,wall_skin=jcell==2)
+        call require(ok.and.abs(film%density/z-1)<2e-14_dp,'single/mixture skin equivalence')
+        call require(abs(film%surface_fraction-expected)<2e-14_dp,'single/mixture surface equivalence')
+      end do
+    end do
   case('liquid_mw')
     mixture_components=liquid;mixture_components%molecular_weight=[18.0_dp,36.0_dp]
     mixture_y=.5_dp;mw=species(liquid%vapor_index)%molecular_weight;surface_x=-1

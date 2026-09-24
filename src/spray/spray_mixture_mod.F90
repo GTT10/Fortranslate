@@ -12,7 +12,7 @@ module spray_mixture_mod
   implicit none
   private
   real(dp), parameter, public :: mixture_trace_fraction=1e-12_dp
-  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v3-vapor-mapping'
+  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v4-ambient-skin'
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
   public :: liquid_mixture_surface, advance_mixture_evaporation
   public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas, valid_component_inventory
@@ -139,7 +139,7 @@ contains
     real(dp) :: xs(size(y)),mw_liq(size(y)),diff_weights(size(y)),enthalpy(size(y))
     real(dp) :: yf(size(species)),yg(size(species)),xg(size(species)),ys(size(species)),mw_g(size(species))
     real(dp) :: diffusion(size(species)),binary(size(species),size(species)),tf,r,mw,cp,cv,gamma,h,e,entropy
-    real(dp) :: carrier_mw,carrier_y,denom,sum_x,carrier_sum,resistance,di,cp_i
+    real(dp) :: ambient_mw,carrier_y,denom,sum_x,carrier_sum,resistance,di,cp_i
     real(dp) :: liquid_x(size(y)),group_x(size(species)),ambient_component
     logical :: active(size(species)),valid
     type(spray_film) :: candidate
@@ -187,12 +187,13 @@ contains
     if (sum_x>0) then
       carrier_y=sum(yg,mask=.not.active);denom=sum(yg/mw_g,mask=.not.active)
       if (carrier_y<=0.or.denom<=0) return
-      carrier_mw=carrier_y/denom
-      denom=sum(xs*mw_liq)+(1-sum_x)*carrier_mw
+      ambient_mw=1/sum(yg/mw_g)
+      denom=sum(xs*mw_liq)+(1-sum_x)*ambient_mw
       do i=1,size(y)
         v=components(i)%vapor_index
         ys(v)=ys(v)+xs(i)*mw_g(v)/denom
       end do
+      if (sum(ys)>=1) return
       where (active) yf=(2*ys+yg)/3
       where (.not.active) yf=yg*(1-sum(yf,mask=active))/carrier_y
     end if

@@ -165,7 +165,8 @@ contains
     logical, intent(in), optional :: wall_skin
     real(dp) :: y(size(species)), yf(size(species)), diffusion(size(species)), tf
     real(dp) :: binary(size(species),size(species)),carrier_sum,resistance
-    real(dp) :: xs,ys,carrier_weight,carrier_inverse,cv,h,e,s,mw,r,cp,gamma,species_cp
+    real(dp) :: xs,ys,ambient_weight,cv,h,e,s,mw,r,cp,gamma,species_cp
+    logical :: vapor_active
     integer :: v,k
     film=spray_film(); ok=.false.
     v=liquid%vapor_index
@@ -179,7 +180,9 @@ contains
     if (any(primitive(6:) < 0.0_dp)) return
     y=primitive(6:)
     if (abs(sum(y)-1.0_dp) > 5.0e-12_dp) return
-    ys=y(v)
+    if (.not.all(ieee_is_finite(species%molecular_weight))) return
+    if (any(species%molecular_weight<1e-3_dp).or.any(species%molecular_weight>1e5_dp)) return
+    ys=0;vapor_active=.false.
     if (options%evaporation .and. y(v) < 1.0_dp-1.0e-12_dp) then
       h=0
       if (liquid%boiling_model=='pelemp-cap') then
@@ -189,16 +192,19 @@ contains
       call saturation_mole_fraction(liquid,species(v)%molecular_weight,parcel%temperature,primitive(5),xs,ok, &
         vapor_enthalpy=h)
       if (.not. ok) return
-      carrier_inverse=0.0_dp
-      do k=1,size(species)
-        if (k == v) cycle
-        carrier_inverse=carrier_inverse+y(k)/species(k)%molecular_weight
-      end do
-      carrier_weight=(1.0_dp-y(v))/carrier_inverse
-      ys=xs*species(v)%molecular_weight/(xs*species(v)%molecular_weight+(1.0_dp-xs)*carrier_weight)
+      ! Pinned Drag.H uses the complete ambient mixture, including vapor.
+      ambient_weight=1/sum(y/species%molecular_weight)
+      vapor_active=xs>y(v)*ambient_weight/species(v)%molecular_weight
+      if (vapor_active) then
+        ys=xs*species(v)%molecular_weight/ &
+          (xs*resolved_liquid_molecular_weight(liquid,species(v)%molecular_weight)+(1-xs)*ambient_weight)
+        if (ys>=1) then
+          ok=.false.;return
+        end if
+      end if
     end if
     yf=y
-    if (ys > y(v)) then
+    if (vapor_active) then
       yf=y*(1.0_dp-(2.0_dp*ys+y(v))/3.0_dp)/(1.0_dp-y(v))
       yf(v)=(2.0_dp*ys+y(v))/3.0_dp
     end if
@@ -207,7 +213,7 @@ contains
       if (wall_skin) then
         ! WallFilm.H declares rule=1/2 despite its stale one-third-rule comment.
         tf=parcel%temperature+.5_dp*max(0.0_dp,gas_temperature-parcel%temperature)
-        if (ys>y(v)) then
+        if (vapor_active) then
           yf(v)=.5_dp*(ys+y(v))
           do k=1,size(species)
             if (k/=v) yf(k)=y(k)*(1-yf(v))/(1-y(v))
@@ -241,10 +247,9 @@ contains
     film%vapor_enthalpy=h
     film%gas_velocity=primitive(2:4)
     film%gas_temperature=gas_temperature
-    film%ambient_fraction=y(v)
+    film%ambient_fraction=merge(y(v),0.0_dp,vapor_active)
     film%surface_fraction=ys
-    ! In a pure-vapor atmosphere the no-condensation model has zero mass flux.
-    if (ys >= 1.0_dp) film%surface_fraction=0.0_dp
+    ! Inactive/pure-vapor atmospheres retain ambient transport and zero mass flux.
     ok=.true.
   end subroutine
 
