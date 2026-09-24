@@ -1087,6 +1087,16 @@ license and deliberate scope differences are recorded in
 
 `spray_mixture_mod` provides the shared thermodynamic operations for up to 16
 components of one liquid droplet, distinct from the existing per-port pure liquids.
+Multiple components may name the same gas species. Their liquid properties and
+component masses remain separate, while surface vapor and gas mass sources are
+summed by gas species. Components mapped to one gas species currently use that
+species' molecular weight; independently specified liquid molecular weights are
+not supported. Ambient vapor partitioning follows the pinned `Drag.H` gate,
+which compares pure-component saturation pressure with the allocated ambient
+partial pressure before applying Raoult weighting. This changes humid/dilute
+mixture behavior from the former gate. The updated mixture evolution identity
+rejects continuation from the former model. See
+[mapping evidence](validation/shared-vapor-mapping-20260925.md).
 It accepts pure-component property records and normalized mass fractions.
 Density uses additive specific volume, `1/rho = sum(Y_i/rho_i)`; heat capacity
 and stored liquid energy use `sum(Y_i*cp_i)` and `sum(Y_i*e_i)`. Each component's

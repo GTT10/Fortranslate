@@ -1,6 +1,11 @@
 # PeleMP vapor-state cap integration — 2026-09-25
 
 Implementation `19e3a093b4f02a27e0a49db4c6cee821e950e10f`, base `b1b05bc`.
+Correction: the EB input mentioned below was the single-level driver. The
+separate fixed/selected EB tree frontend still lacked the new field at this
+revision; [the follow-up](pelemp-eb-tree-input-20260925.md) adds it and records
+changed-rank execution. The historical build successes below did not prove
+that new input was accepted by the EB tree frontend.
 Frozen source identities and the distinction between Watson boiling latent heat
 and ordinary EOS vapor-state latent heat are in
 [the source audit](spray-property-scope-20260925.md).
@@ -21,7 +26,7 @@ boiling field along with the existing boiling model. Stored liquid energy,
 transfer conservation and default models are preserved.
 
 Regular scalar, per-port and mixture inputs expose the new field and bind it
-into restart context. MPI AMR and EB mixture namelists also forward and serialize
+into restart context. MPI AMR and single-level EB mixture namelists also forward and serialize
 it. Regular default context is unchanged; expanded AMR/EB namelist serialization
 can invalidate older build contexts. No cross-build compatibility claim is made.
 

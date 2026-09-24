@@ -31,8 +31,13 @@ The constant-latent `surface-cap` remains available and `reject` remains the
 default. The ordinary EOS vapor-pressure path uses
 enthalpy-derived latent heat, so replacing every latent heat with Watson would
 not match the reference. Isolated property and fixed/selected regular
-conservation/restart checks are complete. MPI/AMR/EB execution of this option,
-broader transfer-integrator parity and physical qualification remain separate.
+conservation/restart checks are complete. EB tree input and changed-rank
+continuation now also have [focused evidence](validation/pelemp-eb-tree-input-20260925.md).
+MPI AMR execution of this option, broader transfer-integrator parity and physical
+qualification remain separate. Shared gas-species mapping now accumulates
+component vapor and sources conservatively
+([mapping evidence](validation/shared-vapor-mapping-20260925.md)); independent
+liquid molecular-weight inputs remain open.
 GCM is excluded from this pinned PeleC port because upstream restricts it to
 PeleLMeX; PeleMP is the available alternative. See the
 [property source audit](validation/spray-property-scope-20260925.md).
