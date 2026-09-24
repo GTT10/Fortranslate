@@ -1054,3 +1054,11 @@ if(PELEF_ENABLE_MPI)
   set_tests_properties(unit_mpi_eb_tree_csv_3d_3 PROPERTIES TIMEOUT 60 PROCESSORS 3
     ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_test(NAME unit_mpi_amr_patch_tree_ppm_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_amr_patch_tree_hydro_3d> ${MPIEXEC_POSTFLAGS} ppm)
+  set_tests_properties(unit_mpi_amr_patch_tree_ppm_3d_2 PROPERTIES
+    TIMEOUT 120 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()

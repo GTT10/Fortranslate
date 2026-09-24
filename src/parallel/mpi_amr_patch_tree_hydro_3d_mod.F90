@@ -5,7 +5,8 @@ module mpi_amr_patch_tree_hydro_3d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
-  use reactive_3d_mod, only: compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d
+  use reactive_3d_mod, only: compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d, &
+    compute_reactive_ppm_halo_ctu_fluxes_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
@@ -37,7 +38,7 @@ contains
     type(amr_tree_state_3d) :: initial,candidate,temps,stage_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)),first_max,second_max
-    integer :: node,nvar,rank,status,ios,parent
+    integer :: node,nvar,rank,status,ios,parent,width
     real(dp) :: controls(28),low(28),high(28)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
@@ -78,7 +79,8 @@ contains
       if (pressure(node)>0.and.faces(node)/='outflow') valid=.false.
     end do
     valid=valid.and.size(boundary_change)==nvar.and.valid_reactive_boundaries_3d(faces)
-    valid=valid.and.(reconstruction=='pcm'.or.reconstruction=='characteristic_plm')
+    valid=valid.and.(reconstruction=='pcm'.or.reconstruction=='characteristic_plm'.or. &
+      reconstruction=='characteristic_ppm')
     valid=valid.and.(limiter=='mc'.or.limiter=='minmod').and.len_trim(solver)<=64
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
@@ -117,7 +119,9 @@ contains
       valid=all(inlet==reference_inlet);call agree(valid)
       if (.not.valid) return
     end if
-    if (reconstruction=='characteristic_plm') donor_limiter=limiter
+    if (reconstruction/='pcm') donor_limiter=limiter
+    width=2
+    if (reconstruction=='characteristic_ppm') width=4
     allocate(h(3,size(tree%nodes)),stat=ios)
     valid=ios==0;call agree(valid)
     if (.not.valid) return
@@ -139,6 +143,12 @@ contains
     if (.not.valid) return
     call euler_stage(candidate,temps,first_budget,first_max,valid)
     if (.not.valid) return
+    if (reconstruction=='characteristic_ppm') then
+      call move_alloc(candidate%fields,state%fields)
+      call move_alloc(temps%fields,temperature%fields)
+      boundary_change=first_budget;maximum_correction=first_max;ok=.true.
+      return
+    end if
     call copy_local(temps,stage_temperature,valid)
     if (.not.valid) return
     call euler_stage(candidate,temps,second_budget,second_max,valid)
@@ -171,7 +181,7 @@ contains
       type(amr_tree_state_3d) :: packed,updated,ghosts
       type(amr_tree_flux_3d), allocatable :: flux(:)
       real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-      real(dp) :: correction(nvar),rhs(nvar)
+      real(dp) :: correction(nvar),rhs(nvar),theta
       integer :: peer,n(3),dims(3),i,j,k,allocation_status
       success=.false.;budget=0;largest=0;correction=0
       allocate(packed%fields(size(tree%nodes)),flux(size(tree%nodes)),stat=allocation_status)
@@ -190,7 +200,7 @@ contains
       call copy_local(u,updated,success)
       if (.not.success) return
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
-        inflow_state=inlet,coarse_limiter=donor_limiter,species_count=size(species), &
+        inflow_state=inlet,coarse_limiter=donor_limiter,species_count=size(species),ghost_width=width, &
         species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
       do peer=1,size(tree%nodes)
@@ -198,14 +208,19 @@ contains
         n=tree%nodes(peer)%shape;dims=n+4
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
-          call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success)
+          call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success,ghost_width=width)
           if (.not.success) exit
           allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)), &
             fz(nvar,dims(1),dims(2),dims(3)),stat=allocation_status)
           if (allocation_status/=0) then
             success=.false.;exit
           end if
-          if (reconstruction=='pcm') then
+          if (reconstruction=='characteristic_ppm') then
+            fx=0;fy=0;fz=0
+            call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+              n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
+              fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success)
+          else if (reconstruction=='pcm') then
             call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
               dims(1),dims(2),dims(3),solver,fx,fy,fz,success)
           else

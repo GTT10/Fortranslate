@@ -17,9 +17,11 @@ program test_mpi_amr_patch_tree_hydro_3d
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
-  character(len=32) :: faces(6),reconstruction
+  character(len=32) :: faces(6),reconstruction,arg
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
-  logical :: ok
+  logical :: ok,ppm
+  call get_command_argument(1,arg)
+  ppm=trim(arg)=='ppm'
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -56,6 +58,7 @@ program test_mpi_amr_patch_tree_hydro_3d
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
   do mode=1,8
+    if (ppm.and.(mode==2.or.mode==6)) cycle
     owners=[0,1,0]
     if (mode==3) owners=0
     if (mode==4) owners=mod([0,1,2],nranks)
@@ -71,6 +74,7 @@ program test_mpi_amr_patch_tree_hydro_3d
       pressure=0;faces(1)='inflow';mach(1)=.2_dp
       if(mode==8) pin(1)=120000
     end if
+    if (ppm) reconstruction='characteristic_ppm'
     allocate(local%fields(3),temperature%fields(3))
     do node=1,3
       if (owners(node)/=rank) cycle
@@ -81,11 +85,11 @@ program test_mpi_amr_patch_tree_hydro_3d
     call advance_amr_patch_tree_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc','hllc', &
       serial_budget,serial_largest,ok,inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
-    call require(ok,'serial RK2 oracle')
+    call require(ok,'serial hydro oracle')
     call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
       budget,largest,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
-    call require(ok,'distributed RK2')
+    call require(ok,'distributed hydro')
     do node=1,3
       call require(allocated(local%fields(node)%values).eqv.(owners(node)==rank),'owned state only')
       call require(allocated(temperature%fields(node)%values).eqv.(owners(node)==rank),'owned temperature only')
@@ -133,7 +137,7 @@ program test_mpi_amr_patch_tree_hydro_3d
     end if
     deallocate(local%fields,temperature%fields)
   end do
-  if (rank==0) print *, 'PASS: distributed tree RK2, PCM/PLM, physical boundaries, exact serial parity and rollback'
+  if (rank==0) print *, 'PASS: distributed tree hydro, physical boundaries, exact serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
   subroutine unchanged()
