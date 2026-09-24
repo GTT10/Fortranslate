@@ -8,6 +8,7 @@ program test_les_amr_tree
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
   use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d,compute_amr_patch_tree_les_timestep_3d
   use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d,compute_les_rhs_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_3d,advance_dynamic_les_ssprk2_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_tree_3d) :: tree
@@ -45,7 +46,7 @@ program test_les_amr_tree
       call initialize_amr_patch_tree_3d([4,4,4],[1,1,2,3,4],patches,tree,ok)
     end if
     call require(ok,'topology')
-    do m=1,3
+    do m=1,4
       select case(m)
       case(1)
         model='smagorinsky'
@@ -53,8 +54,11 @@ program test_les_amr_tree
         model='wale'
       case(3)
         model='vreman'
+      case(4)
+        model='dynamic'
       end select
       do mode=1,3
+        if(m==4.and.mode>1) cycle
         faces='periodic';wall_v=0;outlet=0
         if (mode>=2) faces='outflow'
         if (mode==3) then
@@ -77,10 +81,18 @@ program test_les_amr_tree
           coarse_limiter='mc',outlet_pressure=outlet,model=model,ci=.1_dp)
         call require(ok.and.half_dt==.5_dp*chosen.and.half_diff==diffusivity,'CFL scales chosen interval')
         if (geometry==1) then
+          if(m==4) then
+            call compute_dynamic_les_rhs_3d(species,root,rt(1,:,:,:),spacing,'box',2,reference_rhs,ok, &
+              maximum_diffusivity=reference_diff)
+            call require(ok.and.diffusivity>=reference_diff,'conservative dynamic diffusion bound')
+            call require(chosen*reference_diff*sum(1._dp/spacing**2)<=.05_dp*(1+1e-12_dp), &
+              'dynamic root interval bound')
+          else
           call compute_les_rhs_3d(species,root,rt(1,:,:,:),spacing,.17_dp,.7_dp,.7_dp,reference_rhs,reference_diff,ok, &
             boundary_faces=faces,wall_temperature=wall_t,wall_velocity=wall_v,model=model,ci=.1_dp,outlet_pressure=outlet)
           call require(ok,'root interval oracle')
           call require(abs(chosen*reference_diff*sum(1._dp/spacing**2)-.05_dp)<1e-12_dp,'root interval parity')
+          end if
         end if
         dt=min(chosen,1e-9_dp)
         saved=state
@@ -91,9 +103,14 @@ program test_les_amr_tree
         call require(any(state%fields(1)%values/=saved%fields(1)%values),'AMR LES evolves')
         if (geometry==1) then
           serial=root;st=rt(1,:,:,:)
+          if(m==4) then
+            call advance_dynamic_les_ssprk2_3d(species,serial,st,spacing,'box',2,dt,ok)
+            serial_budget=0
+          else
           call advance_les_ssprk2_3d(species,serial,st,spacing,.17_dp,.7_dp,.7_dp,dt,ok, &
             boundary_faces=faces,boundary_change=serial_budget,wall_temperature=wall_t,wall_velocity=wall_v, &
             model=model,ci=.1_dp,outlet_pressure=outlet)
+          end if
           call require(ok,'regular LES oracle')
           call require(maxval(abs(state%fields(1)%values-serial)/max(1._dp,abs(serial)))<2e-13_dp,'root state parity')
           call require(maxval(abs(temperature%fields(1)%values(1,:,:,:)-st))<1e-9_dp,'root temperature parity')
@@ -119,7 +136,7 @@ program test_les_amr_tree
       end do
     end do
   end do
-  print *, 'PASS: AMR static LES, root parity, composite conservation and rollback'
+  print *, 'PASS: AMR static/dynamic LES, root parity, composite conservation and rollback'
 contains
   subroutine require(condition,label)
     logical, intent(in) :: condition

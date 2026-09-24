@@ -21,7 +21,7 @@ contains
   ! Caller supplies ng valid donor cells on every side, all at the patch spacing.
   ! The periodic workspace seam is outside the complete filter/gradient stencil.
   subroutine compute_dynamic_les_rhs_ghosted_3d(species,state,temperature,spacing,test_model,test_ratio,ng, &
-      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean)
+      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -30,8 +30,10 @@ contains
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     logical, optional, intent(in) :: harmonic_mean
+    real(dp), optional, intent(inout) :: maximum_diffusivity
     real(dp), allocatable :: weights(:),full_rhs(:,:,:,:),x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
     integer :: n(3),padded(3),nv,lo(3),hi(3)
+    real(dp) :: diffusion
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
     n=[size(rhs,2),size(rhs,3),size(rhs,4)]
@@ -49,13 +51,15 @@ contains
     allocate(x(nv,padded(1)+1,padded(2),padded(3)),y(nv,padded(1),padded(2)+1,padded(3)))
     allocate(z(nv,padded(1),padded(2),padded(3)+1))
     call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,full_rhs,valid, &
-      grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z)
+      grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z,maximum_diffusivity=diffusion)
     if(.not.valid) return
     lo=ng+1;hi=ng+n
     rhs=full_rhs(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
     fx=x(:,lo(1):hi(1)+1,lo(2):hi(2),lo(3):hi(3))
     fy=y(:,lo(1):hi(1),lo(2):hi(2)+1,lo(3):hi(3))
     fz=z(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)+1)
+    ! Conservative upper bound includes the padded workspace as well as the patch.
+    if(present(maximum_diffusivity)) maximum_diffusivity=diffusion
     ok=.true.
   end subroutine
 

@@ -5,6 +5,8 @@ module les_amr_patch_tree_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_ghosted_3d
+  use les_filter_3d_mod, only: les_filter_weights
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,average_down_amr_patch_tree_3d, &
     amr_tree_integer_layout_3d
@@ -17,7 +19,7 @@ module les_amr_patch_tree_mod
 contains
   subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -28,6 +30,12 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),ci
     character(len=*), optional, intent(in) :: coarse_limiter,model
+    character(len=*), optional, intent(in) :: test_model
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    character(len=32) :: filter
+    integer :: filter_ratio,width
+    logical :: dynamic
     type(amr_tree_state_3d) :: averaged,packed
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),rhs(:,:,:,:),recovered(:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -37,6 +45,12 @@ contains
     integer :: peer,n(3),nvar,axis,level
     logical :: valid
     ok=.false.
+    call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
+      dynamic,filter,filter_ratio,width,valid)
+    if(.not.valid) return
+    if(dynamic.and.present(outlet_pressure)) then
+      if(any(outlet_pressure/=0)) return
+    end if
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     if (.not.ieee_is_finite(cfl)) return
@@ -69,9 +83,9 @@ contains
     do peer=1,size(tree%nodes)
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,viscous_wall=.true., &
-        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter,species_count=size(species))
+        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
       if (.not.valid) return
-      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
+      if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
       if (.not.valid) return
       local_faces='outflow';level=tree%nodes(peer)%level+1
       do axis=1,3
@@ -79,8 +93,17 @@ contains
         if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
       end do
       allocate(rhs(nvar,n(1),n(2),n(3)))
+      if(dynamic) then
+        block
+          real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+          allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
+          call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+            h(:,peer),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusivity)
+        end block
+      else
       call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
         cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature,model=model,ci=ci)
+      end if
       if (.not.valid) return
       rate=diffusivity*sum(1._dp/h(:,peer)**2)
       if (rate>cfl/candidate) candidate=cfl/rate
@@ -92,7 +115,8 @@ contains
 
   subroutine advance_amr_patch_tree_les_3d(tree,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+      test_model,test_ratio,grid_ratio,harmonic_mean)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -106,6 +130,12 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     character(len=*), optional, intent(in) :: coarse_limiter
+    character(len=*), optional, intent(in) :: test_model
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    character(len=32) :: filter
+    integer :: filter_ratio,width
+    logical :: dynamic
     type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
@@ -115,6 +145,12 @@ contains
     integer :: node,nvar
     logical :: valid
     ok=.false.
+    call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
+      dynamic,filter,filter_ratio,width,valid)
+    if(.not.valid) return
+    if(dynamic.and.present(outlet_pressure)) then
+      if(any(outlet_pressure/=0)) return
+    end if
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))
@@ -192,9 +228,9 @@ contains
         n=tree%nodes(peer)%shape;dims=n+4
         call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,success, &
           viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-          coarse_limiter=coarse_limiter,species_count=size(species))
+          coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width)
         if (.not.success) return
-        call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
+        if(.not.dynamic) call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,success)
         if (.not.success) return
         allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
         local_faces='outflow';level=tree%nodes(peer)%level+1
@@ -203,9 +239,14 @@ contains
           if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
         end do
         allocate(les_rhs(nvar,n(1),n(2),n(3)))
+        if(dynamic) then
+          call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
+            h(:,peer),filter,filter_ratio,width,les_rhs,fx,fy,fz,success,grid_ratio,harmonic_mean,diffusivity)
+        else
         call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
           cs,prt,sct,les_rhs,diffusivity,success,boundary_faces=local_faces, &
           wall_temperature=wall_temperature,model=model,ci=ci,fx=fx,fy=fy,fz=fz)
+        end if
         if (.not.success) return
         success=dt*diffusivity*sum(1._dp/h(:,peer)**2)<=.2_dp
         if (.not.success) return
@@ -249,6 +290,32 @@ contains
       u=updated
     end subroutine
   end subroutine advance_amr_patch_tree_les_3d
+  subroutine dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
+      dynamic,filter,ratio,width,ok)
+    character(len=*), optional, intent(in) :: model,test_model
+    character(len=*), intent(in) :: faces(6)
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    logical, intent(out) :: dynamic,ok
+    character(len=*), intent(out) :: filter
+    integer, intent(out) :: ratio,width
+    real(dp), allocatable :: weights(:)
+    dynamic=.false.;ok=.false.;filter='box';ratio=2;width=2
+    if(present(model)) dynamic=model=='dynamic'
+    if(.not.dynamic) then
+      if(present(test_model).or.present(test_ratio).or.present(grid_ratio).or.present(harmonic_mean)) return
+      ok=.true.;return
+    end if
+    if(any(faces/='periodic')) return
+    if(present(test_model)) filter=test_model
+    if(present(test_ratio)) ratio=test_ratio
+    if(present(grid_ratio)) then
+      if(grid_ratio<1.or.grid_ratio>64) return
+    end if
+    call les_filter_weights(filter,ratio,weights,ok)
+    if(.not.ok) return
+    width=(size(weights)-1)/2+5
+  end subroutine
   subroutine prepare(tree,species,state,temperature,root_spacing,h,ok)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
