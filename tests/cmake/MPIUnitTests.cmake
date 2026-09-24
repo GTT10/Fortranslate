@@ -1022,6 +1022,13 @@ if(PELEF_ENABLE_MPI)
 endif()
 
 if(PELEF_ENABLE_MPI)
+  add_test(NAME regression_mpi_eb_tree_mach_3d
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_eb_tree_application_3d.py"
+      --serial "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/input.nml"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/mpi_eb_tree_mach_3d" --subcycling --automatic --mach)
+  set_tests_properties(regression_mpi_eb_tree_mach_3d PROPERTIES TIMEOUT 180 PROCESSORS 3)
   foreach(mode IN ITEMS scheduled automatic)
     if(mode STREQUAL "scheduled")
       set(subcycle_input scheduled.nml)

@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--scheduled', action='store_true')
     parser.add_argument('--adaptive', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
+    parser.add_argument('--mach', action='store_true')
     parser.add_argument('--selected', action='store_true')
     parser.add_argument('--rebalance', action='store_true')
     args = parser.parse_args()
@@ -32,6 +33,10 @@ def main():
         template = template.replace('&eb_tree', '&eb_tree\n automatic_timestep=.true.,hydro_cfl=5.e-5,', 1)
     if args.subcycling and args.automatic:
         template = template.replace('hydro_cfl=5.e-5', 'hydro_cfl=1.e-5')
+    if args.mach:
+        template = template.replace('&eb_tree', '&eb_tree\n inflow_mach(1)=.2,inflow_mach(4)=.1,'
+                                    'inflow_temperature(1)=400,inflow_temperature(4)=400,'
+                                    'inflow_pressure(4)=120000,', 1)
     env = os.environ.copy()
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
 
@@ -157,6 +162,13 @@ def main():
         invalid_index.write_text(''.join(rows))
         failures.append((name, f"restart_file='{invalid_index}',"))
         run(name + '_serial', extra=f"restart_file='{invalid_index}',", success=False)
+    if args.mach:
+        for field, value in [('inflow_mach(1)', '.3'), ('inflow_temperature(1)', '401'),
+                             ('inflow_pressure(4)', '120001')]:
+            failures.append((f'wrong_{field[:field.index("(")]}',
+                             f"restart_file='{stopped / 'saved.chk'}',{field}={value},"))
+        failures.append(('invalid_mach', 'inflow_mach(1)=101,'))
+        failures.append(('invalid_inlet_temperature', 'inflow_temperature(1)=0,'))
     if args.selected:
         context = (stopped / 'saved.chk').read_text()
         assert 'ELEMENT_CONTEXT' in context

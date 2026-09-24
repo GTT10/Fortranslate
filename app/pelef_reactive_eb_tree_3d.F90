@@ -118,6 +118,8 @@ program pelef_reactive_eb_tree_3d
   integer :: maximum_steps=100,maximum_step_retries=12,checkpoint_interval_steps=0
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp
   logical :: automatic_timestep=.false.,subcycling=.false.
+  real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
+  real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:)
   real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
@@ -134,6 +136,7 @@ program pelef_reactive_eb_tree_3d
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
+    inflow_mach,inflow_temperature,inflow_pressure, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -184,6 +187,19 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+  if (.not.all(ieee_is_finite(inflow_mach)).or.any(inflow_mach>100)) error stop 'Invalid inlet Mach'
+  if (.not.all(ieee_is_finite(inflow_temperature))) error stop 'Invalid inlet temperature'
+  if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
+  if (any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) error stop 'Invalid inlet pressure'
+  if (any(inflow_temperature<=0.and.inflow_mach>=0)) error stop 'Active inlet requires positive temperature'
+  if (any((inflow_temperature/=0.or.inflow_pressure/=0).and.inflow_mach<0)) &
+    error stop 'Inactive inlet has unused temperature or pressure'
+#ifdef PELEF_MPI_EB_SPRAY
+  if (any(inflow_mach>=0)) error stop 'Mach inlet is not connected to EB spray coupling'
+#endif
+  if (any(inflow_mach>=0)) then
+    active_mach=inflow_mach;active_temperature=inflow_temperature;active_pressure=inflow_pressure
+  end if
 #ifdef PELEF_MPI_EB_SPRAY
   if(geometry_type/='level_set') error stop 'MPI EB spray requires original nodal geometry'
   if(trim(output_file)==trim(spray_input).or.trim(output_file)//'.budget.csv'==trim(spray_input)) &
@@ -370,10 +386,12 @@ program pelef_reactive_eb_tree_3d
     if (automatic_timestep) then
 #ifdef PELEF_MPI_EB_TREE
       call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
-        hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok,subcycling)
+        hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok,subcycling, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
 #else
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
-        .true.,.true.,.true.,estimated_dt,ok,subcycling)
+        .true.,.true.,.true.,estimated_dt,ok,subcycling, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
 #endif
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
@@ -414,13 +432,15 @@ program pelef_reactive_eb_tree_3d
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
-        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling)
+        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
-        chemistry_integrator,subcycling)
+        chemistry_integrator,subcycling, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
@@ -1391,10 +1411,21 @@ contains
     logical, optional, intent(in) :: header_only
     character(len=64) :: magic,integrator
     logical :: automatic
-    real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl
+    real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl,stored_inlet(18)
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if (magic=='PELEF_EB_TREE_MACH_INLET_V1') then
+        read(stream,*,iostat=ios) stored_inlet
+        if (ios/=0) error stop 'Missing inlet restart controls'
+        if (.not.all(ieee_is_finite(stored_inlet))) error stop 'Invalid inlet restart controls'
+        if (any(stored_inlet/=[inflow_mach,inflow_temperature,inflow_pressure])) &
+          error stop 'Restart inlet mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if (ios/=0) error stop 'Missing inlet application header'
+      else if (any(inflow_mach>=0)) then
+        error stop 'Restart inlet mismatch'
+      end if
       if (magic=='PELEF_EB_TREE_SUBCYCLE_V1') then
         if (.not.subcycling) error stop 'Restart subcycling mode mismatch'
         read(stream,'(a)',iostat=ios) magic
@@ -1417,6 +1448,12 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if (any(inflow_mach>=0)) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_MACH_INLET_V1'
+        if (ios/=0) error stop 'Cannot write inlet header'
+        write(stream,'(18(es27.18e3,1x))',iostat=ios) inflow_mach,inflow_temperature,inflow_pressure
+        if (ios/=0) error stop 'Cannot write inlet restart controls'
+      end if
       if (subcycling) then
         write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_SUBCYCLE_V1'
         if (ios/=0) error stop 'Cannot write subcycling mode'
