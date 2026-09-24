@@ -124,8 +124,10 @@ A periodic three-axis normal PPM face-flux predictor now reuses the existing
 conservation [checks](validation/ppm-normal-3d-20260925.md). Twelve-solve
 transverse/corner flux construction is now implemented with PeleF conservative
 EOS recovery ([focused checks](validation/ppm-ctu-3d-20260925.md)); reference
-primitive-pressure parity remains open. The time update, physical/AMR halos,
-MPI and application selection remain implementation work; the existing PCM/PLM
+primitive-pressure parity remains open. The periodic conservative CTU time
+update and full-split library dispatch now have multistep conservation and
+rollback [checks](validation/ppm-step-3d-20260925.md). Physical/AMR halos, MPI
+and application selection remain implementation work; the existing PCM/PLM
 solver remains available.
 
 | Order | Work unit | Measurable exit gate |
