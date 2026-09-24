@@ -2,7 +2,7 @@ module les_dynamic_smagorinsky_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
-    fill_pressure_outlet_ghosts_3d,valid_reactive_boundaries_3d
+    fill_mach_inlet_boundary_ghosts_3d,fill_pressure_outlet_ghosts_3d,valid_reactive_boundaries_3d
   use les_smagorinsky_3d_mod, only: smagorinsky_stress
   use les_filter_3d_mod, only: les_filter_weights,filter_les_field_3d
   use nasa7_thermo_mod, only: nasa7_species
@@ -73,7 +73,8 @@ contains
   ! Regular-grid physical donors and outward boundary budget, published atomically.
   subroutine compute_dynamic_les_boundary_rhs_3d(species,state,temperature,spacing,test_model,test_ratio, &
       rhs,maximum_diffusivity,ok,grid_ratio,harmonic_mean,boundary_faces,boundary_rate, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -85,7 +86,7 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(inout) :: boundary_rate(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp), allocatable :: candidate(:,:,:,:),ghost(:,:,:,:),gt(:,:,:),weights(:)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: diffusion,rate(size(state,1))
@@ -98,6 +99,16 @@ contains
     if (any(n<1).or.any(shape(state)/=[nv,n]).or.any(shape(rhs)/=shape(state))) return
     if (present(boundary_rate)) then
       if (size(boundary_rate)/=nv) return
+    end if
+    if(present(inflow_pressure).and..not.present(inflow_mach)) return
+    if(present(inflow_mach)) then
+      if(.not.all(ieee_is_finite(inflow_mach))) return
+      if(any(inflow_mach>100).or.any(inflow_mach>=0.and.faces/='inflow')) return
+      if(present(inflow_pressure)) then
+        if(.not.all(ieee_is_finite(inflow_pressure))) return
+        if(any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) return
+        if(any(inflow_pressure>0.and.inflow_mach<0)) return
+      end if
     end if
     if (present(outlet_pressure)) then
       if (.not.all(ieee_is_finite(outlet_pressure))) return
@@ -116,8 +127,14 @@ contains
       allocate(ghost(nv,n(1)+2*width,n(2)+2*width,n(3)+2*width))
       allocate(gt(n(1)+2*width,n(2)+2*width,n(3)+2*width))
       allocate(fx(nv,n(1)+1,n(2),n(3)),fy(nv,n(1),n(2)+1,n(3)),fz(nv,n(1),n(2),n(3)+1))
-      call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,viscous_wall=.true., &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity,ghost_width=width)
+      if (present(inflow_mach)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,inflow_mach,ghost,gt,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          viscous_wall=.true.,wall_velocity=wall_velocity,ghost_width=width)
+      else
+        call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,viscous_wall=.true., &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity,ghost_width=width)
+      end if
       if (.not.valid) return
       call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,valid,ghost_width=width)
       if (.not.valid) return
@@ -166,7 +183,8 @@ contains
   end function
 
   subroutine advance_dynamic_les_ssprk2_3d(species,state,temperature,spacing,test_model,test_ratio,dt,ok,grid_ratio,harmonic_mean, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt
@@ -177,7 +195,7 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(inout) :: boundary_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     logical, intent(out) :: ok
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
     real(dp) :: diffusion,rate0(size(state,1)),rate1(size(state,1))
@@ -193,7 +211,8 @@ contains
     allocate(t1,mold=temperature);allocate(t2,mold=temperature)
     call compute_dynamic_les_boundary_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs, &
       diffusion,local_ok,grid_ratio,harmonic_mean,boundary_faces,rate0, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     if (.not.local_ok) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     if (dt==0) then
@@ -205,7 +224,8 @@ contains
     if (.not.local_ok) return
     call compute_dynamic_les_boundary_rhs_3d(species,stage,t1,spacing,test_model,test_ratio,rhs, &
       diffusion,local_ok,grid_ratio,harmonic_mean,boundary_faces,rate1, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     if (.not.local_ok) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     candidate=.5_dp*state+.5_dp*stage+.5_dp*dt*rhs

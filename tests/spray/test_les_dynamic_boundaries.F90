@@ -1,4 +1,6 @@
 program test_les_dynamic_boundaries
+  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
+  use les_smagorinsky_3d_mod, only: compute_les_rhs_3d,advance_les_ssprk2_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -85,8 +87,92 @@ program test_les_dynamic_boundaries
   call compute_dynamic_les_boundary_rhs_3d(species,root,t,h,'box',2,rhs,diffusion,ok, &
     boundary_faces=faces,boundary_rate=rate,wall_temperature=wall_t)
   call require(.not.ok.and.all(rhs==123).and.diffusion==456.and.all(rate==789),'invalid wall RHS rollback')
+  call check_mach_les()
   print *, 'PASS: regular Dynamic physical boundaries, AMR parity, conservation and rollback'
 contains
+  subroutine check_mach_les()
+    character(len=16), parameter :: models(4)=[character(len=16)::'smagorinsky','wale','vreman','dynamic']
+    real(dp) :: mach(6),pin(6),target_t(6),uniform(12,4,4,4),uniform_t(4,4,4),ug(12),tg,ref_rate(12)
+    integer :: m,face
+    q=0;q(1)=.3_dp;q(2:4)=[3._dp,4._dp,5._dp];q(5)=101325;q(12)=1
+    call reactive_primitive_to_conserved(species,q,ug,tg,sound,ok)
+    call require(ok,'Mach LES initial state')
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          uniform(:,i,j,k)=ug;uniform_t(i,j,k)=tg
+        end do
+      end do
+    end do
+    target_t=1100
+    do m=1,4
+      face=1
+      if(m==4) face=6
+      faces='outflow';faces(face)='inflow';mach=-1;mach(face)=.2_dp;pin=0
+      if(m==4) pin(face)=120000
+      if(pin(face)>0) then
+        call mach_inlet_ghost_3d(species,uniform(:,1,1,1),tg,face,target_t(face),mach(face), &
+          ug,inlet_t(face),ok,inlet_pressure=pin(face))
+      else
+        call mach_inlet_ghost_3d(species,uniform(:,1,1,1),tg,face,target_t(face),mach(face),ug,inlet_t(face),ok)
+      end if
+      call require(ok,'Mach LES reservoir oracle')
+      inlet=spread(ug,2,6);inlet_t=inlet_t(face)
+      if(m<4) then
+        call compute_les_rhs_3d(species,uniform,uniform_t,h,.17_dp,.7_dp,.7_dp,old_rhs,old_diffusion,ok, &
+          boundary_faces=faces,boundary_rate=ref_rate,inflow_state=inlet,inflow_temperature=inlet_t,model=models(m))
+      else
+        call compute_dynamic_les_boundary_rhs_3d(species,uniform,uniform_t,h,'box',2,old_rhs,old_diffusion,ok, &
+          boundary_faces=faces,boundary_rate=ref_rate,inflow_state=inlet,inflow_temperature=inlet_t)
+      end if
+      call require(ok,'LES reservoir RHS')
+      if(m<4) then
+        call compute_les_rhs_3d(species,uniform,uniform_t,h,.17_dp,.7_dp,.7_dp,rhs,diffusion,ok, &
+          boundary_faces=faces,boundary_rate=rate,inflow_temperature=target_t,model=models(m), &
+          inflow_mach=mach,inflow_pressure=pin)
+      else
+        call compute_dynamic_les_boundary_rhs_3d(species,uniform,uniform_t,h,'box',2,rhs,diffusion,ok, &
+          boundary_faces=faces,boundary_rate=rate,inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=pin)
+      end if
+      call require(ok,'Mach LES RHS')
+      call require(all(rhs==old_rhs).and.diffusion==old_diffusion.and.all(rate==ref_rate),'Mach LES initial oracle')
+      u=root;ut=t;budget=123
+      if(m<4) then
+        call advance_les_ssprk2_3d(species,u,ut,h,.17_dp,.7_dp,.7_dp,dt,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_temperature=target_t,model=models(m), &
+          inflow_mach=mach,inflow_pressure=pin)
+      else
+        call advance_dynamic_les_ssprk2_3d(species,u,ut,h,'box',2,dt,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=pin)
+      end if
+      call require(ok,'Mach LES SSPRK2')
+      call require(any(u/=root),'Mach LES evolves nonuniform gas')
+      delta=sum(sum(sum(u-root,dim=4),dim=3),dim=2)*product(h)
+      scale=maxval(abs(root))*product(h)*64
+      call require(maxval(abs(delta-budget))<=2e-14_dp*scale,'Mach LES boundary inventory')
+      saved=u;saved_t=ut;target_t(face)=-1
+      if(m<4) then
+        call advance_les_ssprk2_3d(species,u,ut,h,.17_dp,.7_dp,.7_dp,dt,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_temperature=target_t,model=models(m),inflow_mach=mach)
+      else
+        saved_budget=budget
+        call advance_dynamic_les_ssprk2_3d(species,u,ut,h,'box',2,dt,ok, &
+          boundary_faces=faces,boundary_change=budget,inflow_temperature=target_t,inflow_mach=mach)
+        call require(all(budget==saved_budget),'Mach Dynamic diagnostic rollback')
+      end if
+      call require(.not.ok.and.all(u==saved).and.all(ut==saved_t),'Mach LES invalid temperature rollback')
+      target_t=1100
+    end do
+    faces='periodic'
+    call compute_les_rhs_3d(species,uniform,uniform_t,h,.17_dp,.7_dp,.7_dp,rhs,diffusion,ok, &
+      boundary_faces=faces,inflow_mach=mach)
+    call require(.not.ok,'static LES rejects Mach on periodic face')
+    rhs=123;diffusion=456;rate=789
+    call compute_dynamic_les_boundary_rhs_3d(species,uniform,uniform_t,h,'box',2,rhs,diffusion,ok, &
+      boundary_faces=faces,boundary_rate=rate,inflow_mach=mach)
+    call require(.not.ok.and.all(rhs==123).and.diffusion==456.and.all(rate==789),'Dynamic periodic Mach rollback')
+  end subroutine check_mach_les
+
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label

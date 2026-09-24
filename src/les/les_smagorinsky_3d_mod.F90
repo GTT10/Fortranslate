@@ -2,7 +2,8 @@ module les_smagorinsky_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
-    valid_reactive_boundaries_3d,valid_wall_velocity_3d,fill_pressure_outlet_ghosts_3d
+    valid_reactive_boundaries_3d,valid_wall_velocity_3d,fill_pressure_outlet_ghosts_3d, &
+    fill_mach_inlet_boundary_ghosts_3d
   use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
   use mixture_thermo_mod, only: mixture_mass_properties
   use reactive_1d_mod, only: reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
@@ -138,8 +139,9 @@ contains
   end subroutine
 
   subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+      boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure, &
+      inflow_mach,inflow_pressure)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
@@ -160,6 +162,16 @@ contains
     end if
     if (present(boundary_faces)) faces=boundary_faces
     if (.not.valid_reactive_boundaries_3d(faces)) return
+    if(present(inflow_pressure).and..not.present(inflow_mach)) return
+    if(present(inflow_mach)) then
+      if(.not.all(ieee_is_finite(inflow_mach))) return
+      if(any(inflow_mach>100).or.any(inflow_mach>=0.and.faces/='inflow')) return
+      if(present(inflow_pressure)) then
+        if(.not.all(ieee_is_finite(inflow_pressure))) return
+        if(any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) return
+        if(any(inflow_pressure>0.and.inflow_mach<0)) return
+      end if
+    end if
     if (present(outlet_pressure)) then
       if (.not.all(ieee_is_finite(outlet_pressure))) return
       if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
@@ -192,8 +204,14 @@ contains
     if (any(shape(rhs)/=shape(state)).or.any(n<2)) return
     allocate(ghost(size(state,1),dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
     allocate(grhs,mold=ghost)
-    call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,ok,viscous_wall=.true., &
-      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+    if (present(inflow_mach)) then
+      call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,inflow_mach,ghost,gt,ok, &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        viscous_wall=.true.,wall_velocity=wall_velocity)
+    else
+      call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,ok,viscous_wall=.true., &
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+    end if
     if (.not.ok) return
     call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,ok)
     if (.not.ok) return
@@ -441,8 +459,9 @@ contains
   end subroutine
 
   subroutine advance_les_ssprk2_3d(species,state,temperature,spacing,cs,prt,sct,dt,ok, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure, &
+      inflow_mach,inflow_pressure)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
@@ -469,7 +488,8 @@ contains
     allocate(rhs,mold=state); allocate(stage,mold=state); allocate(candidate,mold=state)
     allocate(t1,mold=temperature); allocate(t2,mold=temperature)
     call compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate1, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     if ((cs==0.and.isotropic==0).or.dt==0) then
@@ -479,7 +499,8 @@ contains
     call recover_reactive_temperatures_3d(species,stage,temperature,dims(1),dims(2),dims(3),t1,local_ok)
     if (.not. local_ok) return
     call compute_les_rhs_3d(species,stage,t1,spacing,cs,prt,sct,rhs,diffusivity,local_ok,boundary_faces,rate2, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     if (.not. local_ok) return
     if (dt*diffusivity*sum(1.0_dp/spacing**2) > 0.2_dp) return
     candidate=0.5_dp*(state+stage+dt*rhs)
