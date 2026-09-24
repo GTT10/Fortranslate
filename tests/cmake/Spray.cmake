@@ -405,6 +405,12 @@ if(PELEF_ENABLE_SPRAY)
           $<TARGET_FILE:test_les_mpi_dynamic> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_les_mpi_dynamic_${dynamic_ranks} PROPERTIES LABELS "spray;mpi" TIMEOUT 60 PROCESSORS ${dynamic_ranks})
     endforeach()
+    add_test(NAME spray_mpi_dynamic_mach_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/spray/test_mpi_spray_application.py"
+        --executable $<TARGET_FILE:pelef_mpi_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --ranks 2 --les-model dynamic --mach-inlet --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
+        --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_dynamic_mach_restart")
+    set_tests_properties(spray_mpi_dynamic_mach_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
     add_executable(test_les_mpi_boundary spray/test_les_mpi_boundary.F90)
     target_link_libraries(test_les_mpi_boundary PRIVATE pelef_spray_runtime MPI::MPI_Fortran)
     foreach(boundary_ranks 2 4)

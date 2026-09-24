@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--dynamic-walls', action='store_true')
+    parser.add_argument('--mach-inlet', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -50,6 +51,14 @@ def main():
         source = source.replace('&mpi_spray', "&mpi_spray\n boundary_faces='periodic','periodic',"
                                 "'no_slip_wall','isothermal_wall','periodic','periodic',"
                                 "wall_temperature=6*600.,wall_velocity(1,3)=2.,")
+    if args.mach_inlet:
+        if args.les_model != 'dynamic' or args.dynamic_walls or args.pressure_outlet:
+            parser.error('--mach-inlet requires dynamic without other boundary fixtures')
+        # Match initial normal velocity to Mach 0.2 at 800 K for the fixed
+        # H2/O2/N2 mass fractions .03/.23/.74 and pinned NASA7 thermodynamics.
+        source = source.replace('&mpi_spray', "&mpi_spray\n boundary_faces='inflow','outflow',"
+                                "'periodic','periodic','periodic','periodic',"
+                                "inflow_mach(1)=0.2,inflow_temperature(1)=800,inflow_pressure(1)=0,gas_velocity=132.6158394348811,0,0,")
     if args.les_model:
         source = source.replace('&mpi_spray', f"&mpi_spray\n les_cs=.17, les_model='{args.les_model}',")
         if args.les_model == 'dynamic':
@@ -69,6 +78,8 @@ def main():
         assert abs(float(row['relative_mass_error'])) < 2e-11
         assert abs(float(row['relative_energy_error'])) < 2e-11
         assert int(row['parcels']) == 4
+    if args.mach_inlet:
+        assert float(history[-1]['boundary_mass']) > 0
     if args.dynamic_walls:
         assert abs(float(history[-1]['boundary_energy'])) > 1e-14
     gas = [row for path in sorted(work.glob('*.gas.csv')) for row in rows(path)]
@@ -169,6 +180,19 @@ def main():
         assert int(resumed_history[0]['step']) == 1 and int(resumed_history[-1]['step']) == 2
         assert int(resumed_history[-1]['parcels']) == 4
         assert abs(float(resumed_history[-1]['relative_energy_error'])) < 2e-11
+    if args.mach_inlet:
+        original_source = source
+        for label, old, new in [
+            ('mach', 'inflow_mach(1)=0.2', 'inflow_mach(1)=0.3'),
+            ('mach_pressure', 'inflow_pressure(1)=0', 'inflow_pressure(1)=101325'),
+            ('mach_temperature', 'inflow_temperature(1)=800', 'inflow_temperature(1)=801'),
+            ('mach_removed', 'inflow_mach(1)=0.2,', ''),
+        ]:
+            source = original_source.replace(old, new)
+            run_variant(label, args.ranks, " restart_path='split.chk'", expect_success=False)
+            assert 'Restart rejected' in (work / f'{label}.log').read_text()
+            assert not (work / f'{label}.history.csv').exists()
+        source = original_source
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
     if args.les_model:
@@ -229,7 +253,8 @@ def main():
             assert 'Invalid dynamic LES filter' in (work / 'bad_filter.log').read_text()
             source = original_source
             run_variant('bad_faces', args.ranks, " boundary_faces=6*'outflow', wall_velocity=18*0., restart_path='split.chk'", expect_success=False)
-            assert 'Restart rejected' in (work / 'bad_faces.log').read_text()
+            diagnostic = 'Active Mach number requires inflow face' if args.mach_inlet else 'Restart rejected'
+            assert diagnostic in (work / 'bad_faces.log').read_text()
         print(args.les_model, 'PASS: coupled MPI restart, changed ranks, model guards; artifacts:', work)
         return
     schedule = ' injection_events=3\n injection_interval=7.5e-9'

@@ -77,6 +77,9 @@ contains
   real(dp) :: boiling_temperature(2)=[373.15_dp,350.0_dp],latent_heat(2)=[2.257e6_dp,1e6_dp]
   real(dp) :: final_time=2e-8_dp,dt_max=1e-8_dp,cfl=.3_dp,rtol=1e-7_dp,atol=1e-12_dp
   logical :: transport_flags(4)=.true.
+  real(dp) :: inflow_mach(6)=-1,inflow_temperature(6)=1200,inflow_pressure(6)=101325,mach_pressure(6)
+  real(dp), allocatable :: inlet_ghost(:,:,:,:),inlet_ghost_t(:,:,:)
+  real(dp) :: inlet_dt
   real(dp) :: outlet_pressure(6)=0
   real(dp) :: les_ci=0,les_cs=0,les_prt=.7_dp,les_sct=.7_dp
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
@@ -104,7 +107,8 @@ contains
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
     size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3, &
     khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-    boundary_faces,wall_temperature,wall_velocity,impact,les_harmonic_mean,les_ci,outlet_pressure
+    boundary_faces,wall_temperature,wall_velocity,impact,les_harmonic_mean,les_ci,outlet_pressure, &
+    inflow_mach,inflow_temperature,inflow_pressure
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -298,6 +302,25 @@ contains
   call require(ieee_is_finite(les_ci),'Invalid LES CI')
   call require(les_ci>=0.and.les_ci<=1,'Invalid LES CI')
   call require(les_ci==0.or.les_model/='dynamic','Fixed LES CI requires a static model')
+  call require(all(ieee_is_finite(inflow_mach)),'Invalid inlet Mach number')
+  call require(all(inflow_mach<=100).and..not.any(inflow_mach>=0.and.boundary_faces/='inflow'), &
+    'Active Mach number requires inflow face and value at most 100')
+  mach_pressure=merge(inflow_pressure,0._dp,inflow_mach>=0)
+  call require(all(ieee_is_finite(mach_pressure)),'Invalid Mach inlet pressure')
+  call require(all(mach_pressure>=0).and.all(mach_pressure<=1e15_dp),'Invalid Mach inlet pressure')
+  do i=1,6
+    if(inflow_mach(i)<0) cycle
+    call require(ieee_is_finite(inflow_temperature(i)),'Invalid Mach inlet temperature')
+    call require(inflow_temperature(i)>0,'Invalid Mach inlet temperature')
+  end do
+  if(any(inflow_mach>=0)) then
+    write(profile_context,'(*(g0,1x))',iostat=status) 'mpi-mach-inlet-v1', &
+      inflow_mach,inflow_temperature,mach_pressure
+    call require(status==0,'Mach inlet context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint Mach inlet context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  end if
   call require(all(ieee_is_finite(outlet_pressure)),'Invalid outlet pressure')
   call require(all(outlet_pressure>=0).and.all(outlet_pressure<=1e15_dp),'Invalid outlet pressure')
   call require(.not.any(outlet_pressure>0.and.boundary_faces/='outflow'),'Outlet pressure requires outflow face')
@@ -354,6 +377,7 @@ contains
   physical_boundaries=any(boundary_faces/='periodic')
   periodic_axes=[boundary_faces(1)=='periodic',boundary_faces(3)=='periodic',boundary_faces(5)=='periodic']
   inlet_state=spread(gas_cell,2,6);inlet_temperature=initial_t;boundary_total=0
+  where(inflow_mach>=0) inlet_temperature=inflow_temperature
   if (physical_boundaries) then
     allocate(active_faces(6));active_faces=boundary_faces
     if (any(boundary_faces=='isothermal_wall')) call require(transport_flags(2),'Isothermal walls require conduction')
@@ -416,6 +440,23 @@ contains
       call require(ok,'Transport time-step calculation failed')
       local_dt=min(local_dt,transport_dt)
     end if
+    if(any(inflow_mach>=0)) then
+      call fill_mpi_spray_ghosts(MPI_COMM_WORLD,state,temperature,cells,boundary_faces,inlet_ghost,inlet_ghost_t,ok, &
+        viscous_wall=.true.,inflow_state=inlet_state,inflow_temperature=inlet_temperature, &
+        wall_velocity=wall_velocity,species=species,inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
+      call require(ok,'Mach inlet timestep ghost construction failed')
+      call compute_reactive_cfl_timestep_3d(species,inlet_ghost,inlet_ghost_t,extent(1)+4,extent(2)+4,extent(3)+4, &
+        spacing(1),spacing(2),spacing(3),cfl,inlet_dt,ok)
+      call require(ok,'Mach inlet hydro timestep failed')
+      local_dt=min(local_dt,inlet_dt)
+      if(any(transport_flags(:3))) then
+        call reactive_transport_timestep_3d(species,transport,inlet_ghost,inlet_ghost_t, &
+          extent(1)+4,extent(2)+4,extent(3)+4,spacing(1),spacing(2),spacing(3),cfl, &
+          transport_flags(1),transport_flags(2),transport_flags(3),inlet_dt,max_diffusivity,ok)
+        call require(ok,'Mach inlet transport timestep failed')
+        local_dt=min(local_dt,inlet_dt)
+      end if
+    end if
     local_dt=min(local_dt,dt_max,final_time-time)
     if (event<schedule_count) local_dt=min(local_dt,next_injection_time()-time)
     call MPI_Allreduce(local_dt,dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
@@ -430,14 +471,16 @@ contains
         inlet_state,inlet_temperature,wall_temperature,wall_velocity,checkpoint_films,checkpoint_film_mass,impact, &
         les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-        les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure)
+        les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
+        inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
       else
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
         solver,limiter,transport_flags,last_id,[les_cs,les_prt,les_sct],active_faces,boundary_step, &
         inlet_state,inlet_temperature,wall_temperature,wall_velocity,les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
-        les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure)
+        les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
+        inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
       end if
       if (ok) exit
       dt=.5_dp*dt
