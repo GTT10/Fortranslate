@@ -3178,7 +3178,7 @@ owner-local ghosts and preserves both outputs on failure. LES subcycling
 remains open. The MPI AMR spray application connects the common-step API below. See
 [MPI timestep checks](validation/les-mpi-amr-timestep-20260918.md). See [distributed AMR evidence](validation/les-mpi-amr-tree-20260918.md).
 See [timestep evidence](validation/les-amr-timestep-20260918.md).
-Dynamic LES remains outside the MPI API; EB grids are outside both APIs.
+EB grids are outside both APIs.
 See [AMR evidence](validation/les-amr-tree-20260918.md).
 
 The serial stepper and timestep selector now accept `model='dynamic'` on periodic
@@ -3189,9 +3189,16 @@ nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
 wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
 down through the existing transaction. The diffusion bound includes padded
 cells and may restrict the interval more than an interior-only estimate.
-MPI, reacting-spray/application dispatch and Dynamic LES nonperiodic boundaries
+Reacting-spray/application dispatch and Dynamic LES nonperiodic boundaries
 are not connected by this change. See
 [serial Dynamic AMR checks](validation/les-dynamic-amr-20260925.md).
+
+The MPI selector and stepper now have the same periodic dynamic dispatch and
+filter controls. They agree on filter/model options before distributed donor
+queries and retain owner-local fields and collective publication. Implementation
+and fixed/selected builds are complete, but Dynamic MPI AMR numerical checks are
+pending because the MPI launcher is stalled. Do not treat this as tested MPI
+support yet. See [build and pending-test record](validation/les-dynamic-mpi-amr-20260925.md).
 
 ### MPI AMR reacting-spray LES coupling
 
