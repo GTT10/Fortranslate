@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--subcycling', action='store_true')
     parser.add_argument('--pressure-outlet', action='store_true')
+    parser.add_argument('--mach-inlet', action='store_true')
     args = parser.parse_args()
     case = args.case_dir.resolve()
     work = args.work_dir.resolve()
@@ -20,6 +21,11 @@ def main():
     if args.pressure_outlet:
         original = original.replace("  boundary_condition=",
                                     "  outlet_pressure(2)=102325\n  boundary_condition=")
+    if args.mach_inlet:
+        original = original.replace("boundary_faces='outflow','outflow'", "boundary_faces='inflow','outflow'")
+        original = original.replace('  boundary_condition=',
+                                    '  inflow_mach(1)=0.2, inflow_pressure(1)=0, inflow_temperature(1)=900\n'
+                                    '  boundary_condition=')
     time_controls = '\n&amr_tree_timestepping subcycling=.true. /\n'
     if args.subcycling:
         original += time_controls
@@ -48,7 +54,7 @@ def main():
 
         run('continuous', config)
         baseline = [p.read_bytes() for p in outputs]
-        for interval in ([1] if args.subcycling or args.pressure_outlet else [1, 2, 3]):
+        for interval in ([1] if args.subcycling or args.pressure_outlet or args.mach_inlet else [1, 2, 3]):
             controls = (f"\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps={interval},"
                         ' stop_after_checkpoint=.true. /\n')
             log = run(f'stop{interval}', config + controls)
@@ -64,6 +70,11 @@ def main():
                                                    'outlet_pressure(2)=103325') + restart, False)
             run('removed_pressure', config.replace('outlet_pressure(2)=102325',
                                                    'outlet_pressure(2)=0') + restart, False)
+        if args.mach_inlet:
+            for label, old, new in [('mach', 'inflow_mach(1)=0.2', 'inflow_mach(1)=0.3'),
+                                    ('inlet_pressure', 'inflow_pressure(1)=0', 'inflow_pressure(1)=120000'),
+                                    ('inlet_temperature', 'inflow_temperature(1)=900', 'inflow_temperature(1)=901')]:
+                run('changed_' + label, config.replace(old, new) + restart, False)
         if args.subcycling:
             run('changed_timestepping', config.replace(time_controls, '') + restart, False)
         run('changed_physics', config.replace('initial_temperature=1100.0', 'initial_temperature=1110.0') + restart, False)
@@ -96,7 +107,7 @@ def main():
         run('malformed', config + "\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps=1\n", False)
         assert [p.read_bytes() for p in outputs] == baseline
     print('PASS: fixed/selected exact tree continuation and input/failure guards; subcycling=', args.subcycling,
-          'pressure outlet=', args.pressure_outlet)
+          'pressure outlet=', args.pressure_outlet, 'Mach inlet=', args.mach_inlet)
 
 
 if __name__ == '__main__':
