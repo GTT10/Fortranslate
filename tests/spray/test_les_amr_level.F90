@@ -7,7 +7,9 @@ program test_les_amr_level
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
     initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
-  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,advance_amr_patch_tree_les_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,advance_amr_patch_tree_les_3d, &
+    compute_amr_patch_tree_les_timestep_3d
+  use les_amr_subcycle_mod, only: compute_amr_patch_tree_subcycle_les_timestep_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_tree_3d) :: tree
@@ -15,6 +17,7 @@ program test_les_amr_level
   type(amr_tree_state_3d) :: state,temps,before,before_t,oracle,oracle_t,start,finish
   type(amr_tree_flux_3d), allocatable :: flux(:),saved_flux(:),control_flux(:)
   real(dp) :: root(12,4,4,4),temperature(1,4,4,4),q(12),sound,h(3),dt,diffusion,budget(12),correction
+  real(dp) :: common_dt,sub_dt,half_dt,common_diff,sub_diff,half_diff
   real(dp) :: change(12,4,4,4),fractions0(1),fractions1(1)
   integer :: geometry,m,i,j,k,node,active
   character(len=32) :: faces(6),model
@@ -62,6 +65,23 @@ program test_les_amr_level
         model='dynamic'
       end select
       state=before;temps=before_t
+      call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temps,h,.05_dp,faces, &
+        .17_dp,.7_dp,.7_dp,common_dt,common_diff,ok,model=model)
+      call require(ok,'common interval')
+      call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temps,h,.05_dp,faces, &
+        .17_dp,.7_dp,.7_dp,sub_dt,sub_diff,ok,model=model)
+      call require(ok.and.sub_dt>=common_dt.and.sub_dt<=4*common_dt,'subcycle interval bounds')
+      call require(sub_diff==common_diff,'subcycling preserves diffusivity diagnostic')
+      if(geometry==0) call require(sub_dt==common_dt,'root interval equality')
+      if(geometry==1.and.m==4) call require(sub_dt>common_dt,'dynamic fine-grid bound is relaxed by subcycling')
+      call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temps,h,.025_dp,faces, &
+        .17_dp,.7_dp,.7_dp,half_dt,half_diff,ok,model=model)
+      call require(ok.and.half_dt==.5_dp*sub_dt.and.half_diff==sub_diff,'subcycle CFL scaling')
+      half_dt=-7;half_diff=-9
+      call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temps,h,.3_dp,faces, &
+        .17_dp,.7_dp,.7_dp,half_dt,half_diff,ok,model=model)
+      call require(.not.ok.and.half_dt==-7.and.half_diff==-9,'invalid subcycle CFL preserves outputs')
+
       if(geometry==0) then
         call advance_amr_patch_tree_les_level_3d(tree,species,state,temps,0,h,dt,faces, &
           .17_dp,.7_dp,.7_dp,flux,diffusion,ok,model=model)

@@ -20,7 +20,7 @@ module les_amr_patch_tree_mod
 contains
   subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -33,17 +33,18 @@ contains
     character(len=*), optional, intent(in) :: coarse_limiter,model
     character(len=*), optional, intent(in) :: test_model
     integer, optional, intent(in) :: test_ratio,grid_ratio
-    logical, optional, intent(in) :: harmonic_mean
+    logical, optional, intent(in) :: harmonic_mean,subcycle
     character(len=32) :: filter
     integer :: filter_ratio,width
     logical :: dynamic
     type(amr_tree_state_3d) :: averaged,packed
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),rhs(:,:,:,:),recovered(:,:,:)
-    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
     integer, allocatable :: ratios(:)
     real(dp) :: candidate,diffusivity,largest,rate
     character(len=32) :: local_faces(6)
     integer :: peer,n(3),nvar,axis,level
+    integer(int64) :: factor
     logical :: valid
     ok=.false.
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
@@ -55,6 +56,16 @@ contains
     if (cfl<=0.or.cfl>.2_dp.or..not.valid_reactive_boundaries_3d(faces)) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if (.not.valid) return
+    allocate(counts(size(ratios)));counts=1
+    if(present(subcycle)) then
+      if(subcycle) then
+        do level=2,size(ratios)
+          factor=int(ratios(level),int64)**2
+          if(counts(level-1)>huge(1_int64)/factor) return
+          counts(level)=counts(level-1)*factor
+        end do
+      end if
+    end if
     nvar=reactive_nvar(size(species))
     if (any(faces=='inflow')) then
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
@@ -104,7 +115,7 @@ contains
         cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature,model=model,ci=ci)
       end if
       if (.not.valid) return
-      rate=diffusivity*sum(1._dp/h(:,peer)**2)
+      rate=diffusivity*sum(1._dp/h(:,peer)**2)/real(counts(level),dp)
       if (rate>cfl/candidate) candidate=cfl/rate
       largest=max(largest,diffusivity)
       deallocate(rhs)

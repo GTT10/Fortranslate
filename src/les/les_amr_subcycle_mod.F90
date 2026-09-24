@@ -8,12 +8,33 @@ module les_amr_subcycle_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d, &
     average_down_amr_patch_tree_3d
-  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,compute_amr_patch_tree_les_timestep_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   implicit none
   private
-  public :: advance_amr_patch_tree_subcycle_les_3d
+  public :: advance_amr_patch_tree_subcycle_les_3d,compute_amr_patch_tree_subcycle_les_timestep_3d
 contains
+  subroutine compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
+      cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: root_spacing(3),cfl,cs,prt,sct
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(inout) :: dt,maximum_diffusivity
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6),ci
+    character(len=*), optional, intent(in) :: coarse_limiter,model
+    character(len=*), optional, intent(in) :: test_model
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
+      cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle=.true.)
+  end subroutine
+
   subroutine advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temperature,spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,maximum_diffusivity,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure, &
