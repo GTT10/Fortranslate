@@ -2,6 +2,9 @@ program test_mpi_amr_patch_tree_ghost_3d
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use reactive_1d_mod, only: reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d
@@ -178,9 +181,80 @@ program test_mpi_amr_patch_tree_ghost_3d
     call unchanged()
     deallocate(local%fields,local_future%fields)
   end do
+  call mach_checks()
   if (rank==0) print *, 'PASS: MPI PCM/PLM halos match serial, physical walls, empty owners and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine mach_checks()
+    type(nasa7_species), allocatable :: thermo(:)
+    real(dp) :: q(12),sound,ma(6),tin(6),pin(6),bad_ma(6),bad_t(6),bad_p(6)
+    integer :: face,check
+    call load_h2o2_elementary_thermo(thermo,ok)
+    call require(ok,'Mach MPI thermo')
+    do node=1,4
+      deallocate(global%fields(node)%values)
+      n=tree%nodes(node)%shape
+      allocate(global%fields(node)%values(13,n(1),n(2),n(3)))
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            q=0;q(1)=.3_dp+.01_dp*i;q(5)=101325+100*j
+            q(6)=.03_dp;q(9)=.23_dp;q(12)=.74_dp;q(2:4)=[real(i,dp),real(j,dp),real(k,dp)]
+            call reactive_primitive_to_conserved(thermo,q,global%fields(node)%values(:12,i,j,k), &
+              global%fields(node)%values(13,i,j,k),sound,ok)
+            call require(ok,'Mach MPI initial gas')
+          end do
+        end do
+      end do
+    end do
+    future=global
+    do node=1,4
+      if(tree%nodes(node)%level==2) then
+        deallocate(future%fields(node)%values)
+      else
+        future%fields(node)%values(:12,:,:,:)=1.2_dp*future%fields(node)%values(:12,:,:,:)
+      end if
+    end do
+    allocate(local%fields(4),local_future%fields(4))
+    owners=[0,1,0,1];fractions=[.25_dp,.75_dp]
+    do node=1,4
+      if(owners(node)/=rank) cycle
+      local%fields(node)=global%fields(node);local_future%fields(node)=future%fields(node)
+    end do
+    do face=1,6
+      faces='outflow';faces(face)='inflow';ma=-1;ma(face)=.2_dp;tin=700;pin=0
+      if(modulo(face,2)==0) pin(face)=120000
+      call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,13,faces,ghosts,MPI_COMM_WORLD,ok, &
+        species=thermo,inflow_mach=ma,inflow_temperature=tin,inflow_pressure=pin,ghost_width=7, &
+        coarse_limiter='mc',species_count=7,coarse_future=local_future,coarse_fractions=fractions)
+      call require(ok,'Mach MPI interpolated wide halo')
+      do node=1,4
+        call require(allocated(ghosts%fields(node)%values).eqv.(owners(node)==rank),'Mach owned halos')
+        if(owners(node)/=rank) cycle
+        call fill_amr_patch_tree_ghosts_3d(tree,global,node,faces,oracle,ok, &
+          species=thermo,inflow_mach=ma,inflow_temperature=tin,inflow_pressure=pin,ghost_width=7, &
+          coarse_limiter='mc',species_count=7,coarse_future=future, &
+          coarse_fractions=fractions(:tree%nodes(node)%level))
+        call require(ok,'Mach serial interpolated halo')
+        call require(all(oracle==ghosts%fields(node)%values),'Mach exact distributed halo parity')
+      end do
+      saved=ghosts
+      do check=1,4
+        bad_ma=ma;bad_t=tin;bad_p=pin
+        if(rank==nranks-1) then
+          if(check==1) bad_ma(face)=.3_dp
+          if(check==2) bad_t(face)=701
+          if(check==3) bad_p(face)=130000
+          if(check==4) bad_t(face)=-1
+        end if
+        call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,13,faces,ghosts,MPI_COMM_WORLD,ok, &
+          species=thermo,inflow_mach=bad_ma,inflow_temperature=bad_t,inflow_pressure=bad_p,ghost_width=7)
+        call require(.not.ok,'Mach rank mismatch or invalid input rejected')
+        call unchanged()
+      end do
+    end do
+  end subroutine mach_checks
+
   subroutine unchanged()
     integer :: peer
     do peer=1,4

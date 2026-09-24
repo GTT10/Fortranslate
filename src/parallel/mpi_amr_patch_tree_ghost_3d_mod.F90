@@ -3,6 +3,7 @@ module mpi_amr_patch_tree_ghost_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_ghost_3d_mod, only: sample_amr_patch_tree_ghosts_3d,amr_tree_cell_source_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
@@ -21,7 +22,10 @@ module mpi_amr_patch_tree_ghost_3d_mod
 contains
   ! Collective ghost fill. Only owned selected-depth output fields allocate.
   subroutine fill_mpi_amr_tree_ghosts_3d(tree,owners,local,nvar,faces,ghosts,comm,ok, &
-      viscous_wall,inflow_state,wall_velocity,coarse_limiter,species_count,coarse_future,coarse_fractions,depth,ghost_width)
+      viscous_wall,inflow_state,wall_velocity,coarse_limiter,species_count,coarse_future,coarse_fractions,depth,ghost_width, &
+      species,inflow_mach,inflow_temperature,inflow_pressure)
+    type(nasa7_species), optional, intent(in) :: species(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
     type(amr_tree_state_3d), intent(in) :: local
@@ -42,6 +46,7 @@ contains
     real(dp), allocatable :: scratch(:,:,:,:),fractions(:),low_f(:),high_f(:),endpoint_values(:,:)
     integer, allocatable :: queries(:,:)
     integer :: controls(4),low(4),high(4),active,levels,query,slot,endpoint,width
+    real(dp) :: inlet_controls(18),inlet_low(18),inlet_high(18)
     logical :: use_future
     integer :: rank,nranks,status,ios,node,pass
     logical :: valid,ready
@@ -102,6 +107,18 @@ contains
     call sample_node(1,scratch,valid,planning=.true.,validate_only=.true.)
     call agree(valid,ready)
     if (.not.ready) return
+    inlet_controls=0
+    inlet_controls(:6)=-1
+    if(present(inflow_mach)) inlet_controls(:6)=inflow_mach
+    if(present(inflow_pressure)) inlet_controls(13:18)=inflow_pressure
+    if(present(inflow_temperature)) then
+      where(inlet_controls(:6)>=0) inlet_controls(7:12)=inflow_temperature
+    end if
+    call MPI_Allreduce(inlet_controls,inlet_low,18,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(inlet_controls,inlet_high,18,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(inlet_low/=inlet_high)) return
     if (allocated(scratch)) deallocate(scratch)
     allocate(candidate%fields(size(tree%nodes)),stat=ios)
     call agree(ios==0,ready)
@@ -174,11 +191,13 @@ contains
         call sample_amr_patch_tree_ghosts_3d(tree,nvar,peer,faces,reader,output,success, &
           viscous_wall,inflow_state,wall_velocity,coarse_fractions=fractions(:tree%nodes(peer)%level), &
           coarse_limiter=coarse_limiter,species_count=species_count,planning=planning,validate_only=validate_only, &
-          ghost_width=width)
+          ghost_width=width,species=species,inflow_mach=inflow_mach, &
+          inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       else
         call sample_amr_patch_tree_ghosts_3d(tree,nvar,peer,faces,reader,output,success, &
           viscous_wall,inflow_state,wall_velocity,coarse_limiter=coarse_limiter, &
-          species_count=species_count,planning=planning,validate_only=validate_only,ghost_width=width)
+          species_count=species_count,planning=planning,validate_only=validate_only,ghost_width=width, &
+          species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       end if
     end subroutine
     subroutine agree(condition,result)
