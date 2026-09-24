@@ -1614,6 +1614,33 @@ controlled by the existing separate source schedule.
 
 See [inlet restart and conservation evidence](validation/spray-inflow-20260915.md).
 
+Regular fixed/selected spray inputs also accept `inflow_mach(6)` (default -1).
+A value from 0 to 100 enables inward normal Mach velocity on that `inflow` face;
+leave `inflow_velocity(:,face)=0`. Temperature remains prescribed.
+`inflow_pressure(face)=0` extrapolates current interior pressure; positive
+pressure prescribes it (maximum 1e15 Pa). Mach faces use current interior
+composition, including gas changed by particle feedback, rather than the shared
+reservoir mixture. Hydro, molecular transport and static/Dynamic LES reconstruct
+these states at each stage. Current padded inlet states also constrain each
+step's wave-speed and molecular diffusion limits; the existing retry loop
+handles rejected coupled candidates. For an extrapolated x-low inlet:
+
+```fortran
+inflow_mach(1)=0.2
+inflow_temperature(1)=1100
+inflow_pressure(1)=0
+inflow_velocity(:,1)=0,0,0
+```
+
+Mach settings bind checkpoint context; changing Mach, pressure or temperature
+rejects continuation. Ordinary inputs retain their previous context encoding.
+The regular coupled API appends optional `inflow_mach` and `inflow_pressure`;
+pass zero pressure for inactive Mach faces at that API level. The namelist
+uses the existing reservoir-pressure entries and masks inactive Mach faces
+before calling it. MPI/AMR spray Mach dispatch remains open.
+See [Mach inlet restart evidence](validation/mach-inlet-spray-20260925.md).
+
+
 
 ## Isothermal and tangentially moving walls
 
