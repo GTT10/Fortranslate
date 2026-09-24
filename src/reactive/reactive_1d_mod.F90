@@ -40,7 +40,7 @@ module reactive_1d_mod
   public :: reactive_primitive_to_conserved
   public :: reactive_conserved_to_primitive
   public :: reactive_rusanov_flux_x
-  public :: reactive_pelec_flux_x
+  public :: reactive_pelec_flux_x, reactive_pelec_primitive_flux_x
   public :: reactive_hllc_flux_x
   public :: reactive_riemann_flux_x
   public :: reactive_ppm_interface_value
@@ -469,24 +469,73 @@ contains
     ok = .true.
   end subroutine reactive_rusanov_flux_x
 
-  subroutine reactive_pelec_flux_x( &
-      species, left_state, right_state, left_temperature_guess, &
-      right_temperature_guess, flux, ok, interface_density, &
+  subroutine reactive_pelec_flux_x(species,left_state,right_state,left_temperature_guess,right_temperature_guess, &
+      flux,ok,interface_density,interface_velocity,interface_pressure)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: left_state(:),right_state(:),left_temperature_guess,right_temperature_guess
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(out) :: interface_density,interface_velocity,interface_pressure
+    real(dp) :: ql(reactive_nprim(size(species))),qr(reactive_nprim(size(species))),tl,tr,cl,cr
+    logical :: left_ok,right_ok
+    flux=0;ok=.false.
+    if (present(interface_density)) interface_density=0
+    if (present(interface_velocity)) interface_velocity=0
+    if (present(interface_pressure)) interface_pressure=0
+    if (size(left_state)/=reactive_nvar(size(species)).or.size(right_state)/=size(left_state).or. &
+        size(flux)/=size(left_state)) return
+    call reactive_conserved_to_primitive(species,left_state,left_temperature_guess,ql,tl,cl,left_ok)
+    call reactive_conserved_to_primitive(species,right_state,right_temperature_guess,qr,tr,cr,right_ok)
+    if (.not.(left_ok.and.right_ok)) return
+    call reactive_pelec_flux_core(species,ql,qr,cl,cr,.false.,.5_dp*(cl+cr),flux,ok, &
+      interface_density,interface_velocity,interface_pressure)
+  end subroutine reactive_pelec_flux_x
+
+  ! Pressure-traced face states enter without a conserved-to-primitive round trip.
+  ! cav is the neighboring cell-centered sound-speed mean used by PeleC.
+  subroutine reactive_pelec_primitive_flux_x(species,ql,qr,cav,flux,ok, &
+      interface_density,interface_velocity,interface_pressure)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: ql(:),qr(:),cav
+    real(dp), intent(out) :: flux(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(out) :: interface_density,interface_velocity,interface_pressure
+    real(dp) :: scratch(reactive_nvar(size(species))),tl,tr,cl,cr
+    real(dp) :: candidate(reactive_nvar(size(species)))
+    logical :: left_ok,right_ok
+    flux=0;ok=.false.
+    if (present(interface_density)) interface_density=0
+    if (present(interface_velocity)) interface_velocity=0
+    if (present(interface_pressure)) interface_pressure=0
+    if (size(ql)/=reactive_nprim(size(species)).or.size(qr)/=size(ql).or. &
+        size(flux)/=reactive_nvar(size(species))) return
+    if (.not.ieee_is_finite(cav)) return
+    if (cav<=0) return
+    call reactive_primitive_to_conserved(species,ql,scratch,tl,cl,left_ok)
+    call reactive_primitive_to_conserved(species,qr,scratch,tr,cr,right_ok)
+    if (.not.(left_ok.and.right_ok)) return
+    call reactive_pelec_flux_core(species,ql,qr,cl,cr,.true.,cav,candidate,ok, &
+      interface_density,interface_velocity,interface_pressure)
+    if (ok) flux=candidate
+  end subroutine reactive_pelec_primitive_flux_x
+
+  subroutine reactive_pelec_flux_core( &
+      species, ql, qr, cl, cr, primitive_input, cav, flux, ok, interface_density, &
       interface_velocity, interface_pressure)
     type(nasa7_species), intent(in) :: species(:)
-    real(dp), intent(in) :: left_state(:), right_state(:)
-    real(dp), intent(in) :: left_temperature_guess, right_temperature_guess
+    real(dp), intent(in) :: ql(:),qr(:),cl,cr,cav
+    logical, intent(in) :: primitive_input
     real(dp), intent(out) :: flux(:)
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: interface_density
     real(dp), intent(out), optional :: interface_velocity
     real(dp), intent(out), optional :: interface_pressure
 
-    real(dp), allocatable :: ql(:), qr(:), qorigin(:), qstar(:), qinterface(:)
+    real(dp), allocatable :: qorigin(:), qstar(:), qinterface(:)
     real(dp), allocatable :: interface_state(:), scratch_state(:)
     real(dp), allocatable :: rho_species_origin(:), rho_species_star(:)
     real(dp), allocatable :: rho_species_interface(:)
-    real(dp) :: tl, tr, cl, cr, origin_temperature, star_temperature
+    real(dp) :: origin_temperature, star_temperature
     real(dp) :: interface_temperature, interface_sound_speed
     real(dp) :: rho_left, rho_right, velocity_left, velocity_right
     real(dp) :: pressure_left, pressure_right, impedance_left, impedance_right
@@ -497,7 +546,8 @@ contains
     real(dp) :: interpolation_fraction, average_sound_speed, regularization
     real(dp) :: rho_interface, velocity_at_interface, pressure_at_interface
     real(dp) :: mass_flux, stationary_threshold
-    logical :: left_ok, right_ok, local_ok, stationary_interface
+    logical :: local_ok, stationary_interface
+    real(dp) :: star_pressure_floor
     integer :: nspecies, nvar, k
 
     flux = 0.0_dp
@@ -507,22 +557,12 @@ contains
     if (present(interface_pressure)) interface_pressure = 0.0_dp
     nspecies = size(species)
     nvar = reactive_nvar(nspecies)
-    if (size(left_state) /= nvar .or. size(right_state) /= nvar .or. &
-        size(flux) /= nvar) return
-
-    allocate(ql(reactive_nprim(nspecies)), qr(reactive_nprim(nspecies)))
     allocate(qorigin(reactive_nprim(nspecies)))
     allocate(qstar(reactive_nprim(nspecies)))
     allocate(qinterface(reactive_nprim(nspecies)))
     allocate(interface_state(nvar), scratch_state(nvar))
     allocate(rho_species_origin(nspecies), rho_species_star(nspecies))
     allocate(rho_species_interface(nspecies))
-    call reactive_conserved_to_primitive( &
-      species, left_state, left_temperature_guess, ql, tl, cl, left_ok)
-    call reactive_conserved_to_primitive( &
-      species, right_state, right_temperature_guess, qr, tr, cr, right_ok)
-    if (.not. (left_ok .and. right_ok)) return
-
     rho_left = ql(1)
     velocity_left = ql(2)
     pressure_left = ql(5)
@@ -531,13 +571,21 @@ contains
     pressure_right = qr(5)
     impedance_left = max(tiny(1.0_dp), cl * rho_left)
     impedance_right = max(tiny(1.0_dp), cr * rho_right)
-    pressure_star = max(pressure_floor, &
+    star_pressure_floor=pressure_floor
+    if (primitive_input) star_pressure_floor=tiny(1.0_dp)
+    pressure_star = max(star_pressure_floor, &
       ((impedance_right * pressure_left + impedance_left * pressure_right) + &
        impedance_left * impedance_right * (velocity_left - velocity_right)) / &
       (impedance_left + impedance_right))
     velocity_star = &
       ((impedance_left * velocity_left + impedance_right * velocity_right) + &
        pressure_left - pressure_right) / (impedance_left + impedance_right)
+    if (primitive_input) then
+      ! Keep the pressure difference grouped as in pinned Riemann.H; adding
+      ! and subtracting a large equal pressure would erase tiny contact speeds.
+      velocity_star=((impedance_left*velocity_left+impedance_right*velocity_right)+ &
+        (pressure_left-pressure_right))/(impedance_left+impedance_right)
+    end if
     if (.not. ieee_is_finite(pressure_star) .or. &
         .not. ieee_is_finite(velocity_star)) return
 
@@ -563,13 +611,18 @@ contains
       end do
     end if
 
-    ! PeleC receives already reconstructed primitive states, whereas this API
-    ! recovers them from total energy. Include the EOS inversion roundoff scale
-    ! so a physically stationary material contact remains exactly stationary.
+    ! Conserved-state callers retain the EOS inversion roundoff scale so a
+    ! physically stationary material contact remains exactly stationary.
     stationary_threshold = max( &
       tiny_speed * 0.5_dp * (abs(velocity_left) + abs(velocity_right)), &
       sqrt(epsilon(1.0_dp)) * max(1.0_dp, 0.5_dp * (cl + cr)))
-    stationary_interface = abs(velocity_star) <= stationary_threshold
+    if (primitive_input) then
+      ! Pinned PeleC Riemann.H uses smallu=1e-12, without the EOS-roundtrip band.
+      stationary_threshold=1e-12_dp*.5_dp*(abs(velocity_left)+abs(velocity_right))
+      stationary_interface=abs(velocity_star)<stationary_threshold.or.velocity_star==0
+    else
+      stationary_interface = abs(velocity_star) <= stationary_threshold
+    end if
     if (stationary_interface) then
       velocity_star = 0.0_dp
       rho_origin = 0.5_dp * (rho_left + rho_right)
@@ -623,8 +676,13 @@ contains
     average_sound_speed = 0.5_dp * (cl + cr)
     regularization = sqrt(epsilon(1.0_dp)) * &
       max(1.0_dp, average_sound_speed)
+    if (primitive_input) then
+      ! Pinned Constants.H: very_small_num=epsilon*1e-100; small_num=1e-8.
+      regularization=epsilon(1.0_dp)*1e-100_dp
+    end if
     if (abs(wave_out - wave_in) < regularization) then
       speed_difference = regularization
+      if (primitive_input) speed_difference=1e-8_dp*cav
     else
       speed_difference = wave_out - wave_in
     end if
@@ -684,7 +742,7 @@ contains
     if (present(interface_velocity)) interface_velocity = velocity_at_interface
     if (present(interface_pressure)) interface_pressure = pressure_at_interface
     ok = .true.
-  end subroutine reactive_pelec_flux_x
+  end subroutine reactive_pelec_flux_core
 
   subroutine reactive_hllc_flux_x( &
       species, left_state, right_state, left_temperature_guess, &

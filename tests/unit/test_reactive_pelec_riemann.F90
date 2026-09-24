@@ -9,7 +9,7 @@ program test_reactive_pelec_riemann
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_species_component, reactive_primitive_to_conserved, &
-    reactive_pelec_flux_x, reactive_riemann_flux_x
+    reactive_pelec_flux_x, reactive_pelec_primitive_flux_x, reactive_riemann_flux_x
   use reactive_2d_mod, only: reactive_riemann_flux_y
   implicit none
 
@@ -142,9 +142,44 @@ program test_reactive_pelec_riemann
   call assert_close(interface_pressure, 0.0_dp, 0.0_dp, &
     "failed interface pressure reset")
 
+  call check_primitive_entry()
   write(*, '(a)') "test_reactive_pelec_riemann: PASS"
 
 contains
+
+  subroutine check_primitive_entry()
+    real(dp) :: q(12),u(12),f(12),exact(12),t,c,rf,vf,pf,reference(12),right(12),uright(12),t2,c2
+    logical :: good
+    ! A tiny moving contact must retain its supplied speed: the conserved API's
+    ! EOS-roundtrip stationary band must not affect pressure-traced primitives.
+    call make_state(rho_l,1e-8_dp,-15._dp,7._dp,1.5e5_dp,yl,q,u,t,c)
+    call reactive_pelec_primitive_flux_x(species,q,q,c,f,good,rf,vf,pf)
+    if (.not.good) error stop 'Primitive tiny-velocity Riemann flux rejected'
+    call physical_flux(u,q(5),q(2),q(3),q(4),yl,exact)
+    call assert_vector_close(f,exact,2e-12_dp,'primitive equal-state flux')
+    if (abs(vf-q(2))>1e-14_dp*abs(q(2))) error stop 'Primitive contact velocity clipped'
+    if (abs(f(1)-rho_l*q(2))>1e-14_dp*abs(rho_l*q(2))) error stop 'Primitive mass flux clipped'
+    if (pf/=q(5)) error stop 'Primitive input pressure changed'
+    ! A separately traced pressure changes the momentum flux without an energy
+    ! inversion of a stale conserved normal predictor.
+    q(2)=0;q(5)=1.6e5_dp
+    call reactive_pelec_primitive_flux_x(species,q,q,c,f,good,rf,vf,pf)
+    if (.not.good.or.pf/=q(5).or.f(imx)/=q(5)) error stop 'Traced pressure not preserved'
+    if (any(f([irho,imy,imz,iet])/=0)) error stop 'Stationary primitive pressure work'
+    ! Nondegenerate unequal-state solve retains the existing general-EOS result.
+    call make_state(rho_l,80._dp,-15._dp,7._dp,1.5e5_dp,yl,q,u,t,c)
+    call make_state(rho_r,-20._dp,12._dp,-5._dp,1.2e5_dp,yr,right,uright,t2,c2)
+    call reactive_pelec_primitive_flux_x(species,q,right,.5_dp*(c+c2),f,good)
+    if (.not.good) error stop 'Primitive unequal-state flux rejected'
+    call reactive_pelec_flux_x(species,u,uright,t,t2,reference,good)
+    if (.not.good) error stop 'Conserved unequal-state reference rejected'
+    call assert_vector_close(f,reference,2e-10_dp,'primitive general-EOS reference')
+    q(5)=-1
+    call reactive_pelec_primitive_flux_x(species,q,q,c,f,good,rf,vf,pf)
+    if (good.or.any(f/=0).or.rf/=0.or.vf/=0.or.pf/=0) error stop 'Invalid primitive outputs not zero'
+    call reactive_pelec_primitive_flux_x(species,ql,qr,0._dp,f,good)
+    if (good.or.any(f/=0)) error stop 'Invalid cell sound speed accepted'
+  end subroutine check_primitive_entry
 
   subroutine make_state(rho, u, v, w, p, y, q, conserved, t, c)
     real(dp), intent(in) :: rho, u, v, w, p, y(:)
