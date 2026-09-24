@@ -1900,10 +1900,38 @@ The library now separately provides `watson_latent_heat` and
 boiling temperatures; the latter is defined at 101325 Pa. Inputs use K, J/kg,
 Pa and kg/kmol. The Watson function accepts only subcritical temperatures;
 the boiling function caps the inferred temperature at Tc and rejects
-nonpositive inverse temperatures. These APIs do not yet participate in
-application liquid input, vapor pressure or restart. They do not replace the
-ordinary EOS enthalpy-based latent heat used by the pinned reference.
+nonpositive inverse temperatures. The `pelemp-cap` mode below
+connects them to the ordinary EOS vapor-state calculation.
 See [kernel checks and limits](validation/watson-properties-20260925.md).
+
+### PeleMP vapor-state cap
+
+Select `boiling_model='pelemp-cap'`, provide `normal_boiling_temperature` at
+101325 Pa and `critical_temperature`, and set `reference_temperature` to the
+temperature of the supplied `latent_heat`. Both reference temperatures must
+be below Tc; `reference_pressure` must be 101325 Pa in this mode. The normal
+boiling temperature is independent of the liquid energy reference temperature.
+The default `reject` and legacy `surface-cap` modes require the new field to
+remain zero.
+
+Watson latent heat evaluated at the normal boiling point supplies Tboil(P).
+For Clausius saturation pressure, the latent heat is instead
+`hgas(Tdrop) - liquid_energy(Ts)`, where `Ts=min(Tdrop,0.99*Tboil(P))`.
+For constant liquid heat capacity this matches the pinned ordinary EOS
+PeleMP formula. Polynomial heat capacity uses PeleF's integrated liquid energy.
+Antoine evaluation also uses Ts, with the fit bounds applied to Ts.
+Stored liquid energy and the conservative transfer update retain their existing
+definitions; this is not full reference transfer-integrator parity.
+
+Regular input uses `normal_boiling_temperature`,
+`port_normal_boiling_temperatures` or `mixture_normal_boiling_temperatures` with
+the corresponding boiling-model and critical-temperature fields. MPI AMR's
+`amr_spray_properties` and EB's `eb_spray` groups accept the mixture array.
+Unused entries must be zero. All active settings bind checkpoint context.
+The expanded AMR/EB namelist serialization may reject checkpoints from older
+builds; no cross-build compatibility is implied. Fixed/selected regular
+conservation and restart checks are recorded in
+[the integration evidence](validation/pelemp-cap-integration-20260925.md).
 
 ## Multiple injection ports
 

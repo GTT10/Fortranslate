@@ -23,14 +23,16 @@ See the [dated source audit](validation/les-reference-scope-20260925.md).
 
 Watson latent heat and the PeleMP pressure-dependent boiling calculation now
 have independent library APIs with distinct reference and boiling temperatures
-([kernel evidence](validation/watson-properties-20260925.md)). The next unit
-connects those distinct inputs to liquid configuration, the vapor-state cap and
-restart identity. The current constant-latent `surface-cap` remains the
-compatibility default. The ordinary EOS vapor-pressure path uses
+([kernel evidence](validation/watson-properties-20260925.md)). The optional
+`pelemp-cap` mode now connects distinct liquid inputs, the vapor-state cap and
+restart identity, including ordinary EOS enthalpy-derived saturation latent heat
+([integration evidence](validation/pelemp-cap-integration-20260925.md)).
+The constant-latent `surface-cap` remains available and `reject` remains the
+default. The ordinary EOS vapor-pressure path uses
 enthalpy-derived latent heat, so replacing every latent heat with Watson would
-not match the reference. Exit checks must cover the reference-temperature
-identity, pressure dependence, invalid critical/boiling temperatures, unchanged
-default behavior and restart identity for any new inputs.
+not match the reference. Isolated property and fixed/selected regular
+conservation/restart checks are complete. MPI/AMR/EB execution of this option,
+broader transfer-integrator parity and physical qualification remain separate.
 GCM is excluded from this pinned PeleC port because upstream restricts it to
 PeleLMeX; PeleMP is the available alternative. See the
 [property source audit](validation/spray-property-scope-20260925.md).
