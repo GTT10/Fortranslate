@@ -24,7 +24,7 @@ program test_mpi_amr_patch_tree_split_3d
   type(amr_tree_state_3d) :: global,reference,local,temperature,saved,oracle,oracle_t,saved_t
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
-  real(dp) :: pressure(6)
+  real(dp) :: pressure(6),mach(6),pin(6)
   character(len=32) :: faces(6),reconstruction,integrator
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   logical :: ok,enabled,bad_enabled
@@ -68,7 +68,7 @@ program test_mpi_amr_patch_tree_split_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
-  do mode=1,4
+  do mode=1,6
     owners=[0,1,0]
     if (mode==3) owners=0
     if (mode==4) owners=mod([0,1,2],nranks)
@@ -84,8 +84,12 @@ program test_mpi_amr_patch_tree_split_3d
     if (mod(mode,2)==0) then
       faces='outflow';faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
     end if
-    pressure=0
+    pressure=0;mach=-1;pin=0
     if (mode==4) pressure([1,6])=203650
+    if(mode>=5) then
+      faces(1)='inflow';mach(1)=.2_dp
+      if(mode==6) pin(1)=210000
+    end if
     allocate(local%fields(3),temperature%fields(3))
     do node=1,3
       if (owners(node)/=rank) cycle
@@ -96,12 +100,12 @@ program test_mpi_amr_patch_tree_split_3d
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces, &
       reconstruction,'mc','hllc',enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       serial_budget,serial_largest,serial_theta,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
-      outlet_pressure=pressure)
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
     call require(ok,'serial full operator split')
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
       reconstruction,'mc','hllc',enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
-      outlet_pressure=pressure)
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
     call require(ok,'distributed full operator split')
     call compare_state()
     call require(all(budget==serial_budget).and.largest==serial_largest.and.theta==serial_theta,'exact coupled diagnostics')
@@ -109,7 +113,7 @@ program test_mpi_amr_patch_tree_split_3d
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
       reconstruction,'mc','bad',enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
-      outlet_pressure=pressure)
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
     call require(.not.ok,'hydro failure rolls back preceding chemistry and transport')
     call unchanged()
     bad_enabled=enabled
@@ -117,7 +121,7 @@ program test_mpi_amr_patch_tree_split_3d
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
       reconstruction,'mc','hllc',bad_enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
-      outlet_pressure=pressure)
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
     call require(.not.ok,'inconsistent enabled operators rejected')
     call unchanged()
     deallocate(local%fields,temperature%fields)
