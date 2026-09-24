@@ -81,6 +81,22 @@ program test_amr_patch_tree_ghost_3d
         lo=origins(:,node)+1;hi=origins(:,node)+tree%nodes(node)%shape+4
         call require(all(ghost==oracle(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))), &
           'all halo/interior values equal dense oracle including cross-parent peers and ancestor fallback')
+        if(mode==1) then
+          call fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,ghost_width=7)
+          call require(ok.and.all(shape(ghost)==[6,tree%nodes(node)%shape+14]),'wide periodic ghost shape')
+          do k=1,size(ghost,4)
+            do j=1,size(ghost,3)
+              do i=1,size(ghost,2)
+                lo=modulo(origins(:,node)+[i,j,k]-8,n)+1
+                call require(all(ghost(:,i,j,k)==dense(:,lo(1),lo(2),lo(3))), &
+                  'wide periodic donors match dense oracle across peer and ancestor boundaries')
+              end do
+            end do
+          end do
+          saved=ghost
+          call fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,ghost_width=0)
+          call require(.not.ok.and.all(ghost==saved),'invalid ghost width preserves output')
+        end if
       end do
       deallocate(t,oracle,gt)
     end do

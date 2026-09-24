@@ -67,7 +67,7 @@ contains
   end subroutine
 
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
-      coarse_future,coarse_fractions,coarse_limiter,species_count)
+      coarse_future,coarse_fractions,coarse_limiter,species_count,ghost_width)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), target, intent(in) :: state
     integer, intent(in) :: node
@@ -80,6 +80,7 @@ contains
     real(dp), optional, intent(in) :: coarse_fractions(:)
     character(len=*), optional, intent(in) :: coarse_limiter
     integer, optional, intent(in) :: species_count
+    integer, optional, intent(in) :: ghost_width
     type(serial_tree_source) :: reader
     integer :: nvar,other,nspecies
     ok=.false.
@@ -112,7 +113,7 @@ contains
     reader%state=>state
     if (present(coarse_future)) reader%future=>coarse_future
     call sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall, &
-      inflow_state,wall_velocity,coarse_fractions,coarse_limiter,species_count)
+      inflow_state,wall_velocity,coarse_fractions,coarse_limiter,species_count,ghost_width=ghost_width)
   end subroutine fill_amr_patch_tree_ghosts_3d
 
   subroutine read_serial_cell(self,node,index,future,value,ok)
@@ -130,11 +131,12 @@ contains
   end subroutine
 
   subroutine sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
-      coarse_fractions,coarse_limiter,species_count,planning,validate_only)
+      coarse_fractions,coarse_limiter,species_count,planning,validate_only,ghost_width)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: nvar
     class(amr_tree_cell_source_3d), intent(inout) :: reader
     logical, optional, intent(in) :: planning,validate_only
+    integer, optional, intent(in) :: ghost_width
     integer, intent(in) :: node
     character(len=*), intent(in) :: faces(6)
     real(dp), allocatable, intent(inout) :: ghost(:,:,:,:)
@@ -152,14 +154,17 @@ contains
     real(dp) :: endpoint(nvar)
     real(dp) :: shift(3),old_momentum(3),rho,fraction
     logical :: reflect(3),viscous,found,valid,plan
-    integer :: nspecies
+    integer :: nspecies,width
     ok=.false.
     plan=.false.
     if (present(planning)) plan=planning
+    width=2
+    if (present(ghost_width)) width=ghost_width
+    if(width<1.or.width>128) return
     if (.not.tree%is_valid()) return
     if (node<1.or.node>size(tree%nodes)) return
     if (.not.valid_reactive_boundaries_3d(faces)) return
-    if (nvar<5.or.any(tree%nodes(node)%shape>huge(1)-4)) return
+    if (nvar<5.or.any(tree%nodes(node)%shape>huge(1)-2*width)) return
     nspecies=0
     if (present(species_count)) nspecies=species_count
     if (nspecies<0.or.nspecies>nvar-5) return
@@ -189,13 +194,20 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) return
     ok=.false.
-    level=tree%nodes(node)%level+1;extent=domain(:,level);dims=tree%nodes(node)%shape+4
+    level=tree%nodes(node)%level+1;extent=domain(:,level);dims=tree%nodes(node)%shape+2*width
+    ! Single wall reflection requires no more than one full domain of donor cells.
+    do axis=1,3
+      if(any(faces(2*axis-1:2*axis)=='slip_wall').or.any(faces(2*axis-1:2*axis)=='no_slip_wall').or. &
+        any(faces(2*axis-1:2*axis)=='isothermal_wall')) then
+        if(int(width,int64)>extent(axis)) return
+      end if
+    end do
     allocate(candidate(nvar,dims(1),dims(2),dims(3)),stat=ios)
     if (ios/=0) return
     do k=1,dims(3)
       do j=1,dims(2)
         do i=1,dims(1)
-          coordinate=origin(:,node)+int([i,j,k]-3,int64)
+          coordinate=origin(:,node)+int([i,j,k]-width-1,int64)
           mapped=coordinate;reflect=.false.;shift=0;inlet=0
           do axis=1,3
             if (coordinate(axis)>=0.and.coordinate(axis)<extent(axis)) cycle
