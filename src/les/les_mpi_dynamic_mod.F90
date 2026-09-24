@@ -7,16 +7,20 @@ module les_mpi_dynamic_mod
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use les_filter_3d_mod, only: les_filter_weights,les_filter_code
+  use les_mpi_boundary_mod, only: fill_mpi_les_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   use les_mpi_filter_mod, only: filter_mpi_les_field_3d
   use les_dynamic_smagorinsky_mod, only: dynamic_smagorinsky_quantities,dynamic_smagorinsky_coefficients, &
-    compute_dynamic_les_rhs_3d
+    compute_dynamic_les_rhs_3d,compute_dynamic_les_rhs_ghosted_3d
   implicit none
   private
   public :: compute_mpi_dynamic_les_coefficients_3d,compute_mpi_dynamic_les_rhs_3d
+  public :: compute_mpi_dynamic_les_boundary_rhs_3d
   public :: advance_mpi_dynamic_les_ssprk2_3d
 contains
   subroutine advance_mpi_dynamic_les_ssprk2_3d(comm,species,state,temperature,spacing,cells,test_model, &
-      test_ratio,dt,ok,grid_ratio,harmonic_mean)
+      test_ratio,dt,ok,grid_ratio,harmonic_mean, &
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -24,6 +28,11 @@ contains
     integer, intent(in) :: cells(3),test_ratio
     character(len=*), intent(in) :: test_model
     logical, optional, intent(in) :: harmonic_mean
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: boundary_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp) :: rate0(size(state,1)),rate1(size(state,1))
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     real(dp), allocatable :: rhs(:,:,:,:),stage(:,:,:,:),candidate(:,:,:,:),t1(:,:,:),t2(:,:,:)
@@ -32,6 +41,7 @@ contains
     logical :: valid,global_valid
     ok=.false.;n=shape(temperature);nv=size(state,1)
     valid=ieee_is_finite(dt)
+    if(present(boundary_change)) valid=valid.and.size(boundary_change)==nv
     call agree()
     if (.not.global_valid) return
     call MPI_Allreduce(dt,dt_min,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
@@ -43,20 +53,23 @@ contains
       candidate(nv,n(1),n(2),n(3)),t1(n(1),n(2),n(3)),t2(n(1),n(2),n(3)),stat=ios)
     valid=ios==0;call agree()
     if (.not.global_valid) return
-    call compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
-      rhs,valid,grid_ratio,diffusion,harmonic_mean)
+    call compute_mpi_dynamic_les_boundary_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
+      rhs,diffusion,valid,grid_ratio,harmonic_mean,boundary_faces,rate0, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     call agree()
     if (.not.global_valid) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
     if (dt==0) then
+      if(present(boundary_change)) boundary_change=0
       ok=.true.;return
     end if
     stage=state+dt*rhs
     call recover_reactive_temperatures_3d(species,stage,temperature,n(1),n(2),n(3),t1,valid)
     call agree()
     if (.not.global_valid) return
-    call compute_mpi_dynamic_les_rhs_3d(comm,species,stage,t1,spacing,cells,test_model,test_ratio,rhs,valid, &
-      grid_ratio,diffusion,harmonic_mean)
+    call compute_mpi_dynamic_les_boundary_rhs_3d(comm,species,stage,t1,spacing,cells,test_model,test_ratio, &
+      rhs,diffusion,valid,grid_ratio,harmonic_mean,boundary_faces,rate1, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
     call agree()
     if (.not.global_valid) return
     if (dt*diffusion*sum(1/spacing**2)>.2_dp) return
@@ -64,13 +77,141 @@ contains
     call recover_reactive_temperatures_3d(species,candidate,t1,n(1),n(2),n(3),t2,valid)
     call agree()
     if (.not.global_valid) return
-    state=candidate;temperature=t2;ok=.true.
+    state=candidate;temperature=t2
+    if(present(boundary_change)) boundary_change=.5_dp*dt*(rate0+rate1)
+    ok=.true.
   contains
     subroutine agree()
       call MPI_Allreduce(valid,global_valid,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if (ierr/=MPI_SUCCESS) global_valid=.false.
     end subroutine
   end subroutine
+
+  subroutine compute_mpi_dynamic_les_boundary_rhs_3d(comm,species,state,temperature,spacing,cells,test_model, &
+      test_ratio,rhs,maximum_diffusivity,ok,grid_ratio,harmonic_mean,boundary_faces,boundary_rate, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
+    integer, intent(in) :: cells(3),test_ratio
+    character(len=*), intent(in) :: test_model
+    real(dp), intent(inout) :: rhs(:,:,:,:),maximum_diffusivity
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: boundary_rate(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),candidate(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),weights(:)
+    real(dp) :: diffusion,global_diffusion,rate(size(state,1)),global_rate(size(state,1)),walls(6)
+    real(dp) :: controls(9),minimum(9),maximum(9)
+    integer :: config(8),low(8),high(8),ratio,width,n(3),nv,rank,nranks,ierr,ios,i,j,k
+    character(len=32) :: faces(6),reference_faces(6),local_faces(6)
+    logical :: valid,agreed,harmonic
+    ok=.false.;n=shape(temperature);nv=size(state,1);ratio=1;harmonic=.false.;faces='periodic';walls=0;rate=0
+    if(present(grid_ratio)) ratio=grid_ratio
+    if(present(harmonic_mean)) harmonic=harmonic_mean
+    if(present(boundary_faces)) faces=boundary_faces
+    call MPI_Comm_rank(comm,rank,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    config=[cells,nv,les_filter_code(test_model),test_ratio,ratio,merge(1,0,harmonic)]
+    call MPI_Allreduce(config,low,8,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(config,high,8,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(low==high).and.ratio>=1.and.ratio<=64.and.valid_reactive_boundaries_3d(faces)
+    valid=valid.and.all(shape(rhs)==shape(state)).and.nv==reactive_nvar(size(species))
+    valid=valid.and.all(ieee_is_finite(spacing)).and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp)
+    if(present(boundary_rate)) valid=valid.and.size(boundary_rate)==nv
+    if(present(outlet_pressure)) then
+      valid=valid.and.all(ieee_is_finite(outlet_pressure))
+      valid=valid.and.all(outlet_pressure>=0).and.all(outlet_pressure<=1e15_dp)
+      valid=valid.and..not.any(outlet_pressure>0.and.faces/='outflow')
+    end if
+    if(present(wall_temperature)) then
+      valid=valid.and.size(wall_temperature)==6
+      if(size(wall_temperature)==6) walls=wall_temperature
+    end if
+    valid=valid.and.all(ieee_is_finite(walls))
+    if(any(faces=='isothermal_wall')) valid=valid.and.all(walls>0.or.faces/='isothermal_wall')
+    call agree()
+    if(.not.agreed) return
+    reference_faces=faces
+    call MPI_Bcast(reference_faces,6*len(reference_faces),MPI_CHARACTER,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(faces==reference_faces);call agree()
+    if(.not.agreed) return
+    controls=[spacing,walls]
+    call MPI_Allreduce(controls,minimum,9,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,9,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(minimum/=maximum)) return
+    allocate(candidate,mold=rhs,stat=ios)
+    valid=ios==0;call agree()
+    if(.not.agreed) return
+    if(all(faces=='periodic')) then
+      call compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
+        candidate,valid,ratio,global_diffusion,harmonic)
+      if(.not.valid) return
+      global_rate=0
+    else
+      call les_filter_weights(test_model,test_ratio,weights,valid)
+      call agree()
+      if(.not.agreed) return
+      width=(size(weights)-1)/2+5
+      call fill_mpi_les_boundary_ghosts_3d(comm,species,state,temperature,cells,faces,width,ghost,gt,valid, &
+        inflow_state,inflow_temperature,wall_velocity,outlet_pressure)
+      if(.not.valid) return
+      allocate(fx(nv,n(1)+1,n(2),n(3)),fy(nv,n(1),n(2)+1,n(3)),fz(nv,n(1),n(2),n(3)+1),stat=ios)
+      valid=ios==0;call agree()
+      if(.not.agreed) return
+      local_faces=faces
+      if(rank/=0) local_faces(1)='outflow'
+      if(rank/=nranks-1) local_faces(2)='outflow'
+      call compute_dynamic_les_rhs_ghosted_3d(species,ghost,gt,spacing,test_model,test_ratio,width, &
+        candidate,fx,fy,fz,valid,ratio,harmonic,diffusion,local_faces,walls)
+      call agree()
+      if(.not.agreed) return
+      if(faces(1)/='periodic') then
+        do k=1,n(3)
+          do j=1,n(2)
+            if(rank==0) rate=rate+fx(:,1,j,k)*spacing(2)*spacing(3)
+            if(rank==nranks-1) rate=rate-fx(:,n(1)+1,j,k)*spacing(2)*spacing(3)
+          end do
+        end do
+      end if
+      if(faces(3)/='periodic') then
+        do k=1,n(3)
+          do i=1,n(1)
+            rate=rate+(fy(:,i,1,k)-fy(:,i,n(2)+1,k))*spacing(1)*spacing(3)
+          end do
+        end do
+      end if
+      if(faces(5)/='periodic') then
+        do j=1,n(2)
+          do i=1,n(1)
+            rate=rate+(fz(:,i,j,1)-fz(:,i,j,n(3)+1))*spacing(1)*spacing(2)
+          end do
+        end do
+      end if
+      call MPI_Allreduce(rate,global_rate,nv,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      call MPI_Allreduce(diffusion,global_diffusion,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+    end if
+    if(.not.all(ieee_is_finite(global_rate))) return
+    rhs=candidate;maximum_diffusivity=global_diffusion
+    if(present(boundary_rate)) boundary_rate=global_rate
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine compute_mpi_dynamic_les_boundary_rhs_3d
 
   subroutine compute_mpi_dynamic_les_rhs_3d(comm,species,state,temperature,spacing,cells,test_model,test_ratio, &
       rhs,ok,grid_ratio,maximum_diffusivity,harmonic_mean)

@@ -5,6 +5,8 @@ program test_les_mpi_boundary
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use spray_partition_mod, only: spray_cartesian_block
+  use les_mpi_dynamic_mod, only: compute_mpi_dynamic_les_boundary_rhs_3d,advance_mpi_dynamic_les_ssprk2_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_boundary_rhs_3d,advance_dynamic_les_ssprk2_3d
   use les_mpi_boundary_mod, only: fill_mpi_les_boundary_ghosts_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,fill_pressure_outlet_ghosts_3d
   implicit none
@@ -13,6 +15,9 @@ program test_les_mpi_boundary
   real(dp) :: full(nv,5,3,2),temperature(5,3,2),q(nv),sound,walls(3,6),pressure(6),inlet(nv,6),inlet_t(6)
   real(dp) :: reference(nv,19,17,16),reference_t(19,17,16)
   real(dp), allocatable :: local(:,:,:,:),local_t(:,:,:),ghost(:,:,:,:),gt(:,:,:),saved(:,:,:,:),saved_t(:,:,:)
+  real(dp) :: rhs_full(nv,5,3,2),serial_rate(nv),rate(nv),diffusion,serial_diffusion,h(3),wall_t(6)
+  real(dp) :: serial_u(nv,5,3,2),serial_t(5,3,2),serial_budget(nv),budget(nv),saved_budget(nv),scale
+  real(dp), allocatable :: rhs(:,:,:,:),u(:,:,:,:),t(:,:,:)
   character(len=32) :: faces(6)
   integer :: rank,nranks,ierr,first(3),extent(3),i,j,k,mode,lo,hi,requested_width
   logical :: ok
@@ -35,6 +40,8 @@ program test_les_mpi_boundary
   lo=first(1)+1;hi=first(1)+extent(1)
   local=full(:,lo:hi,:,:);local_t=temperature(lo:hi,:,:)
   inlet=spread(full(:,1,1,1),2,6);inlet_t=temperature(1,1,1)
+  allocate(rhs,mold=local)
+  h=[.001_dp,.0015_dp,.002_dp];wall_t=1100
   do mode=1,6
     walls=0;pressure=0;faces='periodic'
     select case(mode)
@@ -59,6 +66,38 @@ program test_les_mpi_boundary
     call require(ok,'distributed boundary donors')
     call require(all(ghost==reference(:,lo:hi+2*width,:,:)),'exact full-width serial states')
     call require(all(gt==reference_t(lo:hi+2*width,:,:)),'exact full-width serial temperatures')
+    call compute_dynamic_les_boundary_rhs_3d(species,full,temperature,h,'box',2,rhs_full,serial_diffusion,ok, &
+      boundary_faces=faces,boundary_rate=serial_rate,inflow_state=inlet,inflow_temperature=inlet_t, &
+      wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+    call require(ok,'serial physical RHS')
+    call compute_mpi_dynamic_les_boundary_rhs_3d(MPI_COMM_WORLD,species,local,local_t,h,cells,'box',2, &
+      rhs,diffusion,ok,boundary_faces=faces,boundary_rate=rate,inflow_state=inlet,inflow_temperature=inlet_t, &
+      wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+    call require(ok,'distributed physical RHS')
+    call require(all(rhs==rhs_full(:,lo:hi,:,:)),'exact serial RHS')
+    scale=max(maxval(abs(serial_rate)),1e-30_dp)
+    call require(maxval(abs(rate-serial_rate))<=1e-12_dp*scale,'global boundary rate')
+    if(mode==2.or.mode>=5) then
+      serial_u=full;serial_t=temperature;u=local;t=local_t
+      call advance_dynamic_les_ssprk2_3d(species,serial_u,serial_t,h,'box',2,1e-9_dp,ok, &
+        boundary_faces=faces,boundary_change=serial_budget,inflow_state=inlet,inflow_temperature=inlet_t, &
+        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+      call require(ok,'serial physical step')
+      call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,u,t,h,cells,'box',2,1e-9_dp,ok, &
+        boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=inlet_t, &
+        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+      call require(ok,'distributed physical step')
+      call require(all(u==serial_u(:,lo:hi,:,:)).and.all(t==serial_t(lo:hi,:,:)),'exact serial SSPRK2')
+      scale=max(maxval(abs(serial_budget)),1e-30_dp)
+      call require(maxval(abs(budget-serial_budget))<=1e-12_dp*scale,'integrated boundary budget')
+      saved_budget=budget
+      call advance_mpi_dynamic_les_ssprk2_3d(MPI_COMM_WORLD,species,u,t,h,cells,'box',2,1._dp,ok, &
+        boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=inlet_t, &
+        wall_temperature=wall_t,wall_velocity=walls,outlet_pressure=pressure)
+      call require(.not.ok,'excessive dt rejects')
+      call require(all(u==serial_u(:,lo:hi,:,:)).and.all(t==serial_t(lo:hi,:,:)).and. &
+        all(budget==saved_budget),'step rollback')
+    end if
   end do
   saved=ghost;saved_t=gt;requested_width=width
   if(rank==nranks-1) requested_width=width-1
@@ -74,7 +113,13 @@ program test_les_mpi_boundary
   call fill_mpi_les_boundary_ghosts_3d(MPI_COMM_WORLD,species,local,local_t,cells,faces,width,ghost,gt,ok, &
     inlet,inlet_t,walls,pressure)
   call require(.not.ok.and.all(ghost==saved).and.all(gt==saved_t),'pressure disagreement rollback')
-  if(rank==0) print *, 'PASS: wide distributed physical donors match serial, including one-cell slabs and rollback'
+  rhs=123;diffusion=456;rate=789
+  pressure=0
+  if(rank==nranks-1) wall_t(3)=1200
+  call compute_mpi_dynamic_les_boundary_rhs_3d(MPI_COMM_WORLD,species,local,local_t,h,cells,'box',2, &
+    rhs,diffusion,ok,boundary_faces=faces,boundary_rate=rate,wall_temperature=wall_t,wall_velocity=walls)
+  call require(.not.ok.and.all(rhs==123).and.diffusion==456.and.all(rate==789),'RHS disagreement rollback')
+  if(rank==0) print *, 'PASS: distributed physical donors, Dynamic fluxes and SSPRK2 match serial with rollback'
   call MPI_Finalize(ierr)
 contains
   subroutine require(condition,message)
