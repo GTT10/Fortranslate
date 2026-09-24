@@ -12,7 +12,7 @@ module spray_mixture_mod
   implicit none
   private
   real(dp), parameter, public :: mixture_trace_fraction=1e-12_dp
-  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v5-vapor-cp'
+  character(len=*), parameter, public :: mixture_evolution_id='mixed-liquid-components-v6-heat-iteration'
   public :: liquid_mixture_properties, liquid_mixture_temperature, advance_mixture_heating
   public :: liquid_mixture_surface, advance_mixture_evaporation
   public :: build_mixture_film, mixture_transfer_rates, advance_mixture_frozen_gas, valid_component_inventory

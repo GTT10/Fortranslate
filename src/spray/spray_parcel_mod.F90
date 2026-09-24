@@ -534,7 +534,7 @@ contains
     real(dp), intent(out) :: inverse_tau, heat_coefficient, mass_coefficient
     logical, intent(out) :: ok
     real(dp) :: rho
-    real(dp) :: d, re, cdre, pr, sc, bm, bt, logbm, sh0, nu0, sh, nu, next_nu, phi, factor, f2,heat_cp
+    real(dp) :: d, re, cdre, pr, sc, bm, bt, old_bt, logbm, sh0, nu0, sh, nu, phi, factor, f2,heat_cp
     integer :: iteration
     inverse_tau=0.0_dp; heat_coefficient=0.0_dp; mass_coefficient=0.0_dp
     ok = .false.
@@ -596,16 +596,22 @@ contains
     sh=sh0; nu=nu0; factor=1.0_dp
     if (o%abramzon_sirignano .and. bm > 1.0e-12_dp) then
       sh=2.0_dp+(sh0-2.0_dp)/blowing_factor(bm)
-      do iteration=1,100
+      phi=heat_cp*f%density*f%diffusivity*sh/(f%conductivity*nu0)
+      if (phi*logbm>100.0_dp) return
+      bt=(1.0_dp+bm)**phi-1.0_dp
+      ! Pinned Drag.H calcHeatCoeff: initial correction then at most 100
+      ! direct B_T updates, with absolute B_T convergence tolerance 1e-7.
+      do iteration=0,100
+        old_bt=bt
+        nu=2.0_dp+(nu0-2.0_dp)/blowing_factor(bt)
         phi=heat_cp*f%density*f%diffusivity*sh/(f%conductivity*nu)
         if (phi*logbm > 100.0_dp) return
-        bt=exp(phi*logbm)-1.0_dp
-        next_nu=2.0_dp+(nu0-2.0_dp)/blowing_factor(bt)
-        if (abs(next_nu-nu) <= 1.0e-10_dp*max(1.0_dp,nu)) exit
-        nu=0.5_dp*(nu+next_nu)
+        bt=(1.0_dp+bm)**phi-1.0_dp
+        if (.not.ieee_is_finite(bt)) return
+        if (abs(bt-old_bt)<=1.0e-7_dp) exit
       end do
       if (iteration > 100) return
-      nu=next_nu
+      nu=2.0_dp+(nu0-2.0_dp)/blowing_factor(bt)
       if (bt > 1.0e-12_dp) factor=log(1.0_dp+bt)/bt
     end if
     if (o%drag) inverse_tau=3.0_dp*f%viscosity*cdre/(4.0_dp*rho*d*d)

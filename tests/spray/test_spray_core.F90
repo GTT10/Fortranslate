@@ -1273,6 +1273,23 @@ program test_spray_core
     call require(ok.and.abs(film%vapor_cp/value-1)<2e-14_dp,'shared gas species cp counted once')
   case('abramzon')
     options%abramzon_sirignano=.true.
+    film%vapor_cp=2000
+    ! Values from pinned C++ Drag.H calcHeatCoeff, Re spanning 0 to 2777.78.
+    do n=1,4
+      select case(n)
+      case(1)
+        p%velocity=[0.0_dp,0.0_dp,0.0_dp];expected=1.6510934499401388_dp
+      case(2)
+        p%velocity=[1.0_dp,0.0_dp,0.0_dp];expected=2.2947576817546693_dp
+      case(3)
+        p%velocity=[50.0_dp,0.0_dp,0.0_dp];expected=7.2882103277227754_dp
+      case(4)
+        p%velocity=[500.0_dp,0.0_dp,0.0_dp];expected=15.03362047582373_dp
+      end select
+      call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+      value=heat/(pi*film%conductivity*parcel_diameter(p,liquid))
+      call require(ok.and.abs(value/expected-1)<2e-13_dp,'pinned direct B_T iteration')
+    end do
     call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
     call require(ok .and. heat > 0.0_dp .and. masscoef > 0.0_dp,'AS converges')
     film%surface_fraction=film%ambient_fraction; p%velocity=0.0_dp
