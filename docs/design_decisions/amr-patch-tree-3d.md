@@ -38,7 +38,15 @@ The hierarchy owns its arrays; restriction uses a private candidate copy.
 
 ## Ghost cells and coarse-time interpolation
 
-`fill_amr_patch_tree_ghosts_3d` builds a two-cell halo around one node. It
+`fill_amr_patch_tree_ghosts_3d` builds a two-cell halo around one node by default.
+Optional `ghost_width=1..128` requests a wider or narrower halo; the shared
+`sample_amr_patch_tree_ghosts_3d` reader interface accepts the same option.
+Periodic wrapping supports multiple domain crossings. Along axes with reflecting
+walls the width must not exceed the domain extent at that level, since wall
+mapping uses one reflection. Output remains unchanged on rejection.
+The existing MPI wrapper and pressure-outlet correction still use two layers;
+this option alone does not extend those APIs or connect Dynamic LES stepping.
+See [wide-halo evidence](../validation/amr-wide-ghosts-20260925.md). The sampler
 constructs checked 64-bit global integer coordinates at every depth, searches
 all peer boxes at the requested resolution (including different parents), and
 falls back through coarser levels when no peer covers the cell (PCM by default).
