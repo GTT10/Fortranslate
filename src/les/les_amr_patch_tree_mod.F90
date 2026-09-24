@@ -322,7 +322,7 @@ contains
     ! Endpoints pack conserved components followed by a temperature guess.
     type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
     real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:),inflow_state(:,:),inflow_temperature(:)
-    type(amr_tree_state_3d) :: initial,candidate,temps,packed,updated
+    type(amr_tree_state_3d) :: initial,candidate,temps,packed,updated,first_t
     type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),les_rhs(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),recovered(:,:,:)
     real(dp) :: rhs(reactive_nvar(size(species)))
@@ -437,12 +437,13 @@ contains
         temps%fields(peer)%values(1,:,:,:)=recovered;deallocate(recovered)
       end do
       candidate=updated
+      if(stage==1) first_t=temps
 
     end do
     do peer=1,size(tree%nodes)
       if (tree%nodes(peer)%level/=depth) cycle
       candidate%fields(peer)%values=.5_dp*initial%fields(peer)%values+.5_dp*candidate%fields(peer)%values
-      temps%fields(peer)%values=.5_dp*(temperature%fields(peer)%values+temps%fields(peer)%values)
+      temps%fields(peer)%values=first_t%fields(peer)%values
       n=tree%nodes(peer)%shape;allocate(recovered(n(1),n(2),n(3)))
       call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
         n(1),n(2),n(3),recovered,valid)
