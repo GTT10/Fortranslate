@@ -627,6 +627,12 @@ if(PELEF_ENABLE_SPRAY)
         --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
         --les-model dynamic --les-harmonic --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_dynamic_harmonic_restart")
     set_tests_properties(spray_mpi_dynamic_harmonic_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
+    add_test(NAME spray_mpi_dynamic_wall_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/spray/test_mpi_spray_application.py"
+        --executable "$<TARGET_FILE:pelef_mpi_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}" --ranks 2
+        --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
+        --les-model dynamic --dynamic-walls --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_dynamic_wall_restart")
+    set_tests_properties(spray_mpi_dynamic_wall_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
   endif()
   add_test(NAME spray_isotropic_restart COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --sgs .17 --les-model wale --les-isotropic

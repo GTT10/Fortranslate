@@ -1307,7 +1307,6 @@ contains
       filter_code=les_filter_code(selected_filter)
       call les_filter_weights(selected_filter,test_ratio,filter_weights,filter_valid)
       filter_valid=filter_valid.and.grid_ratio>=1.and.grid_ratio<=64
-      if (present(boundary_faces)) filter_valid=filter_valid.and.all(boundary_faces=='periodic')
     end if
     sgs=[0.0_dp,.7_dp,.7_dp]
     if (present(les_settings)) sgs=les_settings
@@ -1402,7 +1401,8 @@ contains
         if (les_code==4) then
           if (allocated(stage_change)) stage_change=0
           call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
-            .5_dp*interval,valid,grid_ratio,harmonic)
+            .5_dp*interval,valid,grid_ratio,harmonic,boundary_faces,stage_change, &
+            inflow_state,inflow_temperature,wall_temperature,wall_velocity,pressure)
         else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
           boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
@@ -1419,7 +1419,8 @@ contains
         if (les_code==4) then
           if (allocated(stage_change)) stage_change=0
           call advance_mpi_dynamic_les_ssprk2_3d(comm,species,gas,temp,spacing,cells,selected_filter,test_ratio, &
-            .5_dp*interval,valid,grid_ratio,harmonic)
+            .5_dp*interval,valid,grid_ratio,harmonic,boundary_faces,stage_change, &
+            inflow_state,inflow_temperature,wall_temperature,wall_velocity,pressure)
         else
         call advance_mpi_spray_les(comm,species,gas,temp,spacing,cells,.5_dp*interval,sgs(1),sgs(2),sgs(3),valid, &
           boundary_faces,stage_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &

@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--rate-files', action='store_true')
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
+    parser.add_argument('--dynamic-walls', action='store_true')
     parser.add_argument('--les-model', choices=('wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +44,12 @@ def main():
         if args.les_model != 'dynamic':
             parser.error('--les-harmonic requires --les-model dynamic')
         source = source.replace('&mpi_spray', '&mpi_spray\n les_harmonic_mean=.true.,')
+    if args.dynamic_walls:
+        if args.les_model != 'dynamic':
+            parser.error('--dynamic-walls requires --les-model dynamic')
+        source = source.replace('&mpi_spray', "&mpi_spray\n boundary_faces='periodic','periodic',"
+                                "'no_slip_wall','isothermal_wall','periodic','periodic',"
+                                "wall_temperature=6*600.,wall_velocity(1,3)=2.,")
     if args.les_model:
         source = source.replace('&mpi_spray', f"&mpi_spray\n les_cs=.17, les_model='{args.les_model}',")
         if args.les_model == 'dynamic':
@@ -62,6 +69,8 @@ def main():
         assert abs(float(row['relative_mass_error'])) < 2e-11
         assert abs(float(row['relative_energy_error'])) < 2e-11
         assert int(row['parcels']) == 4
+    if args.dynamic_walls:
+        assert abs(float(history[-1]['boundary_energy'])) > 1e-14
     gas = [row for path in sorted(work.glob('*.gas.csv')) for row in rows(path)]
     assert len(gas) == 8 * 4 * 4
     cells = {(int(row['i']), int(row['j']), int(row['k'])) for row in gas}
@@ -219,8 +228,8 @@ def main():
             run_variant('bad_filter', args.ranks, '', expect_success=False)
             assert 'Invalid dynamic LES filter' in (work / 'bad_filter.log').read_text()
             source = original_source
-            run_variant('bad_faces', args.ranks, " boundary_faces=6*'outflow'", expect_success=False)
-            assert 'Dynamic LES requires periodic boundaries' in (work / 'bad_faces.log').read_text()
+            run_variant('bad_faces', args.ranks, " boundary_faces=6*'outflow', wall_velocity=18*0., restart_path='split.chk'", expect_success=False)
+            assert 'Restart rejected' in (work / 'bad_faces.log').read_text()
         print(args.les_model, 'PASS: coupled MPI restart, changed ranks, model guards; artifacts:', work)
         return
     schedule = ' injection_events=3\n injection_interval=7.5e-9'

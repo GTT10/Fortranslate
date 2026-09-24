@@ -321,7 +321,6 @@ contains
     checkpoint_context=trim(checkpoint_context)//' les-harmonic-v1'
   end if
   if (les_model=='dynamic') then
-    call require(all(boundary_faces=='periodic'),'Dynamic LES requires periodic boundaries')
     call les_filter_weights(les_test_filter,les_test_ratio,les_weights,ok)
     call require(ok.and.les_grid_ratio>=1.and.les_grid_ratio<=64,'Invalid dynamic LES filter')
     write(profile_context,'(*(g0,1x))',iostat=status) 'dynamic-les-filter-v1',trim(les_test_filter), &
