@@ -118,6 +118,13 @@ initial/scheduled injection, component budgets and density-based injection speed
 
 ## Ordered implementation work
 
+The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
+A periodic three-axis normal PPM face-flux predictor now reuses the existing
+1D/2D characteristic reconstruction, with analytic-flux, rotational and periodic
+conservation [checks](validation/ppm-normal-3d-20260925.md). Transverse/corner
+corrections, the time update, physical/AMR halos, MPI and application selection
+remain implementation work; the existing PCM/PLM solver remains available.
+
 | Order | Work unit | Measurable exit gate |
 | --- | --- | --- |
 | 1 | Validate existing physics before expanding it | Pin external cases, states, observables and tolerances; compare H2/O2 trajectories/rates with Cantera and flow fields with frozen PeleC; characterize convergence and conservation |
