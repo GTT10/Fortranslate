@@ -846,8 +846,9 @@ The fixed/selected serial spray application accepts
 particle/gas split, and checkpoint context binds the reconstruction selector.
 A fixed Mach-inlet fixture with molecular transport, Smagorinsky and evaporating
 parcels has exact restart evidence
-([focused checks](validation/ppm-regular-spray-20260925.md)). The regular MPI
-spray application is a separate implementation and does not yet expose PPM.
+([focused checks](validation/ppm-regular-spray-20260925.md)). The regular MPI spray application also accepts this selector in `&mpi_spray`,
+with fixed changed-rank continuation
+[checks](validation/ppm-regular-mpi-application-20260925.md).
 MPI AMR spray instead uses the gas namelist's `reconstruction` selector.
 
 ## Build and run

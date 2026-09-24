@@ -147,8 +147,9 @@ transport and fixed changed-rank continuation
 with fixed 2-to-4-rank particle/gas continuation
 [checks](validation/ppm-amr-spray-20260925.md). Regular serial spray also exposes PPM with Mach-boundary/transport/Smagorinsky
 restart [checks](validation/ppm-regular-spray-20260925.md). Two-level AMR and
-regular MPI spray application selection, broader coupling and reference-pressure
-fidelity remain open. The regular MPI spray hydro library now accepts PPM
+broader coupling and reference-pressure fidelity remain open. Regular MPI spray
+now exposes PPM through particle coupling and checkpoint context, with fixed
+changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
 [checks](validation/ppm-regular-mpi-hydro-20260925.md); the existing
 PCM/PLM solver remains available.

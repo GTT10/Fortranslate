@@ -412,3 +412,13 @@ The MPI integration performs frozen-gas transfer/breakup before each synchronous
 collision batch and uses pre-batch film heights. Film heating/evaporation brackets
 the coupled update with half-steps. This differs from sequential serial impact
 ordering and does not establish physical wet-wall or spray validation.
+
+## PPM hydro
+
+Set `hydro_reconstruction='characteristic_ppm'` in `&mpi_spray` to select
+four-layer CTU hydro in fixed or selected builds. The default is
+`characteristic_plm`. The particle/gas split forwards this selector, and
+checkpoint context rejects switching it on continuation. Fixed PPM has
+same-rank and 2-to-4-rank continuation evidence; selected PPM was compiled
+but not executed in that check. See the
+[application evidence](../../docs/validation/ppm-regular-mpi-application-20260925.md).
