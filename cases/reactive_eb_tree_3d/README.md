@@ -15,7 +15,7 @@ Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 
 ### Mach inlet
 
-Gas-only fixed/selected serial and MPI executables accept six-face inlet arrays
+Fixed/selected serial and MPI gas executables and MPI EB spray accept six-face inlet arrays
 in `&eb_tree`, ordered low-x, high-x, low-y, high-y, low-z, high-z. For example:
 
 ```fortran
@@ -31,9 +31,10 @@ the adjacent pressure; a positive value prescribes it. Negative Mach (default
 All values must be finite. Common and recursive gas stepping, molecular boundary
 fluxes and automatic timestep selection use the controls. Active inlet controls
 are saved and compared during restart, including rank-changing continuation.
-The MPI EB spray executable currently rejects active Mach inlets because its
-coupling path has not yet been connected. See
-[application evidence](../../docs/validation/eb-mach-application-20260925.md).
+MPI EB spray forwards the same controls to its gas update; particle boundary
+behavior remains governed by its separate particle settings. See
+[gas application evidence](../../docs/validation/eb-mach-application-20260925.md)
+and [spray coupling evidence](../../docs/validation/eb-mach-spray-20260925.md).
 
 ### Launch
 

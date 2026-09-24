@@ -144,8 +144,10 @@ now includes inlet signal speeds and diffusivity
 ([bound checks](validation/eb-mach-timestep-20260925.md)). Fixed/selected gas
 application input and checkpoint binding are connected; fixed serial/2/3-rank
 execution and rank-changing restart have
-[focused evidence](validation/eb-mach-application-20260925.md). The EB spray
-coupling path still needs inlet forwarding and explicitly rejects active inlets.
+[focused evidence](validation/eb-mach-application-20260925.md). MPI EB spray now
+forwards the same controls, with 2/4-rank conservation/parity and 2-to-4-rank
+restart [checks](validation/eb-mach-spray-20260925.md). These bounded tests do
+not establish nozzle validation or deposition/splash/film inlet qualification.
 AMR-particle boundary coupling and stationary level-set EB applications are
 implemented within the documented subsets. A three-axis extrusion API now maps
 validated 2D level-set sections into 3D volume/face/wall metrics, including faceted
