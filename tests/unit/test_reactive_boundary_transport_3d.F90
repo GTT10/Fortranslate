@@ -1,10 +1,13 @@
 program test_reactive_boundary_transport_3d
+  use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: gas_transport_species, load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_primitive_to_conserved
-  use reactive_3d_mod, only: reactive_integrals_3d, advance_reactive_boundary_hydro_3d
+  use reactive_3d_mod, only: reactive_integrals_3d, advance_reactive_boundary_hydro_3d, &
+    advance_reactive_full_3d, advance_reactive_chemistry_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d, reactive_transport_euler_update_3d, &
     reactive_isothermal_timestep_3d
   use mixture_thermo_mod, only: mixture_mass_properties
@@ -25,6 +28,7 @@ program test_reactive_boundary_transport_3d
   call require(ok,'transport')
   call check_pressure_transport()
   call check_mach_transport()
+  call check_mach_split()
   call check_wall_shear()
   call check_wall_heat()
   do mode=1,4
@@ -133,6 +137,52 @@ contains
       .true.,.true.,.true.,.true.,theta,ok,faces,change,inflow_temperature=target_t,inflow_mach=mach)
     call require(.not.ok.and.all(u==before).and.all(t==bt),'Mach transport temperature failure preserves fluid')
   end subroutine check_mach_transport
+
+  subroutine check_mach_split()
+    type(elementary_reaction), allocatable :: reactions(:)
+    real(dp) :: mach(6),target_t(6),target_p(6),ref(12,4,4,4),rt(4,4,4),ledger(12),part(12),th
+    real(dp), parameter :: step=1e-8_dp
+    integer :: stage
+    call load_h2o2_elementary_mechanism(reactions,ok)
+    call require(ok,'split mechanism')
+    faces='outflow';faces(1)='inflow';mach=-1;mach(1)=.2_dp;target_t=700;target_p=0
+    target_p(1)=120000
+    ref=before;rt=bt;ledger=0
+    do stage=1,5
+      select case(stage)
+      case(1,5)
+        call advance_reactive_chemistry_3d(species,reactions,ref,rt,4,4,4,.5_dp*step,1e-6_dp,1e-12_dp,ok)
+      case(2,4)
+        call advance_reactive_transport_3d(species,transport,ref,rt,4,4,4,dx,dx,dx,.5_dp*step, &
+          .true.,.true.,.true.,.true.,th,ok,faces,part, &
+          inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=target_p)
+        ledger=ledger+part
+      case(3)
+        call advance_reactive_boundary_hydro_3d(species,ref,rt,[dx,dx,dx],step,faces, &
+          'characteristic_plm','mc','hllc',part,ok,inflow_temperature=target_t, &
+          inflow_mach=mach,inflow_pressure=target_p)
+        ledger=ledger+part
+      end select
+      call require(ok,'explicit Mach split stage')
+    end do
+    u=before;t=bt
+    call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,dx,dx,dx,step,'hllc', &
+      .true.,1e-6_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,theta,ok, &
+      reconstruction='characteristic_plm',boundary_faces=faces,boundary_change=change, &
+      inflow_temperature=target_t,inflow_mach=mach,inflow_pressure=target_p)
+    call require(ok,'Mach full reactive split')
+    call require(all(u==ref).and.all(t==rt).and.all(change==ledger),'exact five-stage Mach composition')
+    u=before;t=bt;target_t(1)=-1
+    call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,dx,dx,dx,step,'hllc', &
+      .true.,1e-6_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,theta,ok,boundary_faces=faces, &
+      inflow_temperature=target_t,inflow_mach=mach)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'failed split preserves fluid after chemistry')
+    faces='periodic'
+    call advance_reactive_full_3d(species,reactions,transport,u,t,4,4,4,dx,dx,dx,step,'hllc', &
+      .false.,1e-6_dp,1e-12_dp,.false.,.false.,.false.,.false.,.false.,theta,ok, &
+      boundary_faces=faces,inflow_mach=mach)
+    call require(.not.ok.and.all(u==before).and.all(t==bt),'active Mach cannot bypass periodic dispatch')
+  end subroutine check_mach_split
 
   subroutine check_pressure_transport()
     real(dp) :: outlet(6)

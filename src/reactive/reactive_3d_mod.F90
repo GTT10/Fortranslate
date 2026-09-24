@@ -1062,7 +1062,8 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
-      boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure)
+      boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1081,7 +1082,7 @@ contains
     real(dp), allocatable :: candidate_state(:, :, :, :)
     real(dp), allocatable :: candidate_temperature(:, :, :)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     character(len=*), intent(in), optional :: boundary_faces(6)
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
@@ -1095,6 +1096,16 @@ contains
     minimum_transport_theta = 1.0_dp
     faces = "periodic"
     if (present(boundary_faces)) faces = boundary_faces
+    if(present(inflow_pressure).and..not.present(inflow_mach)) return
+    if(present(inflow_mach)) then
+      if(.not.all(ieee_is_finite(inflow_mach))) return
+      if(any(inflow_mach>100).or.any(inflow_mach>=0.and.faces/='inflow')) return
+      if(present(inflow_pressure)) then
+        if(.not.all(ieee_is_finite(inflow_pressure))) return
+        if(any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) return
+        if(any(inflow_pressure>0.and.inflow_mach<0)) return
+      end if
+    end if
     if(present(outlet_pressure)) then
       if(.not.all(ieee_is_finite(outlet_pressure))) return
       if(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
@@ -1145,7 +1156,8 @@ contains
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
-        inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure)
+        inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
+        inflow_mach,inflow_pressure)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -1154,7 +1166,8 @@ contains
     if (any(faces /= "periodic")) then
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
         [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
-        inflow_state, inflow_temperature,outlet_pressure=outlet_pressure)
+        inflow_state, inflow_temperature,outlet_pressure=outlet_pressure, &
+        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -1175,7 +1188,8 @@ contains
         nx, ny, nz, dx, dy, dz, 0.5_dp * dt, viscosity_enabled, &
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
-        inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure)
+        inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
+        inflow_mach,inflow_pressure)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
