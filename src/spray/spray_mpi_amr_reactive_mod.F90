@@ -32,14 +32,14 @@ contains
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       wall_films,film_mass,film_settings,film_steps,les_settings,les_model,outlet_pressure, &
       acceleration,source_change,split_created, &
-      les_test_model,les_test_ratio,les_grid_ratio,les_harmonic_mean)
+      les_test_model,les_test_ratio,les_grid_ratio,les_harmonic_mean,inflow_mach,inflow_pressure)
     integer(int64), optional, intent(out) :: split_created
     integer(int64) :: before_split
     real(dp) :: low_multiplicity,high_multiplicity
     real(dp), optional, intent(in) :: acceleration(3)
     real(dp), optional, intent(inout) :: source_change(:)
     real(dp) :: accel(3),low_accel(3),high_accel(3)
-    real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6),pressure_min(6),pressure_max(6)
     ! Static LES settings are [eddy coefficient, PrT, ScT, CI]; dynamic is enabled by model.
     real(dp), optional, intent(in) :: les_settings(4)
@@ -220,7 +220,7 @@ contains
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       boundary,correction,theta,comm,valid,chemistry_integrator=chemistry_integrator,subcycling=subcycling, &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
-      wall_velocity=wall_velocity,outlet_pressure=pressure)
+      wall_velocity=wall_velocity,outlet_pressure=pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
     if (.not.valid) return
     call les_half_step()
     if (.not.valid) return
@@ -339,13 +339,15 @@ contains
           sgs(1),sgs(2),sgs(3),les_boundary,les_correction,maximum_diffusivity,comm,valid, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
           wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure, &
-          test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean)
+          test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
       else
         call advance_mpi_amr_tree_les_3d(tree,owners,species,gas,temp,spacing,.5_dp*dt,faces, &
           sgs(1),sgs(2),sgs(3),les_boundary,les_correction,comm,valid, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
           wall_temperature=wall_temperature,wall_velocity=wall_velocity,model=model,ci=sgs(4),outlet_pressure=pressure, &
-          test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean)
+          test_model=les_test_model,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio,harmonic_mean=les_harmonic_mean, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
       end if
       if (.not.valid) return
       les_ledger=les_ledger+les_boundary;les_max=max(les_max,les_correction)

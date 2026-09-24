@@ -30,7 +30,7 @@ program test_spray_mpi_amr_reactive
   real(dp), allocatable :: boundary(:)
   character(len=32) :: faces(6)
   real(dp) :: correction,theta
-  real(dp) :: sgs(4),accel(3)=0
+  real(dp) :: sgs(4),accel(3)=0,mach(6)=-1,pin(6)=0,tin(6)=800
   real(dp), allocatable :: source(:)
   character(len=16) :: argument
   integer :: mode
@@ -170,6 +170,27 @@ program test_spray_mpi_amr_reactive
     call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(q==2,'coupled outflow removes parcel')
   end do
+  if(argument=='les') then
+    faces='periodic';faces(1)='inflow';faces(2)='outflow';mach(1)=.2_dp
+    do mode=1,2
+      recursive=mode==2;pin=0
+      if(recursive) pin(1)=120000
+      local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+      tin(1)=-1;boundary=123
+      call coupled()
+      call require(.not.ok,'invalid Mach temperature rejects coupled step')
+      call unchanged()
+      call require(all(boundary==123),'Mach failure preserves boundary ledger')
+      tin(1)=800
+      call totals(before)
+      call coupled()
+      call require(ok,'Mach LES common/recursive spray step')
+      call totals(after)
+      scale=max(abs(before),abs(after),abs(boundary),1.e-30_dp)
+      call require(all(abs(after-before-boundary)<=3.e-12_dp*scale),'Mach combined gas and parcel budget')
+    end do
+    mach=-1;pin=0;faces(1)='slip_wall'
+  end if
   if (argument=='split') then
     local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
     faces='periodic';recursive=.false.;chemistry=.false.;last_id=3
@@ -234,7 +255,8 @@ contains
       local,local_t,drops,masses,zero,spacing,interval,'pcm','minmod',solver,chemistry, &
       .true.,.true.,.true.,.false.,1.e-6_dp,1.e-12_dp,steps,correction,theta,ok,last_id, &
       chemistry_integrator='implicit',subcycling=recursive,boundary_faces=faces,boundary_change=boundary, &
-      les_settings=sgs,les_model='vreman',acceleration=accel,source_change=source,split_created=created)
+      les_settings=sgs,les_model='vreman',acceleration=accel,source_change=source,split_created=created, &
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
   end subroutine
   subroutine unchanged()
     integer :: a
