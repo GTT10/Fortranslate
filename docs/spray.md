@@ -3224,8 +3224,13 @@ see [open-boundary checks](validation/les-dynamic-open-20260925.md).
 The serial `advance_amr_patch_tree_les_level_3d` API advances one depth using
 temporal coarse donors and returns SSPRK2 time-integrated faces for later
 reflux. It preserves inactive levels and publishes outputs transactionally.
-Recursive scheduling and MPI/application dispatch remain separate work; see
-[level integration checks](validation/les-amr-level-20260925.md).
+The serial `advance_amr_patch_tree_subcycle_les_3d` driver now schedules
+ratio-squared child intervals, interpolates coarse endpoints and synchronizes
+time-integrated fluxes after each child cycle. It returns per-level step counts,
+composite boundary change and maximum correction/diffusivity transactionally.
+Automatic subcycle timestep selection and MPI/application dispatch remain work.
+See [level integration checks](validation/les-amr-level-20260925.md) and
+[recursive integration checks](validation/les-amr-subcycle-20260925.md).
 
 `advance_mpi_amr_spray_reactive` accepts optional `les_settings` containing
 `[eddy coefficient, PrT, ScT, CI]` and `les_model` (`smagorinsky`, `wale` or

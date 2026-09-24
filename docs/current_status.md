@@ -22,8 +22,10 @@ Dynamic wall faces are connected through the AMR selector, stepper and spray app
 ([wall integration](validation/les-dynamic-amr-walls-20260925.md)).
 Dynamic pressure-target outlets now correct all donor layers using physical
 domain coordinates ([pressure integration](validation/les-dynamic-amr-pressure-20260925.md)).
-LES subcycling, detailed-fuel Dynamic LES and
-physical qualification remain open.
+Serial LES subcycling now has a recursive driver with interval-weighted reflux
+([focused checks](validation/les-amr-subcycle-20260925.md)). Subcycle timestep
+selection, MPI/application dispatch, detailed-fuel Dynamic LES and physical
+qualification remain open.
 Non-regular EB LES is an extension beyond the pinned reference, which rejects
 such cells in all four closures ([source audit](validation/les-reference-scope-20260925.md)).
 Use the regular-grid AMR LES path for the supported LES scope.
