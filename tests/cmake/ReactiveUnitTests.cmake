@@ -810,6 +810,8 @@ add_test(NAME unit_eb_tree_subcycle_transport_3d COMMAND test_eb_tree_subcycle_t
 add_executable(test_eb_tree_subcycle_full_3d unit/test_eb_tree_subcycle_full_3d.F90)
 target_link_libraries(test_eb_tree_subcycle_full_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_subcycle_full_3d COMMAND test_eb_tree_subcycle_full_3d)
+add_test(NAME unit_eb_tree_mach_subcycle_full_3d COMMAND test_eb_tree_subcycle_full_3d mach)
+add_test(NAME unit_eb_tree_mach_common_full_3d COMMAND test_eb_tree_subcycle_full_3d mach-common)
 add_test(NAME regression_eb_tree_subcycle_3d
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_application_3d.py"
     --exe "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
