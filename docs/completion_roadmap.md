@@ -126,9 +126,10 @@ transverse/corner flux construction is now implemented with PeleF conservative
 EOS recovery ([focused checks](validation/ppm-ctu-3d-20260925.md)); reference
 primitive-pressure parity remains open. The periodic conservative CTU time
 update and full-split library dispatch now have multistep conservation and
-rollback [checks](validation/ppm-step-3d-20260925.md). Physical/AMR halos, MPI
-and application selection remain implementation work; the existing PCM/PLM
-solver remains available.
+rollback [checks](validation/ppm-step-3d-20260925.md). Fixed/selected regular
+gas application input now selects periodic PPM
+([input checks](validation/ppm-input-3d-20260925.md)). Physical/AMR halos and MPI
+remain implementation work; the existing PCM/PLM solver remains available.
 
 | Order | Work unit | Measurable exit gate |
 | --- | --- | --- |

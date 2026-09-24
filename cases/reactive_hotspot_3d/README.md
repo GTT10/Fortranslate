@@ -14,3 +14,12 @@ The case is a coupled numerical regression, not an external ignition
 validation. Its checker enforces physical fields, EOS and species identities,
 Euler conservation, H/O/N elemental conservation, and nonzero chemical
 evolution.
+
+## Periodic PPM
+
+The fixed and selected regular gas executables accept
+`reconstruction = "characteristic_ppm"` for six periodic faces. This selects
+the conservative twelve-solve CTU step with flattening enabled and contact
+steepening disabled. Physical-boundary and AMR application selection remains
+unsupported. The regular gas application has no checkpoint/restart interface.
+See the [focused input checks](../../docs/validation/ppm-input-3d-20260925.md).
