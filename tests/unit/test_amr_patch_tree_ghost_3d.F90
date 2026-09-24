@@ -1,11 +1,15 @@
 program test_amr_patch_tree_ghost_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use nasa7_thermo_mod, only: nasa7_species
+  use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use reactive_1d_mod, only: reactive_primitive_to_conserved
   use precision_mod, only: dp
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d,prolong_pcm_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
     initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d
   use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d
-  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
+    fill_mach_inlet_boundary_ghosts_3d,mach_inlet_ghost_3d
   implicit none
   type(amr_patch_tree_3d) :: tree,deep
   type(amr_tree_state_3d) :: state,deep_state
@@ -103,6 +107,7 @@ program test_amr_patch_tree_ghost_3d
     deallocate(dense)
   end do
   call wide_wall_checks()
+  call mach_inlet_checks()
   call temporal_checks()
   saved=ghost
   call fill_amr_patch_tree_ghosts_3d(tree,state,5,faces,ghost,ok)
@@ -127,6 +132,79 @@ program test_amr_patch_tree_ghost_3d
   call require(.not.ok.and.all(ghost==saved),'global integer-coordinate overflow rejects before allocation')
   print '(a)','test_amr_patch_tree_ghost_3d: PASS'
 contains
+  subroutine mach_inlet_checks()
+    type(nasa7_species), allocatable :: thermo(:)
+    type(amr_patch_tree_3d) :: geometry
+    type(amr_tree_state_3d) :: gas,future
+    type(amr_patch_3d) :: empty(0),patch(1)
+    real(dp) :: packed(13,4,4,4),q(12),sound,ma(6),pin(6),tin(6),walls(3,6),donor(13),expected(13)
+    real(dp) :: regular(12,18,18,18),regular_t(18,18,18)
+    real(dp), allocatable :: halo(:,:,:,:),previous(:,:,:,:)
+    character(len=32) :: bc(6)
+    integer :: i,j,k,face,wall_axis
+    logical :: success
+    call load_h2o2_elementary_thermo(thermo,success)
+    call require(success,'Mach tree thermo')
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          q=0;q(1)=.3_dp+.01_dp*i;q(5)=101325+100*j;q(6)=.03_dp;q(9)=.23_dp;q(12)=.74_dp
+          q(2:4)=[real(i,dp),real(j,dp),real(k,dp)]
+          call reactive_primitive_to_conserved(thermo,q,packed(:12,i,j,k),packed(13,i,j,k),sound,success)
+          call require(success,'Mach tree initial gas')
+        end do
+      end do
+    end do
+    call initialize_amr_patch_tree_3d([4,4,4],[integer::],empty,geometry,success)
+    call require(success,'Mach tree root')
+    call prolong_amr_patch_tree_3d(geometry,packed,gas,success)
+    call require(success,'Mach tree packed gas')
+    tin=700
+    do face=1,6
+      bc='outflow';bc(face)='inflow';ma=-1;ma(face)=.2_dp;pin=0;walls=0
+      if(modulo(face,2)==0) pin(face)=120000
+      wall_axis=modulo((face+1)/2,3)+1
+      bc(2*wall_axis-1:2*wall_axis)='no_slip_wall'
+      walls((face+1)/2,2*wall_axis-1)=2
+      call fill_amr_patch_tree_ghosts_3d(geometry,gas,1,bc,halo,success,viscous_wall=.true.,wall_velocity=walls, &
+        ghost_width=7,species=thermo,inflow_mach=ma,inflow_temperature=tin,inflow_pressure=pin)
+      call require(success,'Mach tree wide root donors')
+      call fill_mach_inlet_boundary_ghosts_3d(thermo,packed(:12,:,:,:),packed(13,:,:,:),bc,ma,regular,regular_t, &
+        success,viscous_wall=.true.,wall_velocity=walls,ghost_width=7,inflow_temperature=tin,inflow_pressure=pin)
+      call require(success,'Mach regular root oracle')
+      call require(all(halo(:12,:,:,:)==regular).and.all(halo(13,:,:,:)==regular_t),'exact Mach root including walls')
+    end do
+    donor=packed(:,1,1,1)
+    do k=1,4
+      do j=1,4
+        do i=1,4
+          packed(:,i,j,k)=donor
+        end do
+      end do
+    end do
+    call initialize_amr_patch_3d(4,4,4,2,3,2,3,2,3,2,patch(1),success)
+    call require(success,'Mach interior refinement')
+    call initialize_amr_patch_tree_3d([4,4,4],[1],patch,geometry,success)
+    call require(success,'Mach refined geometry')
+    call prolong_amr_patch_tree_3d(geometry,packed,gas,success)
+    call require(success,'Mach refined gas')
+    future=gas;future%fields(1)%values(:12,:,:,:)=1.2_dp*gas%fields(1)%values(:12,:,:,:)
+    bc='outflow';bc(1)='inflow';ma=-1;ma(1)=.2_dp
+    call fill_amr_patch_tree_ghosts_3d(geometry,gas,2,bc,halo,success,coarse_future=future, &
+      coarse_fractions=[.5_dp],coarse_limiter='mc',species_count=7,ghost_width=7, &
+      species=thermo,inflow_mach=ma,inflow_temperature=tin)
+    call require(success,'Mach temporally interpolated coarse donors')
+    donor(:12)=.5_dp*donor(:12)+.5_dp*(1.2_dp*donor(:12))
+    expected=donor
+    call mach_inlet_ghost_3d(thermo,donor(:12),donor(13),1,700._dp,.2_dp,expected(:12),expected(13),success)
+    call require(success,'Mach coarse endpoint oracle')
+    call require(all(halo(:,1,9,9)==expected),'Mach inlet uses blended coarse pressure and composition')
+    previous=halo;tin(1)=-1
+    call fill_amr_patch_tree_ghosts_3d(geometry,gas,2,bc,halo,success,species=thermo,inflow_mach=ma, &
+      inflow_temperature=tin,ghost_width=7)
+    call require(.not.success.and.all(halo==previous),'Mach tree failure preserves output')
+  end subroutine mach_inlet_checks
+
   subroutine wide_wall_checks()
     type(amr_patch_tree_3d) :: box
     type(amr_tree_state_3d) :: field

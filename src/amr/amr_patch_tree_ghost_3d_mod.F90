@@ -6,7 +6,7 @@ module amr_patch_tree_ghost_3d_mod
   use slope_limiter_mod, only: limited_slope
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d,valid_wall_velocity_3d, &
-    fill_pressure_outlet_ghosts_3d
+    fill_pressure_outlet_ghosts_3d,mach_inlet_ghost_3d
   implicit none
   private
   public :: fill_amr_patch_tree_ghosts_3d,sample_amr_patch_tree_ghosts_3d
@@ -82,7 +82,10 @@ contains
   end subroutine
 
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
-      coarse_future,coarse_fractions,coarse_limiter,species_count,ghost_width)
+      coarse_future,coarse_fractions,coarse_limiter,species_count,ghost_width, &
+      species,inflow_mach,inflow_temperature,inflow_pressure)
+    type(nasa7_species), optional, intent(in) :: species(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), target, intent(in) :: state
     integer, intent(in) :: node
@@ -128,7 +131,8 @@ contains
     reader%state=>state
     if (present(coarse_future)) reader%future=>coarse_future
     call sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall, &
-      inflow_state,wall_velocity,coarse_fractions,coarse_limiter,species_count,ghost_width=ghost_width)
+      inflow_state,wall_velocity,coarse_fractions,coarse_limiter,species_count,ghost_width=ghost_width, &
+      species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
   end subroutine fill_amr_patch_tree_ghosts_3d
 
   subroutine read_serial_cell(self,node,index,future,value,ok)
@@ -146,7 +150,10 @@ contains
   end subroutine
 
   subroutine sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
-      coarse_fractions,coarse_limiter,species_count,planning,validate_only,ghost_width)
+      coarse_fractions,coarse_limiter,species_count,planning,validate_only,ghost_width, &
+      species,inflow_mach,inflow_temperature,inflow_pressure)
+    type(nasa7_species), optional, intent(in) :: species(:)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: nvar
     class(amr_tree_cell_source_3d), intent(inout) :: reader
@@ -167,8 +174,8 @@ contains
     integer(int64) :: coordinate(3),mapped(3),point(3),extent(3)
     integer :: i,j,k,axis,face,inlet,level,source_level,source,local(3),dims(3),ios
     real(dp) :: endpoint(nvar)
-    real(dp) :: shift(3),old_momentum(3),rho,fraction
-    logical :: reflect(3),viscous,found,valid,plan
+    real(dp) :: shift(3),old_momentum(3),rho,fraction,mach(6),pin(6)
+    logical :: reflect(3),viscous,found,valid,plan,interpolate
     integer :: nspecies,width,bounces,bounce,wall_faces(128)
     ok=.false.
     plan=.false.
@@ -194,7 +201,27 @@ contains
     if (present(wall_velocity)) then
       if (.not.valid_wall_velocity_3d(faces,wall_velocity)) return
     end if
-    if (any(faces=='inflow')) then
+    mach=-1;pin=0
+    if(present(inflow_mach)) mach=inflow_mach
+    if(present(inflow_pressure)) then
+      if(.not.present(inflow_mach)) return
+      pin=inflow_pressure
+    end if
+    if(.not.all(ieee_is_finite(mach)).or.any(mach>100)) return
+    if(any(mach>=0.and.faces/='inflow')) return
+    if(.not.all(ieee_is_finite(pin)).or.any(pin<0).or.any(pin>1e15_dp)) return
+    if(any(pin>0.and.mach<0)) return
+    if(any(mach>=0)) then
+      if(.not.present(species).or..not.present(inflow_temperature)) return
+      if(nvar/=6+size(species)) return
+      if(present(species_count)) then
+        if(species_count/=size(species)) return
+      end if
+      nspecies=size(species)
+      if(.not.all(ieee_is_finite(inflow_temperature))) return
+      if(any(inflow_temperature<=0.and.mach>=0)) return
+    end if
+    if (any(faces=='inflow'.and.mach<0)) then
       if (.not.present(inflow_state)) return
       if (any(shape(inflow_state)/=[nvar,6])) return
       if (.not.all(ieee_is_finite(inflow_state))) return
@@ -283,12 +310,17 @@ contains
             source_level=source_level-1
           end do
           if (.not.found) return
-          if (present(coarse_limiter).and.source_level<level.and.inlet==0) then
+          interpolate=inlet==0
+          if(inlet>0) interpolate=mach(inlet)>=0
+          if (present(coarse_limiter).and.source_level<level.and.interpolate) then
             call interpolate_donor(point,source_level,mapped,candidate(:,i,j,k),valid)
             if (.not.valid) return
           end if
           if (plan) cycle
-          if (inlet>0) candidate(:,i,j,k)=inflow_state(:,inlet)
+          if (inlet>0) then
+            call apply_inlet(candidate(:,i,j,k),inlet,valid)
+            if(.not.valid) return
+          end if
           old_momentum=candidate(2:4,i,j,k)
           do axis=1,3
             if (reflect(axis)) candidate(axis+1,i,j,k)=-candidate(axis+1,i,j,k)
@@ -306,6 +338,26 @@ contains
     if (.not.all(ieee_is_finite(candidate))) return
     call move_alloc(candidate,ghost);ok=.true.
   contains
+    subroutine apply_inlet(value,boundary,success)
+      real(dp), intent(inout) :: value(:)
+      integer, intent(in) :: boundary
+      logical, intent(out) :: success
+      real(dp) :: donor(nvar)
+      success=.true.
+      if(mach(boundary)<0) then
+        value=inflow_state(:,boundary)
+        return
+      end if
+      donor=value
+      if(pin(boundary)>0) then
+        call mach_inlet_ghost_3d(species,donor(:nvar-1),donor(nvar),boundary,inflow_temperature(boundary), &
+          mach(boundary),value(:nvar-1),value(nvar),success,inlet_pressure=pin(boundary))
+      else
+        call mach_inlet_ghost_3d(species,donor(:nvar-1),donor(nvar),boundary,inflow_temperature(boundary), &
+          mach(boundary),value(:nvar-1),value(nvar),success)
+      end if
+    end subroutine apply_inlet
+
     subroutine interpolate_donor(center_index,donor_level,fine_index,value,success)
       integer(int64), intent(in) :: center_index(3),fine_index(3)
       integer, intent(in) :: donor_level
@@ -422,7 +474,10 @@ contains
       end do
       if (.not.success) return
       if (plan) return
-      if (reservoir>0) value=inflow_state(:,reservoir)
+      if (reservoir>0) then
+        call apply_inlet(value,reservoir,success)
+        if(.not.success) return
+      end if
       momentum=value(2:4)
       do direction=1,3
         if (flip(direction)) value(direction+1)=-value(direction+1)
