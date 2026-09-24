@@ -3232,6 +3232,9 @@ composite boundary change and maximum correction/diffusivity transactionally.
 scaling each patch's diffusion rate with the cumulative squared refinement ratio
 ([selector checks](validation/les-subcycle-timestep-20260925.md)). Stage bounds
 remain enforced during stepping. MPI/application subcycle dispatch remains work.
+The MPI timestep API accepts `subcycle=.true.` for the same coarse-interval
+scaling, with collective agreement and owner-local diffusion evaluation
+([MPI selector checks](validation/les-mpi-subcycle-timestep-20260925.md)).
 See [level integration checks](validation/les-amr-level-20260925.md) and
 [recursive integration checks](validation/les-amr-subcycle-20260925.md).
 
