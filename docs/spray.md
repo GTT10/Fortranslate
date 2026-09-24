@@ -3186,7 +3186,12 @@ prescribed reservoir inflow, extrapolated outflow and slip/adiabatic/isothermal 
 Optional `test_model`, `test_ratio`, `grid_ratio`, `harmonic_mean` default
 to `box`, 2, 1 and false. These controls are rejected for static models. Dynamic
 coefficients replace the static `cs/prt/sct/ci` parameters.
-Nonzero outlet pressures reject in dynamic mode. Each stage builds sufficiently
+Pressure-target outlets use the existing acoustic pressure extrapolation across
+all donor layers. A wide halo can cross the physical domain boundary even for
+an interior patch; correction uses that boundary rather than the patch edge.
+Large pressure differences can make an outer donor inadmissible and reject the
+transaction. See [pressure integration checks](validation/les-dynamic-amr-pressure-20260925.md).
+Each stage builds sufficiently
 wide donor halos, evaluates dynamic faces, synchronizes/refluxes and averages
 down through the existing transaction. The diffusion bound includes padded
 cells and may restrict the interval more than an interior-only estimate.

@@ -290,8 +290,9 @@ Periodic, prescribed reservoir inflow/extrapolated outflow and slip/adiabatic/is
 The second group is optional with the shown defaults. Dynamic mode is active
 even with `les_cs=les_ci=0`; its computed coefficients replace static
 `les_cs/les_prt/les_sct/les_ci`. Filter models/ratios follow the regular Dynamic
-LES kernel. Pressure-target outlets still reject; nondefault dynamic filter controls
-on a static model reject. Dynamic settings enter checkpoint identity, so changing
+LES kernel. Pressure-target outlets apply acoustic extrapolation through the
+full donor halo; an inadmissible outer donor rejects the step. Nondefault dynamic
+filter controls on a static model reject. Dynamic settings enter checkpoint identity, so changing
 them rejects restart. Static/default context serialization is preserved.
 The same particle/gas transaction, two LES half steps and retry logic apply.
 The diffusion estimate includes padded donor cells and can be conservative.
@@ -302,6 +303,7 @@ also pass focused checks ([combined evidence](../../docs/validation/les-dynamic-
 Detailed-fuel and physical validation remain outside this evidence.
 Moving walls require `transport_enabled=.true.,viscosity_enabled=.true.` in the gas input.
 See [wall integration checks](../../docs/validation/les-dynamic-amr-walls-20260925.md).
+See [pressure-outlet checks](../../docs/validation/les-dynamic-amr-pressure-20260925.md).
 See also [inflow/outflow checks](../../docs/validation/les-dynamic-open-20260925.md).
 
 ### Uniform acceleration
