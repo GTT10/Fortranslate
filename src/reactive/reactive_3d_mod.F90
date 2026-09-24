@@ -12,12 +12,14 @@ module reactive_3d_mod
     reactive_primitive_to_conserved, reactive_conserved_to_primitive, &
     reactive_riemann_flux_x, characteristic_limited_slope
   use reactive_2d_mod, only: &
-    reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d
+    reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d, &
+    apply_reactive_transverse_correction_2d
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   private
 
+  public :: compute_reactive_ppm_ctu_fluxes_3d
   public :: compute_reactive_ppm_normal_fluxes_3d
   public :: advance_reactive_boundary_hydro_3d
   public :: compute_reactive_cfl_timestep_3d
@@ -41,13 +43,17 @@ contains
   ! Periodic time-centered normal PPM fluxes. These are predictors for a CTU
   ! update; transverse/corner corrections must be applied by the caller.
   subroutine compute_reactive_ppm_normal_fluxes_3d(species,state,temperature,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,ok)
+      steepening,flattening,solver,xflux,yflux,zflux,ok,normal_minus,normal_plus,normal_tm,normal_tp)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),dt
     logical, intent(in) :: steepening,flattening
     character(len=*), intent(in) :: solver
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:)
     logical, intent(out) :: ok
+    real(dp), allocatable, optional, intent(out) :: normal_minus(:,:,:,:,:),normal_plus(:,:,:,:,:)
+    real(dp), allocatable, optional, intent(out) :: normal_tm(:,:,:,:),normal_tp(:,:,:,:)
+    real(dp), allocatable :: nm(:,:,:,:,:),np(:,:,:,:,:),ntm(:,:,:,:),ntp(:,:,:,:)
+    logical :: save_states
     real(dp), allocatable :: q(:,:,:,:),sound(:,:,:),minus(:,:,:,:),plus(:,:,:,:),tm(:,:,:),tp(:,:,:)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: stencil(reactive_nprim(size(species)),-3:3)
@@ -56,6 +62,10 @@ contains
     integer :: n(3),nv,axis,i,j,k,offset,index(3),donor(3),left(3),face(3)
     logical :: valid
     xflux=0;yflux=0;zflux=0;ok=.false.;nv=reactive_nvar(size(species))
+    save_states=present(normal_minus).or.present(normal_plus).or.present(normal_tm).or.present(normal_tp)
+    if (save_states) then
+      if (.not.(present(normal_minus).and.present(normal_plus).and.present(normal_tm).and.present(normal_tp))) return
+    end if
     n=shape(temperature)
     if (any(n<2).or.any(shape(state)/=[nv,n])) return
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
@@ -75,6 +85,8 @@ contains
     end do
     end do
     end do
+    if (save_states) allocate(nm(nv,n(1),n(2),n(3),3),np(nv,n(1),n(2),n(3),3), &
+      ntm(n(1),n(2),n(3),3),ntp(n(1),n(2),n(3),3))
     do axis=1,3
       do k=1,n(3)
       do j=1,n(2)
@@ -98,6 +110,9 @@ contains
       end do
       end do
       end do
+      if (save_states) then
+        nm(:,:,:,:,axis)=minus;np(:,:,:,:,axis)=plus;ntm(:,:,:,axis)=tm;ntp(:,:,:,axis)=tp
+      end if
       do k=1,n(3)
       do j=1,n(2)
       do i=1,n(1)
@@ -128,8 +143,118 @@ contains
     fy(:,:,n(2),:)=fy(:,:,0,:)
     fz(:,:,:,n(3))=fz(:,:,:,0)
     xflux=fx;yflux=fy;zflux=fz
+    if (save_states) then
+      call move_alloc(nm,normal_minus);call move_alloc(np,normal_plus)
+      call move_alloc(ntm,normal_tm);call move_alloc(ntp,normal_tp)
+    end if
     ok=.true.
   end subroutine compute_reactive_ppm_normal_fluxes_3d
+
+  ! Twelve-solve CTU ordering: 3 normal, 6 single-transverse (dt/3),
+  ! then 3 double-transverse (dt/2) solves. EOS recovery/positivity follows
+  ! PeleF's conservative transverse correction, not PeleC's separate p equation.
+  subroutine compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt, &
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),dt
+    logical, intent(in) :: steepening,flattening
+    character(len=*), intent(in) :: solver
+    real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
+    logical, intent(out) :: ok
+    real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),nm(:,:,:,:,:),np(:,:,:,:,:)
+    real(dp), allocatable :: ntm(:,:,:,:),ntp(:,:,:,:),normal(:,:,:,:,:),corner(:,:,:,:,:,:),final(:,:,:,:,:)
+    real(dp), allocatable :: minus(:,:,:,:),plus(:,:,:,:),tm(:,:,:),tp(:,:,:),delta(:,:,:,:)
+    real(dp) :: theta,theta_m,theta_p,zero(reactive_nvar(size(species)))
+    integer :: n(3),nv,a,b,c,i,j,k,index(3),lo(3),hi(3)
+    logical :: valid
+    xflux=0;yflux=0;zflux=0;minimum_theta=0;ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    if (any(n<2)) return
+    if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)])) return
+    if (any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)])) return
+    if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
+    allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    call compute_reactive_ppm_normal_fluxes_3d(species,state,temperature,spacing,dt,steepening,flattening, &
+      solver,fx,fy,fz,valid,nm,np,ntm,ntp)
+    if (.not.valid) return
+    allocate(normal(nv,n(1),n(2),n(3),3),corner(nv,n(1),n(2),n(3),3,3),final(nv,n(1),n(2),n(3),3))
+    allocate(minus(nv,n(1),n(2),n(3)),plus(nv,n(1),n(2),n(3)),delta(nv,n(1),n(2),n(3)))
+    allocate(tm(n(1),n(2),n(3)),tp(n(1),n(2),n(3)))
+    normal(:,:,:,:,1)=fx(:,1:,:,:);normal(:,:,:,:,2)=fy(:,:,1:,:);normal(:,:,:,:,3)=fz(:,:,:,1:)
+    theta=1;zero=0;corner=0
+    do a=1,3
+      do b=1,3
+        if (a==b) cycle
+        delta=0
+        call add_difference(normal(:,:,:,:,b),b,(dt/spacing(b))/3)
+        call correct_and_solve(a,corner(:,:,:,:,a,b),valid)
+        if (.not.valid) return
+      end do
+    end do
+    do a=1,3
+      b=modulo(a,3)+1;c=modulo(a+1,3)+1
+      delta=0
+      call add_difference(corner(:,:,:,:,b,c),b,.5_dp*dt/spacing(b))
+      call add_difference(corner(:,:,:,:,c,b),c,.5_dp*dt/spacing(c))
+      call correct_and_solve(a,final(:,:,:,:,a),valid)
+      if (.not.valid) return
+    end do
+    xflux(:,1:,:,:)=final(:,:,:,:,1);xflux(:,0,:,:)=final(:,n(1),:,:,1)
+    yflux(:,:,1:,:)=final(:,:,:,:,2);yflux(:,:,0,:)=final(:,:,n(2),:,2)
+    zflux(:,:,:,1:)=final(:,:,:,:,3);zflux(:,:,:,0)=final(:,:,:,n(3),3)
+    minimum_theta=theta;ok=.true.
+  contains
+    subroutine add_difference(flux,direction,scale)
+      real(dp), intent(in) :: flux(:,:,:,:),scale
+      integer, intent(in) :: direction
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        index=[i,j,k];lo=index;lo(direction)=modulo(index(direction)-2,n(direction))+1
+        delta(:,i,j,k)=delta(:,i,j,k)+scale*(flux(:,i,j,k)-flux(:,lo(1),lo(2),lo(3)))
+      end do
+      end do
+      end do
+    end subroutine
+    subroutine correct_and_solve(direction,flux,good)
+      integer, intent(in) :: direction
+      real(dp), intent(out) :: flux(:,:,:,:)
+      logical, intent(out) :: good
+      good=.false.
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        call apply_reactive_transverse_correction_2d(species,nm(:,i,j,k,direction),ntm(i,j,k,direction), &
+          delta(:,i,j,k),zero,1._dp,minus(:,i,j,k),tm(i,j,k),theta_m,valid)
+        if (.not.valid) return
+        call apply_reactive_transverse_correction_2d(species,np(:,i,j,k,direction),ntp(i,j,k,direction), &
+          delta(:,i,j,k),zero,1._dp,plus(:,i,j,k),tp(i,j,k),theta_p,valid)
+        if (.not.valid) return
+        theta=min(theta,theta_m,theta_p)
+      end do
+      end do
+      end do
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        index=[i,j,k];hi=index;hi(direction)=modulo(index(direction),n(direction))+1
+        select case(direction)
+        case(1)
+          call reactive_riemann_flux_x(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
+            tp(i,j,k),tm(hi(1),hi(2),hi(3)),solver,flux(:,i,j,k),valid)
+        case(2)
+          call reactive_riemann_flux_y(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
+            tp(i,j,k),tm(hi(1),hi(2),hi(3)),solver,flux(:,i,j,k),valid)
+        case(3)
+          call reactive_riemann_flux_z(species,plus(:,i,j,k),minus(:,hi(1),hi(2),hi(3)), &
+            tp(i,j,k),tm(hi(1),hi(2),hi(3)),solver,flux(:,i,j,k),valid)
+        end select
+        if (.not.valid) return
+      end do
+      end do
+      end do
+      good=.true.
+    end subroutine
+  end subroutine compute_reactive_ppm_ctu_fluxes_3d
 
   subroutine compute_reactive_cfl_timestep_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, cfl, dt, ok)

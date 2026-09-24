@@ -3,11 +3,11 @@ program test_reactive_ppm_normal_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
-  use reactive_3d_mod, only: compute_reactive_ppm_normal_fluxes_3d
+  use reactive_3d_mod, only: compute_reactive_ppm_normal_fluxes_3d,compute_reactive_ppm_ctu_fluxes_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),reference(:,:),q(:),v(:),f(:)
-  real(dp) :: speed,swap,dt,pi,phase,residual
+  real(dp) :: speed,swap,dt,pi,phase,residual,theta,expected,error_normal,error_ctu,value
   integer :: nv,i,j,k,axis,mode,index(3),m
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
@@ -56,6 +56,19 @@ program test_reactive_ppm_normal_3d
         call require(all(abs(f-v)<=2e-13_dp*max(1._dp,abs(v))),'analytic uniform Euler flux')
       end if
     end do
+    call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.125_dp,.125_dp,.125_dp],dt, &
+      .true.,.true.,'hllc',fx,fy,fz,theta,ok)
+    call require(ok.and.theta==1,'CTU uniform/one-dimensional predictor')
+    do i=0,8
+      select case(axis)
+      case(1);f=fx(:,i,3,3)
+      case(2);f=fy(:,3,i,3)
+      case(3);f=fz(:,3,3,i)
+      end select
+      swap=f(2);f(2)=f(axis+1);f(axis+1)=swap
+      call require(all(abs(f-reference(:,i))<=2e-13_dp*max(1._dp,abs(reference(:,i)))), &
+        'CTU reduces to normal prediction in one dimension')
+    end do
   end do
   end do
   call compute_reactive_ppm_normal_fluxes_3d(species,u,t,[.125_dp,.125_dp,.125_dp],0._dp, &
@@ -65,6 +78,43 @@ program test_reactive_ppm_normal_3d
   call compute_reactive_ppm_normal_fluxes_3d(species,u,t,[.125_dp,.125_dp,.125_dp],1._dp, &
     .true.,.true.,'hllc',fx,fy,fz,ok)
   call require(.not.ok.and.all(fx==0).and.all(fy==0).and.all(fz==0),'CFL rejection clears all flux outputs')
+  dt=1e-4_dp
+  do k=1,8
+  do j=1,8
+  do i=1,8
+    phase=2*pi*(real(i+j+k,dp)-1.5_dp)/8
+    q=0;q(1)=1+.1_dp*sin(phase);q(2:4)=20;q(5)=101325;q(nv)=1
+    call reactive_primitive_to_conserved(species,q,u(:,i,j,k),t(i,j,k),speed,ok)
+    call require(ok,'diagonal contact initial state')
+  end do
+  end do
+  end do
+  do mode=0,1
+    if (mode==0) then
+      call compute_reactive_ppm_normal_fluxes_3d(species,u,t,[.125_dp,.125_dp,.125_dp],dt, &
+        .false.,.false.,'hllc',fx,fy,fz,ok)
+    else
+      call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.125_dp,.125_dp,.125_dp],dt, &
+        .false.,.false.,'hllc',fx,fy,fz,theta,ok)
+      call require(theta==1,'unlimited smooth CTU')
+    end if
+    call require(ok,'diagonal flux')
+    residual=0
+    do k=1,8
+    do j=1,8
+    do i=1,8
+      expected=1+.1_dp*sin(2*pi*((real(i+j+k,dp)-1.5_dp)/8-60*dt))
+      value=u(1,i,j,k)-dt/.125_dp*(fx(1,i,j,k)-fx(1,i-1,j,k)+ &
+        fy(1,i,j,k)-fy(1,i,j-1,k)+fz(1,i,j,k)-fz(1,i,j,k-1))
+      residual=residual+abs(value-expected)/512
+    end do
+    end do
+    end do
+    if (mode==0) error_normal=residual
+    if (mode==1) error_ctu=residual
+  end do
+  print *, 'diagonal contact normal/CTU density L1: ',error_normal,error_ctu
+  call require(error_ctu<error_normal,'corner transport improves diagonal contact prediction')
   print *, 'test_reactive_ppm_normal_3d: PASS'
 contains
   subroutine require(condition,label)
