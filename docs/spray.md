@@ -3235,6 +3235,10 @@ remain enforced during stepping. MPI/application subcycle dispatch remains work.
 The MPI timestep API accepts `subcycle=.true.` for the same coarse-interval
 scaling, with collective agreement and owner-local diffusion evaluation
 ([MPI selector checks](validation/les-mpi-subcycle-timestep-20260925.md)).
+`advance_mpi_amr_tree_les_level_3d` now supplies owner-local level stepping,
+temporal coarse donors and integrated faces with collective rollback
+([MPI level checks](validation/les-mpi-amr-level-20260925.md)). Recursive MPI
+scheduling and coupled application dispatch remain to be connected.
 See [level integration checks](validation/les-amr-level-20260925.md) and
 [recursive integration checks](validation/les-amr-subcycle-20260925.md).
 
