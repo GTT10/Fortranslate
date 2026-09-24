@@ -39,8 +39,10 @@ ghost sampler now reconstructs Mach inlet states after donor interpolation
 exchange forwards the same controls with collective agreement and rollback
 ([MPI ghost checks](validation/mach-inlet-mpi-amr-ghosts-20260925.md)). Serial AMR
 hydro now rebuilds Mach inlets for common and recursive level steps
-([hydro checks](validation/mach-inlet-amr-hydro-20260925.md)). MPI hydro,
-AMR transport/LES, coupled dispatch and application input remain open.
+([hydro checks](validation/mach-inlet-amr-hydro-20260925.md)). Distributed common
+and recursive hydro now forward collectively agreed Mach controls
+([MPI hydro checks](validation/mach-inlet-mpi-amr-hydro-20260925.md)). AMR
+transport/LES, coupled dispatch and application input remain open.
 
 Periodic Dynamic LES is now connected to serial/MPI regular patch-tree stepping
 and the MPI AMR reacting-spray application, including filter-bound restart.
