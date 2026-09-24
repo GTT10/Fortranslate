@@ -107,6 +107,24 @@ doses use `number` particles. Profiles and their integration version are bound t
 checkpoint context, so a changed profile cannot silently continue a saved run.
 With `injection_profile_points=0` (default), fixed mass per event is unchanged.
 
+Alternatively, append an optional group to the input:
+
+```fortran
+&mpi_spray_rate_files
+ profile_file='shared.dat',profile_files(2)='port2.dat'
+/
+```
+
+The common file supplies the shared curve; each `profile_files(p)` supplies a
+port override. Leave the corresponding inline point count and arrays zero.
+Files contain 2--64 whitespace-separated time/rate pairs, with blank lines and
+`#`/`!` comments allowed. Existing profile and event-coverage bounds still apply.
+File/inline conflicts and paths for inactive ports reject. Relative paths use
+the process working directory. Only rank 0 reads files, then broadcasts loaded
+tables with the other input. Restart identity includes numbers, not paths or
+comments; files are read again on restart. No live reloading or automatic event
+creation is added. See [focused evidence](../../docs/validation/spray-regular-mpi-rate-files-20260925.md).
+
 
 ## Independent injection ports
 
