@@ -54,11 +54,9 @@ def main():
     if args.mach_inlet:
         if args.les_model != 'dynamic' or args.dynamic_walls or args.pressure_outlet:
             parser.error('--mach-inlet requires dynamic without other boundary fixtures')
-        # Match initial normal velocity to Mach 0.2 at 800 K for the fixed
-        # H2/O2/N2 mass fractions .03/.23/.74 and pinned NASA7 thermodynamics.
         source = source.replace('&mpi_spray', "&mpi_spray\n boundary_faces='inflow','outflow',"
                                 "'periodic','periodic','periodic','periodic',"
-                                "inflow_mach(1)=0.2,inflow_temperature(1)=800,inflow_pressure(1)=0,gas_velocity=132.6158394348811,0,0,")
+                                "inflow_mach(1)=0.2,inflow_temperature(1)=900,inflow_pressure(1)=0,")
     if args.les_model:
         source = source.replace('&mpi_spray', f"&mpi_spray\n les_cs=.17, les_model='{args.les_model}',")
         if args.les_model == 'dynamic':
@@ -185,7 +183,7 @@ def main():
         for label, old, new in [
             ('mach', 'inflow_mach(1)=0.2', 'inflow_mach(1)=0.3'),
             ('mach_pressure', 'inflow_pressure(1)=0', 'inflow_pressure(1)=101325'),
-            ('mach_temperature', 'inflow_temperature(1)=800', 'inflow_temperature(1)=801'),
+            ('mach_temperature', 'inflow_temperature(1)=900', 'inflow_temperature(1)=901'),
             ('mach_removed', 'inflow_mach(1)=0.2,', ''),
         ]:
             source = original_source.replace(old, new)

@@ -58,14 +58,16 @@ contains
     call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,full_rhs,valid, &
       grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z,maximum_diffusivity=diffusion, &
       boundary_faces=boundary_faces,wall_temperature=wall_temperature,wall_bounds=reshape([ng+1,ng+n(1), &
-      ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]))
+      ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]), &
+      diffusion_bounds=reshape([ng+1,ng+n(1),ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]))
     if(.not.valid) return
     lo=ng+1;hi=ng+n
     rhs=full_rhs(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
     fx=x(:,lo(1):hi(1)+1,lo(2):hi(2),lo(3):hi(3))
     fy=y(:,lo(1):hi(1),lo(2):hi(2)+1,lo(3):hi(3))
     fz=z(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)+1)
-    ! Conservative upper bound includes the padded workspace as well as the patch.
+    ! Bound only faces contributing to active-cell divergence; the periodic
+    ! workspace seam and unrelated outer padding are not advanced.
     if(present(maximum_diffusivity)) maximum_diffusivity=diffusion
     ok=.true.
   end subroutine
@@ -240,7 +242,9 @@ contains
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
       grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean,fx,fy,fz, &
-      boundary_faces,wall_temperature,wall_bounds)
+      boundary_faces,wall_temperature,wall_bounds,diffusion_bounds)
+    integer, optional, intent(in) :: diffusion_bounds(2,3)
+    logical :: estimate_face
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -299,6 +303,10 @@ contains
         if(.not.ieee_is_finite(wall_temperature(f))) return
         if(wall_temperature(f)<=0.or.wall_temperature(f)>1e6_dp) return
       end do
+    end if
+    if(present(diffusion_bounds)) then
+      if(any(diffusion_bounds(1,:)<2).or.any(diffusion_bounds(2,:)>n-1)) return
+      if(any(diffusion_bounds(1,:)>diffusion_bounds(2,:))) return
     end if
     first_x=1;last_x=n(1)
     if (present(active_x)) then
@@ -379,8 +387,13 @@ contains
             if (maxval(abs(ft))>1e100_dp.or.cp>1e30_dp) return
             if (cv<1e-30_dp) return
             face_viscosity=.5_dp*(viscosity(i,j,k)+viscosity(neighbor(1),neighbor(2),neighbor(3)))
+            estimate_face=.true.
+            if(present(diffusion_bounds)) estimate_face= &
+              all(cell>=diffusion_bounds(1,:)-merge(1,0,[1,2,3]==d)).and.all(cell<=diffusion_bounds(2,:))
+            ! Only faces in the cropped divergence enter its stability estimate.
+            ! Fluxes and coefficients are still evaluated on the full workspace.
             ! Frozen-coefficient diffusion estimate including isotropic stress.
-            diffusion=max(diffusion,face_viscosity*max(4*(c(1)+c(2)),cp/cv*c(3))/ &
+            if(estimate_face) diffusion=max(diffusion,face_viscosity*max(4*(c(1)+c(2)),cp/cv*c(3))/ &
               min(q(1,i,j,k),q(1,neighbor(1),neighbor(2),neighbor(3))))
             sigma=c(1)*stress(:,d);sigma(d)=sigma(d)-c(2)*a/3
             heat=-cp*c(3)*ft(d)
@@ -399,7 +412,7 @@ contains
                   else
                     heat=-2*cp*c(3)*face_viscosity*(wall_temperature(wall_face)-temps(i,j,k))/spacing(d)
                   end if
-                  diffusion=max(diffusion,2*face_viscosity*cp/cv*c(3)/ &
+                  if(estimate_face) diffusion=max(diffusion,2*face_viscosity*cp/cv*c(3)/ &
                     min(q(1,i,j,k),q(1,neighbor(1),neighbor(2),neighbor(3))))
                 end select
               end if
