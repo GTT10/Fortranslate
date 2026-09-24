@@ -159,7 +159,11 @@ and exact serial hierarchy parity
 ([checks](validation/ppm-mpi-two-level-hierarchy-20260925.md)). Fixed/selected MPI
 two-level input and regridding also enable PPM; fixed four-to-two-rank restart
 matches serial output ([checks](validation/ppm-mpi-two-level-application-20260925.md)).
-Broader coupling and reference-pressure fidelity remain open. Regular MPI spray
+A primitive-state Riemann entry now preserves traced pressure and uses the pinned
+PeleC contact/regularization policy
+([checks](validation/ppm-primitive-riemann-20260925.md)). Connecting separate
+transverse pressure work and pressure tracing to CTU remains open, along with
+broader coupling. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
