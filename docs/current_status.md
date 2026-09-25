@@ -25,7 +25,9 @@ parity and rollback checks
 serial and MPI gas applications now accept thermal wall inputs and bind wall
 temperatures to changed-rank restart
 ([checks](validation/eb-tree-isothermal-application-20260926.md)). MPI EB
-spray thermal forwarding remains open.
+spray also forwards thermal gas walls, with common/recursive conservation and
+fixed-mechanism changed-rank continuation checks
+([evidence](validation/mpi-eb-isothermal-spray-20260926.md)).
 
 MPI EB particle drift now supports specular domain-wall reflection with exterior
 impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
