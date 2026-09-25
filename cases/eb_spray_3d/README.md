@@ -338,3 +338,12 @@ configurations and checkpoint-format compatibility limits.
 
 The EB coefficient default changed to 0.1; old zero-policy checkpoints require
 explicit `difmag=0`. See [default-policy checks](../../docs/validation/eb-default-difmag-20260925.md).
+
+### CTU gas update
+
+Fixed and selected executables accept `hydro_method='plm_ctu'` with
+`riemann_solver='pelec'` in the gas input. The application builds extended nodal
+geometry for the gas update; original nodal data still supplies particle wall
+intersections. Restart context binds the method. Focused conservation and exact
+continuation checks are recorded in [the CTU evidence](../../docs/validation/serial-eb-spray-ctu-20260925.md).
+These checks do not qualify nozzle, diesel ignition or validated LES behavior.

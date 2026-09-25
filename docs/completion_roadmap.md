@@ -160,8 +160,9 @@ connected ([checks](validation/eb-tree-ctu-application-20260925.md)). Other phys
 boundary halo preparation remains before claiming EB Godunov parity. MPI EB
 spray now forwards CTU through coupled gas stepping and checkpoint identity
 ([checks](validation/mpi-eb-spray-ctu-20260925.md)). The serial single-level spray
-entry still needs CTU dispatch; broader physical-boundary preparation and complete
-reference parity remain open.
+entry and fixed/selected restart now also connect CTU
+([checks](validation/serial-eb-spray-ctu-20260925.md)); broader physical-boundary
+preparation and complete reference parity remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
