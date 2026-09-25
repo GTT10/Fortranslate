@@ -398,7 +398,7 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf)
+          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf,difmag=config%difmag)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
@@ -407,7 +407,7 @@ contains
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
           last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow, &
-          acceleration=acceleration,source_change=sf)
+          acceleration=acceleration,source_change=sf,difmag=config%difmag)
         end if
         if(ok) exit
         dt=.5_dp*dt
@@ -473,7 +473,25 @@ contains
       open(newunit=scratch,status='scratch',form='formatted',delim='quote',iostat=ios)
       if(ios/=0) error stop 'Cannot prepare EB checkpoint context'
       write(scratch,'(a)',iostat=ios) 'EB_SPRAY_CONTEXT_V2',mixture_evolution_id
-      if(ios==0) write(scratch,*,iostat=ios) canonical
+      ! Keep legacy zero-coefficient context independent of added config fields.
+      if(ios==0) write(scratch,*,iostat=ios) &
+        canonical%nx,canonical%ny,canonical%nz, &
+        canonical%maximum_steps,canonical%x_lower,canonical%x_upper, &
+        canonical%y_lower,canonical%y_upper,canonical%z_lower, &
+        canonical%z_upper,canonical%final_time,canonical%cfl, &
+        canonical%geometry_type,canonical%extrusion_axis,canonical%section_file, &
+        canonical%level_set_file,canonical%plane_axis,canonical%plane_position, &
+        canonical%riemann_solver,canonical%redistribution,canonical%thermo_model, &
+        canonical%state_redist_target_volume_fraction,canonical%chemistry_enabled,canonical%chemistry_relative_tolerance, &
+        canonical%chemistry_absolute_tolerance,canonical%transport_enabled,canonical%viscosity_enabled, &
+        canonical%thermal_conduction_enabled,canonical%species_diffusion_enabled,canonical%barodiffusion_enabled, &
+        canonical%transport_cfl,canonical%regular_density,canonical%cut_density, &
+        canonical%initial_pressure,canonical%initial_velocity_x,canonical%initial_velocity_y, &
+        canonical%initial_velocity_z,canonical%composition_count,canonical%composition_species, &
+        canonical%composition_mole_fractions,canonical%checkpoint_interval_steps,canonical%stop_after_checkpoint, &
+        canonical%checkpoint_file,canonical%restart_file,canonical%output_file
+      if(ios==0.and.config%difmag>0) &
+        write(scratch,'(a,1x,es27.18e3)',iostat=ios) 'difmag-v1',config%difmag
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)
         if(ios==0) write(scratch,*,iostat=ios) species(j)

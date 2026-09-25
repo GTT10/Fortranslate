@@ -19,6 +19,7 @@ p.add_argument('--split', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--force', action='store_true')
+p.add_argument('--difmag', type=float)
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
 a.work.mkdir(parents=True, exist_ok=True)
@@ -78,6 +79,9 @@ labels = ('Injected inventory:', 'Boundary inventory:', 'Wall inventory:', 'Chem
 if a.force:
     labels += ('Force inventory:',)
 exe = str(a.exe.resolve())
+if a.difmag is not None:
+    gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d', f'&reactive_eb_3d\n difmag={a.difmag},', 1)
+    (work / 'gas.nml').write_text(gas)
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
 (work / 'run.log').write_text(result.stdout + result.stderr)
 assert result.returncode == 0, (work, result.stderr)
@@ -192,6 +196,16 @@ if a.restart:
         before = next(line for line in full_log.splitlines() if line.startswith(label))
         after = next(line for line in run.stdout.splitlines() if line.startswith(label))
         assert before == after, (label, work)
+    if a.difmag is not None:
+        for name, value in [('changed_difmag', a.difmag + .01), ('negative_difmag', -1), ('nan_difmag', 'NaN')]:
+            altered = resume.replace(f'difmag={a.difmag}', f'difmag={value}')
+            (work / f'{name}.nml').write_text(altered)
+            rejected = subprocess.run([exe, f'{name}.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+            (work / f'{name}.log').write_text(rejected.stdout + rejected.stderr)
+            assert rejected.returncode != 0, name
+            assert (work / 'gas.csv').read_bytes() == full_gas
+            assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
+            assert (work / 'gas.csv.films.csv').read_bytes() == full_films
     # Immutable publication, context change and a truncated payload must reject.
     run = subprocess.run([exe, 'split.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
     (work / 'overwrite.log').write_text(run.stdout + run.stderr)
