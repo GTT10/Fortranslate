@@ -644,6 +644,7 @@ contains
     integer, allocatable :: ratios(:)
     real(dp) :: theta,stage_theta
     logical :: faces(6)
+    character(len=16) :: patch_faces(6)
     integer :: nv,node,n(3),depth,c
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
@@ -671,10 +672,15 @@ contains
         origin(2,node)>0,origin(2,node)+n(2)<domain(2,depth), &
         origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
-      if (present(boundary_faces)) faces=.true.
+      patch_faces='outflow'
+      if(present(boundary_faces)) then
+        where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+          patch_faces=boundary_faces
+        faces=.true.
+      end if
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
         dt,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
-        candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)
+        candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces)
       if (.not.valid) return
       theta=min(theta,stage_theta)
       deallocate(ghost,gt)
@@ -968,6 +974,7 @@ contains
       integer :: node,peer,owner,receiver,axis,child,substep,d(3),lo(3),hi(3),component,substeps
       integer(int64) :: offset(3)
       logical :: valid,faces(6)
+      character(len=16) :: patch_faces(6)
       good=.false.;snapshot=candidate
       clock_start(level+1)=time;clock_dt(level+1)=interval
       allocate(flux(size(tree%nodes)),fraction(level))
@@ -1011,10 +1018,15 @@ contains
             origin(2,node)>0,origin(2,node)+int(d(2),int64)<domain(2,level+1), &
             origin(3,node)>0,origin(3,node)+int(d(3),int64)<domain(3,level+1)]
           if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
-          if (present(boundary_faces)) faces=.true.
+          patch_faces='outflow'
+          if(present(boundary_faces)) then
+            where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+              patch_faces=boundary_faces
+            faces=.true.
+          end if
           call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
             interval,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
-            candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)
+            candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces)
           if (.not.valid) return
           theta=min(theta,stage_theta)
         else if(present(extended_geometry)) then

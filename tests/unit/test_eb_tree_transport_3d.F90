@@ -91,6 +91,18 @@ program test_eb_tree_transport_3d
   print *, 'axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'transport conservation')
   call require(any(tree%nodes(count)%state/=saved%nodes(count)%state),'nontrivial deep transport update')
+  periodic_faces='no_slip_wall'
+  tree=saved
+  call advance_reactive_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+    tree,boundary,theta,ok,boundary_faces=periodic_faces)
+  call require(ok,'wall transport update')
+  call require(boundary(1)==0.and.boundary(5)==0.and.all(boundary(6:)==0),'impermeable adiabatic wall flux')
+  call require(theta>=0.and.theta<=1,'periodic limiter range')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'wall inventory')
+  residual=maxval(abs(after-before-boundary)/max(1._dp,abs(before)))
+  print *, 'wall axis, nodes, residual: ',axes(axis),count,residual
+  call require(residual<3.e-14_dp,'wall composite transport conservation')
   periodic_faces='periodic';periodic_faces(2*axis-1:2*axis)='outflow'
   tree=saved
   call advance_reactive_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &

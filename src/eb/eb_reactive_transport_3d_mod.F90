@@ -153,7 +153,7 @@ contains
   ! Conservative Euler update without redistribution, for flux-synchronized
   ! patches. The caller supplies a small-cell-limited diffusion timestep.
   subroutine advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry,dt,viscosity,conduction, &
-      diffusion,barodiffusion,state,temperature,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces)
+      diffusion,barodiffusion,state,temperature,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces,physical_faces)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -164,6 +164,7 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     logical, optional, intent(in) :: faces(6)
+    character(len=*), optional, intent(in) :: physical_faces(6)
     type(eb_integrated_flux_3d) :: flux
     real(dp), allocatable :: rhs(:,:,:,:),candidate(:,:,:,:),temps(:,:,:),primitive(:)
     real(dp) :: theta,speed
@@ -179,7 +180,7 @@ contains
       flux%y(nvar,geometry%nx,0:geometry%ny,geometry%nz),flux%z(nvar,geometry%nx,geometry%ny,0:geometry%nz))
     call reactive_eb_transport_fluxes_rhs_3d(species,transport,state,temperature,geometry,dt, &
       viscosity,conduction,diffusion,barodiffusion,rhs,flux%x,flux%y,flux%z,theta,valid, &
-      ghost_state,ghost_temperature,faces)
+      ghost_state,ghost_temperature,faces,physical_faces)
     if (.not.valid) return
     allocate(candidate,source=state);allocate(temps,source=temperature)
     do k=1,geometry%nz

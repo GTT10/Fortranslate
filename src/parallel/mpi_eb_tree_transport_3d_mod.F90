@@ -44,6 +44,7 @@ contains
     real(dp) :: boundary(size(boundary_change)),theta,local_theta,stage_theta,low,high
     integer :: nv,rank,status,node,n(3),c,ios,depth,flags(4),minflags(4),maxflags(4)
     logical :: faces(6)
+    character(len=16) :: patch_faces(6)
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
     valid=ieee_is_finite(dt)
@@ -86,10 +87,15 @@ contains
         origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
       work_stamp=tree_work_start()
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
-        if(present(boundary_faces)) faces=.true.
+        patch_faces='outflow'
+        if(present(boundary_faces)) then
+          where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+            patch_faces=boundary_faces
+          faces=.true.
+        end if
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry(node),dt, &
         viscosity,conduction,diffusion,barodiffusion,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
-        flux(node),stage_theta,valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),faces)
+        flux(node),stage_theta,valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),faces,physical_faces=patch_faces)
       call tree_work_stop(node,work_stamp)
       if (.not.valid) exit
       local_theta=min(local_theta,stage_theta)
