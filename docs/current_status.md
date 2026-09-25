@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Regular fixed/selected gas input now selects nonreacting periodic SDC with
+external forcing through `time_integrator='sdc'`
+([checks](validation/sdc-app-20260926.md)). Chemistry, transport and broader
+boundary/AMR/MPI integration for SDC remain open.
+
 Regular fixed/selected gas applications now accept force-per-volume input
 `external_forcing(3)` with PPM/PeleC, time-centered work and separate source
 inventories ([checks](validation/external-force-app-20260926.md)).
