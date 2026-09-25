@@ -24,7 +24,7 @@ int main(){
   for(auto& plane:cells)for(auto& row:plane)for(auto& cell:row)for(double& v:cell)if(!(std::cin>>v))return 3;
   using namespace amrex;
   Box bx{{0,0,0},{3,3,3}},wide=grow(bx,4),fb{{0,0,0},{4,4,4}};
-  FArrayBox prim(wide,QVAR),aux(wide,2),src(wide,QVAR),vol(bx,1),pd(bx,1),cons(wide,NVAR),divergence(fb,1);
+  FArrayBox prim(wide,QVAR),aux(wide,4),conserved_src(wide,NVAR),src(wide,QVAR),vol(bx,1),pd(bx,1),cons(wide,NVAR),divergence(fb,1);
   FArrayBox fx(fb,NVAR),fy(fb,NVAR),fz(fb,NVAR),qx(fb,NGDNV),qy(fb,NGDNV),qz(fb,NGDNV),area(fb,1);
   auto q=prim.array(),qa=aux.array(),vv=vol.array(),aa=area.array(),u=cons.array(),div=divergence.array();EOS eos;
   ParallelFor(wide,[&](int i,int j,int k){
@@ -51,6 +51,12 @@ int main(){
    u(i,j,k,UEDEN)=cell[0]*(e+.5*kin);u(i,j,k,UEINT)=cell[0]*e;
    for(int n=5;n<12;n++)u(i,j,k,n)=cell[0]*cell[n];
    q(i,j,k,QREINT)=cell[0]*e;qa(i,j,k,QC)=c;qa(i,j,k,QGAMC)=c*c*cell[0]/cell[4];
+   qa(i,j,k,QDPDE)=cell[0]*(c*c*cell[0]/cell[4]-1.);
+   qa(i,j,k,QDPDR)=cell[4]/cell[0];
+   if(forcing==2.){
+    auto cs=conserved_src.array();for(int n=0;n<12;n++)cs(i,j,k,n)=source(i,j,k,n);
+    pc_srctoprim(i,j,k,q,qa,cs,source);
+   }
   });
   ParallelFor(bx,[&](int i,int j,int k){vv(i,j,k)=1.;});
   ParallelFor(fb,[&](int i,int j,int k){aa(i,j,k)=1.;});
@@ -84,6 +90,7 @@ def main():
     p.add_argument('--shock-viscosity',action='store_true')
     p.add_argument('--physical-boundaries',action='store_true')
     p.add_argument('--sources',action='store_true')
+    p.add_argument('--conserved-sources',action='store_true')
     a=p.parse_args();root=Path(__file__).resolve().parents[1]
     pin=json.loads((root/'references/pelec_baseline.json').read_text())['pelec']['commit']
     names=('PPM.H','PPM.cpp','Riemann.H','Godunov.H','Godunov.cpp','Hydro.H','PLM.H')
@@ -94,7 +101,7 @@ def main():
     flatten=extract(sources['Godunov.H'],'flatten').replace('void flatten(', 'amrex::Real flatten(',1)
     slope=extract(sources['PLM.H'],'plm_slope').replace('void plm_slope(', 'amrex::Real plm_slope(',1)
     bodies=flatten+slope+''.join(extract(sources[n],f) for n,f in (
-        ('PPM.H','ppm_reconstruct'),('PPM.H','ppm_int_profile'),
+        ('Hydro.H','pc_srctoprim'),('PPM.H','ppm_reconstruct'),('PPM.H','ppm_int_profile'),
         ('Riemann.H','riemann'),('PPM.cpp','trace_ppm'),
         ('PLM.H','pc_plm_d_passive'),('PLM.H','pc_plm_d'),
         ('Godunov.H','pc_cmpflx_passive'),('Godunov.H','pc_cmpflx'),
@@ -118,6 +125,7 @@ def main():
         configs += [(2,1e-5,1,visc,bc) for bc in (1,2,3,4) for visc in (0.,.1)]
     configs=[c+(0.,) for c in configs]
     if a.sources:configs += [(2,1e-5,1,visc,bc,1.) for bc in range(5) for visc in (0.,.1)]
+    if a.conserved_sources:configs += [(2,1e-5,1,visc,bc,2.) for bc in range(5) for visc in (0.,.1)]
     for mode,dt,flat,visc,boundary,forcing in configs:
         rows=[]
         for k in range(4):
@@ -158,7 +166,7 @@ def main():
         for table in (expected,observed):
             assert table[6*240:7*240]!=table[7*240:8*240], 'flattening inactive'
             assert table[6*240:7*240]!=table[8*240:9*240], 'viscosity inactive'
-    report=dict(sources=a.sources,physical_boundaries=a.physical_boundaries,shock_viscosity=a.shock_viscosity,reference_commit=pin,source_sha256={n:hashlib.sha256(s.encode()).hexdigest() for n,s in sources.items()},
+    report=dict(conserved_sources=a.conserved_sources,sources=a.sources,physical_boundaries=a.physical_boundaries,shock_viscosity=a.shock_viscosity,reference_commit=pin,source_sha256={n:hashlib.sha256(s.encode()).hexdigest() for n,s in sources.items()},
                 shim_sha256=hashlib.sha256(shim.encode()).hexdigest(),
                 eos_adapter_sha256=hashlib.sha256(PREFIX.encode()).hexdigest(),
                 compiler=run([a.cxx,'--version']).splitlines()[0],

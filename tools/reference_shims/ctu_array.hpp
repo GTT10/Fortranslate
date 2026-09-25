@@ -13,7 +13,7 @@
 #define NUM_LIN 0
 constexpr int QRHO=0,QU=1,QV=2,QW=3,QPRES=4,QFS=5,QREINT=12,QVAR=13;
 constexpr int URHO=0,UMX=1,UMY=2,UMZ=3,UEDEN=4,UFS=5,UEINT=12,UTEMP=13,NVAR=14;
-constexpr int GDU=0,GDV=1,GDW=2,GDPRES=3,GDGAME=4,NGDNV=5,QC=0,QGAMC=1;
+constexpr int GDU=0,GDV=1,GDW=2,GDPRES=3,GDGAME=4,NGDNV=5,QC=0,QGAMC=1,QDPDE=2,QDPDR=3;
 constexpr int im2=0,im1=1,i0=2,ip1=3,ip2=4;
 namespace PCPhysBCType { enum { interior, inflow, user_bc, outflow, slip_wall, no_slip_wall, symmetry }; }
 namespace amrex {

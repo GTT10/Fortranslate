@@ -33,7 +33,7 @@ program test_reactive_ppm_normal_3d
         real(dp) :: cg(12,12,12,12),cgt(12,12,12)
         character(len=16) :: faces(6)
         real(dp) :: viscosity,inlet(12,6),inlet_t(6),forcing
-        real(dp), allocatable :: src(:,:,:,:),srce(:,:,:)
+        real(dp), allocatable :: src(:,:,:,:),srce(:,:,:),csrc(:,:,:,:)
         do
           read(*,*,iostat=status) dt,flatten_flag,viscosity,boundary_mode,forcing
           if(status<0) exit
@@ -49,6 +49,7 @@ program test_reactive_ppm_normal_3d
           end do
           end do
           if(allocated(src)) deallocate(src,srce)
+          if(allocated(csrc)) deallocate(csrc)
           if(forcing/=0) then
             ii=4
             if(boundary_mode/=0) ii=12
@@ -58,10 +59,13 @@ program test_reactive_ppm_normal_3d
             src(5,:,:,:)=forcing*(-2e4_dp)
             src(6,:,:,:)=forcing*10;src(7,:,:,:)=forcing*(-10)
           end if
+          if(forcing==2) then
+            call move_alloc(src,csrc);deallocate(srce)
+          end if
           if(boundary_mode==0) then
             call compute_reactive_ppm_ctu_fluxes_3d(species,cu,ct,[.25_dp,.25_dp,.25_dp],dt, &
               .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity, &
-              primitive_source=src,energy_source=srce)
+              primitive_source=src,energy_source=srce,conserved_source=csrc)
           else
             select case(boundary_mode)
             case(1);faces='outflow'
@@ -78,7 +82,7 @@ program test_reactive_ppm_normal_3d
               .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity, &
               reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall', &
               outflow_faces=faces=='outflow',no_slip_faces=faces=='no_slip_wall',inflow_faces=faces=='inflow', &
-              primitive_source=src,energy_source=srce)
+              primitive_source=src,energy_source=srce,conserved_source=csrc)
           end if
           call require(ok,'CTU reference fluxes')
           do kk=1,4
