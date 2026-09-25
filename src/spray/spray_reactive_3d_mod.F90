@@ -104,7 +104,7 @@ contains
       reconstruction,riemann_solver,boundary_faces,boundary_change,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,acceleration,source_change,materials,breakup_options,wall_options,wall_films, &
       mixture_components,component_mass,film_component_mass,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure)
+      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -125,7 +125,7 @@ contains
     character(len=*), optional, intent(in) :: les_model,les_test_filter
     integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
-    real(dp), optional, intent(in) :: les_ci
+    real(dp), optional, intent(in) :: les_ci,difmag
     real(dp) :: isotropic
     logical, optional, intent(in) :: les_harmonic_mean
     logical :: harmonic
@@ -230,6 +230,11 @@ contains
     end if
     selected_reconstruction='characteristic_plm'; selected_riemann='hllc'
     if (present(reconstruction)) selected_reconstruction=reconstruction
+    if (present(difmag)) then
+      if (.not.ieee_is_finite(difmag)) return
+      if (difmag<0) return
+      if (difmag>0.and.selected_reconstruction/='characteristic_ppm') return
+    end if
     if (present(riemann_solver)) selected_riemann=riemann_solver
     if (.not. all(ieee_is_finite([dt,rtol,atol,cs,prt,sct]))) return
     if (cs<0.or.cs>2.or.min(prt,sct)<1e-6_dp.or.max(prt,sct)>1e6_dp) return
@@ -293,7 +298,7 @@ contains
           .true.,.true.,.true.,.false.,theta,local_ok,trim(selected_reconstruction),'mc',chemistry_integrator='implicit', &
           boundary_faces=faces,boundary_change=exchange,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
           wall_temperature=wall_temperature,wall_velocity=wall_velocity,outlet_pressure=outlet_pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag)
         if (.not. local_ok) then
           message='Hydro/molecular transport step rejected'; return
         end if

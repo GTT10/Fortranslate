@@ -163,6 +163,7 @@ contains
     logical :: ok,exists
     character(len=24) :: mole_names(mechanism_species_capacity),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
     character(len=1024) :: output_prefix,checkpoint_file,restart_file,message
+    real(dp) :: difmag
     character(len=16384) :: context
     character(len=1050), allocatable :: paths(:)
     integer(int64) :: first_id
@@ -180,7 +181,7 @@ contains
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
       inflow_composition_species,inflow_composition_mole_fractions, &
-      hydro_reconstruction,riemann_solver,gas_temperature,gas_pressure, &
+      hydro_reconstruction,riemann_solver,difmag,gas_temperature,gas_pressure, &
       gas_velocity,shear_velocity,mole_names,mole_amounts, &
       boiling_model,critical_temperature,normal_boiling_temperature,liquid_molecular_weight, &
       liquid_density_model,liquid_density_coefficients,liquid_density_temperature_range, &
@@ -244,7 +245,7 @@ contains
     outlet_pressure=0
     boundary_faces="periodic";wall_temperature=300;wall_velocity=0
     cells=[4,4,4]; domain_length=0.004_dp
-    hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'
+    hydro_reconstruction='characteristic_plm'; riemann_solver='hllc'; difmag=-1._dp
     gas_temperature=1200.0_dp; gas_pressure=101325.0_dp; gas_velocity=0.0_dp; shear_velocity=0.0_dp
     mole_names=''; mole_names(1:3)=[character(len=24)::'H2','O2','N2']
     mole_amounts=0.0_dp; mole_amounts(1:3)=[2.0_dp,1.0_dp,3.76_dp]
@@ -369,6 +370,14 @@ contains
     if (trim(hydro_reconstruction)/='pcm' .and. trim(hydro_reconstruction)/='characteristic_plm' .and. &
         trim(hydro_reconstruction)/='characteristic_ppm') &
       call fail('Invalid hydro reconstruction')
+    if (.not.ieee_is_finite(difmag)) call fail('Invalid artificial-viscosity coefficient')
+    if (difmag<0.and.difmag/=-1._dp) call fail('Invalid artificial-viscosity coefficient')
+    if (difmag>=0.and.hydro_reconstruction/='characteristic_ppm') &
+      call fail('Artificial-viscosity input requires characteristic_ppm')
+    if (difmag==-1._dp) then
+      difmag=0._dp
+      if (hydro_reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') difmag=.1_dp
+    end if
     if (trim(hydro_reconstruction)=='characteristic_plm' .and. any(cells<3)) &
       call fail('Characteristic PLM requires at least three cells per direction')
     if (trim(riemann_solver)/='hllc' .and. trim(riemann_solver)/='rusanov' .and. trim(riemann_solver)/='pelec') &
@@ -902,6 +911,10 @@ contains
       max_fractional_change,particle_cfl,minimum_diameter])
     context=trim(context)//' '//trim(vapor_name)//' '//trim(chemistry_method)// &
       ' '//trim(hydro_reconstruction)//' '//trim(riemann_solver)
+    if (hydro_reconstruction=='characteristic_ppm') then
+      context=trim(context)//' ppm-difmag-v1'
+      call append_reals([difmag])
+    end if
     block
       character(len=32) :: flags
       write(flags,'(7l2)') chemistry_enabled,transport_enabled,drag_enabled,heat_enabled,evaporation_enabled, &
@@ -1384,7 +1397,7 @@ contains
           wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
           les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
+          inflow_mach=inflow_mach,inflow_pressure=mach_pressure,difmag=difmag)
         else
         call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
@@ -1393,7 +1406,7 @@ contains
           breakup_options,wall_options,wall_films,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
           les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=mach_pressure)
+          inflow_mach=inflow_mach,inflow_pressure=mach_pressure,difmag=difmag)
         end if
         if (ok) exit
         dt=0.5_dp*dt

@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--inflow', action='store_true')
     parser.add_argument('--ppm', action='store_true')
+    parser.add_argument('--difmag', type=float)
     parser.add_argument('--mach-inlet', action='store_true')
     parser.add_argument('--thermal-wall', action='store_true')
     parser.add_argument('--acceleration', type=float, default=0.0)
@@ -30,6 +31,10 @@ def main():
     template = (Path(__file__).resolve().parents[1] / 'cases/spray_3d' / case).read_text()
     if args.ppm:
         template = template.replace('&spray', "&spray\n hydro_reconstruction='characteristic_ppm',")
+    if args.difmag is not None:
+        if not args.ppm or args.difmag < 0:
+            parser.error('--difmag requires --ppm and a nonnegative coefficient')
+        template = template.replace('&spray', f"&spray\n difmag={args.difmag}, riemann_solver='pelec',")
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
     if args.les_isotropic:
         if args.les_model not in ('wale', 'vreman'):
@@ -74,7 +79,7 @@ def main():
             config = re.sub(r"output_prefix='[^']*'", f"output_prefix='{tag}'", template)
             if kind == 'outflow':
                 config = config.replace("'slip_wall'", "'outflow'")
-            config = config.replace('&spray', '&spray\n' + extra)
+            config = config.rsplit('/', 1)[0] + extra + '\n/\n'
             path = work / (tag + '.nml')
             path.write_text(config)
             result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
@@ -149,8 +154,34 @@ def main():
             result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
                                     text=True, capture_output=True, timeout=30)
             (work / 'changed_reconstruction.log').write_text(result.stdout + result.stderr)
-            assert result.returncode != 0 and 'incompatible spray checkpoint' in result.stdout + result.stderr
+            diagnostic = ('Artificial-viscosity input requires characteristic_ppm' if args.difmag is not None
+                          else 'incompatible spray checkpoint')
+            assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
             assert not (work / 'changed_reconstruction.history.csv').exists()
+        if args.difmag is not None:
+            original = (work / (resumed + '.nml')).read_text()
+            for label, replacement, diagnostic in [
+                ('changed_difmag', f'difmag={args.difmag + 0.1},', 'incompatible spray checkpoint'),
+                ('invalid_difmag', 'difmag=-2,', 'Invalid artificial-viscosity coefficient'),
+                ('nonfinite_difmag', 'difmag=NaN,', 'Invalid artificial-viscosity coefficient'),
+            ]:
+                config = original.replace(f'difmag={args.difmag},', replacement).replace(resumed, label)
+                path = work / (label + '.nml')
+                path.write_text(config)
+                result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
+                                        text=True, capture_output=True, timeout=30)
+                (work / (label + '.log')).write_text(result.stdout + result.stderr)
+                assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
+                assert not (work / (label + '.history.csv')).exists()
+            # Exercise the disabled correction through the complete coupled path.
+            zero = run('zero_difmag', 'difmag=0,')
+            assert (work / (zero + '.gas.csv')).read_bytes() != (work / (ref + '.gas.csv')).read_bytes()
+            # Equivalent automatic and explicit default settings must share restart identity.
+            run('auto_stop', f"difmag=-1, stop_after_steps=2, checkpoint_file='{kind}_auto.chk',")
+            auto = run('auto_resume', f"difmag=-1, restart_file='{kind}_auto.chk',")
+            explicit = run('explicit_resume', f"difmag=0.1, restart_file='{kind}_auto.chk',")
+            for suffix in ('.gas.csv', '.parcels.csv', '.history.csv'):
+                assert (work / (auto + suffix)).read_bytes() == (work / (explicit + suffix)).read_bytes()
         if args.mach_inlet:
             original = (work / (resumed + '.nml')).read_text()
             for label, changed, diagnostic in [
