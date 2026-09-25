@@ -25,7 +25,7 @@ program test_eb_multipatch_full_3d
   integer :: lower(3,2),upper(3,2),p,nvar,mode,s,component
   integer :: time_mode
   character(len=32) :: argument
-  real(dp) :: coefficient=0
+  real(dp), allocatable :: coefficient
   logical :: subcycling
   logical :: valid,active(4,4,4)
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']

@@ -470,7 +470,8 @@ contains
     real(dp), allocatable :: ghost_vf(:,:,:)
     logical :: valid
     ok=.false.;np=size(patches);nvar=reactive_nvar(size(species))
-    coefficient=0
+    coefficient=.1_dp
+    if(present(transport)) coefficient=0
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     if(present(transport).and.coefficient>0) return
@@ -971,7 +972,8 @@ contains
     real(dp) :: volume
     logical :: valid
     ok=.false.
-    coefficient=0
+    coefficient=.1_dp
+    if(present(transport)) coefficient=0
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     if(present(transport).and.coefficient>0) return

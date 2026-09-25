@@ -18,7 +18,7 @@ program test_eb_two_level_full_3d
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   character(len=32) :: argument
-  real(dp) :: coefficient=0
+  real(dp), allocatable :: coefficient
   real(dp) :: theta
   real(dp), allocatable :: reference_chem(:)
   type(eb_geometry_3d) :: full,coarse,fine

@@ -140,7 +140,7 @@ contains
     integer :: flags(3),low(3),high(3),status,nv,half
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
-    coefficient=0
+    coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     valid=ieee_is_finite(dt).and.ieee_is_finite(coefficient).and.coefficient>=0
     if (valid) valid=dt>0._dp

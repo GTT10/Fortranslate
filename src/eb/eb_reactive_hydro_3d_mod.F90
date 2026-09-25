@@ -42,7 +42,7 @@ contains
     real(dp), intent(out) :: z_flux(:, :, :, 0:)
     logical, intent(out) :: ok
     ! Optional face halo, indexed 0:n+1 in each spatial direction. Only open
-    ! boundary-face donors are read for zero/omitted viscosity. Positive difmag
+    ! boundary-face donors are read for explicit zero viscosity. Positive difmag
     ! also needs edge/corner state donors and a matching volume-fraction halo.
     ! With no halo, retain the historical extrapolated-outflow boundary states.
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
@@ -88,7 +88,7 @@ contains
       if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
       if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
     end if
-    coefficient=0
+    coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     n=[geometry%nx,geometry%ny,geometry%nz]

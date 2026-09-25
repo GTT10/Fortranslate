@@ -89,7 +89,7 @@ contains
     if(present(film_steps)) film_steps=0
     if(present(split_created)) split_created=0
     if(present(model_rejected)) model_rejected=.false.
-    coefficient=0
+    coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     valid=ieee_is_finite(coefficient).and.coefficient>=0
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)

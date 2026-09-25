@@ -622,7 +622,7 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
-    coefficient=0
+    coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     snapshot=tree
@@ -742,7 +742,8 @@ contains
         present(barodiffusion).and.present(minimum_theta))) return
       if (any(ratios>huge(1)/ratios)) return
     end if
-    coefficient=0
+    coefficient=.1_dp
+    if(present(transport)) coefficient=0
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     if(present(transport).and.coefficient>0) return

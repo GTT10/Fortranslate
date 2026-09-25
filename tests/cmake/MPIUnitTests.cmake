@@ -1167,3 +1167,11 @@ if(PELEF_ENABLE_MPI)
   set_tests_properties(mpi_amr_default_hierarchy_3d_np8 PROPERTIES TIMEOUT 240 PROCESSORS 8
     ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_test(NAME unit_mpi_eb_tree_default_3d_3
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_hydro_3d> ${MPIEXEC_POSTFLAGS} default)
+  set_tests_properties(unit_mpi_eb_tree_default_3d_3 PROPERTIES TIMEOUT 120 PROCESSORS 3
+    ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()

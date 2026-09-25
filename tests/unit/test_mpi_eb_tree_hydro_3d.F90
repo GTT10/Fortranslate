@@ -30,6 +30,7 @@ program test_mpi_eb_tree_hydro_3d
   call get_command_argument(1,test_mode)
   coefficient=0
   if(test_mode=='viscosity') coefficient=.037_dp
+  if(test_mode=='default') coefficient=.1_dp
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
@@ -92,6 +93,7 @@ contains
   subroutine check_mpi_hydro()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)
+    real(dp), allocatable :: mpi_coefficient
     real(dp) :: b(nv),w(nv),inventory(nv),error,dt,local_coefficient
     integer :: owners(count),p,mode,failure
     logical :: good
@@ -109,8 +111,9 @@ contains
         lt%fields(p)%values(1,:,:,:)=saved%nodes(p)%temperature
       end do
       initial=local;it=lt;b=17._dp;w=19._dp;local_coefficient=coefficient
+      if(test_mode/='default') mpi_coefficient=coefficient
       call advance_mpi_eb_tree_hydro_3d(species,topology,owners,geometry,'hllc',1.e-8_dp, &
-        local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient)
+        local,lt,b,w,MPI_COMM_WORLD,good,difmag=mpi_coefficient)
       call require(good,'MPI hydro')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'owner-local U')
