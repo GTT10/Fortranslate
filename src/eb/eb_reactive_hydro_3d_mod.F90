@@ -24,7 +24,7 @@ module eb_reactive_hydro_3d_mod
     real(dp), allocatable :: left(:,:,:,:),right(:,:,:,:),flux(:,:,:,:)
     real(dp), allocatable :: energy_left(:,:,:),energy_right(:,:,:),pressure(:,:,:),velocity(:,:,:)
   end type eb_plm_face_prediction_3d
-  public :: compute_reactive_eb_plm_normal_fluxes_3d
+  public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
@@ -36,6 +36,70 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! Pinned pc_transdo/pc_transdd for a cell's two normal face states.
+  ! Fluxes are intensive and in global momentum order. For two transverse
+  ! directions, all four faces must be open, as in PeleC's joint EB gate.
+  subroutine apply_reactive_eb_transverse_3d(states,internal_energy,gamma,normal_area, &
+      transverse_area,flux,face_pressure,face_velocity,coefficient,ok,source,source_energy,source_dt)
+    real(dp), intent(inout) :: states(:,:),internal_energy(:)
+    real(dp), intent(in) :: gamma,normal_area(2),transverse_area(:,:),flux(:,:,:)
+    real(dp), intent(in) :: face_pressure(:,:),face_velocity(:,:),coefficient(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: source(:),source_energy,source_dt
+    real(dp) :: candidate(size(states,1),2),energy(2),delta(size(states,1)),pressure_work(2)
+    real(dp) :: forcing(size(states,1)),forcing_energy,hdt,rho,new_rho,momentum(3),total,pnew
+    integer :: nv,nt,d,side,supplied
+    logical :: use_flux
+    ok=.false.;nv=size(states,1);nt=size(coefficient)
+    if(nv<6.or.size(states,2)/=2.or.size(internal_energy)/=2.or.nt<1.or.nt>2) return
+    if(any(shape(flux)/=[nv,2,nt]).or.any(shape(transverse_area)/=[2,nt])) return
+    if(any(shape(face_pressure)/=[2,nt]).or.any(shape(face_velocity)/=[2,nt])) return
+    if(.not.all(ieee_is_finite([gamma,normal_area,coefficient]))) return
+    if(.not.all(ieee_is_finite(transverse_area))) return
+    if(gamma<=0.or.any(normal_area<0).or.any(normal_area>1).or.any(coefficient<0)) return
+    if(any(transverse_area<0).or.any(transverse_area>1)) return
+    forcing=0;forcing_energy=0;hdt=0
+    supplied=count([present(source),present(source_energy),present(source_dt)])
+    if(supplied/=0.and.supplied/=3) return
+    if(supplied==3) then
+      if(nt/=2.or.size(source)/=nv) return
+      if(.not.all(ieee_is_finite(source)).or..not.all(ieee_is_finite([source_energy,source_dt]))) return
+      if(source_dt<0) return
+      forcing=source;forcing_energy=source_energy;hdt=source_dt
+    end if
+    use_flux=all(transverse_area>0)
+    delta=0;pressure_work=0
+    if(use_flux) then
+      if(.not.all(ieee_is_finite(flux)).or..not.all(ieee_is_finite(face_pressure)).or. &
+        .not.all(ieee_is_finite(face_velocity))) return
+      do d=1,nt
+        delta=delta+coefficient(d)*(flux(:,2,d)-flux(:,1,d))
+        pressure_work(d)=coefficient(d)*(face_pressure(2,d)*face_velocity(2,d)- &
+          face_pressure(1,d)*face_velocity(1,d)+.5_dp*(face_pressure(2,d)+face_pressure(1,d))* &
+          (face_velocity(2,d)-face_velocity(1,d))*(gamma-1))
+      end do
+    end if
+    candidate=states;energy=internal_energy
+    do side=1,2
+      if(normal_area(side)<=0) cycle
+      if(.not.all(ieee_is_finite(states(:,side))).or..not.ieee_is_finite(internal_energy(side))) return
+      rho=states(1,side);new_rho=rho-delta(1)
+      if(rho<=0.or.new_rho<=0) return
+      momentum=rho*states(2:4,side)-delta(2:4)
+      total=internal_energy(side)+.5_dp*rho*sum(states(2:4,side)**2)-delta(5)
+      candidate(1,side)=new_rho+hdt*forcing(1)
+      candidate(2:4,side)=momentum/new_rho+hdt*forcing(2:4)
+      energy(side)=total-.5_dp*sum(momentum**2)/new_rho+hdt*forcing_energy
+      ! Preserve the reference's ordered subtraction for the two-direction stage.
+      pnew=states(5,side)-pressure_work(1)-pressure_work(2)+hdt*forcing(5)
+      candidate(5,side)=max(tiny(1._dp),pnew)
+      candidate(6:,side)=(rho*states(6:,side)-delta(6:))/new_rho+hdt*forcing(6:)
+      if(.not.all(ieee_is_finite(candidate(:,side))).or..not.ieee_is_finite(energy(side))) return
+      if(candidate(1,side)<=0.or.any(candidate(6:,side)<0).or.sum(candidate(6:,side))<=0) return
+    end do
+    states=candidate;internal_energy=energy;ok=.true.
+  end subroutine apply_reactive_eb_transverse_3d
 
   ! First Godunov stage only: intensive normal fluxes before transverse,
   ! viscosity, centroid interpolation or aperture/area integration.

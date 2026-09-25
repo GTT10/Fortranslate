@@ -13,7 +13,7 @@ program test_reactive_eb_hydro_3d
     reactive_eb_flux_divergence_3d
   use eb_reactive_hydro_3d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
-    compute_reactive_eb_plm_normal_fluxes_3d,eb_plm_face_prediction_3d, &
+    compute_reactive_eb_plm_normal_fluxes_3d,eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
@@ -76,6 +76,7 @@ program test_reactive_eb_hydro_3d
   call verify_viscosity()
   call verify_normal_prediction()
   call verify_normal_fluxes()
+  call verify_transverse_prediction()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -256,6 +257,64 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_transverse_prediction()
+    real(dp) :: initial(nvar,2),q(nvar,2),e(2),original_energy(2),flx(nvar,2,2),p(2,2),v(2,2)
+    real(dp) :: ta(2,2),na(2),coef(2),delta(nvar),wanted(nvar),source(nvar),base(nvar,2),base_e(2),nan_value
+    integer :: nt,mask,normal_mask,d,side
+    logical :: valid,active
+    initial=0;initial(1,:)=2;initial(2,:)=1;initial(3,:)=2;initial(4,:)=3;initial(5,:)=100
+    initial(6,:)=.25_dp;initial(nvar,:)=.75_dp;original_energy=50
+    delta=0;delta(1:5)=[.2_dp,.1_dp,.2_dp,.3_dp,.4_dp];delta(6)=.05_dp;delta(nvar)=.15_dp
+    coef=[.1_dp,.2_dp];nan_value=ieee_value(0._dp,ieee_quiet_nan)
+    do nt=1,2
+      do mask=0,2**(2*nt)-1
+        do d=1,nt
+          ta(:,d)=[merge(.3_dp,0._dp,btest(mask,2*d-2)),merge(.7_dp,0._dp,btest(mask,2*d-1))]
+        end do
+        active=all(ta(:,:nt)>0)
+        flx=0;flx(:,2,1)=10*delta;flx(:,2,2)=10*delta
+        p(:,1)=[100._dp,110._dp];p(:,2)=[80._dp,90._dp]
+        v(:,1)=[2._dp,3._dp];v(:,2)=[1._dp,2._dp]
+        if(.not.active) then
+          flx=nan_value;p=nan_value;v=nan_value
+        end if
+        do normal_mask=0,3
+          na=[merge(.2_dp,0._dp,btest(normal_mask,0)),merge(.8_dp,0._dp,btest(normal_mask,1))]
+          q=initial;e=original_energy
+          call apply_reactive_eb_transverse_3d(q,e,1.4_dp,na,ta(:,:nt),flx(:,:,:nt),p(:,:nt),v(:,:nt), &
+            coef(:nt),valid)
+          call require(valid,'single/double EB transverse correction')
+          do side=1,2
+            if(na(side)==0.or..not.active) then
+              call require(all(q(:,side)==initial(:,side)).and.e(side)==50,'closed normal or transverse gate')
+            else
+              wanted=delta*merge(1._dp,3._dp,nt==1)
+              call require(abs(q(1,side)-(2-wanted(1)))<1e-14_dp,'transverse density conservation')
+              call require(maxval(abs(q(1,side)*q(2:4,side)-([2._dp,4._dp,6._dp]-wanted(2:4))))<1e-14_dp, &
+                'transverse momentum conservation')
+              call require(abs(e(side)+.5_dp*q(1,side)*sum(q(2:4,side)**2)-(64-wanted(5)))<2e-14_dp, &
+                'transverse total energy conservation')
+              call require(abs(q(5,side)-merge(82.8_dp,56._dp,nt==1))<2e-14_dp,'ordered transverse pressure work')
+              call require(maxval(abs(q(1,side)*q(6:,side)-(2*initial(6:,side)-wanted(6:))))<1e-14_dp, &
+                'transverse species conservation')
+            end if
+          end do
+        end do
+      end do
+    end do
+    q=initial;e=original_energy
+    call apply_reactive_eb_transverse_3d(q,e,1.4_dp,[1._dp,1._dp],ta,flx,p,v,coef,valid)
+    call require(valid,'source-free transverse reference')
+    base=q;base_e=e
+    source=0;source(1:5)=[.2_dp,.4_dp,.6_dp,.8_dp,2._dp];source(6)=.01_dp;source(nvar)=-.01_dp
+    q=initial;e=original_energy
+    call apply_reactive_eb_transverse_3d(q,e,1.4_dp,[1._dp,1._dp],ta,flx,p,v,coef,valid,source,3._dp,.5_dp)
+    call require(valid.and.maxval(abs(q(:,1)-base(:,1)-.5_dp*source))<1e-14_dp.and. &
+      all(e==base_e+1.5_dp),'double transverse primitive source integration')
+    q=initial;e=original_energy;flx(1,2,1)=1e6_dp
+    call apply_reactive_eb_transverse_3d(q,e,1.4_dp,[1._dp,1._dp],ta,flx,p,v,coef,valid)
+    call require(.not.valid.and.all(q==initial).and.all(e==original_energy),'nonpositive transverse density rollback')
+  end subroutine verify_transverse_prediction
   subroutine verify_normal_fluxes()
     type(eb_geometry_3d) :: shape
     type(eb_plm_face_prediction_3d) :: result(3),saved(3)
