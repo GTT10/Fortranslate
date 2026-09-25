@@ -64,7 +64,7 @@ contains
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
       chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
-      boundary_change, wall_change, chemistry_change)
+      boundary_change, wall_change, chemistry_change, tree_patch)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -89,6 +89,8 @@ contains
     character(len=*), optional, intent(in) :: element_names(:)
     real(dp), optional, intent(in) :: element_atoms(:,:)
     real(dp), optional, intent(in) :: boundary_change(:),wall_change(:),chemistry_change(:)
+    ! Tree snapshots reuse this record with PCM boundary support; standalone defaults stay strict.
+    logical, optional, intent(in) :: tree_patch
 
     integer :: element_index,face,component
     integer :: unit, status, nvar, species_index, reaction_index,plog_index
@@ -147,7 +149,12 @@ contains
       message = "Reactive EB 3D transport checkpoint is incomplete"
       return
     end if
-    if (.not. valid_checkpoint_config(config)) then
+    if(present(tree_patch)) then
+      if(tree_patch.and..not.present(checkpoint_unit)) then
+        message='Tree patch context requires an embedded checkpoint unit';return
+      end if
+    end if
+    if (.not. valid_checkpoint_config(config,tree_patch)) then
       message = "Invalid Reactive EB 3D checkpoint configuration"
       return
     end if
@@ -530,7 +537,7 @@ contains
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
       chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
-      boundary_change, wall_change, chemistry_change)
+      boundary_change, wall_change, chemistry_change, tree_patch)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -555,6 +562,8 @@ contains
     character(len=*), optional, intent(in) :: element_names(:)
     real(dp), optional, intent(in) :: element_atoms(:,:)
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
+    ! Tree snapshots reuse this record with PCM boundary support; standalone defaults stay strict.
+    logical, optional, intent(in) :: tree_patch
 
     type(eb_geometry_3d) :: candidate_geometry
     real(dp), allocatable :: candidate_state(:, :, :, :)
@@ -656,7 +665,12 @@ contains
       message = "Invalid Reactive EB 3D restart target"
       return
     end if
-    if (.not. valid_checkpoint_config(config)) then
+    if(present(tree_patch)) then
+      if(tree_patch.and..not.present(checkpoint_unit)) then
+        message='Tree patch context requires an embedded checkpoint unit';return
+      end if
+    end if
+    if (.not. valid_checkpoint_config(config,tree_patch)) then
       message = "Invalid Reactive EB 3D restart target"
       return
     end if
@@ -1327,13 +1341,14 @@ contains
     end if
   end function checkpoint_solver_identity
 
-  logical function valid_checkpoint_config(config) result(valid)
+  logical function valid_checkpoint_config(config,tree_patch) result(valid)
     type(reactive_eb_3d_config), intent(in) :: config
     real(dp) :: axis_lower, axis_upper, spacing, coordinate, tolerance
     real(dp) :: cut_fraction
+    logical, optional, intent(in) :: tree_patch
 
     valid=.false.
-    if(.not.valid_reactive_eb_boundaries(config)) return
+    if(.not.valid_reactive_eb_boundaries(config,tree_patch)) return
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) return
     if(config%hydro_method/='pcm'.and.config%hydro_method/='plm_ctu') return
     if(config%hydro_method=='plm_ctu'.and.config%riemann_solver/='pelec') return

@@ -16,11 +16,14 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--domain-wall', action='store_true')
+p.add_argument('--pcm', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--specular-outflow', action='store_true')
 p.add_argument('--force', action='store_true')
 a = p.parse_args()
+if a.pcm:
+    assert a.domain_wall, '--pcm requires --domain-wall'
 if a.domain_wall:
     assert a.khrt, '--domain-wall requires --khrt'
 a.work.mkdir(parents=True, exist_ok=True)
@@ -57,7 +60,8 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
                 'regrid_lower(:,1,3)=1,1,1,regrid_upper(:,1,3)=2,4,4,'
                 'rebalance_interval_steps=1,rebalance_minimum_gain=0.,')
     if a.domain_wall:
-        tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
+        if not a.pcm:
+            tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
         controls += "boundary_faces='no_slip_wall','no_slip_wall','outflow','outflow','outflow','outflow',"
     if a.selected:
         controls += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"

@@ -126,7 +126,7 @@ contains
         end if
         call read_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,g,u,t,got_time,got_step, &
           integral,l1,elements,got_dt,diffusivity,got_theta,valid,message,bundle_sha256,chemistry_integrator, &
-          base_mole_fractions,unit,element_names,element_atoms)
+          base_mole_fractions,unit,element_names,element_atoms,tree_patch=.true.)
         if (.not.valid) return
         if (indexed) then
           inquire(unit,pos=patch_end,iostat=ios)
@@ -152,7 +152,7 @@ contains
       else
         call write_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,g,u,t,saved%time,saved%steps, &
           expected,expected_l1,expected_elements,saved%minimum_dt,0._dp,saved%minimum_theta,valid,message, &
-          bundle_sha256,chemistry_integrator,base_mole_fractions,unit,element_names,element_atoms)
+          bundle_sha256,chemistry_integrator,base_mole_fractions,unit,element_names,element_atoms,tree_patch=.true.)
         if (.not.valid) return
       end if
       end associate

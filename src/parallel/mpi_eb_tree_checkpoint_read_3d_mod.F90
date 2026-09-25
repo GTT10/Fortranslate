@@ -166,7 +166,7 @@ contains
       got_time=0._dp;got_steps=0;got_dt=0._dp;got_theta=1._dp;diffusivity=0._dp
       call read_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,g,candidate%fields(node)%values, &
         ct%fields(node)%values(1,:,:,:),got_time,got_steps,integral,l1,elements,got_dt,diffusivity,got_theta, &
-        valid,message,bundle_sha256,chemistry_integrator,base_mole_fractions,unit,element_names,element_atoms)
+        valid,message,bundle_sha256,chemistry_integrator,base_mole_fractions,unit,element_names,element_atoms,tree_patch=.true.)
       if (.not.valid) exit
       inquire(unit,pos=position,iostat=ios)
       valid=ios==0.and.position==ends(node).and.matching_eb_metrics_3d(g,geometry(node))

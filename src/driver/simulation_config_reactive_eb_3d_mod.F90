@@ -81,8 +81,10 @@ module simulation_config_reactive_eb_3d_mod
 
 contains
 
-  pure logical function valid_reactive_eb_boundaries(config) result(valid)
+  pure logical function valid_reactive_eb_boundaries(config,tree_patch) result(valid)
     type(reactive_eb_3d_config), intent(in) :: config
+    logical, optional, intent(in) :: tree_patch
+    logical :: tree_pcm
     integer :: face
     logical :: ok
     character(len=256) :: message
@@ -105,7 +107,11 @@ contains
     if(all(config%boundary_faces=='legacy')) then
       valid=.true.;return
     end if
-    if(config%hydro_method/='plm_ctu'.or.config%riemann_solver/='pelec') return
+    tree_pcm=.false.
+    if(present(tree_patch)) tree_pcm=tree_patch.and.config%hydro_method=='pcm'
+    if(.not.tree_pcm) then
+      if(config%hydro_method/='plm_ctu'.or.config%riemann_solver/='pelec') return
+    end if
     if(any(config%boundary_faces=='isothermal_wall')) then
       if(.not.config%transport_enabled.or..not.config%thermal_conduction_enabled) return
     end if

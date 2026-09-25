@@ -135,7 +135,7 @@ contains
       end if
       if (valid) call write_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,g,u,t, &
         record%time,record%steps,integral,l1,elements,record%minimum_dt,0._dp,record%minimum_theta,valid,message, &
-        bundle_sha256,chemistry_integrator,base_mole_fractions,patch,element_names,element_atoms)
+        bundle_sha256,chemistry_integrator,base_mole_fractions,patch,element_names,element_atoms,tree_patch=.true.)
       end associate
       if (valid) call stage_formatted(patch,valid)
       close(patch,iostat=ios)
