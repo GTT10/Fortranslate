@@ -14,7 +14,25 @@ program test_reactive_ppm
   real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
   real(dp) :: density_contact(-2:2), pressure_contact(-2:2)
   logical :: ok
-  integer :: i
+  integer :: i, status
+  character(len=32) :: mode
+  real(dp) :: velocity, sound, dtdx
+
+  if (command_argument_count()>0) then
+    call get_command_argument(1,mode)
+    if (trim(mode)/='--reference-stream') error stop 'unknown mode'
+    do
+      read(*,*,iostat=status) stencil,flattening,velocity,sound,dtdx
+      if (status<0) exit
+      if (status/=0) error stop 'invalid reference input'
+      call reactive_ppm_reconstruct_five(stencil,flattening,left_edge,right_edge)
+      call reactive_ppm_integrate_profile(left_edge,right_edge,stencil(3),velocity,sound,dtdx, &
+        integral_right,integral_left,ok)
+      if (.not.ok) error stop 'invalid reference profile'
+      write(*,'(8(es26.17e3,1x))') left_edge,right_edge,integral_right,integral_left
+    end do
+    stop
+  end if
 
   value = reactive_ppm_interface_value(-1.0_dp, 0.0_dp, 1.0_dp, 2.0_dp)
   call assert_close(value, 0.5_dp, 2.0e-15_dp, "linear interface")
