@@ -79,7 +79,9 @@ with fixed-mechanism changed-rank continuation checks
 
 Single-level fixed/selected EB gas applications now accept named mole fractions
 per inlet face, with exact input-composition restart binding
-([checks](validation/eb-inlet-composition-20260926.md)).
+([checks](validation/eb-inlet-composition-20260926.md)). Single-level spray
+also constructs these inlet states and binds composition to its coupled restart
+([checks](validation/eb-spray-inlet-composition-20260926.md)).
 
 Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
 with the `pelec` Riemann solver, outflow halos, reaction/transport composition

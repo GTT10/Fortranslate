@@ -188,7 +188,7 @@ seam fluxes and species limiter coefficients
 ([checks](validation/eb-periodic-transport-20260925.md)). Periodic configured geometry,
 coupled gas dispatch and fixed/selected application restart are now connected
 ([checks](validation/eb-periodic-application-20260925.md)). Fixed/selected single-level gas applications now accept independent inlet mixtures;
-single-level spray mixture forwarding remains open. Serial single-level spray boundary
+single-level spray state generation and restart now forward those mixtures. Serial single-level spray boundary
 input now covers inflow/outflow, periodic and domain-wall gas conditions with
 specular particle reflection ([checks](validation/eb-spray-wall-20260926.md)).
 The serial EB tree halo API and common/recursive time updates now accept
