@@ -58,6 +58,10 @@ program test_mpi_eb_tree_subcycle_full_3d
     deallocate(mach,pin)
     allocate(labels(6));labels='periodic';labels(5:6)='outflow'
   end if
+  if(index(test_mode,'wall')>0) then
+    deallocate(mach,pin)
+    allocate(labels(6));labels='outflow';labels(1:2)='slip_wall';labels(3:4)='no_slip_wall'
+  end if
   if (index(test_mode,'mach')==1) then
     mach(1)=.2_dp;mach(4)=.1_dp;pin(4)=120000
   end if
@@ -277,7 +281,7 @@ contains
       if(allocated(labels)) then
         saved_tin=tin(1)
         if(rank==0) then
-          if(index(test_mode,'periodic')>0) then
+          if(index(test_mode,'periodic')>0.or.index(test_mode,'wall')>0) then
             labels(1)='outflow'
           else
             tin(1)=ieee_value(0._dp,ieee_quiet_nan)
@@ -290,6 +294,7 @@ contains
         call require(.not.good,'invalid boundary after private reaction')
         tin(1)=saved_tin
         if(index(test_mode,'periodic')>0) labels(1)='periodic'
+        if(index(test_mode,'wall')>0) labels(1)='slip_wall'
         do p=1,count
           if(owners(p)/=rank) cycle
           call require(all(local%fields(p)%values==initial%fields(p)%values).and. &
