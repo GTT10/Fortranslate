@@ -871,3 +871,9 @@ foreach(layout reference multipatch)
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_two_level_difmag_${layout}")
   set_tests_properties(reactive_eb_two_level_difmag_${layout} PROPERTIES TIMEOUT 180)
 endforeach()
+
+add_test(NAME reactive_eb_3d_ctu_application COMMAND "${Python3_EXECUTABLE}"
+  "${PROJECT_SOURCE_DIR}/tools/check_eb_ctu_application.py"
+  --executable "$<TARGET_FILE:pelef_reactive_eb_3d>"
+  --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_3d_ctu_application")
+set_tests_properties(reactive_eb_3d_ctu_application PROPERTIES TIMEOUT 180)

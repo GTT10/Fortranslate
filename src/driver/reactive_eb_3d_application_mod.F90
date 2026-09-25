@@ -45,6 +45,7 @@ contains
     character(len=*), intent(in), optional :: element_names(:)
     real(dp), intent(in), optional :: element_atoms(:,:)
 
+    type(eb_geometry_3d), allocatable :: extended_geometry
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:, :, :, :), new_state(:, :, :, :)
     real(dp), allocatable :: temperature(:, :, :), new_temperature(:, :, :)
@@ -102,6 +103,11 @@ contains
 
     call build_configured_eb_geometry_3d(config,geometry,ok)
     if (.not. ok) error stop "Failed to build public 3D EB geometry"
+    if(config%hydro_method=='plm_ctu') then
+      allocate(extended_geometry)
+      call build_configured_eb_geometry_3d(config,extended_geometry,ok,halo=6)
+      if(.not.ok) error stop 'Failed to extend CTU EB geometry'
+    end if
 
     nvar = reactive_nvar(size(species))
     allocate(state(nvar, config%nx, config%ny, config%nz))
@@ -198,7 +204,7 @@ contains
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         new_state, new_temperature, step_transport_theta, ok, &
         config%state_redist_target_volume_fraction, chemistry_integrator, &
-        step_boundary,step_wall,step_chemical,difmag=config%difmag)
+        step_boundary,step_wall,step_chemical,difmag=config%difmag,extended_geometry=extended_geometry)
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
       boundary=boundary+step_boundary
       wall=wall+step_wall
@@ -285,6 +291,7 @@ contains
     write(*, '(a,1x,a)') "Plane axis:", trim(config%plane_axis)
     write(*, '(a,es24.16)') "Plane position: ", config%plane_position
     end if
+    write(*, '(a,1x,a)') "Hydro method:", trim(config%hydro_method)
     write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
     write(*, '(a,1x,a)') "Redistribution:", trim(config%redistribution)
     write(*, '(a,l2)') "Chemistry: ", config%chemistry_enabled

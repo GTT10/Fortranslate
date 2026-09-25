@@ -1268,6 +1268,7 @@ contains
     character(len=128) :: identity
     identity=trim(config%riemann_solver)
     if(config%difmag>0) write(identity,'(a,1x,a,1x,es27.18e3)') trim(config%riemann_solver),'difmag-v1',config%difmag
+    if(config%hydro_method/='pcm') identity=trim(identity)//' hydro-v1 '//trim(config%hydro_method)
   end function checkpoint_solver_identity
 
   logical function valid_checkpoint_config(config) result(valid)
@@ -1277,6 +1278,8 @@ contains
 
     valid=.false.
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) return
+    if(config%hydro_method/='pcm'.and.config%hydro_method/='plm_ctu') return
+    if(config%hydro_method=='plm_ctu'.and.config%riemann_solver/='pelec') return
     valid = min(config%nx, config%ny, config%nz) >= merge(1,2,trim(config%redistribution)=="none") .and. &
       config%maximum_steps > 0 .and. &
       all(ieee_is_finite([config%x_lower, config%x_upper, &

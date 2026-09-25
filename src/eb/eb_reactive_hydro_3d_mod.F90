@@ -162,7 +162,7 @@ contains
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
     type(eb_geometry_3d) :: working
     type(eb_plm_boundary_3d) :: boundary
-    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),flat(:,:,:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),flat(:,:,:),candidate(:,:,:,:),ct(:,:,:)
     integer :: n(3),nv,i,j,k,donor(3)
     logical :: valid,use_flattening
     ok=.false.;nv=reactive_nvar(size(species));n=shape(temperature)
@@ -193,8 +193,20 @@ contains
       if(.not.valid) return
     end if
     boundary%lower=4;boundary%upper=n+3;boundary%faces='outflow'
-    call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,new_state,new_temperature,ok, &
+    candidate=state;ct=temperature
+    call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,candidate,ct,ok, &
       redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,boundary)
+    if(.not.ok) return
+    ! Existing application and split operators preserve covered-cell storage.
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(vf(i+3,j+3,k+3)>0) cycle
+      candidate(:,i,j,k)=state(:,i,j,k);ct(i,j,k)=temperature(i,j,k)
+    end do
+    end do
+    end do
+    new_state=candidate;new_temperature=ct
   end subroutine advance_reactive_eb_outflow_ctu_3d
 
   ! Complete hydro update for the central cells 4:N-3 of a prepared working

@@ -12,9 +12,9 @@ module reactive_eb_3d_driver_mod
     reactive_mass_fraction_component, reactive_conserved_to_primitive, &
     reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d
+    eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d,extract_eb_geometry_3d
   use eb_reactive_hydro_3d_mod, only: &
-    advance_reactive_eb_redistributed_euler_3d, &
+    advance_reactive_eb_redistributed_euler_3d,advance_reactive_eb_outflow_ctu_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_3d
@@ -34,6 +34,76 @@ module reactive_eb_3d_driver_mod
   public :: write_reactive_eb_3d_csv
 
 contains
+
+  logical function valid_ctu_geometry(physical,extended,solver) result(valid)
+    type(eb_geometry_3d), intent(in) :: physical
+    type(eb_geometry_3d), optional, intent(in) :: extended
+    character(len=*), intent(in) :: solver
+    type(eb_geometry_3d) :: cropped
+    integer :: n(3)
+    real(dp), parameter :: tolerance=256*epsilon(1._dp)
+    real(dp) :: bounds(6),other(6)
+    valid=.true.
+    if(.not.present(extended)) return
+    valid=.false.
+    if(solver/='pelec') return
+    n=[physical%nx,physical%ny,physical%nz]
+    if(any([extended%nx,extended%ny,extended%nz]/=n+12)) return
+    call extract_eb_geometry_3d(extended,[7,7,7],n+6,cropped,valid)
+    if(.not.valid) return
+    valid=.false.
+    bounds=[physical%x_lower,physical%x_upper,physical%y_lower,physical%y_upper,physical%z_lower,physical%z_upper]
+    other=[cropped%x_lower,cropped%x_upper,cropped%y_lower,cropped%y_upper,cropped%z_lower,cropped%z_upper]
+    if(any(abs(bounds-other)>tolerance*max(1._dp,abs(bounds)))) return
+    if(any(cropped%cell_type/=physical%cell_type)) return
+    if(any(abs(cropped%volume_fraction-physical%volume_fraction)> &
+      tolerance*max(1._dp,abs(physical%volume_fraction)))) return
+    if(any(abs(cropped%cell_centroid_x-physical%cell_centroid_x)> &
+      tolerance*max(1._dp,abs(physical%cell_centroid_x)))) return
+    if(any(abs(cropped%cell_centroid_y-physical%cell_centroid_y)> &
+      tolerance*max(1._dp,abs(physical%cell_centroid_y)))) return
+    if(any(abs(cropped%cell_centroid_z-physical%cell_centroid_z)> &
+      tolerance*max(1._dp,abs(physical%cell_centroid_z)))) return
+    if(any(abs(cropped%x_face_fraction-physical%x_face_fraction)> &
+      tolerance*max(1._dp,abs(physical%x_face_fraction)))) return
+    if(any(abs(cropped%y_face_fraction-physical%y_face_fraction)> &
+      tolerance*max(1._dp,abs(physical%y_face_fraction)))) return
+    if(any(abs(cropped%z_face_fraction-physical%z_face_fraction)> &
+      tolerance*max(1._dp,abs(physical%z_face_fraction)))) return
+    if(any(abs(cropped%x_face_centroid_y-physical%x_face_centroid_y)> &
+      tolerance*max(1._dp,abs(physical%x_face_centroid_y)))) return
+    if(any(abs(cropped%x_face_centroid_z-physical%x_face_centroid_z)> &
+      tolerance*max(1._dp,abs(physical%x_face_centroid_z)))) return
+    if(any(abs(cropped%y_face_centroid_x-physical%y_face_centroid_x)> &
+      tolerance*max(1._dp,abs(physical%y_face_centroid_x)))) return
+    if(any(abs(cropped%y_face_centroid_z-physical%y_face_centroid_z)> &
+      tolerance*max(1._dp,abs(physical%y_face_centroid_z)))) return
+    if(any(abs(cropped%z_face_centroid_x-physical%z_face_centroid_x)> &
+      tolerance*max(1._dp,abs(physical%z_face_centroid_x)))) return
+    if(any(abs(cropped%z_face_centroid_y-physical%z_face_centroid_y)> &
+      tolerance*max(1._dp,abs(physical%z_face_centroid_y)))) return
+    if(any(abs(cropped%boundary_area-physical%boundary_area)> &
+      tolerance*max(1._dp,abs(physical%boundary_area)))) return
+    if(any(abs(cropped%boundary_centroid_x-physical%boundary_centroid_x)> &
+      tolerance*max(1._dp,abs(physical%boundary_centroid_x)))) return
+    if(any(abs(cropped%boundary_centroid_y-physical%boundary_centroid_y)> &
+      tolerance*max(1._dp,abs(physical%boundary_centroid_y)))) return
+    if(any(abs(cropped%boundary_centroid_z-physical%boundary_centroid_z)> &
+      tolerance*max(1._dp,abs(physical%boundary_centroid_z)))) return
+    if(any(abs(cropped%boundary_normal_x-physical%boundary_normal_x)> &
+      tolerance*max(1._dp,abs(physical%boundary_normal_x)))) return
+    if(any(abs(cropped%boundary_normal_y-physical%boundary_normal_y)> &
+      tolerance*max(1._dp,abs(physical%boundary_normal_y)))) return
+    if(any(abs(cropped%boundary_normal_z-physical%boundary_normal_z)> &
+      tolerance*max(1._dp,abs(physical%boundary_normal_z)))) return
+    if(any(abs(cropped%boundary_normal_integral_x-physical%boundary_normal_integral_x)> &
+      tolerance*max(1._dp,abs(physical%boundary_normal_integral_x)))) return
+    if(any(abs(cropped%boundary_normal_integral_y-physical%boundary_normal_integral_y)> &
+      tolerance*max(1._dp,abs(physical%boundary_normal_integral_y)))) return
+    if(any(abs(cropped%boundary_normal_integral_z-physical%boundary_normal_integral_z)> &
+      tolerance*max(1._dp,abs(physical%boundary_normal_integral_z)))) return
+    valid=.true.
+  end function valid_ctu_geometry
 
   subroutine initialize_reactive_eb_density_sheet_3d( &
       species, config, geometry, state, temperature, ok, &
@@ -118,11 +188,12 @@ contains
   subroutine advance_reactive_eb_strang_3d( &
       species, reactions, state, temperature, geometry, solver, redistribution, &
       dt, chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag)
+      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     character(len=*), intent(in) :: solver, redistribution
     real(dp), intent(in) :: dt, rtol, atol
     logical, intent(in) :: chemistry_enabled
@@ -154,6 +225,7 @@ contains
         any(shape(new_temperature) /= shape(temperature))) return
     new_state = state
     new_temperature = temperature
+    if(.not.valid_ctu_geometry(geometry,extended_geometry,solver)) return
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
@@ -212,16 +284,22 @@ contains
       end if
     end if
 
-    select case (trim(redistribution))
-    case ("flux_redist")
-      call advance_reactive_eb_redistributed_euler_3d( &
-        species, candidate_state, candidate_temperature, geometry, solver, dt, &
-        hydro_state, hydro_temperature, local_ok,exchange_boundary,exchange_wall,difmag=difmag)
-    case ("state_redist")
-      call advance_reactive_eb_state_redistributed_euler_3d( &
-        species, candidate_state, candidate_temperature, geometry, solver, dt, &
-        hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
-    end select
+    if(present(extended_geometry)) then
+      call advance_reactive_eb_outflow_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
+        hydro_state,hydro_temperature,local_ok,redistribution,difmag,boundary_change=exchange_boundary, &
+        wall_change=exchange_wall,target_volume_fraction=target)
+    else
+      select case (trim(redistribution))
+      case ("flux_redist")
+        call advance_reactive_eb_redistributed_euler_3d( &
+          species, candidate_state, candidate_temperature, geometry, solver, dt, &
+          hydro_state, hydro_temperature, local_ok,exchange_boundary,exchange_wall,difmag=difmag)
+      case ("state_redist")
+        call advance_reactive_eb_state_redistributed_euler_3d( &
+          species, candidate_state, candidate_temperature, geometry, solver, dt, &
+          hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
+      end select
+    end if
     if (.not. local_ok) return
     call covered_cells_match_3d( &
       state, temperature, hydro_state, hydro_temperature, geometry, local_ok)
@@ -268,12 +346,13 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, new_state, &
       new_temperature, minimum_transport_theta, ok, target_volume_fraction, &
-      chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag)
+      chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     character(len=*), intent(in) :: solver, redistribution
     real(dp), intent(in) :: dt, rtol, atol
     logical, intent(in) :: chemistry_enabled, transport_enabled
@@ -311,6 +390,7 @@ contains
         any(shape(new_temperature) /= shape(temperature))) return
     new_state = state
     new_temperature = temperature
+    if(.not.valid_ctu_geometry(geometry,extended_geometry,solver)) return
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
@@ -332,7 +412,7 @@ contains
         species, reactions, state, temperature, geometry, solver, &
         redistribution, dt, chemistry_enabled, rtol, atol, new_state, &
         new_temperature, ok, target_volume_fraction, chemistry_integrator, &
-        boundary_change,wall_change,chemistry_change,difmag=difmag)
+        boundary_change,wall_change,chemistry_change,difmag=difmag,extended_geometry=extended_geometry)
       return
     end if
 
@@ -389,9 +469,15 @@ contains
       geometry, local_ok)
     if (.not. local_ok) return
 
-    call advance_reactive_eb_state_redistributed_euler_3d( &
-      species, candidate_state, candidate_temperature, geometry, solver, &
-      dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
+    if(present(extended_geometry)) then
+      call advance_reactive_eb_outflow_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
+        hydro_state,hydro_temperature,local_ok,redistribution,difmag,boundary_change=exchange_boundary, &
+        wall_change=exchange_wall,target_volume_fraction=target)
+    else
+      call advance_reactive_eb_state_redistributed_euler_3d( &
+        species, candidate_state, candidate_temperature, geometry, solver, &
+        dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
+    end if
     if (.not. local_ok) return
     call covered_cells_match_3d( &
       state, temperature, hydro_state, hydro_temperature, geometry, &

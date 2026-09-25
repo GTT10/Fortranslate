@@ -34,6 +34,7 @@ module simulation_config_reactive_eb_3d_mod
     character(len=8) :: plane_axis = "x"
     real(dp) :: plane_position = 0.395_dp
     real(dp) :: difmag=.1_dp
+    character(len=16) :: hydro_method = "pcm"
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
@@ -217,12 +218,12 @@ contains
   end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_difmag)
+      path, config, ok, message, allow_selected, allow_difmag,allow_ctu)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_difmag
+    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu
 
     integer :: nx, ny, nz, maximum_steps, checkpoint_interval_steps
     integer :: unit, io_status
@@ -236,6 +237,7 @@ contains
     character(len=8) :: plane_axis,extrusion_axis
     character(len=16) :: geometry_type
     character(len=512) :: section_file,level_set_file
+    character(len=16) :: hydro_method
     character(len=32) :: riemann_solver, redistribution, thermo_model
     character(len=512) :: checkpoint_file, restart_file, output_file
     integer :: composition_count
@@ -250,7 +252,7 @@ contains
     namelist /reactive_eb_3d/ &
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
-      final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, &
+      final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, hydro_method, &
       geometry_type,extrusion_axis,section_file,level_set_file, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
@@ -281,6 +283,7 @@ contains
     level_set_file=config%level_set_file
     plane_axis = config%plane_axis
     plane_position = config%plane_position
+    hydro_method = config%hydro_method
     riemann_solver = config%riemann_solver
     difmag=config%difmag
     redistribution = config%redistribution
@@ -345,6 +348,7 @@ contains
     config%section_file=trim(section_file);config%level_set_file=trim(level_set_file)
     config%plane_axis = trim(plane_axis)
     config%plane_position = plane_position
+    config%hydro_method = trim(hydro_method)
     config%riemann_solver = trim(riemann_solver)
     config%difmag=difmag
     config%redistribution = trim(redistribution)
@@ -374,6 +378,13 @@ contains
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
     config%output_file = trim(output_file)
+    if(hydro_method/='pcm') then
+      ok=.false.
+      if(present(allow_ctu)) ok=allow_ctu
+      if(.not.ok) then
+        message='CTU hydro input is not enabled in this application';return
+      end if
+    end if
     if(difmag>0) then
       ok=.true.
       if(present(allow_difmag)) ok=allow_difmag
@@ -495,6 +506,10 @@ contains
              len_trim(config%checkpoint_file) == 0) then
       message = "Reactive EB 3D checkpoint_file must not be empty"
       return
+    else if(config%hydro_method/='pcm'.and.config%hydro_method/='plm_ctu') then
+      message='Reactive EB 3D hydro_method must be pcm or plm_ctu';return
+    else if(config%hydro_method=='plm_ctu'.and.config%riemann_solver/='pelec') then
+      message='Reactive EB 3D plm_ctu requires the pelec Riemann solver';return
     else if (trim(config%riemann_solver) /= "rusanov" .and. &
              trim(config%riemann_solver) /= "hllc" .and. &
              trim(config%riemann_solver) /= "pelec") then
