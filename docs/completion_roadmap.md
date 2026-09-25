@@ -162,7 +162,10 @@ spray now forwards CTU through coupled gas stepping and checkpoint identity
 ([checks](validation/mpi-eb-spray-ctu-20260925.md)). The serial single-level spray
 entry and fixed/selected restart now also connect CTU
 ([checks](validation/serial-eb-spray-ctu-20260925.md)); broader physical-boundary
-preparation and complete reference parity remain open.
+preparation and complete reference parity remain open. A single-level library
+entry now prepares six-layer periodic/fixed-wall/prescribed-inflow halos for CTU
+([checks](validation/eb-ctu-boundary-halos-20260925.md)); coupled transport,
+application and tree/MPI boundary selection still need connection.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
