@@ -60,7 +60,8 @@ prints were removed. There were no build failures or skips.
 
 The diagnostic runs also raised an overflow flag in the existing shock-sensor
 zero-denominator path; the shared sensor's denominator safeguard remains a
-separate numerical follow-up. Compiler warnings remain.
+separate numerical follow-up, now resolved in the
+[denominator correction](flattening-denominator-20260925.md). Compiler warnings remain.
 
 Artifacts in `build/eb-tree-ctu-checks/` include `build.log`, `rebuild.log`,
 `bounded-build.log`, `LastTest-first.log`, `LastTest-warm.log`, final
