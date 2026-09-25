@@ -130,9 +130,12 @@ primitive sources ([checks](validation/eb-transverse-20260925.md)). The twelve-s
 CTU flux pipeline is connected, including corrected Godunov pressure/velocity
 ([checks](validation/eb-ctu-flux-20260925.md)). A connectivity-gated face-centroid
 flux interpolation API now follows the reference regular-area/aperture ordering
-([checks](validation/eb-centroid-flux-20260925.md)). CTU/viscosity/centroid assembly,
-conservative update/redistribution, application halo preparation and input
-selection remain before claiming EB Godunov parity.
+([checks](validation/eb-centroid-flux-20260925.md)). The prepared-halo hydro API
+now assembles CTU, viscosity/normalization, centroid fluxes and conservative,
+FluxRedist or StateRedist updates with integrated flux and inventory publication
+([checks](validation/eb-ctu-update-20260925.md)). Application halo/geometry and
+flattening preparation, physical boundary masks, input selection and coupled
+MPI/AMR dispatch remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
