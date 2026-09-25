@@ -226,8 +226,11 @@ cut/covered cells using the reference cutoff
 plain/flux-redistributed/state-redistributed Euler APIs now accept explicit
 coefficients. Outflow halos are built locally; external positive-coefficient
 halos must include corner states and matching volume fractions
-([checks](validation/eb-viscosity-dispatch-20260925.md)). EB tree/MPI callers
-still need geometry halo and coefficient wiring. Regular MPI spray PLM hydro now
+([checks](validation/eb-viscosity-dispatch-20260925.md)). Serial common-step EB
+tree hydro now requests complete donor halos and forwards explicit coefficients
+([checks](validation/eb-tree-viscosity-20260925.md)). Its coarse/fine volume
+fractions use PCM ancestor values; reference geometry fidelity remains open,
+as do recursive/coupled and MPI coefficient/halo wiring. Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies
