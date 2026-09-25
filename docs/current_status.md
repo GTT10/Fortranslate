@@ -14,10 +14,11 @@ intermediate species weights as in the pinned passive kernels. Riemann forwardin
 and the separate accepted-cell rejection are checked
 ([evidence](validation/ppm-signed-transverse-20260926.md)).
 
-PPM normal primitive-state prediction now agrees with compiled pinned PeleC
-projection bodies in 252 bounded cases
-([comparison](validation/ppm-pinned-normal-20260926.md)). Full CTU external
-parity and physical validation remain open.
+PPM normal primitive-state prediction now preserves independently reconstructed
+species weights in the PeleC pressure path. The expanded compiled-reference
+comparison passes 315 bounded cases, including independent mixture gradients
+([repair and checks](validation/ppm-mixture-projection-20260926.md)). Full CTU
+external parity and physical validation remain open.
 
 Serial single-level EB KH eligibility now previews the complete boundary flight,
 including periodic wraps and reflecting domain walls. Fixed-mechanism periodic
