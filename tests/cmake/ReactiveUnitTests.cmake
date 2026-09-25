@@ -843,3 +843,7 @@ add_test(NAME reactive_3d_difmag_input
     --executable "$<TARGET_FILE:pelef_reactive_3d>"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_3d_difmag_input")
 set_tests_properties(reactive_3d_difmag_input PROPERTIES TIMEOUT 120)
+
+add_executable(test_reactive_pcm_plm_viscosity_3d unit/test_reactive_pcm_plm_viscosity_3d.F90)
+target_link_libraries(test_reactive_pcm_plm_viscosity_3d PRIVATE pelef_core)
+add_test(NAME unit_reactive_pcm_plm_viscosity_3d COMMAND test_reactive_pcm_plm_viscosity_3d)

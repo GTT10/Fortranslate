@@ -1844,7 +1844,7 @@ contains
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
     real(dp) :: change(size(state,1)),hydro_change(size(state,1)),transport_change(size(state,1))
-    real(dp) :: stage_transport_theta,transverse_theta
+    real(dp) :: stage_transport_theta,transverse_theta,explicit_viscosity
     logical :: local_ok
     integer :: nvar
     character(len=32) :: selected_reconstruction, selected_limiter
@@ -1883,9 +1883,10 @@ contains
     if (present(reconstruction)) selected_reconstruction = &
       trim(reconstruction)
     if (present(limiter)) selected_limiter = trim(limiter)
+    explicit_viscosity=0
     if (present(difmag)) then
       if (.not.ieee_is_finite(difmag).or.difmag<0) return
-      if (difmag>0.and.selected_reconstruction/='characteristic_ppm') return
+      explicit_viscosity=difmag
     end if
     nvar = reactive_nvar(size(species))
     if (.not. valid_reactive_3d_shapes( &
@@ -1925,7 +1926,8 @@ contains
       minimum_transport_theta = min( &
         minimum_transport_theta, stage_transport_theta)
     end if
-    if (any(faces /= "periodic")) then
+    if (any(faces /= "periodic").or. &
+        (explicit_viscosity>0.and.selected_reconstruction/="characteristic_ppm")) then
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
         [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
         inflow_state, inflow_temperature,outlet_pressure=outlet_pressure, &
@@ -1995,16 +1997,17 @@ contains
     real(dp), intent(out) :: boundary_change(:)
     logical, intent(out) :: ok
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),recovered(:,:,:),rhs(:,:,:,:)
-    real(dp) :: rate0(size(state,1)),rate1(size(state,1))
+    real(dp) :: rate0(size(state,1)),rate1(size(state,1)),explicit_viscosity
     integer :: n(3)
     logical :: local_ok,full_faces
     ok=.false.; boundary_change=0.0_dp
     if (present(flux_x)) flux_x=0
     if (present(flux_y)) flux_y=0
     if (present(flux_z)) flux_z=0
+    explicit_viscosity=0
     if (present(difmag)) then
       if (.not.ieee_is_finite(difmag).or.difmag<0) return
-      if (difmag>0.and.reconstruction/='characteristic_ppm') return
+      explicit_viscosity=difmag
     end if
     if ((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
     if(present(outlet_pressure)) then
@@ -2151,6 +2154,13 @@ contains
           limiter,riemann_solver,fx,fy,fz,success)
       end if
       if (.not.success) return
+      if(explicit_viscosity>0) then
+        call adjust_reactive_artificial_viscosity_3d(ghost(:,2:n(1)+3,2:n(2)+3,2:n(3)+3), &
+          n,spacing,explicit_viscosity,faces=='no_slip_wall'.or.faces=='isothermal_wall', &
+          fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2),fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2), &
+          fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),success)
+        if(.not.success) return
+      end if
       do k=3,n(3)+2
         do j=3,n(2)+2
           do i=3,n(1)+2
