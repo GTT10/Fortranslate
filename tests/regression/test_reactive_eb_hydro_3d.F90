@@ -8,17 +8,18 @@ program test_reactive_eb_hydro_3d
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_species_component, reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d
+    eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_flux_divergence_3d
   use eb_reactive_hydro_3d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
-    compute_reactive_eb_plm_normal_fluxes_3d,compute_reactive_eb_plm_ctu_fluxes_3d, &
+    compute_reactive_eb_plm_normal_fluxes_3d,compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d, &
     eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   implicit none
 
   integer, parameter :: nx = 10
@@ -79,6 +80,7 @@ program test_reactive_eb_hydro_3d
   call verify_normal_fluxes()
   call verify_transverse_prediction()
   call verify_ctu_fluxes()
+  call verify_ctu_update()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -259,6 +261,74 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_ctu_update()
+    type(eb_geometry_3d) :: working,physical
+    type(eb_integrated_flux_3d) :: integral,saved_flux
+    real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11),flat(0:9,0:9,0:9)
+    real(dp) :: initial(nvar,2,2,2),q(nvar,2,2,2),t(2,2,2),saved(nvar,2,2,2),saved_t(2,2,2)
+    real(dp) :: boundary(nvar),wall(nvar),change,scale,vel(3),cs,position,nan_value
+    integer :: cut,mode,ii,jj,kk,c,idx(3),inside(3)
+    character(len=1), parameter :: axes(3)=['x','y','z']
+    character(len=12), parameter :: methods(3)=[character(len=12)::'none','flux_redist','state_redist']
+    logical :: valid
+    flat=1;nan_value=ieee_value(0._dp,ieee_quiet_nan)
+    do cut=0,3
+      position=.46_dp
+      if(cut==0) position=-.1_dp
+      call build_axis_plane_eb_geometry_3d(8,8,8,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
+        axes(max(1,cut)),position,working,valid)
+      call require(valid,'CTU update working geometry')
+      call extract_eb_geometry_3d(working,[4,4,4],[5,5,5],physical,valid)
+      call require(valid,'CTU physical geometry')
+      ghost=nan_value;gt=nan_value
+      do kk=-2,11
+      do jj=-2,11
+      do ii=-2,11
+        idx=[ii,jj,kk];inside=max(1,min(8,idx))
+        vf(ii,jj,kk)=working%volume_fraction(inside(1),inside(2),inside(3))
+        if(vf(ii,jj,kk)==0.or.count(idx<1.or.idx>8)>1) cycle
+        vel=[4._dp,2._dp,-1._dp]-.1_dp*inside
+        call build_cell_state(.31_dp+.001_dp*sum(inside),vel,ghost(:,ii,jj,kk),gt(ii,jj,kk),cs)
+      end do
+      end do
+      end do
+      initial=ghost(:,4:5,4:5,4:5)
+      do kk=1,2
+      do jj=1,2
+      do ii=1,2
+        if(physical%volume_fraction(ii,jj,kk)==0) initial(:,ii,jj,kk)=0
+      end do
+      end do
+      end do
+      do mode=1,3
+        q=-17;t=-18;boundary=19;wall=20
+        call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,1e-8_dp,flat,q,t,valid, &
+          redistribution=trim(methods(mode)),integrated_flux=integral,boundary_change=boundary,wall_change=wall)
+        call require(valid.and.any(q/=initial),'complete CTU hydro update and redistribution')
+        do c=1,nvar
+          change=sum((q(c,:,:,:)-initial(c,:,:,:))*physical%volume_fraction)*physical%dx*physical%dy*physical%dz
+          scale=max(1._dp,sum(abs(initial(c,:,:,:))*physical%volume_fraction)*physical%dx*physical%dy*physical%dz)
+          call require(abs(change-boundary(c)-wall(c))<2e-12_dp*scale,'CTU boundary/wall inventory closure')
+        end do
+        call require(maxval(abs(sum(q(6:,:,:,:),dim=1)-q(1,:,:,:)))<2e-13_dp,'CTU species closure')
+        saved=q;saved_t=t;saved_flux=integral
+        if(cut==0.and.mode==1) then
+          call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,1e-8_dp,flat,q,t,valid,difmag=.1_dp)
+          call require(valid.and.all(q==saved).and.all(t==saved_t),'CTU omitted viscosity reference policy')
+          call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,1e-8_dp,flat,q,t,valid,difmag=0._dp)
+          call require(valid.and.any(q/=saved),'CTU zero viscosity disables compression correction')
+          q=saved;t=saved_t
+        end if
+        boundary=19;wall=20
+        call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,1._dp,flat,q,t,valid, &
+          redistribution=trim(methods(mode)),integrated_flux=integral,boundary_change=boundary,wall_change=wall)
+        call require(.not.valid.and.all(q==saved).and.all(t==saved_t).and.all(boundary==19).and.all(wall==20), &
+          'CTU failed update preserves state and ledgers')
+        call require(all(integral%x==saved_flux%x).and.all(integral%y==saved_flux%y).and. &
+          all(integral%z==saved_flux%z),'CTU failed update preserves integrated flux')
+      end do
+    end do
+  end subroutine verify_ctu_update
   subroutine verify_ctu_fluxes()
     type(eb_geometry_3d) :: shape
     type(eb_plm_face_prediction_3d) :: result(3),saved(3)

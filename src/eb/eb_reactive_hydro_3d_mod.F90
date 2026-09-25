@@ -9,10 +9,10 @@ module eb_reactive_hydro_3d_mod
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d
+    eb_geometry_3d, eb_covered_cell_3d,extract_eb_geometry_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_wall_flux_3d_mod, only: &
-    reactive_eb_flux_divergence_3d,reactive_eb_slip_wall_source_3d
+    reactive_eb_flux_divergence_3d,reactive_eb_slip_wall_source_3d,interpolate_reactive_eb_centroid_fluxes_3d
   use eb_reactive_redistribution_3d_mod, only: &
     advance_reactive_eb_redistributed_3d, &
     advance_reactive_eb_state_redistributed_3d
@@ -25,7 +25,7 @@ module eb_reactive_hydro_3d_mod
     real(dp), allocatable :: energy_left(:,:,:),energy_right(:,:,:),pressure(:,:,:),velocity(:,:,:)
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
-  public :: compute_reactive_eb_plm_ctu_fluxes_3d
+  public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
@@ -37,6 +37,128 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! Complete hydro update for the central cells 4:N-3 of a prepared working
+  ! geometry. Physical boundary filling/flattening remain caller responsibilities.
+  subroutine advance_reactive_eb_plm_ctu_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
+      new_state,new_temperature,ok,redistribution,difmag,integrated_flux,boundary_change,wall_change, &
+      target_volume_fraction,order)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
+    real(dp), intent(in) :: dt,flattening(0:,0:,0:)
+    real(dp), intent(inout) :: new_state(:,:,:,:),new_temperature(:,:,:)
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(in) :: difmag,target_volume_fraction
+    integer, optional, intent(in) :: order
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    type(eb_plm_face_prediction_3d) :: prediction(3)
+    type(eb_geometry_3d) :: margin,physical
+    type(eb_integrated_flux_3d) :: flux
+    real(dp), allocatable :: state(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),ct(:,:,:),rhs(:,:,:,:)
+    real(dp) :: coefficient,target,total,recovered,speed,q(reactive_nvar(size(species)))
+    real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
+    integer :: n(3),m(3),nv,i,j,k,a,lo(4),hi(4)
+    character(len=16) :: method
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
+    if(any(n<7).or..not.geometry%is_valid()) return
+    if(any(shape(new_state)/=[nv,n-6]).or.any(shape(new_temperature)/=n-6)) return
+    if(.not.ieee_is_finite(dt).or.dt<=0) return
+    coefficient=.1_dp;target=.5_dp;method='none'
+    if(present(difmag)) coefficient=difmag
+    if(present(target_volume_fraction)) target=target_volume_fraction
+    if(present(redistribution)) method=redistribution
+    if(.not.all(ieee_is_finite([coefficient,target])).or.coefficient<0.or.target<=0.or.target>1) return
+    if(method/='none'.and.method/='flux_redist'.and.method/='state_redist') return
+    if(present(boundary_change)) then
+      if(size(boundary_change)/=nv) return
+    end if
+    if(present(wall_change)) then
+      if(size(wall_change)/=nv) return
+    end if
+    call compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
+      dt,flattening,prediction,valid,order)
+    if(.not.valid) return
+    call extract_eb_geometry_3d(geometry,[3,3,3],n-2,margin,valid)
+    if(.not.valid) return
+    m=n-4
+    call adjust_reactive_artificial_viscosity_3d(ghost(:,2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+      m,[geometry%dx,geometry%dy,geometry%dz],coefficient,[.false.,.false.,.false.,.false.,.false.,.false.], &
+      prediction(1)%flux,prediction(2)%flux,prediction(3)%flux,valid, &
+      volume_fraction(2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+      margin%x_face_fraction>0,margin%y_face_fraction>0,margin%z_face_fraction>0)
+    if(.not.valid) return
+    ! The viscosity API deliberately treats zero as identity. Godunov still
+    ! normalizes species flux when viscosity is disabled.
+    if(coefficient==0) then
+      do a=1,3
+        lo=lbound(prediction(a)%flux);hi=ubound(prediction(a)%flux)
+        do k=lo(4),hi(4)
+        do j=lo(3),hi(3)
+        do i=lo(2),hi(2)
+          total=sum(prediction(a)%flux(6:,i,j,k))
+          if(total/=0) prediction(a)%flux(6:,i,j,k)= &
+            prediction(a)%flux(6:,i,j,k)*(prediction(a)%flux(1,i,j,k)/total)
+        end do
+        end do
+        end do
+      end do
+    end if
+    m=n-6
+    allocate(flux%x(nv,0:m(1),m(2),m(3)),flux%y(nv,m(1),0:m(2),m(3)),flux%z(nv,m(1),m(2),0:m(3)))
+    call interpolate_reactive_eb_centroid_fluxes_3d(margin,prediction(1)%flux,prediction(2)%flux,prediction(3)%flux, &
+      flux%x,flux%y,flux%z,valid)
+    if(.not.valid) return
+    call extract_eb_geometry_3d(geometry,[4,4,4],n-3,physical,valid)
+    if(.not.valid) return
+    state=ghost(:,4:n(1)-3,4:n(2)-3,4:n(3)-3);temp=temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3)
+    do k=1,m(3)
+    do j=1,m(2)
+    do i=1,m(1)
+      if(physical%volume_fraction(i,j,k)>0) cycle
+      state(:,i,j,k)=0;temp(i,j,k)=0
+    end do
+    end do
+    end do
+    allocate(rhs(nv,m(1),m(2),m(3)))
+    call reactive_eb_flux_divergence_3d(species,state,temp,physical,flux%x,flux%y,flux%z,rhs,valid)
+    if(.not.valid) return
+    call hydro_inventory_changes(species,state,temp,physical,dt,flux,boundary,wall,valid)
+    if(.not.valid) return
+    allocate(candidate,mold=state);allocate(ct,mold=temp)
+    select case(method)
+    case('flux_redist')
+      call advance_reactive_eb_redistributed_3d(species,state,temp,physical,rhs,dt,candidate,ct,valid)
+    case('state_redist')
+      call advance_reactive_eb_state_redistributed_3d(species,state,temp,physical,rhs,dt,candidate,ct,valid,target)
+    case('none')
+      candidate=state;ct=temp
+      do k=1,m(3)
+      do j=1,m(2)
+      do i=1,m(1)
+        if(physical%volume_fraction(i,j,k)<=0) cycle
+        candidate(:,i,j,k)=state(:,i,j,k)+dt*rhs(:,i,j,k)
+        call reactive_conserved_to_primitive(species,candidate(:,i,j,k),temp(i,j,k),q,recovered,speed,valid)
+        if(.not.valid) return
+        ct(i,j,k)=recovered
+      end do
+      end do
+      end do
+    end select
+    if(.not.valid) return
+    if(.not.all(ieee_is_finite(candidate)).or..not.all(ieee_is_finite(ct))) return
+    flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
+    if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+      .not.all(ieee_is_finite(flux%z))) return
+    new_state=candidate;new_temperature=ct
+    if(present(integrated_flux)) integrated_flux=flux
+    if(present(boundary_change)) boundary_change=boundary
+    if(present(wall_change)) wall_change=wall
+    ok=.true.
+  end subroutine advance_reactive_eb_plm_ctu_3d
 
   ! Twelve Riemann solves: three normal, six single-transverse, three final.
   ! Geometry includes a two-cell margin around the returned region. The normal
