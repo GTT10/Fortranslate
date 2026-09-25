@@ -290,8 +290,10 @@ now adds supplied frozen conserved rates with inventory and rollback checks
 accepts caller-supplied source halos and separates boundary/source inventories
 ([checks](validation/ppm-boundary-source-step-20260926.md)). The full library
 split now forwards these sources with exact transport-composition checks
-([evidence](validation/ppm-source-split-20260926.md)); application source
-generation and SDC integration remain open. Physical
+([evidence](validation/ppm-source-split-20260926.md)). A regular-cell external
+force/work constructor now follows the pinned force-per-volume policy
+([checks](validation/external-force-source-20260926.md)); old/new work correction,
+application input and SDC integration remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
