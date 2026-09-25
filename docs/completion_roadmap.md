@@ -140,9 +140,10 @@ corrections and interior physical-wall viscosity masks now reach the complete
 prepared CTU update ([checks](validation/eb-physical-flux-20260925.md)).
 Configured plane/extruded/nodal geometry now supports domain-face extension,
 and an outflow entry prepares state halos and flattening before the CTU update
-([checks](validation/eb-extended-geometry-20260925.md)). Application input and
-reaction/transport integration, other boundary halo preparation and coupled
-MPI/AMR dispatch remain before claiming EB Godunov parity.
+([checks](validation/eb-extended-geometry-20260925.md)). Fixed/selected single-level applications now select `plm_ctu`, compose it with
+reaction/transport and bind checkpoint continuation to the hydro method
+([checks](validation/eb-ctu-application-20260925.md)). Other boundary halo
+preparation and coupled MPI/AMR dispatch remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

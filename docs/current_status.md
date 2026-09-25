@@ -9,6 +9,14 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
+with the `pelec` Riemann solver, outflow halos, reaction/transport composition
+and method-bound checkpoint continuation. PCM remains the default. Fixed and
+selected H2O2 coupled continuation passed focused checks
+([evidence](validation/eb-ctu-application-20260925.md),
+[input example](../cases/reactive_eb_3d/plm_ctu.nml)). This does not yet connect
+CTU to EB tree/MPI/spray paths or qualify a physical wall-flow solution.
+
 The pinned nozzle Mach-inlet state kernel is now available for six faces, with
 interior composition and extrapolated or prescribed pressure
 ([state-kernel checks](validation/mach-inlet-state-20260925.md)). Serial hydro
