@@ -67,3 +67,6 @@ git diff --check
 Artifacts: `build/eb-geometry-halo-checks/` contains `build.log`, `rebuild.log`,
 `final-build.log`, `test-build.log`, `checkpoint-build.log`,
 `LastTest-first.log` and `LastTest-checkpoint.log`.
+
+Subsequent [MPI agreement and restart checks](mpi-eb-geometry-agreement-20260925.md)
+cover rank-dependent halo presence/values and 2-to-3-rank application restart.
