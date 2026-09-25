@@ -11,7 +11,9 @@ Older milestone prose remains historical detail, not a current global status.
 
 MPI EB particle drift now supports specular domain-wall reflection with exterior
 impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
-Coupled wall runtime and application routing remain to be checked.
+Coupled common/recursive CTU wall steps and the fixed MPI spray application
+now include wall reflection and changed-rank restart checks
+([evidence](validation/mpi-eb-wall-spray-application-20260926.md)).
 
 Fixed/selected tree gas applications now expose slip/no-slip adiabatic walls,
 with scheduled regridding and changed-rank restart checked on an enclosed
