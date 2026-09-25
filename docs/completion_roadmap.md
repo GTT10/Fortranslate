@@ -280,7 +280,9 @@ species upwinding and zero-viscosity final normalization now connect through
 regular/EB CTU ([checks](validation/ppm-passive-flux-20260926.md)). The local
 double-transverse kernel now accepts primitive sources and agrees in 216 compiled
 reference cases ([checks](validation/ppm-transverse-source-20260926.md)); full
-CTU source routing and application integration remain open. Physical
+periodic/halo CTU source routing now also agrees in 28 full-assembly cases
+([checks](validation/ppm-ctu-source-20260926.md)). Conserved-source conversion
+and application integration remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

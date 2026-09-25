@@ -17,6 +17,11 @@ includes normal tracing, Riemann solves, transverse correction, inflow PLM
 replacement and final species normalization. Complete solver and physical
 validation remain open.
 
+Optional primitive sources now reach the periodic and supplied-halo PPM CTU
+flux APIs, with 28 compiled-reference assembly cases
+([evidence](validation/ppm-ctu-source-20260926.md)). Application source generation
+and conserved-source conversion remain open.
+
 The pressure path preserves independent and signed face species weights and
 uses contact-speed passive upwinding
 ([projection](validation/ppm-mixture-projection-20260926.md),
