@@ -12,7 +12,9 @@ Older milestone prose remains historical detail, not a current global status.
 The serial EB impact interval now supports periodic crossings and specular
 domain reflection before EB deposition, using the shared periodic film-image
 counter ([checks](validation/serial-eb-periodic-impact-20260926.md)). Single-level
-coupling and application dispatch still require connection.
+coupling and fixed/selected application restart now connect periodic film
+exchange and reflecting-domain EB impacts
+([evidence](validation/serial-eb-periodic-film-application-20260926.md)).
 
 MPI EB deposition/splash and stationary films can now coexist with specular
 outer-domain walls. Remaining flight and separate exterior/EB budgets are
@@ -174,8 +176,9 @@ spray input, inlet timestep bounds and boundary-bound restart are connected
 serial spray library coupling now wraps field exchange and parcel drift with
 matching gas faces
 ([checks](validation/eb-spray-periodic-field-20260925.md)). Fixed/selected serial
-periodic input and restart are also connected; periodic impact/film dispatch
-remains pending ([checks](validation/eb-spray-periodic-application-20260925.md)).
+periodic input and restart are also connected
+([checks](validation/eb-spray-periodic-application-20260925.md)); periodic
+impact/film dispatch now has the focused checks linked above.
 Serial domain-wall gas conditions now connect specular particle reflection,
 wall thermal timestep bounds and fixed/selected temperature-bound restart
 ([checks](validation/eb-spray-wall-20260926.md)).
