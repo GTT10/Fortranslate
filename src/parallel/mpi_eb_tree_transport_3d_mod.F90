@@ -21,7 +21,7 @@ contains
   ! Common molecular-transport interval with closed physical diffusion faces.
   subroutine advance_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt,viscosity,conduction, &
       diffusion,barodiffusion,state,temperature,boundary_change,minimum_theta,comm,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -33,6 +33,8 @@ contains
     real(dp), intent(inout) :: boundary_change(:),minimum_theta
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     logical, intent(out) :: ok
     type(amr_tree_state_3d) :: snapshot,st,candidate,ct,ghost,gt
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -62,7 +64,8 @@ contains
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
     if (.not.ready) return
     call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
-      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state)
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
@@ -83,6 +86,7 @@ contains
         origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
       work_stamp=tree_work_start()
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
+        if(present(boundary_faces)) faces=.true.
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry(node),dt, &
         viscosity,conduction,diffusion,barodiffusion,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
         flux(node),stage_theta,valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),faces)

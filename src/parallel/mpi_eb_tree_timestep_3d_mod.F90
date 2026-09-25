@@ -19,7 +19,7 @@ contains
   ! Only owner-local fields are scanned; geometry remains replicated.
   subroutine mpi_eb_tree_timestep_3d(species,transport,tree,owners,geometry,state,temperature, &
       hydro_cfl,transport_cfl,transport_enabled,viscosity,conduction,diffusion,dt,comm,ok,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -31,6 +31,8 @@ contains
     real(dp), intent(inout) :: dt
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: subcycling
     logical :: recursive_steps
@@ -66,12 +68,14 @@ contains
       call agree(valid,ready)
       if (.not.ready) return
     end if
-    supplied=merge(1,0,present(inflow_mach).or.present(inflow_temperature).or.present(inflow_pressure))
+    supplied=merge(1,0,present(inflow_mach).or.present(inflow_temperature).or.present(inflow_pressure).or. &
+      present(boundary_faces).or.present(inflow_state))
     call MPI_Allreduce(supplied,any_supplied,1,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any_supplied>0) then
       call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
-        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state)
       if (.not.ready) return
     end if
     maxima=0._dp;active=.false.
