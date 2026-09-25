@@ -446,7 +446,7 @@ contains
   ! before restriction. Global donor maxima cover peer and ancestor halos.
   subroutine reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl, &
       transport_enabled,viscosity,conduction,diffusion,dt,ok,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
@@ -454,6 +454,8 @@ contains
     logical, intent(in) :: transport_enabled,viscosity,conduction,diffusion
     real(dp), intent(inout) :: dt
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: subcycling
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -484,11 +486,13 @@ contains
       call reactive_eb_signal_speeds_3d(species,u,t,g,speeds,valid)
       if (.not.valid) return
       donors=max(donors,speeds)
-      if (present(inflow_mach).or.present(inflow_temperature).or.present(inflow_pressure)) then
+      if (present(inflow_mach).or.present(inflow_temperature).or.present(inflow_pressure).or. &
+        present(boundary_faces).or.present(inflow_state)) then
         n=tree%topology%nodes(node)%shape
         allocate(ghost(size(u,1),0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
         call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
-          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          boundary_faces=boundary_faces,inflow_state=inflow_state)
         if (.not.valid) return
         call reactive_eb_halo_bounds_3d(species,transport,g,ghost,gt,transport_enabled, &
           viscosity,conduction,diffusion,speeds,diffusivity,valid)
@@ -535,7 +539,7 @@ contains
   subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
       rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
       wall_change,chemical_change,minimum_theta,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -546,6 +550,8 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
@@ -576,11 +582,13 @@ contains
         if (recursive_steps) then
           call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
             diffusion,barodiffusion,candidate,exchange,stage_theta,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            boundary_faces=boundary_faces,inflow_state=inflow_state)
         else
           call advance_reactive_eb_tree_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
             diffusion,barodiffusion,candidate,exchange,stage_theta,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            boundary_faces=boundary_faces,inflow_state=inflow_state)
         end if
         if (.not.valid) return
         transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)
@@ -589,10 +597,12 @@ contains
         if (recursive_steps) then
           call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,candidate,boundary,wall,valid, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            boundary_faces=boundary_faces,inflow_state=inflow_state, &
             difmag=difmag,extended_geometry=extended_geometry)
         else
           call advance_reactive_eb_tree_hydro_3d(species,solver,dt,candidate,boundary,wall,valid, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            boundary_faces=boundary_faces,inflow_state=inflow_state, &
             difmag=difmag,extended_geometry=extended_geometry)
         end if
         if (.not.valid) return
@@ -616,7 +626,7 @@ contains
   ! Common-interval molecular transport: closed outflow edges or open Mach inlets.
   subroutine advance_reactive_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
@@ -624,6 +634,8 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),minimum_theta
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d) :: snapshot,candidate
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -649,7 +661,8 @@ contains
       n=tree%topology%nodes(node)%shape
       allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
-        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state)
       if (.not.valid) return
       depth=tree%topology%nodes(node)%level+1
       ! Inactive physical domain faces remain closed to diffusion. Parent patch edges
@@ -658,6 +671,7 @@ contains
         origin(2,node)>0,origin(2,node)+n(2)<domain(2,depth), &
         origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
+      if (present(boundary_faces)) faces=.true.
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
         dt,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
         candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)
@@ -686,7 +700,7 @@ contains
   ! Supplying extended geometry selects PLM CTU; omission retains PCM Euler.
   ! Every node reads the same averaged snapshot; all outputs commit together.
   subroutine advance_reactive_eb_tree_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     type(eb_geometry_3d) :: working,center
@@ -699,6 +713,8 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: difmag
     real(dp) :: coefficient
     real(dp), allocatable :: vf(:,:,:)
@@ -741,6 +757,7 @@ contains
           vf(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),flat(0:n(1)+7,0:n(2)+7,0:n(3)+7))
         call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
           inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          boundary_faces=boundary_faces,inflow_state=inflow_state, &
           ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=extended_geometry(node)%volume_fraction)
         if(.not.valid) return
         call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,working,valid)
@@ -751,6 +768,7 @@ contains
         physical_boundary%lower=4-int(origin(:,node))
         physical_boundary%upper=3+int(domain(:,level)-origin(:,node))
         physical_boundary%faces='outflow'
+        if(present(boundary_faces)) physical_boundary%faces=boundary_faces
         if(present(inflow_mach)) then
           where(inflow_mach>=0) physical_boundary%faces='inflow'
         end if
@@ -768,7 +786,8 @@ contains
       allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       if(coefficient>0) allocate(vf(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
-        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf)
       if(.not.valid) return
       call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
         snapshot%nodes(node)%geometry,solver,dt,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
@@ -813,7 +832,7 @@ contains
   ! Each level advances together, with ratio fine substeps, time-interpolated
   ! ancestor donors, per-substep peer fluxes and interval-local reflux.
   subroutine advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     character(len=*), intent(in) :: solver
@@ -821,16 +840,19 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     call advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      boundary_faces=boundary_faces,inflow_state=inflow_state, &
             difmag=difmag,extended_geometry=extended_geometry)
   end subroutine advance_reactive_eb_tree_subcycle_hydro_3d
 
   subroutine advance_reactive_eb_tree_subcycle_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: dt
@@ -838,16 +860,19 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),minimum_theta
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     logical, intent(out) :: ok
     real(dp) :: wall(size(boundary_change))
     call advance_reactive_eb_tree_subcycle_operator_3d(species,'',dt,tree,boundary_change,wall,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta, &
-      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      boundary_faces=boundary_faces,inflow_state=inflow_state)
   end subroutine advance_reactive_eb_tree_subcycle_transport_3d
 
   subroutine advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     character(len=*), intent(in) :: solver
@@ -855,6 +880,8 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     type(gas_transport_species), optional, intent(in) :: transport(:)
@@ -953,6 +980,7 @@ contains
             vf(-5:d(1)+6,-5:d(2)+6,-5:d(3)+6),flat(0:d(1)+7,0:d(2)+7,0:d(3)+7))
           call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            boundary_faces=boundary_faces,inflow_state=inflow_state, &
             ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=extended_geometry(node)%volume_fraction)
           if(.not.valid) return
           call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],d+9,working,valid)
@@ -962,6 +990,7 @@ contains
           physical_boundary%lower=4-int(origin(:,node))
           physical_boundary%upper=3+int(domain(:,level+1)-origin(:,node))
           physical_boundary%faces='outflow'
+          if(present(boundary_faces)) physical_boundary%faces=boundary_faces
           if(present(inflow_mach)) then
             where(inflow_mach>=0) physical_boundary%faces='inflow'
           end if
@@ -969,7 +998,8 @@ contains
         allocate(ghost(nv,0:d(1)+1,0:d(2)+1,0:d(3)+1),gt(0:d(1)+1,0:d(2)+1,0:d(3)+1))
         if(coefficient>0) allocate(vf(0:d(1)+1,0:d(2)+1,0:d(3)+1))
         call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction, &
-          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
+          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf)
         if (.not.valid) return
         end if
         if (present(transport)) then
@@ -977,6 +1007,7 @@ contains
             origin(2,node)>0,origin(2,node)+int(d(2),int64)<domain(2,level+1), &
             origin(3,node)>0,origin(3,node)+int(d(3),int64)<domain(3,level+1)]
           if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
+          if (present(boundary_faces)) faces=.true.
           call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
             interval,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
             candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)

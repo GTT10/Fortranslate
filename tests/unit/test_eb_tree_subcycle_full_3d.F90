@@ -36,8 +36,10 @@ program test_eb_tree_subcycle_full_3d
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,half
   logical :: ok,chemistry_on,transport_on,recursive_steps
-  real(dp) :: mach(6),tin(6),pin(6)
-  character(len=16) :: test_mode,solver
+  real(dp), allocatable :: mach(:),pin(:),inlet(:,:)
+  real(dp) :: tin(6)
+  character(len=16), allocatable :: faces(:)
+  character(len=32) :: test_mode,solver
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
   call get_command_argument(2,viscosity_mode)
   coefficient=0
@@ -46,7 +48,11 @@ program test_eb_tree_subcycle_full_3d
   recursive_steps=index(test_mode,'common')==0
   solver='hllc'
   if(index(test_mode,'ctu')==1) solver='pelec'
-  mach=-1;tin=400;pin=0
+  allocate(mach(6),pin(6));mach=-1;tin=400;pin=0
+  if(index(test_mode,'inflow')>0) then
+    deallocate(mach,pin)
+    allocate(faces(6));faces='outflow';faces(1)='inflow';faces(4)='inflow'
+  end if
   if (index(test_mode,'mach')==1) then
     mach(1)=.2_dp;mach(4)=.1_dp;pin(4)=120000
   end if
@@ -132,6 +138,17 @@ program test_eb_tree_subcycle_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  if(allocated(faces)) then
+    allocate(inlet(nv,6))
+    call reactive_conserved_to_primitive(species,tree%nodes(1)%state(:,1,1,3), &
+      tree%nodes(1)%temperature(1,1,3),primitive,et,speed,ok)
+    call require(ok,'prescribed inlet primitive')
+    primitive(2:4)=[100._dp,-50._dp,0._dp];primitive(5)=.8_dp*primitive(5)
+    do i=1,6
+      call reactive_primitive_to_conserved(species,primitive,inlet(:,i),tin(i),speed,ok)
+      call require(ok,'prescribed inlet EOS')
+    end do
+  end if
   do integrator_index=1,2
   do mode=0,3
     chemistry_on=btest(mode,0);transport_on=btest(mode,1)
@@ -139,7 +156,8 @@ program test_eb_tree_subcycle_full_3d
     call advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,1.e-8_dp,chemistry_on, &
       2.e-7_dp,1.e-12_dp,transport_on,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       integrators(integrator_index),subcycling=recursive_steps, &
-      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended)
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
+      boundary_faces=faces,inflow_state=inlet)
     call require(ok,'combined step')
     call integrate_reactive_eb_tree_3d(tree,after,ok)
     call require(ok,'final inventory')
@@ -160,21 +178,24 @@ program test_eb_tree_subcycle_full_3d
         if (half==1) call reaction()
         if (recursive_steps) then
           call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,0.5e-8_dp,.true.,.true.,.true.,.true., &
-            reference,exchange,stage_theta,ok,mach,tin,pin)
+            reference,exchange,stage_theta,ok,mach,tin,pin,boundary_faces=faces,inflow_state=inlet)
         else
           call advance_reactive_eb_tree_transport_3d(species,transport,0.5e-8_dp,.true.,.true.,.true.,.true., &
-            reference,exchange,stage_theta,ok,mach,tin,pin)
+            reference,exchange,stage_theta,ok,mach,tin,pin,boundary_faces=faces,inflow_state=inlet)
         end if
         call require(ok,'reference transport')
-        if (any(mach>=0)) call require(abs(exchange(5))>1e-12_dp,'active inlet transport energy flux')
+        if (allocated(faces).or.index(test_mode,'mach')==1) &
+          call require(abs(exchange(5))>1e-12_dp,'active inlet transport energy flux')
         ref_b=ref_b+exchange;ref_theta=min(ref_theta,stage_theta)
         if (half==1) then
           if (recursive_steps) then
             call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,1.e-8_dp,reference,exchange,ref_w,ok, &
-              mach,tin,pin,difmag=coefficient,extended_geometry=extended)
+              mach,tin,pin,difmag=coefficient,extended_geometry=extended, &
+      boundary_faces=faces,inflow_state=inlet)
           else
             call advance_reactive_eb_tree_hydro_3d(species,solver,1.e-8_dp,reference,exchange,ref_w,ok, &
-              mach,tin,pin,difmag=coefficient,extended_geometry=extended)
+              mach,tin,pin,difmag=coefficient,extended_geometry=extended, &
+      boundary_faces=faces,inflow_state=inlet)
           end if
           call require(ok,'reference hydro')
           ref_h=exchange
@@ -198,17 +219,19 @@ program test_eb_tree_subcycle_full_3d
   call advance_reactive_eb_tree_full_3d(species,reactions,transport,'invalid',1.e-8_dp,.true., &
     2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       'explicit',subcycling=recursive_steps, &
-      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended)
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
+      boundary_faces=faces,inflow_state=inlet)
   call require(.not.ok,'failure after earlier stages')
   call unchanged_tree()
   call require(all(boundary==17._dp).and.all(wall==19._dp).and.all(chemical==23._dp).and. &
     theta==29._dp,'complete diagnostic rollback')
-  if (any(mach>=0)) then
+  if (allocated(faces).or.index(test_mode,'mach')==1) then
     tin(1)=ieee_value(0._dp,ieee_quiet_nan)
     call advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,1.e-8_dp,.true., &
       2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       'explicit',subcycling=recursive_steps,inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin, &
-      difmag=coefficient,extended_geometry=extended)
+      difmag=coefficient,extended_geometry=extended, &
+      boundary_faces=faces,inflow_state=inlet)
     call require(.not.ok,'invalid inlet after private reaction')
     call unchanged_tree()
     call require(all(boundary==17).and.all(wall==19).and.all(chemical==23).and.theta==29, &

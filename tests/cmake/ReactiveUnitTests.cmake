@@ -879,3 +879,6 @@ add_test(NAME reactive_eb_3d_ctu_application COMMAND "${Python3_EXECUTABLE}"
   --executable "$<TARGET_FILE:pelef_reactive_eb_3d>"
   --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_3d_ctu_application")
 set_tests_properties(reactive_eb_3d_ctu_application PROPERTIES TIMEOUT 180)
+
+add_test(NAME unit_eb_tree_ctu_inflow_full_3d COMMAND test_eb_tree_subcycle_full_3d ctu-inflow viscosity)
+add_test(NAME unit_eb_tree_ctu_inflow_common_3d COMMAND test_eb_tree_subcycle_full_3d ctu-inflow-common viscosity)
