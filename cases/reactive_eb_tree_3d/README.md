@@ -16,7 +16,8 @@ Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 Gas executables accept finite nonnegative `difmag` in `&eb_tree` (for example,
 `difmag=0.037`). Default zero preserves the previous flux policy; -1 is invalid.
 The coefficient reaches common and recursive hydro and must match on restart.
-MPI EB spray currently rejects positive values. See
+MPI EB spray also forwards the coefficient through its gas update; see
+[MPI spray evidence](../../docs/validation/mpi-eb-spray-difmag-20260925.md). See
 [input/restart evidence](../../docs/validation/eb-tree-difmag-input-20260925.md)
 for the checked configuration and remaining limitations.
 

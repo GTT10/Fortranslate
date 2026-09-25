@@ -380,3 +380,10 @@ the default is zero. Attached films remain stationary. The budget CSV has a
 adds force history to the coupled gas checkpoint prefix; its serialized input
 binds the mode to restart. See
 [rank-changing restart evidence](../../docs/validation/spray-mpi-eb-acceleration-application-20260918.md).
+
+## Artificial viscosity
+
+`&eb_tree` accepts finite nonnegative `difmag` (default zero). The gas update
+uses it between particle half steps, and restart requires the same value.
+The library requires coefficient agreement across ranks before particle work.
+See [focused checks](../../docs/validation/mpi-eb-spray-difmag-20260925.md).
