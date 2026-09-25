@@ -3,12 +3,13 @@ program test_reactive_ppm_halo_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_ppm_flattening_coefficient, &
-    reconstruct_pelec_plm_cell
+    reconstruct_pelec_plm_cell,compute_pelec_plm_slopes
   use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_3d_mod, only: compute_reactive_ppm_ctu_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d, &
     adjust_reactive_artificial_viscosity_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   implicit none
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),g(:,:,:,:),gt(:,:,:),q(:)
@@ -265,6 +266,39 @@ contains
       call reconstruct_pelec_plm_cell(mixture,c,1e-5_dp,1._dp,qm,qp,valid)
       call require(valid.and.abs(sum(qm(6:))-1)<3e-16_dp.and.abs(sum(qp(6:))-1)<3e-16_dp, &
         'independently limited PLM species remain normalized')
+    end block
+    block
+      real(dp) :: line(1,-2:2),gradient(1),expected,eb_stencil(nv,-2:2)
+      logical :: covered(-2:2)
+      integer :: mask,order,orders(3),o,m
+      orders=[1,2,4]
+      do mask=0,31
+        do m=-2,2
+          covered(m)=btest(mask,m+2)
+          line(1,m)=1+.02_dp*m
+          if(covered(m)) line(1,m)=ieee_value(0._dp,ieee_quiet_nan)
+        end do
+        do o=1,3
+          order=orders(o);expected=0
+          if(order>1.and..not.any(covered(-1:1))) then
+            expected=.02_dp*4/3
+            if(order==4.and..not.any(covered)) expected=.02_dp
+          end if
+          call compute_pelec_plm_slopes(line,1._dp,order,gradient,valid,covered)
+          call require(valid.and.abs(gradient(1)-expected)<1e-14_dp,'EB PLM covered-stencil order fallback')
+        end do
+      end do
+      covered=.false.;covered(-2)=.true.
+      eb_stencil=stencil(:,-2:2)
+      eb_stencil(:,-2)=ieee_value(0._dp,ieee_quiet_nan)
+      call reconstruct_pelec_plm_cell(eb_stencil,c,0._dp,1._dp,qm,qp,valid,covered=covered)
+      call require(valid.and.abs(qm(1)-(1._dp-.01_dp*4/3))<1e-14_dp.and. &
+        abs(qp(1)-(1._dp+.01_dp*4/3))<1e-14_dp,'EB second-order fallback normal predictor')
+      covered(-1)=.true.;eb_stencil(:,-1)=ieee_value(0._dp,ieee_quiet_nan)
+      call reconstruct_pelec_plm_cell(eb_stencil,c,0._dp,1._dp,qm,qp,valid,covered=covered)
+      call require(valid.and.all(qm==stencil(:,0)).and.all(qp==stencil(:,0)),'EB blocked stencil zero slope')
+      call compute_pelec_plm_slopes(line,1._dp,3,gradient,valid,covered)
+      call require(.not.valid.and.all(gradient==0),'invalid PLM order rejected')
     end block
     flat=reactive_ppm_flattening_coefficient(pressure,velocity)
     call require(flat==0,'transverse compressive shock detected')
