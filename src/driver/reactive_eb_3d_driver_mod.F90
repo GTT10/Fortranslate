@@ -14,10 +14,12 @@ module reactive_eb_3d_driver_mod
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d,extract_eb_geometry_3d
   use eb_reactive_hydro_3d_mod, only: &
-    advance_reactive_eb_redistributed_euler_3d,advance_reactive_eb_outflow_ctu_3d, &
+    advance_reactive_eb_redistributed_euler_3d,advance_reactive_eb_boundary_ctu_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
-  use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_3d
+  use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_3d,eb_transport_halo_provider_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   implicit none
   private
@@ -188,13 +190,17 @@ contains
   subroutine advance_reactive_eb_strang_3d( &
       species, reactions, state, temperature, geometry, solver, redistribution, &
       dt, chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry)
+      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry, &
+      boundary_faces,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     character(len=*), intent(in) :: solver, redistribution
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    character(len=32) :: hydro_faces(6)
     real(dp), intent(in) :: dt, rtol, atol
     logical, intent(in) :: chemistry_enabled
     real(dp), intent(out) :: new_state(:, :, :, :), new_temperature(:, :, :)
@@ -226,6 +232,14 @@ contains
     new_state = state
     new_temperature = temperature
     if(.not.valid_ctu_geometry(geometry,extended_geometry,solver)) return
+    hydro_faces='outflow'
+    if(present(boundary_faces)) then
+      if(.not.present(extended_geometry)) return
+      if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      hydro_faces=boundary_faces
+    else
+      if(present(inflow_state).or.present(inflow_temperature)) return
+    end if
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
@@ -285,9 +299,9 @@ contains
     end if
 
     if(present(extended_geometry)) then
-      call advance_reactive_eb_outflow_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
-        hydro_state,hydro_temperature,local_ok,redistribution,difmag,boundary_change=exchange_boundary, &
-        wall_change=exchange_wall,target_volume_fraction=target)
+      call advance_reactive_eb_boundary_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
+        hydro_state,hydro_temperature,local_ok,hydro_faces,redistribution,difmag,boundary_change=exchange_boundary, &
+        wall_change=exchange_wall,target_volume_fraction=target,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
     else
       select case (trim(redistribution))
       case ("flux_redist")
@@ -346,7 +360,8 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, new_state, &
       new_temperature, minimum_transport_theta, ok, target_volume_fraction, &
-      chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry)
+      chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry, &
+      boundary_faces,inflow_state,inflow_temperature,prepare_transport_halo)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -354,6 +369,12 @@ contains
     type(eb_geometry_3d), intent(in) :: geometry
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     character(len=*), intent(in) :: solver, redistribution
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    character(len=32) :: hydro_faces(6)
+    procedure(eb_transport_halo_provider_3d), optional :: prepare_transport_halo
+    type(eb_integrated_flux_3d), allocatable :: transport_flux
+    real(dp), allocatable :: transport_change(:),half_change(:)
     real(dp), intent(in) :: dt, rtol, atol
     logical, intent(in) :: chemistry_enabled, transport_enabled
     logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
@@ -391,6 +412,18 @@ contains
     new_state = state
     new_temperature = temperature
     if(.not.valid_ctu_geometry(geometry,extended_geometry,solver)) return
+    hydro_faces='outflow'
+    if(present(boundary_faces)) then
+      if(.not.present(extended_geometry)) return
+      if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      hydro_faces=boundary_faces
+    else
+      if(present(inflow_state).or.present(inflow_temperature)) return
+    end if
+    ! Explicit transport boundaries require a stage provider; a provider must
+    ! also identify the matching hydro boundaries. Its flux policy is caller-owned.
+    if(present(prepare_transport_halo).and..not.present(boundary_faces)) return
+    if(transport_enabled.and.present(boundary_faces).and..not.present(prepare_transport_halo)) return
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
@@ -412,10 +445,16 @@ contains
         species, reactions, state, temperature, geometry, solver, &
         redistribution, dt, chemistry_enabled, rtol, atol, new_state, &
         new_temperature, ok, target_volume_fraction, chemistry_integrator, &
-        boundary_change,wall_change,chemistry_change,difmag=difmag,extended_geometry=extended_geometry)
+        boundary_change,wall_change,chemistry_change,difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       return
     end if
 
+    ! Stage ghosts alone do not establish periodic seam synchronization or
+    ! physical wall traction/heat fluxes. Enable these after their flux policies.
+    if(present(boundary_faces)) then
+      if(any(hydro_faces/='outflow'.and.hydro_faces/='inflow')) return
+    end if
     if (size(transport) /= size(species)) return
     if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
         .not. ieee_is_finite(rtol) .or. .not. ieee_is_finite(atol) .or. &
@@ -430,6 +469,10 @@ contains
     if (.not. ieee_is_finite(target) .or. target <= 0.0_dp .or. &
         target > 1.0_dp) return
 
+    if(present(prepare_transport_halo).and.allocated(exchange_boundary)) then
+      allocate(transport_flux,transport_change(nvar),half_change(nvar))
+      transport_change=0
+    end if
     allocate(candidate_state, source=state)
     allocate(candidate_temperature, source=temperature)
     allocate(hydro_state, source=state)
@@ -462,17 +505,22 @@ contains
       species, transport, candidate_state, candidate_temperature, &
       geometry, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, target, theta_one, local_ok)
+      barodiffusion_enabled, target, theta_one, local_ok,prepare_transport_halo,transport_flux)
     if (.not. local_ok) return
+    if(allocated(transport_flux)) then
+      call transport_boundary_inventory(geometry,transport_flux,half_change,local_ok)
+      if(.not.local_ok) return
+      transport_change=transport_change+half_change
+    end if
     call covered_cells_match_3d( &
       state, temperature, candidate_state, candidate_temperature, &
       geometry, local_ok)
     if (.not. local_ok) return
 
     if(present(extended_geometry)) then
-      call advance_reactive_eb_outflow_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
-        hydro_state,hydro_temperature,local_ok,redistribution,difmag,boundary_change=exchange_boundary, &
-        wall_change=exchange_wall,target_volume_fraction=target)
+      call advance_reactive_eb_boundary_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
+        hydro_state,hydro_temperature,local_ok,hydro_faces,redistribution,difmag,boundary_change=exchange_boundary, &
+        wall_change=exchange_wall,target_volume_fraction=target,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
     else
       call advance_reactive_eb_state_redistributed_euler_3d( &
         species, candidate_state, candidate_temperature, geometry, solver, &
@@ -490,8 +538,13 @@ contains
       species, transport, candidate_state, candidate_temperature, &
       geometry, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, target, theta_two, local_ok)
+      barodiffusion_enabled, target, theta_two, local_ok,prepare_transport_halo,transport_flux)
     if (.not. local_ok) return
+    if(allocated(transport_flux)) then
+      call transport_boundary_inventory(geometry,transport_flux,half_change,local_ok)
+      if(.not.local_ok) return
+      transport_change=transport_change+half_change
+    end if
     call covered_cells_match_3d( &
       state, temperature, candidate_state, candidate_temperature, &
       geometry, local_ok)
@@ -523,6 +576,10 @@ contains
     if (allocated(exchange_chemistry)) then
       if (.not.all(ieee_is_finite(exchange_chemistry))) return
     end if
+    if(allocated(transport_change)) then
+      exchange_boundary=exchange_boundary+transport_change
+      if(.not.all(ieee_is_finite(exchange_boundary))) return
+    end if
     if (present(boundary_change)) boundary_change=exchange_boundary
     if (present(wall_change)) wall_change=exchange_wall
     if (present(chemistry_change)) chemistry_change=exchange_chemistry
@@ -531,6 +588,27 @@ contains
     minimum_transport_theta = min(theta_one, theta_two)
     ok = .true.
   end subroutine advance_reactive_eb_full_3d
+
+  ! Flux is already integrated in time and per open face area.
+  subroutine transport_boundary_inventory(geometry,flux,change,ok)
+    type(eb_geometry_3d), intent(in) :: geometry
+    type(eb_integrated_flux_3d), intent(in) :: flux
+    real(dp), intent(out) :: change(:)
+    logical, intent(out) :: ok
+    integer :: c,n(3)
+    ok=.false.
+    if(.not.valid_eb_integrated_flux_3d(flux,geometry,size(change))) return
+    n=[geometry%nx,geometry%ny,geometry%nz]
+    do c=1,size(change)
+      change(c)=geometry%dy*geometry%dz*sum( &
+        geometry%x_face_fraction(0,:,:)*flux%x(c,0,:,:)-geometry%x_face_fraction(n(1),:,:)*flux%x(c,n(1),:,:)) &
+        +geometry%dx*geometry%dz*sum( &
+        geometry%y_face_fraction(:,0,:)*flux%y(c,:,0,:)-geometry%y_face_fraction(:,n(2),:)*flux%y(c,:,n(2),:)) &
+        +geometry%dx*geometry%dy*sum( &
+        geometry%z_face_fraction(:,:,0)*flux%z(c,:,:,0)-geometry%z_face_fraction(:,:,n(3))*flux%z(c,:,:,n(3)))
+    end do
+    ok=all(ieee_is_finite(change))
+  end subroutine transport_boundary_inventory
 
   subroutine covered_cells_match_3d( &
       reference_state, reference_temperature, candidate_state, &

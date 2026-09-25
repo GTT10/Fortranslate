@@ -1,6 +1,8 @@
 program test_eb_transport_halo_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_species_component, &
@@ -11,12 +13,17 @@ program test_eb_transport_halo_3d
     reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
-  use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
+  use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d, &
+    advance_reactive_eb_full_3d,reactive_eb_integrals_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
-  type(eb_geometry_3d) :: geometry
+  type(eb_geometry_3d) :: geometry,extended
+  type(elementary_reaction), allocatable :: reactions(:)
+  real(dp), allocatable :: inflow(:,:),inflow_t(:),boundary(:),wall(:),chemical(:),before(:),after(:)
+  character(len=16) :: labels(6)
+  integer :: reacting
   type(reactive_eb_3d_config) :: config
   type(eb_integrated_flux_3d) :: integrated,saved_flux,first_flux,second_flux
   real(dp), allocatable :: stage(:,:,:,:),stage_t(:,:,:),twice(:,:,:,:),twice_t(:,:,:)
@@ -33,10 +40,13 @@ program test_eb_transport_halo_3d
   call require(ok,'thermo')
   call load_h2o2_elementary_transport(transport,ok)
   call require(ok,'transport')
+  call load_h2o2_elementary_mechanism(reactions,ok)
+  call require(ok,'reactions')
   nvar=reactive_nvar(size(species));config%nx=4;config%ny=4;config%nz=4
   allocate(u(nvar,4,4,4),t(4,4,4),rhs(nvar,4,4,4),g(nvar,0:5,0:5,0:5),gt(0:5,0:5,0:5))
   allocate(advanced(nvar,4,4,4),advanced_t(4,4,4))
   allocate(stage(nvar,4,4,4),stage_t(4,4,4),twice(nvar,4,4,4),twice_t(4,4,4))
+  allocate(inflow(nvar,6),inflow_t(6),boundary(nvar),wall(nvar),chemical(nvar),before(nvar),after(nvar))
   allocate(x(nvar,0:4,4,4),y(nvar,4,0:4,4),z(nvar,4,4,0:4))
   allocate(p(reactive_nprim(size(species))))
   allocate(gp(size(p)),left(size(p)),right(size(p)), &
@@ -206,6 +216,61 @@ program test_eb_transport_halo_3d
       'second-stage halo failure rolls back whole interval')
     call require(all(integrated%x==saved_flux%x).and.all(integrated%y==saved_flux%y).and. &
       all(integrated%z==saved_flux%z),'second-stage halo failure preserves flux')
+    position=-10._dp
+    if(mode==2) position=.31_dp
+    call build_axis_plane_eb_geometry_3d(16,16,16,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp, &
+      -1.5_dp,2.5_dp,'z',position,extended,ok)
+    call require(ok,'coupled CTU extended geometry')
+    labels='outflow';labels(1)='inflow'
+    do c=1,6
+      inflow(:,c)=donor;inflow_t(c)=donor_t
+    end do
+    call reactive_eb_integrals_3d(u,geometry,before,ok)
+    call require(ok,'coupled initial inventory')
+    do reacting=0,1
+      provider_calls=0;fail_call=0
+      call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
+        1.e-7_dp,reacting==1,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+        advanced,advanced_t,theta,ok,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+        extended_geometry=extended,boundary_faces=labels,inflow_state=inflow,inflow_temperature=inflow_t, &
+        prepare_transport_halo=prepare_stage_halo)
+      call require(ok.and.provider_calls==4,'coupled CTU rebuilds four transport stage halos')
+      call reactive_eb_integrals_3d(advanced,geometry,after,ok)
+      call require(ok,'coupled final inventory')
+      call require(maxval(abs(after-before-boundary-wall-chemical)/max(1._dp,abs(before)))<=2.e-12_dp, &
+        'coupled CTU hydro transport and chemistry boundary inventory')
+      if(reacting==1) call require(maxval(abs(chemical))>1.e-15_dp,'coupled chemistry has resolved exchange')
+    end do
+    provider_calls=0
+    call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.true.,2.e-7_dp,1.e-12_dp,.false.,.false.,.false.,.false.,.false., &
+      advanced,advanced_t,theta,ok,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+      extended_geometry=extended,boundary_faces=labels,inflow_state=inflow,inflow_temperature=inflow_t)
+    call require(ok.and.provider_calls==0,'transport-disabled route forwards CTU boundaries')
+    call reactive_eb_integrals_3d(advanced,geometry,after,ok)
+    call require(ok,'Strang final inventory')
+    call require(maxval(abs(after-before-boundary-wall-chemical)/max(1._dp,abs(before)))<=2.e-12_dp, &
+      'Strang CTU boundary and chemistry inventory')
+    provider_calls=0;fail_call=4;boundary=-81;wall=-82;chemical=-83
+    call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+      advanced,advanced_t,theta,ok,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+      extended_geometry=extended,boundary_faces=labels,inflow_state=inflow,inflow_temperature=inflow_t, &
+      prepare_transport_halo=prepare_stage_halo)
+    call require(.not.ok.and.provider_calls==4.and.all(advanced==u).and.all(advanced_t==t), &
+      'last coupled transport halo failure restores complete input')
+    call require(all(boundary==-81).and.all(wall==-82).and.all(chemical==-83), &
+      'last coupled transport halo failure preserves ledgers')
+    call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.false.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+      advanced,advanced_t,theta,ok,extended_geometry=extended,boundary_faces=labels)
+    call require(.not.ok.and.all(advanced==u).and.all(advanced_t==t),'explicit boundary requires transport provider')
+    labels='slip_wall';provider_calls=0
+    call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.false.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+      advanced,advanced_t,theta,ok,extended_geometry=extended,boundary_faces=labels, &
+      prepare_transport_halo=prepare_stage_halo)
+    call require(.not.ok.and.provider_calls==0,'unsupported physical wall transport rejects before stepping')
   end do
   write(*,'(a)') 'test_eb_transport_halo_3d: PASS'
 contains
