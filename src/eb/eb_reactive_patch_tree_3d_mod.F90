@@ -1153,6 +1153,11 @@ contains
         end if
         if(donor==0) return
         volumes(i,j,k)=snapshot%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))
+        if(allocated(snapshot%nodes(target)%geometry%halo_volume_fraction)) then
+          local=global-origin(:,target)+1
+          if(snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))>=0) &
+            volumes(i,j,k)=snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))
+        end if
         if(volumes(i,j,k)<=0) cycle
         if(filled(i,j,k)) cycle
         value=snapshot%nodes(donor)%state(:,source(1),source(2),source(3))

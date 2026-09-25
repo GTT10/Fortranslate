@@ -26,6 +26,8 @@ module eb_geometry_3d_mod
     real(dp) :: dy = 0.0_dp
     real(dp) :: dz = 0.0_dp
     real(dp), allocatable :: volume_fraction(:, :, :)
+    ! Same-resolution one-cell context retained by extraction; -1 means unavailable.
+    real(dp), allocatable :: halo_volume_fraction(:, :, :)
     ! Cell-centroid offsets relative to the Cartesian cell center,
     ! normalized by the corresponding cell width (AMReX convention).
     real(dp), allocatable :: cell_centroid_x(:, :, :)
@@ -69,7 +71,7 @@ contains
     type(eb_geometry_3d), intent(inout) :: patch
     logical, intent(out) :: ok
     type(eb_geometry_3d) :: candidate
-    integer :: dims(3)
+    integer :: dims(3),i,j,k,index(3),source_dims(3)
     ok=.false.
     if (.not.source%is_valid()) return
     if (any(lower<1).or.any(upper<lower).or.any(upper>[source%nx,source%ny,source%nz])) return
@@ -109,6 +111,21 @@ contains
     candidate%boundary_normal_integral_y=source%boundary_normal_integral_y(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
     candidate%boundary_normal_integral_z=source%boundary_normal_integral_z(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
     candidate%cell_type=source%cell_type(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+    allocate(candidate%halo_volume_fraction(0:dims(1)+1,0:dims(2)+1,0:dims(3)+1))
+    candidate%halo_volume_fraction=-1
+    source_dims=[source%nx,source%ny,source%nz]
+    do k=0,dims(3)+1
+    do j=0,dims(2)+1
+    do i=0,dims(1)+1
+      index=lower+[i,j,k]-1
+      if(all(index>=1.and.index<=source_dims)) then
+        candidate%halo_volume_fraction(i,j,k)=source%volume_fraction(index(1),index(2),index(3))
+      else if(allocated(source%halo_volume_fraction)) then
+        candidate%halo_volume_fraction(i,j,k)=source%halo_volume_fraction(index(1),index(2),index(3))
+      end if
+    end do
+    end do
+    end do
     if (.not.candidate%is_valid()) return
     patch=candidate;ok=.true.
   end subroutine extract_eb_geometry_3d
@@ -908,6 +925,17 @@ contains
     if (.not. valid) return
     valid = geometry_arrays_are_valid(self)
     if (.not. valid) return
+    if(allocated(self%halo_volume_fraction)) then
+      valid=all(shape(self%halo_volume_fraction)==[self%nx+2,self%ny+2,self%nz+2]).and. &
+        all(lbound(self%halo_volume_fraction)==0)
+      if(.not.valid) return
+      valid=all(ieee_is_finite(self%halo_volume_fraction)).and. &
+        all(self%halo_volume_fraction==-1.or. &
+        (self%halo_volume_fraction>=0.and.self%halo_volume_fraction<=1))
+      if(.not.valid) return
+      valid=all(self%halo_volume_fraction(1:self%nx,1:self%ny,1:self%nz)==self%volume_fraction)
+      if(.not.valid) return
+    end if
     valid = spacing_is_valid(self, tolerance)
     if (.not. valid) return
     valid = geometry_values_are_valid(self, tolerance)

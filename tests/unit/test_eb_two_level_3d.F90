@@ -121,6 +121,8 @@ contains
   subroutine check_complete_halo()
     real(dp) :: ghost(nvar,0:n+1,0:n+1,0:n+1),gt(0:n+1,0:n+1,0:n+1),vol(0:n+1,0:n+1,0:n+1)
     integer :: x,y,z,idx(3),parent(3)
+    logical :: distinct_metric
+    distinct_metric=.false.
     ghost=-17;gt=-18;vol=-19
     call fill_reactive_eb_patch_halo_3d(species,coarse,fine,lo,ratio,uc,tc,uf,tf,ghost,gt,ok,vol)
     call require(ok,'complete halo')
@@ -135,7 +137,9 @@ contains
             if(vol(x,y,z)>0) call require(all(ghost(:,x,y,z)==uf(:,idx(1),idx(2),idx(3))),'fine donor')
           else
             parent=lo+floor(real(idx-1,dp)/ratio)
-            call require(vol(x,y,z)==coarse%volume_fraction(parent(1),parent(2),parent(3)),'parent halo metric')
+            if(vol(x,y,z)/=coarse%volume_fraction(parent(1),parent(2),parent(3))) distinct_metric=.true.
+            call require(vol(x,y,z)==full%volume_fraction((lo(1)-1)*ratio+idx(1), &
+              (lo(2)-1)*ratio+idx(2),(lo(3)-1)*ratio+idx(3)),'fine-resolution exterior halo metric')
             if(vol(x,y,z)>0) &
               call require(all(ghost(:,x,y,z)==uc(:,parent(1),parent(2),parent(3))),'parent donor')
           end if
@@ -143,6 +147,7 @@ contains
         end do
       end do
     end do
+    call require(distinct_metric,'fine halo distinguishes parent-constant geometry')
     sf=uf;sf(1,n,n,n)=-1
     ghost=-17;gt=-18;vol=-19
     call fill_reactive_eb_patch_halo_3d(species,coarse,fine,lo,ratio,uc,tc,sf,tf,ghost,gt,ok,vol)

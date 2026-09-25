@@ -101,12 +101,27 @@ program test_eb_tree_checkpoint_3d
   call require(ok,'write tree record')
   call unchanged_tree()
   rewind(stream)
+  tree%nodes(1)%geometry%halo_volume_fraction(0,0,0)=.5_dp
+  restored%time=17._dp
+  call reactive_eb_tree_checkpoint_record_3d(stream,.true.,species,reactions,transport,config, &
+    tree,restored,ok,message)
+  call require(.not.ok,'changed geometry halo rejects checkpoint')
+  call unchanged_tree()
+  call require(tree%nodes(1)%geometry%halo_volume_fraction(0,0,0)==.5_dp.and.restored%time==17._dp, &
+    'geometry halo mismatch rollback')
+  tree=saved
+  rewind(stream)
   tree%nodes(1)%state=0.9_dp*tree%nodes(1)%state
   restored%time=17._dp
   call reactive_eb_tree_checkpoint_record_3d(stream,.true.,species,reactions,transport,config, &
     tree,restored,ok,message)
   if (.not.ok) print *,trim(message)
   call require(ok,'read tree record')
+  do node=1,count
+    call require(allocated(tree%nodes(node)%geometry%halo_volume_fraction),'restored geometry halo present')
+    call require(all(tree%nodes(node)%geometry%halo_volume_fraction== &
+      saved%nodes(node)%geometry%halo_volume_fraction),'exact geometry halo roundtrip')
+  end do
   call unchanged_tree()
   call require(restored%time==record%time.and.restored%steps==record%steps.and. &
     all(restored%boundary==record%boundary).and.all(restored%wall==record%wall).and. &

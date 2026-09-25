@@ -445,6 +445,13 @@ contains
     call write_integer_array_3d(unit, geometry%cell_type, status)
     if (status /= 0) go to 900
 
+    if(allocated(geometry%halo_volume_fraction)) then
+      write(unit, '(a)', iostat=status) "GEOMETRY_HALO_V1"
+      if(status/=0) go to 900
+      call write_real_array_3d(unit,geometry%halo_volume_fraction,status)
+      if(status/=0) go to 900
+    end if
+
     write(unit, '(a)', iostat=status) "DIAGNOSTICS"
     if (status /= 0) go to 900
     write(unit, '(es27.18e3,1x,i0)', iostat=status) time, steps
@@ -1024,11 +1031,19 @@ contains
     if (status /= 0) go to 900
     call read_integer_array_3d(unit, candidate_geometry%cell_type, status)
     if (status /= 0) go to 900
-    if (.not. candidate_geometry%is_valid()) go to 900
-    if (.not. geometries_match(candidate_geometry, geometry)) go to 900
-
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
+    if(trim(marker)=="GEOMETRY_HALO_V1") then
+      allocate(candidate_geometry%halo_volume_fraction(0:candidate_geometry%nx+1, &
+        0:candidate_geometry%ny+1,0:candidate_geometry%nz+1),stat=status)
+      if(status/=0) go to 900
+      call read_real_array_3d(unit,candidate_geometry%halo_volume_fraction,status)
+      if(status/=0) go to 900
+      read(unit, '(a)', iostat=status) marker
+      if(status/=0) go to 900
+    end if
+    if (.not. candidate_geometry%is_valid()) go to 900
+    if (.not. geometries_match(candidate_geometry, geometry)) go to 900
     if (trim(marker) /= "DIAGNOSTICS") go to 900
     read(unit, *, iostat=status) stored_time, stored_steps
     if (status /= 0) go to 900
@@ -1581,6 +1596,12 @@ contains
         [right%x_lower, right%x_upper, right%y_lower, right%y_upper, &
           right%z_lower, right%z_upper, right%dx, right%dy, right%dz]))
     if (.not. matches) return
+    matches=allocated(left%halo_volume_fraction).eqv.allocated(right%halo_volume_fraction)
+    if(.not.matches) return
+    if(allocated(left%halo_volume_fraction)) then
+      matches=all(checkpoint_real_matches(left%halo_volume_fraction,right%halo_volume_fraction))
+      if(.not.matches) return
+    end if
     matches = all(checkpoint_real_matches(left%volume_fraction, right%volume_fraction)) .and. &
       all(checkpoint_real_matches(left%cell_centroid_x, right%cell_centroid_x)) .and. &
       all(checkpoint_real_matches(left%cell_centroid_y, right%cell_centroid_y)) .and. &

@@ -247,6 +247,14 @@ contains
           end if
           if(full_halo) cv%fields(target)%values(1,i,j,k)= &
             geometry(donor)%volume_fraction(source(1),source(2),source(3))
+          if(full_halo) then
+            if(allocated(geometry(target)%halo_volume_fraction)) then
+              cell=global-origin(:,target)+1
+              if(geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))>=0) &
+                cv%fields(target)%values(1,i,j,k)=geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))
+            end if
+            if(cv%fields(target)%values(1,i,j,k)<=0) cycle
+          end if
           if (geometry(donor)%volume_fraction(source(1),source(2),source(3))<=0._dp) then
             if(.not.full_halo) valid=.false.
             cycle

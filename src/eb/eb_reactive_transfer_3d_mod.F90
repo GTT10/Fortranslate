@@ -223,7 +223,14 @@ contains
               donor=coarse_state(:,parent(1),parent(2),parent(3))
               guess=coarse_temperature(parent(1),parent(2),parent(3))
             end if
-            if(volumes(i,j,k)<=0) cycle
+            if(allocated(fine%halo_volume_fraction)) then
+              if(fine%halo_volume_fraction(index(1),index(2),index(3))>=0) &
+                volumes(i,j,k)=fine%halo_volume_fraction(index(1),index(2),index(3))
+            end if
+            if(volumes(i,j,k)<=0) then
+              candidate(:,i,j,k)=0;temps(i,j,k)=0
+              cycle
+            end if
             ! Open faces were already checked above. Retain their existing values.
             if(temps(i,j,k)>0) cycle
             if(.not.ieee_is_finite(guess).or.guess<=0) return
