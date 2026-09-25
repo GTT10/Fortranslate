@@ -32,8 +32,8 @@ def main():
     if args.ppm:
         template = template.replace('&spray', "&spray\n hydro_reconstruction='characteristic_ppm',")
     if args.difmag is not None:
-        if not args.ppm or args.difmag < 0:
-            parser.error('--difmag requires --ppm and a nonnegative coefficient')
+        if args.difmag < 0:
+            parser.error('--difmag requires a nonnegative coefficient')
         template = template.replace('&spray', f"&spray\n difmag={args.difmag}, riemann_solver='pelec',")
     template = template.replace('smagorinsky_constant=0,', f'smagorinsky_constant={args.sgs},')
     if args.les_isotropic:
@@ -154,8 +154,7 @@ def main():
             result = subprocess.run([str(args.executable.resolve()), str(path)], cwd=work,
                                     text=True, capture_output=True, timeout=30)
             (work / 'changed_reconstruction.log').write_text(result.stdout + result.stderr)
-            diagnostic = ('Artificial-viscosity input requires characteristic_ppm' if args.difmag is not None
-                          else 'incompatible spray checkpoint')
+            diagnostic = 'incompatible spray checkpoint'
             assert result.returncode != 0 and diagnostic in result.stdout + result.stderr
             assert not (work / 'changed_reconstruction.history.csv').exists()
         if args.difmag is not None:
@@ -179,7 +178,7 @@ def main():
             # Equivalent automatic and explicit default settings must share restart identity.
             run('auto_stop', f"difmag=-1, stop_after_steps=2, checkpoint_file='{kind}_auto.chk',")
             auto = run('auto_resume', f"difmag=-1, restart_file='{kind}_auto.chk',")
-            explicit = run('explicit_resume', f"difmag=0.1, restart_file='{kind}_auto.chk',")
+            explicit = run('explicit_resume', f"difmag={0.1 if args.ppm else 0}, restart_file='{kind}_auto.chk',")
             for suffix in ('.gas.csv', '.parcels.csv', '.history.csv'):
                 assert (work / (auto + suffix)).read_bytes() == (work / (explicit + suffix)).read_bytes()
         if args.mach_inlet:

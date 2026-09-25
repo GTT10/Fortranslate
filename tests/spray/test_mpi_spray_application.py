@@ -37,8 +37,8 @@ def main():
     if args.ppm:
         source = source.replace('&mpi_spray', "&mpi_spray\n hydro_reconstruction='characteristic_ppm',")
     if args.difmag is not None:
-        if not args.ppm or not math.isfinite(args.difmag) or args.difmag < 0:
-            parser.error('--difmag requires --ppm and a finite nonnegative coefficient')
+        if not math.isfinite(args.difmag) or args.difmag < 0:
+            parser.error('--difmag requires a finite nonnegative coefficient')
         source = source.replace('&mpi_spray', f"&mpi_spray\n difmag={args.difmag}, solver='pelec',")
     input_path = args.input.resolve()
     if args.pressure_outlet:
@@ -71,8 +71,8 @@ def main():
             source = source.replace('&mpi_spray', "&mpi_spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
         input_path = work / 'les.nml'
         input_path.write_text(source)
-    if args.ppm:
-        input_path = work / 'ppm.nml'
+    if args.ppm or args.difmag is not None:
+        input_path = work / 'hydro.nml'
         input_path.write_text(source)
     command = [str(args.mpiexec.resolve()), '-n', str(args.ranks),
                str(args.executable.resolve()), str(input_path)]
@@ -209,8 +209,7 @@ def main():
     if args.ppm:
         run_variant('changed_reconstruction', args.ranks,
                     " restart_path='split.chk', hydro_reconstruction='characteristic_plm'", expect_success=False)
-        diagnostic = ('Artificial-viscosity input requires characteristic_ppm' if args.difmag is not None
-                      else 'Restart rejected')
+        diagnostic = 'Restart rejected'
         assert diagnostic in (work / 'changed_reconstruction.log').read_text()
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
@@ -225,7 +224,7 @@ def main():
             assert not (work / f'{label}.history.csv').exists()
         run_variant('auto_split', args.ranks, "difmag=-1, checkpoint_path='auto.chk'", stop='1e-8')
         run_variant('auto_resume', 6 - args.ranks, "difmag=-1, restart_path='auto.chk'")
-        run_variant('explicit_resume', 6 - args.ranks, "difmag=.1, restart_path='auto.chk'")
+        run_variant('explicit_resume', 6 - args.ranks, f"difmag={.1 if args.ppm else 0}, restart_path='auto.chk'")
         for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
             assert snapshots('auto_resume', suffix, keys) == snapshots('explicit_resume', suffix, keys)
         assert rows(work / 'auto_resume.history.csv') == rows(work / 'explicit_resume.history.csv')

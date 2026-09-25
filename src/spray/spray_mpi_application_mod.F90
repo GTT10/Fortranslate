@@ -239,8 +239,6 @@ contains
     'Invalid hydro reconstruction')
   call require(ieee_is_finite(difmag),'Invalid artificial-viscosity coefficient')
   call require(difmag>=0.or.difmag==-1._dp,'Invalid artificial-viscosity coefficient')
-  call require(difmag<0.or.hydro_reconstruction=='characteristic_ppm', &
-    'Artificial-viscosity input requires characteristic_ppm')
   if(difmag==-1._dp) then
     difmag=0
     if(hydro_reconstruction=='characteristic_ppm'.and.solver=='pelec') difmag=.1_dp
@@ -256,6 +254,8 @@ contains
   if(hydro_reconstruction=='characteristic_ppm') then
     call require(len_trim(checkpoint_context)+31<=len(checkpoint_context),'Hydro context too long')
     checkpoint_context=trim(checkpoint_context)//' mpi-hydro-characteristic-ppm-v1'
+  end if
+  if(hydro_reconstruction=='characteristic_ppm'.or.difmag>0) then
     write(profile_context,'(*(g0,1x))',iostat=status) 'ppm-difmag-v1',difmag
     call require(status==0,'Artificial-viscosity context serialization failed')
     call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &

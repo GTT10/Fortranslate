@@ -932,3 +932,18 @@ if(TARGET test_spray_mpi_ppm)
   set_tests_properties(spray_mpi_plm_viscosity_4 PROPERTIES LABELS "spray;mpi" TIMEOUT 120 PROCESSORS 4
     ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(TARGET pelef_spray_3d)
+  add_test(NAME spray_plm_difmag_restart COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_spray_boundaries.py" --inflow --mach-inlet --difmag .05
+    --executable "$<TARGET_FILE:pelef_spray_3d>" --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_plm_difmag_restart")
+  set_tests_properties(spray_plm_difmag_restart PROPERTIES LABELS "spray" TIMEOUT 300)
+endif()
+if(TARGET pelef_mpi_spray_3d)
+    add_test(NAME spray_mpi_plm_difmag_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/spray/test_mpi_spray_application.py"
+        --executable "$<TARGET_FILE:pelef_mpi_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}" --ranks 2 --difmag .037
+        --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
+        --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_plm_difmag_restart")
+    set_tests_properties(spray_mpi_plm_difmag_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
+endif()

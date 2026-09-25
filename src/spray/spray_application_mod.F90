@@ -372,8 +372,6 @@ contains
       call fail('Invalid hydro reconstruction')
     if (.not.ieee_is_finite(difmag)) call fail('Invalid artificial-viscosity coefficient')
     if (difmag<0.and.difmag/=-1._dp) call fail('Invalid artificial-viscosity coefficient')
-    if (difmag>=0.and.hydro_reconstruction/='characteristic_ppm') &
-      call fail('Artificial-viscosity input requires characteristic_ppm')
     if (difmag==-1._dp) then
       difmag=0._dp
       if (hydro_reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') difmag=.1_dp
@@ -913,6 +911,9 @@ contains
       ' '//trim(hydro_reconstruction)//' '//trim(riemann_solver)
     if (hydro_reconstruction=='characteristic_ppm') then
       context=trim(context)//' ppm-difmag-v1'
+      call append_reals([difmag])
+    else if(difmag>0) then
+      context=trim(context)//' hydro-difmag-v1'
       call append_reals([difmag])
     end if
     block
