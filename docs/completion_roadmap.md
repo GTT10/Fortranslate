@@ -280,7 +280,10 @@ species upwinding and zero-viscosity final normalization now connect through
 regular/EB CTU ([checks](validation/ppm-passive-flux-20260926.md)). Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
-Full-CTU assembly parity and broader qualification remain open.
+The full periodic zero-source twelve-solve assembly now agrees in six bounded
+compiled-reference cases ([checks](validation/ppm-pinned-ctu-20260926.md)).
+External assembly checks with flattening, viscosity, physical boundaries and
+broader qualification remain open.
 The reference also adjusts final fluxes with compressive artificial viscosity
 (default `difmag=0.1`). A regular-cell nodal-divergence/flux-correction API now
 implements this step with no-slip tangential exclusions and species-flux

@@ -9,29 +9,21 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
-Regular pressure-traced CTU now applies physical wall/outflow hydro-state
-corrections at each Riemann stage. Serial/MPI AMR and MPI spray dispatch forward
-physical-face masks; explicit pressure outlets retain their prescribed donors
+The full twelve-solve periodic PPM CTU assembly now agrees with compiled pinned
+PeleC bodies in six small-grid cases, including independent mixture variation
+([comparison](validation/ppm-pinned-ctu-20260926.md)). This includes normal tracing,
+Riemann solves, transverse correction and final species normalization at zero
+viscosity. Physical boundaries, flattening and viscosity remain outside that
+external oracle; complete solver and physical validation remain open.
+
+The pressure path preserves independent and signed face species weights and
+uses contact-speed passive upwinding
+([projection](validation/ppm-mixture-projection-20260926.md),
+[transverse](validation/ppm-signed-transverse-20260926.md),
+[face flux](validation/ppm-passive-flux-20260926.md)). Physical wall/outflow
+Riemann corrections reach regular serial/MPI AMR and MPI spray dispatch, while
+explicit pressure outlets retain their prescribed donors
 ([checks](validation/ppm-physical-riemann-20260926.md)).
-
-Regular and EB CTU now use the pinned contact-speed species upwinding after
-Riemann solves; regular final fluxes also normalize species at zero viscosity
-([repair and checks](validation/ppm-passive-flux-20260926.md)).
-
-Regular zero-source CTU transverse updates now have compiled pinned-kernel
-agreement in 144 cases across all three normal axes, including signed species
-and pressure floors ([checks](validation/ppm-pinned-transverse-20260926.md)).
-
-The regular pressure-traced PPM transverse predictor now retains signed
-intermediate species weights as in the pinned passive kernels. Riemann forwarding
-and the separate accepted-cell rejection are checked
-([evidence](validation/ppm-signed-transverse-20260926.md)).
-
-PPM normal primitive-state prediction now preserves independently reconstructed
-species weights in the PeleC pressure path. The expanded compiled-reference
-comparison passes 315 bounded cases, including independent mixture gradients
-([repair and checks](validation/ppm-mixture-projection-20260926.md)). Full CTU
-external parity and physical validation remain open.
 
 Serial single-level EB KH eligibility now previews the complete boundary flight,
 including periodic wraps and reflecting domain walls. Fixed-mechanism periodic
