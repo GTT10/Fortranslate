@@ -40,8 +40,10 @@ serial agreement and collective rollback checks
 and MPI gas applications now accept paired periodic input, wrap geometry
 padding and retain boundary identity across scheduled regridding and changed-rank
 restart ([checks](validation/eb-tree-periodic-application-20260926.md)).
-MPI EB spray periodic application input remains rejected pending application
-and restart qualification.
+MPI EB spray also accepts periodic input, with fixed-mechanism 2/4-rank
+comparison and 2-to-4-rank restart checks
+([checks](validation/mpi-eb-periodic-application-20260926.md)). Periodic
+wall-impact/film and KH child-generation combinations reject at input.
 The composite EB particle stencil now accepts periodic axes and checks
 visibility along segmented, wrapped paths to donor centroids
 ([checks](validation/eb-tree-periodic-stencil-20260926.md)). MPI particle field
