@@ -438,8 +438,10 @@ Set `particle_outflow=.true.` in the spray input to enable explicit particle
 boundary routing. Particles reflect specularly at either wall label; the gas
 uses the corresponding slip/no-slip condition. Exterior particle impulse is
 included in the coupled boundary inventory. Wall labels are bound to restart.
-`wall_impacts` and `particle_options%khrt_children` must remain false with these
-explicit walls.
+`wall_impacts` must remain false with these explicit walls. KH child generation
+is supported for nonperiodic faces: a parent reaching a domain wall skips KH
+release on that substep, reflects, and can release on later eligible substeps.
+Child state and ID allocation participate in the existing interval transaction.
 
 `isothermal_wall` is also accepted with `wall_temperature(6)` in the tree input:
 
@@ -456,4 +458,5 @@ particles reflect specularly without a direct particle-wall heat model.
 Gas heat transfer and particle domain-wall impulse enter the boundary ledger.
 The common/recursive coupled transaction includes both processes. Restart binds
 all six wall temperatures; changed values reject before continuation. The
-explicit-boundary film/KH restrictions above also apply to thermal walls.
+domain-wall film restriction above also applies to thermal walls. Periodic KH
+child generation remains unsupported.

@@ -99,7 +99,8 @@ contains
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
     if(present(eb_geometry).and.present(boundary_faces)) then
       valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
-      valid=valid.and.present(eb_outflow_change).and..not.present(wall_films).and..not.options%khrt_children
+      valid=valid.and.present(eb_outflow_change).and..not.present(wall_films)
+      if(any(faces=='periodic')) valid=valid.and..not.options%khrt_children
     end if
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
@@ -318,6 +319,16 @@ contains
                 crossing_position,crossing_normal,crossing_cell,valid)
               if(.not.valid) exit
               eligible(p)=.not.crossing
+              if(present(boundary_faces)) then
+                ! Domain-wall impact also takes precedence over KH release.
+                do axis=1,3
+                  if(delta(axis)<0.and.trial(p)%position(axis)+delta(axis)<=lower(axis)) then
+                    if(faces(2*axis-1)=='slip_wall'.or.faces(2*axis-1)=='no_slip_wall') eligible(p)=.false.
+                  else if(delta(axis)>0.and.trial(p)%position(axis)+delta(axis)>=lower(axis)+length(axis)) then
+                    if(faces(2*axis)=='slip_wall'.or.faces(2*axis)=='no_slip_wall') eligible(p)=.false.
+                  end if
+                end do
+              end if
             end do
             call agree()
           end if

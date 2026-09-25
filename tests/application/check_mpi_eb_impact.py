@@ -15,11 +15,14 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--khrt', action='store_true')
+p.add_argument('--domain-wall', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--specular-outflow', action='store_true')
 p.add_argument('--force', action='store_true')
 a = p.parse_args()
+if a.domain_wall:
+    assert a.khrt, '--domain-wall requires --khrt'
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='impact_', dir=a.work.resolve()))
 env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
@@ -53,6 +56,9 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
                 'regrid_lower(:,1,1)=3,1,1,regrid_upper(:,1,1)=4,4,4,'
                 'regrid_lower(:,1,3)=1,1,1,regrid_upper(:,1,3)=2,4,4,'
                 'rebalance_interval_steps=1,rebalance_minimum_gain=0.,')
+    if a.domain_wall:
+        tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
+        controls += "boundary_faces='no_slip_wall','no_slip_wall','outflow','outflow','outflow','outflow',"
     if a.selected:
         controls += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
     (directory / 'tree.nml').write_text(tree.replace('&eb_tree', '&eb_tree\n' + controls + extra, 1))
@@ -71,6 +77,9 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         spray = spray.replace('&eb_spray', "&eb_spray\n particle_options%breakup_model='khrt',"
                               'particle_options%khrt_children=.true.,particle_options%khrt_reference_diameter_cubed=1.e-25,'
                               'particle_options%drag=.false.,particle_options%heat=.false.,particle_options%evaporation=.false.,', 1)
+    if a.domain_wall:
+        spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+        spray = spray.replace('center=.0015,.0015,.0015', 'center=.003999999,.0015,.0015')
     if mode == 'split':
         spray = spray.replace('wall_impacts=.true.', 'wall_impacts=.false.').replace('walls%evolve=.true.', 'walls%evolve=.false.')
         spray = spray.replace('particle_options%surface_tension=.072', 'particle_options%surface_tension=1000.')
@@ -114,7 +123,10 @@ for mode in (('deposit',) if a.force else ('outflow',) if a.specular_outflow els
     elif mode == 'khrt':
         assert len(films) == 0 and len(particles) > 2 and (len(particles)-2) % 4 == 0
         assert sorted(int(r['id']) for r in particles) == list(range(1, len(particles)+1))
-        assert all(float(r['u']) > 0 and float(r['x']) > .0015 for r in particles)
+        if a.domain_wall:
+            assert all(float(r['u']) < 0 and 0 < float(r['x']) < .004 for r in particles)
+        else:
+            assert all(float(r['u']) > 0 and float(r['x']) > .0015 for r in particles)
     elif a.outflow:
         assert len(films) == 2 and 0 < len(particles) < 8
     else:
