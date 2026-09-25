@@ -98,6 +98,7 @@ contains
     real(dp) :: halo_source(nv,-3:8,-3:8,-3:8),boundary(nv)
     character(len=8) :: walls(6)
     real(dp) :: composed(nv,4,4,4),composed_t(4,4,4),boundary_ref(nv),transport_limit
+    real(dp) :: force(3),work,expected_energy,source_total(nv)
     integer :: component,bc
     state=u;temp=t
     call compute_reactive_external_source_3d(state,[2._dp,-3._dp,4._dp],source,ok)
@@ -184,6 +185,34 @@ contains
       .false.,.true.,'pelec',lim,ok,conserved_source=source)
     call require(ok.and.maxval(abs(state-old-dt*source)/max(1._dp,abs(old)))<3e-14_dp, &
       'uniform source applied exactly once')
+    force=[2e4_dp,-3e4_dp,4e4_dp]
+    state=old;temp=ot
+    call advance_reactive_full_3d(species,reactions,transport,state,temp,4,4,4, &
+      .25_dp,.25_dp,.25_dp,dt,'pelec',.false.,1e-7_dp,1e-12_dp,.false.,.true.,.true.,.true.,.true.,lim,ok, &
+      reconstruction='characteristic_ppm',external_force=force,source_change=source_total)
+    call require(ok,'time-centered external force update')
+    work=sum(old(2:4,1,1,1)/old(1,1,1,1)*force)
+    expected_energy=dt*work+.5_dp*dt**2*sum(force**2)/old(1,1,1,1)
+    call require(maxval(abs(state(2:4,1,1,1)-old(2:4,1,1,1)-dt*force))<1e-13_dp, &
+      'exact external force momentum increment')
+    call require(abs(state(5,1,1,1)-old(5,1,1,1)-expected_energy)< &
+      3e-14_dp*abs(old(5,1,1,1)),'external work includes quadratic kinetic increment')
+    call require(maxval(abs(temp-ot))<3e-10_dp,'external force preserves uniform internal temperature')
+    do component=1,nv
+      call require(abs(sum(state(component,:,:,:)-old(component,:,:,:))*.25_dp**3-source_total(component))< &
+        3e-14_dp*max(1._dp,abs(old(component,1,1,1))),'external force source ledger')
+    end do
+    state=u;temp=t;walls='outflow'
+    call advance_reactive_full_3d(species,reactions,transport,state,temp,4,4,4, &
+      .25_dp,.25_dp,.25_dp,dt,'pelec',.false.,1e-7_dp,1e-12_dp,.false.,.true.,.true.,.true.,.true.,lim,ok, &
+      reconstruction='characteristic_ppm',boundary_faces=walls,external_force=force,source_change=source_total, &
+      boundary_change=boundary)
+    call require(ok,'outflow external force update')
+    do component=1,nv
+      call require(abs(sum(state(component,:,:,:)-u(component,:,:,:))*.25_dp**3- &
+        source_total(component)-boundary(component))<3e-14_dp*max(1._dp,abs(sum(u(component,:,:,:)))*.25_dp**3), &
+        'outflow external force inventory')
+    end do
     state=old;temp=ot;lim=17
     source=0;source(5,:,:,:)=-1e14_dp
     call advance_reactive_euler_ppm_ctu_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt, &

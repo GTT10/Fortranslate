@@ -2108,10 +2108,13 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
       boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,conserved_source)
+      inflow_mach,inflow_pressure,difmag,conserved_source,external_force,source_change)
     ! Frozen source rates with four supplied ghost layers for physical boundaries.
     real(dp), optional, intent(in) :: conserved_source(:,-3:,-3:,-3:)
-    real(dp), allocatable :: source_cells(:,:,:,:)
+    real(dp), optional, intent(in) :: external_force(3)
+    real(dp), optional, intent(out) :: source_change(:)
+    real(dp), allocatable :: source_cells(:,:,:,:),source_halo(:,:,:,:),new_source(:,:,:,:)
+    real(dp), allocatable :: force_ghost(:,:,:,:),force_temp(:,:,:),corrected_temp(:,:,:)
     real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -2136,12 +2139,18 @@ contains
     real(dp), intent(out), optional :: boundary_change(:)
     character(len=32) :: faces(6)
     real(dp) :: change(size(state,1)),hydro_change(size(state,1)),transport_change(size(state,1))
+    real(dp) :: source_inventory(size(state,1))
     real(dp) :: stage_transport_theta,transverse_theta,explicit_viscosity
     logical :: local_ok
-    integer :: nvar
+    integer :: nvar,component
     character(len=32) :: selected_reconstruction, selected_limiter
 
     ok = .false.
+    source_inventory=0
+    if(present(source_change)) then
+      source_change=0
+      if(size(source_change)/=size(state,1)) return
+    end if
     minimum_transport_theta = 1.0_dp
     faces = "periodic"
     if (present(boundary_faces)) faces = boundary_faces
@@ -2196,11 +2205,16 @@ contains
     if (trim(selected_limiter) /= "minmod" .and. &
         trim(selected_limiter) /= "mc") return
 
+    if(present(external_force)) then
+      if(present(conserved_source).or..not.all(ieee_is_finite(external_force))) return
+      if(selected_reconstruction/='characteristic_ppm'.or.riemann_solver/='pelec') return
+    end if
     if(present(conserved_source)) then
       if(selected_reconstruction/='characteristic_ppm'.or.riemann_solver/='pelec') return
       if(any(shape(conserved_source)/=[nvar,nx+8,ny+8,nz+8])) return
       if(.not.all(ieee_is_finite(conserved_source))) return
       source_cells=conserved_source(:,1:nx,1:ny,1:nz)
+      source_halo=conserved_source
     end if
     allocate(candidate_state, source=state)
     allocate(candidate_temperature, source=temperature)
@@ -2224,12 +2238,30 @@ contains
       minimum_transport_theta = min( &
         minimum_transport_theta, stage_transport_theta)
     end if
+    if(present(external_force)) then
+      allocate(force_ghost(nvar,nx+8,ny+8,nz+8),force_temp(nx+8,ny+8,nz+8))
+      if(present(inflow_mach)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,candidate_state,candidate_temperature,faces,inflow_mach, &
+          force_ghost,force_temp,local_ok,inflow_state,inflow_temperature,inflow_pressure,ghost_width=4)
+      else
+        call fill_reactive_boundary_ghosts_3d(candidate_state,candidate_temperature,faces,force_ghost,force_temp, &
+          local_ok,inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=4)
+      end if
+      if(.not.local_ok) return
+      call fill_pressure_outlet_ghosts_3d(species,[nx,ny,nz],faces,outlet_pressure,force_ghost,force_temp, &
+        local_ok,ghost_width=4)
+      if(.not.local_ok) return
+      allocate(source_halo(nvar,nx+8,ny+8,nz+8))
+      call compute_reactive_external_source_3d(force_ghost,external_force,source_halo,local_ok)
+      if(.not.local_ok) return
+      source_cells=source_halo(:,5:nx+4,5:ny+4,5:nz+4)
+    end if
     if (any(faces /= "periodic").or. &
         (explicit_viscosity>0.and.selected_reconstruction/="characteristic_ppm")) then
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
         [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
         inflow_state, inflow_temperature,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag,conserved_source=conserved_source)
+        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag,conserved_source=source_halo)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -2246,6 +2278,24 @@ contains
       end select
     end if
     if (.not. local_ok) return
+    if(present(external_force)) then
+      allocate(new_source,mold=candidate_state)
+      call compute_reactive_external_source_3d(candidate_state,external_force,new_source,local_ok)
+      if(.not.local_ok) return
+      candidate_state=candidate_state+.5_dp*dt*(new_source-source_cells)
+      allocate(corrected_temp,mold=candidate_temperature)
+      call recover_reactive_temperatures_3d(species,candidate_state,candidate_temperature,nx,ny,nz, &
+        corrected_temp,local_ok)
+      if(.not.local_ok) return
+      candidate_temperature=corrected_temp
+      source_cells=.5_dp*(source_cells+new_source)
+    end if
+    if(allocated(source_cells)) then
+      do component=1,nvar
+        source_inventory(component)=dt*dx*dy*dz*sum(source_cells(component,:,:,:))
+      end do
+      if(.not.all(ieee_is_finite(source_inventory))) return
+    end if
     change = change + hydro_change
     if (transport_enabled) then
       call advance_reactive_transport_3d( &
@@ -2268,6 +2318,7 @@ contains
       if (.not. local_ok) return
     end if
     if (present(boundary_change)) boundary_change = change
+    if(present(source_change)) source_change=source_inventory
     state = candidate_state
     temperature = candidate_temperature
     ok = .true.
