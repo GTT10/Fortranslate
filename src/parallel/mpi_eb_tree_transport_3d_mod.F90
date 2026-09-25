@@ -21,7 +21,7 @@ contains
   ! Common molecular-transport interval with closed physical diffusion faces.
   subroutine advance_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt,viscosity,conduction, &
       diffusion,barodiffusion,state,temperature,boundary_change,minimum_theta,comm,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -35,6 +35,8 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    real(dp) :: thermal(7),thermal_low(7),thermal_high(7)
     logical, intent(out) :: ok
     type(amr_tree_state_3d) :: snapshot,st,candidate,ct,ghost,gt
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -50,8 +52,21 @@ contains
     valid=ieee_is_finite(dt)
     if (valid) valid=dt>0._dp
     valid=valid.and.size(boundary_change)==nv
+    thermal=0
+    if(present(wall_temperature)) then
+      thermal(1)=1;thermal(2:)=wall_temperature
+      valid=valid.and.present(boundary_faces)
+      valid=valid.and.all(ieee_is_finite(wall_temperature)).and.all(wall_temperature>0)
+    end if
+    if(present(boundary_faces)) then
+      if(any(boundary_faces=='isothermal_wall')) valid=valid.and.conduction.and.present(wall_temperature)
+    end if
     call agree(valid,ready)
     if (.not.ready) return
+    call MPI_Allreduce(thermal,thermal_low,7,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(thermal,thermal_high,7,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(thermal_low/=thermal_high)) return
     call MPI_Allreduce(dt,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
     call MPI_Allreduce(dt,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
@@ -89,13 +104,15 @@ contains
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
         patch_faces='outflow'
         if(present(boundary_faces)) then
-          where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+          where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
+            boundary_faces=='isothermal_wall')) &
             patch_faces=boundary_faces
           faces=.true.
         end if
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry(node),dt, &
         viscosity,conduction,diffusion,barodiffusion,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
-        flux(node),stage_theta,valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),faces,physical_faces=patch_faces)
+        flux(node),stage_theta,valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),faces, &
+          physical_faces=patch_faces,wall_temperature=wall_temperature)
       call tree_work_stop(node,work_stamp)
       if (.not.valid) exit
       local_theta=min(local_theta,stage_theta)

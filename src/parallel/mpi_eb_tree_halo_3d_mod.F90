@@ -71,11 +71,11 @@ contains
     if(present(boundary_faces)) then
       valid=.not.present(inflow_mach).and..not.present(inflow_pressure)
       valid=valid.and.all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic'.or. &
-        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
+        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or.boundary_faces=='isothermal_wall')
       controls(22)=1
       controls(23:28)=merge(1._dp,0._dp,boundary_faces=='inflow')+ &
         merge(2._dp,0._dp,boundary_faces=='periodic')+merge(3._dp,0._dp,boundary_faces=='slip_wall')+ &
-        merge(4._dp,0._dp,boundary_faces=='no_slip_wall')
+        merge(4._dp,0._dp,boundary_faces=='no_slip_wall')+merge(5._dp,0._dp,boundary_faces=='isothermal_wall')
       if(any(boundary_faces=='inflow')) valid=valid.and.present(inflow_state).and.present(inflow_temperature)
     else
       valid=valid.and..not.present(inflow_state)
@@ -443,8 +443,8 @@ contains
           boundary_face=2*direction
           if(position(direction)<0) boundary_face=boundary_face-1
           boundary_code=nint(controls(22+boundary_face))
-          if(boundary_code/=3.and.boundary_code/=4) exit
-          if(boundary_code==4) then
+          if(boundary_code<3.or.boundary_code>5) exit
+          if(boundary_code>=4) then
             signs=-signs
           else
             signs(direction)=-signs(direction)

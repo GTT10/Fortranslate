@@ -27,7 +27,14 @@ program test_mpi_eb_tree_subcycle_transport_3d
   real(dp) :: residual,theta,speed
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,rank,nranks,status
+  character(len=16) :: test_mode
+  character(len=16), allocatable :: labels(:)
+  real(dp), allocatable :: wall_t(:)
   logical :: ok
+  call get_command_argument(1,test_mode)
+  if(test_mode=='isothermal') then
+    allocate(labels(6),wall_t(6));labels='isothermal_wall';wall_t=2000
+  end if
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
@@ -39,6 +46,7 @@ program test_mpi_eb_tree_subcycle_transport_3d
   allocate(before(nv),after(nv),boundary(nv),primitive(reactive_nprim(size(species))))
   do axis=1,3
   do count=4,5
+  if(allocated(labels).and.(axis/=3.or.count/=5)) cycle
   call initialize_amr_patch_3d(4,4,4,1,2,1,2,2,3,2,boxes(1),ok)
   call require(ok,'child left')
   call initialize_amr_patch_3d(4,4,4,3,4,1,2,2,3,2,boxes(2),ok)
@@ -86,9 +94,13 @@ program test_mpi_eb_tree_subcycle_transport_3d
   saved=tree
   boundary=17._dp;theta=19._dp
   call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
-    tree,boundary,theta,ok)
+    tree,boundary,theta,ok,boundary_faces=labels,wall_temperature=wall_t)
   call require(ok,'tree transport step')
-  call require(all(boundary==0._dp),'closed physical diffusion faces')
+  if(allocated(labels)) then
+    call require(boundary(1)==0.and.all(boundary(6:)==0).and.boundary(5)>0,'heated impermeable walls')
+  else
+    call require(all(boundary==0._dp),'closed physical diffusion faces')
+  end if
   call require(theta>=0._dp.and.theta<=1._dp,'limiter range')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
   call require(ok,'final inventory')
@@ -124,7 +136,8 @@ contains
       end do
       initial=local;it=lt;b=17._dp;limiter=19._dp
       call advance_mpi_eb_tree_subcycle_transport_3d(species,transport,topology,owners,geometry,1.e-8_dp, &
-        .true.,.true.,.true.,.true.,local,lt,b,limiter,MPI_COMM_WORLD,good)
+        .true.,.true.,.true.,.true.,local,lt,b,limiter,MPI_COMM_WORLD,good, &
+          boundary_faces=labels,wall_temperature=wall_t)
       call require(good,'MPI transport')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'owner-local U')
@@ -139,15 +152,19 @@ contains
       error=maxval(abs(inventory-before-b)/max(1._dp,abs(before)))
       call require(error<3.e-14_dp,'MPI transport conservation')
       if (rank==0) print *, 'MPI axis, nodes, mode, residual: ',axes(axis),count,mode,error
-      do failure=1,4
+      do failure=1,5
+        if(failure==5.and..not.allocated(wall_t)) cycle
         local=initial;lt=it;b=17._dp;limiter=19._dp;dt=1.e-8_dp
         visc=.true.
         if (failure==1) dt=-1.e-8_dp
         if (failure==2.and.rank==0) dt=2.e-8_dp
         if (failure==3.and.rank==owners(count)) local%fields(count)%values(1,4,4,4)=-1._dp
         if (failure==4.and.rank==0) visc=.false.
+        if(failure==5.and.rank==0) wall_t(1)=2001
         call advance_mpi_eb_tree_subcycle_transport_3d(species,transport,topology,owners,geometry,dt, &
-          visc,.true.,.true.,.true.,local,lt,b,limiter,MPI_COMM_WORLD,good)
+          visc,.true.,.true.,.true.,local,lt,b,limiter,MPI_COMM_WORLD,good, &
+          boundary_faces=labels,wall_temperature=wall_t)
+        if(allocated(wall_t)) wall_t=2000
         call require(.not.good,'collective transport rejection')
         if (failure==3.and.rank==owners(count)) then
           call require(local%fields(count)%values(1,4,4,4)==-1._dp,'bad density preserved')

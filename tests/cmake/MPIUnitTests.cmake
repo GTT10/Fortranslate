@@ -1246,3 +1246,13 @@ if(PELEF_ENABLE_MPI)
       TIMEOUT 120 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
+
+if(PELEF_ENABLE_MPI)
+  foreach(thermal_step IN ITEMS transport subcycle_transport)
+    add_test(NAME unit_mpi_eb_tree_isothermal_${thermal_step}_3d
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_${thermal_step}_3d> ${MPIEXEC_POSTFLAGS} isothermal)
+    set_tests_properties(unit_mpi_eb_tree_isothermal_${thermal_step}_3d PROPERTIES
+      TIMEOUT 120 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()
