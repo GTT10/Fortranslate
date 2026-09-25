@@ -30,7 +30,11 @@ Periodic common/recursive reacting PLM/CTU splits now pass focused explicit
 and implicit chemistry checks. MPI flux synchronization also accepts periodic
 faces with exact serial agreement, owner-local transfers and collective
 rollback ([checks](validation/eb-tree-periodic-full-mpi-flux-20260926.md)).
-Periodic MPI time-update dispatch remains pending.
+Common and recursive MPI hydro now forward periodic labels through provisional
+endpoint and final flux synchronization, with focused PLM/CTU serial agreement
+and collective rollback checks
+([checks](validation/mpi-eb-periodic-hydro-20260926.md)). MPI periodic transport,
+reacting splits and application inputs remain pending.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
