@@ -10,11 +10,12 @@ Older milestone prose remains historical detail, not a current global status.
 ## Supported boundary
 
 The full twelve-solve periodic PPM CTU assembly now agrees with compiled pinned
-PeleC bodies in six small-grid cases, including independent mixture variation
-([comparison](validation/ppm-pinned-ctu-20260926.md)). This includes normal tracing,
-Riemann solves, transverse correction and final species normalization at zero
-viscosity. Physical boundaries, flattening and viscosity remain outside that
-external oracle; complete solver and physical validation remain open.
+PeleC bodies in ten small-grid cases, including independent mixture variation,
+active shock flattening and artificial viscosity
+([comparison](validation/ppm-pinned-shock-20260926.md)). This includes normal
+tracing, Riemann solves, transverse correction and final species normalization.
+Physical boundaries remain outside that external oracle; complete solver and
+physical validation remain open.
 
 The pressure path preserves independent and signed face species weights and
 uses contact-speed passive upwinding
