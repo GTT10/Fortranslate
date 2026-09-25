@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+MPI EB deposition/splash and stationary films can now coexist with specular
+outer-domain walls. Remaining flight and separate exterior/EB budgets are
+preserved through regrid and changed-rank continuation
+([checks](validation/mpi-eb-film-domain-reflection-20260926.md)). Periodic films
+and film creation on outer domain faces remain open.
+
 MPI EB KH child generation now accepts explicit nonperiodic domain walls,
 with wall-before-release ordering and CTU regrid/changed-rank continuation
 ([checks](validation/mpi-eb-wall-khrt-20260926.md)). Explicit-boundary PCM
