@@ -24,6 +24,50 @@ program test_reactive_ppm_normal_3d
         write(*,'(16(es26.17e3,1x))') species(k)%molecular_weight,species(k)%temperature_mid, &
           species(k)%low_coefficients,species(k)%high_coefficients
       end do
+    case('--ctu-stream')
+      block
+        real(dp) :: cu(12,4,4,4),ct(4,4,4),cx(12,0:4,4,4),cy(12,4,0:4,4),cz(12,4,4,0:4),cq(12)
+        integer :: ii,jj,kk
+        do
+          read(*,*,iostat=status) dt
+          if(status<0) exit
+          if(status/=0) error stop 'invalid CTU interval'
+          do kk=1,4
+          do jj=1,4
+          do ii=1,4
+            read(*,*,iostat=status) cq
+            if(status/=0) error stop 'invalid CTU cell'
+            call reactive_primitive_to_conserved(species,cq,cu(:,ii,jj,kk),ct(ii,jj,kk),speed,ok)
+            call require(ok,'CTU input EOS')
+          end do
+          end do
+          end do
+          call compute_reactive_ppm_ctu_fluxes_3d(species,cu,ct,[.25_dp,.25_dp,.25_dp],dt, &
+            .false.,.false.,'pelec',cx,cy,cz,theta,ok,difmag=0._dp)
+          call require(ok,'CTU reference fluxes')
+          do kk=1,4
+          do jj=1,4
+          do ii=0,4
+            write(*,'(12(es26.17e3,1x))') cx(:,ii,jj,kk)
+          end do
+          end do
+          end do
+          do kk=1,4
+          do jj=0,4
+          do ii=1,4
+            write(*,'(12(es26.17e3,1x))') cy(:,ii,jj,kk)
+          end do
+          end do
+          end do
+          do kk=0,4
+          do jj=1,4
+          do ii=1,4
+            write(*,'(12(es26.17e3,1x))') cz(:,ii,jj,kk)
+          end do
+          end do
+          end do
+        end do
+      end block
     case('--reference-stream')
       do
         read(*,*,iostat=status) stencil,flat,ratio
