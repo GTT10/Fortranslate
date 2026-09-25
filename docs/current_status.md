@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+MPI EB particle drift now supports specular domain-wall reflection with exterior
+impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
+Coupled wall runtime and application routing remain to be checked.
+
 Fixed/selected tree gas applications now expose slip/no-slip adiabatic walls,
 with scheduled regridding and changed-rank restart checked on an enclosed
 planar fixture ([evidence](validation/eb-tree-wall-application-20260926.md)).
