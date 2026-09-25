@@ -29,6 +29,7 @@ module amr_patch_tree_application_3d_mod
   use amr_patch_tree_transport_3d_mod, only: compute_amr_patch_tree_transport_timestep_3d
   use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
+  use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
   private
   public :: run_amr_patch_tree_application_3d
@@ -337,7 +338,8 @@ contains
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           change,correction,theta,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling, &
-          outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
+          outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
+          difmag=resolved_reactive_difmag_3d(config))
         if (ok) exit
         dt=.5_dp*dt
       end do

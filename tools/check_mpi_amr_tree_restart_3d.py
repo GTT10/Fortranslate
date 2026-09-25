@@ -12,6 +12,7 @@ def main():
     for option in ('fixed', 'selected', 'serial-fixed', 'serial-selected', 'case-dir', 'workdir'):
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--scheduled', action='store_true')
+    parser.add_argument('--difmag', action='store_true')
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--mach-inlet', action='store_true')
     parser.add_argument('--subcycling', action='store_true')
@@ -22,6 +23,9 @@ def main():
     args = parser.parse_args()
     case = args.case_dir.resolve()
     template = (case / 'hotspot.nml').read_text()
+    if args.difmag:
+        template = template.replace("reconstruction='pcm'", "reconstruction='characteristic_ppm', difmag=0.1")
+        template = template.replace("riemann_solver='hllc'", "riemann_solver='pelec'")
     if args.pressure_outlet:
         template = template.replace('  boundary_condition=',
                                     '  outlet_pressure(2)=102325\n  boundary_condition=')
@@ -145,6 +149,15 @@ def main():
             run('wrong_index', config + restart, 3, 'Invalid MPI tree restart checkpoint/context')
             compare()
             checkpoint.write_bytes(saved)
+        if args.difmag:
+            run('auto_coefficient', config.replace('difmag=0.1', 'difmag=-1') + restart, 3)
+            compare()
+            run('auto_coefficient_serial', config.replace('difmag=0.1', 'difmag=-1') + restart, 0)
+            compare()
+            for ranks in (0, 3):
+                error = 'Invalid MPI tree restart checkpoint/context' if ranks else 'Invalid tree restart checkpoint/context'
+                run(f'changed_coefficient_{ranks}', config.replace('difmag=0.1', 'difmag=0.2') + restart, ranks, error)
+                compare()
         if args.mach_inlet:
             for label, old, new in [('mach', 'inflow_mach(1)=0.2', 'inflow_mach(1)=0.3'),
                                     ('inlet_pressure', 'inflow_pressure(1)=0', 'inflow_pressure(1)=120000'),

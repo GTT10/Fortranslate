@@ -14,6 +14,7 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--ppm', action='store_true')
+p.add_argument('--difmag', action='store_true')
 p.add_argument('--multiport', action='store_true')
 p.add_argument('--adaptive', action='store_true')
 p.add_argument('--rebalance', action='store_true')
@@ -42,6 +43,9 @@ case = a.source.resolve() / 'cases/mpi_amr_spray_3d'
 gas = (case / 'gas.nml').read_text()
 if a.ppm:
     gas = gas.replace("reconstruction='pcm'", "reconstruction='characteristic_ppm'")
+if a.difmag:
+    assert a.ppm
+    gas = gas.replace("riemann_solver='hllc'", "riemann_solver='pelec',difmag=0.1")
 if a.selected:
     gas = gas.replace("thermo_model='full_h2o2'", "thermo_model='selected'")
     gas = gas.replace(' output_file=', " composition_count=3,composition_species='H2','O2','N2'\n"
@@ -190,10 +194,12 @@ if a.rate_files:
     spray += "\n&amr_spray_rate_files profile_files='rate1.dat','rate2.dat' /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False, changed_mach=None, changed_reconstruction=False):
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False, changed_mach=None, changed_reconstruction=False, coefficient=None):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
+    if coefficient is not None:
+        local_gas = local_gas.replace('difmag=0.1', f'difmag={coefficient}')
     if changed_reconstruction:
         local_gas = local_gas.replace("reconstruction='characteristic_ppm'", "reconstruction='characteristic_plm'")
     if changed_pressure:
@@ -370,6 +376,11 @@ if a.force:
     run('changed_force', 2, f"restart_file='{checkpoint}'", good=False, changed_force=True)
 if a.pressure:
     run('changed_pressure', 2, f"restart_file='{checkpoint}'", good=False, changed_pressure=True)
+if a.difmag:
+    equivalent = run('auto_coefficient', 4, f"restart_file='{checkpoint}'", coefficient=-1)
+    assert read(equivalent, 4) == read(continued, 4)
+    rejected = run('changed_coefficient', 2, f"restart_file='{checkpoint}'", good=False, coefficient=.2)
+    assert 'AMR spray checkpoint operation failed' in (rejected / 'run.log').read_text()
 if a.ppm:
     run('changed_reconstruction', 2, f"restart_file='{checkpoint}'", good=False, changed_reconstruction=True)
 if a.subcycling:

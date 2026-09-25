@@ -6,7 +6,7 @@ module amr_patch_tree_checkpoint_3d_mod
   use elementary_kinetics_mod, only: elementary_reaction,valid_elementary_reaction
   use gas_transport_mod, only: gas_transport_species,compatible_transport_database
   use reactive_1d_mod, only: reactive_nvar
-  use simulation_config_reactive_3d_mod, only: reactive_3d_config
+  use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_difmag_3d
   use amr_reactive_3d_checkpoint_mod, only: write_selected_checkpoint_context,checkpoint_temperature_is_consistent
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
@@ -54,6 +54,7 @@ contains
     if (.not.valid_context(trim(schedule_identity)//achar(10))) return
     ! Capture all configuration fields except continuation limits/output path.
     canonical=config;canonical%final_time=0;canonical%maximum_steps=0;canonical%output_file=''
+    if(canonical%reconstruction=='characteristic_ppm') canonical%difmag=resolved_reactive_difmag_3d(config)
     open(newunit=unit,status='scratch',access='stream',form='formatted',delim='quote',iostat=status)
     if (status/=0) return
     write(unit,*,iostat=status) canonical

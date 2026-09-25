@@ -87,6 +87,7 @@ module simulation_config_reactive_3d_mod
   public :: valid_wall_velocity_3d
   public :: fill_reactive_boundary_ghosts_3d
   public :: resolved_reactive_boundaries_3d, valid_reactive_boundaries_3d
+  public :: resolved_reactive_difmag_3d
   public :: read_reactive_3d_configuration
   public :: validate_reactive_3d_configuration
   public :: reactive_3d_mole_fractions
@@ -96,6 +97,14 @@ module simulation_config_reactive_3d_mod
   public :: mach_inlet_ghost_3d
   public :: map_reactive_boundary_donor_3d
 contains
+  pure real(dp) function resolved_reactive_difmag_3d(config) result(coefficient)
+    type(reactive_3d_config), intent(in) :: config
+    coefficient=config%difmag
+    if(coefficient/=-1._dp) return
+    coefficient=0
+    if(config%reconstruction=='characteristic_ppm'.and.config%riemann_solver=='pelec') coefficient=.1_dp
+  end function resolved_reactive_difmag_3d
+
 
   ! Frozen-composition acoustic pressure extrapolation, as in pinned
   ! PeleC EB-ConvergingNozzle/prob.H. distance_ratio=2 is the first ghost center.

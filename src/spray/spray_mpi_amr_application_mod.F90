@@ -38,6 +38,7 @@ module spray_mpi_amr_application_mod
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
   use spray_mpi_amr_reactive_mod, only: advance_mpi_amr_spray_reactive
   use spray_mpi_amr_remap_mod, only: remap_mpi_amr_spray
+  use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
   private
   public :: run_mpi_amr_spray_application
@@ -647,7 +648,8 @@ contains
             acceleration=acceleration,source_change=force_change, &
             les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
             les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic, &
-            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
+          difmag=resolved_reactive_difmag_3d(config))
         else
           call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
@@ -662,7 +664,8 @@ contains
             acceleration=acceleration,source_change=force_change, &
             les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
             les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic, &
-            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
+          difmag=resolved_reactive_difmag_3d(config))
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
