@@ -26,10 +26,14 @@ program test_eb_multipatch_3d
   integer :: lower(3,2),extent(3,2),upper(3,2),bad_lower(3,2),operation,ratio,mode,p,nvar,nf(3),i,j,k,c,step,lo(3),hi(3)
   real(dp) :: amount,reference_amount,interval,theta,accepted_theta,saved_theta,reference_theta,recovered,speed
   integer :: time_mode
+  character(len=32) :: argument
+  real(dp) :: coefficient=0
   logical :: subcycling
   procedure(advance_reactive_eb_two_level_euler_3d), pointer :: hydro_reference
   procedure(advance_reactive_eb_two_level_transport_3d), pointer :: transport_reference
   logical :: valid,refined(4,4,4)
+  call get_command_argument(1,argument)
+  if(argument=="viscosity") coefficient=.037_dp
   call load_h2o2_elementary_thermo(species,valid)
   call require(valid,'thermo')
   call load_h2o2_elementary_transport(transport,valid)
@@ -150,7 +154,7 @@ program test_eb_multipatch_3d
           rc=sc;rt=st
           if (operation==1) then
             call hydro_reference(species,coarse,joined,[2,2,2],ratio,'rusanov',interval, &
-              rc,rt,joined_u,joined_t,rb,rw,valid)
+              rc,rt,joined_u,joined_t,rb,rw,valid,difmag=coefficient)
           else
             call transport_reference(species,transport,coarse,joined,[2,2,2],ratio,interval, &
               .true.,.true.,.true.,.true.,rc,rt,joined_u,joined_t,rb,reference_theta,valid)
@@ -194,7 +198,8 @@ contains
     type(eb_reactive_patch_3d), intent(inout) :: children(:)
     logical, intent(out) :: success
     if (operation==1) then
-      call advance_reactive_eb_multipatch_euler_3d(gas,geometry,boxes,refinement,solver,dt,u,t,children,b,w,success,subcycling)
+      call advance_reactive_eb_multipatch_euler_3d(gas,geometry,boxes,refinement,solver,dt,u,t,children,b,w, &
+        success,subcycling,difmag=coefficient)
       if (success) theta=1._dp
     else
       call advance_reactive_eb_multipatch_transport_3d(gas,transport,geometry,boxes,refinement,dt, &

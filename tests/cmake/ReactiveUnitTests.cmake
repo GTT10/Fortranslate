@@ -691,10 +691,12 @@ add_test(
 add_executable(test_eb_multipatch_3d unit/test_eb_multipatch_3d.F90)
 target_link_libraries(test_eb_multipatch_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_multipatch_3d COMMAND test_eb_multipatch_3d)
+add_test(NAME unit_eb_multipatch_viscosity_3d COMMAND test_eb_multipatch_3d viscosity)
 
 add_executable(test_eb_multipatch_full_3d unit/test_eb_multipatch_full_3d.F90)
 target_link_libraries(test_eb_multipatch_full_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_multipatch_full_3d COMMAND test_eb_multipatch_full_3d)
+add_test(NAME unit_eb_multipatch_viscosity_full_3d COMMAND test_eb_multipatch_full_3d viscosity)
 
 add_executable(test_eb_composition_integrals_3d unit/test_eb_composition_integrals_3d.F90)
 target_link_libraries(test_eb_composition_integrals_3d PRIVATE pelef_core)

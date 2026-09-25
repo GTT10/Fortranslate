@@ -251,13 +251,14 @@ contains
   subroutine advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       coarse_state,coarse_temperature,patches,boundary_change,wall_change,chemistry_change,minimum_theta,ok, &
-      chemistry_integrator,subcycle)
+      chemistry_integrator,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: coarse
     integer, intent(in) :: lower(:,:),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt,rtol,atol
     logical, intent(in) :: chemistry_enabled,transport_enabled,viscosity,conduction,diffusion,barodiffusion
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
@@ -275,10 +276,13 @@ contains
     real(dp) :: theta,stage_theta
     logical :: valid
     ok=.false.;np=size(patches);nvar=reactive_nvar(size(species))
+    if(present(difmag)) then
+      if(.not.ieee_is_finite(difmag).or.difmag<0) return
+    end if
     if (size(chemistry_change)/=nvar) return
     if (.not.chemistry_enabled.and..not.transport_enabled) then
       call advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
-        coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok,subcycle)
+        coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok,subcycle,difmag=difmag)
       if (ok) then
         chemistry_change=0._dp;minimum_theta=1._dp
       end if
@@ -330,7 +334,7 @@ contains
       if (.not.valid) return
     end if
     call advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
-      candidate,temps,children,boundary,wall,valid,subcycle)
+      candidate,temps,children,boundary,wall,valid,subcycle,difmag=difmag)
     if (.not.valid) return
     if (transport_enabled) then
       call transport_half(valid)
@@ -399,18 +403,19 @@ contains
   end subroutine advance_reactive_eb_multipatch_full_3d
 
   subroutine advance_reactive_eb_multipatch_euler_3d(species,coarse,lower,ratio,solver,dt, &
-      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok,subcycle)
+      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: coarse
     integer, intent(in) :: lower(:,:),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),boundary_change(:),wall_change(:)
     type(eb_reactive_patch_3d), intent(inout) :: patches(:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: subcycle
     call advance_multipatch_euler(species,coarse,lower,ratio,solver,dt, &
-      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok,subcycle=subcycle)
+      coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok,subcycle=subcycle,difmag=difmag)
   end subroutine advance_reactive_eb_multipatch_euler_3d
 
   subroutine advance_reactive_eb_multipatch_transport_3d(species,transport,coarse,lower,ratio,dt, &
@@ -434,11 +439,12 @@ contains
 
   subroutine advance_multipatch_euler(species,coarse,lower,ratio,solver,dt, &
       coarse_state,coarse_temperature,patches,boundary_change,wall_change,ok, &
-      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: coarse
     integer, intent(in) :: lower(:,:),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),boundary_change(:),wall_change(:)
     type(eb_reactive_patch_3d), intent(inout) :: patches(:)
@@ -460,8 +466,14 @@ contains
     real(dp), allocatable :: initial(:,:,:,:),initial_t(:,:,:),candidate(:,:,:,:),temps(:,:,:)
     real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source(:,:,:,:),wall(:),boundary(:)
     integer :: n(3),np,nvar,p,q,a,b,c,idx,offset(3)
+    real(dp) :: coefficient
+    real(dp), allocatable :: ghost_vf(:,:,:)
     logical :: valid
     ok=.false.;np=size(patches);nvar=reactive_nvar(size(species))
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if(present(transport).and.coefficient>0) return
     if (ratio<1.or..not.ieee_is_finite(dt)) return
     substeps=1
     if (present(subcycle)) then
@@ -525,7 +537,7 @@ contains
       if (.not.valid) return
     else
       call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
-        integrated_flux=coarse_flux)
+        integrated_flux=coarse_flux,difmag=coefficient)
       if (.not.valid) return
       call reactive_eb_slip_wall_source_3d(species,initial,initial_t,coarse,source,valid)
       if (.not.valid) return
@@ -558,8 +570,9 @@ contains
         p=order(a)
         allocate(ghost(nvar,0:dims(1,p)+1,0:dims(2,p)+1,0:dims(3,p)+1), &
           ghost_t(0:dims(1,p)+1,0:dims(2,p)+1,0:dims(3,p)+1))
+        if(coefficient>0) allocate(ghost_vf(0:dims(1,p)+1,0:dims(2,p)+1,0:dims(3,p)+1))
         call fill_reactive_eb_patch_halo_3d(species,coarse,old_patches(p)%geometry,lower(:,p),ratio,donor,donor_t, &
-          old_patches(p)%state,old_patches(p)%temperature,ghost,ghost_t,valid)
+          old_patches(p)%state,old_patches(p)%temperature,ghost,ghost_t,valid,ghost_volume_fraction=ghost_vf)
         if (.not.valid) return
         do b=1,np
           q=order(b)
@@ -568,7 +581,7 @@ contains
           if (any(offset < -dims(:,q)/ratio).or.any(offset>dims(:,p)/ratio)) cycle
           offset=offset*ratio
           call overlay_reactive_eb_peer_halo_3d(species,old_patches(p)%geometry,old_patches(q)%geometry,offset, &
-            old_patches(q)%state,old_patches(q)%temperature,ghost,ghost_t,valid)
+            old_patches(q)%state,old_patches(q)%temperature,ghost,ghost_t,valid,ghost_volume_fraction=ghost_vf)
           if (.not.valid) return
         end do
         if (present(transport)) then
@@ -580,10 +593,12 @@ contains
           theta=min(theta,stage_theta)
         else
           call advance_reactive_eb_euler_3d(species,old_patches(p)%state,old_patches(p)%temperature,old_patches(p)%geometry, &
-            solver,sub_dt,candidate_patches(p)%state,candidate_patches(p)%temperature,valid,ghost,ghost_t,fine_flux(p))
+            solver,sub_dt,candidate_patches(p)%state,candidate_patches(p)%temperature,valid,ghost,ghost_t,fine_flux(p), &
+            difmag=coefficient,ghost_volume_fraction=ghost_vf)
           if (.not.valid) return
         end if
         deallocate(ghost,ghost_t)
+        if(allocated(ghost_vf)) deallocate(ghost_vf)
         allocate(source(nvar,dims(1,p),dims(2,p),dims(3,p)))
         source=0._dp
         if (.not.present(transport)) then

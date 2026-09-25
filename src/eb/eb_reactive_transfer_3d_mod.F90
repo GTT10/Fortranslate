@@ -13,14 +13,17 @@ contains
   ! Overlay one same-resolution peer on previously filled face halos.
   ! peer_offset is the peer origin minus the target origin in cell indices.
   ! Only their shared open face is replaced; edges/corners and other donors
-  ! remain untouched. The caller owns collection-wide overlap validation.
+  ! remain untouched unless volume fractions request all peer-covered slots.
+  ! The caller owns collection-wide overlap validation.
   subroutine overlay_reactive_eb_peer_halo_3d(species,target,peer,peer_offset,peer_state,peer_temperature, &
-      ghost_state,ghost_temperature,ok)
+      ghost_state,ghost_temperature,ok,ghost_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: target,peer
     integer, intent(in) :: peer_offset(3)
     real(dp), intent(in) :: peer_state(:,:,:,:),peer_temperature(:,:,:)
     real(dp), intent(inout) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), optional, intent(inout) :: ghost_volume_fraction(0:,0:,0:)
+    real(dp), allocatable :: volumes(:,:,:)
     logical, intent(out) :: ok
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:)
     real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed,guess
@@ -43,6 +46,11 @@ contains
     nvar=reactive_nvar(size(species))
     if (.not.fields_match(peer_state,peer_temperature,peer,nvar)) return
     if (any(shape(ghost_state)/=[nvar,n+2]).or.any(shape(ghost_temperature)/=n+2)) return
+    if(present(ghost_volume_fraction)) then
+      if(any(shape(ghost_volume_fraction)/=n+2)) return
+      allocate(volumes(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      volumes=ghost_volume_fraction
+    end if
     allocate(candidate(nvar,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1))
     candidate=ghost_state;temps=ghost_temperature
     do axis=1,3
@@ -76,6 +84,26 @@ contains
         end do
       end do
     end do
+    if(present(ghost_volume_fraction)) then
+      first=max(0,peer_offset+1);last=min(n+1,peer_offset+pn)
+      do k=first(3),last(3)
+        do j=first(2),last(2)
+          do i=first(1),last(1)
+            source=[i,j,k]-peer_offset
+            volumes(i,j,k)=peer%volume_fraction(source(1),source(2),source(3))
+            candidate(:,i,j,k)=0;temps(i,j,k)=0
+            if(volumes(i,j,k)<=0) cycle
+            guess=peer_temperature(source(1),source(2),source(3))
+            if(.not.ieee_is_finite(guess).or.guess<=0) return
+            call reactive_conserved_to_primitive(species,peer_state(:,source(1),source(2),source(3)),guess, &
+              primitive,recovered,speed,valid)
+            if(.not.valid) return
+            candidate(:,i,j,k)=peer_state(:,source(1),source(2),source(3));temps(i,j,k)=recovered
+          end do
+        end do
+      end do
+      ghost_volume_fraction=volumes
+    end if
     ghost_state=candidate;ghost_temperature=temps;ok=.true.
   end subroutine overlay_reactive_eb_peer_halo_3d
 
