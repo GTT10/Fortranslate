@@ -248,8 +248,10 @@ coefficients. Outflow halos are built locally; external positive-coefficient
 halos must include corner states and matching volume fractions
 ([checks](validation/eb-viscosity-dispatch-20260925.md)). Serial common-step EB
 tree hydro now requests complete donor halos and forwards explicit coefficients
-([checks](validation/eb-tree-viscosity-20260925.md)). Its coarse/fine volume
-fractions use PCM ancestor values; reference geometry fidelity remains open,
+([checks](validation/eb-tree-viscosity-20260925.md)). Extracted patches now retain same-resolution exterior volume fractions through
+serial/MPI halo fill and checkpoint restart
+([checks](validation/eb-fine-geometry-halo-20260925.md)). Geometry without that
+context still uses donor fractions; external reference geometry fidelity remains open,
 as does the uniform default policy. MPI common-step hydro now
 fetches complete owner-local halos and applies agreed coefficients, with
 three-rank serial parity
