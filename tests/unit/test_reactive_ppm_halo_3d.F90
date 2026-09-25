@@ -19,8 +19,30 @@ program test_reactive_ppm_halo_3d
   real(dp) :: speed,theta,halo_theta,phase,dt,mach(6),tin(6),pin(6),residual
   integer :: nv,i,j,k,mode,n,face,m,policy
   character(len=5) :: solver
+  real(dp) :: input_state(7),input_flux(7,2),input_delta(7),input_q(7),input_e,input_p,input_gamma
+  real(dp) :: input_pl(2),input_ph(2),input_vl(2),input_vh(2),input_scale(2)
+  integer :: input_nd,input_axis,input_status
+  character(len=32) :: argument
   logical :: ok
   character(len=32) :: faces(6)
+  if(command_argument_count()>0) then
+    call get_command_argument(1,argument)
+    if(trim(argument)/='--transverse-stream') error stop 'unknown stream'
+    do
+      read(*,*,iostat=input_status) input_nd,input_axis,input_state,input_p,input_gamma,input_flux, &
+        input_pl,input_ph,input_vl,input_vh,input_scale
+      if(input_status<0) exit
+      if(input_status/=0.or.input_nd<1.or.input_nd>2) error stop 'invalid transverse input'
+      input_delta=input_scale(1)*input_flux(:,1)
+      if(input_nd==2) input_delta=input_delta+input_scale(2)*input_flux(:,2)
+      call reactive_ppm_transverse_pressure_3d(input_state,input_p,input_delta,input_gamma, &
+        input_pl(:input_nd),input_ph(:input_nd),input_vl(:input_nd),input_vh(:input_nd), &
+        input_scale(:input_nd),input_q,input_e,ok)
+      call require(ok,'transverse reference input')
+      write(*,'(16(es26.17e3,1x))') input_q,input_e,input_q,input_e
+    end do
+    stop
+  end if
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   nv=reactive_nvar(size(species));dt=1e-5_dp;faces='periodic'
