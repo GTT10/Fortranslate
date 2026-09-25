@@ -912,6 +912,11 @@ if(PELEF_ENABLE_MPI)
     add_test(NAME unit_mpi_eb_tree_flux_3d_${tree_ranks}
       COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" ${tree_ranks} ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_mpi_eb_tree_flux_3d> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME unit_mpi_eb_tree_periodic_flux_3d_${tree_ranks}
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" ${tree_ranks} ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_flux_3d> periodic ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_mpi_eb_tree_periodic_flux_3d_${tree_ranks} PROPERTIES
+      TIMEOUT 60 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
     set_tests_properties(unit_mpi_eb_tree_flux_3d_${tree_ranks} PROPERTIES
       TIMEOUT 60 PROCESSORS ${tree_ranks} ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()

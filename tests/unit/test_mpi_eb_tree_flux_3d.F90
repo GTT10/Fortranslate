@@ -28,7 +28,11 @@ program test_mpi_eb_tree_flux_3d
   real(dp) :: volume,residual
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,rank,nranks,status
+  character(len=16), allocatable :: faces(:)
+  character(len=16) :: test_mode
   logical :: ok
+  call get_command_argument(1,test_mode)
+  if(test_mode=='periodic') allocate(faces(6))
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
@@ -37,6 +41,9 @@ program test_mpi_eb_tree_flux_3d
   nv=reactive_nvar(size(species))
   allocate(before(nv),after(nv),boundary(nv),basis(nv))
   do axis=1,3
+  if(allocated(faces)) then
+    faces='periodic';faces(2*axis-1:2*axis)='outflow'
+  end if
   do count=4,5
   call initialize_amr_patch_3d(4,4,4,1,2,1,2,2,3,2,boxes(1),ok)
   call require(ok,'child left')
@@ -101,7 +108,7 @@ program test_mpi_eb_tree_flux_3d
     end associate
   end do
   saved=tree;raw=flux
-  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok)
+  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,boundary_faces=faces)
   call require(ok,'flux synchronization')
   call require(any(flux(1)%x/=raw(1)%x),'nontrivial coarse replacement')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
@@ -144,7 +151,7 @@ contains
       expected=tree;expected_flux=flux
       if (mode==3) then
         expected=saved;expected_flux=raw
-        call synchronize_reactive_eb_tree_flux_3d(species,expected,expected_flux,good,first,last)
+        call synchronize_reactive_eb_tree_flux_3d(species,expected,expected_flux,good,first,last,boundary_faces=faces)
         call require(good,'serial level-scoped sync')
       end if
       allocate(local%fields(count),lt%fields(count),lf(count))
@@ -156,7 +163,8 @@ contains
         lf(p)=raw(p)
       end do
       initial=local;it=lt
-      call synchronize_mpi_eb_tree_flux_3d(species,topology,owners,geometry,local,lt,lf,MPI_COMM_WORLD,good,first,last)
+      call synchronize_mpi_eb_tree_flux_3d(species,topology,owners,geometry,local,lt,lf,MPI_COMM_WORLD,good, &
+        first,last,boundary_faces=faces)
       call require(good,'MPI flux sync')
       do p=1,count
         call require(allocated(lf(p)%x).eqv.(owners(p)==rank),'owner-local flux')
@@ -166,7 +174,7 @@ contains
         call require(all(lf(p)%x==expected_flux(p)%x).and.all(lf(p)%y==expected_flux(p)%y).and. &
           all(lf(p)%z==expected_flux(p)%z),'exact serial effective flux')
       end do
-      do failure=1,3
+      do failure=1,merge(4,3,allocated(faces))
         local=initial;lt=it
         do p=1,count
           if (owners(p)==rank) lf(p)=raw(p)
@@ -177,8 +185,13 @@ contains
         end if
         saved_flux=lf;first=0
         if (failure==3.and.rank==0) first=1
-        call synchronize_mpi_eb_tree_flux_3d(species,topology,owners,geometry,local,lt,lf,MPI_COMM_WORLD,good,first,2)
-        call require(.not.good,'collective malformed flux, EOS or level rejection')
+        if(failure==4.and.rank==0) faces(2*mod(axis,3)+1:2*mod(axis,3)+2)='outflow'
+        call synchronize_mpi_eb_tree_flux_3d(species,topology,owners,geometry,local,lt,lf,MPI_COMM_WORLD,good, &
+          first,2,boundary_faces=faces)
+        call require(.not.good,'collective flux, EOS, level or periodic label rejection')
+        if(allocated(faces)) then
+          faces='periodic';faces(2*axis-1:2*axis)='outflow'
+        end if
         do p=1,count
           if (owners(p)/=rank) cycle
           call require(all(local%fields(p)%values==initial%fields(p)%values),'U rollback')
