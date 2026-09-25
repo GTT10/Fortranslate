@@ -341,7 +341,10 @@ can persist across caller-coordinated iterations
 ([checks](validation/sdc-iteration-state-20260926.md)); a hierarchy stage driver
 is still required. The reaction stage is independently callable
 ([checks](validation/sdc-reaction-stage-20260926.md)) so hierarchy drivers can
-separate source evaluation from reaction integration. Physical
+separate source evaluation from reaction integration. A transactional AMR
+patch-tree reaction wrapper is now available
+([checks](validation/sdc-tree-reaction-20260926.md)); the full hierarchy
+hydro/source/reflux driver remains open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

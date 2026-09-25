@@ -42,6 +42,9 @@ New-time source estimates can now persist across caller-coordinated iterations
 prerequisite, not completed hierarchy synchronization.
 The transactional SDC reaction stage is now independently callable
 ([checks](validation/sdc-reaction-stage-20260926.md)) for that coordination.
+The AMR patch-tree wrapper now executes this reaction stage transactionally
+across levels ([checks](validation/sdc-tree-reaction-20260926.md)); full
+hierarchy SDC stepping is still incomplete.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
