@@ -283,8 +283,11 @@ MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
 compiled-reference cases ([checks](validation/ppm-pinned-ctu-20260926.md)).
 The expanded ten-case oracle also covers active flattening and artificial
-viscosity ([checks](validation/ppm-pinned-shock-20260926.md)). External physical-
-boundary assembly checks and broader qualification remain open.
+viscosity ([checks](validation/ppm-pinned-shock-20260926.md)). Eighteen cases now
+include inflow/outflow/slip/no-slip boundary assembly; inflow PLM replacement
+preserves independent species weights
+([checks](validation/ppm-pinned-boundary-20260926.md)). Broader qualification
+remains open.
 The reference also adjusts final fluxes with compressive artificial viscosity
 (default `difmag=0.1`). A regular-cell nodal-divergence/flux-correction API now
 implements this step with no-slip tangential exclusions and species-flux
