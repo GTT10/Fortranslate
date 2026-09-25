@@ -173,7 +173,9 @@ now selects this pressure policy through the common periodic/halo CTU entries
 ([checks](validation/ppm-pressure-dispatch-20260925.md)). Scalar reconstruction
 and profile integration now agree with compiled pinned C++ bodies in a bounded
 675-case comparison ([checks](validation/ppm-pinned-kernels-20260925.md)).
-External EOS-dependent normal/CTU parity and broader qualification remain open. Regular MPI spray
+The primitive Riemann entry also agrees with the pinned compiled kernel using a
+NASA7 EOS adapter in 56 cases ([checks](validation/riemann-pinned-kernel-20260925.md)).
+External normal-projection/full-CTU parity and broader qualification remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
