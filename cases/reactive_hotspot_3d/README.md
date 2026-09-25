@@ -43,6 +43,6 @@ fixture, not a nozzle validation. See the
 For `characteristic_ppm`, `difmag=-1` (default) selects `0.1` with `pelec` and
 zero with other solvers. Set `difmag=0` to disable it, or a positive value to
 choose its strength. Both fixed and selected regular gas executables print the
-resolved coefficient. Explicit coefficients with PCM/PLM are rejected. Other
-application families currently reject explicit `difmag` until their stepping
-and restart contexts are connected.
+resolved coefficient. PCM/PLM also accept explicit nonnegative coefficients;
+their automatic policy remains zero. See
+[input checks](../../docs/validation/nonppm-difmag-input-20260925.md).
