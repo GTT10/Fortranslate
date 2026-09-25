@@ -28,7 +28,7 @@ program test_reactive_ppm_step_3d
   do i=1,4
     phase=2*acos(-1._dp)*real(i+j+k,dp)/4
     q=0;q(1)=1+.05_dp*sin(phase);q(2:4)=[20._dp,10._dp,-5._dp];q(5)=500000
-    q(6)=.05_dp+.01_dp*cos(phase);q(9)=.1_dp;q(nv)=1-q(6)-q(9)
+    q(6)=.05_dp+.01_dp*cos(phase);q(9)=.1_dp+.007_dp*sin(phase);q(nv)=1-q(6)-q(9)
     call reactive_primitive_to_conserved(species,q,u(:,i,j,k),t(i,j,k),speed,ok)
     call require(ok,'initial state')
   end do

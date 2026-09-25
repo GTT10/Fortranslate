@@ -212,7 +212,7 @@ contains
 
   subroutine reconstruct_reactive_characteristic_ppm_cell_2d( &
       species, stencil, sound_speed, dtdn, use_contact_steepening, &
-      use_shock_flattening, minus_state, plus_state, ok, flattening_override)
+      use_shock_flattening, minus_state, plus_state, ok, flattening_override, pelec_projection)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: stencil(:, -3:)
     real(dp), intent(in) :: sound_speed, dtdn
@@ -220,6 +220,7 @@ contains
     real(dp), intent(out) :: minus_state(:), plus_state(:)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: flattening_override
+    logical, optional, intent(in) :: pelec_projection
 
     real(dp), allocatable :: edge_minus(:), edge_plus(:)
     real(dp), allocatable :: integral_right(:, :), integral_left(:, :)
@@ -228,9 +229,11 @@ contains
     real(dp) :: pressure_wide(-3:3), velocity_wide(-3:3)
     real(dp) :: profile_right(3), profile_left(3)
     real(dp) :: flattening, eta, gamma_effective
-    logical :: local_ok
+    logical :: local_ok, pinned
     integer :: nspecies, nprimitive, component, offset, k
 
+    pinned=.false.
+    if(present(pelec_projection)) pinned=pelec_projection
     minus_state = 0.0_dp
     plus_state = 0.0_dp
     ok = .false.
@@ -288,8 +291,10 @@ contains
       end if
     end if
 
-    call sanitize_primitive(edge_minus, stencil(:, 0), nspecies)
-    call sanitize_primitive(edge_plus, stencil(:, 0), nspecies)
+    if(.not.pinned) then
+      call sanitize_primitive(edge_minus, stencil(:, 0), nspecies)
+      call sanitize_primitive(edge_plus, stencil(:, 0), nspecies)
+    end if
     do component = 1, nprimitive
       call reactive_ppm_integrate_profile( &
         edge_minus(component), edge_plus(component), stencil(component, 0), &
@@ -300,10 +305,12 @@ contains
     end do
     call build_characteristic_ppm_states( &
       species, stencil(:, 0), sound_speed, integral_right, integral_left, &
-      minus_state, plus_state, local_ok)
+      minus_state, plus_state, local_ok, pelec_projection=pinned)
     if (.not. local_ok) return
-    call sanitize_primitive(minus_state, stencil(:, 0), nspecies)
-    call sanitize_primitive(plus_state, stencil(:, 0), nspecies)
+    if(.not.pinned) then
+      call sanitize_primitive(minus_state, stencil(:, 0), nspecies)
+      call sanitize_primitive(plus_state, stencil(:, 0), nspecies)
+    end if
     ok = all(ieee_is_finite(minus_state)) .and. &
       all(ieee_is_finite(plus_state))
   end subroutine reconstruct_reactive_characteristic_ppm_cell_2d

@@ -50,6 +50,7 @@ module reactive_1d_mod
   public :: reactive_ppm_flattening_coefficient
   public :: reactive_ppm_contact_steepening_factor
   public :: reactive_ppm_apply_contact_steepening
+  public :: reconstructed_pelec_state
   public :: build_characteristic_ppm_states
   public :: reconstruct_characteristic_ppm_faces
   public :: reconstruct_ppm_faces
@@ -520,9 +521,9 @@ contains
     if (ok) flux=candidate
   end subroutine reactive_pelec_primitive_flux_x
 
-  ! Pinned Fuego RPY2Cs/RYP2E evaluate signed reconstructed species weights.
-  ! These are transient face states, never accepted cell compositions. Keep
-  ! the ordinary nonnegative path bitwise unchanged and retain NASA bounds.
+  ! Pinned Fuego RPY2Cs/RYP2E evaluate reconstructed species weights without
+  ! clipping or normalization. These are transient face states, never accepted
+  ! cell compositions. Keep the normalized nonnegative path and NASA bounds.
   subroutine reconstructed_pelec_state(species,q,u,temperature,sound,ok)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: q(:)
@@ -534,7 +535,7 @@ contains
     u=0;temperature=0;sound=0;ok=.false.
     if(size(q)/=reactive_nprim(size(species)).or.size(u)/=size(q)) return
     if(.not.all(ieee_is_finite(q))) return
-    if(.not.any(q(6:)<0)) then
+    if(.not.any(q(6:)<0).and.abs(sum(q(6:))-1._dp)<=8*epsilon(1._dp)) then
       call reactive_primitive_to_conserved(species,q,u,temperature,sound,ok)
       return
     end if
@@ -1484,20 +1485,23 @@ contains
 
   subroutine build_characteristic_ppm_states( &
       species, center, sound_speed, integral_right, integral_left, &
-      left_state, right_state, ok)
+      left_state, right_state, ok, pelec_projection)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: center(:), sound_speed
     real(dp), intent(in) :: integral_right(:, :), integral_left(:, :)
     real(dp), intent(out) :: left_state(:), right_state(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: pelec_projection
 
     real(dp), allocatable :: reference(:), dummy_conserved(:)
     real(dp) :: rho_ref, u_ref, p_ref, c_ref, t_ref
     real(dp) :: dum, dpm, drho, dp0, dup, dpp
     real(dp) :: alpham, alpha0, alphap, c2, u
-    logical :: local_ok
+    logical :: local_ok, pinned
     integer :: nspecies, nprimitive, k, component
 
+    pinned=.false.
+    if(present(pelec_projection)) pinned=pelec_projection
     left_state = 0.0_dp
     right_state = 0.0_dp
     ok = .false.
@@ -1515,9 +1519,15 @@ contains
 
     left_state = integral_left(:, 2)
     reference = integral_left(:, 1)
-    call sanitize_primitive(reference, center, nspecies)
-    call reactive_primitive_to_conserved( &
-      species, reference, dummy_conserved, t_ref, c_ref, local_ok)
+    if(pinned) then
+      reference(1)=max(reference(1),tiny(1._dp))
+      reference(5)=max(reference(5),tiny(1._dp))
+      call reconstructed_pelec_state(species,reference,dummy_conserved,t_ref,c_ref,local_ok)
+    else
+      call sanitize_primitive(reference, center, nspecies)
+      call reactive_primitive_to_conserved( &
+        species, reference, dummy_conserved, t_ref, c_ref, local_ok)
+    end if
     if (.not. local_ok) return
     rho_ref = reference(1)
     u_ref = reference(2)
@@ -1556,13 +1566,24 @@ contains
       component = reactive_mass_fraction_component(k)
       left_state(component) = integral_left(component, 2)
     end do
-    call sanitize_primitive(left_state, center, nspecies)
+    if(pinned) then
+      left_state(1)=max(left_state(1),tiny(1._dp))
+      left_state(5)=max(left_state(5),tiny(1._dp))
+    else
+      call sanitize_primitive(left_state, center, nspecies)
+    end if
 
     right_state = integral_right(:, 2)
     reference = integral_right(:, 3)
-    call sanitize_primitive(reference, center, nspecies)
-    call reactive_primitive_to_conserved( &
-      species, reference, dummy_conserved, t_ref, c_ref, local_ok)
+    if(pinned) then
+      reference(1)=max(reference(1),tiny(1._dp))
+      reference(5)=max(reference(5),tiny(1._dp))
+      call reconstructed_pelec_state(species,reference,dummy_conserved,t_ref,c_ref,local_ok)
+    else
+      call sanitize_primitive(reference, center, nspecies)
+      call reactive_primitive_to_conserved( &
+        species, reference, dummy_conserved, t_ref, c_ref, local_ok)
+    end if
     if (.not. local_ok) return
     rho_ref = reference(1)
     u_ref = reference(2)
@@ -1601,7 +1622,12 @@ contains
       component = reactive_mass_fraction_component(k)
       right_state(component) = integral_right(component, 2)
     end do
-    call sanitize_primitive(right_state, center, nspecies)
+    if(pinned) then
+      right_state(1)=max(right_state(1),tiny(1._dp))
+      right_state(5)=max(right_state(5),tiny(1._dp))
+    else
+      call sanitize_primitive(right_state, center, nspecies)
+    end if
     ok = all(ieee_is_finite(left_state)) .and. &
       all(ieee_is_finite(right_state))
   end subroutine build_characteristic_ppm_states

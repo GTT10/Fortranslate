@@ -73,11 +73,13 @@ def main():
     rng=random.Random(20260926);rows=[]
     for velocity in (-2500.,-100.,-1e-8,0.,1e-8,100.,2500.):
         for flat in (0.,.37,1.):
-            for shape in ('constant','linear','contact','random'):
+            for shape in ('constant','linear','contact','random','mixture'):
                 stencil=[]
                 for j in range(-3,4):
                     factor=(j*.02 if shape in ('linear','contact') else rng.uniform(-.05,.05) if shape=='random' else 0.)
                     y=[.01+factor*.01,.001,.001,.2,.001,.05,0.]
+                    if shape=='mixture':
+                        y[:-1]=[rng.uniform(.001,.12) for _ in range(6)]
                     y[-1]=1-sum(y[:-1]);p=1e5*(1+factor if shape!='contact' else 1.)
                     t=900*(1+factor)
                     r=sum(v*8314.46261815324/m for v,m in zip(y,mw))

@@ -32,7 +32,7 @@ program test_reactive_ppm_normal_3d
         call reactive_primitive_to_conserved(species,stencil(:,0),scratch,temperature,speed,ok)
         call require(ok,'reference center EOS')
         call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,speed,ratio, &
-          .false.,.false.,qm,qp,ok,flat)
+          .false.,.false.,qm,qp,ok,flat,pelec_projection=.true.)
         call require(ok,'reference normal prediction')
         write(*,'(24(es26.17e3,1x))') qm,qp
       end do

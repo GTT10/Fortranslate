@@ -9,7 +9,7 @@ module reactive_3d_mod
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_primitive_to_conserved, reactive_conserved_to_primitive, &
+    reactive_primitive_to_conserved, reactive_conserved_to_primitive, reconstructed_pelec_state, &
     reactive_riemann_flux_x, reactive_pelec_primitive_flux_x, characteristic_limited_slope, &
     reactive_ppm_flattening_coefficient, reconstruct_pelec_plm_cell
   use reactive_2d_mod, only: &
@@ -585,7 +585,7 @@ contains
         if (dt>spacing(a)/(abs(stencil(2,0))+sound(i,j,k))) return
         if (trace_pressure) then
           call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(a), &
-            steepening,flattening,qm,qp,valid,flattening_override=cell_flat(i,j,k))
+            steepening,flattening,qm,qp,valid,flattening_override=cell_flat(i,j,k),pelec_projection=.true.)
         else
           call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,sound(i,j,k),dt/spacing(a), &
             steepening,flattening,qm,qp,valid)
@@ -596,9 +596,15 @@ contains
         if (trace_pressure) then
           pnminus(i,j,k,a)=qm(5);pnplus(i,j,k,a)=qp(5)
         end if
-        call reactive_primitive_to_conserved(species,qm,nm(:,i,j,k,a),ntm(i,j,k,a),speed,valid)
-        if (.not.valid) return
-        call reactive_primitive_to_conserved(species,qp,np(:,i,j,k,a),ntp(i,j,k,a),speed,valid)
+        if(trace_pressure) then
+          call reconstructed_pelec_state(species,qm,nm(:,i,j,k,a),ntm(i,j,k,a),speed,valid)
+          if (.not.valid) return
+          call reconstructed_pelec_state(species,qp,np(:,i,j,k,a),ntp(i,j,k,a),speed,valid)
+        else
+          call reactive_primitive_to_conserved(species,qm,nm(:,i,j,k,a),ntm(i,j,k,a),speed,valid)
+          if (.not.valid) return
+          call reactive_primitive_to_conserved(species,qp,np(:,i,j,k,a),ntp(i,j,k,a),speed,valid)
+        end if
         if (.not.valid) return
       end do
       end do
