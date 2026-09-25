@@ -21,8 +21,11 @@ selection now matches serial
 ([checks](validation/mpi-eb-isothermal-timestep-20260926.md)). Full reacting
 common/recursive splits now forward wall temperatures with serial/MPI state
 parity and rollback checks
-([evidence](validation/eb-tree-isothermal-full-20260926.md)). Application
-input and restart binding remain open.
+([evidence](validation/eb-tree-isothermal-full-20260926.md)). Fixed/selected
+serial and MPI gas applications now accept thermal wall inputs and bind wall
+temperatures to changed-rank restart
+([checks](validation/eb-tree-isothermal-application-20260926.md)). MPI EB
+spray thermal forwarding remains open.
 
 MPI EB particle drift now supports specular domain-wall reflection with exterior
 impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
