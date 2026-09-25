@@ -25,6 +25,7 @@ program test_spray_eb_impact
   real(dp) :: y(2),mw(2),rho,cp,e,amount,before(5),after(5),inventory(2),temperature,speed
   integer :: i,j,k,mode,p,regime
   integer(int64) :: first_id=2_int64
+  character(len=16) :: faces(6)
   logical :: hit,ok
   call load_h2o2_full_thermo(species,ok)
   call require(ok,'thermo')
@@ -169,8 +170,40 @@ program test_spray_eb_impact
     'splash exterior mass momentum energy conservation')
   call require(all(abs(inventory-original%mass*original%multiplicity*y-exterior(6:))<1e-23_dp), &
     'splash exterior component conservation')
+  ! Outer crossing precedes deposition; preserve the remaining flight time.
+  do i=0,2
+    phi(i,:,:)=.5_dp*i-.5_dp
+  end do
+  do mode=1,2
+    deallocate(population,population_mass,patches,patch_mass)
+    allocate(population(1),population_mass(2,1),patches(0),patch_mass(2,0))
+    population(1)=original;population(1)%position=[.6_dp,.5_dp,.99_dp]
+    population(1)%velocity=[-1._dp,0._dp,1._dp]
+    population_mass(:,1)=original%mass*y;watermark=1;wall=42;exterior=43;hits=17
+    faces='outflow';faces(5:6)='periodic'
+    if(mode==2) faces(5:6)='no_slip_wall'
+    amount=original%mass*original%multiplicity
+    before=[amount,amount*population(1)%velocity,amount*(e+.5_dp*sum(population(1)%velocity**2))]
+    call crossing_deposit(1)
+    call require(.not.ok.and.hits==17.and.all(wall==42).and.all(exterior==43),'crossing deposit rollback')
+    call require(size(population)==1.and.size(patches)==0.and.watermark==1,'crossing population rollback')
+    call crossing_deposit(4)
+    call require(ok.and.hits==2.and.size(population)==0.and.size(patches)==1,'crossing then deposition')
+    call require(abs(patches(1)%position(3)-merge(.09_dp,.91_dp,mode==1))<1e-14_dp,'remaining flight after crossing')
+    after=0;after(1)=patches(1)%mass;after(5)=patches(1)%mass*e
+    call require(all(abs(after+wall-before-exterior(:5))<1e-12_dp*max(abs(before),1e-20_dp)), &
+      'crossing deposition budget')
+    if(mode==1) call require(all(exterior==0),'periodic crossing has no exterior transfer')
+  end do
   print *, 'PASS: EB impact remaining flight and exterior loss'
 contains
+  subroutine crossing_deposit(limit)
+    integer, intent(in) :: limit
+    call advance_mixture_level_set_impacts(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp], &
+      .2_dp,limit,5,1,liquids,options,mw,101325._dp,300._dp,acos(-1._dp)/3, &
+      population,population_mass,patches,patch_mass,watermark,wall,hits,ok,outflow_change=exterior,outer_faces=faces)
+  end subroutine
+
   subroutine escaping_splash(limit)
     integer, intent(in) :: limit
     call advance_mixture_level_set_impacts(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp], &

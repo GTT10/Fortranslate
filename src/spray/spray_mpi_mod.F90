@@ -1,4 +1,5 @@
 module spray_mpi_mod
+  use spray_wall_impact_mod, only: count_periodic_film_images
   use mpi_f08
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
@@ -332,9 +333,8 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: periodic_length(3)
     real(dp), allocatable :: query(:,:),local(:),total(:),candidate(:)
-    real(dp) :: delta(3),minimum,maximum,limit,length(3),low_length(3),high_length(3),offset(3),radius
-    integer :: axis,first(3),last(3),i,j,k
-    integer(int64) :: images
+    real(dp) :: delta(3),minimum,maximum,limit,length(3),low_length(3),high_length(3),radius
+    integer :: image_count
     integer :: rank,nranks,ierr,source,nq,count_queries,q,p
     logical :: valid,agreed
     ok=.false.;nq=size(positions,2)
@@ -389,38 +389,13 @@ contains
       do q=1,count_queries
         do p=1,size(films)
           if (maxval(abs(films(p)%normal-query(4:,q)))>1e-12_dp) cycle
-          offset=query(:3,q)-films(p)%position;radius=.5_dp*films(p)%diameter
-          first=0;last=0;images=1
-          do axis=1,3
-            if(length(axis)==0) cycle
-            offset(axis)=modulo(offset(axis)+.5_dp*length(axis),length(axis))-.5_dp*length(axis)
-            if(radius/length(axis)>500000) then
-              valid=.false.;exit
-            end if
-            first(axis)=ceiling((-radius-offset(axis))/length(axis))
-            last(axis)=floor((radius-offset(axis))/length(axis))
-            images=images*int(max(0,last(axis)-first(axis)+1),int64)
-            if(images>1000000_int64) then
-              valid=.false.;exit
-            end if
-          end do
+          delta=query(:3,q)-films(p)%position;radius=.5_dp*films(p)%diameter
+          call count_periodic_film_images(delta,query(4:,q),radius,plane_tolerance,length,image_count,valid)
           if(.not.valid) exit
-          do k=first(3),last(3)
-          do j=first(2),last(2)
-          do i=first(1),last(1)
-            delta=offset+real([i,j,k],dp)*length
-            if (abs(dot_product(delta,query(4:,q)))>plane_tolerance) cycle
-            if (norm2(delta)>radius) cycle
-            if (films(p)%height>limit-local(q)) then
-              valid=.false.;exit
-            end if
-            local(q)=local(q)+films(p)%height
-          end do
-          if(.not.valid) exit
-          end do
-          if(.not.valid) exit
-          end do
-          if(.not.valid) exit
+          if (films(p)%height*real(image_count,dp)>limit-local(q)) then
+            valid=.false.;exit
+          end if
+          local(q)=local(q)+films(p)%height*real(image_count,dp)
         end do
         if (.not.valid) exit
       end do

@@ -38,7 +38,42 @@ module spray_wall_impact_mod
   public :: resolve_wall_impact,resolve_mixture_wall_impact,advance_mixture_wall_film_exchange
   public :: construct_splash_children, construct_wall_film, wall_film_totals
   real(dp), parameter :: pi=acos(-1.0_dp)
+  public :: count_periodic_film_images
+
 contains
+  pure subroutine count_periodic_film_images(displacement,normal,radius,tolerance,length,count,ok)
+    real(dp), intent(in) :: displacement(3),normal(3),radius,tolerance,length(3)
+    integer, intent(inout) :: count
+    logical, intent(out) :: ok
+    real(dp) :: offset(3),delta(3)
+    integer :: first(3),last(3),axis,i,j,k,found
+    integer(int64) :: images
+    ok=.false.
+    if(.not.all(ieee_is_finite([displacement,normal,radius,tolerance,length]))) return
+    if(any(length<0).or.any(length>1e9_dp).or.any(length>0.and.length<1e-12_dp)) return
+    if(radius<0.or.tolerance<0) return
+    offset=displacement;first=0;last=0;images=1;found=0
+    do axis=1,3
+      if(length(axis)==0) cycle
+      offset(axis)=modulo(offset(axis)+.5_dp*length(axis),length(axis))-.5_dp*length(axis)
+      if(radius/length(axis)>500000) return
+      first(axis)=ceiling((-radius-offset(axis))/length(axis))
+      last(axis)=floor((radius-offset(axis))/length(axis))
+      images=images*int(max(0,last(axis)-first(axis)+1),int64)
+      if(images>1000000_int64) return
+    end do
+    do k=first(3),last(3)
+    do j=first(2),last(2)
+    do i=first(1),last(1)
+      delta=offset+real([i,j,k],dp)*length
+      if(abs(dot_product(delta,normal))>tolerance.or.norm2(delta)>radius) cycle
+      found=found+1
+    end do
+    end do
+    end do
+    count=found;ok=.true.
+  end subroutine count_periodic_film_images
+
   real(dp) function wall_liquid_conductivity_at_temperature(o,material_id,t) result(value)
     type(spray_wall_options), intent(in) :: o
     integer, intent(in) :: material_id

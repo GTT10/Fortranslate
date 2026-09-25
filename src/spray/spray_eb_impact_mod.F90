@@ -2,6 +2,8 @@ module spray_eb_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use spray_coupling_3d_mod, only: valid_spray_boundary_faces
+  use spray_wall_impact_mod, only: count_periodic_film_images
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   use spray_wall_impact_mod, only: spray_wall_film,resolve_mixture_wall_impact,mixture_impact_boiling_temperature
@@ -105,7 +107,7 @@ contains
   ! IDs must be sorted on input. Capacities bound all intermediate births/deposits.
   subroutine advance_mixture_level_set_impacts(phi,lower,upper,dt,maximum_hits,capacity,film_capacity, &
       components,properties,molecular_weights,pressure,wall_temperature,contact_angle, &
-      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures,model_rejected,outflow_change)
+      parcels,masses,films,film_masses,last_id,wall,hits,ok,pressures,model_rejected,outflow_change,outer_faces)
     use spray_eb_drift_mod, only: drift_spray_level_set
     use spray_wall_impact_mod, only: valid_wall_component_inventory
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),dt,molecular_weights(:)
@@ -120,7 +122,10 @@ contains
     integer(int64), intent(inout) :: last_id
     real(dp), optional, intent(inout) :: outflow_change(:)
     real(dp) :: exterior(5+size(components)),exit_fraction,axis_fraction,rho,cp,e,amount
-    integer :: axis
+    character(len=*), optional, intent(in) :: outer_faces(6)
+    character(len=16) :: faces(6)
+    real(dp) :: length(3)
+    integer :: axis,exit_face,face,dims(3),image_count
     logical :: exits
     real(dp), intent(inout) :: wall(5)
     integer, intent(inout) :: hits
@@ -143,6 +148,24 @@ contains
     n=size(parcels);nf=size(films);nc=size(components)
     if(present(outflow_change)) then
       if(size(outflow_change)/=5+nc) return
+    end if
+    faces='outflow';length=0
+    if(present(outer_faces)) then
+      if(.not.present(outflow_change)) return
+      if(.not.valid_spray_boundary_faces(outer_faces)) return
+      faces=outer_faces
+      dims=shape(phi)-1
+      if(any(dims<1)) return
+      if(faces(1)=='periodic') then
+        if(any(phi(0,:,:)/=phi(dims(1),:,:))) return
+      end if
+      if(faces(3)=='periodic') then
+        if(any(phi(:,0,:)/=phi(:,dims(2),:))) return
+      end if
+      if(faces(5)=='periodic') then
+        if(any(phi(:,:,0)/=phi(:,:,dims(3)))) return
+      end if
+      where(faces(1:6:2)=='periodic') length=upper-lower
     end if
     exterior=0
     if (nc<1.or.nc>16.or.capacity<n.or.capacity>1000000.or.capacity<0) return
@@ -182,19 +205,21 @@ contains
       do while(queue(p)%mass>0)
         previous=queue(p)%position
         queue(p)%position=previous+remaining(p)*queue(p)%velocity
-        exits=.false.;exit_fraction=1
+        exits=.false.;exit_fraction=1;exit_face=0
         if(present(outflow_change)) then
           if(any(previous<lower).or.any(previous>upper)) return
           do axis=1,3
             if(remaining(p)*queue(p)%velocity(axis)==0) cycle
             if(queue(p)%velocity(axis)>0.and.queue(p)%position(axis)>=upper(axis)) then
-              axis_fraction=(upper(axis)-previous(axis))/(remaining(p)*queue(p)%velocity(axis))
+              axis_fraction=(upper(axis)-previous(axis))/(remaining(p)*queue(p)%velocity(axis));face=2*axis
             else if(queue(p)%velocity(axis)<0.and.queue(p)%position(axis)<=lower(axis)) then
-              axis_fraction=(lower(axis)-previous(axis))/(remaining(p)*queue(p)%velocity(axis))
+              axis_fraction=(lower(axis)-previous(axis))/(remaining(p)*queue(p)%velocity(axis));face=2*axis-1
             else
               cycle
             end if
-            exits=.true.;exit_fraction=min(exit_fraction,axis_fraction)
+            if(axis_fraction>exit_fraction) cycle
+            if(exits.and.axis_fraction==exit_fraction) cycle
+            exits=.true.;exit_fraction=axis_fraction;exit_face=face
           end do
           if(exits) queue(p)%position=max(lower,min(upper,previous+exit_fraction*remaining(p)*queue(p)%velocity))
         end if
@@ -205,6 +230,19 @@ contains
         if (.not.hit) then
           if(exits) then
             if(depth(p)>=maximum_hits) return
+            if(faces(exit_face)=='periodic'.or.faces(exit_face)=='slip_wall'.or.faces(exit_face)=='no_slip_wall') then
+              axis=(exit_face+1)/2
+              if(faces(exit_face)=='periodic') then
+                queue(p)%position(axis)=merge(lower(axis),upper(axis),modulo(exit_face,2)==0)
+              else
+                amount=queue(p)%mass*queue(p)%multiplicity
+                exterior(axis+1)=exterior(axis+1)-2*amount*queue(p)%velocity(axis)
+                queue(p)%velocity(axis)=-queue(p)%velocity(axis)
+              end if
+              depth(p)=depth(p)+1;count=count+1;remaining(p)=remaining(p)*(1-exit_fraction)
+              if(remaining(p)==0) exit
+              cycle
+            end if
             call liquid_mixture_properties(components,inventory(:,p)/queue(p)%mass,queue(p)%temperature,rho,cp,e,valid)
             if(.not.valid) return
             amount=queue(p)%mass*queue(p)%multiplicity
@@ -221,8 +259,11 @@ contains
         do f=1,nf
           if (maxval(abs(patches(f)%normal-normal))>1e-12_dp) cycle
           delta=location-patches(f)%position
-          if (abs(dot_product(delta,normal))>1e-10_dp*maxval(upper-lower)) cycle
-          if (norm2(delta)<=.5_dp*patches(f)%diameter) thickness=thickness+patches(f)%height
+          call count_periodic_film_images(delta,normal,.5_dp*patches(f)%diameter, &
+            1e-10_dp*maxval(upper-lower),length,image_count,valid)
+          if(.not.valid) return
+          if(patches(f)%height*real(image_count,dp)>huge(1._dp)-thickness) return
+          thickness=thickness+patches(f)%height*real(image_count,dp)
         end do
         if (watermark>huge(watermark)-4_int64) return
         call impact_mixture_level_set(phi,lower,upper,previous,queue(p),components,inventory(:,p),properties, &
