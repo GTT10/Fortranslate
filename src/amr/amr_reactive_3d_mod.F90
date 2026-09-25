@@ -21,7 +21,7 @@ module amr_reactive_3d_mod
     advance_reactive_euler_ssprk2_with_fluxes_3d, &
     advance_reactive_euler_ssprk2_plm_with_fluxes_3d, &
     compute_reactive_plm_slab_face_fluxes_3d, compute_reactive_ppm_halo_ctu_fluxes_3d, &
-    advance_reactive_chemistry_3d, &
+    advance_reactive_chemistry_3d,adjust_reactive_artificial_viscosity_3d, &
     recover_reactive_temperatures_3d
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, average_down_3d, composite_integrals_amr_3d
@@ -626,7 +626,7 @@ contains
     real(dp), allocatable :: fine_x_lower(:, :, :), fine_x_upper(:, :, :)
     real(dp), allocatable :: fine_y_lower(:, :, :), fine_y_upper(:, :, :)
     real(dp), allocatable :: fine_z_lower(:, :, :), fine_z_upper(:, :, :)
-    real(dp) :: fine_dt, alpha_start, alpha_end
+    real(dp) :: fine_dt, alpha_start, alpha_end,explicit_viscosity
     logical :: local_ok
     logical, allocatable :: touched(:)
     real(dp) :: surface_correction(size(coarse_state,1)),candidate_reflux
@@ -656,10 +656,11 @@ contains
       selected_reconstruction = trim(reconstruction)
     end if
     if (present(limiter)) selected_limiter = trim(limiter)
+    explicit_viscosity=0
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag)) return
       if(difmag<0) return
-      if(difmag>0.and.selected_reconstruction/='characteristic_ppm') return
+      explicit_viscosity=difmag
     end if
     if (.not. valid_amr_reactive_shapes( &
           species, patch, coarse_state, coarse_temperature, &
@@ -714,6 +715,11 @@ contains
         boundary_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
         inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z,outlet_pressure, &
         difmag=difmag)
+    else if(explicit_viscosity>0) then
+      periodic_faces='periodic'
+      call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
+        periodic_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
+        flux_x=coarse_flux_x,flux_y=coarse_flux_y,flux_z=coarse_flux_z,difmag=difmag)
     else
     select case (trim(selected_reconstruction))
     case ("characteristic_ppm")
@@ -997,6 +1003,23 @@ contains
       first_flux_z, local_ok)
     end if
     if (.not. local_ok) return
+    if(present(difmag)) then
+      if(difmag>0) then
+        physical_touch=.false.;physical_faces='periodic'
+        if(present(touched)) physical_touch=touched
+        if(present(faces)) physical_faces=faces
+        if(.not.allocated(ghost)) allocate(ghost(nvar,nx+4,ny+4,nz+4),gt(nx+4,ny+4,nz+4))
+        call build_boundary_fine_ghosts_3d(species,patch,coarse_start,coarse_start_temperature, &
+          coarse_end,coarse_end_temperature,old_state,old_temperature,alpha_start,reconstruction,limiter, &
+          physical_touch,physical_faces,ghost,gt,local_ok,inflow_state,inflow_temperature,outlet_pressure=outlet_pressure)
+        if(.not.local_ok) return
+        call adjust_reactive_artificial_viscosity_3d(ghost(:,2:nx+3,2:ny+3,2:nz+3), &
+          [nx,ny,nz],[dx,dy,dz],difmag, &
+          physical_touch.and.(physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'), &
+          first_flux_x,first_flux_y,first_flux_z,local_ok)
+        if(.not.local_ok) return
+      end if
+    end if
     call fine_flux_divergence_3d( &
       first_flux_x, first_flux_y, first_flux_z, dx, dy, dz, rhs, local_ok)
     if (.not. local_ok) return
@@ -1020,6 +1043,23 @@ contains
       second_flux_z, local_ok)
     end if
     if (.not. local_ok) return
+    if(present(difmag)) then
+      if(difmag>0) then
+        physical_touch=.false.;physical_faces='periodic'
+        if(present(touched)) physical_touch=touched
+        if(present(faces)) physical_faces=faces
+        if(.not.allocated(ghost)) allocate(ghost(nvar,nx+4,ny+4,nz+4),gt(nx+4,ny+4,nz+4))
+        call build_boundary_fine_ghosts_3d(species,patch,coarse_start,coarse_start_temperature, &
+          coarse_end,coarse_end_temperature,stage_state,stage_temperature,alpha_end,reconstruction,limiter, &
+          physical_touch,physical_faces,ghost,gt,local_ok,inflow_state,inflow_temperature,outlet_pressure=outlet_pressure)
+        if(.not.local_ok) return
+        call adjust_reactive_artificial_viscosity_3d(ghost(:,2:nx+3,2:ny+3,2:nz+3), &
+          [nx,ny,nz],[dx,dy,dz],difmag, &
+          physical_touch.and.(physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'), &
+          second_flux_x,second_flux_y,second_flux_z,local_ok)
+        if(.not.local_ok) return
+      end if
+    end if
     call fine_flux_divergence_3d( &
       second_flux_x, second_flux_y, second_flux_z, dx, dy, dz, rhs, local_ok)
     if (.not. local_ok) return

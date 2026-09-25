@@ -73,6 +73,7 @@ program test_amr_reactive_3d
     species, patch, "characteristic_plm", "minmod", ok)
   call require(ok, "uniform minmod characteristic PLM AMR invariance")
   call run_physical_boundaries()
+  call run_viscosity()
   call run_public_api_validation_tests(species, patch, ok)
   call require(ok, "public AMR API validation and rollback")
   write(*, '(a,es24.16)') "composite conservation error=", conservation_error
@@ -94,6 +95,52 @@ program test_amr_reactive_3d
   write(*, '(a)') "test_amr_reactive_3d: PASS"
 
 contains
+
+  subroutine run_viscosity()
+    real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),c0(:,:,:,:),ct0(:,:,:),f0(:,:,:,:),ft0(:,:,:)
+    real(dp), allocatable :: baseline(:,:,:,:),before(:),after(:),ledger(:)
+    real(dp) :: correction
+    character(len=32) :: faces(6),method
+    integer :: mode,boundary
+    call initialize_public_api_hierarchy(species,patch,c0,ct0,f0,ft0,ok)
+    call require(ok,'viscosity hierarchy')
+    allocate(before(size(c0,1)),after(size(c0,1)),ledger(size(c0,1)))
+    do mode=1,2
+      method='pcm'
+      if(mode==2) method='characteristic_plm'
+      do boundary=1,2
+        faces='periodic'
+        if(boundary==2) then
+          faces(1)='no_slip_wall';faces(2)='outflow'
+        end if
+        c=c0;ct=ct0;f=f0;ft=ft0
+        call composite_integrals_amr_3d(c,f,patch,.125_dp,.125_dp,.125_dp,before,ok)
+        call require(ok,'viscosity initial integral')
+        if(boundary==1) then
+          call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+            'pelec',correction,ok,method,'mc',difmag=.037_dp)
+          ledger=0
+        else
+          call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+            'pelec',correction,ok,method,'mc',faces,ledger,difmag=.037_dp)
+        end if
+        call require(ok,'viscosity both-level advance')
+        call composite_integrals_amr_3d(c,f,patch,.125_dp,.125_dp,.125_dp,after,ok)
+        call require(ok.and.all(abs(after-before-ledger)<2e-11_dp*max(1._dp,abs(before))), &
+          'viscosity refluxed composite conservation')
+        baseline=c
+        c=c0;ct=ct0;f=f0;ft=ft0
+        call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+          'pelec',correction,ok,method,'mc',faces,ledger,difmag=0._dp)
+        call require(ok.and.any(c/=baseline),'viscosity changes compressive update')
+        c=c0;ct=ct0;f=f0;ft=ft0
+        call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,.125_dp,.125_dp,.125_dp,1e-6_dp, &
+          'pelec',correction,ok,method,'mc',faces,ledger,difmag=-1._dp)
+        call require(.not.ok.and.all(c==c0).and.all(f==f0).and.all(ct==ct0).and.all(ft==ft0).and.all(ledger==0), &
+          'viscosity invalid input rollback')
+      end do
+    end do
+  end subroutine run_viscosity
 
   subroutine run_physical_boundaries()
     integer, parameter :: n=12
@@ -228,7 +275,7 @@ contains
     call interpolate_coarse_fine_ghost_plm_3d( &
       species, coarse_start, coarse_start_temperature, coarse_end, &
       coarse_end_temperature, patch%coarse_i_lower, patch%coarse_j_lower, &
-      patch%coarse_k_lower, -2, 1, 1, patch%refinement_ratio, 0.5_dp, "mc", &
+      patch%coarse_k_lower, -4, 1, 1, patch%refinement_ratio, 0.5_dp, "mc", &
       primitive, ghost_state, ghost_temperature, local_ok)
     call require(.not. local_ok, "public PLM ghost local-index rejection")
     call interpolate_coarse_fine_ghost_plm_3d( &
