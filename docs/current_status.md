@@ -17,11 +17,11 @@ now matches serial with distributed and empty-rank ownership
 recursive PCM hydro now accept tangential adiabatic walls with composite
 conservation checks ([evidence](validation/eb-tree-wall-hydro-20260926.md));
 MPI common/recursive CTU wall hydro now matches serial for a tangential planar
-fixture ([checks](validation/mpi-eb-wall-hydro-20260926.md)). Full coupled wall
-stepping remains open. Serial common/recursive molecular transport now forwards
+fixture ([checks](validation/mpi-eb-wall-hydro-20260926.md)). Full reacting
+wall splits now match serial for common/recursive CTU with explicit/implicit
+chemistry ([checks](validation/mpi-eb-wall-full-20260926.md)). Serial common/recursive molecular transport now forwards
 domain-wall labels and enforces impermeable adiabatic fluxes
-([checks](validation/eb-tree-wall-transport-20260926.md)); MPI forwarding is
-compiled but its wall transport runtime remains unchecked.
+([checks](validation/eb-tree-wall-transport-20260926.md)); MPI wall transport runtime is covered by those full-split checks.
 
 Serial EB tree halos also accept paired periodic faces, wrapping donor indices
 through peers and ancestors, including halos wider than the root domain
