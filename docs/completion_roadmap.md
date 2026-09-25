@@ -168,7 +168,10 @@ entry now prepares six-layer periodic/fixed-wall/prescribed-inflow halos for CTU
 application and tree/MPI boundary selection still need connection. The redistributed
 transport Euler stage now accepts prepared donors and returns transactional
 integrated face fluxes ([checks](validation/eb-transport-redistributed-halos-20260925.md));
-stage-wise physical donor preparation and boundary flux policies remain open.
+SSPRK2 now invokes a caller-supplied donor provider at both stages and returns
+weighted integrated fluxes ([checks](validation/eb-transport-stage-halos-20260925.md)).
+Coupled-driver dispatch, concrete physical-boundary providers and boundary flux
+policies remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
