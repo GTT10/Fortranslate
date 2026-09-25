@@ -25,6 +25,9 @@ check ([evidence](validation/sdc-outflow-app-20260926.md)). Outflow molecular
 transport now participates with separate boundary accounting
 ([checks](validation/sdc-outflow-transport-20260926.md)); other physical
 boundary types remain open.
+Prescribed outlet pressure now reaches both SDC hydro and transport
+([checks](validation/sdc-pressure-outlet-20260926.md)); existing ghost-state
+admissibility limits still apply.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
