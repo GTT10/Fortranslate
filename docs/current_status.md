@@ -31,7 +31,10 @@ EB spray library also forwards explicit inflow/outflow gas boundaries and
 escaped particle inventories
 ([checks](validation/eb-spray-open-coupling-20260925.md)). Fixed/selected serial
 spray input, inlet timestep bounds and boundary-bound restart are connected
-([application checks](validation/eb-spray-inflow-application-20260925.md)).
+([application checks](validation/eb-spray-inflow-application-20260925.md)). Periodic
+serial spray library coupling now wraps field exchange and parcel drift with
+matching gas faces; application and impact/film dispatch remain pending
+([checks](validation/eb-spray-periodic-field-20260925.md)).
 Serial/MPI fixed and selected EB tree gas applications now also accept CTU,
 including scheduled regridding and method-bound changed-rank continuation
 ([application checks](validation/eb-tree-ctu-application-20260925.md)).
