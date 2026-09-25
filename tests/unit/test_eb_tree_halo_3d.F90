@@ -213,10 +213,10 @@ program test_eb_tree_halo_3d
     call require(wide_t(i,j,9)>0,'wall donor temperature')
   end do
   end do
-  faces(1)='isothermal_wall';wide=17;wide_t=19;vf=23
+  faces(1)='unknown_wall';wide=17;wide_t=19;vf=23
   call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
     ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
-  call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'unsupported thermal wall rollback')
+  call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'unknown wall rollback')
   print *, 'test_eb_tree_halo_3d: PASS'
 contains
   subroutine require(condition,label)

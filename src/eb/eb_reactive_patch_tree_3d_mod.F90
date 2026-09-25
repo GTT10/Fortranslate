@@ -626,7 +626,7 @@ contains
   ! Common-interval molecular transport: closed outflow edges or open Mach inlets.
   subroutine advance_reactive_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
@@ -636,6 +636,7 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d) :: snapshot,candidate
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -648,6 +649,10 @@ contains
     integer :: nv,node,n(3),depth,c
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    if(present(wall_temperature)) then
+      if(.not.present(boundary_faces)) return
+      if(.not.all(ieee_is_finite(wall_temperature)).or.any(wall_temperature<=0)) return
+    end if
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
@@ -674,13 +679,15 @@ contains
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
       patch_faces='outflow'
       if(present(boundary_faces)) then
-        where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+        where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
+              boundary_faces=='isothermal_wall')) &
           patch_faces=boundary_faces
         faces=.true.
       end if
       call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
         dt,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
-        candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces)
+        candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces, &
+            physical_faces=patch_faces,wall_temperature=wall_temperature)
       if (.not.valid) return
       theta=min(theta,stage_theta)
       deallocate(ghost,gt)
@@ -858,7 +865,7 @@ contains
 
   subroutine advance_reactive_eb_tree_subcycle_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: dt
@@ -868,17 +875,18 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     logical, intent(out) :: ok
     real(dp) :: wall(size(boundary_change))
     call advance_reactive_eb_tree_subcycle_operator_3d(species,'',dt,tree,boundary_change,wall,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      boundary_faces=boundary_faces,inflow_state=inflow_state)
+      boundary_faces=boundary_faces,inflow_state=inflow_state,wall_temperature=wall_temperature)
   end subroutine advance_reactive_eb_tree_subcycle_transport_3d
 
   subroutine advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     character(len=*), intent(in) :: solver
@@ -888,6 +896,7 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     type(gas_transport_species), optional, intent(in) :: transport(:)
@@ -903,6 +912,10 @@ contains
     integer :: nv,levels,c,n(3),node
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    if(present(wall_temperature)) then
+      if(.not.present(boundary_faces)) return
+      if(.not.all(ieee_is_finite(wall_temperature)).or.any(wall_temperature<=0)) return
+    end if
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
@@ -1020,13 +1033,15 @@ contains
           if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
           patch_faces='outflow'
           if(present(boundary_faces)) then
-            where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+            where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
+              boundary_faces=='isothermal_wall')) &
               patch_faces=boundary_faces
             faces=.true.
           end if
           call advance_reactive_eb_transport_patch_euler_3d(species,transport,snapshot%nodes(node)%geometry, &
             interval,viscosity,conduction,diffusion,barodiffusion,candidate%nodes(node)%state, &
-            candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces)
+            candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces, &
+            physical_faces=patch_faces,wall_temperature=wall_temperature)
           if (.not.valid) return
           theta=min(theta,stage_theta)
         else if(present(extended_geometry)) then
@@ -1173,7 +1188,7 @@ contains
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
     if(any(faces/='outflow'.and.faces/='inflow'.and.faces/='periodic'.and. &
-      faces/='slip_wall'.and.faces/='no_slip_wall')) return
+      faces/='slip_wall'.and.faces/='no_slip_wall'.and.faces/='isothermal_wall')) return
     if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
     associate(g=>tree%nodes(1)%geometry)
     length=[g%x_upper-g%x_lower,g%y_upper-g%y_lower,g%z_upper-g%z_lower]
@@ -1351,7 +1366,7 @@ contains
     faces='outflow'
     if(present(boundary_faces)) then
       if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic'.and. &
-        boundary_faces/='slip_wall'.and.boundary_faces/='no_slip_wall')) return
+        boundary_faces/='slip_wall'.and.boundary_faces/='no_slip_wall'.and.boundary_faces/='isothermal_wall')) return
       if(present(inflow_mach).or.present(inflow_pressure)) return
       faces=boundary_faces
       if(any(faces=='inflow')) then
@@ -1486,7 +1501,7 @@ contains
           call prescribed_inlet(2*axis-1+side,valid)
           if(.not.valid) return
           if(faces(2*axis-1+side)=='slip_wall') value(1+axis)=-value(1+axis)
-          if(faces(2*axis-1+side)=='no_slip_wall') value(2:4)=-value(2:4)
+          if(faces(2*axis-1+side)=='no_slip_wall'.or.faces(2*axis-1+side)=='isothermal_wall') value(2:4)=-value(2:4)
         end if
         candidate(:,i,j,k)=value
         temps(i,j,k)=recovered
@@ -1537,7 +1552,7 @@ contains
           do axis=1,3
             if(faces(2*axis-1)=='periodic'.or.faces(2*axis-1)=='slip_wall'.or. &
               faces(2*axis-1)=='no_slip_wall'.or.faces(2*axis)=='slip_wall'.or. &
-              faces(2*axis)=='no_slip_wall') local(axis)=index(axis)
+              faces(2*axis)=='no_slip_wall'.or.any(faces(2*axis-1:2*axis)=='isothermal_wall')) local(axis)=index(axis)
           end do
           if(snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))>=0) &
             volumes(i,j,k)=snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))
@@ -1609,8 +1624,8 @@ contains
         do while(position(direction)<0.or.position(direction)>=domain(direction,level))
           face=2*direction
           if(position(direction)<0) face=face-1
-          if(faces(face)/='slip_wall'.and.faces(face)/='no_slip_wall') exit
-          if(faces(face)=='no_slip_wall') then
+          if(faces(face)/='slip_wall'.and.faces(face)/='no_slip_wall'.and.faces(face)/='isothermal_wall') exit
+          if(faces(face)=='no_slip_wall'.or.faces(face)=='isothermal_wall') then
             signs=-signs
           else
             signs(direction)=-signs(direction)
