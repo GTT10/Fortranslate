@@ -181,9 +181,11 @@ faces now receive final fourth-order-slope PLM flux replacement
 ([checks](validation/ppm-inflow-plm-20260925.md)). Serial/MPI two-level AMR now
 forwards physical inflow masks on coarse/fine ownership boundaries and normalizes
 PLM face composition before EOS evaluation
-([checks](validation/ppm-two-level-inflow-20260925.md)). Patch-tree/regular-MPI
-spray boundary-mask propagation, external normal-projection/full-CTU parity and
-broader qualification remain open. Regular MPI spray
+([checks](validation/ppm-two-level-inflow-20260925.md)). Serial/MPI patch-tree
+common and recursive stepping now also forwards physical inflow masks
+([checks](validation/ppm-tree-inflow-20260925.md)). Regular-MPI spray boundary-mask
+propagation, external normal-projection/full-CTU parity and broader qualification
+remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
