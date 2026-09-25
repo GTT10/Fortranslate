@@ -10,6 +10,7 @@ program test_reactive_ppm_halo_3d
     adjust_reactive_artificial_viscosity_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use, intrinsic :: ieee_exceptions, only: ieee_set_flag,ieee_get_flag,ieee_overflow
   implicit none
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),g(:,:,:,:),gt(:,:,:),q(:)
@@ -27,6 +28,7 @@ program test_reactive_ppm_halo_3d
   allocate(hx(nv,0:4,4,4),hy(nv,4,0:4,4),hz(nv,4,4,0:4))
   call check_artificial_viscosity()
   call check_pressure_work()
+  call check_flattening_denominator()
   call check_transverse_flattening()
   do policy=1,2
   solver="hllc"
@@ -233,6 +235,37 @@ contains
       walls,ax,ay,az,valid,vf,ox,oy,oz)
     call require(.not.valid.and.all(ax==rx).and.all(ay==ry).and.all(az==rz),'inconsistent EB masks rollback')
   end subroutine check_eb_viscosity
+
+  subroutine check_flattening_denominator()
+    real(dp) :: pressure(-3:3),velocity(-3:3),flat
+    integer :: direction,shifted,point
+    logical :: overflowed
+    do direction=-1,1,2
+    do shifted=0,1
+      pressure=1e5_dp
+      if(shifted==0) then
+        pressure(direction)=2e5_dp
+      else
+        pressure=1e5_dp*[2._dp,1._dp,1._dp,2._dp,2._dp,2._dp,1._dp]
+        if(direction<0) pressure=pressure(3:-3:-1)
+      end if
+      do point=-3,3
+        velocity(point)=-real(point,dp)
+      end do
+      ! The direct or shifted pressure denominator vanishes while its numerator
+      ! is nonzero. Saturation must not depend on an overflowing division.
+      call ieee_set_flag(ieee_overflow,.false.)
+      flat=reactive_ppm_flattening_coefficient(pressure,velocity)
+      call ieee_get_flag(ieee_overflow,overflowed)
+      call require(flat==0.and..not.overflowed,'flattening handles zero denominator without overflow')
+      velocity=-velocity
+      call ieee_set_flag(ieee_overflow,.false.)
+      flat=reactive_ppm_flattening_coefficient(pressure,velocity)
+      call ieee_get_flag(ieee_overflow,overflowed)
+      call require(flat==1.and..not.overflowed,'expansion sensor avoids zero-denominator overflow')
+    end do
+    end do
+  end subroutine check_flattening_denominator
 
   subroutine check_transverse_flattening()
     real(dp) :: stencil(nv,-3:3),qm(nv),qp(nv),dummy(nv),temp,c,flat

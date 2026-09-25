@@ -1303,6 +1303,8 @@ contains
   pure real(dp) function reactive_ppm_flattening_coefficient( &
       pressure, velocity) result(flattening)
     real(dp), intent(in) :: pressure(-3:3), velocity(-3:3)
+    ! Pinned Godunov.H small_pres; machine tiny overflows for ordinary pressure jumps.
+    real(dp), parameter :: small_pressure_difference = 1e-200_dp
     real(dp), parameter :: shock_threshold = 0.33_dp
     real(dp), parameter :: zcut1 = 0.75_dp
     real(dp), parameter :: zcut2 = 0.85_dp
@@ -1319,7 +1321,7 @@ contains
 
     dp_jump = pressure(1) - pressure(-1)
     shift = merge(1, -1, dp_jump > 0.0_dp)
-    denominator = max(tiny(1.0_dp), abs(pressure(2) - pressure(-2)))
+    denominator = max(small_pressure_difference, abs(pressure(2) - pressure(-2)))
     zeta = abs(dp_jump) / denominator
     z = max(0.0_dp, min(1.0_dp, &
       (zeta - zcut1) / (zcut2 - zcut1)))
@@ -1335,7 +1337,7 @@ contains
     shifted_plus2 = pressure(2 - shift)
     shifted_minus2 = pressure(-(2 + shift))
     dp_jump = shifted_plus - shifted_minus
-    denominator = max(tiny(1.0_dp), abs(shifted_plus2 - shifted_minus2))
+    denominator = max(small_pressure_difference, abs(shifted_plus2 - shifted_minus2))
     zeta = abs(dp_jump) / denominator
     z2 = max(0.0_dp, min(1.0_dp, &
       (zeta - zcut1) / (zcut2 - zcut1)))
