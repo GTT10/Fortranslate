@@ -77,6 +77,10 @@ also forwards prescribed inflow through the coupled split and application,
 with fixed-mechanism changed-rank continuation checks
 ([checks](validation/mpi-eb-spray-inflow-20260926.md)).
 
+Single-level fixed/selected EB gas applications now accept named mole fractions
+per inlet face, with exact input-composition restart binding
+([checks](validation/eb-inlet-composition-20260926.md)).
+
 Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
 with the `pelec` Riemann solver, outflow halos, reaction/transport composition
 and method-bound checkpoint continuation. PCM remains the default. Fixed and
