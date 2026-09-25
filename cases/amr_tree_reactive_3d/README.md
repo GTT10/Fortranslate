@@ -17,6 +17,19 @@ PCM/characteristic-PLM/characteristic-PPM face reconstruction, physical boundari
 molecular transport. Existing validation requires at least four root cells in
 each direction. The application is also registered for installation.
 
+## Common-step SDC
+
+Serial fixed/selected frontends accept `time_integrator='sdc'` with
+`characteristic_ppm` and the `pelec` Riemann solver. Run `sdc.nml` with `sdc.dat`
+for a small two-level reacting example with transport and external forcing.
+Reaction-source estimates persist across successful steps. The SDC budget CSV
+adds `source_change`, separate from `boundary_change`.
+
+This route currently requires static geometry and a common timestep. SDC
+checkpoint/restart, scheduled/automatic regridding and subcycling are rejected
+before stepping. Split stepping retains its existing capabilities and CSV format;
+nonzero external forcing requires SDC. This serial route does not enable MPI SDC.
+
 ## Pressure outlets
 
 The serial and MPI fixed/selected tree frontends also accept `inflow_mach(6)` in
