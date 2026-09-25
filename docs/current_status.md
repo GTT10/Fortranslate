@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+MPI EB KH child generation now accepts explicit nonperiodic domain walls,
+with wall-before-release ordering and CTU regrid/changed-rank continuation
+([checks](validation/mpi-eb-wall-khrt-20260926.md)). Explicit-boundary PCM
+checkpoint serialization still rejects the shared single-level configuration;
+that compatibility gap remains open.
+
 Patch Euler transport now accepts isothermal wall temperatures with transactional
 heat-flux checks ([evidence](validation/eb-isothermal-patch-20260926.md)).
 Serial common/recursive tree temperature forwarding now passes heated-wall

@@ -198,8 +198,8 @@ dispatch now include changed-rank restart
 also accept independent named mixtures per inlet face
 ([checks](validation/eb-tree-inlet-composition-20260926.md)). Periodic gas and MPI
 spray boundaries are connected; adiabatic tree gas wall inputs and restart are connected
-([checks](validation/eb-tree-wall-application-20260926.md)). Isothermal tree walls
-remain open; MPI spray specular wall routing and changed-rank application
+([checks](validation/eb-tree-wall-application-20260926.md)). Isothermal tree gas and MPI spray input, stepping and restart are connected
+([checks](validation/mpi-eb-isothermal-spray-20260926.md)); MPI spray specular wall routing and changed-rank application
 restart are connected
 ([checks](validation/mpi-eb-wall-spray-application-20260926.md)).
 
