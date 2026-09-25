@@ -15,7 +15,8 @@ module reactive_eb_3d_checkpoint_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_species_component, &
     reactive_conserved_to_primitive
-  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,reactive_eb_geometry_identity
+  use simulation_config_reactive_eb_3d_mod, only: &
+    reactive_eb_3d_config,reactive_eb_geometry_identity,valid_reactive_eb_boundaries
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d
   implicit none
@@ -567,7 +568,8 @@ contains
     real(dp) :: stored_maximum_transport_diffusivity
     real(dp) :: stored_minimum_transport_theta
     character(len=1024) :: magic, marker, stored_name, stored_equation
-    character(len=1024) :: stored_axis, stored_solver, stored_redistribution
+    character(len=1024) :: stored_axis, stored_redistribution
+    character(len=4096) :: stored_solver
     character(len=1024) :: trailer
     integer :: stored_header(5), stored_reaction_header(6)
     integer :: stored_config_ints(n_config_ints)
@@ -1265,10 +1267,21 @@ contains
 
   pure function checkpoint_solver_identity(config) result(identity)
     type(reactive_eb_3d_config), intent(in) :: config
-    character(len=128) :: identity
+    character(len=4096) :: identity
+    character(len=160) :: entry
+    integer :: face
     identity=trim(config%riemann_solver)
     if(config%difmag>0) write(identity,'(a,1x,a,1x,es27.18e3)') trim(config%riemann_solver),'difmag-v1',config%difmag
     if(config%hydro_method/='pcm') identity=trim(identity)//' hydro-v1 '//trim(config%hydro_method)
+    if(any(config%boundary_faces/='legacy')) then
+      identity=trim(identity)//' boundary-v1'
+      do face=1,6
+        identity=trim(identity)//' '//trim(config%boundary_faces(face))
+        write(entry,'(5(1x,es27.18e3))') config%inflow_density(face),config%inflow_pressure(face), &
+          config%inflow_velocity(:,face)
+        identity=trim(identity)//trim(entry)
+      end do
+    end if
   end function checkpoint_solver_identity
 
   logical function valid_checkpoint_config(config) result(valid)
@@ -1277,6 +1290,7 @@ contains
     real(dp) :: cut_fraction
 
     valid=.false.
+    if(.not.valid_reactive_eb_boundaries(config)) return
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) return
     if(config%hydro_method/='pcm'.and.config%hydro_method/='plm_ctu') return
     if(config%hydro_method=='plm_ctu'.and.config%riemann_solver/='pelec') return

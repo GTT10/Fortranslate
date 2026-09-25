@@ -6,14 +6,15 @@ module reactive_eb_3d_application_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive,reactive_primitive_to_conserved
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
     eb_regular_cell_3d
   use reactive_eb_cfl_3d_mod, only: &
     compute_reactive_eb_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: &
-    reactive_eb_transport_timestep_3d
+    reactive_eb_transport_timestep_3d,reactive_eb_halo_bounds_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_checkpoint_mod, only: &
     write_reactive_eb_3d_checkpoint, read_reactive_eb_3d_checkpoint
@@ -47,6 +48,10 @@ contains
 
     type(eb_geometry_3d), allocatable :: extended_geometry
     type(eb_geometry_3d) :: geometry
+    character(len=16), allocatable :: boundary_faces(:)
+    real(dp), allocatable :: inlet(:,:),inlet_t(:),ghost(:,:,:,:),ghost_t(:,:,:),primitive(:)
+    real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate
+    integer :: face
     real(dp), allocatable :: state(:, :, :, :), new_state(:, :, :, :)
     real(dp), allocatable :: temperature(:, :, :), new_temperature(:, :, :)
     real(dp), allocatable :: initial_integrals(:), final_integrals(:)
@@ -122,6 +127,23 @@ contains
     call initialize_reactive_eb_density_sheet_3d( &
       species, config, geometry, state, temperature, ok, base_mole_fractions)
     if (.not. ok) error stop "Failed to initialize public 3D EB state"
+    if(any(config%boundary_faces/='legacy')) then
+      allocate(boundary_faces,source=config%boundary_faces)
+      allocate(inlet(nvar,6),inlet_t(6),primitive(reactive_nprim(size(species))))
+      allocate(ghost(nvar,0:config%nx+1,0:config%ny+1,0:config%nz+1), &
+        ghost_t(0:config%nx+1,0:config%ny+1,0:config%nz+1))
+      call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1), &
+        primitive,inlet_temp,inlet_sound,ok)
+      if(.not.ok) error stop 'Failed to obtain EB inlet composition'
+      do face=1,6
+        inlet(:,face)=state(:,1,1,1);inlet_t(face)=temperature(1,1,1)
+        if(boundary_faces(face)/='inflow') cycle
+        primitive(1)=config%inflow_density(face);primitive(2:4)=config%inflow_velocity(:,face)
+        primitive(5)=config%inflow_pressure(face)
+        call reactive_primitive_to_conserved(species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
+        if(.not.ok) error stop 'Invalid prescribed EB inlet thermodynamic state'
+      end do
+    end if
     call reactive_eb_integrals_3d( &
       state, geometry, initial_integrals, ok, initial_l1_integrals)
     if (.not. ok) error stop "Failed to integrate initial 3D EB state"
@@ -194,6 +216,24 @@ contains
         maximum_transport_diffusivity = max( &
           maximum_transport_diffusivity, step_transport_diffusivity)
       end if
+      if(allocated(boundary_faces)) then
+        call fill_reactive_boundary_ghosts_3d(state,temperature,boundary_faces,ghost,ghost_t,ok, &
+          viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,ghost_width=1)
+        if(.not.ok) error stop 'Failed to prepare EB timestep boundary donors'
+        call reactive_eb_halo_bounds_3d(species,transport,geometry,ghost,ghost_t,config%transport_enabled, &
+          config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
+          donor_speeds,donor_diffusivity,ok)
+        if(.not.ok) error stop 'Failed to compute EB boundary timestep bounds'
+        donor_rate=sum(donor_speeds(:3)/[geometry%dx,geometry%dy,geometry%dz])
+        if(.not.ieee_is_finite(donor_rate)) error stop 'Invalid EB boundary signal rate'
+        if(donor_rate>0) dt=min(dt,config%cfl/donor_rate)
+        if(config%transport_enabled.and.donor_diffusivity>0) then
+          donor_rate=donor_diffusivity*sum(1._dp/[geometry%dx,geometry%dy,geometry%dz]**2)
+          if(.not.ieee_is_finite(donor_rate)) error stop 'Invalid EB boundary diffusion rate'
+          dt=min(dt,config%transport_cfl/donor_rate)
+          maximum_transport_diffusivity=max(maximum_transport_diffusivity,donor_diffusivity)
+        end if
+      end if
       dt = min(dt, config%final_time - time)
       call advance_reactive_eb_full_3d( &
         species, reactions, transport, state, temperature, geometry, &
@@ -204,7 +244,8 @@ contains
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         new_state, new_temperature, step_transport_theta, ok, &
         config%state_redist_target_volume_fraction, chemistry_integrator, &
-        step_boundary,step_wall,step_chemical,difmag=config%difmag,extended_geometry=extended_geometry)
+        step_boundary,step_wall,step_chemical,difmag=config%difmag,extended_geometry=extended_geometry, &
+        boundary_faces=boundary_faces,inflow_state=inlet,inflow_temperature=inlet_t)
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
       boundary=boundary+step_boundary
       wall=wall+step_wall

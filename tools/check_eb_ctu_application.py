@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--selected', action='store_true', help='Use the selected H2O2 fixture')
+    parser.add_argument('--inflow', action='store_true', help='Exercise prescribed physical inflow and restart binding')
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
@@ -24,6 +25,11 @@ def main():
  regular_density=.31, cut_density=.93,
  initial_velocity_y=2., initial_velocity_z=-1.,
  redistribution='state_redist',
+"""
+
+    if args.inflow:
+        base += """boundary_faces='outflow','outflow','inflow','outflow','outflow','outflow',
+ inflow_density(3)=.31, inflow_pressure(3)=135000., inflow_velocity(2,3)=200.,
 """
 
     if args.selected:
@@ -68,10 +74,16 @@ def main():
     stopped = run('stopped', coupled + "checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='step.chk'")
     assert stopped != reference
     assert run('resumed', coupled + "restart_file='step.chk'") == reference
-    assert 'Failed to restart public 3D EB state' in run(
+    assert ('Invalid EB boundary configuration' if args.inflow else 'Failed to restart public 3D EB state') in run(
         'method_mismatch', coupled + "hydro_method='pcm', restart_file='step.chk'", False)
-    assert 'requires the pelec Riemann solver' in run('solver_mismatch', "riemann_solver='hllc'", False)
-    assert 'hydro_method must be' in run('invalid_method', "hydro_method='unknown'", False)
+    assert ('Invalid EB boundary configuration' if args.inflow else 'requires the pelec Riemann solver') in run('solver_mismatch', "riemann_solver='hllc'", False)
+    assert ('Invalid EB boundary configuration' if args.inflow else 'hydro_method must be') in run('invalid_method', "hydro_method='unknown'", False)
+    if args.inflow:
+        for name, changed in [('inlet_mismatch', 'inflow_velocity(2,3)=201.'),
+                              ('boundary_mismatch', "boundary_faces(3)='outflow'")]:
+            assert 'Failed to restart public 3D EB state' in run(
+                name, coupled + changed + ", restart_file='step.chk'", False)
+        assert 'Invalid EB boundary configuration' in run('invalid_inlet', 'inflow_density(3)=-1.', False)
     print(f'PASS: EB CTU hydro, reacting/coupled stepping, exact restart and input rejection; artifacts={work}')
 
 

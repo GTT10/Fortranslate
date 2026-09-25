@@ -15,6 +15,20 @@ program test_reactive_eb_3d_config
   integer :: unit
 
   call verify_extended_geometry()
+  config=reactive_eb_3d_config()
+  config%boundary_faces='outflow';config%boundary_faces(3)='inflow'
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(.not.ok,'physical boundary requires CTU')
+  config%hydro_method='plm_ctu';config%riemann_solver='pelec'
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(ok,'physical inflow and outflow config')
+  config%boundary_faces(1)='legacy'
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(.not.ok,'mixed legacy and physical boundaries reject')
+  config%boundary_faces(1)='outflow';config%inflow_density(3)=-1
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(.not.ok,'negative inlet density rejects')
+
 
   config = reactive_eb_3d_config()
   call validate_reactive_eb_3d_configuration(config, ok, message)

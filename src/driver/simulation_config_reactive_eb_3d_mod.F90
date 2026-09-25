@@ -35,6 +35,8 @@ module simulation_config_reactive_eb_3d_mod
     real(dp) :: plane_position = 0.395_dp
     real(dp) :: difmag=.1_dp
     character(len=16) :: hydro_method = "pcm"
+    character(len=16) :: boundary_faces(6) = 'legacy'
+    real(dp) :: inflow_density(6)=.31_dp,inflow_pressure(6)=135000._dp,inflow_velocity(3,6)=0._dp
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
@@ -66,12 +68,25 @@ module simulation_config_reactive_eb_3d_mod
     character(len=512) :: output_file = "reactive_eb_3d.csv"
   end type reactive_eb_3d_config
 
-  public :: build_configured_eb_geometry_3d,reactive_eb_geometry_identity
+  public :: build_configured_eb_geometry_3d,reactive_eb_geometry_identity,valid_reactive_eb_boundaries
   public :: read_reactive_eb_3d_configuration
   public :: validate_reactive_eb_3d_configuration
   public :: resolve_reactive_eb_3d_selected_composition
 
 contains
+
+  pure logical function valid_reactive_eb_boundaries(config) result(valid)
+    type(reactive_eb_3d_config), intent(in) :: config
+    valid=.false.
+    if(.not.all(ieee_is_finite(config%inflow_density)).or..not.all(ieee_is_finite(config%inflow_pressure)).or. &
+      .not.all(ieee_is_finite(config%inflow_velocity))) return
+    if(any(config%inflow_density<=0).or.any(config%inflow_pressure<=0)) return
+    if(all(config%boundary_faces=='legacy')) then
+      valid=.true.;return
+    end if
+    if(config%hydro_method/='plm_ctu'.or.config%riemann_solver/='pelec') return
+    valid=all(config%boundary_faces=='inflow'.or.config%boundary_faces=='outflow')
+  end function valid_reactive_eb_boundaries
 
   function reactive_eb_geometry_identity(config) result(identity)
     type(reactive_eb_3d_config), intent(in) :: config
@@ -218,12 +233,12 @@ contains
   end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_difmag,allow_ctu)
+      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu
+    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu,allow_boundaries
 
     integer :: nx, ny, nz, maximum_steps, checkpoint_interval_steps
     integer :: unit, io_status
@@ -238,6 +253,8 @@ contains
     character(len=16) :: geometry_type
     character(len=512) :: section_file,level_set_file
     character(len=16) :: hydro_method
+    character(len=16) :: boundary_faces(6)
+    real(dp) :: inflow_density(6),inflow_pressure(6),inflow_velocity(3,6)
     character(len=32) :: riemann_solver, redistribution, thermo_model
     character(len=512) :: checkpoint_file, restart_file, output_file
     integer :: composition_count
@@ -254,6 +271,7 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, hydro_method, &
       geometry_type,extrusion_axis,section_file,level_set_file, &
+      boundary_faces,inflow_density,inflow_pressure,inflow_velocity, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
@@ -283,6 +301,8 @@ contains
     level_set_file=config%level_set_file
     plane_axis = config%plane_axis
     plane_position = config%plane_position
+    boundary_faces=config%boundary_faces;inflow_density=config%inflow_density
+    inflow_pressure=config%inflow_pressure;inflow_velocity=config%inflow_velocity
     hydro_method = config%hydro_method
     riemann_solver = config%riemann_solver
     difmag=config%difmag
@@ -348,6 +368,8 @@ contains
     config%section_file=trim(section_file);config%level_set_file=trim(level_set_file)
     config%plane_axis = trim(plane_axis)
     config%plane_position = plane_position
+    config%boundary_faces=boundary_faces;config%inflow_density=inflow_density
+    config%inflow_pressure=inflow_pressure;config%inflow_velocity=inflow_velocity
     config%hydro_method = trim(hydro_method)
     config%riemann_solver = trim(riemann_solver)
     config%difmag=difmag
@@ -378,6 +400,13 @@ contains
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
     config%output_file = trim(output_file)
+    if(any(boundary_faces/='legacy')) then
+      ok=.false.
+      if(present(allow_boundaries)) ok=allow_boundaries
+      if(.not.ok) then
+        message='Physical EB boundaries are not enabled in this application';return
+      end if
+    end if
     if(hydro_method/='pcm') then
       ok=.false.
       if(present(allow_ctu)) ok=allow_ctu
@@ -411,6 +440,10 @@ contains
     message = ""
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) then
       message='Invalid artificial-viscosity coefficient';return
+    end if
+    if(.not.valid_reactive_eb_boundaries(config)) then
+      message='Invalid EB boundary configuration: use six legacy labels or CTU inflow/outflow with positive inlet data'
+      return
     end if
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
