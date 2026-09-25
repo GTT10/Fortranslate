@@ -25,6 +25,7 @@ module reactive_3d_mod
   public :: reactive_ppm_transverse_pressure_3d
   public :: compute_reactive_external_source_3d
   public :: construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
+  public :: advance_reactive_sdc_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
@@ -54,14 +55,17 @@ module reactive_3d_mod
       logical, intent(out) :: ok
     end subroutine reactive_sdc_source_evaluator
   end interface
+  interface advance_reactive_sdc_3d
+    module procedure advance_reactive_sdc_periodic_3d
+  end interface
 contains
 
-  ! Periodic do_sdc_iteration. Source callbacks produce physical
+  ! Periodic/outflow do_sdc_iteration. Source callbacks produce physical
   ! cell rates; the CTU wrapper supplies periodic source halos.
   subroutine advance_reactive_sdc_periodic_3d(species,state,temperature,spacing,dt,time,iterations, &
       source_count,evaluate_sources,ok,difmag,external_force,source_change, &
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
-      chemistry_relative_tolerance,chemistry_absolute_tolerance)
+      chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -75,6 +79,12 @@ contains
     type(elementary_reaction), optional, intent(in) :: reactions(:)
     real(dp), optional, intent(inout) :: reaction_source(:,:,:,:)
     real(dp), optional, intent(in) :: chemistry_relative_tolerance,chemistry_absolute_tolerance
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(out) :: boundary_change(:)
+    character(len=16) :: faces(6)
+    real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source_ghost(:,:,:,:)
+    integer :: index(3),a
+    real(dp) :: boundary_inventory(size(state,1))
     real(dp), allocatable :: ir(:,:,:,:)
     real(dp) :: rtol,atol,rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
     integer :: chemistry_steps
@@ -87,6 +97,15 @@ contains
     integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    faces='periodic'
+    if(present(boundary_faces)) faces=boundary_faces
+    if(present(boundary_change)) then
+      boundary_change=0
+      if(size(boundary_change)/=nv) return
+    end if
+    if(.not.valid_reactive_boundaries_3d(faces)) return
+    if(any(faces/='periodic'.and.faces/='outflow')) return
+    if(any(faces/='periodic').and.present(transport)) return
     rtol=1e-6_dp;atol=1e-12_dp
     if(present(chemistry_relative_tolerance)) rtol=chemistry_relative_tolerance
     if(present(chemistry_absolute_tolerance)) atol=chemistry_absolute_tolerance
@@ -120,6 +139,12 @@ contains
     allocate(predictor,mold=state);allocate(zero,mold=state);zero=0
     allocate(candidate,mold=state);allocate(ct,mold=temperature);allocate(recovered,mold=temperature);allocate(hydro,mold=state)
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    if(any(faces/='periodic')) then
+      allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),ghost_t(n(1)+8,n(2)+8,n(3)+8))
+      allocate(source_ghost(nv,-3:n(1)+4,-3:n(2)+4,-3:n(3)+4))
+      call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,ghost_t,valid,ghost_width=4)
+      if(.not.valid) return
+    end if
     call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
     if(.not.valid) return
     if(present(evaluate_sources)) then
@@ -133,8 +158,29 @@ contains
       ! Hydro.cpp sums half new then half old rates, without including hydro itself.
       call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,reaction_source=ir)
       if(.not.valid) return
-      call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,.false.,.true.,'pelec', &
-        fx,fy,fz,theta,valid,difmag=difmag,conserved_source=predictor)
+      if(all(faces=='periodic')) then
+        call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,.false.,.true.,'pelec', &
+          fx,fy,fz,theta,valid,difmag=difmag,conserved_source=predictor)
+      else
+        ! Outflow copies source rates; periodic axes wrap them like the state.
+        do k=-3,n(3)+4
+        do j=-3,n(2)+4
+        do i=-3,n(1)+4
+          index=[i,j,k]
+          do a=1,3
+            if(faces(2*a-1)=='periodic') then
+              index(a)=modulo(index(a)-1,n(a))+1
+            else
+              index(a)=max(1,min(n(a),index(a)))
+            end if
+          end do
+          source_ghost(:,i,j,k)=predictor(:,index(1),index(2),index(3))
+        end do
+        end do
+        end do
+        call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,ghost_t,n,spacing,dt,.false.,.true.,'pelec', &
+          fx,fy,fz,theta,valid,difmag=difmag,conserved_source=source_ghost,outflow_faces=faces=='outflow')
+      end if
       if(.not.valid) return
       do k=1,n(3)
       do j=1,n(2)
@@ -194,6 +240,13 @@ contains
     end do
     end do
     if(.not.all(ieee_is_finite(inventory))) return
+    do component=1,nv
+      boundary_inventory(component)=dt*((sum(fx(component,0,:,:))-sum(fx(component,n(1),:,:)))*spacing(2)*spacing(3)+ &
+        (sum(fy(component,:,0,:))-sum(fy(component,:,n(2),:)))*spacing(1)*spacing(3)+ &
+        (sum(fz(component,:,:,0))-sum(fz(component,:,:,n(3))))*spacing(1)*spacing(2))
+    end do
+    if(.not.all(ieee_is_finite(boundary_inventory))) return
+    if(present(boundary_change)) boundary_change=boundary_inventory
     if(present(source_change)) source_change=inventory
     if(present(minimum_transport_theta)) minimum_transport_theta=source_theta
     if(present(reaction_source)) reaction_source=ir

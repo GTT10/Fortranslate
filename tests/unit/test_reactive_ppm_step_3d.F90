@@ -28,6 +28,7 @@ program test_reactive_ppm_step_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
   use reactive_3d_mod, only: compute_reactive_external_source_3d,construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
+  use reactive_3d_mod, only: advance_reactive_sdc_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -58,6 +59,7 @@ program test_reactive_ppm_step_3d
   end do
   call check_sdc_iteration()
   call check_sdc_reactions()
+  call check_sdc_outflow()
   call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
@@ -117,6 +119,34 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+
+  subroutine check_sdc_outflow()
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4),et(4,4,4)
+    real(dp) :: boundary(nv),baseline_boundary(nv),source(nv),difference
+    character(len=8) :: bc(6)
+    integer :: component
+    bc='periodic';bc(1:2)='outflow'
+    state=u;temp=t;expected=u;et=t
+    call advance_reactive_boundary_hydro_3d(species,expected,et,[.25_dp,.25_dp,.25_dp],dt, &
+      bc,'characteristic_ppm','mc','pelec',baseline_boundary,ok)
+    call require(ok,'SDC outflow reference hydro')
+    call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,1,ok=ok,external_force=[0._dp,0._dp,0._dp],boundary_faces=bc,boundary_change=boundary)
+    call require(ok,'SDC outflow step')
+    call require(maxval(abs(state-expected)/max(1._dp,abs(expected)))<1e-13_dp, &
+      'SDC zero-source outflow matches boundary CTU')
+    call require(maxval(abs(boundary-baseline_boundary))<1e-10_dp,'SDC outflow flux inventory')
+    state=u;temp=t
+    call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,1,ok=ok,external_force=[20000._dp,-30000._dp,40000._dp],boundary_faces=bc, &
+      boundary_change=boundary,source_change=source)
+    call require(ok,'SDC forced outflow')
+    do component=1,nv
+      difference=sum(state(component,:,:,:)-u(component,:,:,:))*.25_dp**3-boundary(component)-source(component)
+      call require(abs(difference)/max(1._dp,abs(sum(u(component,:,:,:))*.25_dp**3))<1e-12_dp, &
+        'SDC outflow boundary and volume source inventories')
+    end do
+  end subroutine check_sdc_outflow
 
   subroutine check_sdc_reactions()
     type(elementary_reaction), allocatable :: active_reactions(:)
