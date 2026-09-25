@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The serial EB impact interval now supports periodic crossings and specular
+domain reflection before EB deposition, using the shared periodic film-image
+counter ([checks](validation/serial-eb-periodic-impact-20260926.md)). Single-level
+coupling and application dispatch still require connection.
+
 MPI EB deposition/splash and stationary films can now coexist with specular
 outer-domain walls. Remaining flight and separate exterior/EB budgets are
 preserved through regrid and changed-rank continuation
