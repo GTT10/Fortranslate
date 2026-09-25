@@ -7,7 +7,9 @@ program test_eb_transport_halo_3d
     reactive_mass_fraction_component,reactive_primitive_to_conserved,reactive_conserved_to_primitive
   use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d
-  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d
+  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d, &
+    reactive_eb_transport_euler_update_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -15,6 +17,9 @@ program test_eb_transport_halo_3d
   type(gas_transport_species), allocatable :: transport(:)
   type(eb_geometry_3d) :: geometry
   type(reactive_eb_3d_config) :: config
+  type(eb_integrated_flux_3d) :: integrated,saved_flux
+  real(dp), allocatable :: advanced(:,:,:,:),advanced_t(:,:,:)
+  real(dp), parameter :: dt=1.e-3_dp
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),g(:,:,:,:),gt(:,:,:),rhs(:,:,:,:),x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
   real(dp), allocatable :: p(:),donor(:),gp(:),expected(:),left(:),right(:),uniform(:)
   real(dp) :: temp,speed,donor_t,checked_t,gradient(3,3),species_energy,theta,volume,budget,change,position,guess_t
@@ -26,6 +31,7 @@ program test_eb_transport_halo_3d
   call require(ok,'transport')
   nvar=reactive_nvar(size(species));config%nx=4;config%ny=4;config%nz=4
   allocate(u(nvar,4,4,4),t(4,4,4),rhs(nvar,4,4,4),g(nvar,0:5,0:5,0:5),gt(0:5,0:5,0:5))
+  allocate(advanced(nvar,4,4,4),advanced_t(4,4,4))
   allocate(x(nvar,0:4,4,4),y(nvar,4,0:4,4),z(nvar,4,4,0:4))
   allocate(p(reactive_nprim(size(species))))
   allocate(gp(size(p)),left(size(p)),right(size(p)), &
@@ -104,6 +110,34 @@ program test_eb_transport_halo_3d
           change=volume*sum(rhs(c,:,:,:)*geometry%volume_fraction)
           call require(abs(change-budget)<=2.e-12_dp*max(1._dp,abs(budget)),'transport aperture inventory')
         end do
+        call reactive_eb_transport_euler_update_3d(species,transport,u,t,geometry,dt, &
+          .true.,.true.,.true.,.true.,.5_dp,advanced,advanced_t,theta,ok,g,gt,faces,integrated)
+        call require(ok,'redistributed halo transport update')
+        call require(maxval(abs(advanced-u))>0._dp,'halo exchange changes state')
+        call require(maxval(abs(integrated%x-dt*x))<=2.e-12_dp*max(1._dp,maxval(abs(dt*x))).and. &
+          maxval(abs(integrated%y-dt*y))<=2.e-12_dp*max(1._dp,maxval(abs(dt*y))).and. &
+          maxval(abs(integrated%z-dt*z))<=2.e-12_dp*max(1._dp,maxval(abs(dt*z))), &
+          'redistributed update returns actual time-integrated face fluxes')
+        do c=1,nvar
+          budget=.25_dp**2*(sum(geometry%x_face_fraction(0,:,:)*integrated%x(c,0,:,:)- &
+            geometry%x_face_fraction(4,:,:)*integrated%x(c,4,:,:))+ &
+            sum(geometry%y_face_fraction(:,0,:)*integrated%y(c,:,0,:)- &
+            geometry%y_face_fraction(:,4,:)*integrated%y(c,:,4,:))+ &
+            sum(geometry%z_face_fraction(:,:,0)*integrated%z(c,:,:,0)- &
+            geometry%z_face_fraction(:,:,4)*integrated%z(c,:,:,4)))
+          change=volume*sum((advanced(c,:,:,:)-u(c,:,:,:))*geometry%volume_fraction)
+          call require(abs(change-budget)<=2.e-12_dp*max(1._dp, &
+            volume*sum(abs(u(c,:,:,:))*geometry%volume_fraction)), 'redistributed halo inventory')
+          call require(all(advanced(c,:,:,:)==u(c,:,:,:).or.geometry%volume_fraction>0), &
+            'covered storage preserved')
+        end do
+        saved_flux=integrated
+        call reactive_eb_transport_euler_update_3d(species,transport,u,t,geometry,dt, &
+          .true.,.true.,.true.,.true.,-1._dp,advanced,advanced_t,theta,ok,g,gt,faces,integrated)
+        call require(.not.ok.and.all(advanced==u).and.all(advanced_t==t), &
+          'redistribution failure restores input state and temperature')
+        call require(all(integrated%x==saved_flux%x).and.all(integrated%y==saved_flux%y).and. &
+          all(integrated%z==saved_flux%z),'failed redistribution preserves published flux')
         call reactive_eb_transport_fluxes_rhs_3d(species,transport,u,t,geometry,1.e8_dp, &
           .true.,.true.,.true.,.true.,rhs,x,y,z,theta,ok,g,gt,faces)
         call require(ok.and.theta<1._dp,'boundary species limiter active')
@@ -117,6 +151,17 @@ program test_eb_transport_halo_3d
     call reactive_eb_transport_fluxes_rhs_3d(species,transport,u,t,geometry,0._dp, &
       .true.,.true.,.true.,.true.,rhs,x,y,z,theta,ok,ghost_state=g)
     call require(.not.ok,'incomplete transport halo rejected')
+    call reactive_eb_transport_euler_update_3d(species,transport,u,t,geometry,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,advanced,advanced_t,theta,ok, &
+      ghost_state=g,integrated_flux=integrated)
+    call require(.not.ok.and.all(advanced==u).and.all(advanced_t==t),'incomplete halo update rejected')
+    call require(all(integrated%x==saved_flux%x).and.all(integrated%y==saved_flux%y).and. &
+      all(integrated%z==saved_flux%z),'failed halo preserves published flux')
+    call reactive_eb_transport_euler_update_3d(species,transport,u,t,geometry,0._dp, &
+      .true.,.true.,.true.,.true.,.5_dp,advanced,advanced_t,theta,ok,integrated_flux=integrated)
+    call require(ok.and.all(advanced==u).and.all(advanced_t==t),'zero interval identity')
+    call require(all(integrated%x==0).and.all(integrated%y==0).and.all(integrated%z==0), &
+      'zero interval clears exchange')
   end do
   write(*,'(a)') 'test_eb_transport_halo_3d: PASS'
 contains

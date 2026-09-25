@@ -810,11 +810,14 @@ contains
     ok = all(ieee_is_finite(rhs))
   end subroutine reactive_eb_transport_fluxes_rhs_3d
 
+  ! Optional caller-prepared donors use one halo layer (indices 0:n+1).
+  ! Returned flux is dt times the limited intensive face flux; apply apertures
+  ! and face areas once when forming a boundary inventory.
   subroutine reactive_eb_transport_rhs_3d( &
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      minimum_theta, ok)
+      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -825,6 +828,9 @@ contains
     real(dp), intent(out) :: rhs(:, :, :, :)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, optional, intent(in) :: boundary_faces(6)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
 
     real(dp), allocatable :: x_flux(:, :, :, :)
     real(dp), allocatable :: y_flux(:, :, :, :)
@@ -840,15 +846,27 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      x_flux, y_flux, z_flux, minimum_theta, ok)
+      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces)
+    if (.not.ok) return
+    if (present(integrated_flux)) then
+      x_flux=dt*x_flux;y_flux=dt*y_flux;z_flux=dt*z_flux
+      ok=all(ieee_is_finite(x_flux)).and.all(ieee_is_finite(y_flux)).and.all(ieee_is_finite(z_flux))
+      if (.not.ok) return
+      call move_alloc(x_flux,integrated_flux%x)
+      call move_alloc(y_flux,integrated_flux%y)
+      call move_alloc(z_flux,integrated_flux%z)
+    end if
   end subroutine reactive_eb_transport_rhs_3d
 
+  ! The caller must rebuild donors for each time stage. Flux publication waits
+  ! for successful redistribution and thermodynamic recovery; failure restores
+  ! the input state/temperature and leaves the caller's flux object untouched.
   subroutine reactive_eb_transport_euler_update_3d( &
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, new_state, new_temperature, &
-      minimum_theta, ok)
+      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -860,8 +878,12 @@ contains
     real(dp), intent(out) :: new_temperature(:, :, :)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, optional, intent(in) :: boundary_faces(6)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
 
-    real(dp), allocatable :: rhs(:, :, :, :)
+    real(dp), allocatable :: rhs(:, :, :, :),candidate(:,:,:,:),candidate_temperature(:,:,:)
+    type(eb_integrated_flux_3d) :: flux
     logical :: local_ok
 
     minimum_theta = 1.0_dp
@@ -877,6 +899,12 @@ contains
     new_temperature = temperature
     if (dt <= tiny(1.0_dp) .or. .not. (viscosity_enabled .or. &
         thermal_conduction_enabled .or. species_diffusion_enabled)) then
+      if (present(integrated_flux)) then
+        allocate(flux%x(size(state,1),0:geometry%nx,geometry%ny,geometry%nz), &
+          flux%y(size(state,1),geometry%nx,0:geometry%ny,geometry%nz), &
+          flux%z(size(state,1),geometry%nx,geometry%ny,0:geometry%nz))
+        flux%x=0;flux%y=0;flux%z=0;integrated_flux=flux
+      end if
       ok = .true.
       return
     end if
@@ -885,12 +913,15 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      minimum_theta, local_ok)
+      minimum_theta, local_ok, ghost_state, ghost_temperature, boundary_faces, flux)
     if (.not. local_ok) return
+    allocate(candidate,mold=state);allocate(candidate_temperature,mold=temperature)
     call advance_reactive_eb_state_redistributed_3d( &
-      species, state, temperature, geometry, rhs, dt, new_state, &
-      new_temperature, local_ok, target_volume_fraction)
+      species, state, temperature, geometry, rhs, dt, candidate, &
+      candidate_temperature, local_ok, target_volume_fraction)
     if (.not. local_ok) return
+    new_state=candidate;new_temperature=candidate_temperature
+    if (present(integrated_flux)) integrated_flux=flux
     ok = .true.
   end subroutine reactive_eb_transport_euler_update_3d
 
