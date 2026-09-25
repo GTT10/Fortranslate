@@ -8,6 +8,7 @@ module eb_reactive_patch_tree_3d_mod
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use gas_transport_mod, only: gas_transport_species
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
+    reactive_eb_isothermal_timestep_3d, &
     reactive_eb_transport_patch_timestep_3d,reactive_eb_halo_bounds_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d,advance_reactive_eb_plm_ctu_3d, &
@@ -446,7 +447,7 @@ contains
   ! before restriction. Global donor maxima cover peer and ancestor halos.
   subroutine reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl, &
       transport_enabled,viscosity,conduction,diffusion,dt,ok,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
@@ -456,6 +457,10 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    character(len=16) :: thermal_faces(6)
+    integer :: direction
+    logical :: thermal_wall
     logical, intent(out) :: ok
     logical, optional, intent(in) :: subcycling
     integer(int64), allocatable :: origin(:,:),domain(:,:)
@@ -469,9 +474,18 @@ contains
     if (.not.all(ieee_is_finite([hydro_cfl,transport_cfl]))) return
     if (hydro_cfl<=0._dp.or.hydro_cfl>1._dp.or.transport_cfl<=0._dp.or.transport_cfl>.5_dp) return
     if (.not.valid_tree(tree,reactive_nvar(size(species)))) return
+    thermal_wall=.false.
+    if(present(wall_temperature)) then
+      if(.not.present(boundary_faces)) return
+      if(.not.all(ieee_is_finite(wall_temperature)).or.any(wall_temperature<=0)) return
+    end if
+    if(present(boundary_faces)) thermal_wall=any(boundary_faces=='isothermal_wall')
+    if(thermal_wall) then
+      if(.not.present(wall_temperature).or..not.transport_enabled.or..not.conduction) return
+    end if
     recursive=.false.
     if (present(subcycling)) recursive=subcycling
-    if (recursive) then
+    if (recursive.or.thermal_wall) then
       call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
       if (.not.valid) return
     end if
@@ -528,6 +542,19 @@ contains
         ! Conservatively use a full-interval diffusion bound for split halves.
         factor=factor*factor
         if (interval<candidate/factor) candidate=interval*factor
+        if(thermal_wall) then
+          level=tree%topology%nodes(node)%level+1;n=tree%topology%nodes(node)%shape
+          thermal_faces='outflow'
+          do direction=1,3
+            if(origin(direction,node)==0) thermal_faces(2*direction-1)=boundary_faces(2*direction-1)
+            if(origin(direction,node)+n(direction)==domain(direction,level)) &
+              thermal_faces(2*direction)=boundary_faces(2*direction)
+          end do
+          call reactive_eb_isothermal_timestep_3d(species,transport,u,t,g,thermal_faces, &
+            wall_temperature,transport_cfl,interval,valid)
+          if(.not.valid) return
+          if(interval<candidate/factor) candidate=interval*factor
+        end if
       end if
       end associate
     end do

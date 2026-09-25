@@ -8,6 +8,7 @@ program test_eb_tree_transport_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
+    reactive_eb_tree_timestep_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_transport_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
@@ -25,7 +26,9 @@ program test_eb_tree_transport_3d
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k
   character(len=16) :: periodic_faces(6)
-  real(dp) :: wall_t(6)
+  real(dp) :: wall_t(6),base_dt,thermal_dt
+  integer :: bound_mode
+  logical :: tightened=.false.
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
@@ -120,6 +123,22 @@ program test_eb_tree_transport_3d
   residual=maxval(abs(after-before-boundary)/max(1._dp,abs(before)))
   print *, 'isothermal axis, nodes, residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'isothermal composite transport conservation')
+  do bound_mode=0,1
+    call reactive_eb_tree_timestep_3d(species,transport,saved,.5_dp,1.e-12_dp,.true., &
+      .false.,.true.,.false.,base_dt,ok,subcycling=bound_mode==1)
+    call require(ok,'baseline tree timestep')
+    call reactive_eb_tree_timestep_3d(species,transport,saved,.5_dp,1.e-12_dp,.true., &
+      .false.,.true.,.false.,thermal_dt,ok,subcycling=bound_mode==1, &
+      boundary_faces=periodic_faces,wall_temperature=wall_t)
+    call require(ok.and.thermal_dt>0.and.thermal_dt<=base_dt,'thermal timestep restriction')
+    tightened=tightened.or.thermal_dt<base_dt
+    print *, 'thermal timestep axis, nodes, mode, baseline, wall: ',axes(axis),count,bound_mode,base_dt,thermal_dt
+    thermal_dt=17
+    call reactive_eb_tree_timestep_3d(species,transport,saved,.5_dp,1.e-12_dp,.true., &
+      .false.,.true.,.false.,thermal_dt,ok,subcycling=bound_mode==1,boundary_faces=periodic_faces)
+    call require(.not.ok.and.thermal_dt==17,'missing wall temperature preserves timestep')
+  end do
+
   periodic_faces='periodic';periodic_faces(2*axis-1:2*axis)='outflow'
   tree=saved
   call advance_reactive_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
@@ -152,6 +171,7 @@ program test_eb_tree_transport_3d
   deallocate(u,t)
   end do
   end do
+  call require(tightened,'wall heat restricts an accepted tree timestep')
   print *, 'test_eb_tree_transport_3d: PASS'
 contains
   subroutine unchanged_tree()
