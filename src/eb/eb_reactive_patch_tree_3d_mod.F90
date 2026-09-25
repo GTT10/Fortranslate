@@ -1172,7 +1172,7 @@ contains
   ! assignment preserves caller bounds. Width one retains the legacy face route.
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
       ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure, &
-      ghost_volume_fraction,halo_width,target_volume_fraction)
+      ghost_volume_fraction,halo_width,target_volume_fraction,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
@@ -1182,6 +1182,9 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(inout) :: ghost_volume_fraction(0:,0:,0:)
     real(dp), allocatable :: volumes(:,:,:)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
+    character(len=16) :: faces(6)
     integer :: inlet_face
     logical, allocatable :: filled(:,:,:)
     logical, intent(out) :: ok
@@ -1200,9 +1203,24 @@ contains
     if(present(halo_width)) width=halo_width
     if(width<1.or.width>huge(1)/4) return
     if(width>1.and.(.not.present(ghost_volume_fraction).or..not.present(target_volume_fraction))) return
+    faces='outflow'
+    if(present(boundary_faces)) then
+      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) return
+      if(present(inflow_mach).or.present(inflow_pressure)) return
+      faces=boundary_faces
+      if(any(faces=='inflow')) then
+        if(.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      end if
+    else
+      if(present(inflow_state)) return
+    end if
+    if(present(inflow_state)) then
+      if(any(shape(inflow_state)/=[nv,6])) return
+      if(.not.all(ieee_is_finite(inflow_state))) return
+    end if
     mach=-1;pin=0;tin=0
     if (present(inflow_temperature).or.present(inflow_pressure)) then
-      if (.not.present(inflow_mach)) return
+      if (.not.present(inflow_mach).and..not.present(boundary_faces)) return
     end if
     if (present(inflow_mach)) mach=inflow_mach
     if (present(inflow_temperature)) tin=inflow_temperature
@@ -1316,6 +1334,10 @@ contains
           if (.not.valid) return
           value=inlet_value;recovered=inlet_t
         end if
+        if(physical) then
+          call prescribed_inlet(2*axis-1+side,valid)
+          if(.not.valid) return
+        end if
         candidate(:,i,j,k)=value
         temps(i,j,k)=recovered
         filled(i,j,k)=.true.
@@ -1337,7 +1359,7 @@ contains
           if(global(axis)<0) side=0
           if(global(axis)>=domain(axis,level)) side=1
           if(side<0) cycle
-          if(mach(2*axis-1+side)>=0.and.inlet_face==0) inlet_face=2*axis-1+side
+          if((mach(2*axis-1+side)>=0.or.faces(2*axis-1+side)=='inflow').and.inlet_face==0) inlet_face=2*axis-1+side
         end do
         global=max(0_int64,min(domain(:,level)-1,global))
         donor=0
@@ -1382,6 +1404,10 @@ contains
         call reactive_conserved_to_primitive(species,value,guess,primitive,recovered,speed,valid)
         if(.not.valid) return
         if(inlet_face>0) then
+          if(faces(inlet_face)=='inflow') then
+            call prescribed_inlet(inlet_face,valid)
+            if(.not.valid) return
+          else
           if(pin(inlet_face)>0) then
             call mach_inlet_ghost_3d(species,value,recovered,inlet_face,tin(inlet_face),mach(inlet_face), &
               inlet_value,inlet_t,valid,inlet_pressure=pin(inlet_face))
@@ -1391,6 +1417,7 @@ contains
           end if
           if(.not.valid) return
           value=inlet_value;recovered=inlet_t
+          end if
         end if
         candidate(:,i,j,k)=value;temps(i,j,k)=recovered
       end do
@@ -1412,6 +1439,15 @@ contains
     if(present(ghost_volume_fraction)) ghost_volume_fraction=volumes
     ok=.true.
   contains
+    subroutine prescribed_inlet(face,accepted)
+      integer, intent(in) :: face
+      logical, intent(out) :: accepted
+      accepted=.true.
+      if(faces(face)/='inflow') return
+      call reactive_conserved_to_primitive(species,inflow_state(:,face),tin(face), &
+        primitive,recovered,speed,accepted)
+      if(accepted) value=inflow_state(:,face)
+    end subroutine
     logical function matching_snapshot(other) result(matches)
       type(eb_reactive_tree_3d), intent(in) :: other
       integer(int64), allocatable :: other_origin(:,:),other_domain(:,:)

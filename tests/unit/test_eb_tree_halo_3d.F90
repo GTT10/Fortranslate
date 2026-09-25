@@ -18,6 +18,10 @@ program test_eb_tree_halo_3d
   type(eb_reactive_tree_3d) :: tree,saved,start,finish
   type(reactive_eb_3d_config) :: config
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),ghost(:,:,:,:),gt(:,:,:)
+  real(dp), allocatable :: inlet(:,:),wide(:,:,:,:),wide_t(:,:,:),vf(:,:,:),target_vf(:,:,:)
+  real(dp) :: inlet_t(6)
+  character(len=16) :: faces(6)
+  integer :: i,j,k
   real(dp) :: expected_fraction
   integer :: nv,node,endpoint
   logical :: ok
@@ -107,6 +111,51 @@ program test_eb_tree_halo_3d
   tree=saved
   call fill_reactive_eb_tree_halo_3d(species,tree,0,ghost,gt,ok)
   call require(.not.ok.and.all(ghost==17._dp).and.all(gt==19._dp),'invalid target rollback')
+  allocate(inlet(nv,6))
+  do i=1,6
+    inlet(:,i)=real(i+1,dp)*u(:,1,1,3)
+  end do
+  inlet_t=t(1,1,3);faces='outflow';faces(1)='inflow';faces(3)='inflow'
+  call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok, &
+    boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t)
+  call require(ok.and.all(ghost(:,0,2,2)==inlet(:,1)),'prescribed inlet at boundary child')
+  call require(all(ghost(:,2,0,2)==inlet(:,3)),'second prescribed face')
+  call fill_reactive_eb_tree_halo_3d(species,tree,4,ghost,gt,ok, &
+    boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t)
+  call require(ok.and.all(ghost(:,5,2,2)==tree%nodes(5)%state(:,1,2,2)), &
+    'prescribed outer faces leave interior peer donor unchanged')
+  allocate(wide(nv,0:15,0:15,0:15),wide_t(0:15,0:15,0:15),vf(0:15,0:15,0:15),target_vf(16,16,16))
+  do k=0,15
+  do j=0,15
+  do i=0,15
+    target_vf(i+1,j+1,k+1)=coarse%volume_fraction(max(1,min(4,i-5)), &
+      max(1,min(4,j-5)),max(1,min(4,k-5)))
+  end do
+  end do
+  end do
+  wide=17;wide_t=19;vf=23
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf, &
+    boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t)
+  call require(ok.and.all(wide(:,0,6,9)==inlet(:,1)),'six-layer prescribed inlet')
+  call require(all(wide(:,0,0,9)==inlet(:,1)),'corner uses first inflow axis')
+  call require(all(wide(:,6,0,9)==inlet(:,3)),'wide second face inlet')
+  call require(all(vf==target_vf),'wide inlet volume fractions')
+  inlet(1,1)=-1;wide=17;wide_t=19;vf=23
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf, &
+    boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t)
+  call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'invalid wide inlet rollback')
+  ghost=17;gt=19
+  call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok,boundary_faces=faces)
+  call require(.not.ok.and.all(ghost==17).and.all(gt==19),'missing inlet data rollback')
+  call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok, &
+    inflow_mach=[.2_dp,-1._dp,-1._dp,-1._dp,-1._dp,-1._dp],inflow_temperature=inlet_t)
+  call require(ok.and.ghost(2,0,2,2)>0,'legacy Mach inlet remains available')
+  ghost=17;gt=19
+  call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok, &
+    boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t,inflow_mach=[(0._dp,i=1,6)])
+  call require(.not.ok.and.all(ghost==17).and.all(gt==19),'conflicting inlet modes reject')
   print *, 'test_eb_tree_halo_3d: PASS'
 contains
   subroutine require(condition,label)
