@@ -11,8 +11,7 @@ Older milestone prose remains historical detail, not a current global status.
 
 Serial EB tree halos also accept paired periodic faces, wrapping donor indices
 through peers and ancestors, including halos wider than the root domain
-([checks](validation/eb-tree-periodic-halo-20260926.md)). Periodic tree time
-updates remain rejected pending seam flux reconciliation. MPI periodic tree
+([checks](validation/eb-tree-periodic-halo-20260926.md)). MPI periodic tree
 halo exchange now matches serial face-only, full one-layer and six-layer
 construction, including temporal ancestor donors and idle ranks
 ([checks](validation/mpi-eb-periodic-halo-20260926.md)). Periodic tree application
@@ -20,8 +19,11 @@ dispatch is not yet connected.
 The shared EB peer-flux correction kernel now accepts a periodic domain
 length on one axis, checks matching face centroids and applies conservative
 state correction across the seam
-([checks](validation/eb-periodic-peer-flux-20260926.md)). Tree traversal and
-coarse/fine seam synchronization still need to call this kernel.
+([checks](validation/eb-periodic-peer-flux-20260926.md)). Serial tree traversal
+now reconciles periodic peers and mirrors restricted fine transfers into the
+opposite coarse face. Common-step PCM and PLM/CTU hydro connect that path
+([checks](validation/eb-tree-periodic-flux-20260926.md)). Periodic recursive
+updates, transport and MPI time updates remain pending.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
