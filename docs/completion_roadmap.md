@@ -212,7 +212,11 @@ forward explicit coefficients through coarse/fine stepping and reflux
 ([checks](validation/difmag-two-level-20260925.md)). Fixed/selected serial/MPI
 two-level applications now expose input and bind the resolved coefficient to
 restart identity ([checks](validation/difmag-two-level-input-20260925.md)).
-Artificial-viscosity dispatch outside PPM (PCM/PLM and EB) remains open. Regular MPI spray
+Regular serial PCM/PLM library stepping now applies explicit positive coefficients
+at both SSPRK2 stages, including mean face fluxes and boundary accounting
+([checks](validation/pcm-plm-viscosity-20260925.md)). Omitted/zero PCM/PLM coefficients
+retain the existing policy. PCM/PLM input/default policy, MPI/AMR propagation and
+EB artificial-viscosity dispatch remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
