@@ -37,6 +37,9 @@ matching gas faces
 ([checks](validation/eb-spray-periodic-field-20260925.md)). Fixed/selected serial
 periodic input and restart are also connected; periodic impact/film dispatch
 remains pending ([checks](validation/eb-spray-periodic-application-20260925.md)).
+Serial domain-wall gas conditions now connect specular particle reflection,
+wall thermal timestep bounds and fixed/selected temperature-bound restart
+([checks](validation/eb-spray-wall-20260926.md)).
 Serial/MPI fixed and selected EB tree gas applications now also accept CTU,
 including scheduled regridding and method-bound changed-rank continuation
 ([application checks](validation/eb-tree-ctu-application-20260925.md)).

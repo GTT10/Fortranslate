@@ -51,10 +51,11 @@ wall and chemistry inventories. CSVs are analysis outputs, not restart files. Ou
 not alias the gas, spray or geometry inputs; checks normalize lexical absolute
 paths, not filesystem symlinks.
 
-## Explicit gas inflow, outflow and periodic faces
+## Explicit gas boundaries
 
 Fixed and selected executables accept `hydro_method='plm_ctu'` with
-`riemann_solver='pelec'` and six `boundary_faces` labels (`inflow`, `outflow` or paired `periodic`,
+`riemann_solver='pelec'` and six `boundary_faces` labels (`inflow`, `outflow`, paired `periodic`,
+`slip_wall`, `no_slip_wall` or `isothermal_wall`,
 in x-low, x-high, y-low, y-high, z-low, z-high order). For example, add to
 `gas.nml`:
 
@@ -71,8 +72,18 @@ Gas inlets use the initial mixture composition and do not inject particles.
 The configured inlet states participate in hydro and transport timestep bounds.
 Checkpoint context includes all face labels and inlet density, pressure and
 velocity values, so changing these settings rejects continuation. Legacy
-boundary inputs retain their previous context. Domain-wall labels remain
-unsupported for this spray application.
+boundary inputs retain their previous context.
+
+Domain-wall labels apply the selected gas condition and specular particle
+reflection. Particle tangential velocity is retained even at a gas no-slip
+wall; particle mass and thermal state are unchanged by the reflection itself.
+Use `wall_impacts=.false.` with domain-wall or periodic labels. For an
+isothermal gas wall, enable transport and thermal conduction and set the six
+`wall_temperature` values in kelvin. Wall heat-transfer bounds limit the time
+step, and wall temperatures enter checkpoint identity. The exterior inventory
+includes domain-wall particle impulse; the wall inventory continues to describe
+the embedded surface. External-wall sticking, splash and film creation are
+not connected. See [wall checks](../../docs/validation/eb-spray-wall-20260926.md).
 
 For the supplied x-normal plane, periodic y/z faces can be set with:
 
