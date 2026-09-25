@@ -750,7 +750,9 @@ contains
     rotated=stencil
     rotated(2,:)=stencil(axis+1,:);rotated(axis+1,:)=stencil(2,:)
     dtdx=dt/dx
-    call reconstruct_pelec_plm_cell(rotated,sound,dtdx,flat,qm,qp,valid,selected,covered,opened)
+    ! pc_plm_d_eb_passive preserves independently limited face weights.
+    call reconstruct_pelec_plm_cell(rotated,sound,dtdx,flat,qm,qp,valid,selected,covered,opened, &
+      normalize_species=.false.)
     if(.not.valid) return
     call compute_pelec_plm_slopes(rotated,flat,selected,slope,valid,covered)
     if(.not.valid) return

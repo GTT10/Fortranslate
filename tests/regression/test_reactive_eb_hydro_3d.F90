@@ -865,6 +865,30 @@ contains
         qm,qp,em,ep,valid)
       call require(valid.and.abs(em-299900.2_dp)<1e-10_dp.and.abs(ep-300096.2_dp)<1e-10_dp, &
         'finite-time internal energy contact-wave integration')
+      ! Independent limited species slopes need not sum to zero. Pinned
+      ! pc_plm_d_eb_passive retains the resulting nonunit face weights.
+      q=0;q(1,:)=1;q(5,:)=135000;e=300000
+      q(6:8,-2)=[.1_dp,.3_dp,.6_dp];q(6:8,-1)=q(6:8,-2)
+      q(6:8,0)=[.2_dp,.2_dp,.6_dp]
+      q(6:8,1)=[.4_dp,.1_dp,.5_dp];q(6:8,2)=q(6:8,1)
+      do mask=0,3
+        area=[merge(.7_dp,0._dp,btest(mask,0)),merge(.4_dp,0._dp,btest(mask,1))]
+        call predict_reactive_eb_plm_cell_3d(q,e,400._dp,axis,.01_dp,0._dp,1._dp,covered,area, &
+          qm,qp,em,ep,valid,order=2)
+        call require(valid,'independent species EB prediction')
+        if(area(1)>0) then
+          call require(maxval(abs(qm(6:8)-[.1_dp,4._dp/15,.6_dp]))<1e-14_dp, &
+            'lower EB species retain independent slopes')
+        else
+          call require(all(qm==0).and.em==0,'independent species lower closed face')
+        end if
+        if(area(2)>0) then
+          call require(maxval(abs(qp(6:8)-[.3_dp,2._dp/15,.6_dp]))<1e-14_dp, &
+            'upper EB species retain independent slopes')
+        else
+          call require(all(qp==0).and.ep==0,'independent species upper closed face')
+        end if
+      end do
     end do
     q=nan_value;e=nan_value;covered=.true.
     call predict_reactive_eb_plm_cell_3d(q,e,400._dp,1,.01_dp,1e-6_dp,1._dp,covered,[0._dp,0._dp], &
