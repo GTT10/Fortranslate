@@ -349,3 +349,9 @@ removing thermal controls on restart rejects. Nonthermal checkpoint headers
 retain their existing format. MPI EB spray also forwards these temperatures to the gas split; use
 `particle_outflow=.true.` for explicit boundaries and keep domain-wall films
 disabled. Nonperiodic thermal walls permit KH child generation. Particles reflect specularly at thermal walls. This is application integration, not physical validation.
+
+
+Tree checkpoint records support PCM with explicit boundary labels as well as
+PLM/CTU. The tree serializer supplies an embedded-patch context while retaining
+boundary/solver identity and thermal/inlet validation. This does not enable PCM
+physical-boundary stepping in the separate single-level application.
