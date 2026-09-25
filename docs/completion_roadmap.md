@@ -172,9 +172,10 @@ SSPRK2 now invokes a caller-supplied donor provider at both stages and returns
 weighted integrated fluxes ([checks](validation/eb-transport-stage-halos-20260925.md)).
 Single-level coupled CTU now forwards inflow/outflow labels and a transport donor
 provider with combined hydro/transport boundary accounting
-([checks](validation/eb-coupled-inflow-boundaries-20260925.md)). Concrete production
-providers, periodic/wall transport flux policies and application/tree/MPI dispatch
-remain open.
+([checks](validation/eb-coupled-inflow-boundaries-20260925.md)). Built-in inflow/outflow donors now reuse the regular boundary filler at every
+transport stage ([checks](validation/eb-built-in-inflow-donors-20260925.md)).
+Periodic/wall transport flux policies, input/timestep/restart wiring and
+application/tree/MPI dispatch remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
