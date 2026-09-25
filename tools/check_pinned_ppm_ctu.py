@@ -2,7 +2,7 @@
 """Compare unchanged pinned twelve-solve CTU assembly on small periodic grids.
 
 The serial array shim executes reference loops; EOS uses exported NASA7 data.
-WENO, forcing and physical boundaries are off. Optional shock/viscosity cases.
+WENO and forcing are off. Optional shock/viscosity and physical-boundary cases.
 """
 from __future__ import annotations
 import argparse
@@ -18,8 +18,8 @@ from check_pinned_riemann_kernel import PREFIX
 DRIVER=r'''
 int main(){
  for(auto& row:thermo)for(double& v:row)if(!(std::cin>>v))return 2;
- double dt,difmag;int flattening;std::cout<<std::setprecision(17);
- while(std::cin>>dt>>flattening>>difmag){
+ double dt,difmag;int flattening,boundary;std::cout<<std::setprecision(17);
+ while(std::cin>>dt>>flattening>>difmag>>boundary){
   double cells[4][4][4][12];
   for(auto& plane:cells)for(auto& row:plane)for(auto& cell:row)for(double& v:cell)if(!(std::cin>>v))return 3;
   using namespace amrex;
@@ -28,7 +28,17 @@ int main(){
   FArrayBox fx(fb,NVAR),fy(fb,NVAR),fz(fb,NVAR),qx(fb,NGDNV),qy(fb,NGDNV),qz(fb,NGDNV),area(fb,1);
   auto q=prim.array(),qa=aux.array(),vv=vol.array(),aa=area.array(),u=cons.array(),div=divergence.array();EOS eos;
   ParallelFor(wide,[&](int i,int j,int k){
-   auto& cell=cells[(k%4+4)%4][(j%4+4)%4][(i%4+4)%4];
+   int idx[3]={i,j,k};double sign[3]={1.,1.,1.};
+   for(int d=0;d<3;d++){
+    if(boundary==0)idx[d]=(idx[d]%4+4)%4;
+    else if(boundary==1||boundary==4)idx[d]=std::max(0,std::min(3,idx[d]));
+    else if(idx[d]<0){idx[d]=-idx[d]-1;sign[d]=-1.;}
+    else if(idx[d]>3){idx[d]=7-idx[d];sign[d]=-1.;}
+   }
+   double cell[12];for(int n=0;n<12;n++)cell[n]=cells[idx[2]][idx[1]][idx[0]][n];
+   if(boundary==4&&(i<0||i>3||j<0||j>3||k<0||k>3))
+    for(int n=0;n<12;n++)cell[n]=cells[0][0][0][n];
+   for(int d=0;d<3;d++)cell[d+1]*=sign[d];
    for(int n=0;n<12;n++)q(i,j,k,n)=cell[n];
    double e,c;eos.properties(cell[0],cell+5,cell[4],e,c);
    u(i,j,k,URHO)=cell[0];double kin=0;
@@ -41,13 +51,15 @@ int main(){
   ParallelFor(fb,[&](int i,int j,int k){aa(i,j,k)=1.;});
   GpuArray<const Array4<double>,3> flx{fx.array(),fy.array(),fz.array()},qec{qx.array(),qy.array(),qz.array()};
   GpuArray<const Array4<const double>,3> areas{aa,aa,aa};
-  int bc[3]={0,0,0},lo[3]={0,0,0},hi[3]={3,3,3};
+  int label=boundary==0?PCPhysBCType::interior:boundary==1?PCPhysBCType::outflow:
+    boundary==2?PCPhysBCType::slip_wall:boundary==3?PCPhysBCType::no_slip_wall:PCPhysBCType::inflow;
+  int bc[3]={label,label,label},lo[3]={0,0,0},hi[3]={3,3,3};
   pc_umeth_3D(bx,bc,bc,lo,hi,q,qa,src.array(),flx,qec,areas,pd.array(),vv,{.25,.25,.25},dt,1,4,flattening!=0,false,0);
   ParallelFor(fb,[&](int i,int j,int k){pc_divu(i,j,k,q,.25,.25,.25,div);});
   for(int d=0;d<3;d++){
    auto out=flx[d];Box faces=surroundingNodes(bx,d);
    ParallelFor(faces,[&](int i,int j,int k){
-    pc_artif_visc(i,j,k,out,div,u,.25,difmag,d,0,3,0,0);
+    pc_artif_visc(i,j,k,out,div,u,.25,difmag,d,0,3,label,label);
     pc_norm_spec_flx(i,j,k,out);
     for(int n=0;n<12;n++)std::cout<<out(i,j,k,n)<<' ';
     std::cout<<'\n';
@@ -65,21 +77,24 @@ def main():
     p.add_argument('--work-dir',type=Path,required=True)
     p.add_argument('--cxx',default='c++')
     p.add_argument('--shock-viscosity',action='store_true')
+    p.add_argument('--physical-boundaries',action='store_true')
     a=p.parse_args();root=Path(__file__).resolve().parents[1]
     pin=json.loads((root/'references/pelec_baseline.json').read_text())['pelec']['commit']
-    names=('PPM.H','PPM.cpp','Riemann.H','Godunov.H','Godunov.cpp','Hydro.H')
+    names=('PPM.H','PPM.cpp','Riemann.H','Godunov.H','Godunov.cpp','Hydro.H','PLM.H')
     sources={n:run(['git','-C',str(a.reference),'show',f'{pin}:Source/{n}']) for n in names}
     work=a.work_dir.resolve();work.mkdir(parents=True,exist_ok=True)
     for n,s in sources.items():(work/n).write_text(s)
     shim=(root/'tools/reference_shims/ctu_array.hpp').read_text()
     flatten=extract(sources['Godunov.H'],'flatten').replace('void flatten(', 'amrex::Real flatten(',1)
-    bodies=flatten+''.join(extract(sources[n],f) for n,f in (
+    slope=extract(sources['PLM.H'],'plm_slope').replace('void plm_slope(', 'amrex::Real plm_slope(',1)
+    bodies=flatten+slope+''.join(extract(sources[n],f) for n,f in (
         ('PPM.H','ppm_reconstruct'),('PPM.H','ppm_int_profile'),
         ('Riemann.H','riemann'),('PPM.cpp','trace_ppm'),
+        ('PLM.H','pc_plm_d_passive'),('PLM.H','pc_plm_d'),
         ('Godunov.H','pc_cmpflx_passive'),('Godunov.H','pc_cmpflx'),
         ('Godunov.H','pc_transdo_passive'),('Godunov.H','pc_transdd_passive'),
         ('Godunov.H','pc_transdo'),('Godunov.H','pc_transdd'),('Godunov.H','pc_pdivu'),
-        ('Godunov.cpp','pc_umeth_3D'),('Hydro.H','pc_divu'),
+        ('Godunov.cpp','pc_low_order_boundary'),('Godunov.cpp','pc_umeth_3D'),('Hydro.H','pc_divu'),
         ('Godunov.H','pc_artif_visc'),('Hydro.H','pc_norm_spec_flx')))
     cpp=work/'reference.cpp';cpp.write_text(PREFIX+shim+bodies+DRIVER)
     command=[a.cxx,'-std=c++17','-O0','-ffp-contract=off',str(cpp),'-o',str(work/'reference')]
@@ -91,9 +106,11 @@ def main():
     (work/'thermo.txt').write_text(thermo)
     mw=[float(line.split()[0]) for line in thermo.splitlines()]
     cases=[]
-    configs=[(mode,dt,0,0.) for mode in range(3) for dt in (0.,1e-5)]
-    if a.shock_viscosity:configs += [(3,1e-5,flat,visc) for visc in (0.,.1) for flat in (0,1)]
-    for mode,dt,flat,visc in configs:
+    configs=[(mode,dt,0,0.,0) for mode in range(3) for dt in (0.,1e-5)]
+    if a.shock_viscosity:configs += [(3,1e-5,flat,visc,0) for visc in (0.,.1) for flat in (0,1)]
+    if a.physical_boundaries:
+        configs += [(2,1e-5,1,visc,bc) for bc in (1,2,3,4) for visc in (0.,.1)]
+    for mode,dt,flat,visc,boundary in configs:
         rows=[]
         for k in range(4):
             for j in range(4):
@@ -113,7 +130,7 @@ def main():
                         temp=900
                         velocity=[40. if i<2 else -40.,10*math.sin(phase),5*math.cos(phase)]
                     rows.append([pressure/(r*temp)]+velocity+[pressure]+y)
-        cases.append(f'{dt} {flat} {visc}\n'+''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows))
+        cases.append(f'{dt} {flat} {visc} {boundary}\n'+''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows))
     inputs=''.join(cases);(work/'inputs.txt').write_text(inputs)
     ref=run([str(work/'reference')],input=thermo+inputs)
     actual=run([exe,'--ctu-stream'],input=inputs)
@@ -133,7 +150,7 @@ def main():
         for table in (expected,observed):
             assert table[6*240:7*240]!=table[7*240:8*240], 'flattening inactive'
             assert table[6*240:7*240]!=table[8*240:9*240], 'viscosity inactive'
-    report=dict(shock_viscosity=a.shock_viscosity,reference_commit=pin,source_sha256={n:hashlib.sha256(s.encode()).hexdigest() for n,s in sources.items()},
+    report=dict(physical_boundaries=a.physical_boundaries,shock_viscosity=a.shock_viscosity,reference_commit=pin,source_sha256={n:hashlib.sha256(s.encode()).hexdigest() for n,s in sources.items()},
                 shim_sha256=hashlib.sha256(shim.encode()).hexdigest(),
                 eos_adapter_sha256=hashlib.sha256(PREFIX.encode()).hexdigest(),
                 compiler=run([a.cxx,'--version']).splitlines()[0],

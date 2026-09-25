@@ -727,10 +727,10 @@ contains
             end do
             if (side==0) then
               call reconstruct_pelec_plm_cell(pencil,sound(cell(1),cell(2),cell(3)),dt/spacing(direction), &
-                cell_flat(cell(1),cell(2),cell(3)),unused,left,good)
+                cell_flat(cell(1),cell(2),cell(3)),unused,left,good,normalize_species=.false.)
             else
               call reconstruct_pelec_plm_cell(pencil,sound(cell(1),cell(2),cell(3)),dt/spacing(direction), &
-                cell_flat(cell(1),cell(2),cell(3)),right,unused,good)
+                cell_flat(cell(1),cell(2),cell(3)),right,unused,good,normalize_species=.false.)
             end if
             if (.not.good) return
           end do

@@ -1122,16 +1122,19 @@ contains
 
   ! Pinned PLM.H: fourth-order primitive slopes and pc_plm_d wave tracing.
   ! Only variables consumed by pc_cmpflx are returned (rho,u,v,w,p,Y).
-  pure subroutine reconstruct_pelec_plm_cell(stencil,sound,dtdx,flat,minus,plus,ok,order,covered,face_open)
+  pure subroutine reconstruct_pelec_plm_cell(stencil,sound,dtdx,flat,minus,plus,ok,order,covered,face_open, &
+      normalize_species)
     real(dp), intent(in) :: stencil(:,-2:),sound,dtdx,flat
     real(dp), intent(out) :: minus(:),plus(:)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
-    logical, optional, intent(in) :: covered(-2:),face_open(2)
+    logical, optional, intent(in) :: covered(-2:),face_open(2),normalize_species
     real(dp) :: slope(size(stencil,1)),center(size(stencil,1))
     real(dp) :: w(3),rho,c2,am,ap,a0,factor,acoustic,contact
     integer :: selected,nv
-    logical :: valid,opened(2)
+    logical :: valid,opened(2),normalize
+    normalize=.true.
+    if(present(normalize_species)) normalize=normalize_species
     minus=0;plus=0;ok=.false.;nv=size(stencil,1)
     if (nv<6.or.size(stencil,2)/=5.or.size(minus)/=nv.or.size(plus)/=nv) return
     if(.not.all(ieee_is_finite([sound,dtdx,flat]))) return
@@ -1184,8 +1187,9 @@ contains
     ok=all(ieee_is_finite(minus)).and.all(ieee_is_finite(plus))
     if(ok.and.opened(1)) ok=all(minus(6:)>=0).and.sum(minus(6:))>0
     if(ok.and.opened(2)) ok=all(plus(6:)>=0).and.sum(plus(6:))>0
-    if(ok) then
-      ! Independently limited species slopes need not sum to zero.
+    if(ok.and.normalize) then
+      ! Legacy EOS callers require normalized weights; pc_cmpflx consumes
+      ! the independent reconstructed weights without this normalization.
       if(opened(1)) minus(6:)=minus(6:)/sum(minus(6:))
       if(opened(2)) plus(6:)=plus(6:)/sum(plus(6:))
     end if

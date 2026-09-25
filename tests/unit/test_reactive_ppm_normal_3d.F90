@@ -4,7 +4,9 @@ program test_reactive_ppm_normal_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
-  use reactive_3d_mod, only: compute_reactive_ppm_normal_fluxes_3d,compute_reactive_ppm_ctu_fluxes_3d
+  use reactive_3d_mod, only: compute_reactive_ppm_normal_fluxes_3d,compute_reactive_ppm_ctu_fluxes_3d, &
+    compute_reactive_ppm_halo_ctu_fluxes_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),reference(:,:),q(:),v(:),f(:)
@@ -27,10 +29,12 @@ program test_reactive_ppm_normal_3d
     case('--ctu-stream')
       block
         real(dp) :: cu(12,4,4,4),ct(4,4,4),cx(12,0:4,4,4),cy(12,4,0:4,4),cz(12,4,4,0:4),cq(12)
-        integer :: ii,jj,kk,flatten_flag
-        real(dp) :: viscosity
+        integer :: ii,jj,kk,flatten_flag,boundary_mode
+        real(dp) :: cg(12,12,12,12),cgt(12,12,12)
+        character(len=16) :: faces(6)
+        real(dp) :: viscosity,inlet(12,6),inlet_t(6)
         do
-          read(*,*,iostat=status) dt,flatten_flag,viscosity
+          read(*,*,iostat=status) dt,flatten_flag,viscosity,boundary_mode
           if(status<0) exit
           if(status/=0) error stop 'invalid CTU interval'
           do kk=1,4
@@ -43,8 +47,26 @@ program test_reactive_ppm_normal_3d
           end do
           end do
           end do
-          call compute_reactive_ppm_ctu_fluxes_3d(species,cu,ct,[.25_dp,.25_dp,.25_dp],dt, &
-            .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity)
+          if(boundary_mode==0) then
+            call compute_reactive_ppm_ctu_fluxes_3d(species,cu,ct,[.25_dp,.25_dp,.25_dp],dt, &
+              .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity)
+          else
+            select case(boundary_mode)
+            case(1);faces='outflow'
+            case(2);faces='slip_wall'
+            case(3);faces='no_slip_wall'
+            case(4);faces='inflow'
+            case default;error stop 'unsupported reference boundary'
+            end select
+            inlet=spread(cu(:,1,1,1),2,6);inlet_t=ct(1,1,1)
+            call fill_reactive_boundary_ghosts_3d(cu,ct,faces,cg,cgt,ok,ghost_width=4, &
+              inflow_state=inlet,inflow_temperature=inlet_t)
+            call require(ok,'CTU physical halo')
+            call compute_reactive_ppm_halo_ctu_fluxes_3d(species,cg,cgt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
+              .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity, &
+              reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall', &
+              outflow_faces=faces=='outflow',no_slip_faces=faces=='no_slip_wall',inflow_faces=faces=='inflow')
+          end if
           call require(ok,'CTU reference fluxes')
           do kk=1,4
           do jj=1,4
