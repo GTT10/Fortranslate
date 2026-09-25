@@ -5,7 +5,7 @@ module eb_reactive_hydro_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
-    reactive_riemann_flux_x,reconstruct_pelec_plm_cell,compute_pelec_plm_slopes
+    reactive_riemann_flux_x,reconstruct_pelec_plm_cell,compute_pelec_plm_slopes,reactive_pelec_primitive_flux_x
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
@@ -19,6 +19,12 @@ module eb_reactive_hydro_3d_mod
   implicit none
   private
 
+  type, public :: eb_plm_face_prediction_3d
+    ! Normal face index starts at zero, tangential indices at one.
+    real(dp), allocatable :: left(:,:,:,:),right(:,:,:,:),flux(:,:,:,:)
+    real(dp), allocatable :: energy_left(:,:,:),energy_right(:,:,:),pressure(:,:,:),velocity(:,:,:)
+  end type eb_plm_face_prediction_3d
+  public :: compute_reactive_eb_plm_normal_fluxes_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
@@ -30,6 +36,109 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! First Godunov stage only: intensive normal fluxes before transverse,
+  ! viscosity, centroid interpolation or aperture/area integration.
+  subroutine compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
+      dt,flattening,prediction,ok,order)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
+    real(dp), intent(in) :: dt,flattening(0:,0:,0:)
+    type(eb_plm_face_prediction_3d), intent(inout) :: prediction(3)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: order
+    type(eb_plm_face_prediction_3d) :: candidate(3)
+    real(dp), allocatable :: primitive(:,:,:,:),sound(:,:,:),energy(:,:,:)
+    real(dp) :: stencil(reactive_nvar(size(species)),-2:2),epencil(-2:2)
+    real(dp) :: ql(reactive_nvar(size(species))),qr(reactive_nvar(size(species))),unused(reactive_nvar(size(species)))
+    real(dp) :: f(reactive_nvar(size(species))),el,er,ignored,aperture,spacing(3),recovered,speed,swap,pface,uface
+    integer :: n(3),nv,axis,i,j,k,idx(3),lo(3),hi(3),cell(3),point(3),offset,side,selected
+    logical :: covered(-2:2),valid
+    ok=.false.;nv=reactive_nvar(size(species));selected=4
+    if(present(order)) selected=order
+    if(.not.geometry%is_valid().or.(selected/=1.and.selected/=2.and.selected/=4)) return
+    n=[geometry%nx,geometry%ny,geometry%nz];spacing=[geometry%dx,geometry%dy,geometry%dz]
+    if(any(shape(ghost)/=[nv,n+6]).or.any(shape(temperature)/=n+6).or.any(shape(volume_fraction)/=n+6)) return
+    if(any(shape(flattening)/=n+2)) return
+    if(.not.ieee_is_finite(dt).or.dt<0) return
+    if(.not.all(ieee_is_finite(flattening)).or..not.all(ieee_is_finite(volume_fraction))) return
+    if(any(flattening<0).or.any(flattening>1).or.any(volume_fraction<0).or.any(volume_fraction>1)) return
+    if(any(volume_fraction(1:n(1),1:n(2),1:n(3))/=geometry%volume_fraction)) return
+    allocate(primitive(nv,-2:n(1)+3,-2:n(2)+3,-2:n(3)+3), &
+      sound(-2:n(1)+3,-2:n(2)+3,-2:n(3)+3),energy(-2:n(1)+3,-2:n(2)+3,-2:n(3)+3))
+    primitive=0;sound=0;energy=0
+    do k=-2,n(3)+3
+    do j=-2,n(2)+3
+    do i=-2,n(1)+3
+      idx=[i,j,k]
+      ! Only face-normal pencils enter this stage; unused edge/corner data may be poisoned.
+      if(count(idx<1.or.idx>n)>1.or.volume_fraction(i,j,k)==0) cycle
+      call reactive_conserved_to_primitive(species,ghost(:,i,j,k),temperature(i,j,k), &
+        primitive(:,i,j,k),recovered,speed,valid)
+      if(.not.valid) return
+      sound(i,j,k)=speed
+      energy(i,j,k)=ghost(5,i,j,k)-.5_dp*sum(ghost(2:4,i,j,k)*primitive(2:4,i,j,k))
+    end do
+    end do
+    end do
+    do axis=1,3
+      lo=1;lo(axis)=0;hi=n
+      associate(result=>candidate(axis))
+      allocate(result%left(nv,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        result%right(nv,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        result%flux(nv,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        result%energy_left(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        result%energy_right(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        result%pressure(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+        result%velocity(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)))
+      result%left=0;result%right=0;result%flux=0;result%energy_left=0;result%energy_right=0
+      result%pressure=0;result%velocity=0
+      do k=lo(3),hi(3)
+      do j=lo(2),hi(2)
+      do i=lo(1),hi(1)
+        idx=[i,j,k]
+        select case(axis)
+        case(1);aperture=geometry%x_face_fraction(i,j,k)
+        case(2);aperture=geometry%y_face_fraction(i,j,k)
+        case(3);aperture=geometry%z_face_fraction(i,j,k)
+        end select
+        if(aperture<=0) cycle
+        do side=0,1
+          cell=idx;cell(axis)=cell(axis)+side
+          if(volume_fraction(cell(1),cell(2),cell(3))<=0) return
+          do offset=-2,2
+            point=cell;point(axis)=point(axis)+offset
+            covered(offset)=volume_fraction(point(1),point(2),point(3))<=0
+            stencil(:,offset)=primitive(:,point(1),point(2),point(3))
+            epencil(offset)=energy(point(1),point(2),point(3))
+          end do
+          if(side==0) then
+            call predict_reactive_eb_plm_cell_3d(stencil,epencil,sound(cell(1),cell(2),cell(3)),axis,spacing(axis), &
+              dt,flattening(cell(1),cell(2),cell(3)),covered,[0._dp,aperture],unused,ql,ignored,el,valid,selected)
+          else
+            call predict_reactive_eb_plm_cell_3d(stencil,epencil,sound(cell(1),cell(2),cell(3)),axis,spacing(axis), &
+              dt,flattening(cell(1),cell(2),cell(3)),covered,[aperture,0._dp],qr,unused,er,ignored,valid,selected)
+          end if
+          if(.not.valid) return
+        end do
+        result%left(:,i,j,k)=ql;result%right(:,i,j,k)=qr
+        result%energy_left(i,j,k)=el;result%energy_right(i,j,k)=er
+        swap=ql(2);ql(2)=ql(axis+1);ql(axis+1)=swap
+        swap=qr(2);qr(2)=qr(axis+1);qr(axis+1)=swap
+        cell=idx;cell(axis)=cell(axis)+1
+        call reactive_pelec_primitive_flux_x(species,ql,qr,.5_dp*(sound(i,j,k)+sound(cell(1),cell(2),cell(3))), &
+          f,valid,interface_pressure=pface,interface_velocity=uface)
+        if(.not.valid) return
+        swap=f(2);f(2)=f(axis+1);f(axis+1)=swap
+        result%flux(:,i,j,k)=f;result%pressure(i,j,k)=pface;result%velocity(i,j,k)=uface
+      end do
+      end do
+      end do
+      end associate
+    end do
+    prediction=candidate;ok=.true.
+  end subroutine compute_reactive_eb_plm_normal_fluxes_3d
 
   ! Pinned pc_plm_d_eb normal prediction. Primitive layout is rho,u,v,w,p,Y;
   ! rhoe is kept separately for subsequent EB transverse pressure/energy work.

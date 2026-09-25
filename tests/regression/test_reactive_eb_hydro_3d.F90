@@ -13,6 +13,7 @@ program test_reactive_eb_hydro_3d
     reactive_eb_flux_divergence_3d
   use eb_reactive_hydro_3d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
+    compute_reactive_eb_plm_normal_fluxes_3d,eb_plm_face_prediction_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
@@ -74,6 +75,7 @@ program test_reactive_eb_hydro_3d
   call verify_small_cell_hydro_relief()
   call verify_viscosity()
   call verify_normal_prediction()
+  call verify_normal_fluxes()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -254,6 +256,84 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_normal_fluxes()
+    type(eb_geometry_3d) :: shape
+    type(eb_plm_face_prediction_3d) :: result(3),saved(3)
+    real(dp) :: ghost(nvar,-2:7,-2:7,-2:7),gt(-2:7,-2:7,-2:7),vf(-2:7,-2:7,-2:7),flat(0:5,0:5,0:5)
+    real(dp) :: fx(nvar,0:4,4,4),fy(nvar,4,0:4,4),fz(nvar,4,4,0:4),expected(nvar),cell_state(nvar)
+    real(dp) :: tc,cs,vel(3),area,nan_value
+    integer :: cut,mode,axis,ii,jj,kk,idx(3),inside(3),lo(3),hi(3)
+    logical :: valid
+    character(len=1), parameter :: axes(3)=['x','y','z']
+    nan_value=ieee_value(0._dp,ieee_quiet_nan);flat=1;vel=[7._dp,-3._dp,5._dp]
+    do cut=1,3
+      call build_axis_plane_eb_geometry_3d(4,4,4,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
+        axes(cut),.37_dp,shape,valid)
+      call require(valid,'normal flux geometry')
+      do mode=1,2
+        ghost=nan_value;gt=nan_value
+        do kk=-2,7
+        do jj=-2,7
+        do ii=-2,7
+          idx=[ii,jj,kk];inside=max(1,min(4,idx))
+          vf(ii,jj,kk)=shape%volume_fraction(inside(1),inside(2),inside(3))
+          if(vf(ii,jj,kk)==0.or.count(idx<1.or.idx>4)>1) cycle
+          call build_cell_state(.31_dp+.002_dp*(mode-1)*sum(inside),vel,ghost(:,ii,jj,kk),gt(ii,jj,kk),cs)
+        end do
+        end do
+        end do
+        call compute_reactive_eb_plm_normal_fluxes_3d(species,shape,ghost,gt,vf,1e-7_dp,flat,result,valid)
+        call require(valid,'normal flux pipeline ignores covered and unused corner states')
+        if(mode==1) then
+          call build_cell_state(.31_dp,vel,cell_state,tc,cs)
+          do axis=1,3
+            expected=cell_state*vel(axis);expected(axis+1)=expected(axis+1)+pressure
+            expected(5)=expected(5)+pressure*vel(axis)
+            lo=1;lo(axis)=0;hi=4
+            do kk=lo(3),hi(3)
+            do jj=lo(2),hi(2)
+            do ii=lo(1),hi(1)
+              select case(axis)
+              case(1);area=shape%x_face_fraction(ii,jj,kk)
+              case(2);area=shape%y_face_fraction(ii,jj,kk)
+              case(3);area=shape%z_face_fraction(ii,jj,kk)
+              end select
+              if(area==0) then
+                call require(all(result(axis)%flux(:,ii,jj,kk)==0).and.result(axis)%pressure(ii,jj,kk)==0.and. &
+                  result(axis)%velocity(ii,jj,kk)==0,'closed normal flux zero')
+              else
+                call require(maxval(abs(result(axis)%flux(:,ii,jj,kk)-expected)/max(1._dp,abs(expected)))<3e-13_dp, &
+                  'uniform intensive flux including partially open faces')
+                call require(abs(result(axis)%pressure(ii,jj,kk)/pressure-1)<3e-13_dp.and. &
+                  abs(result(axis)%velocity(ii,jj,kk)-vel(axis))<3e-13_dp,'Godunov pressure and velocity')
+              end if
+            end do
+            end do
+            end do
+          end do
+        else
+          saved=result
+          call compute_reactive_eb_plm_normal_fluxes_3d(species,shape,ghost,gt,vf,1e-7_dp,flat,result,valid,order=1)
+          call require(valid.and.any(result(1)%flux/=saved(1)%flux),'PLM changes nonuniform normal flux')
+          call reactive_eb_outflow_riemann_fluxes_3d(species,ghost(:,1:4,1:4,1:4),gt(1:4,1:4,1:4),shape,'pelec', &
+            fx,fy,fz,valid,ghost(:,0:5,0:5,0:5),gt(0:5,0:5,0:5),difmag=0._dp)
+          call require(valid.and.maxval(abs(result(1)%flux-fx)/max(1._dp,abs(fx)))<3e-13_dp.and. &
+            maxval(abs(result(2)%flux-fy)/max(1._dp,abs(fy)))<3e-13_dp.and. &
+            maxval(abs(result(3)%flux-fz)/max(1._dp,abs(fz)))<3e-13_dp,'first-order PCM flux limit')
+        end if
+        saved=result;ghost(1,5,4,4)=-1
+        call compute_reactive_eb_plm_normal_fluxes_3d(species,shape,ghost,gt,vf,1e-7_dp,flat,result,valid)
+        call require(.not.valid,'bad open donor rejected')
+        do axis=1,3
+          call require(all(result(axis)%flux==saved(axis)%flux).and.all(result(axis)%left==saved(axis)%left).and. &
+            all(result(axis)%right==saved(axis)%right).and.all(result(axis)%energy_left==saved(axis)%energy_left).and. &
+            all(result(axis)%energy_right==saved(axis)%energy_right).and. &
+            all(result(axis)%pressure==saved(axis)%pressure).and.all(result(axis)%velocity==saved(axis)%velocity), &
+            'normal prediction and flux transaction rollback')
+        end do
+      end do
+    end do
+  end subroutine verify_normal_fluxes
   subroutine verify_normal_prediction()
     real(dp) :: q(nvar,-2:2),e(-2:2),qm(nvar),qp(nvar),em,ep,area(2),nan_value
     logical :: covered(-2:2),valid
