@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare regular zero-source CTU transverse updates to pinned C++ bodies."""
+"""Compare regular CTU transverse updates to pinned C++ bodies."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -41,7 +41,7 @@ template<class T> struct Array4 {
 '''
 DRIVER=r'''
 int main(){
- int nd,dir; double normal[7],p,gamma,flux[2][7],pl[2],ph[2],vl[2],vh[2],scale[2];
+ int nd,dir; double forcing[7],source_e,hdt,normal[7],p,gamma,flux[2][7],pl[2],ph[2],vl[2],vh[2],scale[2];
  std::cout<<std::setprecision(17);
  while(std::cin>>nd>>dir){
   for(double& v:normal)std::cin>>v;
@@ -50,6 +50,7 @@ int main(){
   for(double& v:pl)std::cin>>v;for(double& v:ph)std::cin>>v;
   for(double& v:vl)std::cin>>v;for(double& v:vh)std::cin>>v;
   for(double& v:scale)std::cin>>v;
+  for(double& v:forcing)std::cin>>v;std::cin>>source_e>>hdt;
   if(!std::cin)return 2;
   double normals[72]{},f0[72]{},f1[72]{},q0[72]{},q1[72]{},qa[72]{},src[72]{},outp[72]{},outm[72]{};
   using amrex::Array4;using amrex::IntVect;
@@ -62,6 +63,7 @@ int main(){
    nn(v,QPRES)=p;nn(v,QREINT)=normal[4]-kin;
    for(int n=5;n<7;n++)nn(v,n)=normal[n]/rho;
   }
+  for(int n=0;n<7;n++)src[n]=forcing[n];src[QREINT]=source_e;
   aa(iv,QGAMC)=gamma;
   for(int t=0;t<2;t++){
    int axis=t==0?t0:t1;IntVect high=IntVect::TheDimensionVector(axis);
@@ -71,7 +73,7 @@ int main(){
    qq(iv,axis+1)=vl[t];qq(high,axis+1)=vh[t];
   }
   if(nd==1)pc_transdo(0,0,0,dir,t0,mm,pp,{normals},{normals},{f0},{qa},{q0},scale[0]);
-  else pc_transdd(0,0,0,dir,mm,pp,{normals},{normals},{f0},{f1},{q0},{q1},{qa},{src},0.,scale[0],scale[1]);
+  else pc_transdd(0,0,0,dir,mm,pp,{normals},{normals},{f0},{f1},{q0},{q1},{qa},{src},hdt,scale[0],scale[1]);
   for(int n=0;n<8;n++)std::cout<<pp(iv,n)<<' ';
   for(int n=0;n<8;n++)std::cout<<mm(ivn,n)<<' ';
   std::cout<<'\n';
@@ -118,6 +120,9 @@ def main():
                     vl=[rng.uniform(-3,3) for _ in range(2)];vh=[rng.uniform(-3,3) for _ in range(2)]
                     if mode=='floor':vl=[-1e4,-1e4];vh=[1e4,1e4]
                     rows.append([nd,axis]+normal+[1e5,1.4]+sum(flux,[])+pl+ph+vl+vh+[.01,.02])
+    rows=[row+[0.]*9 for row in rows]
+    # Repeat all double-transverse fixtures with finite primitive source rates.
+    rows += [row[:-9]+[.2,3.,-4.,2.,-2e4,.1,-.1,5e3,.025] for row in rows if row[0]==2]
     inputs=''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows)
     (work/'inputs.txt').write_text(inputs)
     reference=run([str(work/'reference')],input=inputs)

@@ -200,16 +200,19 @@ contains
   end subroutine adjust_reactive_artificial_viscosity_3d
 
 
-  ! Regular-cell pc_transdo/pc_transdd pressure work (no forcing sources).
+  ! Regular-cell pc_transdo/pc_transdd pressure work and optional double-stage sources.
   ! Conserved flux differences and primitive pressure are evolved separately.
   subroutine reactive_ppm_transverse_pressure_3d(normal,normal_pressure,delta,gamma, &
-      lower_pressure,upper_pressure,lower_velocity,upper_velocity,scale,primitive,internal_energy,ok)
+      lower_pressure,upper_pressure,lower_velocity,upper_velocity,scale,primitive,internal_energy,ok, &
+      source,source_energy,source_dt)
     real(dp), intent(in) :: normal(:),normal_pressure,delta(:),gamma
     real(dp), intent(in) :: lower_pressure(:),upper_pressure(:),lower_velocity(:),upper_velocity(:),scale(:)
     real(dp), intent(out) :: primitive(:),internal_energy
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: source(:),source_energy,source_dt
     real(dp) :: candidate(size(normal)),state(size(normal)),pressure,work,pav,du,floor_pressure
-    integer :: axis,nd
+    real(dp) :: forcing(size(normal)),energy_forcing,hdt
+    integer :: axis,nd,supplied
     primitive=0;internal_energy=0;ok=.false.;nd=size(scale)
     if (nd<1.or.nd>2.or.size(normal)<6.or.size(delta)/=size(normal).or.size(primitive)/=size(normal)) return
     if (size(lower_pressure)/=nd.or.size(upper_pressure)/=nd.or. &
@@ -219,6 +222,18 @@ contains
         lower_velocity,upper_velocity,scale]))) return
     if (normal(1)<=density_floor.or.normal_pressure<=0.or.gamma<=0.or.any(scale<0).or. &
         any(lower_pressure<=0).or.any(upper_pressure<=0)) return
+    forcing=0;energy_forcing=0;hdt=0
+    supplied=0
+    if(present(source)) supplied=supplied+1
+    if(present(source_energy)) supplied=supplied+1
+    if(present(source_dt)) supplied=supplied+1
+    if(supplied/=0.and.supplied/=3) return
+    if(supplied==3) then
+      if(nd/=2.or.size(source)/=size(normal)) return
+      if(.not.all(ieee_is_finite(source)).or..not.all(ieee_is_finite([source_energy,source_dt]))) return
+      if(source_dt<0) return
+      forcing=source;energy_forcing=source_energy;hdt=source_dt
+    end if
     state=normal-delta
     if (state(1)<=density_floor) return
     ! pc_transdo_passive/pc_transdd_passive retain signed predictor weights.
@@ -234,8 +249,11 @@ contains
     end do
     floor_pressure=tiny(1._dp)
     if (nd==1) floor_pressure=epsilon(1._dp)*1e-100_dp
-    candidate(5)=max(pressure,floor_pressure)
-    work=state(5)-.5_dp*sum(state(2:4)**2)/state(1)
+    candidate(1:4)=candidate(1:4)+hdt*forcing(1:4)
+    candidate(6:)=candidate(6:)+hdt*forcing(6:)
+    candidate(5)=max(pressure+hdt*forcing(5),floor_pressure)
+    work=state(5)-.5_dp*sum(state(2:4)**2)/state(1)+hdt*energy_forcing
+    if(candidate(1)<=density_floor) return
     if (.not.all(ieee_is_finite(candidate)).or..not.ieee_is_finite(work)) return
     primitive=candidate;internal_energy=work;ok=.true.
   end subroutine reactive_ppm_transverse_pressure_3d

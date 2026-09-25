@@ -21,6 +21,7 @@ program test_reactive_ppm_halo_3d
   character(len=5) :: solver
   real(dp) :: input_state(7),input_flux(7,2),input_delta(7),input_q(7),input_e,input_p,input_gamma
   real(dp) :: input_pl(2),input_ph(2),input_vl(2),input_vh(2),input_scale(2)
+  real(dp) :: input_source(7),input_source_e,input_hdt
   integer :: input_nd,input_axis,input_status
   character(len=32) :: argument
   logical :: ok
@@ -30,14 +31,21 @@ program test_reactive_ppm_halo_3d
     if(trim(argument)/='--transverse-stream') error stop 'unknown stream'
     do
       read(*,*,iostat=input_status) input_nd,input_axis,input_state,input_p,input_gamma,input_flux, &
-        input_pl,input_ph,input_vl,input_vh,input_scale
+        input_pl,input_ph,input_vl,input_vh,input_scale,input_source,input_source_e,input_hdt
       if(input_status<0) exit
       if(input_status/=0.or.input_nd<1.or.input_nd>2) error stop 'invalid transverse input'
       input_delta=input_scale(1)*input_flux(:,1)
       if(input_nd==2) input_delta=input_delta+input_scale(2)*input_flux(:,2)
+      if(input_nd==2) then
+      call reactive_ppm_transverse_pressure_3d(input_state,input_p,input_delta,input_gamma, &
+        input_pl(:input_nd),input_ph(:input_nd),input_vl(:input_nd),input_vh(:input_nd), &
+        input_scale(:input_nd),input_q,input_e,ok, &
+        source=input_source,source_energy=input_source_e,source_dt=input_hdt)
+      else
       call reactive_ppm_transverse_pressure_3d(input_state,input_p,input_delta,input_gamma, &
         input_pl(:input_nd),input_ph(:input_nd),input_vl(:input_nd),input_vh(:input_nd), &
         input_scale(:input_nd),input_q,input_e,ok)
+      end if
       call require(ok,'transverse reference input')
       write(*,'(16(es26.17e3,1x))') input_q,input_e,input_q,input_e
     end do
@@ -441,6 +449,18 @@ contains
       [10._dp,20._dp],[20._dp,10._dp],[2._dp,3._dp],[3._dp,2._dp], &
       [.1_dp,.2_dp],primitive,e,ok)
     call require(ok.and.abs(primitive(5)-104.6_dp)<1e-13_dp.and.e==25,'double transverse pressure work')
+    call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
+      [10._dp,20._dp],[20._dp,10._dp],[2._dp,3._dp],[3._dp,2._dp], &
+      [.1_dp,.2_dp],primitive,e,ok,source=normal)
+    call require(.not.ok.and.all(primitive==0).and.e==0,'incomplete source rejected')
+    call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
+      [10._dp],[20._dp],[2._dp],[3._dp],[.1_dp],primitive,e,ok, &
+      source=normal,source_energy=0._dp,source_dt=.1_dp)
+    call require(.not.ok.and.all(primitive==0).and.e==0,'single-stage source rejected')
+    call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
+      [10._dp,20._dp],[20._dp,10._dp],[2._dp,3._dp],[3._dp,2._dp], &
+      [.1_dp,.2_dp],primitive,e,ok,source=-normal,source_energy=0._dp,source_dt=1._dp)
+    call require(.not.ok.and.all(primitive==0).and.e==0,'source invalid density rollback')
     ! The pinned passive transverse kernels preserve signed face weights.
     ! Accepted cell compositions still use the ordinary nonnegative EOS gate.
     base=0;base(1)=1;base(2)=100;base(5)=300000;base(nv)=1
