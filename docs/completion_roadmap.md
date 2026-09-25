@@ -126,9 +126,11 @@ traced internal energy ([checks](validation/eb-plm-normal-20260925.md)). A three
 halo API now constructs normal Riemann fluxes and Godunov pressure/velocity
 ([checks](validation/eb-plm-normal-flux-20260925.md)). Cell-local single/double
 transverse correction now includes the joint aperture gate, pressure work and
-primitive sources ([checks](validation/eb-transverse-20260925.md)). Application
-halo preparation, CTU orchestration/corrected Riemann solves, centroid flux
-interpolation and input dispatch remain before claiming EB Godunov parity.
+primitive sources ([checks](validation/eb-transverse-20260925.md)). The twelve-solve
+CTU flux pipeline is connected, including corrected Godunov pressure/velocity
+([checks](validation/eb-ctu-flux-20260925.md)). Viscosity/centroid flux processing,
+conservative update/redistribution, application halo preparation and input
+selection remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
