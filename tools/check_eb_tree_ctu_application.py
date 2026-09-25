@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--selected', action='store_true')
     parser.add_argument('--uniform-density', action='store_true')
+    parser.add_argument('--inflow', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work.resolve()))
@@ -31,6 +32,10 @@ def main():
                                     "composition_mole_fractions=.29572,.14785,.55643,", 1)
     if args.uniform_density:
         template = template.replace('&eb_tree', '&eb_tree\n cut_density=.31,', 1)
+    if args.inflow:
+        template = template.replace('&eb_tree', "&eb_tree\n "
+            "boundary_faces='inflow','outflow','outflow','outflow','outflow','outflow', "
+            "inflow_pressure(1)=135000, inflow_velocity(1,1)=100,", 1)
     env = os.environ.copy()
     env.pop('DISPLAY', None)
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
@@ -81,7 +86,13 @@ def main():
     run('wrong_method', 3, restart, template.replace("hydro_method='plm_ctu'", "hydro_method='pcm'"), False)
     run('wrong_solver', text=template.replace("riemann_solver='pelec'", "riemann_solver='hllc'"), success=False)
     run('unknown_method', text=template.replace("hydro_method='plm_ctu'", "hydro_method='unknown'"), success=False)
-    print(f'PASS: 4 successful runs, 3 expected rejections; maximum residual={worst:.6e}; artifacts={work}')
+    rejections = 3
+    if args.inflow:
+        run('changed_inlet', 3, restart, template.replace('inflow_velocity(1,1)=100', 'inflow_velocity(1,1)=101'), False)
+        run('changed_boundary', 3, restart, template.replace("'inflow'", "'outflow'"), False)
+        run('conflicting_mode', text=template.replace('&eb_tree', '&eb_tree\n inflow_mach(1)=.2,', 1), success=False)
+        rejections += 3
+    print(f'PASS: 4 successful runs, {rejections} expected rejections; maximum residual={worst:.6e}; artifacts={work}')
 
 
 if __name__ == '__main__':

@@ -52,7 +52,7 @@ program pelef_reactive_eb_tree_3d
 #endif
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar
+  use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d
@@ -120,7 +120,11 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp
   logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
-  real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:)
+  real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:),inlet_state(:,:),inlet_primitive(:)
+  character(len=16) :: boundary_faces(6)='legacy'
+  character(len=16), allocatable :: active_faces(:)
+  real(dp) :: inflow_density(6)=.31_dp,inflow_velocity(3,6)=0,inlet_t,inlet_sound
+  integer :: inlet_face
   real(dp) :: regular_density=.31_dp,cut_density=.93_dp,initial_pressure=135000._dp
   real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=.1_dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
@@ -138,7 +142,7 @@ program pelef_reactive_eb_tree_3d
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
-    inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method, &
+    inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     regular_density,cut_density,initial_pressure, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
@@ -200,8 +204,20 @@ program pelef_reactive_eb_tree_3d
   if (.not.all(ieee_is_finite(inflow_temperature))) error stop 'Invalid inlet temperature'
   if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
   if (any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) error stop 'Invalid inlet pressure'
+  if(any(boundary_faces/='legacy')) then
+#ifdef PELEF_MPI_EB_SPRAY
+    error stop 'Explicit tree boundary input is not connected to MPI spray'
+#endif
+    if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) error stop 'Invalid tree boundary faces'
+    if(any(inflow_mach>=0).or.any(inflow_temperature/=0)) error stop 'Conflicting tree inlet modes'
+    if(.not.all(ieee_is_finite(inflow_density)).or..not.all(ieee_is_finite(inflow_velocity))) &
+      error stop 'Invalid prescribed tree inlet'
+    if(any(inflow_density<=0).or.any(inflow_pressure<=0.and.boundary_faces=='inflow')) &
+      error stop 'Nonpositive prescribed tree inlet'
+    active_faces=boundary_faces
+  end if
   if (any(inflow_temperature<=0.and.inflow_mach>=0)) error stop 'Active inlet requires positive temperature'
-  if (any((inflow_temperature/=0.or.inflow_pressure/=0).and.inflow_mach<0)) &
+  if (.not.allocated(active_faces).and.any((inflow_temperature/=0.or.inflow_pressure/=0).and.inflow_mach<0)) &
     error stop 'Inactive inlet has unused temperature or pressure'
   if (any(inflow_mach>=0)) then
     active_mach=inflow_mach;active_temperature=inflow_temperature;active_pressure=inflow_pressure
@@ -380,6 +396,10 @@ program pelef_reactive_eb_tree_3d
   allocate(u(nv,n(1),n(2),n(3)),t(n(1),n(2),n(3)))
   call initialize_reactive_eb_density_sheet_3d(species,root_config,coarse,u,t,ok,base_mole_fractions)
   if (.not.ok) error stop 'Initial state failed'
+  if(allocated(active_faces)) then
+    call prepare_prescribed_inlet(u(:,1,1,1),t(1,1,1),ok)
+    if(.not.ok) error stop 'Invalid prescribed inlet EOS'
+  end if
   call initialize_reactive_eb_tree_3d(species,topology,geometry_levels(topology%level_count()),u,t,tree,ok)
   if (.not.ok) error stop 'Tree initialization failed'
   call integrate_reactive_eb_tree_3d(tree,current,ok)
@@ -410,11 +430,13 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
       call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
         hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        boundary_faces=active_faces,inflow_state=inlet_state)
 #else
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
         .true.,.true.,.true.,estimated_dt,ok,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        boundary_faces=active_faces,inflow_state=inlet_state)
 #endif
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
@@ -461,7 +483,8 @@ program pelef_reactive_eb_tree_3d
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry)
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state)
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
@@ -469,7 +492,8 @@ program pelef_reactive_eb_tree_3d
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
         chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry)
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state)
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
@@ -1137,6 +1161,19 @@ contains
     call MPI_Allreduce(valid,all_valid,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,ierr)
     if (ierr/=MPI_SUCCESS) error stop 'MPI seed agreement failed'
     if (.not.all_valid) error stop 'Initial state failed'
+    if(allocated(active_faces).and..not.allocated(inlet_state)) then
+      if(mpi_rank==mpi_owners(1)) then
+        call prepare_prescribed_inlet(seed_u(:,1,1,1),seed_t(1,1,1),valid)
+      else
+        allocate(inlet_state(nv,6),active_temperature(6))
+      end if
+      call MPI_Allreduce(valid,all_valid,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS.or..not.all_valid) error stop 'Invalid prescribed inlet EOS'
+      call MPI_Bcast(inlet_state,nv*6,MPI_DOUBLE_PRECISION,mpi_owners(1),MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) error stop 'Cannot broadcast inlet states'
+      call MPI_Bcast(active_temperature,6,MPI_DOUBLE_PRECISION,mpi_owners(1),MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) error stop 'Cannot broadcast inlet temperatures'
+    end if
     call initialize_mpi_eb_tree_3d(species,topology,mpi_owners,geometry_levels(topology%level_count()),seed_u,seed_t, &
       mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
     if (.not.valid) error stop 'MPI tree initialization failed'
@@ -1462,16 +1499,49 @@ contains
       abs(record%chemical)+abs(injected)+abs(force_total)))
     if (.not.ieee_is_finite(error).or.error>5.e-10_dp) error stop 'Composite budget failed'
   end subroutine
+  subroutine prepare_prescribed_inlet(seed,seed_temperature,valid)
+    real(dp), intent(in) :: seed(:),seed_temperature
+    logical, intent(out) :: valid
+    allocate(inlet_state(size(seed),6),inlet_primitive(size(seed)),active_temperature(6))
+    call reactive_conserved_to_primitive(species,seed,seed_temperature,inlet_primitive,inlet_t,inlet_sound,valid)
+    if(.not.valid) return
+    do inlet_face=1,6
+      inlet_state(:,inlet_face)=seed;active_temperature(inlet_face)=seed_temperature
+      if(active_faces(inlet_face)/='inflow') cycle
+      inlet_primitive(1)=inflow_density(inlet_face);inlet_primitive(2:4)=inflow_velocity(:,inlet_face)
+      inlet_primitive(5)=inflow_pressure(inlet_face)
+      call reactive_primitive_to_conserved(species,inlet_primitive,inlet_state(:,inlet_face), &
+        active_temperature(inlet_face),inlet_sound,valid)
+      if(.not.valid) return
+    end do
+  end subroutine
   subroutine envelope(stream,reading,header_only)
     integer, intent(in) :: stream
     logical, intent(in) :: reading
     logical, optional, intent(in) :: header_only
     character(len=64) :: magic,integrator
     logical :: automatic
+    character(len=16) :: stored_faces(6)
+    real(dp) :: stored_prescribed(30)
     real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl,stored_inlet(18)
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if(magic=='PELEF_EB_TREE_PRESCRIBED_INLET_V1') then
+        if(.not.allocated(active_faces)) error stop 'Restart prescribed inlet mismatch'
+        read(stream,*,iostat=ios) stored_faces
+        if(ios/=0) error stop 'Missing restart boundary labels'
+        if(any(stored_faces/=boundary_faces)) error stop 'Restart boundary labels mismatch'
+        read(stream,*,iostat=ios) stored_prescribed
+        if(ios/=0) error stop 'Missing prescribed inlet controls'
+        if(.not.all(ieee_is_finite(stored_prescribed))) error stop 'Invalid prescribed inlet restart controls'
+        if(any(stored_prescribed/=[inflow_density,inflow_pressure,reshape(inflow_velocity,[18])])) &
+          error stop 'Restart prescribed inlet mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if(ios/=0) error stop 'Missing prescribed inlet application header'
+      else if(allocated(active_faces)) then
+        error stop 'Restart prescribed inlet mismatch'
+      end if
       if (magic=='PELEF_EB_TREE_MACH_INLET_V1') then
         read(stream,*,iostat=ios) stored_inlet
         if (ios/=0) error stop 'Missing inlet restart controls'
@@ -1505,6 +1575,13 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if(allocated(active_faces)) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_PRESCRIBED_INLET_V1'
+        if(ios==0) write(stream,'(6(a,1x))',iostat=ios) boundary_faces
+        if(ios==0) write(stream,'(30(es27.18e3,1x))',iostat=ios) &
+          inflow_density,inflow_pressure,inflow_velocity
+        if(ios/=0) error stop 'Cannot write prescribed inlet context'
+      end if
       if (any(inflow_mach>=0)) then
         write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_MACH_INLET_V1'
         if (ios/=0) error stop 'Cannot write inlet header'
