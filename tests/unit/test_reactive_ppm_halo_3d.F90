@@ -187,6 +187,7 @@ contains
     call require(maxval(abs(ax(:,0,1,1)-expected_flux))<2e-15_dp,'conserved jump diffusion')
     call require(maxval(abs(sum(ax(6:,:,:,:),dim=1)-ax(1,:,:,:)))<1e-16_dp,'diffusive species mass closure')
     keepx=ax;keepy=ay;keepz=az
+    call check_eb_viscosity(cells,keepx,keepy,keepz)
     ax=0;ay=0;az=0;walls(1)=.true.
     call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp,walls,ax,ay,az,valid)
     call require(valid.and.all(ax(3:4,0,:,:)==0).and.all(ax(:,1:2,:,:)==keepx(:,1:2,:,:)).and. &
@@ -198,6 +199,40 @@ contains
     call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp,walls,ax,ay,az,valid)
     call require(.not.valid.and.all(ax==keepx).and.all(ay==keepy).and.all(az==keepz),'viscosity rollback')
   end subroutine
+  subroutine check_eb_viscosity(input,rx,ry,rz)
+    real(dp), intent(in) :: input(7,0:3,0:3,0:3),rx(7,0:2,2,2),ry(7,2,0:2,2),rz(7,2,2,0:2)
+    real(dp) :: cells(7,0:3,0:3,0:3),vf(0:3,0:3,0:3)
+    real(dp) :: ax(7,0:2,2,2),ay(7,2,0:2,2),az(7,2,2,0:2)
+    logical :: ox(0:2,2,2),oy(2,0:2,2),oz(2,2,0:2),walls(6),valid
+    cells=input;vf=1;ox=.true.;oy=.true.;oz=.true.;walls=.false.
+    ax=0;ay=0;az=0
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp, &
+      walls,ax,ay,az,valid,vf,ox,oy,oz)
+    call require(valid.and.all(ax==rx).and.all(ay==ry).and.all(az==rz),'EB regular limit exact')
+    vf(0,0,0)=1-4e-12_dp;ax=0;ay=0;az=0
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp, &
+      walls,ax,ay,az,valid,vf,ox,oy,oz)
+    call require(valid.and.all(ax==rx).and.all(ay==ry).and.all(az==rz),'EB reference near-unit cutoff')
+    vf(0,0,0)=.5_dp;ax=0;ay=0;az=0
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp, &
+      walls,ax,ay,az,valid,vf,ox,oy,oz)
+    call require(valid.and.abs(ax(1,0,1,1)-.75_dp*rx(1,0,1,1))<1e-15_dp, &
+      'cut cell suppresses one of four face nodes')
+    call require(all(ax(:,1:,:,:)==rx(:,1:,:,:)),'distant regular faces unchanged')
+    vf(0,0,0)=0;cells(:,0,0,0)=0;ax=0;ay=0;az=0
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp, &
+      walls,ax,ay,az,valid,vf,ox,oy,oz)
+    call require(valid.and.abs(ax(1,0,1,1)-.75_dp*rx(1,0,1,1))<1e-15_dp,'covered corner state not read')
+    vf=0;cells=0;ox=.false.;oy=.false.;oz=.false.;ax=rx;ay=ry;az=rz
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp, &
+      walls,ax,ay,az,valid,vf,ox,oy,oz)
+    call require(valid.and.all(ax==0).and.all(ay==0).and.all(az==0),'closed faces zero without covered EOS')
+    ox(0,1,1)=.true.;ax=rx;ay=ry;az=rz
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp, &
+      walls,ax,ay,az,valid,vf,ox,oy,oz)
+    call require(.not.valid.and.all(ax==rx).and.all(ay==ry).and.all(az==rz),'inconsistent EB masks rollback')
+  end subroutine check_eb_viscosity
+
   subroutine check_transverse_flattening()
     real(dp) :: stencil(nv,-3:3),qm(nv),qp(nv),dummy(nv),temp,c,flat
     real(dp) :: pressure(-3:3),velocity(-3:3)

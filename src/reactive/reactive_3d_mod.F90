@@ -46,36 +46,73 @@ module reactive_3d_mod
 contains
 
   ! Regular-cell pc_divu/pc_artif_visc/pc_norm_spec_flx. One ghost cell per side.
+  ! Optional EB volume fractions use eb_divu's eight-cell regularity cutoff.
+  ! Positive coefficients zero closed faces; zero retains the identity policy.
   ! Fluxes remain intensive; the finite-volume caller supplies face areas.
   subroutine adjust_reactive_artificial_viscosity_3d(state,n,spacing,difmag, &
-      no_slip_faces,xflux,yflux,zflux,ok)
+      no_slip_faces,xflux,yflux,zflux,ok,volume_fraction,open_x,open_y,open_z)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: state(:,0:,0:,0:),spacing(3),difmag
     logical, intent(in) :: no_slip_faces(6)
     real(dp), intent(inout) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:)
     logical, intent(out) :: ok
+    ! EB inputs are an all-or-none group; covered states are never read.
+    real(dp), optional, intent(in) :: volume_fraction(0:,0:,0:)
+    logical, optional, intent(in) :: open_x(0:,:,:),open_y(:,0:,:),open_z(:,:,0:)
     real(dp), allocatable :: velocity(:,:,:,:),divergence(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: derivatives(3),factor,total,candidate(size(state,1)),jump(size(state,1))
     integer :: nv,i,j,k,a,b,c,s,t,point(3),low(3),high(3),limit(3),normal
-    logical :: wall
+    logical :: wall,eb,opened
     ok=.false.;nv=size(state,1)
     if (nv<6.or.any(n<1).or.any(shape(state)/=[nv,n+2])) return
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)]).or. &
         any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
     if (.not.all(ieee_is_finite([spacing,difmag])).or.any(spacing<=0).or.difmag<0) return
-    if (.not.all(ieee_is_finite(state)).or.any(state(1,:,:,:)<=density_floor)) return
+    eb=present(volume_fraction)
+    if(eb.neqv.present(open_x)) return
+    if(eb.neqv.present(open_y)) return
+    if(eb.neqv.present(open_z)) return
+    if(eb) then
+      if(any(shape(volume_fraction)/=n+2)) return
+      if(any(shape(open_x)/=[n(1)+1,n(2),n(3)]).or. &
+        any(shape(open_y)/=[n(1),n(2)+1,n(3)]).or.any(shape(open_z)/=[n(1),n(2),n(3)+1])) return
+      if(.not.all(ieee_is_finite(volume_fraction))) return
+      if(any(volume_fraction<0).or.any(volume_fraction>1)) return
+      do k=0,n(3)+1
+      do j=0,n(2)+1
+      do i=0,n(1)+1
+        if(volume_fraction(i,j,k)==0) cycle
+        if(.not.all(ieee_is_finite(state(:,i,j,k))).or.state(1,i,j,k)<=density_floor) return
+      end do
+      end do
+      end do
+    else
+      if (.not.all(ieee_is_finite(state)).or.any(state(1,:,:,:)<=density_floor)) return
+    end if
     if (.not.all(ieee_is_finite(xflux)).or..not.all(ieee_is_finite(yflux)).or. &
         .not.all(ieee_is_finite(zflux))) return
     if (difmag==0) then
       ok=.true.;return
     end if
     allocate(velocity(3,0:n(1)+1,0:n(2)+1,0:n(3)+1),divergence(0:n(1),0:n(2),0:n(3)))
-    do a=1,3
-      velocity(a,:,:,:)=state(a+1,:,:,:)/state(1,:,:,:)
+    velocity=0
+    do k=0,n(3)+1
+    do j=0,n(2)+1
+    do i=0,n(1)+1
+      if(eb) then
+        if(volume_fraction(i,j,k)==0) cycle
+      end if
+      velocity(:,i,j,k)=state(2:4,i,j,k)/state(1,i,j,k)
+    end do
+    end do
     end do
     do k=0,n(3)
     do j=0,n(2)
     do i=0,n(1)
+      divergence(i,j,k)=0
+      if(eb) then
+        if(sum(volume_fraction(i:i+1,j:j+1,k:k+1))<8._dp*(1._dp-1e-12_dp)) cycle
+      end if
       do a=1,3
         b=merge(2,1,a==1);c=merge(2,3,a==3)
         derivatives(a)=0
@@ -102,6 +139,22 @@ contains
       do j=1,limit(2)
       do i=1,limit(1)
         low=[i,j,k];low(a)=low(a)-1;high=low;high(a)=high(a)+1
+        if(eb) then
+          select case(a)
+          case(1);opened=open_x(low(1),low(2),low(3))
+          case(2);opened=open_y(low(1),low(2),low(3))
+          case(3);opened=open_z(low(1),low(2),low(3))
+          end select
+          if(.not.opened) then
+            select case(a)
+            case(1);fx(:,low(1),low(2),low(3))=0
+            case(2);fy(:,low(1),low(2),low(3))=0
+            case(3);fz(:,low(1),low(2),low(3))=0
+            end select
+            cycle
+          end if
+          if(volume_fraction(low(1),low(2),low(3))==0.or.volume_fraction(high(1),high(2),high(3))==0) return
+        end if
         point=low;point(b)=point(b)-1;point(c)=point(c)-1
         total=0
         do t=0,1
