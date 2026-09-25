@@ -256,8 +256,11 @@ common/recursive hydro now accepts explicit coefficients with complete patch
 halos and conservative reflux
 ([checks](validation/eb-two-level-viscosity-20260925.md)). Its reaction/transport
 split wrappers now forward the coefficient through common/recursive hydro;
-multipatch overlay and older application inputs remain to be connected
-([checks](validation/eb-two-level-viscosity-full-20260925.md)). Regular MPI spray PLM hydro now
+see [coupled checks](validation/eb-two-level-viscosity-full-20260925.md).
+Multipatch hydro/full composition now forwards coefficients through complete
+peer halos, flux reconciliation and reflux
+([checks](validation/eb-multipatch-viscosity-20260925.md)); older application
+inputs remain to be connected. Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies
