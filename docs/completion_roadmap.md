@@ -251,7 +251,11 @@ them to restart context while retaining the legacy zero component sequence
 ([checks](validation/eb-spray-difmag-20260925.md)). MPI EB spray now forwards
 agreed coefficients before gas stepping, with 2/4-rank application parity
 and changed-rank restart checks
-([checks](validation/mpi-eb-spray-difmag-20260925.md)). Regular MPI spray PLM hydro now
+([checks](validation/mpi-eb-spray-difmag-20260925.md)). Older two-level EB
+common/recursive hydro now accepts explicit coefficients with complete patch
+halos and conservative reflux; its split wrappers and multipatch overlay
+remain to be connected
+([checks](validation/eb-two-level-viscosity-20260925.md)). Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies
