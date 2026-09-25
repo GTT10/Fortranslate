@@ -25,7 +25,7 @@ program test_mpi_amr_patch_tree_hydro_3d
   call get_command_argument(1,arg)
   ppm=trim(arg)=='ppm'
   solver="hllc"
-  if (ppm) solver="pelec"
+  if (ppm.or.trim(arg)=='viscosity') solver="pelec"
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -95,7 +95,7 @@ program test_mpi_amr_patch_tree_hydro_3d
       temperature%fields(node)=reference%fields(node)
     end do
     coefficient=0
-    if(ppm) coefficient=.037_dp
+    if(ppm.or.trim(arg)=='viscosity') coefficient=.037_dp
     oracle=global;oracle_t=reference;dt=.1_dp*expected_dt
     call advance_amr_patch_tree_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc',solver, &
       serial_budget,serial_largest,ok,inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure, &
@@ -114,7 +114,7 @@ program test_mpi_amr_patch_tree_hydro_3d
     end do
     call require(all(budget==serial_budget).and.largest==serial_largest,'exact boundary and reflux diagnostics')
     saved=local;saved_t=temperature
-    if(ppm) then
+    if(ppm.or.trim(arg)=='viscosity') then
       coefficient=.037_dp
       if(rank==nranks-1) coefficient=.05_dp
     call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &

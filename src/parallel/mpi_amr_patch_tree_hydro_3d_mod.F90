@@ -6,7 +6,7 @@ module mpi_amr_patch_tree_hydro_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d, &
-    compute_reactive_ppm_halo_ctu_fluxes_3d
+    compute_reactive_ppm_halo_ctu_fluxes_3d,adjust_reactive_artificial_viscosity_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
@@ -78,7 +78,7 @@ contains
     if(.not.valid) return
     controls=[root_spacing,dt,pressure,mach,tin,pin,viscosity]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
-    valid=valid.and.viscosity>=0.and.(viscosity==0.or.reconstruction=='characteristic_ppm')
+    valid=valid.and.viscosity>=0
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
       if (pressure(node)>0.and.faces(node)/='outflow') valid=.false.
@@ -239,6 +239,17 @@ contains
               dims(1),dims(2),dims(3),limiter,solver,fx,fy,fz,success)
           end if
           if (.not.success) exit
+          if(viscosity>0.and.reconstruction/='characteristic_ppm') then
+            block
+              logical :: inflow_mask(6),wall_mask(6)
+              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success,wall_mask)
+              if (.not.success) exit
+              call adjust_reactive_artificial_viscosity_3d(ghost(:nvar,2:n(1)+3,2:n(2)+3,2:n(3)+3), &
+                n,h(:,peer),viscosity,wall_mask,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
+                fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),success)
+            end block
+            if (.not.success) exit
+          end if
           do k=1,n(3)
             do j=1,n(2)
               do i=1,n(1)
