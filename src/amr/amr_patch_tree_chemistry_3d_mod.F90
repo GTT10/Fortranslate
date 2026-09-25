@@ -4,13 +4,48 @@ module amr_patch_tree_chemistry_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar
-  use reactive_3d_mod, only: advance_reactive_chemistry_3d,recover_reactive_temperatures_3d
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d,recover_reactive_temperatures_3d,react_sdc_state_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,average_down_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d
   implicit none
   private
   public :: advance_amr_patch_tree_chemistry_3d,advance_amr_patch_tree_strang_3d
+  public :: react_sdc_amr_patch_tree_3d
 contains
+  subroutine react_sdc_amr_patch_tree_3d(tree,species,reactions,old_state,old_temperature,nonreacting_rates, &
+      dt,rtol,atol,state,temperature,reaction_source,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(amr_tree_state_3d), intent(in) :: old_state,old_temperature,nonreacting_rates
+    real(dp), intent(in) :: dt,rtol,atol
+    type(amr_tree_state_3d), intent(inout) :: state,temperature,reaction_source
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: candidate,temps,sources
+    integer :: node,n(3),nv
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if(.not.old_state%is_valid(tree).or..not.old_temperature%is_valid(tree)) return
+    if(.not.nonreacting_rates%is_valid(tree)) return
+    if(size(old_state%fields(1)%values,1)/=nv.or.size(nonreacting_rates%fields(1)%values,1)/=nv) return
+    if(size(old_temperature%fields(1)%values,1)/=1) return
+    if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
+    candidate=old_state;temps=old_temperature
+    allocate(sources%fields(size(tree%nodes)))
+    ! SDC evolves each level's valid cells, including covered parents used
+    ! during iteration. The hierarchy driver restricts only after reflux;
+    ! premature averaging here would change the reaction source estimates.
+    do node=1,size(tree%nodes)
+      n=tree%nodes(node)%shape
+      allocate(sources%fields(node)%values(nv-4,n(1),n(2),n(3)));sources%fields(node)%values=0
+      call react_sdc_state_3d(species,reactions,old_state%fields(node)%values, &
+        old_temperature%fields(node)%values(1,:,:,:),nonreacting_rates%fields(node)%values,dt,rtol,atol, &
+        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid)
+      if(.not.valid) return
+    end do
+    state=candidate;temperature=temps;reaction_source=sources;ok=.true.
+  end subroutine react_sdc_amr_patch_tree_3d
+
   subroutine advance_amr_patch_tree_chemistry_3d(tree,species,reactions,state,temperature,interval,rtol,atol, &
       ok,chemistry_integrator)
     type(amr_patch_tree_3d), intent(in) :: tree

@@ -5,11 +5,12 @@ program test_amr_patch_tree_chemistry_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use reactive_1d_mod, only: reactive_primitive_to_conserved
-  use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d,average_down_amr_patch_tree_3d
   use amr_patch_tree_chemistry_3d_mod, only: advance_amr_patch_tree_chemistry_3d,advance_amr_patch_tree_strang_3d
+  use amr_patch_tree_chemistry_3d_mod, only: react_sdc_amr_patch_tree_3d
   use amr_reactive_3d_mod, only: element_integrals_from_reactive_integrals_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -40,6 +41,7 @@ program test_amr_patch_tree_chemistry_3d
   call initialize_amr_patch_3d(2,4,4,1,1,1,1,1,1,2,patches(3),ok)
   call initialize_amr_patch_tree_3d([2,2,2],[1,1,2],patches,tree,ok)
   call require(ok,'three-level branched tree')
+  call check_sdc_stage()
   do mode=1,2
     integrator='explicit'
     if (mode==2) integrator='implicit'
@@ -108,6 +110,39 @@ program test_amr_patch_tree_chemistry_3d
     call unchanged()
   end do
 contains
+  subroutine check_sdc_stage()
+    type(amr_tree_state_3d) :: old,ot,rates,result,temps,ir,bad_old,saved_ir
+    real(dp) :: expected(12,2,2,2),expected_t(2,2,2),expected_ir(8,2,2,2)
+    integer :: peer
+    call prolong_amr_patch_tree_3d(tree,root,old,ok)
+    call require(ok,'SDC old tree')
+    call prolong_amr_patch_tree_3d(tree,rt,ot,ok)
+    call require(ok,'SDC temperature tree')
+    call prolong_amr_patch_tree_3d(tree,.1_dp*root,rates,ok)
+    call require(ok,'SDC external rates tree')
+    expected=root;expected_t=rt(1,:,:,:);expected_ir=0
+    call react_sdc_state_3d(species,reactions,root,rt(1,:,:,:),.1_dp*root,dt,2e-7_dp,1e-12_dp, &
+      expected,expected_t,expected_ir,ok)
+    call require(ok,'SDC uniform-grid reaction stage')
+    call react_sdc_amr_patch_tree_3d(tree,species,reactions,old,ot,rates,dt,2e-7_dp,1e-12_dp,result,temps,ir,ok)
+    call require(ok,'SDC three-level reaction stage')
+    do peer=1,size(tree%nodes)
+      call require(maxval(abs(result%fields(peer)%values(:,1,1,1)-expected(:,1,1,1)))<1e-10_dp, &
+        'SDC hierarchy matches independent uniform-grid stage')
+      call require(maxval(abs(temps%fields(peer)%values-expected_t(1,1,1)))<1e-7_dp,'SDC hierarchy temperatures')
+      call require(maxval(abs(ir%fields(peer)%values(:,1,1,1)-expected_ir(:,1,1,1)))<1e-8_dp, &
+        'SDC hierarchy reaction source estimates')
+    end do
+    bad_old=old;bad_old%fields(size(tree%nodes))%values(1,1,1,1)=-1
+    saved=result;saved_t=temps;saved_ir=ir
+    call react_sdc_amr_patch_tree_3d(tree,species,reactions,bad_old,ot,rates,dt,2e-7_dp,1e-12_dp,result,temps,ir,ok)
+    call require(.not.ok,'SDC invalid late-patch state rejected')
+    do peer=1,size(tree%nodes)
+      call require(all(result%fields(peer)%values==saved%fields(peer)%values).and. &
+        all(temps%fields(peer)%values==saved_t%fields(peer)%values).and. &
+        all(ir%fields(peer)%values==saved_ir%fields(peer)%values),'SDC whole-tree rollback')
+    end do
+  end subroutine check_sdc_stage
   subroutine inventory(total,elements)
     real(dp), intent(out) :: total(12),elements(3)
     call composite_integrals_amr_patch_tree_3d(tree,state,spacing,total,ok)
