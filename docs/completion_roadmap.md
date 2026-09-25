@@ -330,7 +330,10 @@ SDC prescribed outlet pressure now reaches hydro and transport
 inflow now share existing ghost and transport treatment in SDC
 ([checks](validation/sdc-inflow-20260926.md)). Slip, no-slip and isothermal
 wall dispatch now reaches SDC hydro and transport
-([checks](validation/sdc-walls-20260926.md)); AMR/MPI/EB SDC remain open. Physical
+([checks](validation/sdc-walls-20260926.md)). Full-face hydro/transport fluxes
+are available for AMR flux registers
+([checks](validation/sdc-flux-export-20260926.md)); halo interpolation,
+reflux dispatch and AMR/MPI/EB SDC remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
