@@ -17,6 +17,11 @@ halo exchange now matches serial face-only, full one-layer and six-layer
 construction, including temporal ancestor donors and idle ranks
 ([checks](validation/mpi-eb-periodic-halo-20260926.md)). Periodic tree application
 dispatch is not yet connected.
+The shared EB peer-flux correction kernel now accepts a periodic domain
+length on one axis, checks matching face centroids and applies conservative
+state correction across the seam
+([checks](validation/eb-periodic-peer-flux-20260926.md)). Tree traversal and
+coarse/fine seam synchronization still need to call this kernel.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
