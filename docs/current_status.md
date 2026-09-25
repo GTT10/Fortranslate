@@ -14,7 +14,10 @@ one-cell and six-cell halos while retaining interior peer/ancestor donors
 ([checks](validation/eb-tree-prescribed-halo-20260926.md)). Common and recursive
 hydro/transport/reacting library updates now forward those conditions; MPI
 and application input remain pending
-([checks](validation/eb-tree-inflow-step-20260926.md)).
+([checks](validation/eb-tree-inflow-step-20260926.md)). MPI halo exchange also
+accepts collectively agreed prescribed states, with serial agreement and idle-rank
+rollback checks; MPI time-update forwarding remains pending
+([checks](validation/mpi-eb-prescribed-halo-20260926.md)).
 
 Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
 with the `pelec` Riemann solver, outflow halos, reaction/transport composition
