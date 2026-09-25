@@ -135,8 +135,10 @@ now assembles CTU, viscosity/normalization, centroid fluxes and conservative,
 FluxRedist or StateRedist updates with integrated flux and inventory publication
 ([checks](validation/eb-ctu-update-20260925.md)). A cut-aware, multidirectional
 flattening preparation API now feeds the prepared-halo update
-([checks](validation/eb-flattening-20260925.md)). Application halo/geometry
-preparation, physical boundary masks, input selection and coupled
+([checks](validation/eb-flattening-20260925.md)). Physical wall/outflow Riemann
+corrections and interior physical-wall viscosity masks now reach the complete
+prepared CTU update ([checks](validation/eb-physical-flux-20260925.md)).
+Application halo/geometry preparation, input selection and coupled
 MPI/AMR dispatch remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
