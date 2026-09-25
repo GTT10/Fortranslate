@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Serial EB tree halo construction now accepts adiabatic slip/no-slip walls,
+including reflected six-layer corner donors with nonzero momentum
+([checks](validation/eb-tree-wall-halo-20260926.md)). MPI and coupled tree wall
+stepping remain open.
+
 Serial EB tree halos also accept paired periodic faces, wrapping donor indices
 through peers and ancestors, including halos wider than the root domain
 ([checks](validation/eb-tree-periodic-halo-20260926.md)). MPI periodic tree
