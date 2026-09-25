@@ -188,7 +188,12 @@ seam fluxes and species limiter coefficients
 ([checks](validation/eb-periodic-transport-20260925.md)). Periodic configured geometry,
 coupled gas dispatch and fixed/selected application restart are now connected
 ([checks](validation/eb-periodic-application-20260925.md)). Independent inlet mixtures
-and spray/tree/MPI boundary input remain open.
+and tree/MPI boundary input remain open. Serial single-level spray boundary
+input now covers inflow/outflow, periodic and domain-wall gas conditions with
+specular particle reflection ([checks](validation/eb-spray-wall-20260926.md)).
+The serial EB tree halo API now accepts prescribed inflow states; forwarding
+through time updates and MPI remains work
+([checks](validation/eb-tree-prescribed-halo-20260926.md)).
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Serial EB tree halo construction now accepts prescribed inflow states for
+one-cell and six-cell halos while retaining interior peer/ancestor donors;
+time-update and MPI forwarding remain pending
+([checks](validation/eb-tree-prescribed-halo-20260926.md)).
+
 Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
 with the `pelec` Riemann solver, outflow halos, reaction/transport composition
 and method-bound checkpoint continuation. PCM remains the default. Fixed and
