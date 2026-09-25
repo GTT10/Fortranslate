@@ -82,7 +82,7 @@ contains
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z, &
-      fill_halos,fill_source_halos)
+      fill_halos,fill_source_halos,new_source_estimate)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -90,6 +90,10 @@ contains
     procedure(reactive_sdc_source_evaluator), optional :: evaluate_sources
     procedure(reactive_sdc_halo_filler), optional :: fill_halos
     procedure(reactive_sdc_source_halo_filler), optional :: fill_source_halos
+    ! To coordinate patches one iteration at a time, seed with old source
+    ! rates, retain this estimate and reaction_source, and reset state/T to
+    ! the same interval-start values before each call (do not advance time).
+    real(dp), optional, intent(inout) :: new_source_estimate(:,:,:,:,:)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,external_force(3)
     real(dp), optional, intent(out) :: source_change(:),minimum_transport_theta
@@ -124,6 +128,10 @@ contains
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
     if(present(fill_halos).neqv.present(fill_source_halos)) return
+    if(present(new_source_estimate)) then
+      if(any(shape(new_source_estimate)/=[nv,n,source_count])) return
+      if(.not.all(ieee_is_finite(new_source_estimate))) return
+    end if
     if(present(flux_x)) flux_x=0
     if(present(flux_y)) flux_y=0
     if(present(flux_z)) flux_z=0
@@ -209,6 +217,7 @@ contains
     end if
     if(.not.valid) return
     new_sources=old_sources
+    if(present(new_source_estimate)) new_sources=new_source_estimate
     old_transport_rate=transport_rate
     if(present(flux_x).and.present(transport)) then
       allocate(old_tx,source=tx);allocate(old_ty,source=ty);allocate(old_tz,source=tz)
@@ -337,6 +346,7 @@ contains
     if(present(source_change)) source_change=inventory
     if(present(minimum_transport_theta)) minimum_transport_theta=source_theta
     if(present(reaction_source)) reaction_source=ir
+    if(present(new_source_estimate)) new_source_estimate=new_sources
     state=candidate;temperature=ct;ok=.true.
   contains
     subroutine builtin_sources(u,t,stage_time,rates,good)

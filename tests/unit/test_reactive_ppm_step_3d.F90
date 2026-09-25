@@ -277,6 +277,7 @@ contains
 
   subroutine check_sdc_iteration()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),old(nv,4,4,4),ot(4,4,4),factor,expected_factor
+    real(dp) :: estimate(nv,4,4,4,2),prior_estimate(nv,4,4,4,2),expected(nv,4,4,4)
     integer :: iterations,iteration
     do k=1,4
     do j=1,4
@@ -298,10 +299,23 @@ contains
       call require(maxval(abs(state-expected_factor*old)/max(1._dp,abs(old)))<3e-14_dp, &
         'SDC rebuilds from old state instead of accumulating steps')
     end do
+    expected=state
+    call sdc_test_sources(old,ot,0._dp,estimate,ok)
+    call require(ok,'SDC initialize external iteration estimate')
+    do iteration=1,3
+      state=old;temp=ot
+      call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+        1,2,sdc_test_sources,ok,new_source_estimate=estimate)
+      call require(ok,'SDC externally coordinated iteration')
+    end do
+    call require(maxval(abs(state-expected)/max(1._dp,abs(expected)))<1e-14_dp, &
+      'SDC three coordinated iterations match three internal iterations')
+    prior_estimate=estimate
     state=old;temp=ot;sdc_failure=.true.
     call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
-      2,2,sdc_test_sources,ok)
+      2,2,sdc_test_sources,ok,new_source_estimate=estimate)
     call require(.not.ok.and.all(state==old).and.all(temp==ot),'SDC new source failure rolls back entire step')
+    call require(all(estimate==prior_estimate),'SDC failure preserves external source estimate')
     sdc_failure=.false.
   end subroutine check_sdc_iteration
   subroutine check_sdc_assembly()
