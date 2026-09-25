@@ -10,7 +10,7 @@ module amr_patch_tree_ghost_3d_mod
   implicit none
   private
   public :: fill_amr_patch_tree_ghosts_3d,sample_amr_patch_tree_ghosts_3d
-  public :: apply_amr_tree_pressure_ghosts_3d
+  public :: apply_amr_tree_pressure_ghosts_3d,amr_tree_inflow_faces_3d
   public :: amr_tree_cell_source_3d
   type, abstract :: amr_tree_cell_source_3d
   contains
@@ -32,6 +32,27 @@ module amr_patch_tree_ghost_3d_mod
     end subroutine
   end interface
 contains
+  subroutine amr_tree_inflow_faces_3d(tree,node,faces,mask,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: node
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(out) :: mask(6),ok
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: axis,level
+    mask=.false.;ok=.false.
+    if (.not.allocated(tree%nodes)) return
+    if (node<1.or.node>size(tree%nodes)) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    if (.not.ok) return
+    level=tree%nodes(node)%level+1
+    do axis=1,3
+      mask(2*axis-1)=faces(2*axis-1)=='inflow'.and.origin(axis,node)==0
+      mask(2*axis)=faces(2*axis)=='inflow'.and. &
+        origin(axis,node)+int(tree%nodes(node)%shape(axis),int64)==domain(axis,level)
+    end do
+  end subroutine amr_tree_inflow_faces_3d
+
   ! Packed ghosts hold conserved components followed by one temperature guess.
   ! Call on a private buffer after ordinary tree ghost sampling.
   subroutine apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,ok,ghost_width)

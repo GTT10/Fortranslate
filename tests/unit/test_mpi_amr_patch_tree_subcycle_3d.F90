@@ -20,12 +20,14 @@ program test_mpi_amr_patch_tree_subcycle_3d
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
-  character(len=32) :: faces(6),reconstruction,arg
+  character(len=32) :: faces(6),reconstruction,arg,solver
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   integer(int64) :: steps(3),serial_steps(3)
   logical :: ok,ppm
   call get_command_argument(1,arg)
   ppm=trim(arg)=='ppm'
+  solver="hllc"
+  if (ppm) solver="pelec"
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -88,12 +90,12 @@ program test_mpi_amr_patch_tree_subcycle_3d
     call compute_mpi_amr_tree_subcycle_cfl_3d(tree,owners,species,local,temperature,spacing,.15_dp,dt,MPI_COMM_WORLD,ok)
     call require(ok.and.dt==expected_dt,'exact scaled CFL')
     oracle=global;oracle_t=reference;dt=.1_dp*expected_dt
-    call advance_amr_patch_tree_subcycle_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc','hllc', &
+    call advance_amr_patch_tree_subcycle_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc',solver, &
       serial_budget,serial_largest,ok,inflow_state=inlet,inflow_temperature=inlet_t,level_steps=serial_steps, &
       outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'serial hydro oracle')
-    call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
+    call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
       budget,largest,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t,level_steps=steps,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'distributed recursive hydro')
@@ -113,7 +115,7 @@ program test_mpi_amr_patch_tree_subcycle_3d
     call require(.not.ok,'flux solver failure rejects collectively')
     call unchanged()
     if (rank==nranks-1) dt=2*dt
-    call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
+    call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
       budget,largest,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t,level_steps=steps,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
     call require(.not.ok,'mismatched timestep rejected')
@@ -122,14 +124,14 @@ program test_mpi_amr_patch_tree_subcycle_3d
       dt=.1_dp*expected_dt
       if (rank==nranks-1) pressure(1)=103325
       call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
-        reconstruction,'mc','hllc',budget,largest,MPI_COMM_WORLD,ok,level_steps=steps,outlet_pressure=pressure, &
+        reconstruction,'mc',solver,budget,largest,MPI_COMM_WORLD,ok,level_steps=steps,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
       call require(.not.ok,'mismatched pressure rejected')
       call unchanged()
       pressure(1)=102325
       if (rank==nranks-1) pressure(3)=102325
       call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
-        reconstruction,'mc','hllc',budget,largest,MPI_COMM_WORLD,ok,level_steps=steps,outlet_pressure=pressure, &
+        reconstruction,'mc',solver,budget,largest,MPI_COMM_WORLD,ok,level_steps=steps,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
       call require(.not.ok,'rank-local wall pressure rejected')
       call unchanged()
@@ -138,7 +140,7 @@ program test_mpi_amr_patch_tree_subcycle_3d
       dt=.1_dp*expected_dt
       if(rank==nranks-1) mach(1)=.3_dp
       call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
-        reconstruction,'mc','hllc',budget,largest,MPI_COMM_WORLD,ok,inflow_temperature=inlet_t, &
+        reconstruction,'mc',solver,budget,largest,MPI_COMM_WORLD,ok,inflow_temperature=inlet_t, &
         inflow_mach=mach,inflow_pressure=pin,level_steps=steps)
       call require(.not.ok,'rank-disagreeing Mach rejected')
       call unchanged()

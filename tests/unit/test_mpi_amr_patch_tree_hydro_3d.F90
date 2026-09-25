@@ -9,6 +9,7 @@ program test_mpi_amr_patch_tree_hydro_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d
   use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d
+  use amr_patch_tree_ghost_3d_mod, only: amr_tree_inflow_faces_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_tree_3d) :: tree
@@ -17,11 +18,13 @@ program test_mpi_amr_patch_tree_hydro_3d
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
-  character(len=32) :: faces(6),reconstruction,arg
+  character(len=32) :: faces(6),reconstruction,arg,solver
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
-  logical :: ok,ppm
+  logical :: ok,ppm,inflow_mask(6)
   call get_command_argument(1,arg)
   ppm=trim(arg)=='ppm'
+  solver="hllc"
+  if (ppm) solver="pelec"
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -33,6 +36,15 @@ program test_mpi_amr_patch_tree_hydro_3d
   call require(ok,'grandchild')
   call initialize_amr_patch_tree_3d([4,4,4],[1,2],patches,tree,ok)
   call require(ok,'tree')
+  faces='inflow'
+  call amr_tree_inflow_faces_3d(tree,1,faces,inflow_mask,ok)
+  call require(ok.and.all(inflow_mask),'root touches all physical faces')
+  call amr_tree_inflow_faces_3d(tree,2,faces,inflow_mask,ok)
+  call require(ok.and.all(inflow_mask.eqv.[.true.,.false.,.true.,.false.,.true.,.false.]), &
+    'child touches only lower physical faces')
+  call amr_tree_inflow_faces_3d(tree,3,faces,inflow_mask,ok)
+  call require(ok.and..not.any(inflow_mask),'nested interior patch has no physical inflow')
+
   allocate(global%fields(3),reference%fields(3))
   do node=1,3
     n=tree%nodes(node)%shape
@@ -82,11 +94,11 @@ program test_mpi_amr_patch_tree_hydro_3d
       temperature%fields(node)=reference%fields(node)
     end do
     oracle=global;oracle_t=reference;dt=.1_dp*expected_dt
-    call advance_amr_patch_tree_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc','hllc', &
+    call advance_amr_patch_tree_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc',solver, &
       serial_budget,serial_largest,ok,inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'serial hydro oracle')
-    call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
+    call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
       budget,largest,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'distributed hydro')
@@ -105,7 +117,7 @@ program test_mpi_amr_patch_tree_hydro_3d
     call require(.not.ok,'flux solver failure rejects collectively')
     call unchanged()
     if (rank==nranks-1) dt=2*dt
-    call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
+    call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
       budget,largest,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
     call require(.not.ok,'mismatched timestep rejected')
@@ -113,14 +125,14 @@ program test_mpi_amr_patch_tree_hydro_3d
     if (mode>=5.and.mode<=6) then
       dt=.1_dp*expected_dt
       if (rank==nranks-1) pressure(1)=103325
-      call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
+      call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
         budget,largest,MPI_COMM_WORLD,ok,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
       call require(.not.ok,'mismatched pressure rejected')
       call unchanged()
       pressure(1)=102325
       if (rank==nranks-1) pressure(3)=102325
-      call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc','hllc', &
+      call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
         budget,largest,MPI_COMM_WORLD,ok,outlet_pressure=pressure, &
       inflow_mach=mach,inflow_pressure=pin)
       call require(.not.ok,'rank-local wall pressure rejected')
@@ -130,7 +142,7 @@ program test_mpi_amr_patch_tree_hydro_3d
       dt=.1_dp*expected_dt
       if(rank==nranks-1) mach(1)=.3_dp
       call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
-        reconstruction,'mc','hllc',budget,largest,MPI_COMM_WORLD,ok,inflow_temperature=inlet_t, &
+        reconstruction,'mc',solver,budget,largest,MPI_COMM_WORLD,ok,inflow_temperature=inlet_t, &
         inflow_mach=mach,inflow_pressure=pin)
       call require(.not.ok,'rank-disagreeing Mach rejected')
       call unchanged()

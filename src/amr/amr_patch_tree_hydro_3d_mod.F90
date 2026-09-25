@@ -6,7 +6,8 @@ module amr_patch_tree_hydro_3d_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_cfl_timestep_3d, &
     compute_reactive_face_fluxes_3d,compute_reactive_plm_face_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,average_down_amr_patch_tree_3d
-  use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d,apply_amr_tree_pressure_ghosts_3d
+  use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d, &
+    apply_amr_tree_pressure_ghosts_3d,amr_tree_inflow_faces_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
@@ -156,10 +157,15 @@ contains
         if (.not.success) return
         allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)),fz(nvar,dims(1),dims(2),dims(3)))
         if (reconstruction=='characteristic_ppm') then
-          fx=0;fy=0;fz=0
+          block
+            logical :: inflow_mask(6)
+            call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success)
+            if (.not.success) return
+            fx=0;fy=0;fz=0
           call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
-            fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success)
+            fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success,inflow_faces=inflow_mask)
+          end block
         else if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             dims(1),dims(2),dims(3),solver,fx,fy,fz,success)
@@ -297,10 +303,15 @@ contains
         if (.not.valid) return
         allocate(fx(nvar,dims(1),dims(2),dims(3)),fy(nvar,dims(1),dims(2),dims(3)),fz(nvar,dims(1),dims(2),dims(3)))
         if (reconstruction=='characteristic_ppm') then
-          fx=0;fy=0;fz=0
+          block
+            logical :: inflow_mask(6)
+            call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,valid)
+            if (.not.valid) return
+            fx=0;fy=0;fz=0
           call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
-            fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,valid)
+            fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,valid,inflow_faces=inflow_mask)
+          end block
         else if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             dims(1),dims(2),dims(3),solver,fx,fy,fz,valid)
