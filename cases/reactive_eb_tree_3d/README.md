@@ -264,7 +264,22 @@ in x-low, x-high, y-low, y-high, z-low, z-high order. For example:
 ```
 
 Gas executables also accept paired `periodic` labels as described below.
-Inlet composition is the initial gas mixture. `inflow_density` defaults to
+Inlet composition defaults to the initial gas mixture. Override each inflow face
+with named mole fractions, for example:
+
+```fortran
+ inflow_composition_count(1)=3
+ inflow_composition_species(1:3,1)='H2','O2','N2'
+ inflow_composition_mole_fractions(1:3,1)=.1,.2,.7
+```
+
+Fractions are normalized and converted to mass fractions using the active
+mechanism. Names must be unique and present in that mechanism. Count zero
+inherits the initial gas; unused entries must be blank/zero. Overrides on
+non-inflow faces are rejected. These fields work for fixed and selected
+executables. Restart binds the six counts and resolved mass fractions.
+
+`inflow_density` defaults to
 0.31 kg/m3, velocity to zero, and pressure must be positive on an inlet.
 Leave Mach controls inactive and input `inflow_temperature` at zero; inlet
 temperature is recovered from density, pressure and composition. The MPI root

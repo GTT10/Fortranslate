@@ -21,7 +21,10 @@ def main():
     boundaries = parser.add_mutually_exclusive_group()
     boundaries.add_argument('--inflow', action='store_true')
     boundaries.add_argument('--periodic', action='store_true')
+    parser.add_argument('--inlet-composition', action='store_true')
     args = parser.parse_args()
+    if args.inlet_composition and not args.inflow:
+        parser.error('--inlet-composition requires --inflow')
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work.resolve()))
     template = args.input.read_text().replace("riemann_solver='hllc'", "riemann_solver='pelec', hydro_method='plm_ctu'")
@@ -38,6 +41,10 @@ def main():
         template = template.replace('&eb_tree', "&eb_tree\n "
             "boundary_faces='inflow','outflow','outflow','outflow','outflow','outflow', "
             "inflow_pressure(1)=135000, inflow_velocity(1,1)=100,", 1)
+    if args.inlet_composition:
+        template = template.replace('&eb_tree', "&eb_tree\n "
+            "inflow_composition_count(1)=3, inflow_composition_species(1:3,1)='H2','O2','N2', "
+            "inflow_composition_mole_fractions(1:3,1)=.1,.2,.7,", 1)
     if args.periodic:
         template = template.replace('&eb_tree', "&eb_tree\n "
             "boundary_faces='periodic','periodic','periodic','periodic','outflow','outflow',", 1)
@@ -97,12 +104,24 @@ def main():
         run('changed_boundary', 3, restart, template.replace("'inflow'", "'outflow'"), False)
         run('conflicting_mode', text=template.replace('&eb_tree', '&eb_tree\n inflow_mach(1)=.2,', 1), success=False)
         rejections += 3
+    if args.inlet_composition:
+        changed = template.replace('=.1,.2,.7', '=.2,.2,.6')
+        run('changed_composition', 3, restart, changed, False)
+        run('removed_composition', 3, restart,
+            template.replace('inflow_composition_count(1)=3', 'inflow_composition_count(1)=0')
+            .replace("inflow_composition_species(1:3,1)='H2','O2','N2',", '')
+            .replace('inflow_composition_mole_fractions(1:3,1)=.1,.2,.7,', ''), False)
+        run('unknown_species', text=template.replace("'H2','O2','N2'", "'missing','O2','N2'"), success=False)
+        run('negative_fraction', text=template.replace('=.1,.2,.7', '=-.1,.2,.7'), success=False)
+        alternate = run('alternate_composition', text=changed)
+        assert (alternate / 'result.csv').read_bytes() != expected
+        rejections += 4
     if args.periodic:
         run('changed_boundary', 3, restart, template.replace("'periodic'", "'outflow'"), False)
         run('unpaired_boundary', text=template.replace("'periodic'", "'outflow'", 1), success=False)
         run('incompatible_geometry', text=template.replace("'outflow'", "'periodic'"), success=False)
         rejections += 3
-    print(f'PASS: 4 successful runs, {rejections} expected rejections; maximum residual={worst:.6e}; artifacts={work}')
+    print(f'PASS: {5 if args.inlet_composition else 4} successful runs, {rejections} expected rejections; maximum residual={worst:.6e}; artifacts={work}')
 
 
 if __name__ == '__main__':

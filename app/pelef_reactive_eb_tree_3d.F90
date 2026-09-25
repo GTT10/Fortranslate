@@ -48,8 +48,9 @@ program pelef_reactive_eb_tree_3d
   use selected_mechanism_runtime_mod, only: prepare_selected_mechanism,validate_selected_temperature_range
   use simulation_config_reactive_eb_3d_mod, only: resolve_reactive_eb_3d_selected_composition
   use reactive_eb_3d_driver_mod, only: reactive_eb_composition_integrals_3d
-  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions,mixture_specific_gas_constant
+  use mixture_thermo_mod, only: mixture_specific_gas_constant
 #endif
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
@@ -63,7 +64,8 @@ program pelef_reactive_eb_tree_3d
     build_eb_tree_extended_geometry_3d, &
     remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
-  use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
+  use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length, &
+    resolve_selected_composition
   implicit none
 #ifdef PELEF_MPI_EB_SPRAY
   interface
@@ -100,6 +102,11 @@ program pelef_reactive_eb_tree_3d
   character(len=1024) :: spray_input
   integer :: particle_steps,restart_layout_stage=0
 #endif
+  integer :: inflow_composition_count(6)=0
+  character(len=selected_composition_name_length) :: &
+    inflow_composition_species(selected_composition_max_species,6)=''
+  real(dp) :: inflow_composition_mole_fractions(selected_composition_max_species,6)=0._dp
+  real(dp), allocatable :: inlet_mass_fractions(:,:)
   integer :: composition_count=0
   character(len=selected_composition_name_length) :: composition_species(selected_composition_max_species)=''
   real(dp) :: composition_mole_fractions(selected_composition_max_species)=0._dp
@@ -143,6 +150,7 @@ program pelef_reactive_eb_tree_3d
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
+    inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
@@ -387,6 +395,7 @@ program pelef_reactive_eb_tree_3d
   call load_h2o2_elementary_transport(transport,ok)
   if (.not.ok) error stop 'Transport load failed'
 #endif
+  call prepare_inlet_compositions()
   nv=reactive_nvar(size(species));n=root_shape
   allocate(current(nv),boundary(nv),wall(nv),chemical(nv),injected(nv))
   allocate(force_total(nv),step_force(nv));force_total=0;step_force=0
@@ -1508,15 +1517,41 @@ contains
       abs(record%chemical)+abs(injected)+abs(force_total)))
     if (.not.ieee_is_finite(error).or.error>5.e-10_dp) error stop 'Composite budget failed'
   end subroutine
+  subroutine prepare_inlet_compositions()
+    real(dp) :: mole(size(species))
+    integer :: face
+    allocate(inlet_mass_fractions(size(species),6));inlet_mass_fractions=0._dp
+    do face=1,6
+      if(inflow_composition_count(face)==0) then
+        if(any(inflow_composition_species(:,face)/='').or. &
+          any(inflow_composition_mole_fractions(:,face)/=0._dp)) &
+          error stop 'Inlet composition fields require a positive count'
+        cycle
+      end if
+      if(boundary_faces(face)/='inflow') error stop 'Inlet composition requires an inflow face'
+      call resolve_selected_composition('Tree inlet',inflow_composition_count(face), &
+        inflow_composition_species(:,face),inflow_composition_mole_fractions(:,face),species,mole,ok,message)
+      if(.not.ok) then
+        write(*,'(a)') trim(message)
+        error stop 'Invalid inlet composition'
+      end if
+      call mass_fractions_from_mole_fractions(species,mole,inlet_mass_fractions(:,face),ok)
+      if(.not.ok) error stop 'Invalid inlet mass fractions'
+    end do
+  end subroutine
   subroutine prepare_prescribed_inlet(seed,seed_temperature,valid)
     real(dp), intent(in) :: seed(:),seed_temperature
     logical, intent(out) :: valid
+    real(dp) :: seed_primitive(size(seed))
     allocate(inlet_state(size(seed),6),inlet_primitive(size(seed)),active_temperature(6))
     call reactive_conserved_to_primitive(species,seed,seed_temperature,inlet_primitive,inlet_t,inlet_sound,valid)
     if(.not.valid) return
+    seed_primitive=inlet_primitive
     do inlet_face=1,6
       inlet_state(:,inlet_face)=seed;active_temperature(inlet_face)=seed_temperature
       if(active_faces(inlet_face)/='inflow') cycle
+      inlet_primitive=seed_primitive
+      if(inflow_composition_count(inlet_face)>0) inlet_primitive(6:)=inlet_mass_fractions(:,inlet_face)
       inlet_primitive(1)=inflow_density(inlet_face);inlet_primitive(2:4)=inflow_velocity(:,inlet_face)
       inlet_primitive(5)=inflow_pressure(inlet_face)
       call reactive_primitive_to_conserved(species,inlet_primitive,inlet_state(:,inlet_face), &
@@ -1531,11 +1566,27 @@ contains
     character(len=64) :: magic,integrator
     logical :: automatic
     character(len=16) :: stored_faces(6)
+    integer :: stored_counts(6),stored_nspecies
+    real(dp) :: stored_composition(size(species),6)
     real(dp) :: stored_prescribed(30)
     real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl,stored_inlet(18)
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if(magic=='PELEF_EB_TREE_INLET_COMPOSITION_V1') then
+        read(stream,*,iostat=ios) stored_nspecies,stored_counts
+        if(ios/=0) error stop 'Missing inlet composition dimensions'
+        if(stored_nspecies/=size(species).or.any(stored_counts/=inflow_composition_count)) &
+          error stop 'Restart inlet composition mismatch'
+        read(stream,*,iostat=ios) stored_composition
+        if(ios/=0) error stop 'Missing inlet composition values'
+        if(.not.all(ieee_is_finite(stored_composition))) error stop 'Invalid restart inlet composition'
+        if(any(stored_composition/=inlet_mass_fractions)) error stop 'Restart inlet composition mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if(ios/=0) error stop 'Missing inlet composition application header'
+      else if(any(inflow_composition_count/=0)) then
+        error stop 'Restart inlet composition mismatch'
+      end if
       if(magic=='PELEF_EB_TREE_PRESCRIBED_INLET_V1') then
         if(.not.allocated(active_faces)) error stop 'Restart prescribed inlet mismatch'
         read(stream,*,iostat=ios) stored_faces
@@ -1584,6 +1635,12 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if(any(inflow_composition_count/=0)) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_INLET_COMPOSITION_V1'
+        if(ios==0) write(stream,*,iostat=ios) size(species),inflow_composition_count
+        if(ios==0) write(stream,'(*(es27.18e3,1x))',iostat=ios) inlet_mass_fractions
+        if(ios/=0) error stop 'Cannot write inlet composition context'
+      end if
       if(allocated(active_faces)) then
         write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_PRESCRIBED_INLET_V1'
         if(ios==0) write(stream,'(6(a,1x))',iostat=ios) boundary_faces
