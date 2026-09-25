@@ -288,7 +288,9 @@ conversion now feeds periodic/halo CTU directly
 now adds supplied frozen conserved rates with inventory and rollback checks
 ([evidence](validation/ppm-source-step-20260926.md)). Boundary stepping also
 accepts caller-supplied source halos and separates boundary/source inventories
-([checks](validation/ppm-boundary-source-step-20260926.md)); application source
+([checks](validation/ppm-boundary-source-step-20260926.md)). The full library
+split now forwards these sources with exact transport-composition checks
+([evidence](validation/ppm-source-split-20260926.md)); application source
 generation and SDC integration remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
