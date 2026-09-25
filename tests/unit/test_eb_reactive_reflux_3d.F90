@@ -124,12 +124,15 @@ contains
     type(eb_geometry_3d) :: domain,owner,receiver
     type(eb_integrated_flux_3d) :: owned,received,kept_flux
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),kept(:,:,:,:),kept_t(:,:,:)
-    real(dp) :: vector(nvar),expected(nvar),actual(nvar),area,h(3),rvolume
-    integer :: axis,side,ol(3),oh(3),rl(3),rh(3),offset(3),rn(3),first(3),last(3),component
+    real(dp), allocatable :: period(:)
+    real(dp) :: vector(nvar),expected(nvar),actual(nvar),area,h(3),rvolume,shift
+    integer :: trial,axis,side,ol(3),oh(3),rl(3),rh(3),offset(3),rn(3),first(3),last(3),component
     logical :: valid
     call build_axis_plane_eb_geometry_3d(6,6,6,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'z',.37_dp,domain,valid)
     call require(valid,'peer flux domain geometry')
     allocate(owned%x(nvar,0:3,3,3),owned%y(nvar,3,0:3,3),owned%z(nvar,3,3,0:3))
+    do trial=1,2
+    if(trial==2) allocate(period(3))
     do axis=1,3
       do side=0,1
         ol=1;oh=3;rl=2;rh=3
@@ -149,6 +152,18 @@ contains
         config%nx=rn(1);config%ny=rn(2);config%nz=rn(3)
         call initialize_reactive_eb_density_sheet_3d(species,config,receiver,u,t,valid)
         call require(valid,'receiver physical state')
+        if(allocated(period)) then
+          period=0;period(axis)=1
+          shift=-real(2*side-1,dp)
+          select case(axis)
+          case(1);receiver%x_lower=receiver%x_lower+shift;receiver%x_upper=receiver%x_upper+shift
+            where(receiver%boundary_area>0) receiver%boundary_centroid_x=receiver%boundary_centroid_x+shift
+          case(2);receiver%y_lower=receiver%y_lower+shift;receiver%y_upper=receiver%y_upper+shift
+            where(receiver%boundary_area>0) receiver%boundary_centroid_y=receiver%boundary_centroid_y+shift
+          case(3);receiver%z_lower=receiver%z_lower+shift;receiver%z_upper=receiver%z_upper+shift
+            where(receiver%boundary_area>0) receiver%boundary_centroid_z=receiver%boundary_centroid_z+shift
+          end select
+        end if
         vector=1.e-7_dp*u(:,rn(1),rn(2),rn(3))
         do component=1,nvar
           owned%x(component,:,:,:)=vector(component)
@@ -157,7 +172,7 @@ contains
         end do
         received%x=0._dp;received%y=0._dp;received%z=0._dp
         kept=u;kept_t=t
-        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid)
+        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid,periodic_length=period)
         call require(valid,'peer flux synchronization')
         first=offset+1;last=offset+rn;first(axis)=side*3;last(axis)=first(axis)
         select case(axis)
@@ -176,22 +191,32 @@ contains
         call require(all(t>0._dp),'corrected peer temperatures positive')
         kept=u;kept_t=t;kept_flux=received
         ! Matching fluxes are idempotent (up to EOS temperature recovery).
-        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid)
+        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid,periodic_length=period)
         call require(valid.and.all(u==kept),'synchronized conserved state is idempotent')
         kept_t=t
+        if(allocated(period)) then
+          period(axis)=-1
+          call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid, &
+            periodic_length=period)
+          call require(.not.valid.and.all(u==kept).and.all(t==kept_t),'invalid period rolls back state')
+          call require(all(received%x==kept_flux%x).and.all(received%y==kept_flux%y).and. &
+            all(received%z==kept_flux%z),'invalid period rolls back flux')
+          period(axis)=1
+        end if
         do component=1,nvar
           owned%x(component,:,:,:)=-real(2*side-1,dp)*1.e13_dp*vector(component)
           owned%y(component,:,:,:)=-real(2*side-1,dp)*1.e13_dp*vector(component)
           owned%z(component,:,:,:)=-real(2*side-1,dp)*1.e13_dp*vector(component)
         end do
-        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid)
+        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,offset,owned,received,u,t,valid,periodic_length=period)
         call require(.not.valid.and.all(u==kept).and.all(t==kept_t),'nonphysical correction rolls back state')
         call require(all(received%x==kept_flux%x).and.all(received%y==kept_flux%y).and. &
           all(received%z==kept_flux%z),'failed correction rolls back fluxes')
-        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,[0,0,0],owned,received,u,t,valid)
+        call reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,[0,0,0],owned,received,u,t,valid,periodic_length=period)
         call require(.not.valid.and.all(u==kept).and.all(t==kept_t),'overlapping peer flux boxes rejected')
         deallocate(u,t,received%x,received%y,received%z)
       end do
+    end do
     end do
   end subroutine check_peer_flux
 

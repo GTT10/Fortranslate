@@ -20,10 +20,12 @@ contains
   ! transfer and correct the already advanced receiver state by the difference.
   ! Owner data is read-only; receiver flux, conserved state and T commit together.
   subroutine reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,receiver_offset,owner_flux, &
-      receiver_flux,state,temperature,ok)
+      receiver_flux,state,temperature,ok,periodic_length)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: owner,receiver
     integer, intent(in) :: receiver_offset(3)
+    ! Optional domain length on exactly one axis; zero on tangential axes.
+    real(dp), optional, intent(in) :: periodic_length(3)
     type(eb_integrated_flux_3d), intent(in) :: owner_flux
     type(eb_integrated_flux_3d), intent(inout) :: receiver_flux
     real(dp), optional, intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -44,6 +46,14 @@ contains
     if (any(abs(rspacing-spacing)>tol*spacing)) return
     origin=[owner%x_lower,owner%y_lower,owner%z_lower]
     expected=origin+real(receiver_offset,dp)*spacing
+    if(present(periodic_length)) then
+      if(.not.all(ieee_is_finite(periodic_length))) return
+      if(any(periodic_length<0).or.count(periodic_length>0)/=1) return
+      axis=maxloc(periodic_length,dim=1)
+      if(receiver_offset(axis)/=n(axis).and.receiver_offset(axis)/=-rn(axis)) return
+      if(periodic_length(axis)<max(n(axis)*spacing(axis),rn(axis)*rspacing(axis))) return
+      expected(axis)=expected(axis)-sign(periodic_length(axis),real(receiver_offset(axis),dp))
+    end if
     if (any(abs([receiver%x_lower,receiver%y_lower,receiver%z_lower]-expected)> &
       tol*max(1._dp,maxval(abs(origin)),maxval(abs(expected))))) return
     nvar=reactive_nvar(size(species))
@@ -74,6 +84,9 @@ contains
               if (abs(oa-ra)>tol) return
               if ((oa>0._dp).neqv.(ra>0._dp)) return
               if (oa<=0._dp) cycle
+              if(present(periodic_length)) then
+                if(any(abs(face_centroid(owner,axis,oface)-face_centroid(receiver,axis,rface))>tol)) return
+              end if
               if (receiver%volume_fraction(cell(1),cell(2),cell(3))<=0._dp) return
               owner_area=oa*product(spacing)/spacing(axis)
               receiver_area=ra*product(rspacing)/rspacing(axis)
@@ -104,6 +117,19 @@ contains
     end if
     ok=.true.
   end subroutine reconcile_reactive_eb_peer_flux_3d
+
+  pure function face_centroid(g,axis,index) result(value)
+    type(eb_geometry_3d), intent(in) :: g
+    integer, intent(in) :: axis,index(3)
+    real(dp) :: value(2)
+    integer :: i,j,k
+    i=index(1);j=index(2);k=index(3)
+    select case(axis)
+    case(1);value=[g%x_face_centroid_y(i,j,k),g%x_face_centroid_z(i,j,k)]
+    case(2);value=[g%y_face_centroid_x(i,j,k),g%y_face_centroid_z(i,j,k)]
+    case(3);value=[g%z_face_centroid_x(i,j,k),g%z_face_centroid_y(i,j,k)]
+    end select
+  end function face_centroid
 
   subroutine restrict_eb_integrated_flux_3d(fine,ratio,fine_flux,coarse_flux,ok)
     type(eb_geometry_3d), intent(in) :: fine
