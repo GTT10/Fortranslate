@@ -6,16 +6,18 @@
 #include <stdexcept>
 #define AMREX_D_DECL(a,b,c) a,b,c
 #define AMREX_D_TERM(a,b,c) a b c
+#define AMREX_D_PICK(a,b,c) c
 #define AMREX_GPU_DEVICE
 #define AMREX_SPACEDIM 3
 #define NUM_ADV 0
 #define NUM_LIN 0
 constexpr int QRHO=0,QU=1,QV=2,QW=3,QPRES=4,QFS=5,QREINT=12,QVAR=13;
-constexpr int URHO=0,UMX=1,UMY=2,UMZ=3,UEDEN=4,UFS=5,UEINT=12,NVAR=13;
+constexpr int URHO=0,UMX=1,UMY=2,UMZ=3,UEDEN=4,UFS=5,UEINT=12,UTEMP=13,NVAR=14;
 constexpr int GDU=0,GDV=1,GDW=2,GDPRES=3,GDGAME=4,NGDNV=5,QC=0,QGAMC=1;
 constexpr int im2=0,im1=1,i0=2,ip1=3,ip2=4;
 namespace PCPhysBCType { enum { interior, inflow, user_bc, outflow, slip_wall, no_slip_wall, symmetry }; }
 namespace amrex {
+namespace PhysBCType { constexpr int noslipwall=PCPhysBCType::no_slip_wall; }
 template<class T,int N> using GpuArray=std::array<T,N>;
 struct IntVect {
  int v[3];
@@ -44,6 +46,7 @@ template<class T>struct Array4 {
  template<class U,typename=std::enable_if_t<std::is_convertible_v<U*,T*>>>
  Array4(const Array4<U>& a):p(a.p),b(a.b),nc(a.nc){}
  explicit operator bool()const{return p!=nullptr;}
+ bool contains(int i,int j,int k)const{return i>=b.lo[0]&&i<=b.hi[0]&&j>=b.lo[1]&&j<=b.hi[1]&&k>=b.lo[2]&&k<=b.hi[2];}
  T& operator()(int i,int j,int k,int n=0)const{
   if(!p||i<b.lo[0]||i>b.hi[0]||j<b.lo[1]||j>b.hi[1]||k<b.lo[2]||k>b.hi[2]||n<0||n>=nc)Error("array bounds");
   return p[(((k-b.lo[2])*(b.hi[1]-b.lo[1]+1)+j-b.lo[1])*(b.hi[0]-b.lo[0]+1)+i-b.lo[0])*nc+n];
@@ -56,7 +59,6 @@ struct FArrayBox {
  Array4<double> array(){return {data.data(),b,nc};}
 };
 }
-template<class... A>double flatten(A...){amrex::Error("flattening outside oracle scope");}
 template<class... A>double plm_slope(A...){amrex::Error("PLM outside oracle scope");}
 template<class... A>void pc_plm_d(A...){amrex::Error("PLM outside oracle scope");}
 template<class... A>void pc_low_order_boundary(A...){amrex::Error("inflow outside oracle scope");}

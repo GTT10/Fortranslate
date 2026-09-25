@@ -27,9 +27,10 @@ program test_reactive_ppm_normal_3d
     case('--ctu-stream')
       block
         real(dp) :: cu(12,4,4,4),ct(4,4,4),cx(12,0:4,4,4),cy(12,4,0:4,4),cz(12,4,4,0:4),cq(12)
-        integer :: ii,jj,kk
+        integer :: ii,jj,kk,flatten_flag
+        real(dp) :: viscosity
         do
-          read(*,*,iostat=status) dt
+          read(*,*,iostat=status) dt,flatten_flag,viscosity
           if(status<0) exit
           if(status/=0) error stop 'invalid CTU interval'
           do kk=1,4
@@ -43,7 +44,7 @@ program test_reactive_ppm_normal_3d
           end do
           end do
           call compute_reactive_ppm_ctu_fluxes_3d(species,cu,ct,[.25_dp,.25_dp,.25_dp],dt, &
-            .false.,.false.,'pelec',cx,cy,cz,theta,ok,difmag=0._dp)
+            .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity)
           call require(ok,'CTU reference fluxes')
           do kk=1,4
           do jj=1,4
