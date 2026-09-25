@@ -1,15 +1,15 @@
 program test_reactive_pelec_riemann
-  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: &
-    mass_fractions_from_mole_fractions, mixture_density
+    mass_fractions_from_mole_fractions, mixture_density,mixture_mass_properties
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_species_component, reactive_primitive_to_conserved, &
-    reactive_pelec_flux_x, reactive_pelec_primitive_flux_x, reactive_riemann_flux_x
+    reactive_pelec_flux_x, reactive_pelec_primitive_flux_x, reactive_riemann_flux_x,reactive_pelec_source_to_primitive
   use reactive_2d_mod, only: reactive_riemann_flux_y
   implicit none
 
@@ -57,6 +57,8 @@ program test_reactive_pelec_riemann
     end select
     stop
   end if
+
+  call check_source_conversion()
 
   xl = [0.29570_dp, 1.0e-5_dp, 1.0e-5_dp, 0.14784_dp, &
     1.0e-5_dp, 0.0_dp, 0.55643_dp]
@@ -174,6 +176,34 @@ program test_reactive_pelec_riemann
   write(*, '(a)') "test_reactive_pelec_riemann: PASS"
 
 contains
+  subroutine check_source_conversion()
+    real(dp) :: q(12),src(12),converted(12),energy,state(12),temp,sound
+    real(dp) :: mw,r,cp,cv,gamma,h,e,s,expected_pressure
+    logical :: valid
+    q=0;q(1)=2;q(2:4)=[3._dp,-4._dp,12._dp];q(5)=3e5_dp;q(12)=1
+    call reactive_primitive_to_conserved(species,q,state,temp,sound,valid)
+    if(.not.valid) error stop 'source fixture EOS'
+    call mixture_mass_properties(species,q(6:),temp,mw,r,cp,cv,gamma,h,e,s,valid)
+    if(.not.valid) error stop 'source fixture thermo'
+    src=0;src(1:5)=[.2_dp,5._dp,-6._dp,8._dp,1000._dp]
+    src(6)=.02_dp;src(12)=.18_dp
+    call reactive_pelec_source_to_primitive(species,q,src,converted,energy,valid)
+    if(.not.valid) error stop 'source conversion'
+    if(maxval(abs(converted(1:4)-[.2_dp,2.2_dp,-2.6_dp,2.8_dp]))>1e-14_dp) &
+      error stop 'source velocity conversion'
+    if(abs(energy-898.8_dp)>1e-12_dp) error stop 'pinned source internal energy'
+    expected_pressure=(r/cv)*(898.8_dp-.2_dp*e)+.2_dp*r*temp
+    if(abs(converted(5)-expected_pressure)>1e-12_dp*max(1._dp,abs(expected_pressure))) &
+      error stop 'source pressure derivatives'
+    if(abs(converted(6)-.01_dp)>1e-14_dp.or.abs(converted(12)+.01_dp)>1e-14_dp) &
+      error stop 'source species conversion'
+    src=0
+    call reactive_pelec_source_to_primitive(species,q,src,converted,energy,valid)
+    if(.not.valid.or.any(converted/=0).or.energy/=0) error stop 'zero source identity'
+    src(5)=ieee_value(0._dp,ieee_quiet_nan)
+    call reactive_pelec_source_to_primitive(species,q,src,converted,energy,valid)
+    if(valid.or.any(converted/=0).or.energy/=0) error stop 'bad source rollback'
+  end subroutine check_source_conversion
 
   subroutine check_primitive_entry()
     real(dp) :: q(12),u(12),f(12),exact(12),t,c,rf,vf,pf,reference(12),right(12),uright(12),t2,c2

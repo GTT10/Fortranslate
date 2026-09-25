@@ -39,6 +39,7 @@ module reactive_1d_mod
   public :: reactive_species_component, reactive_mass_fraction_component
   public :: reactive_primitive_to_conserved
   public :: reactive_conserved_to_primitive
+  public :: reactive_pelec_source_to_primitive
   public :: reactive_rusanov_flux_x
   public :: reactive_pelec_flux_x, reactive_pelec_primitive_flux_x
   public :: reactive_hllc_flux_x
@@ -75,6 +76,35 @@ module reactive_1d_mod
   public :: reactive_composition_wave_exact
 
 contains
+
+  ! Pinned Hydro.H pc_srctoprim, using ideal-mixture EOS derivatives.
+  ! Preserve the reference's full rho-source times velocity-squared term.
+  subroutine reactive_pelec_source_to_primitive(species,primitive,source,source_q,source_e,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: primitive(:),source(:)
+    real(dp), intent(out) :: source_q(:),source_e
+    logical, intent(out) :: ok
+    real(dp) :: state(size(primitive)),candidate(size(primitive)),temperature,sound
+    real(dp) :: mw,r,cp,cv,gamma,h,e,s,rhoinv,energy,dpde,dpdr
+    logical :: valid
+    source_q=0;source_e=0;ok=.false.
+    if(size(primitive)/=reactive_nprim(size(species))) return
+    if(size(source)/=size(primitive).or.size(source_q)/=size(primitive)) return
+    if(.not.all(ieee_is_finite(source))) return
+    call reactive_primitive_to_conserved(species,primitive,state,temperature,sound,valid)
+    if(.not.valid) return
+    call mixture_mass_properties(species,primitive(6:),temperature,mw,r,cp,cv,gamma,h,e,s,valid)
+    if(.not.valid.or.cv<=0) return
+    rhoinv=1/primitive(1);dpde=primitive(1)*r/cv;dpdr=r*temperature
+    candidate(1)=source(1)
+    candidate(2:4)=(source(2:4)-primitive(2:4)*source(1))*rhoinv
+    energy=source(5)-primitive(2)*source(2)-primitive(3)*source(3)-primitive(4)*source(4)+ &
+      source(1)*sum(primitive(2:4)**2)
+    candidate(5)=dpde*(energy-e*source(1))*rhoinv+dpdr*source(1)
+    candidate(6:)=(source(6:)-primitive(6:)*source(1))*rhoinv
+    if(.not.all(ieee_is_finite(candidate)).or..not.ieee_is_finite(energy)) return
+    source_q=candidate;source_e=energy;ok=.true.
+  end subroutine reactive_pelec_source_to_primitive
 
   subroutine resolve_reactive_chemistry_integrator( &
       nspecies, requested, use_implicit, ok)
