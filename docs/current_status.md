@@ -17,8 +17,9 @@ Chemistry and broader boundary/AMR/MPI integration for SDC remain open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
-([checks](validation/forced-reactor-integrator-20260926.md)); full-interval
-subcycling and SDC connection remain open.
+([checks](validation/forced-reactor-integrator-20260926.md)). Transactional
+full-interval subcycling is also implemented
+([checks](validation/forced-reactor-interval-20260926.md)); SDC connection remains open.
 
 Regular fixed/selected gas applications now accept force-per-volume input
 `external_forcing(3)` with PPM/PeleC, time-centered work and separate source
