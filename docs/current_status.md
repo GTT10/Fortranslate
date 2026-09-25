@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Patch Euler transport now accepts isothermal wall temperatures with transactional
+heat-flux checks ([evidence](validation/eb-isothermal-patch-20260926.md)).
+Tree/MPI temperature forwarding remains open.
+
 MPI EB particle drift now supports specular domain-wall reflection with exterior
 impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
 Coupled common/recursive CTU wall steps and the fixed MPI spray application
