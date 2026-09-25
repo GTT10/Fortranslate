@@ -6,6 +6,7 @@ program test_reactive_ppm_step_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
+  use reactive_3d_mod, only: compute_reactive_external_source_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -98,6 +99,16 @@ contains
     character(len=8) :: walls(6)
     real(dp) :: composed(nv,4,4,4),composed_t(4,4,4),boundary_ref(nv),transport_limit
     integer :: component,bc
+    state=u;temp=t
+    call compute_reactive_external_source_3d(state,[2._dp,-3._dp,4._dp],source,ok)
+    call require(ok,'external force source generation')
+    call require(all(source(1,:,:,:)==0).and.all(source(6:,:,:,:)==0),'force leaves mass and species unchanged')
+    call require(all(source(2,:,:,:)==2).and.all(source(3,:,:,:)==-3).and.all(source(4,:,:,:)==4), &
+      'force is per volume independent of density')
+    call require(maxval(abs(source(5,:,:,:)+10._dp))<1e-13_dp,'external source mechanical work')
+    state(1,4,4,4)=-1
+    call compute_reactive_external_source_3d(state,[2._dp,-3._dp,4._dp],source,ok)
+    call require(.not.ok.and.all(source==0),'external source rejects invalid density transactionally')
     ! Nonuniform fixture: periodic flux divergence must leave only source inventory.
     state=u;temp=t;source=0
     source(2,:,:,:)=.2_dp;source(5,:,:,:)=100._dp

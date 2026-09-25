@@ -22,6 +22,7 @@ module reactive_3d_mod
 
   public :: adjust_reactive_artificial_viscosity_3d
   public :: reactive_ppm_transverse_pressure_3d
+  public :: compute_reactive_external_source_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
@@ -44,6 +45,33 @@ module reactive_3d_mod
   public :: reactive_extrema_3d
 
 contains
+
+  ! Pinned External.cpp: force per volume, and mechanical work u dot force.
+  ! The caller controls the state time level and supplies any needed halos.
+  subroutine compute_reactive_external_source_3d(state,force,source,ok)
+    real(dp), intent(in) :: state(:,:,:,:),force(3)
+    real(dp), intent(out) :: source(:,:,:,:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:)
+    integer :: i,j,k,d
+    source=0;ok=.false.
+    if(size(state,1)<6.or.any(shape(source)/=shape(state))) return
+    if(.not.all(ieee_is_finite(state)).or..not.all(ieee_is_finite(force))) return
+    if(any(state(1,:,:,:)<=density_floor)) return
+    allocate(candidate,mold=state);candidate=0
+    do k=1,size(state,4)
+    do j=1,size(state,3)
+    do i=1,size(state,2)
+      do d=1,3
+        candidate(d+1,i,j,k)=force(d)
+        candidate(5,i,j,k)=candidate(5,i,j,k)+state(d+1,i,j,k)/state(1,i,j,k)*force(d)
+      end do
+    end do
+    end do
+    end do
+    if(.not.all(ieee_is_finite(candidate))) return
+    source=candidate;ok=.true.
+  end subroutine compute_reactive_external_source_3d
 
   ! Regular-cell pc_divu/pc_artif_visc/pc_norm_spec_flx. One ghost cell per side.
   ! Optional EB volume fractions use eb_divu's eight-cell regularity cutoff.
