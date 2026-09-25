@@ -83,6 +83,16 @@ program test_eb_tree_subcycle_hydro_3d
   residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
   print *, 'periodic axis, nodes, residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'periodic recursive hydro conservation')
+  periodic_faces='no_slip_wall';periodic_faces(2*axis-1:2*axis)='outflow'
+  tree=saved
+  call advance_reactive_eb_tree_subcycle_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok, &
+    boundary_faces=periodic_faces)
+  call require(ok,'wall recursive hydro update')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'wall recursive hydro inventory')
+  residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
+  print *, 'wall axis, nodes, residual: ',axes(axis),count,residual
+  call require(residual<3.e-14_dp,'wall recursive hydro conservation')
   tree=saved;boundary=17._dp;wall=19._dp
   call advance_reactive_eb_tree_subcycle_hydro_3d(species,'invalid',1.e-8_dp,tree,boundary,wall,ok)
   call require(.not.ok,'invalid solver rejected')

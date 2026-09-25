@@ -1160,7 +1160,8 @@ contains
     if (.not.valid_tree(tree,nv)) return
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
-    if(any(faces/='outflow'.and.faces/='inflow'.and.faces/='periodic')) return
+    if(any(faces/='outflow'.and.faces/='inflow'.and.faces/='periodic'.and. &
+      faces/='slip_wall'.and.faces/='no_slip_wall')) return
     if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
     associate(g=>tree%nodes(1)%geometry)
     length=[g%x_upper-g%x_lower,g%y_upper-g%y_lower,g%z_upper-g%z_lower]

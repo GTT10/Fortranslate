@@ -156,6 +156,24 @@ program test_eb_tree_hydro_3d
   call require(ok,'periodic PCM inventory')
   residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
   call require(residual<3.e-14_dp,'periodic PCM composite conservation')
+  periodic_faces='no_slip_wall';periodic_faces(2*axis-1:2*axis)='outflow'
+  periodic_faces(2*modulo(axis,3)+1:2*modulo(axis,3)+2)='slip_wall'
+  tree=ctu_start
+  call advance_reactive_eb_tree_hydro_3d(species,'pelec',1.e-8_dp,tree,boundary,wall,ok, &
+    difmag=coefficient,extended_geometry=extended,boundary_faces=periodic_faces)
+  call require(ok,'mixed wall CTU common tree step')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'wall CTU inventory')
+  residual=maxval(abs(after-ctu_before-boundary-wall)/max(1._dp,abs(ctu_before)))
+  call require(residual<3.e-14_dp,'wall CTU composite conservation')
+  tree=saved
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok, &
+    difmag=coefficient,boundary_faces=periodic_faces)
+  call require(ok,'mixed wall PCM common tree step')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'wall PCM inventory')
+  residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
+  call require(residual<3.e-14_dp,'wall PCM composite conservation')
   tree=saved;boundary=17;wall=19
   call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,extended_geometry=extended)
   call require(.not.ok.and.all(boundary==17).and.all(wall==19),'CTU incompatible solver rollback')
