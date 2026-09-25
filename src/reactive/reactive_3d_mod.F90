@@ -18,7 +18,7 @@ module reactive_3d_mod
     apply_reactive_transverse_correction_2d
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d,reactive_transport_fluxes_3d, &
-    physical_transport_fluxes_3d,physical_transport_budget_3d
+    physical_transport_fluxes_3d,physical_transport_budget_3d,physical_transport_ghosted_fluxes_3d
   implicit none
   private
 
@@ -55,6 +55,20 @@ module reactive_3d_mod
       real(dp), intent(out) :: sources(:,:,:,:,:)
       logical, intent(out) :: ok
     end subroutine reactive_sdc_source_evaluator
+    subroutine reactive_sdc_halo_filler(state,temperature,time,width,viscous,ghost,ghost_temperature,ok)
+      import dp
+      real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time
+      integer, intent(in) :: width
+      logical, intent(in) :: viscous
+      real(dp), intent(out) :: ghost(:,:,:,:),ghost_temperature(:,:,:)
+      logical, intent(out) :: ok
+    end subroutine reactive_sdc_halo_filler
+    subroutine reactive_sdc_source_halo_filler(source,time,ghost,ok)
+      import dp
+      real(dp), intent(in) :: source(:,:,:,:),time
+      real(dp), intent(out) :: ghost(:,:,:,:)
+      logical, intent(out) :: ok
+    end subroutine reactive_sdc_source_halo_filler
   end interface
   interface advance_reactive_sdc_3d
     module procedure advance_reactive_sdc_periodic_3d
@@ -67,12 +81,15 @@ contains
       source_count,evaluate_sources,ok,difmag,external_force,source_change, &
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
-      inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z)
+      inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z, &
+      fill_halos,fill_source_halos)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
     integer, intent(in) :: iterations,source_count
     procedure(reactive_sdc_source_evaluator), optional :: evaluate_sources
+    procedure(reactive_sdc_halo_filler), optional :: fill_halos
+    procedure(reactive_sdc_source_halo_filler), optional :: fill_source_halos
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,external_force(3)
     real(dp), optional, intent(out) :: source_change(:),minimum_transport_theta
@@ -106,6 +123,7 @@ contains
     integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    if(present(fill_halos).neqv.present(fill_source_halos)) return
     if(present(flux_x)) flux_x=0
     if(present(flux_y)) flux_y=0
     if(present(flux_z)) flux_z=0
@@ -144,7 +162,7 @@ contains
     if(present(minimum_transport_theta)) minimum_transport_theta=1
     if(present(transport)) then
       if(present(evaluate_sources).or.size(transport)/=size(species)) return
-      if(all(faces=='periodic')) then
+      if(all(faces=='periodic').and..not.present(fill_halos)) then
         allocate(tx,mold=state);allocate(ty,mold=state);allocate(tz,mold=state)
       else
         allocate(tx(nv,0:n(1),n(2),n(3)),ty(nv,n(1),0:n(2),n(3)),tz(nv,n(1),n(2),0:n(3)))
@@ -165,10 +183,12 @@ contains
     allocate(predictor,mold=state);allocate(zero,mold=state);zero=0
     allocate(candidate,mold=state);allocate(ct,mold=temperature);allocate(recovered,mold=temperature);allocate(hydro,mold=state)
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
-    if(any(faces/='periodic')) then
+    if(any(faces/='periodic').or.present(fill_halos)) then
       allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),ghost_t(n(1)+8,n(2)+8,n(3)+8))
       allocate(source_ghost(nv,-3:n(1)+4,-3:n(2)+4,-3:n(3)+4))
-      if(present(inflow_mach)) then
+      if(present(fill_halos)) then
+        call fill_halos(state,temperature,time,4,.false.,ghost,ghost_t,valid)
+      else if(present(inflow_mach)) then
         call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,inflow_mach,ghost,ghost_t,valid, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_width=4)
       else
@@ -176,7 +196,8 @@ contains
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=4)
       end if
       if(.not.valid) return
-      call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,ghost_t,valid,ghost_width=4)
+      if(.not.present(fill_halos)) &
+        call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,ghost_t,valid,ghost_width=4)
       if(.not.valid) return
     end if
     call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
@@ -184,7 +205,7 @@ contains
     if(present(evaluate_sources)) then
       call evaluate_sources(state,ct,time,old_sources,valid)
     else
-      call builtin_sources(state,ct,old_sources,valid)
+      call builtin_sources(state,ct,time,old_sources,valid)
     end if
     if(.not.valid) return
     new_sources=old_sources
@@ -196,11 +217,15 @@ contains
       ! Hydro.cpp sums half new then half old rates, without including hydro itself.
       call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,reaction_source=ir)
       if(.not.valid) return
-      if(all(faces=='periodic')) then
+      if(all(faces=='periodic').and..not.present(fill_halos)) then
         call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,.false.,.true.,'pelec', &
           fx,fy,fz,theta,valid,difmag=difmag,conserved_source=predictor)
       else
-        ! Outflow copies source rates; periodic axes wrap them like the state.
+        if(present(fill_source_halos)) then
+          call fill_source_halos(predictor,time+.5_dp*dt,source_ghost,valid)
+          if(.not.valid) return
+        else
+        ! Physical source rates extrapolate; periodic axes wrap.
         do k=-3,n(3)+4
         do j=-3,n(2)+4
         do i=-3,n(1)+4
@@ -216,6 +241,7 @@ contains
         end do
         end do
         end do
+        end if
         call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,ghost_t,n,spacing,dt,.false.,.true.,'pelec', &
           fx,fy,fz,theta,valid,difmag=difmag,conserved_source=source_ghost,outflow_faces=faces=='outflow', &
           outlet_pressure=outlet_pressure,inflow_faces=faces=='inflow', &
@@ -238,7 +264,7 @@ contains
       if(present(evaluate_sources)) then
         call evaluate_sources(candidate,ct,time+dt,new_sources,valid)
       else
-        call builtin_sources(candidate,ct,new_sources,valid)
+        call builtin_sources(candidate,ct,time+dt,new_sources,valid)
       end if
       if(.not.valid) return
       new_transport_rate=transport_rate
@@ -293,7 +319,7 @@ contains
     if(.not.all(ieee_is_finite(boundary_inventory)).or..not.all(ieee_is_finite(inventory))) return
     if(present(flux_x)) then
       if(present(transport)) then
-        if(all(faces=='periodic')) then
+        if(all(faces=='periodic').and..not.present(fill_halos)) then
           fx(:,1:,:,:)=fx(:,1:,:,:)+.5_dp*(old_tx+tx)
           fy(:,:,1:,:)=fy(:,:,1:,:)+.5_dp*(old_ty+ty)
           fz(:,:,:,1:)=fz(:,:,:,1:)+.5_dp*(old_tz+tz)
@@ -313,25 +339,34 @@ contains
     if(present(reaction_source)) reaction_source=ir
     state=candidate;temperature=ct;ok=.true.
   contains
-    subroutine builtin_sources(u,t,rates,good)
-      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+    subroutine builtin_sources(u,t,stage_time,rates,good)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),stage_time
       real(dp), intent(out) :: rates(:,:,:,:,:)
       logical, intent(out) :: good
       real(dp) :: transport_theta
       integer :: ii,jj,kk
+      real(dp), allocatable :: tg(:,:,:,:),tgt(:,:,:)
       rates=0
       call compute_reactive_external_source_3d(u,external_force,rates(:,:,:,:,1),good)
       if(.not.good.or..not.present(transport)) return
-      if(all(faces=='periodic')) then
+      if(all(faces=='periodic').and..not.present(fill_halos)) then
         call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
           spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
         if(.not.good) return
         call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,2),good)
       else
+        if(present(fill_halos)) then
+          allocate(tg(nv,n(1)+4,n(2)+4,n(3)+4),tgt(n(1)+4,n(2)+4,n(3)+4))
+          call fill_halos(u,t,stage_time,2,.true.,tg,tgt,good)
+          if(.not.good) return
+          call physical_transport_ghosted_fluxes_3d(species,transport,u,t,tg,tgt,n,spacing,dt,faces, &
+            flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,wall_temperature,wall_velocity)
+        else
         call physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
           flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,outlet_pressure=outlet_pressure, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach, &
           inflow_pressure=inflow_pressure,wall_temperature=wall_temperature,wall_velocity=wall_velocity)
+        end if
         if(.not.good) return
         do kk=1,n(3)
         do jj=1,n(2)

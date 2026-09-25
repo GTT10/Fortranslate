@@ -1,9 +1,40 @@
 module sdc_test_source_mod
   use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   logical :: sdc_failure=.false.
   integer :: sdc_calls=0
+  integer :: halo_calls=0,source_halo_calls=0
 contains
+  subroutine sdc_test_halos(state,temp,time,width,viscous,ghost,gt,valid)
+    real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
+    integer, intent(in) :: width
+    logical, intent(in) :: viscous
+    real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
+    logical, intent(out) :: valid
+    character(len=8) :: faces(6)
+    halo_calls=halo_calls+1;valid=.false.;ghost=0;gt=0
+    if(sdc_failure.and.time>0) return
+    faces='periodic'
+    call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,valid,ghost_width=width,viscous_wall=viscous)
+  end subroutine sdc_test_halos
+  subroutine sdc_test_source_halos(source,time,ghost,valid)
+    real(dp), intent(in) :: source(:,:,:,:),time
+    real(dp), intent(out) :: ghost(:,:,:,:)
+    logical, intent(out) :: valid
+    integer :: i,j,k,n(3),index(3)
+    source_halo_calls=source_halo_calls+1
+    n=shape(source(1,:,:,:))
+    do k=1,n(3)+8
+    do j=1,n(2)+8
+    do i=1,n(1)+8
+      index=modulo([i,j,k]-5,n)+1
+      ghost(:,i,j,k)=source(:,index(1),index(2),index(3))
+    end do
+    end do
+    end do
+    valid=time>=0
+  end subroutine sdc_test_source_halos
   subroutine sdc_test_sources(state,temp,time,sources,valid)
     real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
     real(dp), intent(out) :: sources(:,:,:,:,:)
@@ -18,6 +49,7 @@ end module sdc_test_source_mod
 
 program test_reactive_ppm_step_3d
   use sdc_test_source_mod, only: sdc_test_sources,sdc_failure,sdc_calls
+  use sdc_test_source_mod, only: sdc_test_halos,sdc_test_source_halos,halo_calls,source_halo_calls
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -61,6 +93,7 @@ program test_reactive_ppm_step_3d
   call check_sdc_reactions()
   call check_sdc_outflow()
   call check_sdc_flux_export()
+  call check_sdc_halos()
   call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
@@ -120,6 +153,27 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+
+  subroutine check_sdc_halos()
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4),et(4,4,4)
+    expected=u;et=t
+    call advance_reactive_sdc_3d(species,expected,et,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,2,ok=ok,external_force=[0._dp,0._dp,0._dp],transport=transport)
+    call require(ok,'SDC native periodic halo baseline')
+    state=u;temp=t;halo_calls=0;source_halo_calls=0
+    call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,2,ok=ok,external_force=[0._dp,0._dp,0._dp],transport=transport, &
+      fill_halos=sdc_test_halos,fill_source_halos=sdc_test_source_halos)
+    call require(ok.and.halo_calls==4.and.source_halo_calls==2,'SDC staged state and source halo callbacks')
+    call require(maxval(abs(state-expected)/max(1._dp,abs(expected)))<1e-12_dp.and. &
+      maxval(abs(temp-et))<1e-7_dp,'SDC caller halos reproduce native periodic update')
+    state=u;temp=t;sdc_failure=.true.
+    call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,2,ok=ok,external_force=[0._dp,0._dp,0._dp],transport=transport, &
+      fill_halos=sdc_test_halos,fill_source_halos=sdc_test_source_halos)
+    call require(.not.ok.and.all(state==u).and.all(temp==t),'SDC new-time halo failure rolls back')
+    sdc_failure=.false.
+  end subroutine check_sdc_halos
 
   subroutine check_sdc_flux_export()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4)
