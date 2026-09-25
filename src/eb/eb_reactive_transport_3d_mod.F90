@@ -17,6 +17,19 @@ module eb_reactive_transport_3d_mod
   implicit none
   private
 
+  ! A stage donor provider fills one halo layer from the current stage state.
+  ! Physical labels, prescribed values and patch exchange belong to the caller.
+  abstract interface
+    subroutine eb_transport_halo_provider_3d(state,temperature,geometry,ghost,ghost_temperature,faces,ok)
+      import dp,eb_geometry_3d
+      real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
+      type(eb_geometry_3d), intent(in) :: geometry
+      real(dp), intent(out) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+      logical, intent(out) :: faces(6),ok
+    end subroutine eb_transport_halo_provider_3d
+  end interface
+  public :: eb_transport_halo_provider_3d
+
   real(dp), parameter :: species_safety = 0.90_dp
 
   public :: reactive_eb_halo_bounds_3d
@@ -929,7 +942,7 @@ contains
       species, transport, state, temperature, geometry, interval, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      target_volume_fraction, minimum_theta, ok)
+      target_volume_fraction, minimum_theta, ok, prepare_halo, integrated_flux)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -939,6 +952,11 @@ contains
     logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    procedure(eb_transport_halo_provider_3d), optional :: prepare_halo
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
+    type(eb_integrated_flux_3d), allocatable :: flux_one,flux_two
+    real(dp), allocatable :: ghost(:,:,:,:),ghost_temperature(:,:,:)
+    logical :: faces(6)
 
     real(dp), allocatable :: initial_state(:, :, :, :)
     real(dp), allocatable :: initial_temperature(:, :, :)
@@ -963,8 +981,16 @@ contains
         target_volume_fraction > 1.0_dp .or. &
         (barodiffusion_enabled .and. &
           .not. species_diffusion_enabled)) return
+    if (present(integrated_flux)) then
+      allocate(flux_one,flux_two)
+      allocate(flux_one%x(size(state,1),0:geometry%nx,geometry%ny,geometry%nz), &
+        flux_one%y(size(state,1),geometry%nx,0:geometry%ny,geometry%nz), &
+        flux_one%z(size(state,1),geometry%nx,geometry%ny,0:geometry%nz))
+      flux_one%x=0;flux_one%y=0;flux_one%z=0
+    end if
     if (interval <= tiny(1.0_dp) .or. .not. (viscosity_enabled .or. &
         thermal_conduction_enabled .or. species_diffusion_enabled)) then
+      if (present(integrated_flux)) integrated_flux=flux_one
       ok = .true.
       return
     end if
@@ -974,19 +1000,30 @@ contains
     allocate(stage_temperature, mold=temperature)
     allocate(euler_state, mold=state)
     allocate(euler_temperature, mold=temperature)
+    faces=.false.
+    if (present(prepare_halo)) then
+      allocate(ghost(size(state,1),0:geometry%nx+1,0:geometry%ny+1,0:geometry%nz+1), &
+        ghost_temperature(0:geometry%nx+1,0:geometry%ny+1,0:geometry%nz+1))
+      call prepare_halo(initial_state,initial_temperature,geometry,ghost,ghost_temperature,faces,local_ok)
+      if (.not.local_ok) return
+    end if
     call reactive_eb_transport_euler_update_3d( &
       species, transport, initial_state, initial_temperature, geometry, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, stage_state, stage_temperature, theta_one, &
-      local_ok)
+      local_ok,ghost,ghost_temperature,faces,flux_one)
     if (.not. local_ok) return
+    if (present(prepare_halo)) then
+      call prepare_halo(stage_state,stage_temperature,geometry,ghost,ghost_temperature,faces,local_ok)
+      if (.not.local_ok) return
+    end if
     call reactive_eb_transport_euler_update_3d( &
       species, transport, stage_state, stage_temperature, geometry, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, euler_state, euler_temperature, theta_two, &
-      local_ok)
+      local_ok,ghost,ghost_temperature,faces,flux_two)
     if (.not. local_ok) return
 
     allocate(candidate_state, source=0.5_dp * (initial_state + euler_state))
@@ -1012,6 +1049,14 @@ contains
     end do
     if (any(.not. ieee_is_finite(candidate_state)) .or. &
         any(.not. ieee_is_finite(candidate_temperature))) return
+    if (present(integrated_flux)) then
+      flux_one%x=.5_dp*flux_one%x+.5_dp*flux_two%x
+      flux_one%y=.5_dp*flux_one%y+.5_dp*flux_two%y
+      flux_one%z=.5_dp*flux_one%z+.5_dp*flux_two%z
+      if (.not.all(ieee_is_finite(flux_one%x)).or..not.all(ieee_is_finite(flux_one%y)).or. &
+        .not.all(ieee_is_finite(flux_one%z))) return
+      integrated_flux=flux_one
+    end if
     state = candidate_state
     temperature = candidate_temperature
     minimum_theta = min(theta_one, theta_two)

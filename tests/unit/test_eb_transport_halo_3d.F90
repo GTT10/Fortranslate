@@ -8,16 +8,20 @@ program test_eb_transport_halo_3d
   use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d, &
-    reactive_eb_transport_euler_update_3d
+    reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
   type(eb_geometry_3d) :: geometry
   type(reactive_eb_3d_config) :: config
-  type(eb_integrated_flux_3d) :: integrated,saved_flux
+  type(eb_integrated_flux_3d) :: integrated,saved_flux,first_flux,second_flux
+  real(dp), allocatable :: stage(:,:,:,:),stage_t(:,:,:),twice(:,:,:,:),twice_t(:,:,:)
+  integer :: provider_calls,fail_call
+  logical :: observed_stage_change
   real(dp), allocatable :: advanced(:,:,:,:),advanced_t(:,:,:)
   real(dp), parameter :: dt=1.e-3_dp
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),g(:,:,:,:),gt(:,:,:),rhs(:,:,:,:),x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
@@ -32,6 +36,7 @@ program test_eb_transport_halo_3d
   nvar=reactive_nvar(size(species));config%nx=4;config%ny=4;config%nz=4
   allocate(u(nvar,4,4,4),t(4,4,4),rhs(nvar,4,4,4),g(nvar,0:5,0:5,0:5),gt(0:5,0:5,0:5))
   allocate(advanced(nvar,4,4,4),advanced_t(4,4,4))
+  allocate(stage(nvar,4,4,4),stage_t(4,4,4),twice(nvar,4,4,4),twice_t(4,4,4))
   allocate(x(nvar,0:4,4,4),y(nvar,4,0:4,4),z(nvar,4,4,0:4))
   allocate(p(reactive_nprim(size(species))))
   allocate(gp(size(p)),left(size(p)),right(size(p)), &
@@ -162,9 +167,67 @@ program test_eb_transport_halo_3d
     call require(ok.and.all(advanced==u).and.all(advanced_t==t),'zero interval identity')
     call require(all(integrated%x==0).and.all(integrated%y==0).and.all(integrated%z==0), &
       'zero interval clears exchange')
+    provider_calls=0;fail_call=0;observed_stage_change=.false.
+    advanced=u;advanced_t=t
+    call advance_reactive_eb_transport_3d(species,transport,advanced,advanced_t,geometry,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,theta,ok,prepare_stage_halo,integrated)
+    call require(ok.and.provider_calls==2.and.observed_stage_change,'both stages rebuild current donors')
+    saved_flux=integrated
+    call prepare_stage_halo(u,t,geometry,g,gt,faces,ok)
+    call require(ok,'manual initial halo')
+    call reactive_eb_transport_euler_update_3d(species,transport,u,t,geometry,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,stage,stage_t,theta,ok,g,gt,faces,first_flux)
+    call require(ok,'manual first stage')
+    call prepare_stage_halo(stage,stage_t,geometry,g,gt,faces,ok)
+    call require(ok,'manual second halo')
+    call reactive_eb_transport_euler_update_3d(species,transport,stage,stage_t,geometry,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,twice,twice_t,theta,ok,g,gt,faces,second_flux)
+    call require(ok,'manual second stage')
+    call require(maxval(abs(advanced-.5_dp*(u+twice)))<2.e-12_dp*max(1._dp,maxval(abs(u))), &
+      'SSPRK2 agrees with independently assembled stages')
+    call require(all(integrated%x==.5_dp*first_flux%x+.5_dp*second_flux%x).and. &
+      all(integrated%y==.5_dp*first_flux%y+.5_dp*second_flux%y).and. &
+      all(integrated%z==.5_dp*first_flux%z+.5_dp*second_flux%z),'SSPRK2 integrated flux weights')
+    do c=1,nvar
+      budget=.25_dp**2*(sum(geometry%x_face_fraction(0,:,:)*integrated%x(c,0,:,:)- &
+        geometry%x_face_fraction(4,:,:)*integrated%x(c,4,:,:))+ &
+        sum(geometry%y_face_fraction(:,0,:)*integrated%y(c,:,0,:)- &
+        geometry%y_face_fraction(:,4,:)*integrated%y(c,:,4,:))+ &
+        sum(geometry%z_face_fraction(:,:,0)*integrated%z(c,:,:,0)- &
+        geometry%z_face_fraction(:,:,4)*integrated%z(c,:,:,4)))
+      change=volume*sum((advanced(c,:,:,:)-u(c,:,:,:))*geometry%volume_fraction)
+      call require(abs(change-budget)<=2.e-12_dp*max(1._dp, &
+        volume*sum(abs(u(c,:,:,:))*geometry%volume_fraction)), 'SSPRK2 halo inventory')
+    end do
+    provider_calls=0;fail_call=2;advanced=u;advanced_t=t
+    call advance_reactive_eb_transport_3d(species,transport,advanced,advanced_t,geometry,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,theta,ok,prepare_stage_halo,integrated)
+    call require(.not.ok.and.provider_calls==2.and.all(advanced==u).and.all(advanced_t==t), &
+      'second-stage halo failure rolls back whole interval')
+    call require(all(integrated%x==saved_flux%x).and.all(integrated%y==saved_flux%y).and. &
+      all(integrated%z==saved_flux%z),'second-stage halo failure preserves flux')
   end do
   write(*,'(a)') 'test_eb_transport_halo_3d: PASS'
 contains
+  subroutine prepare_stage_halo(state,temperature,metrics,ghost,ghost_temperature,enabled,valid)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
+    type(eb_geometry_3d), intent(in) :: metrics
+    real(dp), intent(out) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, intent(out) :: enabled(6),valid
+    character(len=16) :: labels(6)
+    real(dp) :: inlet(size(state,1),6),inlet_t(6)
+    integer :: face
+    provider_calls=provider_calls+1;valid=.false.;enabled=.true.
+    if(provider_calls==fail_call) return
+    if(any(shape(temperature)/=[metrics%nx,metrics%ny,metrics%nz])) return
+    if(provider_calls==2) observed_stage_change=any(state/=u)
+    labels='outflow';labels(1)='inflow'
+    do face=1,6
+      inlet(:,face)=donor;inlet_t(face)=donor_t
+    end do
+    call fill_reactive_boundary_ghosts_3d(state,temperature,labels,ghost,ghost_temperature,valid, &
+      viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,ghost_width=1)
+  end subroutine prepare_stage_halo
   subroutine require(condition,message)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: message
