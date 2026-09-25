@@ -59,7 +59,7 @@ contains
     real(dp) :: inlet_t
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
-    integer :: inlet_face
+    integer :: inlet_face,momentum_sign(3)
     logical :: valid,ready,full_halo
     ok=.false.;nv=reactive_nvar(size(species))
     full_halo=present(ghost_volume_fraction)
@@ -70,10 +70,12 @@ contains
     if (present(inflow_temperature).or.present(inflow_pressure)) valid=present(inflow_mach)
     if(present(boundary_faces)) then
       valid=.not.present(inflow_mach).and..not.present(inflow_pressure)
-      valid=valid.and.all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic')
+      valid=valid.and.all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic'.or. &
+        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
       controls(22)=1
       controls(23:28)=merge(1._dp,0._dp,boundary_faces=='inflow')+ &
-        merge(2._dp,0._dp,boundary_faces=='periodic')
+        merge(2._dp,0._dp,boundary_faces=='periodic')+merge(3._dp,0._dp,boundary_faces=='slip_wall')+ &
+        merge(4._dp,0._dp,boundary_faces=='no_slip_wall')
       if(any(boundary_faces=='inflow')) valid=valid.and.present(inflow_state).and.present(inflow_temperature)
     else
       valid=valid.and..not.present(inflow_state)
@@ -292,10 +294,7 @@ contains
             if (metrics(1)<=0._dp) cycle
           end if
           global=origin(:,target)+int(idx-1,int64);donor=0
-          do wrap_axis=1,3
-            if(controls(22+2*wrap_axis-1)==2) &
-              global(wrap_axis)=modulo(global(wrap_axis),domain(wrap_axis,level))
-          end do
+          call map_wall_donor(global,momentum_sign)
           if(full_halo) global=max(0_int64,min(domain(:,level)-1,global))
           if(full_halo.and.all(idx>=1).and.all(idx<=n)) then
             donor=target;source=idx
@@ -324,7 +323,8 @@ contains
             else if(allocated(geometry(target)%halo_volume_fraction)) then
               cell=global-origin(:,target)+1
               do wrap_axis=1,3
-                if(controls(22+2*wrap_axis-1)==2) cell(wrap_axis)=idx(wrap_axis)
+                if(controls(22+2*wrap_axis-1)>=2.or.controls(22+2*wrap_axis)>=3) &
+                  cell(wrap_axis)=idx(wrap_axis)
               end do
               if(geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))>=0) &
                 cv%fields(target)%values(1,i,j,k)=geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))
@@ -417,6 +417,8 @@ contains
           values(:,q)=inlet;recovered=inlet_t
         end if
       end if
+      call map_wall_donor(global,momentum_sign)
+      values(2:4,q)=values(2:4,q)*real(momentum_sign,dp)
       candidate%fields(node)%values(:,i,j,k)=values(:,q)
       ct%fields(node)%values(1,i,j,k)=recovered
     end do
@@ -427,6 +429,34 @@ contains
     if(full_halo) call move_alloc(cv%fields,ghost_volume_fraction%fields)
     ok=.true.
   contains
+    subroutine map_wall_donor(position,signs)
+      integer(int64), intent(inout) :: position(3)
+      integer, intent(out) :: signs(3)
+      integer :: direction,boundary_code,boundary_face
+      signs=1
+      do direction=1,3
+        if(controls(22+2*direction-1)==2) then
+          position(direction)=modulo(position(direction),domain(direction,level))
+          cycle
+        end if
+        do while(position(direction)<0.or.position(direction)>=domain(direction,level))
+          boundary_face=2*direction
+          if(position(direction)<0) boundary_face=boundary_face-1
+          boundary_code=nint(controls(22+boundary_face))
+          if(boundary_code/=3.and.boundary_code/=4) exit
+          if(boundary_code==4) then
+            signs=-signs
+          else
+            signs(direction)=-signs(direction)
+          end if
+          if(position(direction)<0) then
+            position(direction)=-position(direction)-1
+          else
+            position(direction)=2*domain(direction,level)-position(direction)-1
+          end if
+        end do
+      end do
+    end subroutine
     subroutine agree(condition,result)
       logical, intent(in) :: condition
       logical, intent(out) :: result

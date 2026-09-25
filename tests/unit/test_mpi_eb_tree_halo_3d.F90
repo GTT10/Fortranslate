@@ -55,6 +55,7 @@ program test_mpi_eb_tree_halo_3d
   call require(ok,'coarse geometry')
   allocate(u(nv,4,4,4),t(4,4,4))
   config%nx=4;config%ny=4;config%nz=4
+  config%initial_velocity_x=1;config%initial_velocity_y=2;config%initial_velocity_z=3
   call initialize_reactive_eb_density_sheet_3d(species,config,coarse,u,t,ok)
   call require(ok,'root state')
   call initialize_reactive_eb_tree_3d(species,topology,finest,u,t,tree,ok)
@@ -102,6 +103,8 @@ program test_mpi_eb_tree_halo_3d
     call wide_checks(.true.)
     call prescribed_checks()
     call periodic_checks()
+    call periodic_checks(walls=.true.)
+    call wide_checks(walls=.true.)
     call wide_checks(periodic=.true.)
     call temporal_checks()
     ! Root unrefined boundary survives averaging, then fails donor EOS after exchange.
@@ -128,12 +131,16 @@ program test_mpi_eb_tree_halo_3d
   if (rank==0) print *, 'PASS: MPI EB face halos, exact serial parity and rollback'
   call MPI_Finalize(status)
 contains
-  subroutine periodic_checks()
+  subroutine periodic_checks(walls)
+    logical, optional, intent(in) :: walls
     type(amr_tree_state_3d) :: volume
     real(dp) :: serial_vf(0:5,0:5,0:5)
     character(len=16) :: labels(6)
     integer :: p
     labels='outflow';labels(:4)='periodic'
+    if(present(walls)) then
+      labels(1:2)='slip_wall';labels(3:4)='no_slip_wall'
+    end if
     call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,ghost,gh_t,MPI_COMM_WORLD,ok, &
       boundary_faces=labels)
     call require(ok,'periodic MPI face halos')
@@ -192,8 +199,8 @@ contains
     call require(.not.ok,'invalid prescribed EOS collective rejection')
     call unchanged_halos()
   end subroutine
-  subroutine wide_checks(prescribed,periodic)
-    logical, optional, intent(in) :: prescribed,periodic
+  subroutine wide_checks(prescribed,periodic,walls)
+    logical, optional, intent(in) :: prescribed,periodic,walls
     character(len=16), allocatable :: labels(:)
     real(dp), allocatable :: inlet(:,:),inlet_t(:)
     type(amr_tree_state_3d) :: metrics,wide_u,wide_t,wide_vf,old_u,old_t,old_vf,end_u
@@ -214,6 +221,10 @@ contains
     if(present(periodic)) then
       allocate(labels(6))
       labels='outflow';labels(:4)='periodic'
+    end if
+    if(present(walls)) then
+      allocate(labels(6))
+      labels='outflow';labels(1:2)='slip_wall';labels(3:4)='no_slip_wall'
     end if
     allocate(metrics%fields(5))
     do p=1,5
@@ -245,7 +256,7 @@ contains
       call require(all(wide_vf%fields(p)%values(1,:,:,:)==serial_vf),'wide fine-metric parity')
       call require(all(serial_vf==metrics%fields(p)%values(1,:,:,:)),'target geometry controls every halo layer')
     end do
-    if(rank==owners(1).and..not.present(periodic)) then
+    if(rank==owners(1).and..not.present(periodic).and..not.present(walls)) then
       call require(all(wide_u%fields(1)%values(:,-5,1,3)==wide_u%fields(1)%values(:,0,1,3)), &
         'all six physical outflow layers use the same boundary donor')
     end if
