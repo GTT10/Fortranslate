@@ -162,7 +162,8 @@ not establish full SDC integration or physical forcing validation.
 `sdc_iterations=2` by default. The default integrator remains `split`.
 The current application path requires PPM/PeleC and periodic or zero-gradient
 outflow boundaries. Molecular transport is supported at outflow boundaries;
-prescribed outlet pressure, inflow and walls are not yet connected to SDC. Boundary flux
+`outlet_pressure(6)` also supports prescribed pressure on outflow faces.
+Inflow and walls are not yet connected to SDC. Boundary flux
 inventories are recorded separately from volume sources.
 With `chemistry_enabled=.true.`, it uses forced adaptive implicit chemistry
 and retains reaction sources between steps. The chemistry tolerances apply;

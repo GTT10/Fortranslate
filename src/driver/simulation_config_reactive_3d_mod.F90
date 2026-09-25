@@ -772,9 +772,6 @@ contains
         any(faces/='periodic'.and.faces/='outflow')) then
         message='SDC requires PPM/PeleC with periodic or outflow faces';return
       end if
-      if(any(config%outlet_pressure/=0)) then
-        message='SDC prescribed outlet pressure is not yet supported';return
-      end if
     end if
     if(.not.all(ieee_is_finite(config%external_forcing))) then
       message='External forcing must be finite';return
