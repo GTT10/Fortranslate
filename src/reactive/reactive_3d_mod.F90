@@ -20,6 +20,7 @@ module reactive_3d_mod
   implicit none
   private
 
+  public :: adjust_reactive_artificial_viscosity_3d
   public :: reactive_ppm_transverse_pressure_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
@@ -43,6 +44,100 @@ module reactive_3d_mod
   public :: reactive_extrema_3d
 
 contains
+
+  ! Regular-cell pc_divu/pc_artif_visc/pc_norm_spec_flx. One ghost cell per side.
+  ! Fluxes remain intensive; the finite-volume caller supplies face areas.
+  subroutine adjust_reactive_artificial_viscosity_3d(state,n,spacing,difmag, &
+      no_slip_faces,xflux,yflux,zflux,ok)
+    integer, intent(in) :: n(3)
+    real(dp), intent(in) :: state(:,0:,0:,0:),spacing(3),difmag
+    logical, intent(in) :: no_slip_faces(6)
+    real(dp), intent(inout) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: velocity(:,:,:,:),divergence(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp) :: derivatives(3),factor,total,candidate(size(state,1)),jump(size(state,1))
+    integer :: nv,i,j,k,a,b,c,s,t,point(3),low(3),high(3),limit(3),normal
+    logical :: wall
+    ok=.false.;nv=size(state,1)
+    if (nv<6.or.any(n<1).or.any(shape(state)/=[nv,n+2])) return
+    if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)]).or. &
+        any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
+    if (.not.all(ieee_is_finite([spacing,difmag])).or.any(spacing<=0).or.difmag<0) return
+    if (.not.all(ieee_is_finite(state)).or.any(state(1,:,:,:)<=density_floor)) return
+    if (.not.all(ieee_is_finite(xflux)).or..not.all(ieee_is_finite(yflux)).or. &
+        .not.all(ieee_is_finite(zflux))) return
+    if (difmag==0) then
+      ok=.true.;return
+    end if
+    allocate(velocity(3,0:n(1)+1,0:n(2)+1,0:n(3)+1),divergence(0:n(1),0:n(2),0:n(3)))
+    do a=1,3
+      velocity(a,:,:,:)=state(a+1,:,:,:)/state(1,:,:,:)
+    end do
+    do k=0,n(3)
+    do j=0,n(2)
+    do i=0,n(1)
+      do a=1,3
+        b=merge(2,1,a==1);c=merge(2,3,a==3)
+        derivatives(a)=0
+        do t=0,1
+        do s=0,1
+          low=[i,j,k];low(b)=low(b)+s;low(c)=low(c)+t
+          high=low;high(a)=high(a)+1
+          derivatives(a)=derivatives(a)+velocity(a,high(1),high(2),high(3))-velocity(a,low(1),low(2),low(3))
+        end do
+        end do
+        derivatives(a)=.25_dp*derivatives(a)/spacing(a)
+      end do
+      divergence(i,j,k)=sum(derivatives)
+    end do
+    end do
+    end do
+    if (.not.all(ieee_is_finite(divergence))) return
+    allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    fx=xflux;fy=yflux;fz=zflux
+    do a=1,3
+      b=merge(2,1,a==1);c=merge(2,3,a==3)
+      limit=n;limit(a)=n(a)+1
+      do k=1,limit(3)
+      do j=1,limit(2)
+      do i=1,limit(1)
+        low=[i,j,k];low(a)=low(a)-1;high=low;high(a)=high(a)+1
+        point=low;point(b)=point(b)-1;point(c)=point(c)-1
+        total=0
+        do t=0,1
+        do s=0,1
+          high=point;high(b)=high(b)+s;high(c)=high(c)+t
+          total=total+divergence(high(1),high(2),high(3))
+        end do
+        end do
+        factor=spacing(a)*difmag*min(0._dp,.25_dp*total)
+        high=low;high(a)=high(a)+1
+        jump=factor*(state(:,high(1),high(2),high(3))-state(:,low(1),low(2),low(3)))
+        normal=low(a)
+        wall=(normal==0.and.no_slip_faces(2*a-1)).or.(normal==n(a).and.no_slip_faces(2*a))
+        if (wall) then
+          jump(b+1)=0;jump(c+1)=0
+        end if
+        select case(a)
+        case(1);candidate=fx(:,low(1),low(2),low(3))+jump
+        case(2);candidate=fy(:,low(1),low(2),low(3))+jump
+        case(3);candidate=fz(:,low(1),low(2),low(3))+jump
+        end select
+        total=sum(candidate(6:))
+        if (total/=0) candidate(6:)=candidate(6:)*(candidate(1)/total)
+        if (.not.all(ieee_is_finite(candidate))) return
+        select case(a)
+        case(1);fx(:,low(1),low(2),low(3))=candidate
+        case(2);fy(:,low(1),low(2),low(3))=candidate
+        case(3);fz(:,low(1),low(2),low(3))=candidate
+        end select
+      end do
+      end do
+      end do
+    end do
+    xflux=fx;yflux=fy;zflux=fz;ok=.true.
+  end subroutine adjust_reactive_artificial_viscosity_3d
+
 
   ! Regular-cell pc_transdo/pc_transdd pressure work (no forcing sources).
   ! Conserved flux differences and primitive pressure are evolved separately.

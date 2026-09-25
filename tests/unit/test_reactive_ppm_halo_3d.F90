@@ -6,7 +6,8 @@ program test_reactive_ppm_halo_3d
     reconstruct_pelec_plm_cell
   use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_3d_mod, only: compute_reactive_ppm_ctu_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
-  use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d
+  use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d, &
+    adjust_reactive_artificial_viscosity_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -23,6 +24,7 @@ program test_reactive_ppm_halo_3d
   nv=reactive_nvar(size(species));dt=1e-5_dp;faces='periodic'
   allocate(g(nv,12,12,12),gt(12,12,12),q(nv))
   allocate(hx(nv,0:4,4,4),hy(nv,4,0:4,4),hz(nv,4,4,0:4))
+  call check_artificial_viscosity()
   call check_pressure_work()
   call check_transverse_flattening()
   do policy=1,2
@@ -153,6 +155,40 @@ program test_reactive_ppm_halo_3d
   call require(all(hx(1,:,:,:)==0).and.all(hy(1,:,:,:)==0).and.all(hz(1,:,:,:)==0),'impermeable wall flux')
   print *, 'test_reactive_ppm_halo_3d: PASS' 
 contains
+  subroutine check_artificial_viscosity()
+    real(dp) :: cells(7,0:3,0:3,0:3),ax(7,0:2,2,2),ay(7,2,0:2,2),az(7,2,2,0:2)
+    real(dp) :: keepx(7,0:2,2,2),keepy(7,2,0:2,2),keepz(7,2,2,0:2),rho,expected_flux(7)
+    integer :: x,y,z
+    logical :: valid,walls(6)
+    do z=0,3
+    do y=0,3
+    do x=0,3
+      rho=1+.1_dp*x+.2_dp*y+.3_dp*z
+      cells(:,x,y,z)=[rho,-rho*x,-rho*2*y,-rho*3*z,10*rho,.25_dp*rho,.75_dp*rho]
+    end do
+    end do
+    end do
+    ax=0;ay=0;az=0;walls=.false.
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp,walls,ax,ay,az,valid)
+    call require(valid,'compressive artificial viscosity')
+    call require(maxval(abs(ax(1,:,:,:)+.06_dp))<1e-15_dp.and. &
+      maxval(abs(ay(1,:,:,:)+.12_dp))<1e-15_dp.and.maxval(abs(az(1,:,:,:)+.18_dp))<1e-15_dp, &
+      'analytic divergence minus six and directional density diffusion')
+    expected_flux=-.6_dp*(cells(:,1,1,1)-cells(:,0,1,1))
+    call require(maxval(abs(ax(:,0,1,1)-expected_flux))<2e-15_dp,'conserved jump diffusion')
+    call require(maxval(abs(sum(ax(6:,:,:,:),dim=1)-ax(1,:,:,:)))<1e-16_dp,'diffusive species mass closure')
+    keepx=ax;keepy=ay;keepz=az
+    ax=0;ay=0;az=0;walls(1)=.true.
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp,walls,ax,ay,az,valid)
+    call require(valid.and.all(ax(3:4,0,:,:)==0).and.all(ax(:,1:2,:,:)==keepx(:,1:2,:,:)).and. &
+      all(ay==keepy).and.all(az==keepz),'no-slip tangential momentum exclusion only at wall')
+    cells(2:4,:,:,:)=-cells(2:4,:,:,:);ax=0;ay=0;az=0
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp,walls,ax,ay,az,valid)
+    call require(valid.and.all(ax==0).and.all(ay==0).and.all(az==0),'expansion has no artificial viscosity')
+    ax=keepx;ay=keepy;az=keepz;cells(1,0,0,0)=0
+    call adjust_reactive_artificial_viscosity_3d(cells,[2,2,2],[1._dp,1._dp,1._dp],.1_dp,walls,ax,ay,az,valid)
+    call require(.not.valid.and.all(ax==keepx).and.all(ay==keepy).and.all(az==keepz),'viscosity rollback')
+  end subroutine
   subroutine check_transverse_flattening()
     real(dp) :: stencil(nv,-3:3),qm(nv),qp(nv),dummy(nv),temp,c,flat
     real(dp) :: pressure(-3:3),velocity(-3:3)
