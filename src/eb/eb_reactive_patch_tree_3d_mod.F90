@@ -650,9 +650,6 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
-    if(present(boundary_faces)) then
-      if(any(boundary_faces=='periodic')) return
-    end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
     snapshot=tree
@@ -682,7 +679,7 @@ contains
       theta=min(theta,stage_theta)
       deallocate(ghost,gt)
     end do
-    call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid)
+    call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid,boundary_faces=boundary_faces)
     if (.not.valid) return
     n=tree%topology%nodes(1)%shape
     associate(g=>tree%nodes(1)%geometry,f=>flux(1))
@@ -903,9 +900,6 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
-    if(present(boundary_faces)) then
-      if(any(boundary_faces=='periodic')) return
-    end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
     if(present(extended_geometry)) then
@@ -960,6 +954,10 @@ contains
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
+      type(eb_integrated_flux_3d) :: owned
+      real(dp) :: period(3),length(3)
+      integer :: seam,tangent
+      logical :: overlap
       type(eb_reactive_tree_3d) :: snapshot
       type(eb_geometry_3d) :: working
       type(eb_plm_boundary_3d) :: physical_boundary
@@ -1076,6 +1074,38 @@ contains
         if (.not.valid) return
       end do
       end do
+      ! Reconcile periodic provisional endpoints before descendants interpolate
+      ! in time; final fine/coarse synchronization follows the recursive steps.
+      if(present(boundary_faces)) then
+        associate(g=>tree%nodes(1)%geometry)
+        length=[g%x_upper-g%x_lower,g%y_upper-g%y_lower,g%z_upper-g%z_lower]
+        end associate
+        do seam=1,3
+          if(boundary_faces(2*seam-1)/='periodic') cycle
+          period=0;period(seam)=length(seam)
+          do owner=1,size(tree%nodes)
+            if(tree%topology%nodes(owner)%level/=level) cycle
+            if(origin(seam,owner)+tree%topology%nodes(owner)%shape(seam)/=domain(seam,level+1)) cycle
+            owned=flux(owner)
+            do receiver=1,size(tree%nodes)
+              if(tree%topology%nodes(receiver)%level/=level.or.origin(seam,receiver)/=0) cycle
+              offset=origin(:,receiver)-origin(:,owner)
+              offset(seam)=offset(seam)+domain(seam,level+1)
+              overlap=.true.
+              do tangent=1,3
+                if(tangent==seam) cycle
+                if(offset(tangent)>=tree%topology%nodes(owner)%shape(tangent).or. &
+                  offset(tangent)+tree%topology%nodes(receiver)%shape(tangent)<=0) overlap=.false.
+              end do
+              if(.not.overlap) cycle
+              call reconcile_reactive_eb_peer_flux_3d(species,tree%nodes(owner)%geometry, &
+                tree%nodes(receiver)%geometry,int(offset),owned,flux(receiver),candidate%nodes(receiver)%state, &
+                candidate%nodes(receiver)%temperature,valid,periodic_length=period)
+              if(.not.valid) return
+            end do
+          end do
+        end do
+      end if
       do node=1,size(tree%nodes)
         if (tree%topology%nodes(node)%level==level) ends%nodes(node)=candidate%nodes(node)
       end do
@@ -1098,7 +1128,7 @@ contains
           elapsed=elapsed+sub_dt
         end do
       end if
-      call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid,level,min(level+1,levels-1))
+      call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid,level,min(level+1,levels-1),boundary_faces)
       if (.not.valid) return
       good=.true.
     end subroutine advance_level

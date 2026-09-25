@@ -22,6 +22,7 @@ program test_eb_tree_subcycle_hydro_3d
   real(dp) :: residual
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count
+  character(len=16) :: periodic_faces(6)
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
@@ -72,6 +73,16 @@ program test_eb_tree_subcycle_hydro_3d
   print *, 'axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'hydro conservation including boundary and exposed wall')
   call require(any(tree%nodes(count)%state/=saved%nodes(count)%state),'nontrivial deep hydro update')
+  periodic_faces='periodic';periodic_faces(2*axis-1:2*axis)='outflow'
+  tree=saved
+  call advance_reactive_eb_tree_subcycle_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok, &
+    boundary_faces=periodic_faces)
+  call require(ok,'periodic recursive hydro update')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'periodic recursive hydro inventory')
+  residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
+  print *, 'periodic axis, nodes, residual: ',axes(axis),count,residual
+  call require(residual<3.e-14_dp,'periodic recursive hydro conservation')
   tree=saved;boundary=17._dp;wall=19._dp
   call advance_reactive_eb_tree_subcycle_hydro_3d(species,'invalid',1.e-8_dp,tree,boundary,wall,ok)
   call require(.not.ok,'invalid solver rejected')

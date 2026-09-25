@@ -27,6 +27,7 @@ program test_eb_tree_subcycle_transport_3d
   real(dp) :: residual,theta,speed
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k
+  character(len=16) :: periodic_faces(6)
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
@@ -94,6 +95,23 @@ program test_eb_tree_subcycle_transport_3d
   print *, 'axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'transport conservation')
   call require(any(tree%nodes(count)%state/=saved%nodes(count)%state),'nontrivial deep transport update')
+  periodic_faces='periodic';periodic_faces(2*axis-1:2*axis)='outflow'
+  tree=saved
+  call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+    tree,boundary,theta,ok,boundary_faces=periodic_faces)
+  call require(ok,'periodic transport update')
+  call require(theta>=0.and.theta<=1,'periodic limiter range')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'periodic inventory')
+  residual=maxval(abs(after-before-boundary)/max(1._dp,abs(before)))
+  print *, 'periodic axis, nodes, residual: ',axes(axis),count,residual
+  call require(residual<3.e-14_dp,'periodic composite transport conservation')
+  tree=saved;boundary=17;theta=19
+  periodic_faces(2*mod(axis,3)+1)='outflow'
+  call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+    tree,boundary,theta,ok,boundary_faces=periodic_faces)
+  call require(.not.ok.and.all(boundary==17).and.theta==19,'unpaired periodic transport rollback')
+  call unchanged_tree()
   tree=saved;boundary=17._dp;theta=19._dp
   call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,-1.e-8_dp,.true.,.true.,.true.,.true., &
     tree,boundary,theta,ok)
