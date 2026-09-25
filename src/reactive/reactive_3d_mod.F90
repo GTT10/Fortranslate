@@ -25,6 +25,7 @@ module reactive_3d_mod
   public :: adjust_reactive_artificial_viscosity_3d
   public :: reactive_ppm_transverse_pressure_3d
   public :: compute_reactive_external_source_3d
+  public :: react_sdc_state_3d
   public :: construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
   public :: advance_reactive_sdc_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
@@ -116,8 +117,7 @@ contains
     real(dp) :: boundary_inventory(size(state,1))
     real(dp) :: transport_rate(size(state,1)),old_transport_rate(size(state,1)),new_transport_rate(size(state,1))
     real(dp), allocatable :: ir(:,:,:,:)
-    real(dp) :: rtol,atol,rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
-    integer :: chemistry_steps
+    real(dp) :: rtol,atol
     logical :: flags(4)
     real(dp) :: source_theta
     real(dp), allocatable :: tx(:,:,:,:),ty(:,:,:,:),tz(:,:,:,:)
@@ -283,31 +283,14 @@ contains
         ! React.cpp builds rates without I_R, then integrates from the old state.
         call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,hydro)
         if(.not.valid) return
-        candidate=state+dt*predictor
-        do k=1,n(3)
-        do j=1,n(2)
-        do i=1,n(1)
-          if(candidate(1,i,j,k)<=0.or..not.all(ieee_is_finite(candidate(:,i,j,k)))) return
-          rhoe_old=state(5,i,j,k)-.5_dp*sum(state(2:4,i,j,k)**2)/state(1,i,j,k)
-          rhoe_new=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
-          rhoy=state(6:,i,j,k);react_t=temperature(i,j,k)
-          call advance_forced_reactor_interval(species,reactions,rhoe_old,predictor(6:,i,j,k), &
-            (rhoe_new-rhoe_old)/dt,dt,rtol,atol*state(1,i,j,k),rhoy,react_t,chemistry_steps,valid)
-          if(.not.valid) return
-          nonreact_energy=candidate(5,i,j,k)
-          candidate(1,i,j,k)=sum(rhoy);candidate(6:,i,j,k)=rhoy
-          candidate(5,i,j,k)=rhoe_new+.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
-          ir(:nv-5,i,j,k)=(rhoy-state(6:,i,j,k))/dt-predictor(6:,i,j,k)
-          ir(nv-4,i,j,k)=(candidate(5,i,j,k)-nonreact_energy)/dt
-          ct(i,j,k)=react_t
-        end do
-        end do
-        end do
-        if(.not.all(ieee_is_finite(ir))) return
+        call react_sdc_state_3d(species,reactions,state,temperature,predictor,dt,rtol,atol,candidate,ct,ir,valid)
+        if(.not.valid) return
       end if
-      call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
-      ct=recovered
-      if(.not.valid) return
+      if(.not.present(reactions)) then
+        call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
+        ct=recovered
+        if(.not.valid) return
+      end if
     end do
     inventory=0
     do family=1,source_count
@@ -391,6 +374,56 @@ contains
       if(good) source_theta=min(source_theta,transport_theta)
     end subroutine builtin_sources
   end subroutine advance_reactive_sdc_periodic_3d
+
+  ! React.cpp cell update, exposed separately for hierarchy stage coordination.
+  ! Nonreacting rates include hydro and averaged external/transport sources.
+  subroutine react_sdc_state_3d(species,reactions,old_state,old_temperature,nonreacting_rates,dt,rtol,atol, &
+      state,temperature,reaction_source,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: old_state(:,:,:,:),old_temperature(:,:,:),nonreacting_rates(:,:,:,:),dt,rtol,atol
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),reaction_source(:,:,:,:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),ir(:,:,:,:)
+    real(dp) :: rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
+    integer :: n(3),nv,i,j,k,steps
+    logical :: valid
+    ok=.false.;n=shape(old_temperature);nv=reactive_nvar(size(species))
+    if(any(n<1).or.size(species)<1) return
+    if(any(shape(old_state)/=[nv,n]).or.any(shape(nonreacting_rates)/=[nv,n])) return
+    if(any(shape(state)/=[nv,n]).or.any(shape(temperature)/=n)) return
+    if(any(shape(reaction_source)/=[nv-4,n])) return
+    if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
+    if(.not.all(ieee_is_finite(nonreacting_rates))) return
+    allocate(ct,mold=old_temperature);allocate(recovered,mold=old_temperature)
+    call recover_reactive_temperatures_3d(species,old_state,old_temperature,n(1),n(2),n(3),ct,valid)
+    if(.not.valid) return
+    candidate=old_state+dt*nonreacting_rates
+    if(.not.all(ieee_is_finite(candidate)).or.any(candidate(1,:,:,:)<=0)) return
+    allocate(ir(nv-4,n(1),n(2),n(3)))
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      rhoe_old=old_state(5,i,j,k)-.5_dp*sum(old_state(2:4,i,j,k)**2)/old_state(1,i,j,k)
+      rhoe_new=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+      rhoy=old_state(6:,i,j,k);react_t=old_temperature(i,j,k)
+      call advance_forced_reactor_interval(species,reactions,rhoe_old,nonreacting_rates(6:,i,j,k), &
+        (rhoe_new-rhoe_old)/dt,dt,rtol,atol*old_state(1,i,j,k),rhoy,react_t,steps,valid)
+      if(.not.valid) return
+      nonreact_energy=candidate(5,i,j,k)
+      candidate(1,i,j,k)=sum(rhoy);candidate(6:,i,j,k)=rhoy
+      candidate(5,i,j,k)=rhoe_new+.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+      ir(:nv-5,i,j,k)=(rhoy-old_state(6:,i,j,k))/dt-nonreacting_rates(6:,i,j,k)
+      ir(nv-4,i,j,k)=(candidate(5,i,j,k)-nonreact_energy)/dt
+      ct(i,j,k)=react_t
+    end do
+    end do
+    end do
+    if(.not.all(ieee_is_finite(ir))) return
+    call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
+    if(.not.valid) return
+    state=candidate;temperature=recovered;reaction_source=ir;ok=.true.
+  end subroutine react_sdc_state_3d
 
   ! Pinned Advance.cpp::construct_Snew. Source-list order and new-before-old
   ! additions are intentional. EOS recovery belongs to the iteration driver.

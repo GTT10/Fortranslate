@@ -60,7 +60,7 @@ program test_reactive_ppm_step_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
   use reactive_3d_mod, only: compute_reactive_external_source_3d,construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
-  use reactive_3d_mod, only: advance_reactive_sdc_3d
+  use reactive_3d_mod, only: advance_reactive_sdc_3d,react_sdc_state_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -239,6 +239,7 @@ contains
     real(dp) :: state(nv,4,4,4),temp(4,4,4),old(nv,4,4,4),ot(4,4,4),ir(nv-4,4,4,4)
     real(dp) :: cell(nv-5),zero_rates(nv-5),cell_t,rhoe,h,prior_ir(nv-4,4,4,4)
     real(dp) :: primitive(nv),initial(nv),initial_t,sound
+    real(dp) :: stage_state(nv,1,1,1),stage_t(1,1,1),stage_ir(nv-4,1,1,1),stage_rates(nv,1,1,1)
     integer :: count
     call load_h2o2_elementary_mechanism(active_reactions,ok)
     call require(ok,'SDC reaction mechanism')
@@ -259,6 +260,17 @@ contains
     call advance_forced_reactor_interval(species,active_reactions,rhoe,zero_rates,0._dp,h,1e-6_dp, &
       1e-12_dp*old(1,1,1,1),cell,cell_t,count,ok)
     call require(ok,'SDC independent cell integration')
+    stage_state=old(:,1:1,1:1,1:1);stage_t=ot(1:1,1:1,1:1);stage_ir=0;stage_rates=0
+    call react_sdc_state_3d(species,active_reactions,old(:,1:1,1:1,1:1),ot(1:1,1:1,1:1), &
+      stage_rates,h,1e-6_dp,1e-12_dp,stage_state,stage_t,stage_ir,ok)
+    call require(ok,'SDC standalone reaction stage')
+    call require(maxval(abs(stage_state(6:,1,1,1)-cell))<1e-12_dp.and.abs(stage_t(1,1,1)-cell_t)<1e-6_dp, &
+      'SDC standalone reaction matches full-interval cell integration')
+    stage_state=7;stage_t=8;stage_ir=9
+    call react_sdc_state_3d(species,active_reactions,old(:,1:1,1:1,1:1),ot(1:1,1:1,1:1), &
+      stage_rates,-h,1e-6_dp,1e-12_dp,stage_state,stage_t,stage_ir,ok)
+    call require(.not.ok.and.all(stage_state==7).and.all(stage_t==8).and.all(stage_ir==9), &
+      'SDC reaction stage failure preserves all outputs')
     state=old;temp=ot;ir=0
     call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],h,0._dp, &
       2,1,ok=ok,external_force=[0._dp,0._dp,0._dp],reactions=active_reactions,reaction_source=ir)
