@@ -26,6 +26,7 @@ module mpi_amr_sparse_reactive_3d_mod
     recover_reactive_temperatures_3d, &
     compute_reactive_plm_slab_face_fluxes_3d,compute_reactive_face_fluxes_3d, &
     compute_reactive_plm_face_fluxes_3d, compute_reactive_ppm_halo_ctu_fluxes_3d, &
+    adjust_reactive_artificial_viscosity_3d, &
     advance_reactive_chemistry_3d
   use reactive_transport_3d_mod, only: &
     reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d, &
@@ -2410,7 +2411,7 @@ contains
     if(reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     local_ok=local_ok.and.ieee_is_finite(viscosity)
-    local_ok=local_ok.and.viscosity>=0.and.(viscosity==0.or.reconstruction=='characteristic_ppm')
+    local_ok=local_ok.and.viscosity>=0
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, [dx, dy, dz, dt,outlet_values,viscosity], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
@@ -2630,7 +2631,7 @@ contains
     if(reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     local_ok=local_ok.and.ieee_is_finite(viscosity)
-    local_ok=local_ok.and.viscosity>=0.and.(viscosity==0.or.reconstruction=='characteristic_ppm')
+    local_ok=local_ok.and.viscosity>=0
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, [dx, dy, dz, dt,viscosity], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
@@ -2761,6 +2762,7 @@ contains
       logical, intent(out) :: success
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),gx(:,:,:,:),gy(:,:,:,:),gz(:,:,:,:)
       integer :: dims(3)
+      logical :: wall_mask(6)
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,u,t,faces,ghost,gt,success, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=outlet_pressure)
       if (.not.success) return
@@ -2776,6 +2778,13 @@ contains
       fx=gx(:,2:local_count+2,3:ny+2,3:nz+2)
       fy=gy(:,3:local_count+2,2:ny+2,3:nz+2)
       fz=gz(:,3:local_count+2,3:ny+2,2:nz+2)
+      if(viscosity>0) then
+        wall_mask=faces=='no_slip_wall'.or.faces=='isothermal_wall'
+        wall_mask(1)=wall_mask(1).and.distribution%coarse_first==1
+        wall_mask(2)=wall_mask(2).and.distribution%coarse_last==patch%coarse_nx
+        call adjust_reactive_artificial_viscosity_3d(ghost(:,2:local_count+3,2:ny+3,2:nz+3), &
+          [local_count,ny,nz],[dx,dy,dz],viscosity,wall_mask,fx,fy,fz,success)
+      end if
     end subroutine physical_fluxes
 
     subroutine physical_stage(old,base,fx,fy,fz,sx,sy,sz,interval,second,candidate,success)
@@ -2883,14 +2892,14 @@ contains
     if(reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     local_ok=local_ok.and.ieee_is_finite(viscosity)
-    local_ok=local_ok.and.viscosity>=0.and.(viscosity==0.or.reconstruction=='characteristic_ppm')
+    local_ok=local_ok.and.viscosity>=0
     call sparse_collective_contract_matches_3d( &
       distribution, species, patch, [dx, dy, dz, dt,viscosity], &
       trim(riemann_solver) // "|" // trim(reconstruction) // "|" // &
         trim(limiter), local_ok, global_ok)
     if (.not. global_ok) return
 
-    if (reconstruction=='characteristic_ppm') then
+    if (reconstruction=='characteristic_ppm'.or.viscosity>0) then
       faces='periodic'
       call advance_mpi_amr_sparse_boundary_hydro_3d(distribution,species,patch,state,temperature,dx,dy,dz,dt, &
         riemann_solver,reconstruction,limiter,first_flux_x,first_flux_y,first_flux_z,faces,boundary_change,ok, &
@@ -3222,7 +3231,8 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, old_state, old_temperature, &
       alpha_start, riemann_solver, reconstruction, limiter, first_flux_x, &
-      first_flux_y, first_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
+      first_flux_y, first_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure, &
+      [dx,dy,dz],difmag)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, old_state, first_flux_x, first_flux_y, first_flux_z, &
@@ -3238,7 +3248,8 @@ contains
       distribution, species, patch, coarse_start, coarse_start_temperature, &
       coarse_end, coarse_end_temperature, stage_state, stage_temperature, &
       alpha_end, riemann_solver, reconstruction, limiter, second_flux_x, &
-      second_flux_y, second_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
+      second_flux_y, second_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure, &
+      [dx,dy,dz],difmag)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, stage_state, second_flux_x, second_flux_y, second_flux_z, &
@@ -3266,7 +3277,7 @@ contains
       coarse_end, coarse_end_temperature, state, temperature, alpha, &
       riemann_solver, reconstruction, limiter, face_flux_x, &
       face_flux_y, face_flux_z, ok, &
-      boundary_faces, inflow_state, inflow_temperature,outlet_pressure)
+      boundary_faces, inflow_state, inflow_temperature,outlet_pressure,spacing,difmag)
     type(mpi_amr_sparse_distribution_3d), intent(in) :: distribution
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -3290,7 +3301,9 @@ contains
     real(dp), allocatable :: extended_flux_x(:, :, :, :)
     real(dp), allocatable :: extended_flux_y(:, :, :, :)
     real(dp), allocatable :: extended_flux_z(:, :, :, :)
-    logical :: face_ok
+    real(dp), intent(in) :: spacing(3)
+    real(dp), optional, intent(in) :: difmag
+    logical :: face_ok,wall_mask(6),physical_mask(6)
     integer :: i, j, k, nvar, local_count, ny, nz
 
     ok = .false.
@@ -3392,6 +3405,21 @@ contains
     case default
       return
     end select
+    if(present(difmag)) then
+      if(difmag>0) then
+        wall_mask=.false.
+        if(present(boundary_faces)) then
+          physical_mask=[patch%coarse_i_lower==1.and.distribution%fine_first==1, &
+            patch%coarse_i_upper==patch%coarse_nx.and.distribution%fine_last==patch%fine_nx(), &
+            patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
+            patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+          wall_mask=physical_mask.and.(boundary_faces=='no_slip_wall'.or.boundary_faces=='isothermal_wall')
+        end if
+        call adjust_reactive_artificial_viscosity_3d(extended_state(:,2:local_count+3,2:ny+3,2:nz+3), &
+          [local_count,ny,nz],spacing,difmag,wall_mask,face_flux_x,face_flux_y,face_flux_z,face_ok)
+        if(.not.face_ok) return
+      end if
+    end if
     ok = all(ieee_is_finite(face_flux_x)) .and. &
       all(ieee_is_finite(face_flux_y)) .and. &
       all(ieee_is_finite(face_flux_z))

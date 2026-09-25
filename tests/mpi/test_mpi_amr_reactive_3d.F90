@@ -112,7 +112,7 @@ program test_mpi_amr_reactive_3d
   integer :: mismatched_fine_nx, global_sparse_value_count
   integer :: candidate_rank, expected_previous_fine_rank
   integer :: expected_next_fine_rank
-  character(len=32) :: halo_test_mode
+  character(len=32) :: halo_test_mode=''
   character(len=32) :: sparse_reconstruction
 
   call MPI_Init(ierr)
@@ -240,6 +240,16 @@ program test_mpi_amr_reactive_3d
       sparse_distribution, patch), "rank-local sparse hierarchy scatter")
   if (command_argument_count()==1) then
     call get_command_argument(1,halo_test_mode)
+    if (trim(halo_test_mode)=='--viscosity-hierarchy-only') then
+      call check_periodic_ppm_hierarchy('pcm')
+      call check_periodic_ppm_hierarchy('characteristic_plm')
+      call check_physical_hierarchy(0,pressure_mode=.true.)
+      call check_physical_hierarchy(1,pressure_mode=.true.)
+      if (distribution%rank==0) print *, 'PASS: sparse PCM PLM viscosity hierarchy'
+      call MPI_Finalize(ierr)
+      if (ierr/=MPI_SUCCESS) error stop 'MPI_Finalize failed'
+      stop
+    end if
     if (trim(halo_test_mode)=='--ppm-hierarchy-only') then
       call check_periodic_ppm_hierarchy()
       call check_physical_hierarchy(0,ppm_mode=.true.)
@@ -841,20 +851,24 @@ contains
     end do
   end subroutine check_boundary_distribution
 
-  subroutine check_periodic_ppm_hierarchy()
+  subroutine check_periodic_ppm_hierarchy(scheme)
+    character(len=*), optional, intent(in) :: scheme
+    character(len=32) :: method
     real(dp) :: coefficient
     type(mpi_amr_sparse_hierarchy_3d) :: h,saved
     real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:)
     real(dp) :: r,rr
+    method='characteristic_ppm'
+    if(present(scheme)) method=scheme
     coefficient=.037_dp
     c=coarse_state;ct=coarse_temperature;f=fine_state;ft=fine_temperature
     h=sparse_hierarchy;saved=h
     call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,dx,dy,dz,1e-7_dp,config%riemann_solver,rr,ok, &
-      'characteristic_ppm','mc', &
+      method,'mc', &
         difmag=coefficient)
     call require(ok,'serial periodic PPM hierarchy')
     call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1e-7_dp, &
-      config%riemann_solver,'characteristic_ppm','mc',r,ok, &
+      config%riemann_solver,method,'mc',r,ok, &
         difmag=coefficient)
     call require(ok,'MPI periodic PPM hierarchy')
     call gather_mpi_amr_sparse_hierarchy_3d(sparse_distribution,patch,0,h,gc,gt,gf,gft,ok)
@@ -865,13 +879,13 @@ contains
     end if
     h=saved
     call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1._dp, &
-      config%riemann_solver,'characteristic_ppm','mc',r,ok, &
+      config%riemann_solver,method,'mc',r,ok, &
         difmag=coefficient)
     call require(.not.ok.and.r==0.and.sparse_hierarchies_bits_match(h,saved),'periodic PPM hierarchy CFL rollback')
     h=saved
     if(sparse_distribution%rank==0) coefficient=.05_dp
     call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1e-7_dp, &
-      config%riemann_solver,'characteristic_ppm','mc',r,ok,difmag=coefficient)
+      config%riemann_solver,method,'mc',r,ok,difmag=coefficient)
     call require(.not.ok.and.r==0.and.sparse_hierarchies_bits_match(h,saved),'coefficient mismatch rollback')
   end subroutine check_periodic_ppm_hierarchy
 
@@ -955,7 +969,7 @@ contains
         if (ppm_mode) method='characteristic_ppm'
       end if
       coefficient=0
-      if(method=='characteristic_ppm') coefficient=.037_dp
+      if(method=='characteristic_ppm'.or.trim(halo_test_mode)=='--viscosity-hierarchy-only') coefficient=.037_dp
       if (mode>=5) faces(1:2)="isothermal_wall"
       c=c0;ct=ct0;f=f0;ft=ft0
       if (mode==5) then
