@@ -25,10 +25,18 @@ program test_mpi_amr_patch_tree_split_3d
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
-  character(len=32) :: faces(6),reconstruction,integrator
+  character(len=32) :: faces(6),reconstruction,integrator,arg,solver
+  real(dp) :: coefficient
+  logical :: ppm
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   logical :: ok,enabled,bad_enabled
   real(dp) :: theta,serial_theta,wall_t(6),wall_v(3,6)
+  call get_command_argument(1,arg)
+  ppm=trim(arg)=='ppm'
+  coefficient=0;solver='hllc'
+  if(ppm) then
+    coefficient=.037_dp;solver='pelec'
+  end if
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -74,6 +82,7 @@ program test_mpi_amr_patch_tree_split_3d
     if (mode==4) owners=mod([0,1,2],nranks)
     faces='periodic';reconstruction='pcm'
     if (mod(mode,2)==0) reconstruction='characteristic_plm'
+    if(ppm) reconstruction='characteristic_ppm'
     if (mode>=3) then
       faces='outflow';faces(3:4)='slip_wall'
     end if
@@ -98,18 +107,28 @@ program test_mpi_amr_patch_tree_split_3d
     end do
     oracle=global;oracle_t=reference;dt=1e-10_dp
     call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces, &
-      reconstruction,'mc','hllc',enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
+      reconstruction,'mc',solver,enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       serial_budget,serial_largest,serial_theta,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
-      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6,difmag=coefficient)
     call require(ok,'serial full operator split')
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
-      reconstruction,'mc','hllc',enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
+      reconstruction,'mc',solver,enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
-      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6,difmag=coefficient)
     call require(ok,'distributed full operator split')
     call compare_state()
     call require(all(budget==serial_budget).and.largest==serial_largest.and.theta==serial_theta,'exact coupled diagnostics')
     saved=local;saved_t=temperature
+    if(ppm) then
+      if(rank==nranks-1) coefficient=.05_dp
+    call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
+      reconstruction,'mc',solver,enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
+      budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
+      outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6,difmag=coefficient)
+      call require(.not.ok,'coefficient mismatch rolls back chemistry and transport')
+      call unchanged()
+      coefficient=.037_dp
+    end if
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
       reconstruction,'mc','bad',enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
@@ -119,7 +138,7 @@ program test_mpi_amr_patch_tree_split_3d
     bad_enabled=enabled
     if (rank==nranks-1) bad_enabled=.not.enabled
     call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
-      reconstruction,'mc','hllc',bad_enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
+      reconstruction,'mc',solver,bad_enabled,enabled,enabled,enabled,enabled,1e-6_dp,1e-14_dp, &
       budget,largest,theta,MPI_COMM_WORLD,ok,integrator,inlet,inlet_t,wall_t,wall_v, &
       outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,subcycling=mode==6)
     call require(.not.ok,'inconsistent enabled operators rejected')

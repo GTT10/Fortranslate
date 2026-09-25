@@ -21,7 +21,8 @@ contains
   subroutine advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
       reconstruction,limiter,solver,chemistry,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       boundary_change,maximum_correction,minimum_theta,comm,ok,chemistry_integrator, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,subcycling,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,subcycling,outlet_pressure,inflow_mach,inflow_pressure, &
+      difmag)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -37,6 +38,7 @@ contains
     character(len=*), optional, intent(in) :: chemistry_integrator
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
     character(len=:), allocatable :: transport_limiter
     type(amr_tree_state_3d) :: candidate,temps
     real(dp) :: budget(size(boundary_change)),stage_budget(size(boundary_change)),largest,stage_max,theta,stage_theta
@@ -73,11 +75,11 @@ contains
     if (recursive_steps) then
       call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,candidate,temps,spacing,dt,faces, &
         reconstruction,limiter,solver,stage_budget,stage_max,comm,valid,inflow_state,inflow_temperature, &
-        outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+        outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag)
     else
       call advance_mpi_amr_tree_hydro_3d(tree,owners,species,candidate,temps,spacing,dt,faces,reconstruction,limiter,solver, &
         stage_budget,stage_max,comm,valid,inflow_state,inflow_temperature, &
-        outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+        outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag)
     end if
     if (.not.valid) return
     budget=budget+stage_budget;largest=max(largest,stage_max)

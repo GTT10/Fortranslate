@@ -67,7 +67,7 @@ contains
 
   subroutine advance_amr_patch_tree_strang_3d(tree,species,reactions,state,temperature,root_spacing,dt,faces, &
       reconstruction,limiter,solver,rtol,atol,boundary_change,maximum_correction,ok, &
-      chemistry_integrator,inflow_state,inflow_temperature,outlet_pressure)
+      chemistry_integrator,inflow_state,inflow_temperature,outlet_pressure,difmag)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -78,6 +78,7 @@ contains
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: chemistry_integrator
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
+    real(dp), optional, intent(in) :: difmag
     type(amr_tree_state_3d) :: candidate,temps
     real(dp) :: budget(size(boundary_change)),largest
     logical :: valid
@@ -90,7 +91,7 @@ contains
     if (.not.valid) return
     budget=0;largest=0
     call advance_amr_patch_tree_hydro_3d(tree,species,candidate,temps,root_spacing,dt,faces, &
-      reconstruction,limiter,solver,budget,largest,valid,inflow_state,inflow_temperature,outlet_pressure)
+      reconstruction,limiter,solver,budget,largest,valid,inflow_state,inflow_temperature,outlet_pressure,difmag=difmag)
     if (.not.valid) return
     call advance_amr_patch_tree_chemistry_3d(tree,species,reactions,candidate,temps,.5_dp*dt,rtol,atol, &
       valid,chemistry_integrator)
