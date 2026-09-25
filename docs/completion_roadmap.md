@@ -314,8 +314,10 @@ substep now integrates the forced reactor
 subcycling now preserves caller state on failure
 ([checks](validation/forced-reactor-interval-20260926.md)). Periodic SDC library
 reaction coupling is implemented with a uniform reacting check
-([evidence](validation/sdc-reactions-20260926.md)); application routing and
-nonuniform reacting qualification remain open. Physical
+([evidence](validation/sdc-reactions-20260926.md)). Fixed/selected application
+routing now retains reaction sources across steps
+([checks](validation/sdc-reacting-app-20260926.md)); nonuniform reacting
+qualification and broader boundary/AMR/MPI routing remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

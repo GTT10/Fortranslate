@@ -9,13 +9,15 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
-Regular fixed/selected gas input now selects nonreacting periodic SDC with
+Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
 ([checks](validation/sdc-app-20260926.md)). Molecular transport now participates
 as an old/new source family ([checks](validation/sdc-transport-20260926.md)).
-The library now couples chemistry into periodic SDC
-([checks](validation/sdc-reactions-20260926.md)); reacting application input and
-broader boundary/AMR/MPI integration remain open.
+The library couples chemistry into periodic SDC
+([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
+input now enables it with persistent reaction sources
+([checks](validation/sdc-reacting-app-20260926.md)). Broader boundary/AMR/MPI
+integration remains open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
