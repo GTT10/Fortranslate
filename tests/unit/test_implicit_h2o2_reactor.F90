@@ -7,7 +7,8 @@ program test_implicit_h2o2_reactor
   use h2o2_full_thermo_mod, only: full_nspecies, load_h2o2_full_thermo
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use constant_volume_reactor_mod, only: &
-    advance_constant_volume_implicit_adaptive,forced_reactor_rhs,reactor_rhs,advance_forced_reactor_implicit_adaptive
+    advance_constant_volume_implicit_adaptive,forced_reactor_rhs,reactor_rhs, &
+    advance_forced_reactor_implicit_adaptive,advance_forced_reactor_interval
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -15,7 +16,7 @@ program test_implicit_h2o2_reactor
   real(dp) :: x(full_nspecies), y(full_nspecies), density, temperature
   real(dp) :: target_energy, final_energy, molecular_weight, gas_constant
   real(dp) :: cp, cv, gamma, enthalpy, entropy, accepted, next_step
-  integer :: newton_iterations, rejected
+  integer :: newton_iterations, rejected,steps
   logical :: ok
   type(elementary_reaction), allocatable :: inert(:)
   real(dp) :: rhoy(full_nspecies),source(full_nspecies),rates(full_nspecies),baseline(full_nspecies),source_t
@@ -100,5 +101,23 @@ program test_implicit_h2o2_reactor
     cp,cv,gamma,enthalpy,final_energy,entropy,ok)
   if(.not.ok.or.abs(sum(rhoy)*final_energy-(density+.2_dp*forced_accepted)*target_energy)/ &
     max(1._dp,abs(density*target_energy))>5e-10_dp) error stop 'forced reacting energy inventory'
+  rhoy=density*y;source=.2_dp*y;forced_t=temperature;saved=rhoy
+  call advance_forced_reactor_interval(species,inert,density*target_energy,source,.2_dp*target_energy, &
+    .25_dp,1e-6_dp,1e-12_dp,rhoy,forced_t,steps,ok,initial_time_step=.03125_dp,maximum_steps=1)
+  if(ok.or.steps/=1.or.any(rhoy/=saved).or.forced_t/=temperature) &
+    error stop 'forced interval rollback after accepted substep'
+  call advance_forced_reactor_interval(species,inert,density*target_energy,source,.2_dp*target_energy, &
+    .25_dp,1e-6_dp,1e-12_dp,rhoy,forced_t,steps,ok,initial_time_step=.03125_dp)
+  if(.not.ok.or.steps/=4.or.maxval(abs(rhoy-(density+.05_dp)*y))>1e-14_dp.or. &
+    abs(forced_t-temperature)>1e-8_dp) error stop 'forced interval inert elapsed-time accounting'
+  rhoy=density*y;forced_t=temperature
+  call advance_forced_reactor_interval(species,reactions,density*target_energy,source,.2_dp*target_energy, &
+    1e-6_dp,1e-6_dp,1e-12_dp,rhoy,forced_t,steps,ok,initial_time_step=1e-8_dp)
+  if(.not.ok.or.steps<2) error stop 'forced reacting full interval'
+  if(abs(sum(rhoy)-(density+.2_dp*1e-6_dp))>1e-13_dp) error stop 'forced interval mass inventory'
+  call mixture_mass_properties(species,rhoy/sum(rhoy),forced_t,molecular_weight,gas_constant, &
+    cp,cv,gamma,enthalpy,final_energy,entropy,ok)
+  if(.not.ok.or.abs(sum(rhoy)*final_energy-(density+.2_dp*1e-6_dp)*target_energy)/ &
+    max(1._dp,abs(density*target_energy))>5e-10_dp) error stop 'forced interval energy inventory'
   write(*, '(a)') "test_implicit_h2o2_reactor: PASS"
 end program test_implicit_h2o2_reactor

@@ -17,6 +17,7 @@ module constant_volume_reactor_mod
   public :: reactor_rhs
   public :: forced_reactor_rhs
   public :: advance_forced_reactor_implicit_adaptive
+  public :: advance_forced_reactor_interval
   public :: advance_constant_volume_adaptive
   public :: reactor_reduced_jacobian
   public :: backward_euler_trial
@@ -142,6 +143,63 @@ contains
       if(valid) finish=density*end_y
     end subroutine trial
   end subroutine advance_forced_reactor_implicit_adaptive
+
+  ! Transactional full interval: publish only after every substep succeeds.
+  subroutine advance_forced_reactor_interval(species,reactions,initial_energy_density,external_species, &
+      external_energy,duration,relative_tolerance,absolute_tolerance,species_density,temperature, &
+      completed_steps,ok,initial_time_step,maximum_steps)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: initial_energy_density,external_species(:),external_energy,duration
+    real(dp), intent(in) :: relative_tolerance,absolute_tolerance
+    real(dp), intent(inout) :: species_density(:),temperature
+    integer, intent(out) :: completed_steps
+    logical, intent(out) :: ok
+    real(dp), intent(in), optional :: initial_time_step
+    integer, intent(in), optional :: maximum_steps
+    real(dp) :: candidate(size(species)),rates(size(species)),candidate_temperature,recovered_temperature
+    real(dp) :: elapsed,step,accepted,next_step,remaining
+    integer :: limit
+    logical :: valid
+
+    ok=.false.;completed_steps=0;limit=100000
+    if(present(maximum_steps)) limit=maximum_steps
+    if(limit<1) return
+    if(.not.all(ieee_is_finite([duration,relative_tolerance,absolute_tolerance]))) return
+    if(duration<0.or.min(relative_tolerance,absolute_tolerance)<=0) return
+    step=duration
+    if(present(initial_time_step)) then
+      if(.not.ieee_is_finite(initial_time_step)) return
+      if(initial_time_step<=0) return
+      step=min(step,initial_time_step)
+    end if
+    call forced_reactor_rhs(species,reactions,initial_energy_density,0._dp,species_density, &
+      external_species,external_energy,temperature,rates,recovered_temperature,valid)
+    if(.not.valid) return
+    if(duration==0) then
+      ok=.true.
+      return
+    end if
+    candidate=species_density;candidate_temperature=recovered_temperature;elapsed=0
+    do while(elapsed<duration)
+      if(completed_steps>=limit) return
+      remaining=duration-elapsed
+      step=min(step,remaining)
+      call advance_forced_reactor_implicit_adaptive(species,reactions,initial_energy_density,elapsed, &
+        external_species,external_energy,step,relative_tolerance,absolute_tolerance,candidate, &
+        candidate_temperature,accepted,next_step,valid)
+      if(.not.valid) return
+      if(accepted<=0.or.accepted>remaining.or.elapsed+accepted<=elapsed) return
+      completed_steps=completed_steps+1
+      if(accepted==remaining) then
+        elapsed=duration
+      else
+        elapsed=elapsed+accepted
+      end if
+      step=next_step
+    end do
+    species_density=candidate;temperature=candidate_temperature;ok=.true.
+  end subroutine advance_forced_reactor_interval
 
   real(dp) function reactor_specific_internal_energy( &
       species, mass_fractions, temperature, ok) result(internal_energy)
