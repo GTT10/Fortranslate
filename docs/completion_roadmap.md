@@ -219,7 +219,11 @@ retain the existing policy. Serial/MPI tree common and level hydro now apply
 the coefficient before flux integration and reflux, including recursive
 subcycling ([checks](validation/pcm-plm-tree-viscosity-20260925.md)). PCM/PLM
 uniform default policy and EB
-artificial-viscosity dispatch remain open. Regular MPI spray PLM hydro now
+artificial-viscosity dispatch remain open. The viscosity kernel now accepts
+EB volume fractions and open-face masks, suppressing nodal divergence near
+cut/covered cells using the reference cutoff
+([checks](validation/eb-viscosity-kernel-20260925.md)); EB callers still need
+geometry halo wiring. Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies
