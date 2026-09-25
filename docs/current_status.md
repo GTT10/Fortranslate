@@ -17,7 +17,9 @@ selected H2O2 coupled continuation passed focused checks
 [input example](../cases/reactive_eb_3d/plm_ctu.nml)). This does not qualify a physical wall-flow solution. Explicit inflow/outflow input,
 donor timestep bounds and boundary-bound restart are also connected for fixed and
 selected single-level gas applications
-([checks](validation/eb-inflow-application-20260925.md)).
+([checks](validation/eb-inflow-application-20260925.md)). Fixed domain-wall inputs also
+connect reflected geometry, thermal timestep limits and temperature-bound restart
+([checks](validation/eb-wall-application-20260925.md)).
 MPI EB spray also forwards CTU through the gas/particle split, with common and
 recursive library checks and fixed-mechanism changed-rank application continuation
 ([evidence](validation/mpi-eb-spray-ctu-20260925.md)). Serial EB spray fixed/selected

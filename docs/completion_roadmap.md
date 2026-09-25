@@ -180,9 +180,11 @@ open-face donor timestep bounds and boundary-bound restart
 and isothermal heat flux now connect to single-level coupled CTU
 ([checks](validation/eb-fixed-wall-transport-20260925.md)). An aperture/fluid-volume
 weighted isothermal timestep bound is available
-([checks](validation/eb-isothermal-timestep-20260925.md)). Wall-consistent extended
-geometry and application thermal timestep/input/restart wiring, periodic transport,
-independent inlet mixtures and spray/tree/MPI boundary dispatch remain open.
+([checks](validation/eb-isothermal-timestep-20260925.md)). Reflected configured
+geometry and fixed/selected single-level wall input, thermal timestep and restart
+binding are connected ([checks](validation/eb-wall-application-20260925.md)).
+Periodic transport, independent inlet mixtures and spray/tree/MPI boundary dispatch
+remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

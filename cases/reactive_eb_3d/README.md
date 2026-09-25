@@ -26,7 +26,7 @@ validated combustion configuration. See the [focused evidence](../../docs/valida
 and selected single-level gas executables support these inputs:
 
 - `boundary_faces(6)`: order x-low, x-high, y-low, y-high, z-low, z-high. Specify
-  all six as `inflow` or `outflow` for physical boundary transport. The default
+  all six as supported physical labels for physical boundary transport. The default
   six `legacy` labels retain the previous boundary behavior; mixing modes rejects.
 - `inflow_density(6)`, `inflow_pressure(6)`, `inflow_velocity(3,6)`: prescribed
   inlet density in kg/m³, pressure in Pa and Cartesian velocity in m/s. The inlet
@@ -35,7 +35,23 @@ and selected single-level gas executables support these inputs:
 Physical boundary inputs require `plm_ctu` and `pelec`. Ghost donors are rebuilt
 at every transport stage and hydro update. Open-face donor signal speeds and
 transport diffusivity limit the time step. Restart requires the same boundary
-labels and inlet data. Periodic and wall transport policies remain unsupported;
+labels and inlet data. Periodic transport remains unsupported;
 these inputs are not yet enabled in the spray or tree front ends.
 
 See the [inflow/restart checks](../../docs/validation/eb-inflow-application-20260925.md).
+
+## Fixed domain walls
+
+`plm_ctu_wall.nml` uses six stationary isothermal domain faces. The supported wall
+labels are `slip_wall`, `no_slip_wall` (adiabatic), and `isothermal_wall` (no-slip).
+Set `wall_temperature(6)` in kelvin for isothermal faces; both transport and
+thermal conduction must be enabled. The wall thermal rate also limits the timestep.
+Restart requires the same wall temperatures. The embedded cut surface retains
+its existing model; these controls apply to the six Cartesian domain faces.
+
+Extended plane, extruded and nodal geometry reflects at fixed walls, including
+repeated reflection when the six-cell halo exceeds the physical grid width.
+Outflow/inflow faces retain extrapolated geometry. Moving walls and periodic
+transport remain outside this input path. These are numerical integration cases,
+not physical wall-flow validation. See the
+[wall application checks](../../docs/validation/eb-wall-application-20260925.md).
