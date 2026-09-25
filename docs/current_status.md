@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Regular fixed/selected gas applications now accept force-per-volume input
+`external_forcing(3)` with PPM/PeleC, time-centered work and separate source
+inventories ([checks](validation/external-force-app-20260926.md)).
+
 The full twelve-solve PPM CTU assembly now agrees with compiled pinned PeleC
 bodies in eighteen small-grid cases, including independent mixture variation,
 active shock flattening, artificial viscosity and inflow/outflow/slip/no-slip
