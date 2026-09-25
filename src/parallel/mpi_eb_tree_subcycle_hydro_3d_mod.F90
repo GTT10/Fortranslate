@@ -7,21 +7,23 @@ module mpi_eb_tree_subcycle_hydro_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
-  use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
+  use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d, &
+    advance_reactive_eb_plm_ctu_3d,compute_reactive_eb_flattening_3d,eb_plm_boundary_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
-  use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d
+  use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d,validate_mpi_eb_tree_geometry_3d
+  use eb_reactive_two_level_3d_mod, only: matching_eb_metrics_3d
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use mpi_eb_tree_flux_3d_mod, only: synchronize_mpi_eb_tree_flux_3d
   implicit none
   private
   public :: advance_mpi_eb_tree_subcycle_hydro_3d
 contains
-  ! Recursive hydro intervals with time-interpolated PCM ancestors and flux accumulation.
+  ! Recursive hydro intervals with time-interpolated ancestors and flux accumulation.
   subroutine advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,state,temperature, &
       boundary_change,wall_change,comm,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -33,6 +35,11 @@ contains
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: difmag
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
+    type(eb_geometry_3d) :: center
+    type(amr_tree_state_3d) :: metrics
+    logical :: ctu,reference_ctu
+    integer :: node
     real(dp) :: coefficient
     logical, intent(out) :: ok
     type(amr_tree_state_3d) :: candidate,ct,starts,ends,start_t,end_t
@@ -64,6 +71,16 @@ contains
     call MPI_Bcast(reference,len(reference),MPI_CHARACTER,0,comm,status)
     call agree(status==MPI_SUCCESS.and.trim(solver)==trim(reference),ready)
     if (.not.ready) return
+    ctu=present(extended_geometry);reference_ctu=ctu
+    call MPI_Bcast(reference_ctu,1,MPI_LOGICAL,0,comm,status)
+    call agree(status==MPI_SUCCESS.and.(ctu.eqv.reference_ctu),ready)
+    if(.not.ready) return
+    if(ctu) then
+      call agree(solver=='pelec',ready)
+      if(.not.ready) return
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=6)
+      if(.not.ready) return
+    end if
     candidate=state;ct=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,ready)
     if (.not.ready) return
@@ -72,6 +89,22 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree(valid,ready)
     if (.not.ready) return
+    if(ctu) then
+      call agree(all(domain<=int(huge(1)-4,int64)),ready)
+      if(.not.ready) return
+      allocate(metrics%fields(size(owners)))
+      do node=1,size(owners)
+        n=tree%nodes(node)%shape
+        call extract_eb_geometry_3d(extended_geometry(node),[7,7,7],n+6,center,valid)
+        if(valid) valid=matching_eb_metrics_3d(center,geometry(node))
+        if(.not.valid) exit
+        if(owners(node)/=rank) cycle
+        allocate(metrics%fields(node)%values(1,-5:n(1)+6,-5:n(2)+6,-5:n(3)+6))
+        metrics%fields(node)%values(1,:,:,:)=extended_geometry(node)%volume_fraction
+      end do
+      call agree(valid,ready)
+      if(.not.ready) return
+    end if
     levels=size(ratios)
     starts=candidate;ends=candidate;start_t=ct;end_t=ct
     allocate(clock_start(levels),clock_dt(levels),stat=ios)
@@ -110,6 +143,9 @@ contains
       logical, intent(out) :: good
       type(amr_tree_state_3d) :: snapshot,st,ghost,gt,vf
       type(eb_integrated_flux_3d), allocatable :: fine(:)
+      type(eb_geometry_3d) :: working
+      type(eb_plm_boundary_3d) :: physical_boundary
+      real(dp), allocatable :: flat(:,:,:)
       real(dp), allocatable :: source(:,:,:,:)
       logical, allocatable :: exposed(:,:,:)
       real(dp) :: work_stamp
@@ -138,7 +174,12 @@ contains
       end do
       call agree(valid,ready)
       if (.not.ready) return
-      if(coefficient>0) then
+      if(ctu) then
+        call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
+          starts,ends,start_t,end_t,fractions, &
+          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=metrics)
+      else if(coefficient>0) then
       call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
         starts,ends,start_t,end_t,fractions, &
         inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
@@ -152,7 +193,30 @@ contains
         if (owners(node)/=rank.or.tree%nodes(node)%level/=level) cycle
         d=tree%nodes(node)%shape
         work_stamp=tree_work_start()
-        if(coefficient>0) then
+      if(ctu) then
+        call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],d+9,working,valid)
+        if(.not.valid) exit
+        allocate(flat(0:d(1)+7,0:d(2)+7,0:d(3)+7))
+        call compute_reactive_eb_flattening_3d(species,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:), &
+          vf%fields(node)%values(1,:,:,:),d+6,flat,valid)
+        if(.not.valid) exit
+        physical_boundary%lower=4-int(origin(:,node))
+        physical_boundary%upper=3+int(domain(:,tree%nodes(node)%level+1)-origin(:,node))
+        physical_boundary%faces='outflow'
+        if(present(inflow_mach)) then
+          where(inflow_mach>=0) physical_boundary%faces='inflow'
+        end if
+        call advance_reactive_eb_plm_ctu_3d(species,working,ghost%fields(node)%values, &
+          gt%fields(node)%values(1,:,:,:),vf%fields(node)%values(1,:,:,:),interval,flat,candidate%fields(node)%values, &
+          ct%fields(node)%values(1,:,:,:),valid,difmag=coefficient,integrated_flux=total(node),boundary=physical_boundary)
+        if(.not.valid) exit
+        do component=1,nv
+          where(geometry(node)%volume_fraction<=0) &
+            candidate%fields(node)%values(component,:,:,:)=snapshot%fields(node)%values(component,:,:,:)
+        end do
+        where(geometry(node)%volume_fraction<=0) ct%fields(node)%values(1,:,:,:)=st%fields(node)%values(1,:,:,:)
+        deallocate(flat)
+      else if(coefficient>0) then
         call advance_reactive_eb_euler_3d(species,snapshot%fields(node)%values,st%fields(node)%values(1,:,:,:), &
           geometry(node),solver,interval,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
           valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),total(node), &
@@ -160,7 +224,7 @@ contains
         else
         call advance_reactive_eb_euler_3d(species,snapshot%fields(node)%values,st%fields(node)%values(1,:,:,:), &
           geometry(node),solver,interval,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
-          valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),total(node))
+          valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),total(node),difmag=coefficient)
         end if
         call tree_work_stop(node,work_stamp)
         if (.not.valid) exit

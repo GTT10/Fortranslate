@@ -1182,3 +1182,18 @@ if(TARGET test_mpi_eb_tree_hydro_3d)
       $<TARGET_FILE:test_mpi_eb_tree_hydro_3d> ${MPIEXEC_POSTFLAGS} ctu)
   set_tests_properties(unit_mpi_eb_tree_ctu_hydro_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 180)
 endif()
+
+if(TARGET test_mpi_eb_tree_subcycle_hydro_3d)
+  add_test(NAME unit_mpi_eb_tree_ctu_subcycle_hydro_3d_3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_subcycle_hydro_3d> ${MPIEXEC_POSTFLAGS} ctu)
+  set_tests_properties(unit_mpi_eb_tree_ctu_subcycle_hydro_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 180)
+endif()
+if(TARGET test_mpi_eb_tree_subcycle_full_3d)
+  foreach(ctu_mode IN ITEMS ctu ctu-common)
+    add_test(NAME unit_mpi_eb_tree_${ctu_mode}_full_3d_3
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_subcycle_full_3d> ${MPIEXEC_POSTFLAGS} ${ctu_mode} viscosity)
+    set_tests_properties(unit_mpi_eb_tree_${ctu_mode}_full_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 300)
+  endforeach()
+endif()

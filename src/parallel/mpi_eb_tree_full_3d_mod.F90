@@ -114,7 +114,7 @@ contains
   subroutine advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -128,6 +128,7 @@ contains
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     real(dp), optional, intent(in) :: difmag
     real(dp) :: coefficient,coefficient_low,coefficient_high
     logical, intent(out) :: ok
@@ -181,10 +182,12 @@ contains
         if (recursive_steps) then
           call advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct, &
             boundary,wall,comm,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=coefficient)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            difmag=coefficient,extended_geometry=extended_geometry)
         else
           call advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct,boundary,wall,comm,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=coefficient)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            difmag=coefficient,extended_geometry=extended_geometry)
         end if
         if (.not.valid) return
       else if (chemistry_enabled) then
