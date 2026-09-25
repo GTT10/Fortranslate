@@ -25,7 +25,7 @@ p.add_argument('--specular-outflow', action='store_true')
 p.add_argument('--force', action='store_true')
 a = p.parse_args()
 if a.periodic:
-    assert a.khrt and not a.domain_wall, '--periodic requires KH without --domain-wall'
+    assert not a.domain_wall and not a.reflect_domain, '--periodic excludes reflecting domain modes'
 if a.pcm:
     assert a.domain_wall, '--pcm requires --domain-wall'
 if a.domain_wall:
@@ -108,6 +108,9 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         assert mode == 'splash'
         spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
         spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0015,.001250001,.003999999')
+    if a.periodic and not a.khrt:
+        spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0039999999,.001250001,.0015')
+        spray = spray.replace('axis=0.,-1.,0.', 'axis=1.,-1.,0.')
     if a.reflect_domain:
         spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
         spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0039999999,.001250001,.0015')
@@ -154,6 +157,8 @@ for mode in (('deposit',) if a.force else ('outflow',) if a.specular_outflow els
         assert float(film['component_mass_1']) == float(film['mass'])
         if a.reflect_domain:
             assert 0 < float(film['x']) < .0039999999, 'domain reflection before deposition'
+        if a.periodic:
+            assert 0 <= float(film['x']) < .001, 'periodic wrap before deposition'
     if particles and mode not in ('khrt', 'split'):
         ids = sorted(int(r['id']) for r in particles)
         assert ids == sorted(set(ids)) and all(3 <= i <= 10 for i in ids)

@@ -660,8 +660,6 @@ contains
     if(code/=0) error stop 'Invalid MPI EB spray input'
     if(allocated(active_faces).and..not.particle_outflow) &
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
-    if(any(boundary_faces=='periodic').and.wall_impacts) &
-      error stop 'Periodic EB spray films are not connected'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)

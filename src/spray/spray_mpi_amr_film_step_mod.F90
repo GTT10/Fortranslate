@@ -1,5 +1,6 @@
 module spray_mpi_amr_film_step_mod
   use mpi_f08
+  use spray_coupling_3d_mod, only: valid_spray_boundary_faces
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -69,7 +70,7 @@ contains
     if (eb) reference_faces='slip_wall'
     valid=valid.and.valid_wall_options(wall_options,reference_faces).and.ieee_is_finite(interval)
     if (eb) valid=valid.and.all(wall_options%temperature==wall_options%temperature(1)).and. &
-      all(faces/='periodic')
+      valid_spray_boundary_faces(faces)
     valid=valid.and.interval>=0.and.interval<=1e6_dp.and.size(transport)==size(species)
     call agree()
     if (.not.agreed) return

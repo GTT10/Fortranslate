@@ -104,7 +104,6 @@ contains
     if(present(eb_geometry).and.present(boundary_faces)) then
       valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
       valid=valid.and.present(eb_outflow_change)
-      if(any(faces=='periodic')) valid=valid.and..not.present(wall_films)
     end if
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp

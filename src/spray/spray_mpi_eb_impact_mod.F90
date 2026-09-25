@@ -4,6 +4,7 @@ module spray_mpi_eb_impact_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_parcel_mod
+  use spray_coupling_3d_mod, only: valid_spray_boundary_faces
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
   use spray_wall_impact_mod, only: spray_wall_film,mixture_impact_boiling_temperature, &
     classify_wall_impact,splash_mass_fractions,splash_velocity_components
@@ -190,7 +191,8 @@ contains
     character(len=16) :: faces(6),reference_faces(6)
     integer, allocatable :: exit_face(:)
     integer :: face
-    real(dp) :: fraction
+    real(dp) :: fraction,periodic_length(3)
+    integer :: dims(3)
     logical, optional, intent(out) :: model_rejected
     type(spray_parcel), allocatable :: drops(:),kept(:)
     type(spray_wall_film), allocatable :: patches(:)
@@ -218,14 +220,22 @@ contains
     faces='outflow'
     if(present(boundary_faces)) then
       faces=boundary_faces
-      valid=present(outflow_change).and.all(boundary_faces=='outflow'.or. &
-        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
+      valid=present(outflow_change).and.valid_spray_boundary_faces(boundary_faces)
+      valid=valid.and.all(boundary_faces/='inflow')
     end if
     call agree();if(.not.agreed) return
     reference_faces=faces
     call MPI_Bcast(reference_faces,len(reference_faces(1))*6,MPI_CHARACTER,0,comm,ierr)
     valid=ierr==MPI_SUCCESS.and.all(faces==reference_faces)
     call agree();if(.not.agreed) return
+    periodic_length=0;dims=shape(phi)-1
+    valid=all(dims>0).and.all(ieee_is_finite([lower,upper])).and.all(upper>lower)
+    call agree();if(.not.agreed) return
+    if(faces(1)=='periodic') valid=valid.and.all(phi(0,:,:)==phi(dims(1),:,:))
+    if(faces(3)=='periodic') valid=valid.and.all(phi(:,0,:)==phi(:,dims(2),:))
+    if(faces(5)=='periodic') valid=valid.and.all(phi(:,:,0)==phi(:,:,dims(3)))
+    call agree();if(.not.agreed) return
+    where(faces([1,3,5])=='periodic') periodic_length=upper-lower
     mode=merge(1,0,present(outflow_change))
     call MPI_Allreduce(mode,lowmode,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
@@ -274,7 +284,7 @@ contains
         drops(p)%position=finish
       end do
       call impact_mpi_level_set(comm,components,properties,settings,phi,molecular_weights,pressures,previous, &
-        lower,upper,drops,masses,patches,patch_mass,watermark,crossed,fractions,budget,valid,rejected)
+        lower,upper,drops,masses,patches,patch_mass,watermark,crossed,fractions,budget,valid,rejected,periodic_length)
       if(rejected) then
         if(present(model_rejected)) model_rejected=.true.
         return
@@ -285,7 +295,11 @@ contains
       valid=.true.
       do p=1,np
         if(exits(p).and..not.crossed(p).and.drops(p)%mass>0) then
-          if(faces(exit_face(p))=='outflow') then
+          if(faces(exit_face(p))=='periodic') then
+            axis=(exit_face(p)+1)/2
+            drops(p)%position(axis)=merge(lower(axis),upper(axis),modulo(exit_face(p),2)==0)
+            next_remaining(p)=remaining(p)*(1-exit_fraction(p))
+          else if(faces(exit_face(p))=='outflow') then
             call liquid_mixture_properties(components,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,valid)
             if(.not.valid) exit
             amount=drops(p)%mass*drops(p)%multiplicity

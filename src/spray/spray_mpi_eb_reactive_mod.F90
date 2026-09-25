@@ -161,6 +161,9 @@ contains
       patches=films;patch_mass=film_mass
     end if
     first_film=0;second_film=0;first_film_steps=0;second_film_steps=0;film_faces='slip_wall'
+    if(present(boundary_faces)) then
+      where(boundary_faces=='periodic') film_faces='periodic'
+    end if
     valid=allocated(parcels).and.allocated(component_mass).and.ieee_is_finite(dt)
     if(valid) valid=dt>0.and.dt<=1e6_dp
     valid=valid.and.size(boundary_change)==nv.and.size(wall_change)==nv.and.size(chemical_change)==nv

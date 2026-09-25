@@ -422,7 +422,13 @@ in the spray input. For the supplied y-normal plane geometry:
 Gas and particle exchange use wrapped donors. Parcels crossing periodic faces
 wrap into the domain and migrate to the resulting gas-patch owner. Other
 explicit faces allow particle outflow. Restart retains the boundary labels;
-changing them is rejected. `wall_impacts` must remain false for periodic cases.
+changing them is rejected. `wall_impacts=.true.` also works with periodic faces:
+flight resumes on the opposite face, EB impacts query periodic film images, and
+film heating/evaporation samples and deposits to wrapped gas donors. Periodic
+crossings add no exterior impulse or lost mass; physical outflow still does.
+Opposing nodal geometry values must match. Stationary film positions remain
+inside the root domain and migrate with regridding; their footprint can cross
+the periodic seam.
 KH child generation is supported. Parent eligibility checks the complete wrapped
 flight with the same drift routine used for movement. Periodic crossings permit
 release; EB or reflecting domain-wall contacts suppress release for that substep.

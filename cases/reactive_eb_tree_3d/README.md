@@ -306,8 +306,8 @@ match. Geometry padding wraps periodic donor nodes for PLM/CTU. Common and
 recursive gas updates, automatic timestep selection, scheduled regridding and
 restart use the same labels. Changing labels on restart is rejected.
 MPI EB spray also accepts periodic faces with `particle_outflow=.true.`;
-KH child generation is supported, while periodic wall-impact/film combinations
-remain rejected.
+KH child generation and EB deposition/splash with stationary films are supported.
+Particle flight, wet-film thickness and film/gas exchange all use the periodic axes.
 
 ## Adiabatic domain walls
 
