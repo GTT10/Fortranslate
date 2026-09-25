@@ -6,6 +6,7 @@ module reactive_3d_mod
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
@@ -55,11 +56,12 @@ module reactive_3d_mod
   end interface
 contains
 
-  ! Nonreacting periodic do_sdc_iteration. Source callbacks produce physical
+  ! Periodic do_sdc_iteration. Source callbacks produce physical
   ! cell rates; the CTU wrapper supplies periodic source halos.
   subroutine advance_reactive_sdc_periodic_3d(species,state,temperature,spacing,dt,time,iterations, &
       source_count,evaluate_sources,ok,difmag,external_force,source_change, &
-      transport,transport_flags,minimum_transport_theta)
+      transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
+      chemistry_relative_tolerance,chemistry_absolute_tolerance)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -70,6 +72,12 @@ contains
     real(dp), optional, intent(out) :: source_change(:),minimum_transport_theta
     type(gas_transport_species), optional, intent(in) :: transport(:)
     logical, optional, intent(in) :: transport_flags(4)
+    type(elementary_reaction), optional, intent(in) :: reactions(:)
+    real(dp), optional, intent(inout) :: reaction_source(:,:,:,:)
+    real(dp), optional, intent(in) :: chemistry_relative_tolerance,chemistry_absolute_tolerance
+    real(dp), allocatable :: ir(:,:,:,:)
+    real(dp) :: rtol,atol,rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
+    integer :: chemistry_steps
     logical :: flags(4)
     real(dp) :: source_theta
     real(dp), allocatable :: tx(:,:,:,:),ty(:,:,:,:),tz(:,:,:,:)
@@ -79,6 +87,17 @@ contains
     integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    rtol=1e-6_dp;atol=1e-12_dp
+    if(present(chemistry_relative_tolerance)) rtol=chemistry_relative_tolerance
+    if(present(chemistry_absolute_tolerance)) atol=chemistry_absolute_tolerance
+    if(.not.all(ieee_is_finite([rtol,atol])).or.min(rtol,atol)<=0) return
+    if(present(reaction_source).and..not.present(reactions)) return
+    allocate(ir(nv-4,n(1),n(2),n(3)));ir=0
+    if(present(reaction_source)) then
+      if(any(shape(reaction_source)/=shape(ir))) return
+      if(.not.all(ieee_is_finite(reaction_source))) return
+      ir=reaction_source
+    end if
     flags=.true.;source_theta=1
     if(present(transport_flags)) flags=transport_flags
     if(present(minimum_transport_theta)) minimum_transport_theta=1
@@ -112,7 +131,7 @@ contains
     new_sources=old_sources
     do iteration=1,iterations
       ! Hydro.cpp sums half new then half old rates, without including hydro itself.
-      call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid)
+      call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,reaction_source=ir)
       if(.not.valid) return
       call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,.false.,.true.,'pelec', &
         fx,fy,fz,theta,valid,difmag=difmag,conserved_source=predictor)
@@ -125,7 +144,7 @@ contains
       end do
       end do
       end do
-      call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
+      call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro,ir)
       if(.not.valid) return
       call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
       if(.not.valid) return
@@ -137,6 +156,32 @@ contains
       if(.not.valid) return
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
       if(.not.valid) return
+      if(present(reactions)) then
+        ! React.cpp builds rates without I_R, then integrates from the old state.
+        call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,hydro)
+        if(.not.valid) return
+        candidate=state+dt*predictor
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(candidate(1,i,j,k)<=0.or..not.all(ieee_is_finite(candidate(:,i,j,k)))) return
+          rhoe_old=state(5,i,j,k)-.5_dp*sum(state(2:4,i,j,k)**2)/state(1,i,j,k)
+          rhoe_new=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+          rhoy=state(6:,i,j,k);react_t=temperature(i,j,k)
+          call advance_forced_reactor_interval(species,reactions,rhoe_old,predictor(6:,i,j,k), &
+            (rhoe_new-rhoe_old)/dt,dt,rtol,atol*state(1,i,j,k),rhoy,react_t,chemistry_steps,valid)
+          if(.not.valid) return
+          nonreact_energy=candidate(5,i,j,k)
+          candidate(1,i,j,k)=sum(rhoy);candidate(6:,i,j,k)=rhoy
+          candidate(5,i,j,k)=rhoe_new+.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+          ir(:nv-5,i,j,k)=(rhoy-state(6:,i,j,k))/dt-predictor(6:,i,j,k)
+          ir(nv-4,i,j,k)=(candidate(5,i,j,k)-nonreact_energy)/dt
+          ct(i,j,k)=react_t
+        end do
+        end do
+        end do
+        if(.not.all(ieee_is_finite(ir))) return
+      end if
       call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
       ct=recovered
       if(.not.valid) return
@@ -151,6 +196,7 @@ contains
     if(.not.all(ieee_is_finite(inventory))) return
     if(present(source_change)) source_change=inventory
     if(present(minimum_transport_theta)) minimum_transport_theta=source_theta
+    if(present(reaction_source)) reaction_source=ir
     state=candidate;temperature=ct;ok=.true.
   contains
     subroutine builtin_sources(u,t,rates,good)

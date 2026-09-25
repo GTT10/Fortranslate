@@ -23,6 +23,8 @@ program test_reactive_ppm_step_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
   use reactive_3d_mod, only: compute_reactive_external_source_3d,construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
@@ -55,6 +57,7 @@ program test_reactive_ppm_step_3d
   end do
   end do
   call check_sdc_iteration()
+  call check_sdc_reactions()
   call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
@@ -114,6 +117,47 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+
+  subroutine check_sdc_reactions()
+    type(elementary_reaction), allocatable :: active_reactions(:)
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),old(nv,4,4,4),ot(4,4,4),ir(nv-4,4,4,4)
+    real(dp) :: cell(nv-5),zero_rates(nv-5),cell_t,rhoe,h,prior_ir(nv-4,4,4,4)
+    real(dp) :: primitive(nv),initial(nv),initial_t,sound
+    integer :: count
+    call load_h2o2_elementary_mechanism(active_reactions,ok)
+    call require(ok,'SDC reaction mechanism')
+    primitive=0;primitive(1)=1;primitive(5)=500000
+    primitive(6)=.05_dp;primitive(7:8)=1e-5_dp;primitive(9)=.1_dp;primitive(10)=1e-5_dp
+    primitive(nv)=1-sum(primitive(6:nv-1))
+    call reactive_primitive_to_conserved(species,primitive,initial,initial_t,sound,ok)
+    call require(ok,'SDC reactive mixture with radical seeds')
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      old(:,i,j,k)=initial;ot(i,j,k)=initial_t
+    end do
+    end do
+    end do
+    cell=old(6:,1,1,1);cell_t=ot(1,1,1);h=1e-8_dp;zero_rates=0
+    rhoe=old(5,1,1,1)-.5_dp*sum(old(2:4,1,1,1)**2)/old(1,1,1,1)
+    call advance_forced_reactor_interval(species,active_reactions,rhoe,zero_rates,0._dp,h,1e-6_dp, &
+      1e-12_dp*old(1,1,1,1),cell,cell_t,count,ok)
+    call require(ok,'SDC independent cell integration')
+    state=old;temp=ot;ir=0
+    call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],h,0._dp, &
+      2,1,ok=ok,external_force=[0._dp,0._dp,0._dp],reactions=active_reactions,reaction_source=ir)
+    call require(ok,'SDC reacting step')
+    call require(maxval(abs(state(6:,1,1,1)-cell))<1e-12_dp.and.abs(temp(1,1,1)-cell_t)<1e-6_dp, &
+      'SDC uniform chemistry equals single interval without repeated reaction advancement')
+    call require(maxval(abs(cell-old(6:,1,1,1)))>1e-14_dp,'SDC reaction is active')
+    call require(maxval(abs(ir(:nv-5,1,1,1)-(cell-old(6:,1,1,1))/h))<1e-7_dp,'SDC reaction source inventory')
+    state=old;temp=ot;prior_ir=ir;sdc_failure=.true.
+    call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],h,0._dp, &
+      2,2,sdc_test_sources,ok,reactions=active_reactions,reaction_source=ir)
+    call require(.not.ok.and.all(state==old).and.all(temp==ot).and.all(ir==prior_ir), &
+      'SDC failure preserves state temperature and reaction source')
+    sdc_failure=.false.
+  end subroutine check_sdc_reactions
 
   subroutine check_sdc_iteration()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),old(nv,4,4,4),ot(4,4,4),factor,expected_factor
