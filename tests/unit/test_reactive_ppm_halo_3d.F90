@@ -2,7 +2,8 @@ program test_reactive_ppm_halo_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_ppm_flattening_coefficient
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_ppm_flattening_coefficient, &
+    reconstruct_pelec_plm_cell
   use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_3d_mod, only: compute_reactive_ppm_ctu_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d
@@ -85,6 +86,20 @@ program test_reactive_ppm_halo_3d
   call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],1._dp, &
     .true.,.true.,"pelec",hx,hy,hz,halo_theta,ok,pressure_tracing=.true.)
   call require(.not.ok.and.all(hx==0).and.all(hy==0).and.all(hz==0),"pressure CFL rollback")
+  call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
+    .true.,.true.,'pelec',hx,hy,hz,halo_theta,ok)
+  call require(ok,'unmarked CTU boundary reference')
+  allocate(fx(nv,0:4,4,4),fy(nv,4,0:4,4),fz(nv,4,4,0:4))
+  fx=hx;fy=hy;fz=hz
+  call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
+    .true.,.true.,'pelec',hx,hy,hz,halo_theta,ok,inflow_faces=[(.true.,m=1,6)])
+  call require(ok,'six PLM boundary replacements')
+  call require(all(hx(:,1:3,:,:)==fx(:,1:3,:,:)).and.all(hy(:,:,1:3,:)==fy(:,:,1:3,:)).and. &
+    all(hz(:,:,:,1:3)==fz(:,:,:,1:3)),'interior CTU fluxes preserved')
+  call require(any(hx(:,0,:,:)/=fx(:,0,:,:)).and.any(hx(:,4,:,:)/=fx(:,4,:,:)).and. &
+    any(hy(:,:,0,:)/=fy(:,:,0,:)).and.any(hy(:,:,4,:)/=fy(:,:,4,:)).and. &
+    any(hz(:,:,:,0)/=fz(:,:,:,0)).and.any(hz(:,:,:,4)/=fz(:,:,:,4)),'each boundary plane replaced')
+  deallocate(fx,fy,fz)
   ! Unused far-corner padding must not participate in EOS/CFL checks.
   g(:,1,1,1)=0;gt(1,1,1)=-1
   call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
@@ -98,11 +113,14 @@ program test_reactive_ppm_halo_3d
   do m=1,nv
     before(m)=sum(saved(m,:,:,:))*.25_dp**3
   end do
+  do policy=1,2
+  solver="hllc"
+  if (policy==2) solver="pelec"
   do face=1,6
     u=saved;t=st;faces='outflow';faces(face)='inflow'
     mach=-1;mach(face)=.1_dp;tin=0;tin(face)=400;pin=0;pin(face)=500000
     call advance_reactive_boundary_hydro_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
-      faces,'characteristic_ppm','mc','hllc',change,ok,inflow_temperature=tin, &
+      faces,'characteristic_ppm','mc',solver,change,ok,inflow_temperature=tin, &
       flux_x=hx,flux_y=hy,flux_z=hz,inflow_mach=mach,inflow_pressure=pin)
     call require(ok,'six-face Mach inlet PPM step')
     do m=1,nv
@@ -112,10 +130,11 @@ program test_reactive_ppm_halo_3d
     call require(any(u/=saved),'nontrivial inlet step')
     u=saved;t=st
     call advance_reactive_boundary_hydro_3d(species,u,t,[.25_dp,.25_dp,.25_dp],1._dp, &
-      faces,'characteristic_ppm','mc','hllc',change,ok,inflow_temperature=tin, &
+      faces,'characteristic_ppm','mc',solver,change,ok,inflow_temperature=tin, &
       flux_x=hx,flux_y=hy,flux_z=hz,inflow_mach=mach,inflow_pressure=pin)
     call require(.not.ok.and.all(u==saved).and.all(t==st).and.all(change==0).and. &
       all(hx==0).and.all(hy==0).and.all(hz==0),'boundary step rollback and unpublished fluxes')
+  end do
   end do
   q=0;q(1)=1;q(5)=500000;q(nv)=1
   call reactive_primitive_to_conserved(species,q,u(:,1,1,1),t(1,1,1),speed,ok)
@@ -150,6 +169,13 @@ contains
     end do
     call reactive_primitive_to_conserved(species,stencil(:,0),dummy,temp,c,valid)
     call require(valid,'flattening center EOS')
+    call reconstruct_pelec_plm_cell(stencil(:,-2:2),c,0._dp,1._dp,qm,qp,valid)
+    call require(valid.and.abs(qm(1)-.99_dp)<1e-14_dp.and.abs(qp(1)-1.01_dp)<1e-14_dp, &
+      'fourth-order PLM linear spatial edges')
+    call reconstruct_pelec_plm_cell(stencil(:,-2:2),c,1e-5_dp,0._dp,qm,qp,valid)
+    call require(valid.and.all(qm==stencil(:,0)).and.all(qp==stencil(:,0)),'PLM fully flattened predictor')
+    call reconstruct_pelec_plm_cell(stencil(:,-2:2),c,1._dp,1._dp,qm,qp,valid)
+    call require(.not.valid.and.all(qm==0).and.all(qp==0),'PLM CFL rollback')
     flat=reactive_ppm_flattening_coefficient(pressure,velocity)
     call require(flat==0,'transverse compressive shock detected')
     call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,c,1e-5_dp, &

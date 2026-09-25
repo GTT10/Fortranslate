@@ -11,7 +11,7 @@ module reactive_3d_mod
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_primitive_to_conserved, reactive_conserved_to_primitive, &
     reactive_riemann_flux_x, reactive_pelec_primitive_flux_x, characteristic_limited_slope, &
-    reactive_ppm_flattening_coefficient
+    reactive_ppm_flattening_coefficient, reconstruct_pelec_plm_cell
   use reactive_2d_mod, only: &
     reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d, &
     apply_reactive_transverse_correction_2d
@@ -317,7 +317,7 @@ contains
   ! Four supplied ghost layers; physical cells are 1:n. No periodic wrapping
   ! or ghost filling occurs here. Corner solves are bounded to their consumers.
   subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces)
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
@@ -325,7 +325,7 @@ contains
     character(len=*), intent(in) :: solver
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: pressure_tracing
+    logical, optional, intent(in) :: pressure_tracing,inflow_faces(6)
     real(dp), allocatable :: cell_flat(:,:,:)
     real(dp) :: pressure_pencil(-3:3),velocity_pencil(-3:3)
     logical :: trace_pressure
@@ -467,11 +467,57 @@ contains
       call solve_faces(a,final(:,:,:,:,a),valid)
       if (.not.valid) return
     end do
+    if (trace_pressure.and.present(inflow_faces)) then
+      call replace_inflow_fluxes(valid)
+      if (.not.valid) return
+    end if
     xflux=final(:,0:n(1),1:n(2),1:n(3),1)
     yflux=final(:,1:n(1),0:n(2),1:n(3),2)
     zflux=final(:,1:n(1),1:n(2),0:n(3),3)
     minimum_theta=theta;ok=.true.
   contains
+    subroutine replace_inflow_fluxes(good)
+      logical, intent(out) :: good
+      integer :: face,side,direction,cell(3),point(3),ii,jj,kk,shift
+      real(dp) :: pencil(nv,-2:2),left(nv),right(nv),unused(nv),rotated(nv)
+      good=.false.
+      do face=1,6
+        if (.not.inflow_faces(face)) cycle
+        direction=(face+1)/2
+        lower=1;upper=n
+        lower(direction)=merge(0,n(direction),modulo(face,2)==1)
+        upper(direction)=lower(direction)
+        do kk=lower(3),upper(3)
+        do jj=lower(2),upper(2)
+        do ii=lower(1),upper(1)
+          do side=0,1
+            cell=[ii,jj,kk];cell(direction)=cell(direction)+side
+            do shift=-2,2
+              point=cell;point(direction)=point(direction)+shift
+              pencil(:,shift)=q(:,point(1),point(2),point(3))
+              swap=pencil(2,shift);pencil(2,shift)=pencil(direction+1,shift);pencil(direction+1,shift)=swap
+            end do
+            if (side==0) then
+              call reconstruct_pelec_plm_cell(pencil,sound(cell(1),cell(2),cell(3)),dt/spacing(direction), &
+                cell_flat(cell(1),cell(2),cell(3)),unused,left,good)
+            else
+              call reconstruct_pelec_plm_cell(pencil,sound(cell(1),cell(2),cell(3)),dt/spacing(direction), &
+                cell_flat(cell(1),cell(2),cell(3)),right,unused,good)
+            end if
+            if (.not.good) return
+          end do
+          point=[ii,jj,kk];point(direction)=point(direction)+1
+          call reactive_pelec_primitive_flux_x(species,left,right, &
+            .5_dp*(sound(ii,jj,kk)+sound(point(1),point(2),point(3))),rotated,good)
+          if (.not.good) return
+          swap=rotated(2);rotated(2)=rotated(direction+1);rotated(direction+1)=swap
+          final(:,ii,jj,kk,direction)=rotated
+        end do
+        end do
+        end do
+      end do
+      good=.true.
+    end subroutine replace_inflow_fluxes
     subroutine normal_primitives(direction,good)
       integer, intent(in) :: direction
       logical, intent(out) :: good
@@ -1908,7 +1954,7 @@ contains
       call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,success,ghost_width=4)
       if (.not.success) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,.false.,.true., &
-        riemann_solver,fx,fy,fz,theta,success)
+        riemann_solver,fx,fy,fz,theta,success,inflow_faces=faces=='inflow')
       if (.not.success) return
       success=.false.
       candidate=state

@@ -56,6 +56,7 @@ module reactive_1d_mod
   public :: reactive_difference_to_characteristics
   public :: reactive_characteristics_to_difference
   public :: characteristic_limited_slope
+  public :: reconstruct_pelec_plm_cell
   public :: trace_reactive_characteristics
   public :: initialize_reactive_1d
   public :: advance_reactive_hydro
@@ -991,6 +992,64 @@ contains
     end do
     ok = .true.
   end subroutine characteristic_limited_slope
+
+  ! Pinned PLM.H: fourth-order primitive slopes and pc_plm_d wave tracing.
+  ! Only variables consumed by pc_cmpflx are returned (rho,u,v,w,p,Y).
+  pure subroutine reconstruct_pelec_plm_cell(stencil,sound,dtdx,flat,minus,plus,ok)
+    real(dp), intent(in) :: stencil(:,-2:),sound,dtdx,flat
+    real(dp), intent(out) :: minus(:),plus(:)
+    logical, intent(out) :: ok
+    real(dp) :: slope(size(stencil,1)),center(size(stencil,1)),sl(-1:1)
+    real(dp) :: dl,dr,dc,lim,w(3),rho,c2,am,ap,a0,factor,acoustic,contact
+    integer :: n,j,nv
+    minus=0;plus=0;ok=.false.;nv=size(stencil,1)
+    if (nv<6.or.size(stencil,2)/=5.or.size(minus)/=nv.or.size(plus)/=nv) return
+    if (.not.all(ieee_is_finite(stencil)).or..not.all(ieee_is_finite([sound,dtdx,flat]))) return
+    if (sound<=0.or.dtdx<0.or.flat<0.or.flat>1) return
+    center=stencil(:,0);rho=center(1);c2=sound**2
+    if (rho<=density_floor.or.center(5)<=pressure_floor) return
+    w=[center(2)-sound,center(2),center(2)+sound]
+    if (maxval(abs(w))*dtdx>1+50*epsilon(1._dp)) return
+    do n=1,nv
+      do j=-1,1
+        dl=stencil(n,j)-stencil(n,j-1);dr=stencil(n,j+1)-stencil(n,j)
+        dc=.5_dp*(dl+dr);lim=0
+        if (dl*dr>=0) lim=2*min(abs(dl),abs(dr))
+        sl(j)=sign(min(lim,abs(dc)),dc)
+      end do
+      dl=stencil(n,0)-stencil(n,-1);dr=stencil(n,1)-stencil(n,0)
+      dc=.5_dp*(dl+dr);lim=0
+      if (dl*dr>=0) lim=2*min(abs(dl),abs(dr))
+      slope(n)=flat*sign(min(lim,abs((4._dp/3)*dc-(sl(1)+sl(-1))/6)),dc)
+    end do
+    am=.5_dp*(slope(5)/(rho*sound)-slope(2))*rho/sound
+    ap=.5_dp*(slope(5)/(rho*sound)+slope(2))*rho/sound
+    a0=slope(1)-slope(5)/c2
+    factor=.25_dp*dtdx*(w(1)-w(3))*(1-sign(1._dp,w(3)))
+    acoustic=factor*ap
+    contact=.25_dp*dtdx*(w(1)-w(2))*(1-sign(1._dp,w(2)))
+    minus=center-.5_dp*(1+dtdx*min(w(1),0._dp))*slope
+    minus(1)=max(tiny(1._dp),minus(1)+acoustic+contact*a0)
+    minus(2)=minus(2)+acoustic*sound/rho
+    minus(3:4)=minus(3:4)+contact*slope(3:4)
+    minus(5)=max(tiny(1._dp),minus(5)+acoustic*c2)
+    factor=.25_dp*dtdx*(w(3)-w(1))*(1+sign(1._dp,w(1)))
+    acoustic=factor*am
+    contact=.25_dp*dtdx*(w(3)-w(2))*(1+sign(1._dp,w(2)))
+    plus=center+.5_dp*(1-dtdx*max(w(3),0._dp))*slope
+    plus(1)=max(tiny(1._dp),plus(1)+acoustic+contact*a0)
+    plus(2)=plus(2)-acoustic*sound/rho
+    plus(3:4)=plus(3:4)+contact*slope(3:4)
+    plus(5)=max(tiny(1._dp),plus(5)+acoustic*c2)
+    factor=merge(-1._dp,center(2)*dtdx,center(2)>0)
+    minus(6:)=center(6:)+.5_dp*(-1-factor)*slope(6:)
+    factor=merge(center(2)*dtdx,1._dp,center(2)>=0)
+    plus(6:)=center(6:)+.5_dp*(1-factor)*slope(6:)
+    ok=all(ieee_is_finite(minus)).and.all(ieee_is_finite(plus))
+    if (.not.ok) then
+      minus=0;plus=0
+    end if
+  end subroutine reconstruct_pelec_plm_cell
 
   pure subroutine trace_reactive_characteristics( &
       center, slope, sound_speed, dtdx, left_state, right_state, ok)
