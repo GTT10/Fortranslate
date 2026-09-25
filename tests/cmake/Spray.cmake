@@ -581,6 +581,13 @@ if(PELEF_ENABLE_SPRAY)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_deposit> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_mpi_eb_deposit_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
+      foreach(exchange IN ITEMS sample deposit)
+        add_test(NAME spray_mpi_eb_periodic_${exchange}_${ranks}
+          COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+            $<TARGET_FILE:test_spray_mpi_eb_${exchange}> ${MPIEXEC_POSTFLAGS} periodic)
+        set_tests_properties(spray_mpi_eb_periodic_${exchange}_${ranks} PROPERTIES
+          LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
+      endforeach()
       add_test(NAME spray_mpi_eb_sample_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_sample> ${MPIEXEC_POSTFLAGS})

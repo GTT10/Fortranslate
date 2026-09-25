@@ -11,7 +11,7 @@ module spray_mpi_amr_field_mod
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_amr_tree_coupling_mod, only: amr_tree_spray_stencil
-  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
   use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil,compatible_eb_nodal_lattice
   implicit none
   private
@@ -49,7 +49,7 @@ contains
     if(present(eb_geometry)) then
       call validate_mpi_amr_tree_local_3d(tree,owners,state,reactive_nvar(size(species)),comm,valid)
       if(.not.valid) return
-      call validate_eb_sampling_geometry(comm,tree,eb_geometry,nodal_phi,valid)
+      call validate_eb_sampling_geometry(comm,tree,eb_geometry,nodal_phi,valid,periodic)
       if(.not.valid) return
     end if
     call recover_gas(state,recovered,valid)
@@ -282,7 +282,6 @@ contains
     valid=size(positions,1)==3.and.limit>=0.and.limit<=1000000
     valid=valid.and.all(ieee_is_finite([lower,spacing]))
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
-    if(present(eb_geometry)) valid=valid.and..not.any(periodic)
     if (valid) valid=size(positions,2)<=limit
     call agree()
     if (.not.agreed) return
@@ -296,7 +295,7 @@ contains
     call agree()
     if (.not.agreed) return
     if(present(eb_geometry)) then
-      call validate_eb_sampling_geometry(comm,tree,eb_geometry,nodal_phi,valid)
+      call validate_eb_sampling_geometry(comm,tree,eb_geometry,nodal_phi,valid,periodic)
       if(.not.valid) return
     end if
     call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,lookup,valid)
@@ -312,7 +311,7 @@ contains
       end if
       if(present(eb_geometry)) then
         call eb_tree_spray_stencil(tree,eb_geometry,nodal_phi,positions(:,p),lower,spacing, &
-          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid)
+          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,periodic=periodic)
         if(valid) valid=size(stencils(p)%weights)<=limit-total
       else
         call amr_tree_spray_stencil(tree,positions(:,p),lower,spacing,periodic, &
@@ -341,12 +340,15 @@ contains
   end subroutine
   ! Compare the replicated geometry actually used by the EB sampler, including
   ! ranks with no queries. Gas field values remain owner-local.
-  subroutine validate_eb_sampling_geometry(comm,tree,geometry,phi,ok)
+  subroutine validate_eb_sampling_geometry(comm,tree,geometry,phi,ok,periodic)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     type(eb_geometry_3d), intent(in) :: geometry(:)
     real(dp), intent(in) :: phi(0:,0:,0:)
     logical, intent(out) :: ok
+    logical, intent(in) :: periodic(3)
+    character(len=16) :: faces(6)
+    integer :: axis
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: buffer(:),local(:)
@@ -369,6 +371,16 @@ contains
       valid=geometry(node)%is_valid()
       if(valid) valid=all([geometry(node)%nx,geometry(node)%ny,geometry(node)%nz]==tree%nodes(node)%shape)
     end do
+    call agree()
+    if(.not.agreed) return
+    faces='outflow'
+    do axis=1,3
+      if(periodic(axis)) faces(2*axis-1:2*axis)='periodic'
+    end do
+    valid=periodic_eb_faces_match(geometry(1),faces)
+    if(periodic(1)) valid=valid.and.all(phi(0,:,:)==phi(ubound(phi,1),:,:))
+    if(periodic(2)) valid=valid.and.all(phi(:,0,:)==phi(:,ubound(phi,2),:))
+    if(periodic(3)) valid=valid.and.all(phi(:,:,0)==phi(:,:,ubound(phi,3)))
     call agree()
     if(.not.agreed) return
     dims=shape(phi)

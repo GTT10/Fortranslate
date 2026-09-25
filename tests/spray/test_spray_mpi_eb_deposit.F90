@@ -18,7 +18,10 @@ program test_spray_mpi_eb_deposit
   real(dp), allocatable :: positions(:,:),feedback(:,:),cell(:),primitive(:),y(:),total(:),parent(:),fine(:)
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=1,t,sound,r,volume
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
-  logical :: ok
+  logical :: ok,periodic(3)=.false.
+  character(len=16) :: mode
+  call get_command_argument(1,mode)
+  if(mode=='periodic') periodic=[.true.,.false.,.true.]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -68,6 +71,7 @@ program test_spray_mpi_eb_deposit
   end do
   if(rank==0) then
     positions(:,1)=[1.9_dp,1.3_dp,1.5_dp];feedback(:,1)=.01_dp*cell
+    if(any(periodic)) positions(:,1)=[3.9_dp,1.3_dp,3.9_dp]
   end if
   call deposit()
   call require(ok,'EB gas deposit')
@@ -112,7 +116,7 @@ program test_spray_mpi_eb_deposit
 contains
   subroutine deposit()
     call deposit_mpi_amr_tree_spray_gas(MPI_COMM_WORLD,species,tree,owners,field,temp,positions,feedback, &
-      zero,spacing,[.false.,.false.,.false.],ok,eb_geometry=g,nodal_phi=phi)
+      zero,spacing,periodic,ok,eb_geometry=g,nodal_phi=phi)
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition

@@ -17,7 +17,10 @@ program test_spray_mpi_eb_sample
   real(dp), allocatable :: w(:),v(:),saved_w(:),saved_v(:)
   integer, allocatable :: cells(:,:),saved(:,:)
   integer :: j,q,node
-  logical :: ok
+  logical :: ok,periodic(3)=.false.
+  character(len=16) :: mode
+  call get_command_argument(1,mode)
+  if(mode=='periodic') periodic=[.true.,.false.,.true.]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -37,6 +40,7 @@ program test_spray_mpi_eb_sample
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
   position=[1.9_dp,1.3_dp,1.5_dp]
+  if(any(periodic)) position=[3.9_dp,1.3_dp,3.9_dp]
   call run()
   call require(ok.and.all(w>0).and.abs(sum(w)-1)<1e-14_dp,'normalized cut-interface weights')
   call require(any(cells(1,:)==1).and.any(cells(1,:)==2),'coarse and fine support')
@@ -68,16 +72,21 @@ program test_spray_mpi_eb_sample
   deallocate(positions);allocate(positions(3,0))
   call sample(100)
   call require(ok.and.size(samples,2)==0,'globally empty queries')
+  if(any(periodic)) then
+    phi(0,8,8)=phi(0,8,8)+.1_dp
+    call sample(100)
+    call require(.not.ok.and.size(samples,2)==0,'empty periodic query still validates nodal endpoints')
+  end if
   if(rank==0) print *, 'PASS: owner-local MPI EB composite particle sampling'
   call MPI_Finalize(ierr)
 contains
   subroutine sample(limit)
     integer, intent(in) :: limit
     call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,field,1,positions,zero,spacing, &
-      [.false.,.false.,.false.],samples,ok,limit,g,phi)
+      periodic,samples,ok,limit,g,phi)
   end subroutine
   subroutine run()
-    call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok)
+    call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok,periodic=periodic)
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition
