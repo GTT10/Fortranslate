@@ -68,6 +68,38 @@ program test_spray_eb_field
   positions(:,2)=.1_dp
   call sample_eb_spray_field(g,phi,field,positions,samples,ok)
   call require(.not.ok.and.maxval(abs(samples-3))<1e-14_dp,'solid query sampling rollback')
+  ! The same cut-cell stencil spans the y/z periodic corner from either side.
+  do k=1,4
+  do j=1,4
+    field(1,:,j,k)=real(j+10*k,dp)
+  end do
+  end do
+  positions(:,1)=[1.4_dp,0._dp,0._dp];positions(:,2)=[1.4_dp,4._dp,4._dp]
+  call sample_eb_spray_field(g,phi,field,positions,samples,ok,[.false.,.true.,.true.])
+  call require(ok.and.maxval(abs(samples-27.5_dp))<1e-14_dp,'periodic corner sampling from both sides')
+  call eb_spray_stencil(g,phi,positions(:,1),c,w,v,ok,[.false.,.true.,.true.])
+  call require(ok.and.count(w>0)==4,'four periodic corner donors')
+  do q=1,8
+    if(w(q)<=0) cycle
+    call require(c(1,q)==2.and.(c(2,q)==1.or.c(2,q)==4).and.(c(3,q)==1.or.c(3,q)==4), &
+      'wrapped donor indices')
+    call require(abs(w(q)-.25_dp)<1e-14_dp,'symmetric corner weights')
+  end do
+  state=saved;temperature=saved_t;feedback(:,1)=.01_dp*cell;feedback(:,2)=.02_dp*cell
+  call inventory(before)
+  call deposit_eb_spray_gas(species,g,phi,positions,feedback,state,temperature,ok,[.false.,.true.,.true.])
+  call require(ok,'periodic corner deposition')
+  call inventory(after)
+  call require(maxval(abs(after-before-sum(feedback,dim=2))/max(1._dp,abs(before)))<1e-14_dp, &
+    'periodic corner inventory')
+  call require(state(1,2,1,1)>saved(1,2,1,1).and.state(1,2,4,4)>saved(1,2,4,4), &
+    'feedback on both sides of seam')
+  call require(all(state(:,1,:,:)==0).and.all(temperature(1,:,:)==42),'periodic covered cells unchanged')
+  call sample_eb_spray_field(g,phi,field,positions,samples,ok,[.true.,.true.,.true.])
+  call require(.not.ok.and.maxval(abs(samples-27.5_dp))<1e-14_dp,'incompatible periodic geometry rollback')
+  phi(:,4,:)=phi(:,4,:)+.01_dp
+  call sample_eb_spray_field(g,phi,field,positions,samples,ok,[.false.,.true.,.true.])
+  call require(.not.ok.and.maxval(abs(samples-27.5_dp))<1e-14_dp,'incompatible nodal seam rollback')
   print *, 'PASS: EB particle field exchange and EOS transaction'
 contains
   subroutine inventory(total)

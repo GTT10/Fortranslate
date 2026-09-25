@@ -160,6 +160,15 @@ program test_spray_eb_reactive
     call inventory(after)
     call require(all(abs(after-before-boundary-wall-chemical)<= &
       3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'exiting parcel coupled inventory')
+    state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass
+    faces='outflow';faces(3:6)='periodic'
+    drops(1)%position=[.003_dp,.003999999_dp,.002_dp];drops(1)%velocity=[0._dp,20._dp,0._dp]
+    call inventory(before)
+    call advance_open()
+    call require(ok.and.drops(1)%mass>0.and.drops(1)%position(2)<.001_dp,'coupled periodic parcel crossing')
+    call inventory(after)
+    call require(all(abs(after-before-boundary-wall-chemical)<= &
+      3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'periodic gas and particle inventory')
   end if
   print *, 'PASS: reactive EB gas and spray composition with atomic ledgers'
 contains

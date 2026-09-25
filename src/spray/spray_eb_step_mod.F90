@@ -85,7 +85,7 @@ contains
     logical, allocatable :: eligible(:)
     real(dp) :: crossing_fraction,crossing_position(3),crossing_normal(3)
     integer :: crossing_cell(3),parent
-    logical :: crossing,valid,accepted
+    logical :: crossing,valid,accepted,periodic(3)
     ok=.false.;substeps=0
     if (present(model_rejected)) model_rejected=.false.
     if (.not.g%is_valid().or..not.valid_spray_options(options)) return
@@ -99,6 +99,8 @@ contains
       if(.not.valid_spray_boundary_faces(outer_faces)) return
       if(size(outer_change)/=reactive_nvar(size(species))) return
     end if
+    periodic=.false.
+    if(present(outer_faces)) periodic=outer_faces(1:6:2)=='periodic'
     exterior=0
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
@@ -161,7 +163,7 @@ contains
       positions(:,p)=drops(p)%position
     end do
     change=0
-    call deposit_eb_spray_gas(species,g,phi,positions,change,gas,temp,valid)
+    call deposit_eb_spray_gas(species,g,phi,positions,change,gas,temp,valid,periodic)
     if (.not.valid) return
     elapsed=0;count_steps=0
     do while(elapsed<interval)
@@ -176,7 +178,7 @@ contains
       do p=1,np
         positions(:,p)=drops(p)%position
       end do
-      call sample_eb_spray_field(g,phi,field,positions,samples,valid)
+      call sample_eb_spray_field(g,phi,field,positions,samples,valid,periodic)
       if (.not.valid) return
       dt=interval-elapsed
       do p=1,np
@@ -275,7 +277,7 @@ contains
         if(allocated(impact_exterior)) impact_exterior=0
         if (valid) then
           next_gas=gas;next_temp=temp
-          call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
+          call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid,periodic)
         end if
         if (valid) then
           if (impacts) then

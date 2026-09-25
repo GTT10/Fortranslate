@@ -1,7 +1,7 @@
 module spray_eb_field_mod
   use precision_mod, only: dp
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
@@ -11,15 +11,17 @@ module spray_eb_field_mod
 contains
   ! Volume-weighted CIC, restricted to face-connected fluid cells in the local
   ! eight-cell support. The caller binds phi to the geometry built from it.
-  subroutine eb_spray_stencil(g,phi,position,cells,weights,volumes,ok)
+  subroutine eb_spray_stencil(g,phi,position,cells,weights,volumes,ok,periodic)
     type(eb_geometry_3d), intent(in) :: g
     real(dp), intent(in) :: phi(0:,0:,0:),position(3)
     integer, intent(inout) :: cells(3,8)
     real(dp), intent(inout) :: weights(8),volumes(8)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
     integer :: n(3),base(3),owner(3),idx(3),c(3,8),i,j,k,q,r,pass,axis,d(3),face(3),dummy(3)
     real(dp) :: lo(3),hi(3),h(3),u(3),w(8),v(8),fraction,point(3),normal(3),aperture
-    logical :: hit,valid,connected(8)
+    logical :: hit,valid,connected(8),wrap(3)
+    integer :: raw(3,8)
     ok=.false.
     if (.not.g%is_valid()) return
     n=[g%nx,g%ny,g%nz]
@@ -28,17 +30,22 @@ contains
     hit=.false.;fraction=0;point=0;normal=0;dummy=0
     call intersect_spray_level_set(phi,lo,hi,position,position,hit,fraction,point,normal,dummy,valid)
     if (.not.valid) return
+    if(.not.valid_periodic_geometry(g,phi,periodic)) return
+    wrap=.false.;if(present(periodic)) wrap=periodic
     u=(position-lo)/h+.5_dp;base=floor(u);owner=min(n,floor((position-lo)/h)+1)
     c=0;w=0;v=0;connected=.false.;q=0
     do k=0,1
     do j=0,1
     do i=0,1
-      q=q+1;idx=base+[i,j,k]
+      q=q+1;idx=base+[i,j,k];raw(:,q)=idx
+      do axis=1,3
+        if(wrap(axis)) idx(axis)=modulo(idx(axis)-1,n(axis))+1
+      end do
       if (any(idx<1).or.any(idx>n)) cycle
       if (g%volume_fraction(idx(1),idx(2),idx(3))<=0) cycle
       c(:,q)=idx
       v(q)=g%volume_fraction(idx(1),idx(2),idx(3))*product(h)
-      w(q)=product(max(0._dp,1-abs(u-real(idx,dp))))*g%volume_fraction(idx(1),idx(2),idx(3))
+      w(q)=product(max(0._dp,1-abs(u-real(raw(:,q),dp))))*g%volume_fraction(idx(1),idx(2),idx(3))
       connected(q)=all(idx==owner)
     end do
     end do
@@ -49,9 +56,11 @@ contains
         if (connected(q).or.w(q)<=0) cycle
         do r=1,8
           if (.not.connected(r)) cycle
-          d=abs(c(:,q)-c(:,r))
+          d=abs(raw(:,q)-raw(:,r))
           if (sum(d)/=1) cycle
-          axis=maxloc(d,dim=1);face=min(c(:,q),c(:,r))
+          axis=maxloc(d,dim=1);face=c(:,q)
+          face(axis)=min(raw(axis,q),raw(axis,r))
+          if(wrap(axis)) face(axis)=modulo(face(axis),n(axis))
           select case(axis)
           case(1)
             aperture=g%x_face_fraction(face(1),face(2),face(3))
@@ -70,11 +79,12 @@ contains
     cells=c;weights=w;volumes=v;ok=.true.
   end subroutine
 
-  subroutine sample_eb_spray_field(g,phi,field,positions,samples,ok)
+  subroutine sample_eb_spray_field(g,phi,field,positions,samples,ok,periodic)
     type(eb_geometry_3d), intent(in) :: g
     real(dp), intent(in) :: phi(0:,0:,0:),field(:,:,:,:),positions(:,:)
     real(dp), allocatable, intent(inout) :: samples(:,:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
     real(dp), allocatable :: trial(:,:)
     real(dp) :: w(8),v(8)
     integer :: c(3,8),p,q,ios
@@ -83,6 +93,7 @@ contains
     if (.not.g%is_valid().or.size(positions,1)/=3) return
     if (any(shape(phi)/=[g%nx+1,g%ny+1,g%nz+1])) return
     if (.not.all(ieee_is_finite(phi))) return
+    if (.not.valid_periodic_geometry(g,phi,periodic)) return
     if (any(shape(field)/=[size(field,1),g%nx,g%ny,g%nz]).or.size(field,1)<1) return
     if (.not.all(ieee_is_finite(field))) return
     if (maxval(abs(field))>1e100_dp) return
@@ -90,7 +101,7 @@ contains
     if (ios/=0) return
     trial=0;c=0;w=0;v=0
     do p=1,size(positions,2)
-      call eb_spray_stencil(g,phi,positions(:,p),c,w,v,valid)
+      call eb_spray_stencil(g,phi,positions(:,p),c,w,v,valid,periodic)
       if (.not.valid) return
       do q=1,8
         if (w(q)<=0) cycle
@@ -102,12 +113,13 @@ contains
 
   ! Contributions are integrated mass/momentum/energy/species, while state holds
   ! densities per fluid volume. Covered cells and their temperature are untouched.
-  subroutine deposit_eb_spray_gas(species,g,phi,positions,contributions,state,temperature,ok)
+  subroutine deposit_eb_spray_gas(species,g,phi,positions,contributions,state,temperature,ok,periodic)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: g
     real(dp), intent(in) :: phi(0:,0:,0:),positions(:,:),contributions(:,:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
     real(dp), allocatable :: trial(:,:,:,:),temp(:,:,:),primitive(:),term(:)
     real(dp) :: w(8),v(8),sound
     integer :: c(3,8),nv,p,q,i,j,k,ios
@@ -116,6 +128,7 @@ contains
     if (.not.g%is_valid().or.size(positions,1)/=3) return
     if (any(shape(phi)/=[g%nx+1,g%ny+1,g%nz+1])) return
     if (.not.all(ieee_is_finite(phi))) return
+    if (.not.valid_periodic_geometry(g,phi,periodic)) return
     if (any(shape(state)/=[nv,g%nx,g%ny,g%nz])) return
     if (any(shape(temperature)/=[g%nx,g%ny,g%nz])) return
     if (any(shape(contributions)/=[nv,size(positions,2)])) return
@@ -128,7 +141,7 @@ contains
     call recover(valid)
     if (.not.valid) return
     do p=1,size(positions,2)
-      call eb_spray_stencil(g,phi,positions(:,p),c,w,v,valid)
+      call eb_spray_stencil(g,phi,positions(:,p),c,w,v,valid,periodic)
       if (.not.valid) return
       do q=1,8
         if (w(q)<=0) cycle
@@ -163,4 +176,29 @@ contains
       accepted=.true.
     end subroutine
   end subroutine
+  logical function valid_periodic_geometry(g,phi,periodic) result(valid)
+    type(eb_geometry_3d), intent(in) :: g
+    real(dp), intent(in) :: phi(0:,0:,0:)
+    logical, optional, intent(in) :: periodic(3)
+    character(len=16) :: faces(6)
+    integer :: axis
+    valid=.true.
+    if(.not.present(periodic)) return
+    faces='outflow'
+    do axis=1,3
+      if(periodic(axis)) faces(2*axis-1:2*axis)='periodic'
+    end do
+    valid=.false.
+    if(.not.periodic_eb_faces_match(g,faces)) return
+    if(periodic(1)) then
+      if(any(phi(0,:,:)/=phi(g%nx,:,:))) return
+    end if
+    if(periodic(2)) then
+      if(any(phi(:,0,:)/=phi(:,g%ny,:))) return
+    end if
+    if(periodic(3)) then
+      if(any(phi(:,:,0)/=phi(:,:,g%nz))) return
+    end if
+    valid=.true.
+  end function
 end module

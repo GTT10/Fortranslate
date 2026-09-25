@@ -7,6 +7,7 @@ module spray_eb_reactive_mod
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_parcel
   use eb_geometry_3d_mod, only: eb_geometry_3d
+  use spray_coupling_3d_mod, only: valid_spray_boundary_faces
   use spray_breakup_mod, only: split_spray_parcels
   use spray_eb_step_mod, only: advance_eb_mixture_coupling_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
@@ -126,7 +127,9 @@ contains
     ! Gas inlets do not inject parcels. Existing parcels may leave through
     ! either open gas face; their removed inventory enters the same ledger.
     if(present(boundary_faces)) then
-      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) return
+      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) return
+      if(.not.valid_spray_boundary_faces(boundary_faces)) return
+      if(impacts.and.any(boundary_faces=='periodic')) return
       if(.not.present(extended_geometry)) return
       if(present(particle_outflow)) then
         if(.not.particle_outflow) return
@@ -136,6 +139,9 @@ contains
       if(present(inflow_state).or.present(inflow_temperature)) return
     end if
     outer_faces='outflow';first_exterior=0;second_exterior=0
+    if(present(boundary_faces)) then
+      where(boundary_faces=='periodic') outer_faces='periodic'
+    end if
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
     if (impacts.and..not.present(last_id)) return
