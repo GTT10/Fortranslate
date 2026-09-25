@@ -68,7 +68,19 @@ in x-low, x-high, y-low, y-high, z-low, z-high order). For example, add to
 
 Also set `particle_outflow=.true.` in `spray.nml`. Existing particles can leave
 through either open gas face; their inventory joins the exterior ledger.
-Gas inlets use the initial mixture composition and do not inject particles.
+Gas inlets default to initial gas composition. Independent per-face mixtures
+use the same fields as the single-level gas application, for example:
+
+```fortran
+ inflow_composition_count(3)=2
+ inflow_composition_species(1:2,3)='O2','N2'
+ inflow_composition_mole_fractions(1:2,3)=.2,.8
+```
+
+Names must exist in the active mechanism; nonnegative mole fractions are
+normalized. Count zero inherits initial gas independently for that face.
+Unused names/values must be blank/zero. Restart binds exact counts, names and
+input fractions. Gas inlets do not inject particles.
 The configured inlet states participate in hydro and transport timestep bounds.
 Checkpoint context includes all face labels and inlet density, pressure and
 velocity values, so changing these settings rejects continuation. Legacy

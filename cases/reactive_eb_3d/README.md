@@ -46,7 +46,7 @@ at every transport stage and hydro update. Open-face donor signal speeds and
 transport diffusivity limit the time step. Restart requires the same boundary
 labels and inlet data, including the exact composition count, species order and
 input fractions. The tree front end has corresponding per-face composition
-inputs; the single-level spray front end currently rejects composition overrides.
+inputs; the single-level spray front end accepts the same fields.
 
 See the [inflow/restart checks](../../docs/validation/eb-inflow-application-20260925.md).
 

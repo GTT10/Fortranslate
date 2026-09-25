@@ -15,6 +15,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--ctu', action='store_true')
 p.add_argument('--inflow', action='store_true')
+p.add_argument('--inlet-composition', action='store_true')
 p.add_argument('--periodic', action='store_true')
 p.add_argument('--wall', action='store_true')
 p.add_argument('--scheduled', action='store_true')
@@ -26,6 +27,7 @@ p.add_argument('--force', action='store_true')
 p.add_argument('--difmag', type=float)
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
+assert not a.inlet_composition or (a.inflow and a.restart)
 if a.inflow or a.periodic or a.wall:
     a.ctu = True
 if a.periodic or a.wall:
@@ -46,6 +48,12 @@ if a.inflow:
     (work / 'gas.nml').write_text(gas)
     spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
     (work / 'spray.nml').write_text(spray)
+if a.inlet_composition:
+    gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d',
+        "&reactive_eb_3d\n inflow_composition_count(3)=2, "
+        "inflow_composition_species(1:2,3)='O2','N2', "
+        "inflow_composition_mole_fractions(1:2,3)=.2,.8,", 1)
+    (work / 'gas.nml').write_text(gas)
 if a.periodic or a.wall:
     gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d',
         "&reactive_eb_3d\n boundary_faces='outflow','outflow','periodic','periodic','periodic','periodic',", 1)
@@ -246,6 +254,17 @@ if a.restart:
         assert (work / 'gas.csv').read_bytes() == full_gas
         assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
         assert (work / 'gas.csv.films.csv').read_bytes() == full_films
+    if a.inlet_composition:
+        for name, changed in [
+            ('changed_composition', resume.replace('=.2,.8', '=.3,.7')),
+            ('unknown_species', resume.replace("'O2','N2'", "'missing','N2'")),
+            ('negative_fraction', resume.replace('=.2,.8', '=-.2,.8')),
+        ]:
+            (work / f'{name}.nml').write_text(changed)
+            rejected = subprocess.run([exe, f'{name}.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+            (work / f'{name}.log').write_text(rejected.stdout + rejected.stderr)
+            assert rejected.returncode != 0, name
+        assert 'incompatible spray checkpoint' in (work / 'changed_composition.log').read_text().lower()
     if a.inflow:
         for name, altered in [
             ('changed_inlet', resume.replace('inflow_velocity(2,3)=200', 'inflow_velocity(2,3)=201')),

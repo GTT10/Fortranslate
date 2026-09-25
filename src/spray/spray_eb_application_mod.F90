@@ -1,4 +1,6 @@
 module spray_eb_application_mod
+  use selected_composition_mod, only: resolve_selected_composition
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use precision_mod, only: dp
   use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
@@ -102,6 +104,7 @@ contains
     type(eb_geometry_3d) :: g
     type(eb_geometry_3d), allocatable :: extended_geometry
     character(len=16), allocatable :: boundary_faces(:)
+    real(dp) :: seed_mass(size(species)),inlet_mole(size(species))
     real(dp), allocatable :: inlet(:,:),inlet_t(:),primitive(:),ghost(:,:,:,:),ghost_t(:,:,:),wall_t(:)
     real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate,wall_dt
     integer :: face
@@ -353,9 +356,22 @@ contains
       call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1), &
         primitive,inlet_temp,inlet_sound,ok)
       if(.not.ok) error stop 'Failed to obtain EB inlet composition'
+      seed_mass=primitive(6:)
       do face=1,6
         inlet(:,face)=state(:,1,1,1);inlet_t(face)=temperature(1,1,1)
         if(boundary_faces(face)/='inflow') cycle
+        primitive(6:)=seed_mass
+        if(config%inflow_composition_count(face)/=0) then
+          call resolve_selected_composition('EB spray inlet',config%inflow_composition_count(face), &
+            config%inflow_composition_species(:,face),config%inflow_composition_mole_fractions(:,face), &
+            species,inlet_mole,ok,message)
+          if(.not.ok) then
+            write(*,'(a)') trim(message)
+            error stop 'Invalid EB spray inlet composition'
+          end if
+          call mass_fractions_from_mole_fractions(species,inlet_mole,primitive(6:),ok)
+          if(.not.ok) error stop 'Invalid EB spray inlet mass fractions'
+        end if
         primitive(1)=config%inflow_density(face);primitive(2:4)=config%inflow_velocity(:,face)
         primitive(5)=config%inflow_pressure(face)
         call reactive_primitive_to_conserved(species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
@@ -562,6 +578,15 @@ contains
         do j=1,6
           if(ios==0) write(scratch,'(a,5(1x,es27.18e3))',iostat=ios) trim(boundary_faces(j)), &
             config%inflow_density(j),config%inflow_pressure(j),config%inflow_velocity(:,j)
+        end do
+      end if
+      if(ios==0.and.any(config%inflow_composition_count/=0)) then
+        write(scratch,'(a,6(1x,i0))',iostat=ios) 'inlet-composition-v1',config%inflow_composition_count
+        do j=1,6
+          do k=1,config%inflow_composition_count(j)
+            if(ios==0) write(scratch,'(a,1x,es27.18e3)',iostat=ios) &
+              trim(config%inflow_composition_species(k,j)),config%inflow_composition_mole_fractions(k,j)
+          end do
         end do
       end if
       if(ios==0.and.allocated(wall_t)) &
