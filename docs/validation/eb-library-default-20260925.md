@@ -43,3 +43,6 @@ git diff --check
 
 Artifacts: `build/eb-library-default-checks/` contains `build.log`, `rebuild.log`
 and `LastTest.log`.
+
+The subsequent [face-only caller audit](eb-face-halo-default-20260925.md)
+updates the two legacy halo fixtures and records three focused passing tests.
