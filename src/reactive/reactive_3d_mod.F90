@@ -67,7 +67,7 @@ contains
       source_count,evaluate_sources,ok,difmag,external_force,source_change, &
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
-      inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity)
+      inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -86,6 +86,9 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(:),wall_velocity(:,:)
+    ! Full-face time-averaged flux density; multiply by dt and area for reflux.
+    real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
+    real(dp), allocatable :: old_tx(:,:,:,:),old_ty(:,:,:,:),old_tz(:,:,:,:)
     character(len=16) :: faces(6)
     real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source_ghost(:,:,:,:)
     integer :: index(3),a
@@ -103,6 +106,14 @@ contains
     integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    if(present(flux_x)) flux_x=0
+    if(present(flux_y)) flux_y=0
+    if(present(flux_z)) flux_z=0
+    if((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    if(present(flux_x)) then
+      if(any(shape(flux_x)/=[nv,n(1)+1,n(2),n(3)]).or. &
+        any(shape(flux_y)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(flux_z)/=[nv,n(1),n(2),n(3)+1])) return
+    end if
     faces='periodic'
     if(present(boundary_faces)) faces=boundary_faces
     if(present(boundary_change)) then
@@ -178,6 +189,9 @@ contains
     if(.not.valid) return
     new_sources=old_sources
     old_transport_rate=transport_rate
+    if(present(flux_x).and.present(transport)) then
+      allocate(old_tx,source=tx);allocate(old_ty,source=ty);allocate(old_tz,source=tz)
+    end if
     do iteration=1,iterations
       ! Hydro.cpp sums half new then half old rates, without including hydro itself.
       call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,reaction_source=ir)
@@ -277,6 +291,22 @@ contains
     boundary_inventory=boundary_inventory+.5_dp*dt*(old_transport_rate+new_transport_rate)
     inventory=inventory-.5_dp*dt*(old_transport_rate+new_transport_rate)
     if(.not.all(ieee_is_finite(boundary_inventory)).or..not.all(ieee_is_finite(inventory))) return
+    if(present(flux_x)) then
+      if(present(transport)) then
+        if(all(faces=='periodic')) then
+          fx(:,1:,:,:)=fx(:,1:,:,:)+.5_dp*(old_tx+tx)
+          fy(:,:,1:,:)=fy(:,:,1:,:)+.5_dp*(old_ty+ty)
+          fz(:,:,:,1:)=fz(:,:,:,1:)+.5_dp*(old_tz+tz)
+          fx(:,0,:,:)=fx(:,0,:,:)+.5_dp*(old_tx(:,n(1),:,:)+tx(:,n(1),:,:))
+          fy(:,:,0,:)=fy(:,:,0,:)+.5_dp*(old_ty(:,:,n(2),:)+ty(:,:,n(2),:))
+          fz(:,:,:,0)=fz(:,:,:,0)+.5_dp*(old_tz(:,:,:,n(3))+tz(:,:,:,n(3)))
+        else
+          fx=fx+.5_dp*(old_tx+tx);fy=fy+.5_dp*(old_ty+ty);fz=fz+.5_dp*(old_tz+tz)
+        end if
+      end if
+      if(.not.all(ieee_is_finite(fx)).or..not.all(ieee_is_finite(fy)).or..not.all(ieee_is_finite(fz))) return
+      flux_x=fx;flux_y=fy;flux_z=fz
+    end if
     if(present(boundary_change)) boundary_change=boundary_inventory
     if(present(source_change)) source_change=inventory
     if(present(minimum_transport_theta)) minimum_transport_theta=source_theta

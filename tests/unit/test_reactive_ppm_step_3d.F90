@@ -60,6 +60,7 @@ program test_reactive_ppm_step_3d
   call check_sdc_iteration()
   call check_sdc_reactions()
   call check_sdc_outflow()
+  call check_sdc_flux_export()
   call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
@@ -119,6 +120,37 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+
+  subroutine check_sdc_flux_export()
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4)
+    real(dp) :: fx(nv,0:4,4,4),fy(nv,4,0:4,4),fz(nv,4,4,0:4)
+    character(len=8) :: bc(6)
+    integer :: mode,ii,jj,kk
+    do mode=1,2
+      bc='periodic'
+      if(mode==2) bc(1:2)='outflow'
+      state=u;temp=t
+      call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+        2,2,ok=ok,external_force=[0._dp,0._dp,0._dp],boundary_faces=bc,transport=transport, &
+        flux_x=fx,flux_y=fy,flux_z=fz)
+      call require(ok,'SDC exported hydro plus transport fluxes')
+      do kk=1,4
+      do jj=1,4
+      do ii=1,4
+        expected(:,ii,jj,kk)=u(:,ii,jj,kk)-dt/.25_dp*(fx(:,ii,jj,kk)-fx(:,ii-1,jj,kk)+ &
+          fy(:,ii,jj,kk)-fy(:,ii,jj-1,kk)+fz(:,ii,jj,kk)-fz(:,ii,jj,kk-1))
+      end do
+      end do
+      end do
+      call require(maxval(abs(state-expected)/max(1._dp,abs(expected)))<1e-12_dp, &
+        'SDC full-face divergence reconstructs every cell update')
+    end do
+    state=u;temp=t;fx=1;fy=1;fz=1
+    call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,1,ok=ok,external_force=[0._dp,0._dp,0._dp],flux_x=fx(:,1:,:,:),flux_y=fy,flux_z=fz)
+    call require(.not.ok.and.all(state==u).and.all(temp==t).and.all(fx(:,1:,:,:)==0).and. &
+      all(fy==0).and.all(fz==0),'SDC malformed flux output rejects without state mutation')
+  end subroutine check_sdc_flux_export
 
   subroutine check_sdc_outflow()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4),et(4,4,4)
