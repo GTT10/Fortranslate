@@ -2407,8 +2407,7 @@ contains
       local_ok=local_ok.and.present(boundary_faces)
       if (present(boundary_faces)) local_ok=local_ok.and..not.any(outlet_values>0.and.boundary_faces/='outflow')
     end if
-    viscosity=0
-    if(reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     local_ok=local_ok.and.ieee_is_finite(viscosity)
     local_ok=local_ok.and.viscosity>=0
@@ -2627,8 +2626,7 @@ contains
       trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
-    viscosity=0
-    if(reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     local_ok=local_ok.and.ieee_is_finite(viscosity)
     local_ok=local_ok.and.viscosity>=0
@@ -2888,8 +2886,7 @@ contains
       trim(reconstruction) == "characteristic_plm" .or. trim(reconstruction) == "characteristic_ppm"
     if (local_ok) local_ok = trim(limiter) == "minmod" .or. &
       trim(limiter) == "mc"
-    viscosity=0
-    if(reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     local_ok=local_ok.and.ieee_is_finite(viscosity)
     local_ok=local_ok.and.viscosity>=0
@@ -3154,12 +3151,16 @@ contains
     real(dp), allocatable :: second_flux_y(:, :, :, :)
     real(dp), allocatable :: second_flux_z(:, :, :, :)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    real(dp) :: coefficient
     real(dp) :: theta
     integer :: i,j,k
     logical :: local_ok,inflow_mask(6),wall_mask(6),physical_mask(6)
     integer :: nvar, local_count, ny, nz
 
     ok = .false.
+    coefficient=.1_dp
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     nvar = reactive_nvar(size(species))
     local_count = distribution%fine_count
     ny = patch%fine_ny()
@@ -3198,7 +3199,7 @@ contains
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[local_count,ny,nz],[dx,dy,dz],dt, &
         .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok,inflow_faces=inflow_mask, &
         no_slip_faces=wall_mask, &
-        difmag=difmag)
+        difmag=coefficient)
       if (.not.local_ok) return
       allocate(candidate_state,mold=state)
       allocate(candidate_temperature,mold=temperature)
@@ -3232,7 +3233,7 @@ contains
       coarse_end, coarse_end_temperature, old_state, old_temperature, &
       alpha_start, riemann_solver, reconstruction, limiter, first_flux_x, &
       first_flux_y, first_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure, &
-      [dx,dy,dz],difmag)
+      [dx,dy,dz],coefficient)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, old_state, first_flux_x, first_flux_y, first_flux_z, &
@@ -3249,7 +3250,7 @@ contains
       coarse_end, coarse_end_temperature, stage_state, stage_temperature, &
       alpha_end, riemann_solver, reconstruction, limiter, second_flux_x, &
       second_flux_y, second_flux_z, local_ok, boundary_faces, inflow_state, inflow_temperature,outlet_pressure, &
-      [dx,dy,dz],difmag)
+      [dx,dy,dz],coefficient)
     if (.not. local_ok) return
     call update_sparse_fine_stage_3d( &
       old_state, stage_state, second_flux_x, second_flux_y, second_flux_z, &

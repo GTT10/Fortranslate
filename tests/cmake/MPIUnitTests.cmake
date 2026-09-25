@@ -1159,3 +1159,11 @@ if(PELEF_ENABLE_MPI)
       TIMEOUT 120 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_test(NAME mpi_amr_default_hierarchy_3d_np8
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 8 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_amr_reactive_3d> --default-hierarchy-only ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(mpi_amr_default_hierarchy_3d_np8 PROPERTIES TIMEOUT 240 PROCESSORS 8
+    ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()
