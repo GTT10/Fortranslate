@@ -10,6 +10,7 @@ program test_spray_mpi_ppm
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: global(12,8,4,4),gt(8,4,4),reference(12,8,4,4),rt(8,4,4),q(12),sound
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),saved(:,:,:,:),st(:,:,:)
+  real(dp), allocatable :: mpi_coefficient
   real(dp) :: budget(12),expected(12),mach(6),tin(6),pin(6),coefficient
   real(dp), parameter :: spacing(3)=[.125_dp,.25_dp,.25_dp],dt=1e-5_dp
   character(len=32) :: faces(6),reconstruction,solver
@@ -36,12 +37,18 @@ program test_spray_mpi_ppm
   end do
   end do
   end do
-  do policy=1,3
+  do policy=1,4
     solver="hllc"
     if(policy>=2) solver="pelec"
     coefficient=0
     if(policy==2) coefficient=.1_dp
     if(policy==3) coefficient=.037_dp
+    if(allocated(mpi_coefficient)) deallocate(mpi_coefficient)
+    if(policy==4) then
+      solver='hllc';coefficient=.1_dp
+    else
+      mpi_coefficient=coefficient
+    end if
   do mode=1,8
     faces='periodic';mach=-1;tin=0;pin=0
     if(mode>=2) then
@@ -59,11 +66,11 @@ program test_spray_mpi_ppm
     saved=u;st=t
     if(mode==1) then
       call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],dt,solver,'mc',ok, &
-        reconstruction=scheme,difmag=coefficient)
+        reconstruction=scheme,difmag=mpi_coefficient)
     else
       call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],dt,solver,'mc',ok, &
         faces,budget,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin, &
-        reconstruction=scheme,difmag=coefficient)
+        reconstruction=scheme,difmag=mpi_coefficient)
       call require(maxval(abs(budget-expected)/max(1._dp,abs(expected)))<2e-13_dp,'surface budget parity')
     end if
     call require(ok,'MPI PPM')
@@ -72,7 +79,7 @@ program test_spray_mpi_ppm
     u=saved;t=st
     call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],1._dp,solver,'mc',ok, &
       faces,budget,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin, &
-        reconstruction=scheme,difmag=coefficient)
+        reconstruction=scheme,difmag=mpi_coefficient)
     call require(.not.ok.and.all(u==saved).and.all(t==st).and.all(budget==0),'collective CFL rollback')
     reconstruction=scheme
     if(rank==nranks-1) then

@@ -1139,8 +1139,7 @@ contains
     reconstruction_code=0
     if(hydro=='characteristic_plm') reconstruction_code=1
     if(hydro=='characteristic_ppm') reconstruction_code=2
-    viscosity=0
-    if(hydro=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
@@ -1483,8 +1482,7 @@ contains
       case('pelec');hydro_code=3
       end select
     end if
-    viscosity=0
-    if(reconstruction_code==2.and.hydro_code==3) viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     if (present(hydro_limiter)) then
       select case(trim(hydro_limiter))
