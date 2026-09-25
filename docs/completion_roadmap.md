@@ -317,7 +317,10 @@ reaction coupling is implemented with a uniform reacting check
 ([evidence](validation/sdc-reactions-20260926.md)). Fixed/selected application
 routing now retains reaction sources across steps
 ([checks](validation/sdc-reacting-app-20260926.md)); nonuniform reacting
-qualification and broader boundary/AMR/MPI routing remain open. Physical
+qualification and broader boundary/AMR/MPI routing remain open. The library
+now handles zero-gradient outflow with a separate boundary inventory
+([checks](validation/sdc-outflow-20260926.md)); application dispatch and
+physical-boundary transport remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

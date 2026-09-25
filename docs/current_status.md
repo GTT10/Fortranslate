@@ -18,6 +18,9 @@ The library couples chemistry into periodic SDC
 input now enables it with persistent reaction sources
 ([checks](validation/sdc-reacting-app-20260926.md)). Broader boundary/AMR/MPI
 integration remains open.
+The SDC library additionally supports zero-gradient outflow with separate
+boundary inventories ([checks](validation/sdc-outflow-20260926.md)); application
+routing and physical-boundary transport remain open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
