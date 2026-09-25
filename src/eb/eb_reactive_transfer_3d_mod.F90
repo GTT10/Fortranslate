@@ -97,15 +97,18 @@ contains
 
   ! PCM parent donors at internal patch faces, fine-state extrapolation at
   ! physical domain faces. Only open face slots are populated; all other halo
-  ! storage is zero. This checks Cartesian alignment, not full metric parity.
+  ! storage is zero. Optional volume fractions request complete halos, with PCM
+  ! parent geometry at coarse/fine boundaries. This is not full metric parity.
   subroutine fill_reactive_eb_patch_halo_3d(species,coarse,fine,lower,ratio,coarse_state,coarse_temperature, &
-      fine_state,fine_temperature,ghost_state,ghost_temperature,ok)
+      fine_state,fine_temperature,ghost_state,ghost_temperature,ok,ghost_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     real(dp), intent(in) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
     real(dp), intent(in) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
     real(dp), intent(inout) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), optional, intent(inout) :: ghost_volume_fraction(0:,0:,0:)
+    real(dp), allocatable :: volumes(:,:,:)
     logical, intent(out) :: ok
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:),donor(:)
     integer :: dims(3),parent_dims(3),upper(3),axis,side,i,j,k,start(3),finish(3),index(3),parent(3),inside(3),nvar
@@ -129,6 +132,11 @@ contains
     if (.not.fields_match(coarse_state,coarse_temperature,coarse,nvar)) return
     if (.not.fields_match(fine_state,fine_temperature,fine,nvar)) return
     if (any(shape(ghost_state)/=[nvar,dims+2]).or.any(shape(ghost_temperature)/=dims+2)) return
+    if(present(ghost_volume_fraction)) then
+      if(any(shape(ghost_volume_fraction)/=dims+2)) return
+      allocate(volumes(0:dims(1)+1,0:dims(2)+1,0:dims(3)+1))
+      volumes=0
+    end if
     allocate(candidate(nvar,0:dims(1)+1,0:dims(2)+1,0:dims(3)+1), &
       temps(0:dims(1)+1,0:dims(2)+1,0:dims(3)+1),primitive(reactive_nprim(size(species))),donor(nvar))
     candidate=0._dp;temps=0._dp
@@ -169,6 +177,36 @@ contains
         end do
       end do
     end do
+    if(present(ghost_volume_fraction)) then
+      do k=0,dims(3)+1
+        do j=0,dims(2)+1
+          do i=0,dims(1)+1
+            index=[i,j,k]
+            ! Clamp physical-domain ghosts before selecting a fine or parent donor.
+            where(lower==1) index=max(1,index)
+            where(upper==parent_dims) index=min(dims,index)
+            if(all(index>=1.and.index<=dims)) then
+              volumes(i,j,k)=fine%volume_fraction(index(1),index(2),index(3))
+              donor=fine_state(:,index(1),index(2),index(3))
+              guess=fine_temperature(index(1),index(2),index(3))
+            else
+              parent=lower+(index+ratio-1)/ratio-1
+              volumes(i,j,k)=coarse%volume_fraction(parent(1),parent(2),parent(3))
+              donor=coarse_state(:,parent(1),parent(2),parent(3))
+              guess=coarse_temperature(parent(1),parent(2),parent(3))
+            end if
+            if(volumes(i,j,k)<=0) cycle
+            ! Open faces were already checked above. Retain their existing values.
+            if(temps(i,j,k)>0) cycle
+            if(.not.ieee_is_finite(guess).or.guess<=0) return
+            call reactive_conserved_to_primitive(species,donor,guess,primitive,recovered,speed,valid)
+            if(.not.valid) return
+            candidate(:,i,j,k)=donor;temps(i,j,k)=recovered
+          end do
+        end do
+      end do
+      ghost_volume_fraction=volumes
+    end if
     ghost_state=candidate;ghost_temperature=temps;ok=.true.
   end subroutine fill_reactive_eb_patch_halo_3d
 

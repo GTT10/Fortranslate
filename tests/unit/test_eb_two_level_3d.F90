@@ -1,4 +1,5 @@
 program test_eb_two_level_3d
+  use eb_reactive_transfer_3d_mod, only: fill_reactive_eb_patch_halo_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -18,7 +19,11 @@ program test_eb_two_level_3d
   procedure(advance_reactive_eb_two_level_euler_3d), pointer :: advance
   logical :: refined(4,4,4),ok
   integer :: scheme,ratio,mode,n,nvar,lo(3),hi(3),step,c,i,j,k,fl(3),fh(3)
+  character(len=32) :: argument
+  real(dp) :: coefficient=0
   real(dp) :: coarse_amount,fine_amount,interval
+  call get_command_argument(1,argument)
+  if(argument=="viscosity") coefficient=.037_dp
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   nvar=reactive_nvar(size(species))
@@ -52,12 +57,13 @@ program test_eb_two_level_3d
       config%nx=n;config%ny=n;config%nz=n
       call initialize_reactive_eb_density_sheet_3d(species,config,fine,uf,tf,ok)
       call require(ok,'fine state')
+      if(coefficient>0) call check_complete_halo()
       boundary=17._dp;wall=19._dp
       do step=1,3
         call inventory(before)
         sc=uc;stc=tc;sf=uf;stf=tf
         call advance(species,coarse,fine,lo,ratio,'rusanov',interval, &
-          uc,tc,uf,tf,boundary,wall,ok)
+          uc,tc,uf,tf,boundary,wall,ok,difmag=coefficient)
         call require(ok,'synchronized two-level hydro step')
         call inventory(after)
         do c=1,nvar
@@ -82,7 +88,7 @@ program test_eb_two_level_3d
         call require(maxval(abs(uf-sf))>1.e-12_dp,'fine evolution nonzero')
         if (scheme==2.and.step==1) then
           call advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lo,ratio,'rusanov',interval, &
-            sc,stc,sf,stf,saved_b,saved_w,ok)
+            sc,stc,sf,stf,saved_b,saved_w,ok,difmag=coefficient)
           call require(ok,'common-step reference for subcycle comparison')
           call require(maxval(abs(uf-sf))>1.e-12_dp,'subcycled fine evolution differs from one fine Euler step')
         end if
@@ -92,18 +98,18 @@ program test_eb_two_level_3d
       end do
       sc=uc;stc=tc;sf=uf;stf=tf;saved_b=boundary;saved_w=wall
       call advance(species,coarse,fine,lo,ratio,'rusanov',1.e8_dp, &
-        uc,tc,uf,tf,boundary,wall,ok)
+        uc,tc,uf,tf,boundary,wall,ok,difmag=coefficient)
       call require(.not.ok,'nonphysical large step rejected')
       call unchanged()
       call build_axis_plane_eb_geometry_3d(n,n,n,fine%x_lower,fine%x_upper,fine%y_lower,fine%y_upper, &
         fine%z_lower,fine%z_upper,'z',.311_dp,bad,ok)
       call require(ok,'valid but inconsistent fine geometry')
       call advance(species,coarse,bad,lo,ratio,'rusanov',1.e-10_dp, &
-        uc,tc,uf,tf,boundary,wall,ok)
+        uc,tc,uf,tf,boundary,wall,ok,difmag=coefficient)
       call require(.not.ok,'coarse fine geometry mismatch rejected')
       call unchanged()
       call advance(species,coarse,fine,lo,0,'rusanov',1.e-10_dp, &
-        uc,tc,uf,tf,boundary,wall,ok)
+        uc,tc,uf,tf,boundary,wall,ok,difmag=coefficient)
       call require(.not.ok,'invalid ratio rejected')
       call unchanged()
     end do
@@ -112,6 +118,36 @@ program test_eb_two_level_3d
   end do
   write(*,'(a)') 'test_eb_two_level_3d: PASS'
 contains
+  subroutine check_complete_halo()
+    real(dp) :: ghost(nvar,0:n+1,0:n+1,0:n+1),gt(0:n+1,0:n+1,0:n+1),vol(0:n+1,0:n+1,0:n+1)
+    integer :: x,y,z,idx(3),parent(3)
+    ghost=-17;gt=-18;vol=-19
+    call fill_reactive_eb_patch_halo_3d(species,coarse,fine,lo,ratio,uc,tc,uf,tf,ghost,gt,ok,vol)
+    call require(ok,'complete halo')
+    do z=0,n+1
+      do y=0,n+1
+        do x=0,n+1
+          idx=[x,y,z]
+          where(lo==1) idx=max(1,idx)
+          where(hi==4) idx=min(n,idx)
+          if(all(idx>=1.and.idx<=n)) then
+            call require(vol(x,y,z)==fine%volume_fraction(idx(1),idx(2),idx(3)),'fine halo metric')
+            if(vol(x,y,z)>0) call require(all(ghost(:,x,y,z)==uf(:,idx(1),idx(2),idx(3))),'fine donor')
+          else
+            parent=lo+floor(real(idx-1,dp)/ratio)
+            call require(vol(x,y,z)==coarse%volume_fraction(parent(1),parent(2),parent(3)),'parent halo metric')
+            if(vol(x,y,z)>0) &
+              call require(all(ghost(:,x,y,z)==uc(:,parent(1),parent(2),parent(3))),'parent donor')
+          end if
+          if(vol(x,y,z)>0) call require(gt(x,y,z)>0,'fluid halo temperature')
+        end do
+      end do
+    end do
+    sf=uf;sf(1,n,n,n)=-1
+    ghost=-17;gt=-18;vol=-19
+    call fill_reactive_eb_patch_halo_3d(species,coarse,fine,lo,ratio,uc,tc,sf,tf,ghost,gt,ok,vol)
+    call require(.not.ok.and.all(ghost==-17).and.all(gt==-18).and.all(vol==-19),'complete halo rollback')
+  end subroutine
   subroutine inventory(values)
     real(dp), intent(out) :: values(:)
     integer :: component

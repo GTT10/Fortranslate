@@ -661,6 +661,7 @@ add_test(NAME unit_eb_patch_halo_3d COMMAND test_eb_patch_halo_3d)
 add_executable(test_eb_two_level_3d unit/test_eb_two_level_3d.F90)
 target_link_libraries(test_eb_two_level_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_two_level_3d COMMAND test_eb_two_level_3d)
+add_test(NAME unit_eb_two_level_viscosity_3d COMMAND test_eb_two_level_3d viscosity)
 
 add_executable(test_eb_two_level_chemistry_3d unit/test_eb_two_level_chemistry_3d.F90)
 target_link_libraries(test_eb_two_level_chemistry_3d PRIVATE pelef_core)

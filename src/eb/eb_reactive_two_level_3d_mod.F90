@@ -847,34 +847,36 @@ contains
   ! One static fine patch, a common Euler interval and physical outflow faces.
   ! All four state arrays and both per-step inventories form one transaction.
   subroutine advance_reactive_eb_two_level_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
-      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
     real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:),boundary_change(:),wall_change(:)
     logical, intent(out) :: ok
     call advance_two_level_euler(species,coarse,fine,lower,ratio,solver,dt, &
-      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok,difmag=difmag)
   end subroutine advance_reactive_eb_two_level_euler_3d
 
   ! One coarse Euler step and ratio fine Euler steps. Coarse face donors use
   ! linear interpolation between unrefluxed coarse endpoints. Only the final
   ! synchronized state is published; this does not raise temporal order.
   subroutine advance_reactive_eb_two_level_subcycled_euler_3d(species,coarse,fine,lower,ratio,solver,dt, &
-      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
     real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:),boundary_change(:),wall_change(:)
     logical, intent(out) :: ok
     call advance_two_level_euler(species,coarse,fine,lower,ratio,solver,dt, &
-      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok,subcycle=.true.)
+      coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok,subcycle=.true.,difmag=difmag)
   end subroutine advance_reactive_eb_two_level_subcycled_euler_3d
 
   subroutine advance_reactive_eb_two_level_transport_3d(species,transport,coarse,fine,lower,ratio,dt, &
@@ -916,11 +918,14 @@ contains
 
   subroutine advance_two_level_euler(species,coarse,fine,lower,ratio,solver,dt, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok, &
-      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: coefficient
+    real(dp), allocatable :: ghost_vf(:,:,:)
     real(dp), intent(in) :: dt
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
     real(dp), intent(inout) :: fine_state(:,:,:,:),fine_temperature(:,:,:),boundary_change(:),wall_change(:)
@@ -945,6 +950,10 @@ contains
     real(dp) :: volume
     logical :: valid
     ok=.false.
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if(present(transport).and.coefficient>0) return
     substeps=1
     if (ratio<1) return
     if (present(subcycle)) then
@@ -977,8 +986,9 @@ contains
       initial_t(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3)),valid)
     if (.not.valid) return
     allocate(ghost(nvar,0:nf(1)+1,0:nf(2)+1,0:nf(3)+1),ghost_t(0:nf(1)+1,0:nf(2)+1,0:nf(3)+1))
+    if(coefficient>0) allocate(ghost_vf(0:nf(1)+1,0:nf(2)+1,0:nf(3)+1))
     call fill_reactive_eb_patch_halo_3d(species,coarse,fine,lower,ratio,initial,initial_t, &
-      fine_state,fine_temperature,ghost,ghost_t,valid)
+      fine_state,fine_temperature,ghost,ghost_t,valid,ghost_volume_fraction=ghost_vf)
     if (.not.valid) return
     allocate(candidate,source=initial);allocate(temps,source=initial_t)
     allocate(child,source=fine_state);allocate(child_t,source=fine_temperature)
@@ -989,7 +999,7 @@ contains
       if (.not.valid) return
     else
       call advance_reactive_eb_euler_3d(species,initial,initial_t,coarse,solver,dt,candidate,temps,valid, &
-        integrated_flux=coarse_flux)
+        integrated_flux=coarse_flux,difmag=coefficient)
       if (.not.valid) return
     end if
     if (substeps==1) then
@@ -998,7 +1008,7 @@ contains
           diffusion,barodiffusion,child,child_t,fine_flux,fine_theta,valid,ghost,ghost_t,faces)
       else
         call advance_reactive_eb_euler_3d(species,fine_state,fine_temperature,fine,solver,dt,child,child_t,valid, &
-          ghost,ghost_t,fine_flux)
+          ghost,ghost_t,fine_flux,difmag=coefficient,ghost_volume_fraction=ghost_vf)
       end if
       if (.not.valid) return
     else
@@ -1024,7 +1034,7 @@ contains
           ! Halo construction recovers EOS temperature from the interpolated
           ! conserved donor; donor_t is only its nonlinear solve guess.
           call fill_reactive_eb_patch_halo_3d(species,coarse,fine,lower,ratio,donor,donor_t, &
-            child,child_t,ghost,ghost_t,valid)
+            child,child_t,ghost,ghost_t,valid,ghost_volume_fraction=ghost_vf)
           if (.not.valid) return
         end if
         if (present(transport)) then
@@ -1041,7 +1051,7 @@ contains
               sum(sub_wall(c,:,:,:)*fine%volume_fraction)
           end do
           call advance_reactive_eb_euler_3d(species,child,child_t,fine,solver,sub_dt,next_child,next_t,valid, &
-            ghost,ghost_t,sub_flux)
+            ghost,ghost_t,sub_flux,difmag=coefficient,ghost_volume_fraction=ghost_vf)
           if (.not.valid) return
         end if
         child=next_child;child_t=next_t
