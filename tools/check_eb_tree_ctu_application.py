@@ -21,6 +21,7 @@ def main():
     boundaries = parser.add_mutually_exclusive_group()
     boundaries.add_argument('--inflow', action='store_true')
     boundaries.add_argument('--periodic', action='store_true')
+    boundaries.add_argument('--wall', action='store_true')
     parser.add_argument('--inlet-composition', action='store_true')
     args = parser.parse_args()
     if args.inlet_composition and not args.inflow:
@@ -48,6 +49,9 @@ def main():
     if args.periodic:
         template = template.replace('&eb_tree', "&eb_tree\n "
             "boundary_faces='periodic','periodic','periodic','periodic','outflow','outflow',", 1)
+    if args.wall:
+        template = template.replace('&eb_tree', "&eb_tree\n "
+            "boundary_faces='slip_wall','slip_wall','no_slip_wall','no_slip_wall','no_slip_wall','no_slip_wall',", 1)
     env = os.environ.copy()
     env.pop('DISPLAY', None)
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
@@ -120,6 +124,11 @@ def main():
         run('changed_boundary', 3, restart, template.replace("'periodic'", "'outflow'"), False)
         run('unpaired_boundary', text=template.replace("'periodic'", "'outflow'", 1), success=False)
         run('incompatible_geometry', text=template.replace("'outflow'", "'periodic'"), success=False)
+        rejections += 3
+    if args.wall:
+        run('changed_wall', 3, restart, template.replace("'slip_wall'", "'no_slip_wall'"), False)
+        run('unsupported_thermal_wall', text=template.replace("'slip_wall'", "'isothermal_wall'"), success=False)
+        run('conflicting_wall_mode', text=template.replace('&eb_tree', '&eb_tree\n inflow_mach(1)=.2,', 1), success=False)
         rejections += 3
     print(f'PASS: {5 if args.inlet_composition else 4} successful runs, {rejections} expected rejections; maximum residual={worst:.6e}; artifacts={work}')
 

@@ -307,3 +307,20 @@ recursive gas updates, automatic timestep selection, scheduled regridding and
 restart use the same labels. Changing labels on restart is rejected.
 MPI EB spray also accepts periodic faces with `particle_outflow=.true.`;
 periodic wall-impact/film and KH child-generation combinations are rejected.
+
+## Adiabatic domain walls
+
+Fixed/selected serial and MPI gas applications accept `slip_wall` and
+`no_slip_wall` in `boundary_faces`. For example:
+
+```fortran
+ boundary_faces='slip_wall','slip_wall','no_slip_wall','no_slip_wall','no_slip_wall','no_slip_wall'
+```
+
+Wall ghosts reflect momentum. Molecular transport enforces zero mass/species
+flux and zero energy flux through stationary adiabatic walls, while retaining
+viscous momentum stress. CTU uses reflected configured geometry. Boundary labels
+are bound to checkpoint continuation, including across scheduled regridding
+and rank-count changes. `isothermal_wall` is not yet supported by this tree
+entry point. MPI tree spray rejects domain-wall labels until particle wall
+routing is connected. This input support is not physical wall-flow validation.

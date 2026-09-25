@@ -213,7 +213,8 @@ program pelef_reactive_eb_tree_3d
   if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
   if (any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) error stop 'Invalid inlet pressure'
   if(any(boundary_faces/='legacy')) then
-    if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) &
+    if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic'.and. &
+      boundary_faces/='slip_wall'.and.boundary_faces/='no_slip_wall')) &
       error stop 'Invalid tree boundary faces'
     do inlet_face=1,5,2
       if((boundary_faces(inlet_face)=='periodic').neqv.(boundary_faces(inlet_face+1)=='periodic')) &
@@ -651,6 +652,8 @@ contains
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     if(any(boundary_faces=='periodic').and.(wall_impacts.or.particle_options%khrt_children)) &
       error stop 'Periodic EB spray films and KH children are not connected'
+    if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
+      error stop 'MPI EB spray domain-wall routing is not connected'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)
