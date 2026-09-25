@@ -16,6 +16,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--domain-wall', action='store_true')
+p.add_argument('--reflect-domain', action='store_true')
 p.add_argument('--periodic', action='store_true')
 p.add_argument('--pcm', action='store_true')
 p.add_argument('--split', action='store_true')
@@ -62,7 +63,7 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
                 'regrid_lower(:,1,1)=3,1,1,regrid_upper(:,1,1)=4,4,4,'
                 'regrid_lower(:,1,3)=1,1,1,regrid_upper(:,1,3)=2,4,4,'
                 'rebalance_interval_steps=1,rebalance_minimum_gain=0.,')
-    if a.domain_wall:
+    if a.domain_wall or a.reflect_domain:
         if not a.pcm:
             tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
         controls += "boundary_faces='no_slip_wall','no_slip_wall','outflow','outflow','outflow','outflow',"
@@ -107,6 +108,10 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         assert mode == 'splash'
         spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
         spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0015,.001250001,.003999999')
+    if a.reflect_domain:
+        spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+        spray = spray.replace('center=.0015,.001250001,.0015', 'center=.0039999999,.001250001,.0015')
+        spray = spray.replace('axis=0.,-1.,0.', 'axis=1.,-1.,0.')
     if a.force:
         spray = spray.replace('&eb_spray', '&eb_spray\n acceleration=0,0,1e6,', 1)
     if altered:
@@ -147,6 +152,8 @@ for mode in (('deposit',) if a.force else ('outflow',) if a.specular_outflow els
         assert float(film['mass']) > 0 and float(film['temperature']) > 350
         assert float(film['ny']) == 1 and float(film['y']) == .00125
         assert float(film['component_mass_1']) == float(film['mass'])
+        if a.reflect_domain:
+            assert 0 < float(film['x']) < .0039999999, 'domain reflection before deposition'
     if particles and mode not in ('khrt', 'split'):
         ids = sorted(int(r['id']) for r in particles)
         assert ids == sorted(set(ids)) and all(3 <= i <= 10 for i in ids)

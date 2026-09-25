@@ -662,10 +662,6 @@ contains
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     if(any(boundary_faces=='periodic').and.wall_impacts) &
       error stop 'Periodic EB spray films are not connected'
-    if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
-      boundary_faces=='isothermal_wall').and. &
-      wall_impacts) &
-      error stop 'MPI EB spray domain-wall films are not connected'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)

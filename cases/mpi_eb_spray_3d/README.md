@@ -441,7 +441,11 @@ Set `particle_outflow=.true.` in the spray input to enable explicit particle
 boundary routing. Particles reflect specularly at either wall label; the gas
 uses the corresponding slip/no-slip condition. Exterior particle impulse is
 included in the coupled boundary inventory. Wall labels are bound to restart.
-`wall_impacts` must remain false with these explicit walls. KH child generation
+`wall_impacts=.true.` enables deposition/splash and stationary films on the
+embedded surface while domain faces remain specular. Outer-face impulse enters
+the boundary budget, and EB impact/film exchange enters the wall budget. Flight
+continues through both event types in time order. This does not create films
+on the outer domain faces. KH child generation
 is supported for nonperiodic faces: a parent reaching a domain wall skips KH
 release on that substep, reflects, and can release on later eligible substeps.
 Child state and ID allocation participate in the existing interval transaction.

@@ -324,7 +324,8 @@ viscous momentum stress. CTU uses reflected configured geometry. Boundary labels
 are bound to checkpoint continuation, including across scheduled regridding
 and rank-count changes. MPI tree spray accepts these adiabatic wall labels with
 `particle_outflow=.true.` and specular particle reflection. KH child generation
-is supported at nonperiodic walls; domain-wall films remain unsupported. This input support is not physical wall-flow validation.
+is supported at nonperiodic walls. EB impact films can coexist with specular
+domain walls; films on the outer domain faces remain unsupported. This input support is not physical wall-flow validation.
 
 
 ## Isothermal domain walls
@@ -348,8 +349,8 @@ recursive gas splits and automatic thermal timestep selection use these values.
 Checkpoint context binds all six temperatures and boundary labels; changing or
 removing thermal controls on restart rejects. Nonthermal checkpoint headers
 retain their existing format. MPI EB spray also forwards these temperatures to the gas split; use
-`particle_outflow=.true.` for explicit boundaries and keep domain-wall films
-disabled. Nonperiodic thermal walls permit KH child generation. Particles reflect specularly at thermal walls. This is application integration, not physical validation.
+`particle_outflow=.true.` for explicit boundaries. EB impact films can coexist
+with specular domain walls; outer-domain film creation remains unsupported. Nonperiodic thermal walls permit KH child generation. Particles reflect specularly at thermal walls. This is application integration, not physical validation.
 
 
 Tree checkpoint records support PCM with explicit boundary labels as well as

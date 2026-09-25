@@ -169,7 +169,8 @@ contains
   ! Collective batches of remaining flight. Film thickness is frozen per batch.
   ! Keep source-rank ownership until the caller performs final migration.
   subroutine advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
-      lower,upper,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected, outflow_change)
+      lower,upper,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected, &
+      outflow_change,boundary_faces)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: properties
@@ -183,6 +184,11 @@ contains
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
     real(dp), optional, intent(inout) :: outflow_change(:)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    character(len=16) :: faces(6),reference_faces(6)
+    integer, allocatable :: exit_face(:)
+    integer :: face
+    real(dp) :: fraction
     logical, optional, intent(out) :: model_rejected
     type(spray_parcel), allocatable :: drops(:),kept(:)
     type(spray_wall_film), allocatable :: patches(:)
@@ -207,6 +213,17 @@ contains
     call agree();if(.not.agreed) return
     valid=size(pressure)==size(parcels)
     call agree();if(.not.agreed) return
+    faces='outflow'
+    if(present(boundary_faces)) then
+      faces=boundary_faces
+      valid=present(outflow_change).and.all(boundary_faces=='outflow'.or. &
+        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
+    end if
+    call agree();if(.not.agreed) return
+    reference_faces=faces
+    call MPI_Bcast(reference_faces,len(reference_faces(1))*6,MPI_CHARACTER,0,comm,ierr)
+    valid=ierr==MPI_SUCCESS.and.all(faces==reference_faces)
+    call agree();if(.not.agreed) return
     mode=merge(1,0,present(outflow_change))
     call MPI_Allreduce(mode,lowmode,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
@@ -230,8 +247,9 @@ contains
     do
       np=size(drops)
       if(allocated(previous)) deallocate(previous)
-      if(allocated(exit_fraction)) deallocate(exit_fraction,exits)
-      allocate(previous(3,np),exit_fraction(np),exits(np));exit_fraction=1;exits=.false.
+      if(allocated(exit_fraction)) deallocate(exit_fraction,exits,exit_face)
+      allocate(previous(3,np),exit_fraction(np),exits(np),exit_face(np))
+      exit_fraction=1;exits=.false.;exit_face=0
       do p=1,np
         previous(:,p)=drops(p)%position
         if(drops(p)%mass<=0) cycle
@@ -239,10 +257,15 @@ contains
         if(present(outflow_change)) then
           do axis=1,3
             if(delta(axis)>0.and.finish(axis)>=upper(axis)) then
-              exits(p)=.true.;exit_fraction(p)=min(exit_fraction(p),(upper(axis)-previous(axis,p))/delta(axis))
+              fraction=(upper(axis)-previous(axis,p))/delta(axis);face=2*axis
             else if(delta(axis)<0.and.finish(axis)<=lower(axis)) then
-              exits(p)=.true.;exit_fraction(p)=min(exit_fraction(p),(lower(axis)-previous(axis,p))/delta(axis))
+              fraction=(lower(axis)-previous(axis,p))/delta(axis);face=2*axis-1
+            else
+              cycle
             end if
+            if(fraction>exit_fraction(p)) cycle
+            if(exits(p).and.fraction==exit_fraction(p)) cycle
+            exits(p)=.true.;exit_fraction(p)=fraction;exit_face(p)=face
           end do
           if(exits(p)) finish=max(lower,min(upper,previous(:,p)+exit_fraction(p)*delta))
         end if
@@ -260,14 +283,22 @@ contains
       valid=.true.
       do p=1,np
         if(exits(p).and..not.crossed(p).and.drops(p)%mass>0) then
-          call liquid_mixture_properties(components,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,valid)
-          if(.not.valid) exit
-          amount=drops(p)%mass*drops(p)%multiplicity
-          exterior(1)=exterior(1)-amount
-          exterior(2:4)=exterior(2:4)-amount*drops(p)%velocity
-          exterior(5)=exterior(5)-amount*(e+.5_dp*sum(drops(p)%velocity**2))
-          exterior(6:)=exterior(6:)-masses(:,p)*drops(p)%multiplicity
-          drops(p)%mass=0;masses(:,p)=0
+          if(faces(exit_face(p))=='outflow') then
+            call liquid_mixture_properties(components,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,valid)
+            if(.not.valid) exit
+            amount=drops(p)%mass*drops(p)%multiplicity
+            exterior(1)=exterior(1)-amount
+            exterior(2:4)=exterior(2:4)-amount*drops(p)%velocity
+            exterior(5)=exterior(5)-amount*(e+.5_dp*sum(drops(p)%velocity**2))
+            exterior(6:)=exterior(6:)-masses(:,p)*drops(p)%multiplicity
+            drops(p)%mass=0;masses(:,p)=0
+          else
+            axis=(exit_face(p)+1)/2
+            amount=drops(p)%mass*drops(p)%multiplicity
+            exterior(1+axis)=exterior(1+axis)-2*amount*drops(p)%velocity(axis)
+            drops(p)%velocity(axis)=-drops(p)%velocity(axis)
+            next_remaining(p)=remaining(p)*(1-exit_fraction(p))
+          end if
           next_depth(p)=depth(p)+1;local_hits=local_hits+1_int64
         end if
         if(.not.crossed(p)) cycle

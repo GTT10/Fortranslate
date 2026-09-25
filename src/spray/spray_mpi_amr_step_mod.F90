@@ -103,7 +103,8 @@ contains
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
     if(present(eb_geometry).and.present(boundary_faces)) then
       valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
-      valid=valid.and.present(eb_outflow_change).and..not.present(wall_films)
+      valid=valid.and.present(eb_outflow_change)
+      if(any(faces=='periodic')) valid=valid.and..not.present(wall_films)
     end if
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
@@ -125,7 +126,12 @@ contains
       (present(boundary_faces).or.present(eb_geometry))
     if (present(film_mass)) valid=valid.and.allocated(film_mass)
     if (present(film_settings)) then
-      valid=valid.and.valid_wall_options(film_settings,faces)
+      if(present(eb_geometry)) then
+        outflow_faces='slip_wall'
+        valid=valid.and.valid_wall_options(film_settings,outflow_faces)
+      else
+        valid=valid.and.valid_wall_options(film_settings,faces)
+      end if
       if (present(eb_geometry)) then
         valid=valid.and.all(film_settings%temperature==film_settings%temperature(1))
         eb_walls%temperature=film_settings%temperature(1)
@@ -397,7 +403,7 @@ contains
               eb_hits=0
               call advance_mpi_level_set_impacts(comm,components,options,eb_walls,nodal_phi,mw,impact_pressure, &
                 lower,lower+length,dt,trial,next_mass,trial_patches,trial_patch_mass,trial_id,impact_wall, &
-                eb_hits,valid,rejected,impact_exterior)
+                eb_hits,valid,rejected,impact_exterior,boundary_faces)
               if (rejected) then
                 if (present(model_rejected)) model_rejected=.true.
                 return
