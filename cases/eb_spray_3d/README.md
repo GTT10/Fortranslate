@@ -51,10 +51,10 @@ wall and chemistry inventories. CSVs are analysis outputs, not restart files. Ou
 not alias the gas, spray or geometry inputs; checks normalize lexical absolute
 paths, not filesystem symlinks.
 
-## Explicit gas inflow and outflow
+## Explicit gas inflow, outflow and periodic faces
 
 Fixed and selected executables accept `hydro_method='plm_ctu'` with
-`riemann_solver='pelec'` and six `boundary_faces` labels (`inflow` or `outflow`,
+`riemann_solver='pelec'` and six `boundary_faces` labels (`inflow`, `outflow` or paired `periodic`,
 in x-low, x-high, y-low, y-high, z-low, z-high order). For example, add to
 `gas.nml`:
 
@@ -71,8 +71,22 @@ Gas inlets use the initial mixture composition and do not inject particles.
 The configured inlet states participate in hydro and transport timestep bounds.
 Checkpoint context includes all face labels and inlet density, pressure and
 velocity values, so changing these settings rejects continuation. Legacy
-boundary inputs retain their previous context. Explicit periodic and domain-wall
-labels remain unsupported for this spray application.
+boundary inputs retain their previous context. Domain-wall labels remain
+unsupported for this spray application.
+
+For the supplied x-normal plane, periodic y/z faces can be set with:
+
+```fortran
+ boundary_faces='outflow','outflow','periodic','periodic','periodic','periodic'
+```
+
+Keep `particle_outflow=.true.` to enable exterior-face handling. Periodic faces
+wrap particles and their gas sampling/deposition; they do not remove particle
+inventory. The geometry must match across each periodic pair. The supplied
+plane cannot be periodic in x. Periodic boundaries currently require
+`wall_impacts=.false.`; specular reflection at the embedded surface remains
+available. Fixed/selected periodic crossing and exact CSV continuation are
+covered by [these checks](../../docs/validation/eb-spray-periodic-application-20260925.md).
 
 See [focused application checks](../../docs/validation/eb-spray-inflow-application-20260925.md).
 
