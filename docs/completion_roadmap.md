@@ -222,8 +222,12 @@ uniform default policy and EB
 artificial-viscosity dispatch remain open. The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
-([checks](validation/eb-viscosity-kernel-20260925.md)); EB callers still need
-geometry halo wiring. Regular MPI spray PLM hydro now
+([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and
+plain/flux-redistributed/state-redistributed Euler APIs now accept explicit
+coefficients. Outflow halos are built locally; external positive-coefficient
+halos must include corner states and matching volume fractions
+([checks](validation/eb-viscosity-dispatch-20260925.md)). EB tree/MPI callers
+still need geometry halo and coefficient wiring. Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies
