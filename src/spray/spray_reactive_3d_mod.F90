@@ -233,7 +233,6 @@ contains
     if (present(difmag)) then
       if (.not.ieee_is_finite(difmag)) return
       if (difmag<0) return
-      if (difmag>0.and.selected_reconstruction/='characteristic_ppm') return
     end if
     if (present(riemann_solver)) selected_riemann=riemann_solver
     if (.not. all(ieee_is_finite([dt,rtol,atol,cs,prt,sct]))) return

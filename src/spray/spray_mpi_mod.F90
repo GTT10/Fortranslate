@@ -17,7 +17,8 @@ module spray_mpi_mod
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use reactive_3d_mod, only: recover_reactive_temperatures_3d,compute_reactive_plm_slab_face_fluxes_3d, &
-    compute_reactive_plm_face_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
+    compute_reactive_plm_face_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d, &
+    adjust_reactive_artificial_viscosity_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
@@ -1169,7 +1170,7 @@ contains
     if (any(pressure>0)) valid=valid.and.present(faces)
     if (present(faces)) valid=valid.and..not.any(pressure>0.and.faces/='outflow')
     valid=valid.and.ieee_is_finite(viscosity)
-    valid=valid.and.viscosity>=0.and.(viscosity==0.or.reconstruction_code==2)
+    valid=valid.and.viscosity>=0
     call agree()
     if (.not.agreed) return
     config=[cells,nvar,solver_code,limiter_code,merge(1,0,present(faces)),reconstruction_code]
@@ -1199,7 +1200,9 @@ contains
       call ppm_step()
       return
     end if
-    if (.not.present(faces)) then
+    ppm_faces='periodic'
+    if(present(faces)) ppm_faces=faces
+    if (.not.present(faces).and.viscosity==0) then
       allocate(halo(nvar,nx+4,ny,nz),halo_t(nx+4,ny,nz))
       allocate(send(nvar+1,2,ny,nz),left(nvar+1,2,ny,nz),right(nvar+1,2,ny,nz))
       allocate(fx(nvar,nx+4,ny,nz),fy(nvar,nx+4,ny,nz),fz(nvar,nx+4,ny,nz))
@@ -1208,7 +1211,7 @@ contains
       allocate(fx(nvar,nx+4,ny+4,nz+4),fy(nvar,nx+4,ny+4,nz+4),fz(nvar,nx+4,ny+4,nz+4))
     end if
     do stage=1,2
-      if (present(faces)) then
+      if (present(faces).or.viscosity>0) then
         call physical_stage()
         if (.not.agreed) return
       else
@@ -1312,7 +1315,8 @@ contains
       ok=.true.
     end subroutine ppm_step
     subroutine physical_stage()
-      call fill_mpi_spray_ghosts(comm,gas,temp,cells,faces,halo,halo_t,valid, &
+      logical :: wall_mask(6)
+      call fill_mpi_spray_ghosts(comm,gas,temp,cells,ppm_faces,halo,halo_t,valid, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species,outlet_pressure=pressure, &
           inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
       call agree()
@@ -1321,6 +1325,16 @@ contains
         limiter,solver,fx,fy,fz,valid)
       call agree()
       if (.not.agreed) return
+      if(viscosity>0) then
+        wall_mask=ppm_faces=='no_slip_wall'.or.ppm_faces=='isothermal_wall'
+        wall_mask(1)=wall_mask(1).and.rank==0
+        wall_mask(2)=wall_mask(2).and.rank==nranks-1
+        call adjust_reactive_artificial_viscosity_3d(halo(:,2:nx+3,2:ny+3,2:nz+3), &
+          extent,spacing,viscosity,wall_mask,fx(:,2:nx+2,3:ny+2,3:nz+2), &
+          fy(:,3:nx+2,2:ny+2,3:nz+2),fz(:,3:nx+2,3:ny+2,2:nz+2),valid)
+        call agree()
+        if (.not.agreed) return
+      end if
       do k=1,nz
         do j=1,ny
           do i=1,nx
@@ -1508,7 +1522,7 @@ contains
     end if
     valid=valid.and.reconstruction_code>0
     valid=valid.and.ieee_is_finite(viscosity)
-    valid=valid.and.viscosity>=0.and.(viscosity==0.or.reconstruction_code==2)
+    valid=valid.and.viscosity>=0
     if(present(difmag)) valid=valid.and.present(hydro_solver)
     if(present(hydro_reconstruction)) valid=valid.and.present(hydro_solver)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)

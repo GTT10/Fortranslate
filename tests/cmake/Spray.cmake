@@ -925,3 +925,10 @@ if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
     --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_particle_checkpoint")
   set_tests_properties(spray_mpi_eb_particle_checkpoint PROPERTIES LABELS "spray;mpi;eb;restart" TIMEOUT 150 PROCESSORS 4)
 endif()
+
+if(TARGET test_spray_mpi_ppm)
+  add_test(NAME spray_mpi_plm_viscosity_4 COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 4
+    ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_spray_mpi_ppm> ${MPIEXEC_POSTFLAGS} plm)
+  set_tests_properties(spray_mpi_plm_viscosity_4 PROPERTIES LABELS "spray;mpi" TIMEOUT 120 PROCESSORS 4
+    ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()
