@@ -15,7 +15,7 @@ module reactive_3d_application_mod
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
   use reactive_3d_mod, only: &
-    compute_reactive_cfl_timestep_3d, advance_reactive_full_3d, &
+    compute_reactive_cfl_timestep_3d, advance_reactive_full_3d,advance_reactive_sdc_periodic_3d, &
     reactive_integrals_3d, reactive_extrema_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d, reactive_isothermal_timestep_3d
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
@@ -156,6 +156,8 @@ contains
       "Grid: nx=", config%nx, ", ny=", config%ny, ", nz=", config%nz
     write(*, '(a,1x,a)') "Problem:", trim(config%problem)
     write(*, '(a,1x,a)') "Thermodynamics:", trim(config%thermo_model)
+    write(*,'(a,a)') 'Time integrator: ',trim(config%time_integrator)
+    if(config%time_integrator=='sdc') write(*,'(a,i0)') 'SDC iterations: ',config%sdc_iterations
     difmag=resolved_reactive_difmag_3d(config)
     write(*,'(a,es24.16)') 'Artificial-viscosity coefficient: ',difmag
     write(*, '(a,1x,a)') "Reconstruction:", trim(config%reconstruction)
@@ -238,6 +240,12 @@ contains
           maximum_diffusivity, step_maximum_diffusivity, inlet_diffusivity)
       end if
       dt = min(dt, config%final_time - time)
+      if(config%time_integrator=='sdc') then
+        step_boundary_change=0;step_transport_theta=1
+        call advance_reactive_sdc_periodic_3d(species,state,temperature,[dx,dy,dz],dt,time, &
+          config%sdc_iterations,1,ok=ok,difmag=difmag,external_force=config%external_forcing, &
+          source_change=step_source_change)
+      else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &
         config%nx, config%ny, config%nz, dx, dy, dz, dt, &
@@ -252,6 +260,7 @@ contains
         wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
         inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=difmag, &
         external_force=external_force,source_change=step_source_change)
+      end if
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if

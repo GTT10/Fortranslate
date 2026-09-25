@@ -155,3 +155,15 @@ composition and `thermo_model='selected'`. Nonzero forcing is rejected by
 application families whose input reader has not enabled this feature.
 These regular gas executables have no checkpoint interface. This option does
 not establish full SDC integration or physical forcing validation.
+
+## Periodic nonreacting SDC
+
+`time_integrator='sdc'` selects iterative source-coupled CTU, with
+`sdc_iterations=2` by default. The default integrator remains `split`.
+The current application path requires periodic boundaries, PPM/PeleC,
+`chemistry_enabled=.false.` and `transport_enabled=.false.`. It supports the
+external force input above. Unsupported combinations fail before stepping.
+
+Run `pelef_reactive_3d cases/reactive_boundaries_3d/external_forcing_sdc.nml`
+for the two-iteration example. Fixed/selected gas variants share the driver;
+SDC is not yet enabled for AMR, MPI, EB, chemistry or molecular transport.

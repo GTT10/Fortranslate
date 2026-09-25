@@ -16,6 +16,8 @@ module simulation_config_reactive_3d_mod
     integer :: ny = 12
     integer :: nz = 12
     integer :: maximum_steps = 100000
+    integer :: sdc_iterations=2
+    character(len=32) :: time_integrator="split"
     real(dp) :: x_lower = 0.0_dp
     real(dp) :: x_upper = 0.01_dp
     real(dp) :: y_lower = 0.0_dp
@@ -476,14 +478,16 @@ contains
 
   subroutine read_reactive_3d_configuration( &
       path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag, &
-      allow_external_forcing)
+      allow_external_forcing,allow_sdc)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
-    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing
+    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing,allow_sdc
 
+    character(len=32) :: time_integrator
+    integer :: sdc_iterations
     integer :: nx, ny, nz, maximum_steps, unit, io_status
     integer :: wave_number_x, wave_number_y, wave_number_z
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
@@ -514,7 +518,7 @@ contains
     logical :: selected_allowed
 
     namelist /reactive_3d/ &
-      nx, ny, nz, maximum_steps, &
+      nx, ny, nz, maximum_steps, time_integrator, sdc_iterations, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, difmag, external_forcing, &
       thermo_model, riemann_solver, &
@@ -537,6 +541,7 @@ contains
     nx = config%nx
     ny = config%ny
     nz = config%nz
+    time_integrator=config%time_integrator;sdc_iterations=config%sdc_iterations
     maximum_steps = config%maximum_steps
     x_lower = config%x_lower
     x_upper = config%x_upper
@@ -624,6 +629,7 @@ contains
     config%nx = nx
     config%ny = ny
     config%nz = nz
+    config%time_integrator=time_integrator;config%sdc_iterations=sdc_iterations
     config%maximum_steps = maximum_steps
     config%x_lower = x_lower
     config%x_upper = x_upper
@@ -692,6 +698,13 @@ contains
     call validate_reactive_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
     if (.not.ok) return
+    if(config%time_integrator=='sdc') then
+      ok=.false.
+      if(present(allow_sdc)) ok=allow_sdc
+      if(.not.ok) then
+        message='SDC input is not connected in this application';return
+      end if
+    end if
     if(any(config%external_forcing/=0)) then
       ok=.false.
       if(present(allow_external_forcing)) ok=allow_external_forcing
@@ -748,6 +761,18 @@ contains
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
+    if(config%time_integrator/='split'.and.config%time_integrator/='sdc') then
+      message='Unknown reactive 3D time integrator';return
+    end if
+    if(config%sdc_iterations<1) then
+      message='SDC iterations must be positive';return
+    end if
+    if(config%time_integrator=='sdc') then
+      if(config%reconstruction/='characteristic_ppm'.or.config%riemann_solver/='pelec'.or. &
+        config%chemistry_enabled.or.config%transport_enabled.or.any(faces/='periodic')) then
+        message='SDC requires periodic nonreacting nontransport PPM/PeleC';return
+      end if
+    end if
     if(.not.all(ieee_is_finite(config%external_forcing))) then
       message='External forcing must be finite';return
     end if

@@ -58,20 +58,29 @@ contains
   ! Nonreacting periodic do_sdc_iteration. Source callbacks produce physical
   ! cell rates; the CTU wrapper supplies periodic source halos.
   subroutine advance_reactive_sdc_periodic_3d(species,state,temperature,spacing,dt,time,iterations, &
-      source_count,evaluate_sources,ok,difmag)
+      source_count,evaluate_sources,ok,difmag,external_force,source_change)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
     integer, intent(in) :: iterations,source_count
-    procedure(reactive_sdc_source_evaluator) :: evaluate_sources
+    procedure(reactive_sdc_source_evaluator), optional :: evaluate_sources
     logical, intent(out) :: ok
-    real(dp), optional, intent(in) :: difmag
+    real(dp), optional, intent(in) :: difmag,external_force(3)
+    real(dp), optional, intent(out) :: source_change(:)
     real(dp), allocatable :: old_sources(:,:,:,:,:),new_sources(:,:,:,:,:),predictor(:,:,:,:),zero(:,:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),hydro(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-    real(dp) :: theta
-    integer :: n(3),nv,iteration,i,j,k
+    real(dp) :: theta,inventory(size(state,1))
+    integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    if(present(source_change)) then
+      source_change=0
+      if(size(source_change)/=nv) return
+    end if
+    if(present(evaluate_sources).eqv.present(external_force)) return
+    if(present(external_force)) then
+      if(source_count/=1.or..not.all(ieee_is_finite(external_force))) return
+    end if
     if(any(n<2).or.any(shape(state)/=[nv,n]).or.iterations<1.or.source_count<0) return
     if(.not.all(ieee_is_finite([spacing,dt,time]))) return
     if(any(spacing<=0).or.dt<=0) return
@@ -81,7 +90,11 @@ contains
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
     call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
     if(.not.valid) return
-    call evaluate_sources(state,ct,time,old_sources,valid)
+    if(present(evaluate_sources)) then
+      call evaluate_sources(state,ct,time,old_sources,valid)
+    else
+      call compute_reactive_external_source_3d(state,external_force,old_sources(:,:,:,:,1),valid)
+    end if
     if(.not.valid) return
     new_sources=old_sources
     do iteration=1,iterations
@@ -103,7 +116,11 @@ contains
       if(.not.valid) return
       call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
       if(.not.valid) return
-      call evaluate_sources(candidate,ct,time+dt,new_sources,valid)
+      if(present(evaluate_sources)) then
+        call evaluate_sources(candidate,ct,time+dt,new_sources,valid)
+      else
+        call compute_reactive_external_source_3d(candidate,external_force,new_sources(:,:,:,:,1),valid)
+      end if
       if(.not.valid) return
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
       if(.not.valid) return
@@ -111,6 +128,15 @@ contains
       ct=recovered
       if(.not.valid) return
     end do
+    inventory=0
+    do family=1,source_count
+    do component=1,nv
+      inventory(component)=inventory(component)+.5_dp*dt*product(spacing)* &
+        (sum(new_sources(component,:,:,:,family))+sum(old_sources(component,:,:,:,family)))
+    end do
+    end do
+    if(.not.all(ieee_is_finite(inventory))) return
+    if(present(source_change)) source_change=inventory
     state=candidate;temperature=ct;ok=.true.
   end subroutine advance_reactive_sdc_periodic_3d
 
