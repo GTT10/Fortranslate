@@ -567,7 +567,8 @@ contains
       candidate(5,side)=max(tiny(1._dp),pnew)
       candidate(6:,side)=(rho*states(6:,side)-delta(6:))/new_rho+hdt*forcing(6:)
       if(.not.all(ieee_is_finite(candidate(:,side))).or..not.ieee_is_finite(energy(side))) return
-      if(candidate(1,side)<=0.or.any(candidate(6:,side)<0).or.sum(candidate(6:,side))<=0) return
+      ! Reference transverse passives may be signed before the Riemann solve.
+      if(candidate(1,side)<=0.or.sum(candidate(6:,side))<=0) return
     end do
     states=candidate;internal_energy=energy;ok=.true.
   end subroutine apply_reactive_eb_transverse_3d

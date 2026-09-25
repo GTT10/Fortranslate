@@ -201,6 +201,10 @@ contains
     call reactive_pelec_flux_x(species,u,uright,t,t2,reference,good)
     if (.not.good) error stop 'Conserved unequal-state reference rejected'
     call assert_vector_close(f,reference,2e-10_dp,'primitive general-EOS reference')
+    ! Signed reconstruction is not a valid stored physical composition.
+    q(6)=-1e-8_dp
+    call reactive_primitive_to_conserved(species,q,u,t,c2,good)
+    if(good) error stop 'Negative physical mass fraction accepted'
     q(5)=-1
     call reactive_pelec_primitive_flux_x(species,q,q,c,f,good,rf,vf,pf)
     if (good.or.any(f/=0).or.rf/=0.or.vf/=0.or.pf/=0) error stop 'Invalid primitive outputs not zero'

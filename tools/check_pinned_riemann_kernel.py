@@ -101,6 +101,17 @@ def main() -> None:
         rows.append(q+contact+[700.])
         for _ in range(6):
             rows.append(state(u+rng.uniform(-50,50),True)+state(u+rng.uniform(-50,50),True)+[700.])
+    # Signed CTU passive weights are consumed by Fuego without normalization.
+    # Exercise both upwind directions and stationary/moving interfaces.
+    for weight in (-1e-24, -.001):
+        for velocity in (-2500., -100., 0., 2500.):
+            q = state(velocity, False)
+            q[5] = weight
+            q[-1] = 1-sum(q[5:-1])
+            gas_constant = sum(v*8314.46261815324/m for v,m in zip(q[5:],mw))
+            q[0] = q[4]/(gas_constant*900)
+            right = state(velocity, False)
+            rows.append(q+right+[700.])
     inputs=''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows)
     (work/'inputs.txt').write_text(inputs)
     ref=run([str(work/'reference')],input=thermo+inputs)

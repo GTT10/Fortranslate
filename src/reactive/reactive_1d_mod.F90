@@ -4,7 +4,7 @@ module reactive_1d_mod
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor, tiny_speed
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
-  use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties
+  use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties, nasa7_specific_gas_constant
   use mixture_thermo_mod, only: &
     valid_mixture_composition, mixture_mass_properties, &
     mixture_specific_gas_constant, mixture_pressure, mixture_density, &
@@ -512,13 +512,57 @@ contains
         size(flux)/=reactive_nvar(size(species))) return
     if (.not.ieee_is_finite(cav)) return
     if (cav<=0) return
-    call reactive_primitive_to_conserved(species,ql,scratch,tl,cl,left_ok)
-    call reactive_primitive_to_conserved(species,qr,scratch,tr,cr,right_ok)
+    call reconstructed_pelec_state(species,ql,scratch,tl,cl,left_ok)
+    call reconstructed_pelec_state(species,qr,scratch,tr,cr,right_ok)
     if (.not.(left_ok.and.right_ok)) return
     call reactive_pelec_flux_core(species,ql,qr,cl,cr,.true.,cav,candidate,ok, &
       interface_density,interface_velocity,interface_pressure)
     if (ok) flux=candidate
   end subroutine reactive_pelec_primitive_flux_x
+
+  ! Pinned Fuego RPY2Cs/RYP2E evaluate signed reconstructed species weights.
+  ! These are transient face states, never accepted cell compositions. Keep
+  ! the ordinary nonnegative path bitwise unchanged and retain NASA bounds.
+  subroutine reconstructed_pelec_state(species,q,u,temperature,sound,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: q(:)
+    real(dp), intent(out) :: u(:),temperature,sound
+    logical, intent(out) :: ok
+    real(dp) :: r,cv,energy,cpk,cvk,hk,ek,sk,temperature_candidate,sound_squared
+    integer :: k
+    logical :: valid
+    u=0;temperature=0;sound=0;ok=.false.
+    if(size(q)/=reactive_nprim(size(species)).or.size(u)/=size(q)) return
+    if(.not.all(ieee_is_finite(q))) return
+    if(.not.any(q(6:)<0)) then
+      call reactive_primitive_to_conserved(species,q,u,temperature,sound,ok)
+      return
+    end if
+    if(q(1)<=density_floor.or.q(5)<=pressure_floor.or.sum(q(6:))<=0) return
+    r=0
+    do k=1,size(species)
+      r=r+q(5+k)*nasa7_specific_gas_constant(species(k))
+    end do
+    if(.not.ieee_is_finite(r).or.r<=0) return
+    temperature_candidate=q(5)/(q(1)*r)
+    if(.not.ieee_is_finite(temperature_candidate)) return
+    cv=0;energy=0
+    do k=1,size(species)
+      call nasa7_mass_properties(species(k),temperature_candidate,cpk,cvk,hk,ek,sk,valid)
+      if(.not.valid) return
+      cv=cv+q(5+k)*cvk
+      energy=energy+q(5+k)*ek
+    end do
+    if(.not.all(ieee_is_finite([cv,energy])).or.cv<=0) return
+    sound_squared=(1+r/cv)*q(5)/q(1)
+    if(.not.ieee_is_finite(sound_squared).or.sound_squared<=0) return
+    u(1)=q(1);u(2:4)=q(1)*q(2:4)
+    u(5)=q(1)*(energy+.5_dp*sum(q(2:4)**2));u(6:)=q(1)*q(6:)
+    if(.not.all(ieee_is_finite(u))) then
+      u=0;return
+    end if
+    temperature=temperature_candidate;sound=sqrt(sound_squared);ok=.true.
+  end subroutine reconstructed_pelec_state
 
   subroutine reactive_pelec_flux_core( &
       species, ql, qr, cl, cr, primitive_input, cav, flux, ok, interface_density, &
@@ -646,9 +690,13 @@ contains
       qorigin(reactive_mass_fraction_component(k)) = &
         rho_species_origin(k) / rho_origin
     end do
+    if(primitive_input) then
+      call reconstructed_pelec_state(species,qorigin,scratch_state,origin_temperature,sound_origin,local_ok)
+    else
     call reactive_primitive_to_conserved( &
       species, qorigin, scratch_state, origin_temperature, sound_origin, &
       local_ok)
+    end if
     if (.not. local_ok .or. sound_origin <= 0.0_dp) return
 
     density_increment = (pressure_star - pressure_origin) / sound_origin**2
@@ -663,8 +711,12 @@ contains
     do k = 1, nspecies
       qstar(reactive_mass_fraction_component(k)) = rho_species_star(k) / rho_star
     end do
+    if(primitive_input) then
+      call reconstructed_pelec_state(species,qstar,scratch_state,star_temperature,sound_star,local_ok)
+    else
     call reactive_primitive_to_conserved( &
       species, qstar, scratch_state, star_temperature, sound_star, local_ok)
+    end if
     if (.not. local_ok .or. sound_star <= 0.0_dp) return
 
     wave_out = sound_origin - sign(1.0_dp, velocity_star) * velocity_origin
@@ -718,9 +770,13 @@ contains
       qinterface(reactive_mass_fraction_component(k)) = &
         rho_species_interface(k) / rho_interface
     end do
+    if(primitive_input) then
+      call reconstructed_pelec_state(species,qinterface,interface_state,interface_temperature,interface_sound_speed,local_ok)
+    else
     call reactive_primitive_to_conserved( &
       species, qinterface, interface_state, interface_temperature, &
       interface_sound_speed, local_ok)
+    end if
     if (.not. local_ok) return
 
     mass_flux = rho_interface * velocity_at_interface
