@@ -37,6 +37,7 @@ module simulation_config_reactive_eb_3d_mod
     character(len=16) :: hydro_method = "pcm"
     character(len=16) :: boundary_faces(6) = 'legacy'
     real(dp) :: inflow_density(6)=.31_dp,inflow_pressure(6)=135000._dp,inflow_velocity(3,6)=0._dp
+    real(dp) :: wall_temperature(6)=1000._dp
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
@@ -81,11 +82,17 @@ contains
     if(.not.all(ieee_is_finite(config%inflow_density)).or..not.all(ieee_is_finite(config%inflow_pressure)).or. &
       .not.all(ieee_is_finite(config%inflow_velocity))) return
     if(any(config%inflow_density<=0).or.any(config%inflow_pressure<=0)) return
+    if(.not.all(ieee_is_finite(config%wall_temperature)).or.any(config%wall_temperature<=0)) return
     if(all(config%boundary_faces=='legacy')) then
       valid=.true.;return
     end if
     if(config%hydro_method/='plm_ctu'.or.config%riemann_solver/='pelec') return
-    valid=all(config%boundary_faces=='inflow'.or.config%boundary_faces=='outflow')
+    if(any(config%boundary_faces=='isothermal_wall')) then
+      if(.not.config%transport_enabled.or..not.config%thermal_conduction_enabled) return
+    end if
+    valid=all(config%boundary_faces=='inflow'.or.config%boundary_faces=='outflow'.or. &
+      config%boundary_faces=='slip_wall'.or.config%boundary_faces=='no_slip_wall'.or. &
+      config%boundary_faces=='isothermal_wall')
   end function valid_reactive_eb_boundaries
 
   function reactive_eb_geometry_identity(config) result(identity)
@@ -96,10 +103,36 @@ contains
     if (config%geometry_type=='extruded') identity='extruded:'//trim(config%extrusion_axis)
   end function
 
+  pure logical function reflected_eb_face(face) result(reflected)
+    character(len=*), intent(in) :: face
+    reflected=face=='slip_wall'.or.face=='no_slip_wall'.or.face=='isothermal_wall'
+  end function reflected_eb_face
+
+  pure integer function eb_geometry_node_donor(index,n,lower_face,upper_face) result(donor)
+    integer, intent(in) :: index,n
+    character(len=*), intent(in) :: lower_face,upper_face
+    donor=index
+    do while(donor<0.or.donor>n)
+      if(donor<0) then
+        if(reflected_eb_face(lower_face)) then
+          donor=-donor
+        else
+          donor=0
+        end if
+      else
+        if(reflected_eb_face(upper_face)) then
+          donor=n-(donor-n)
+        else
+          donor=n
+        end if
+      end if
+    end do
+  end function eb_geometry_node_donor
+
   subroutine build_configured_eb_geometry_3d(config,geometry,ok,nodal_field,halo)
     type(reactive_eb_3d_config), intent(in) :: config
     type(eb_geometry_3d), intent(inout) :: geometry
-    ! Nonperiodic EB2-style domain-face extension, in cells.
+    ! Domain-face extension: fixed walls reflect nodes; other faces extrapolate.
     integer, optional, intent(in) :: halo
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: nodal_field(:,:,:)
@@ -116,7 +149,7 @@ contains
     lo=[config%x_lower,config%y_lower,config%z_lower]
     hi=[config%x_upper,config%y_upper,config%z_upper]
     if(any(dims<1).or..not.all(ieee_is_finite(lo)).or..not.all(ieee_is_finite(hi))) return
-    if(any(hi<=lo)) return
+    if(any(hi<=lo).or.h>(huge(1)-maxval(dims))/2) return
     spacing=(hi-lo)/real(dims,dp)
     lo=lo-h*spacing;hi=hi+h*spacing
     if (present(nodal_field).and.config%geometry_type/='level_set') return
@@ -127,6 +160,23 @@ contains
       case('z');axis=3
       case default;return
       end select
+      if(h>0.and.(reflected_eb_face(config%boundary_faces(2*axis-1)).or. &
+        reflected_eb_face(config%boundary_faces(2*axis)))) then
+        allocate(wide_nodal(0:dims(1)+2*h,0:dims(2)+2*h,0:dims(3)+2*h))
+        do k=0,dims(3)+2*h
+        do j=0,dims(2)+2*h
+        do i=0,dims(1)+2*h
+          point=[i,j,k]-h
+          point(axis)=eb_geometry_node_donor(point(axis),dims(axis), &
+            config%boundary_faces(2*axis-1),config%boundary_faces(2*axis))
+          wide_nodal(i,j,k)=lo(axis)+h*spacing(axis)+point(axis)*spacing(axis)-config%plane_position
+        end do
+        end do
+        end do
+        call build_level_set_eb_geometry_3d(wide_nodal,lo,hi,candidate,ok)
+        if(ok) geometry=candidate
+        return
+      end if
       position=config%plane_position
       if(h>0.and.position<=lo(axis)+h*spacing(axis)) position=min(position,lo(axis)-spacing(axis))
       if(h>0.and.position>=hi(axis)-h*spacing(axis)) position=max(position,hi(axis)+spacing(axis))
@@ -168,7 +218,11 @@ contains
         do k=0,dims(3)+2*h
         do j=0,dims(2)+2*h
         do i=0,dims(1)+2*h
-          point=max(0,min(dims,[i,j,k]-h))
+          point=[i,j,k]-h
+          do axis=1,3
+            point(axis)=eb_geometry_node_donor(point(axis),dims(axis), &
+              config%boundary_faces(2*axis-1),config%boundary_faces(2*axis))
+          end do
           wide_nodal(i,j,k)=nodal(point(1),point(2),point(3))
         end do
         end do
@@ -221,7 +275,9 @@ contains
       allocate(wide_phi(0:dims(a)+2*h,0:dims(b)+2*h))
       do j=0,dims(b)+2*h
       do i=0,dims(a)+2*h
-        wide_phi(i,j)=phi(max(0,min(dims(a),i-h)),max(0,min(dims(b),j-h)))
+        point(a)=eb_geometry_node_donor(i-h,dims(a),config%boundary_faces(2*a-1),config%boundary_faces(2*a))
+        point(b)=eb_geometry_node_donor(j-h,dims(b),config%boundary_faces(2*b-1),config%boundary_faces(2*b))
+        wide_phi(i,j)=phi(point(a),point(b))
       end do
       end do
       call move_alloc(wide_phi,phi)
@@ -254,7 +310,7 @@ contains
     character(len=512) :: section_file,level_set_file
     character(len=16) :: hydro_method
     character(len=16) :: boundary_faces(6)
-    real(dp) :: inflow_density(6),inflow_pressure(6),inflow_velocity(3,6)
+    real(dp) :: inflow_density(6),inflow_pressure(6),inflow_velocity(3,6),wall_temperature(6)
     character(len=32) :: riemann_solver, redistribution, thermo_model
     character(len=512) :: checkpoint_file, restart_file, output_file
     integer :: composition_count
@@ -271,7 +327,7 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, hydro_method, &
       geometry_type,extrusion_axis,section_file,level_set_file, &
-      boundary_faces,inflow_density,inflow_pressure,inflow_velocity, &
+      boundary_faces,inflow_density,inflow_pressure,inflow_velocity,wall_temperature, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
@@ -301,6 +357,7 @@ contains
     level_set_file=config%level_set_file
     plane_axis = config%plane_axis
     plane_position = config%plane_position
+    wall_temperature=config%wall_temperature
     boundary_faces=config%boundary_faces;inflow_density=config%inflow_density
     inflow_pressure=config%inflow_pressure;inflow_velocity=config%inflow_velocity
     hydro_method = config%hydro_method
@@ -368,6 +425,7 @@ contains
     config%section_file=trim(section_file);config%level_set_file=trim(level_set_file)
     config%plane_axis = trim(plane_axis)
     config%plane_position = plane_position
+    config%wall_temperature=wall_temperature
     config%boundary_faces=boundary_faces;config%inflow_density=inflow_density
     config%inflow_pressure=inflow_pressure;config%inflow_velocity=inflow_velocity
     config%hydro_method = trim(hydro_method)
@@ -442,7 +500,7 @@ contains
       message='Invalid artificial-viscosity coefficient';return
     end if
     if(.not.valid_reactive_eb_boundaries(config)) then
-      message='Invalid EB boundary configuration: use six legacy labels or CTU inflow/outflow with positive inlet data'
+      message='Invalid EB boundary configuration: use six legacy labels or supported CTU boundaries with valid thermal/inlet data'
       return
     end if
     selected_allowed = .false.

@@ -14,7 +14,7 @@ module reactive_eb_3d_application_mod
   use reactive_eb_cfl_3d_mod, only: &
     compute_reactive_eb_cfl_timestep_3d
   use eb_reactive_transport_3d_mod, only: &
-    reactive_eb_transport_timestep_3d,reactive_eb_halo_bounds_3d
+    reactive_eb_transport_timestep_3d,reactive_eb_halo_bounds_3d,reactive_eb_isothermal_timestep_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_checkpoint_mod, only: &
     write_reactive_eb_3d_checkpoint, read_reactive_eb_3d_checkpoint
@@ -50,7 +50,8 @@ contains
     type(eb_geometry_3d) :: geometry
     character(len=16), allocatable :: boundary_faces(:)
     real(dp), allocatable :: inlet(:,:),inlet_t(:),ghost(:,:,:,:),ghost_t(:,:,:),primitive(:)
-    real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate
+    real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate,wall_dt
+    real(dp), allocatable :: wall_t(:)
     integer :: face
     real(dp), allocatable :: state(:, :, :, :), new_state(:, :, :, :)
     real(dp), allocatable :: temperature(:, :, :), new_temperature(:, :, :)
@@ -129,6 +130,7 @@ contains
     if (.not. ok) error stop "Failed to initialize public 3D EB state"
     if(any(config%boundary_faces/='legacy')) then
       allocate(boundary_faces,source=config%boundary_faces)
+      if(any(boundary_faces=='isothermal_wall')) allocate(wall_t,source=config%wall_temperature)
       allocate(inlet(nvar,6),inlet_t(6),primitive(reactive_nprim(size(species))))
       allocate(ghost(nvar,0:config%nx+1,0:config%ny+1,0:config%nz+1), &
         ghost_t(0:config%nx+1,0:config%ny+1,0:config%nz+1))
@@ -234,6 +236,12 @@ contains
           maximum_transport_diffusivity=max(maximum_transport_diffusivity,donor_diffusivity)
         end if
       end if
+      if(allocated(wall_t)) then
+        call reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,geometry, &
+          boundary_faces,wall_t,config%transport_cfl,wall_dt,ok)
+        if(.not.ok) error stop 'Failed to compute EB isothermal wall timestep'
+        dt=min(dt,wall_dt)
+      end if
       dt = min(dt, config%final_time - time)
       call advance_reactive_eb_full_3d( &
         species, reactions, transport, state, temperature, geometry, &
@@ -245,7 +253,7 @@ contains
         new_state, new_temperature, step_transport_theta, ok, &
         config%state_redist_target_volume_fraction, chemistry_integrator, &
         step_boundary,step_wall,step_chemical,difmag=config%difmag,extended_geometry=extended_geometry, &
-        boundary_faces=boundary_faces,inflow_state=inlet,inflow_temperature=inlet_t)
+        boundary_faces=boundary_faces,inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
       boundary=boundary+step_boundary
       wall=wall+step_wall

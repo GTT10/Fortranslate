@@ -8,11 +8,11 @@ program test_eb_transport_halo_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_species_component, &
     reactive_mass_fraction_component,reactive_primitive_to_conserved,reactive_conserved_to_primitive
   use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,physical_transport_fluxes_3d,reactive_isothermal_timestep_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,build_level_set_eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d, &
     reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d,reactive_eb_isothermal_timestep_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
-  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
+  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d, &
     advance_reactive_eb_full_3d,reactive_eb_integrals_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
@@ -292,23 +292,17 @@ contains
   subroutine verify_wall_transport()
     character(len=16), parameter :: kinds(3)=[character(len=16)::'slip_wall','no_slip_wall','isothermal_wall']
     character(len=16) :: wall_faces(6)
-    real(dp) :: wall_t(6),weights(3),rho,theta_ref,phi(0:16,0:16,0:16),coordinate
+    real(dp) :: wall_t(6),weights(3),rho,theta_ref
+    type(reactive_eb_3d_config) :: wall_config
     type(eb_geometry_3d) :: wall_extended,thin
     real(dp) :: wall_dt,regular_dt,thin_dt
     real(dp), allocatable :: moving(:,:,:,:),rx(:,:,:,:),ry(:,:,:,:),rz(:,:,:,:)
     integer :: kind,normal,which,point(3),component
-    wall_extended=extended
-    if(mode==2) then
-      ! Repeated wall reflection reaches covered donors when halo width exceeds
-      ! this small domain. Geometry must reflect with the state, not extrapolate.
-      do k=0,16
-        coordinate=modulo(-1.5_dp+.25_dp*k,2._dp)
-        phi(:,:,k)=min(coordinate,2._dp-coordinate)-.31_dp
-      end do
-      call build_level_set_eb_geometry_3d(phi,[-1.5_dp,-1.5_dp,-1.5_dp], &
-        [2.5_dp,2.5_dp,2.5_dp],wall_extended,ok)
-      call require(ok,'reflected wall geometry')
-    end if
+    wall_config=config;wall_config%plane_axis='z';wall_config%plane_position=-10._dp
+    if(mode==2) wall_config%plane_position=.31_dp
+    wall_config%boundary_faces='slip_wall'
+    call build_configured_eb_geometry_3d(wall_config,wall_extended,ok,halo=6)
+    call require(ok,'configured reflected wall geometry')
     allocate(moving,source=u)
     allocate(rx(nvar,0:4,4,4),ry(nvar,4,0:4,4),rz(nvar,4,4,0:4))
     do k=1,4

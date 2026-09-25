@@ -1282,6 +1282,13 @@ contains
         identity=trim(identity)//trim(entry)
       end do
     end if
+    if(any(config%boundary_faces=='isothermal_wall')) then
+      identity=trim(identity)//' wall-v1'
+      do face=1,6
+        write(entry,'(1x,es27.18e3)') config%wall_temperature(face)
+        identity=trim(identity)//trim(entry)
+      end do
+    end if
   end function checkpoint_solver_identity
 
   logical function valid_checkpoint_config(config) result(valid)

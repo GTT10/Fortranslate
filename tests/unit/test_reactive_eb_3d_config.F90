@@ -5,6 +5,7 @@ program test_reactive_eb_3d_config
   use simulation_config_reactive_eb_3d_mod, only: &
     reactive_eb_3d_config, read_reactive_eb_3d_configuration, &
     validate_reactive_eb_3d_configuration,build_configured_eb_geometry_3d
+  use simulation_config_reactive_3d_mod, only: map_reactive_boundary_donor_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,extract_eb_geometry_3d
   implicit none
 
@@ -28,6 +29,15 @@ program test_reactive_eb_3d_config
   config%boundary_faces(1)='outflow';config%inflow_density(3)=-1
   call validate_reactive_eb_3d_configuration(config,ok,message)
   call require(.not.ok,'negative inlet density rejects')
+  config%inflow_density=.31_dp;config%boundary_faces='isothermal_wall'
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(.not.ok,'isothermal boundary requires transport')
+  config%transport_enabled=.true.
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(ok,'isothermal boundary input')
+  config%wall_temperature(1)=-1
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(.not.ok,'invalid wall temperature rejects')
 
 
   config = reactive_eb_3d_config()
@@ -193,7 +203,9 @@ contains
     type(reactive_eb_3d_config) :: cfg
     type(eb_geometry_3d) :: base,wide,cropped,saved
     real(dp), allocatable :: nodes(:,:,:),expanded(:,:,:)
-    real(dp) :: section(0:4,0:4),field(0:4,0:4,0:4),error
+    real(dp) :: section(0:4,0:4),field(0:4,0:4,0:4),error,shift(3)
+    logical :: reflect(3)
+    integer :: boundary_mode,donor(3),inlet
     integer :: i,j,k,axis,kind,handle,point(3)
     character(len=1), parameter :: axes(3)=['x','y','z']
     logical :: valid
@@ -216,6 +228,12 @@ contains
     write(handle,*) 4,4,4
     write(handle,*) field
     close(handle)
+    do boundary_mode=0,2
+    cfg%boundary_faces='legacy'
+    if(boundary_mode==1) cfg%boundary_faces='slip_wall'
+    if(boundary_mode==2) then
+      cfg%boundary_faces='outflow';cfg%boundary_faces(1:6:2)='slip_wall'
+    end if
     do kind=1,3
       select case(kind)
       case(1);cfg%geometry_type='plane'
@@ -252,14 +270,34 @@ contains
           do k=0,16
           do j=0,16
           do i=0,16
-            point=max(0,min(4,[i,j,k]-6))
+            select case(boundary_mode)
+            case(0);point=max(0,min(4,[i,j,k]-6))
+            case(1)
+              point=modulo([i,j,k]-6,8)
+              point=min(point,8-point)
+            case(2);point=min(4,abs([i,j,k]-6))
+            end select
             call require(expanded(i,j,k)==nodes(point(1),point(2),point(3)), &
               'domain-face nodal extension includes edges and corners')
           end do
           end do
           end do
         end if
+        if(boundary_mode==1) then
+          do k=1,16
+          do j=1,16
+          do i=1,16
+            call map_reactive_boundary_donor_3d([i,j,k]-6,[4,4,4],cfg%boundary_faces,.false., &
+              donor,reflect,shift,inlet,valid)
+            call require(valid,'wall state donor mapping')
+            call require(abs(wide%volume_fraction(i,j,k)-base%volume_fraction(donor(1),donor(2),donor(3)))<2e-12_dp, &
+              'reflected geometry matches repeatedly reflected state donors')
+          end do
+          end do
+          end do
+        end if
       end do
+    end do
     end do
     saved=wide
     call build_configured_eb_geometry_3d(cfg,wide,valid,halo=-1)

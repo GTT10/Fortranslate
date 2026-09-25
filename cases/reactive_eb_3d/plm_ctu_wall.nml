@@ -1,0 +1,12 @@
+&reactive_eb_3d
+  nx=4, ny=4, nz=4, maximum_steps=100,
+  x_upper=1e-4, y_upper=1e-4, z_upper=1e-4,
+  plane_position=3.95e-5, final_time=2e-9, cfl=.01,
+  hydro_method='plm_ctu', riemann_solver='pelec',
+  redistribution='state_redist', difmag=.1,
+  chemistry_enabled=.true., transport_enabled=.true.,
+  regular_density=.31, cut_density=.93,
+  initial_velocity_y=2., initial_velocity_z=-1.,
+  boundary_faces=6*'isothermal_wall', wall_temperature=6*1200.,
+  output_file='reactive_eb_3d_plm_ctu_wall.csv'
+/
