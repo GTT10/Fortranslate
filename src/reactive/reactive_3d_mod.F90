@@ -370,7 +370,7 @@ contains
     if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
     trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
-    viscosity=merge(.1_dp,0._dp,trace_pressure)
+    viscosity=.1_dp
     if (present(difmag)) viscosity=difmag
     if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
     if (trace_pressure.or.viscosity>0) then
@@ -500,7 +500,7 @@ contains
     trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
     if (trace_pressure.and.solver/="pelec") return
-    viscosity=merge(.1_dp,0._dp,trace_pressure)
+    viscosity=.1_dp
     if (present(difmag)) viscosity=difmag
     if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
     walls=.false.
@@ -1936,7 +1936,7 @@ contains
     if (present(reconstruction)) selected_reconstruction = &
       trim(reconstruction)
     if (present(limiter)) selected_limiter = trim(limiter)
-    explicit_viscosity=0
+    explicit_viscosity=.1_dp
     if (present(difmag)) then
       if (.not.ieee_is_finite(difmag).or.difmag<0) return
       explicit_viscosity=difmag
@@ -2057,7 +2057,7 @@ contains
     if (present(flux_x)) flux_x=0
     if (present(flux_y)) flux_y=0
     if (present(flux_z)) flux_z=0
-    explicit_viscosity=0
+    explicit_viscosity=.1_dp
     if (present(difmag)) then
       if (.not.ieee_is_finite(difmag).or.difmag<0) return
       explicit_viscosity=difmag

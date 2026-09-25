@@ -48,7 +48,15 @@ program test_reactive_pcm_plm_viscosity_3d
       call require(ok,'omitted coefficient')
       u=initial;t=initial_t
       call advance_reactive_boundary_hydro_3d(species,u,t,spacing,dt,faces,scheme,'mc','pelec',change,ok,difmag=0._dp)
-      call require(ok.and.all(u==baseline).and.all(t==bt),'zero equals omitted policy')
+      call require(ok.and.any(u/=baseline),'zero disables default correction')
+      u=initial;t=initial_t
+      call advance_reactive_boundary_hydro_3d(species,u,t,spacing,dt,faces,scheme,'mc','pelec',change,ok,difmag=.1_dp)
+      call require(ok.and.all(u==baseline).and.all(t==bt),'explicit reference equals omitted policy')
+      u=initial;t=initial_t
+      call advance_reactive_full_3d(species,reactions,transport,u,t,n,n,n,spacing(1),spacing(2),spacing(3),dt, &
+        'pelec',.false.,0._dp,0._dp,.false.,.false.,.false.,.false.,.false.,theta,ok, &
+        reconstruction=scheme,limiter='mc',boundary_faces=faces,boundary_change=other_change)
+      call require(ok.and.all(u==baseline).and.all(t==bt),'omitted full composition reference parity')
       u=initial;t=initial_t
       call advance_reactive_boundary_hydro_3d(species,u,t,spacing,dt,faces,scheme,'mc','pelec',change,ok, &
         flux_x=fx,flux_y=fy,flux_z=fz,difmag=.037_dp)
