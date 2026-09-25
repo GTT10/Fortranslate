@@ -961,8 +961,9 @@ contains
   ! One conservative CTU step. A failed final EOS recovery rolls back the
   ! complete field and limiter diagnostic; the caller can retry a smaller dt.
   subroutine advance_reactive_euler_ppm_ctu_3d(species,state,temperature,spacing,dt, &
-      steepening,flattening,solver,minimum_theta,ok,difmag)
-    real(dp), optional, intent(in) :: difmag
+      steepening,flattening,solver,minimum_theta,ok,difmag,conserved_source)
+    ! Caller supplies a conserved rate held fixed over this step.
+    real(dp), optional, intent(in) :: difmag,conserved_source(:,:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),minimum_theta
     real(dp), intent(in) :: spacing(3),dt
@@ -977,6 +978,10 @@ contains
     if (any(n<2).or.any(shape(state)/=[nv,n])) return
     if (.not.all(ieee_is_finite(spacing)).or..not.ieee_is_finite(dt)) return
     if (any(spacing<=0).or.dt<0) return
+    if(present(conserved_source)) then
+      if(solver/='pelec'.or.any(shape(conserved_source)/=shape(state))) return
+      if(.not.all(ieee_is_finite(conserved_source))) return
+    end if
     allocate(ct(n(1),n(2),n(3)))
     if (dt==0) then
       call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
@@ -985,7 +990,7 @@ contains
     end if
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
     call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,steepening,flattening, &
-      solver,fx,fy,fz,theta,valid,difmag=difmag)
+      solver,fx,fy,fz,theta,valid,difmag=difmag,conserved_source=conserved_source)
     if (.not.valid) return
     candidate=state
     do k=1,n(3)
@@ -996,6 +1001,7 @@ contains
     end do
     end do
     end do
+    if(present(conserved_source)) candidate=candidate+dt*conserved_source
     call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
     if (.not.valid) return
     state=candidate;temperature=ct;minimum_theta=theta;ok=.true.

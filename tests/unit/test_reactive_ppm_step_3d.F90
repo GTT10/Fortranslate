@@ -34,6 +34,7 @@ program test_reactive_ppm_step_3d
   end do
   end do
   end do
+  call check_source_step()
   saved=u;st=t
   do m=1,nv
     before(m)=sum(u(m,:,:,:))
@@ -91,6 +92,42 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+  subroutine check_source_step()
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),source(nv,4,4,4),old(nv,4,4,4),ot(4,4,4),lim
+    integer :: component
+    ! Nonuniform fixture: periodic flux divergence must leave only source inventory.
+    state=u;temp=t;source=0
+    source(2,:,:,:)=.2_dp;source(5,:,:,:)=100._dp
+    source(6,:,:,:)=.01_dp;source(nv,:,:,:)=-.01_dp
+    call advance_reactive_euler_ppm_ctu_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt, &
+      .false.,.true.,'pelec',lim,ok,conserved_source=source)
+    call require(ok,'source CTU step')
+    do component=1,nv
+      call require(abs(sum(state(component,:,:,:))-sum(u(component,:,:,:))- &
+        dt*sum(source(component,:,:,:)))<3e-14_dp*max(1._dp,abs(sum(u(component,:,:,:)))), &
+        'periodic source inventory')
+    end do
+    call require(maxval(abs(sum(state(6:,:,:,:),dim=1)-state(1,:,:,:)))<3e-14_dp,'source species closure')
+    ! Uniform fields isolate the source increment, including density injection.
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      old(:,i,j,k)=u(:,1,1,1);ot(i,j,k)=t(1,1,1)
+      source(:,i,j,k)=.1_dp*old(:,i,j,k)
+    end do
+    end do
+    end do
+    state=old;temp=ot
+    call advance_reactive_euler_ppm_ctu_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt, &
+      .false.,.true.,'pelec',lim,ok,conserved_source=source)
+    call require(ok.and.maxval(abs(state-old-dt*source)/max(1._dp,abs(old)))<3e-14_dp, &
+      'uniform source applied exactly once')
+    state=old;temp=ot;lim=17
+    source=0;source(5,:,:,:)=-1e14_dp
+    call advance_reactive_euler_ppm_ctu_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt, &
+      .false.,.true.,'pelec',lim,ok,conserved_source=source)
+    call require(.not.ok.and.all(state==old).and.all(temp==ot).and.lim==17,'source failure complete rollback')
+  end subroutine check_source_step
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label
