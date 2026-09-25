@@ -23,7 +23,7 @@ contains
   ! Recursive hydro intervals with time-interpolated ancestors and flux accumulation.
   subroutine advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,state,temperature, &
       boundary_change,wall_change,comm,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -34,6 +34,8 @@ contains
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: difmag
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     type(eb_geometry_3d) :: center
@@ -178,15 +180,18 @@ contains
         call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
           starts,ends,start_t,end_t,fractions, &
           inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state, &
           ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=metrics)
       else if(coefficient>0) then
       call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
         starts,ends,start_t,end_t,fractions, &
-        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf)
       else
       call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
         starts,ends,start_t,end_t,fractions, &
-        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state)
       end if
       if (.not.ready) return
       do node=1,size(owners)
@@ -203,6 +208,7 @@ contains
         physical_boundary%lower=4-int(origin(:,node))
         physical_boundary%upper=3+int(domain(:,tree%nodes(node)%level+1)-origin(:,node))
         physical_boundary%faces='outflow'
+        if(present(boundary_faces)) physical_boundary%faces=boundary_faces
         if(present(inflow_mach)) then
           where(inflow_mach>=0) physical_boundary%faces='inflow'
         end if

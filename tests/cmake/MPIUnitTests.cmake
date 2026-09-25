@@ -1207,3 +1207,17 @@ if(PELEF_ENABLE_MPI)
       --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_ctu_application")
   set_tests_properties(regression_eb_tree_ctu_application PROPERTIES PROCESSORS 3 TIMEOUT 600)
 endif()
+
+if(TARGET test_mpi_eb_tree_hydro_3d)
+  add_test(NAME unit_mpi_eb_tree_ctu_inflow_hydro_3d_3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_hydro_3d> ${MPIEXEC_POSTFLAGS} ctu-inflow)
+  set_tests_properties(unit_mpi_eb_tree_ctu_inflow_hydro_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 180)
+endif()
+
+if(TARGET test_mpi_eb_tree_subcycle_hydro_3d)
+  add_test(NAME unit_mpi_eb_tree_ctu_inflow_subcycle_hydro_3d_3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_subcycle_hydro_3d> ${MPIEXEC_POSTFLAGS} ctu-inflow)
+  set_tests_properties(unit_mpi_eb_tree_ctu_inflow_subcycle_hydro_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 180)
+endif()

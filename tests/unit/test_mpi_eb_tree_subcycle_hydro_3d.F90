@@ -22,7 +22,8 @@ program test_mpi_eb_tree_subcycle_hydro_3d
   type(eb_geometry_3d), allocatable :: extended(:),physical(:)
   type(eb_reactive_tree_3d) :: tree,saved
   type(reactive_eb_3d_config) :: config
-  real(dp), allocatable :: u(:,:,:,:),t(:,:,:)
+  real(dp), allocatable :: u(:,:,:,:),t(:,:,:),inlet(:,:),inlet_t(:)
+  character(len=16), allocatable :: labels(:)
   real(dp), allocatable :: before(:),after(:),boundary(:),wall(:),primitive(:)
   real(dp) :: residual,coefficient,et,sound
   character(len=32) :: test_mode,solver
@@ -31,9 +32,9 @@ program test_mpi_eb_tree_subcycle_hydro_3d
   logical :: ok
   call get_command_argument(1,test_mode)
   solver='hllc'
-  if(test_mode=='ctu') solver='pelec'
+  if(index(test_mode,'ctu')==1) solver='pelec'
   coefficient=0
-  if(test_mode=='viscosity'.or.test_mode=='ctu') coefficient=.037_dp
+  if(test_mode=='viscosity'.or.index(test_mode,'ctu')==1) coefficient=.037_dp
   if(test_mode=='default') coefficient=.1_dp
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
@@ -44,7 +45,7 @@ program test_mpi_eb_tree_subcycle_hydro_3d
   allocate(before(nv),after(nv),boundary(nv),wall(nv),primitive(nv))
   do axis=1,3
   do count=4,5
-  if(test_mode=='ctu'.and.(axis/=3.or.count/=5)) cycle
+  if(index(test_mode,'ctu')==1.and.(axis/=3.or.count/=5)) cycle
   call initialize_amr_patch_3d(4,4,4,1,2,1,2,2,3,2,boxes(1),ok)
   call require(ok,'child left')
   call initialize_amr_patch_3d(4,4,4,3,4,1,2,2,3,2,boxes(2),ok)
@@ -74,7 +75,7 @@ program test_mpi_eb_tree_subcycle_hydro_3d
   do node=2,count
     tree%nodes(node)%state=real(node,dp)*tree%nodes(node)%state
   end do
-  if(test_mode=='ctu') then
+  if(index(test_mode,'ctu')==1) then
     allocate(physical(count))
     do node=1,count
       physical(node)=tree%nodes(node)%geometry
@@ -104,9 +105,22 @@ program test_mpi_eb_tree_subcycle_hydro_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  if(index(test_mode,'inflow')>0) then
+    allocate(labels(6),inlet(nv,6),inlet_t(6))
+    labels='outflow';labels(1)='inflow';labels(4)='inflow'
+    call reactive_conserved_to_primitive(species,tree%nodes(1)%state(:,1,1,3), &
+      tree%nodes(1)%temperature(1,1,3),primitive,et,sound,ok)
+    call require(ok,'inlet primitive')
+    primitive(2:4)=[100._dp,-50._dp,0._dp];primitive(5)=.8_dp*primitive(5)
+    do i=1,6
+      call reactive_primitive_to_conserved(species,primitive,inlet(:,i),inlet_t(i),sound,ok)
+      call require(ok,'inlet EOS')
+    end do
+  end if
   boundary=17._dp;wall=19._dp
   call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,1.e-8_dp,tree,boundary,wall,ok, &
-    difmag=coefficient,extended_geometry=extended)
+    difmag=coefficient,extended_geometry=extended, &
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
   call require(ok,'tree hydro step')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
   call require(ok,'final inventory')
@@ -126,7 +140,7 @@ contains
     type(eb_geometry_3d) :: geometry(count)
     type(eb_geometry_3d), allocatable :: trial_extended(:)
     real(dp), allocatable :: mpi_coefficient
-    real(dp) :: b(nv),w(nv),inventory(nv),error,dt,local_coefficient
+    real(dp) :: b(nv),w(nv),inventory(nv),error,dt,local_coefficient,inlet_density
     integer :: owners(count),p,mode,failure
     logical :: good
     do p=1,count
@@ -145,7 +159,8 @@ contains
       initial=local;it=lt;b=17._dp;w=19._dp;local_coefficient=coefficient
       if(test_mode/='default') mpi_coefficient=coefficient
       call advance_mpi_eb_tree_subcycle_hydro_3d(species,topology,owners,geometry,solver,1.e-8_dp, &
-        local,lt,b,w,MPI_COMM_WORLD,good,difmag=mpi_coefficient,extended_geometry=extended)
+        local,lt,b,w,MPI_COMM_WORLD,good,difmag=mpi_coefficient,extended_geometry=extended, &
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
       call require(good,'MPI hydro')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'owner-local U')
@@ -160,8 +175,9 @@ contains
       error=maxval(abs(inventory-before-b-w)/max(1._dp,abs(before)))
       call require(error<3.e-14_dp,'MPI hydro conservation')
       if (rank==0) print *, 'MPI axis, nodes, mode, residual: ',axes(axis),count,mode,error
-      do failure=1,8
-        if(failure>=7.and.test_mode/='ctu') cycle
+      do failure=1,9
+        if(failure==9.and..not.allocated(inlet)) cycle
+        if(failure>=7.and.index(test_mode,'ctu')/=1) cycle
         if(allocated(extended)) trial_extended=extended
         if(failure==7.and.rank==0) deallocate(trial_extended)
         if(failure==8.and.rank==0) trial_extended(1)%x_face_centroid_y(0,1,1)=.1_dp
@@ -174,15 +190,21 @@ contains
         local_coefficient=coefficient
         if(failure==4.and.rank==0) local_coefficient=.05_dp
         local=initial;lt=it;b=17._dp;w=19._dp;dt=1.e-8_dp
+        if(failure==9.and.rank==0) then
+          inlet_density=inlet(1,1);inlet(1,1)=inlet_density+.01_dp
+        end if
         if (failure==1) then
           call advance_mpi_eb_tree_subcycle_hydro_3d(species,topology,owners,geometry,'invalid',dt, &
-            local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient,extended_geometry=trial_extended)
+            local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient,extended_geometry=trial_extended, &
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
         else
           if (failure==2.and.rank==0) dt=2.e-8_dp
           if (failure==3.and.rank==owners(count)) local%fields(count)%values(1,4,4,4)=-1._dp
           call advance_mpi_eb_tree_subcycle_hydro_3d(species,topology,owners,geometry,solver,dt, &
-            local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient,extended_geometry=trial_extended)
+            local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient,extended_geometry=trial_extended, &
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
         end if
+        if(failure==9.and.rank==0) inlet(1,1)=inlet_density
         call require(.not.good,'collective hydro rejection')
         if (failure==3.and.rank==owners(count)) then
           call require(local%fields(count)%values(1,4,4,4)==-1._dp,'bad density preserved')
