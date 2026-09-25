@@ -10,11 +10,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
+    parser.add_argument('--tree', action='store_true')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     source = (root / 'cases/reactive_eb_3d/density_sheet_state.nml').read_text()
     source = source.replace('maximum_steps = 10', 'maximum_steps = 100')
     source = source.replace('cfl = 0.5', 'cfl = 0.01').replace('final_time = 5.0e-5', 'final_time = 1.0e-5')
+    if args.tree:
+        source = (root / 'cases/reactive_eb_tree_3d/input.nml').read_text()
+        source = source.replace('&eb_tree', '&eb_tree\n subcycling=.true.,', 1)
+        source = source.replace("output_file='eb_tree.csv'", "output_file = 'reactive_eb_3d_state.csv'")
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
 
@@ -38,7 +43,7 @@ def main():
     assert stopped != reference, 'checkpoint must stop before final output'
     assert run('resumed', "difmag=.037, restart_file='step.chk'") == reference
     log = run('changed', "difmag=.05, restart_file='step.chk'", False)
-    assert 'Failed to restart public 3D EB state' in log
+    assert ('Invalid tree checkpoint record' if args.tree else 'Failed to restart public 3D EB state') in log
     for label, value in [('negative', '-1'), ('nonfinite', 'NaN')]:
         assert 'Invalid artificial-viscosity coefficient' in run(label, f'difmag={value}', False)
     baseline = run('baseline')

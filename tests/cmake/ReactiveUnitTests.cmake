@@ -853,3 +853,9 @@ add_test(NAME reactive_eb_3d_difmag_input COMMAND "${Python3_EXECUTABLE}"
   --executable "$<TARGET_FILE:pelef_reactive_eb_3d>"
   --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_3d_difmag_input")
 set_tests_properties(reactive_eb_3d_difmag_input PROPERTIES TIMEOUT 180)
+
+add_test(NAME reactive_eb_tree_3d_difmag_input COMMAND "${Python3_EXECUTABLE}"
+  "${PROJECT_SOURCE_DIR}/tools/check_eb_difmag_input.py" --tree
+  --executable "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+  --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_tree_3d_difmag_input")
+set_tests_properties(reactive_eb_tree_3d_difmag_input PROPERTIES TIMEOUT 180)

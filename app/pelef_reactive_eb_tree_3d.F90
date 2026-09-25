@@ -120,7 +120,7 @@ program pelef_reactive_eb_tree_3d
   logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:)
-  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
+  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=0._dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z'
@@ -136,7 +136,7 @@ program pelef_reactive_eb_tree_3d
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
-    inflow_mach,inflow_temperature,inflow_pressure, &
+    inflow_mach,inflow_temperature,inflow_pressure,difmag, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -187,6 +187,10 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+  if (.not.ieee_is_finite(difmag).or.difmag<0) error stop 'Invalid artificial-viscosity coefficient'
+#ifdef PELEF_MPI_EB_SPRAY
+  if(difmag>0) error stop 'Artificial-viscosity input is not enabled in this application'
+#endif
   if (.not.all(ieee_is_finite(inflow_mach)).or.any(inflow_mach>100)) error stop 'Invalid inlet Mach'
   if (.not.all(ieee_is_finite(inflow_temperature))) error stop 'Invalid inlet temperature'
   if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
@@ -278,7 +282,7 @@ program pelef_reactive_eb_tree_3d
   config%geometry_type=geometry_type;config%plane_axis=plane_axis;config%plane_position=plane_position
   config%extrusion_axis=extrusion_axis;config%section_file=section_file;config%level_set_file=level_set_file
   config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
-  config%redistribution='none';config%riemann_solver=riemann_solver
+  config%redistribution='none';config%riemann_solver=riemann_solver;config%difmag=difmag
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
   config%chemistry_relative_tolerance=rtol;config%chemistry_absolute_tolerance=atol
   config%viscosity_enabled=.true.;config%thermal_conduction_enabled=.true.
@@ -432,14 +436,14 @@ program pelef_reactive_eb_tree_3d
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
         chemistry_integrator,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
