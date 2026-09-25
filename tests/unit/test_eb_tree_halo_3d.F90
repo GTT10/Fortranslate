@@ -7,7 +7,7 @@ program test_eb_tree_halo_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
-    fill_reactive_eb_tree_halo_3d
+    average_down_reactive_eb_tree_3d,fill_reactive_eb_tree_halo_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -156,6 +156,30 @@ program test_eb_tree_halo_3d
   call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok, &
     boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t,inflow_mach=[(0._dp,i=1,6)])
   call require(.not.ok.and.all(ghost==17).and.all(gt==19),'conflicting inlet modes reject')
+  faces='outflow';faces(:4)='periodic'
+  start=tree
+  call average_down_reactive_eb_tree_3d(species,start,ok)
+  call require(ok,'periodic donor restriction')
+  call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok,boundary_faces=faces)
+  call require(ok.and.all(ghost(:,0,2,2)==start%nodes(3)%state(:,4,2,2)), &
+    'periodic child opposite-side peer donor')
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
+  call require(ok,'wide periodic root halo')
+  do j=0,15
+  do i=0,15
+    call require(all(wide(:,i,j,9)==start%nodes(1)%state(:,modulo(i-6,4)+1,modulo(j-6,4)+1,4)), &
+      'six-layer corner wrapping over multiple domain lengths')
+  end do
+  end do
+  wide=17;wide_t=19;vf=23;faces(1)='outflow'
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
+  call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'unpaired periodic halo rollback')
+  faces='periodic'
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
+  call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'incompatible periodic EB faces')
   print *, 'test_eb_tree_halo_3d: PASS'
 contains
   subroutine require(condition,label)

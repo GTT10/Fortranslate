@@ -16,7 +16,7 @@ module eb_reactive_patch_tree_3d_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_tagging_3d_mod, only: hot_cell,build_tagged_tree_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d,periodic_eb_faces_match
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d, &
     restrict_eb_integrated_flux_3d,reconcile_reactive_eb_peer_flux_3d,reflux_reactive_eb_state_3d
@@ -650,6 +650,9 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
+    if(present(boundary_faces)) then
+      if(any(boundary_faces=='periodic')) return
+    end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
     snapshot=tree
@@ -729,6 +732,9 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
+    if(present(boundary_faces)) then
+      if(any(boundary_faces=='periodic')) return
+    end if
     coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
@@ -900,6 +906,9 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
+    if(present(boundary_faces)) then
+      if(any(boundary_faces=='periodic')) return
+    end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
     if(present(extended_geometry)) then
@@ -1236,7 +1245,7 @@ contains
     if(width>1.and.(.not.present(ghost_volume_fraction).or..not.present(target_volume_fraction))) return
     faces='outflow'
     if(present(boundary_faces)) then
-      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) return
+      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) return
       if(present(inflow_mach).or.present(inflow_pressure)) return
       faces=boundary_faces
       if(any(faces=='inflow')) then
@@ -1261,6 +1270,7 @@ contains
     if (.not.all(ieee_is_finite(tin))) return
     if (any(pin>0.and.mach<0).or.any(tin<=0.and.mach>=0)) return
     if (.not.valid_tree(tree,nv)) return
+    if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
     if (target<1.or.target>size(tree%nodes)) return
     n=tree%topology%nodes(target)%shape;level=tree%topology%nodes(target)%level+1
     if(any(n>huge(1)-2*width)) return
@@ -1309,6 +1319,7 @@ contains
         if (area<=0._dp) cycle
         global=origin(:,target)+int(index-1,int64)
         donor=0
+        if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
         physical=any(global<0_int64).or.any(global>=domain(:,level))
         if (physical) then
           ! Physical boundary starts from the target's adjacent interior cell.
@@ -1391,6 +1402,9 @@ contains
           if(global(axis)>=domain(axis,level)) side=1
           if(side<0) cycle
           if((mach(2*axis-1+side)>=0.or.faces(2*axis-1+side)=='inflow').and.inlet_face==0) inlet_face=2*axis-1+side
+        end do
+        do axis=1,3
+          if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
         end do
         global=max(0_int64,min(domain(:,level)-1,global))
         donor=0
