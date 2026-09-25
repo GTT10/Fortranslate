@@ -959,7 +959,7 @@ if(TARGET pelef_mpi_spray_3d)
 endif()
 
 if(TARGET test_spray_mpi_eb_reactive)
-  foreach(ctu_mode IN ITEMS ctu ctu-subcycle)
+  foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle)
     add_test(NAME spray_mpi_eb_reactive_${ctu_mode}
       COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 4 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} ${ctu_mode})

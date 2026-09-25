@@ -205,9 +205,6 @@ program pelef_reactive_eb_tree_3d
   if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
   if (any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) error stop 'Invalid inlet pressure'
   if(any(boundary_faces/='legacy')) then
-#ifdef PELEF_MPI_EB_SPRAY
-    error stop 'Explicit tree boundary input is not connected to MPI spray'
-#endif
     if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) error stop 'Invalid tree boundary faces'
     if(any(inflow_mach>=0).or.any(inflow_temperature/=0)) error stop 'Conflicting tree inlet modes'
     if(.not.all(ieee_is_finite(inflow_density)).or..not.all(ieee_is_finite(inflow_velocity))) &
@@ -465,7 +462,8 @@ program pelef_reactive_eb_tree_3d
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry)
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -476,7 +474,8 @@ program pelef_reactive_eb_tree_3d
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry)
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -633,6 +632,8 @@ contains
     if(code/=0) error stop 'Cannot read MPI EB spray input'
     read(stream,nml=eb_spray,iostat=code)
     if(code/=0) error stop 'Invalid MPI EB spray input'
+    if(allocated(active_faces).and..not.particle_outflow) &
+      error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)

@@ -22,7 +22,10 @@ program test_spray_mpi_eb_reactive
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: boundary(:),chemical(:)
   real(dp) :: theta
-  character(len=16) :: solver,test_mode
+  character(len=32) :: solver,test_mode
+  character(len=16), allocatable :: labels(:)
+  real(dp), allocatable :: inlet(:,:),inlet_t(:)
+  logical, allocatable :: open_boundary
   logical :: recursive_steps
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -42,7 +45,7 @@ program test_spray_mpi_eb_reactive
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
   logical :: ok
   call get_command_argument(1,test_mode)
-  recursive_steps=test_mode=='ctu-subcycle'
+  recursive_steps=index(test_mode,'subcycle')>0
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -115,6 +118,14 @@ program test_spray_mpi_eb_reactive
       [20._dp,-20._dp,5._dp],1e-12_dp,350._dp,100._dp)
     masses(:,1)=drops(1)%mass*[.25_dp,.75_dp]
   end if
+  if(index(test_mode,'inflow')>0) then
+    allocate(labels(6),inlet(nv,6),inlet_t(6),open_boundary)
+    labels='outflow';labels(1)='inflow';open_boundary=.true.
+    do i=1,6
+      inlet(:,i)=cell
+    end do
+    inlet_t=t
+  end if
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
   call advance()
@@ -134,6 +145,17 @@ program test_spray_mpi_eb_reactive
   call require(all(boundary==43).and.all(chemical==44).and.theta==45,'gas diagnostics rollback')
   solver='hllc'
   if(index(test_mode,'ctu')==1) solver='pelec'
+  if(allocated(inlet)) then
+    if(rank==0) inlet(1,1)=-1
+    call advance()
+    call require(.not.ok.and.steps==0.and.all(boundary==43).and.all(ledger==42),'inlet failure rollback')
+    call require(all(masses==saved_mass).and.size(drops)==size(saved_drops),'inlet population rollback')
+    do node=1,2
+      if(owners(node)/=rank) cycle
+      call require(all(field%fields(node)%values==saved%fields(node)%values),'inlet gas rollback')
+    end do
+    inlet(1,1)=cell(1)
+  end if
   call inventory(before)
   call advance()
   call require(ok.and.steps>1,'distributed EB interval')
@@ -154,7 +176,8 @@ contains
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
       .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &
-      subcycling=recursive_steps,extended_geometry=extended)
+      subcycling=recursive_steps,extended_geometry=extended,particle_outflow=open_boundary, &
+      boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
   end subroutine
   subroutine inventory(result)
     real(dp), intent(out) :: result(:)

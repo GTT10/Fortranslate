@@ -31,7 +31,8 @@ contains
       chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
       films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow, &
-      acceleration,source_change,inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
+      acceleration,source_change,inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry, &
+      boundary_faces,inflow_state)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -53,6 +54,8 @@ contains
     real(dp), optional, intent(in) :: difmag
     real(dp) :: coefficient,low_coefficient,high_coefficient
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     logical, optional, intent(in) :: subcycling
@@ -113,6 +116,15 @@ contains
     if(ierr/=MPI_SUCCESS.or.any(low_accel/=high_accel)) return
     outflow=.false.;exterior=0
     if(present(particle_outflow)) outflow=particle_outflow
+    valid=.true.
+    if(present(boundary_faces)) then
+      valid=all(boundary_faces=='inflow'.or.boundary_faces=='outflow')
+      valid=valid.and.outflow
+    else
+      valid=.not.present(inflow_state)
+    end if
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
     watermark=0
     if(present(last_id)) watermark=last_id
     flags=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))+ &
@@ -163,7 +175,7 @@ contains
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       gas,temp,boundary,wall,chemical,theta,comm,valid,integrator,subcycling, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      difmag=coefficient,extended_geometry=extended_geometry)
+      difmag=coefficient,extended_geometry=extended_geometry,boundary_faces=boundary_faces,inflow_state=inflow_state)
     if(.not.valid) return
     if(present(films)) then
       call advance_mpi_amr_film_coupling(comm,species,transport,liquids,options,film_settings,gas,temp, &

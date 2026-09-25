@@ -24,9 +24,13 @@ def main():
     p.add_argument('--ports', action='store_true')
     p.add_argument('--profiles', action='store_true')
     p.add_argument('--mach', action='store_true')
+    p.add_argument('--inflow', action='store_true')
     p.add_argument('--difmag', type=float)
     p.add_argument('--pelemp-cap', action='store_true')
     a = p.parse_args()
+    if a.inflow:
+        assert not a.mach
+        a.ctu = True
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
     template = a.source / 'cases/mpi_eb_spray_3d'
@@ -64,6 +68,11 @@ def main():
             extra += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
         if a.difmag is not None:
             extra = f'difmag={a.difmag},' + extra
+        if a.inflow:
+            extra = ("boundary_faces='inflow','outflow','outflow','outflow','outflow','outflow',"
+                     "inflow_pressure(1)=135000,inflow_velocity(1,1)=100," + extra)
+            spray = directory / 'spray.nml'
+            spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1))
         if a.mach:
             extra = ('inflow_mach(4)=.1,inflow_temperature(4)=400.,inflow_pressure(4)=120000.,'
                      'automatic_timestep=.true.,subcycling=.true.,' + extra)
@@ -195,6 +204,10 @@ def main():
                 log = (mismatch / 'run.log').read_text()
                 assert ('Gas snapshot restore failed' if label == 'coefficient_mismatch'
                         else 'Invalid artificial-viscosity coefficient') in log
+        if a.inflow:
+            mismatch = run(2, 'prescribed_mismatch', f"restart_file='{archive}',inflow_velocity(1,1)=101,", success=False)
+            assert 'Restart prescribed inlet mismatch' in (mismatch / 'run.log').read_text()
+            assert not (mismatch / 'result.csv').exists()
         if a.mach:
             mismatch = run(2, 'inlet_mismatch', f"restart_file='{archive}',inflow_mach(4)=.2,", success=False)
             assert 'Restart inlet mismatch' in (mismatch / 'run.log').read_text()
