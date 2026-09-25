@@ -154,8 +154,10 @@ ancestor halos and accumulated fine fluxes
 now match serial under distributed and idle-rank ownership
 ([checks](validation/mpi-eb-ctu-common-20260925.md)). Recursive MPI CTU and
 coupled common/recursive dispatch now also match serial
-([checks](validation/mpi-eb-ctu-recursive-20260925.md)). Tree application selection and other physical boundary halo preparation remain
-before claiming EB Godunov parity.
+([checks](validation/mpi-eb-ctu-recursive-20260925.md)). Fixed/selected serial/MPI
+tree application selection, scheduled regridding and changed-rank restart are
+connected ([checks](validation/eb-tree-ctu-application-20260925.md)). Other physical
+boundary halo preparation and spray coupling remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

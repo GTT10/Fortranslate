@@ -14,8 +14,10 @@ with the `pelec` Riemann solver, outflow halos, reaction/transport composition
 and method-bound checkpoint continuation. PCM remains the default. Fixed and
 selected H2O2 coupled continuation passed focused checks
 ([evidence](validation/eb-ctu-application-20260925.md),
-[input example](../cases/reactive_eb_3d/plm_ctu.nml)). This does not yet connect
-CTU to EB tree applications or spray paths or qualify a physical wall-flow solution.
+[input example](../cases/reactive_eb_3d/plm_ctu.nml)). This does not qualify a physical wall-flow solution or connect CTU to spray.
+Serial/MPI fixed and selected EB tree gas applications now also accept CTU,
+including scheduled regridding and method-bound changed-rank continuation
+([application checks](validation/eb-tree-ctu-application-20260925.md)).
 Serial EB tree library operators support common and recursive CTU steps with
 reaction/transport composition ([checks](validation/eb-tree-ctu-subcycle-20260925.md)).
 MPI common and recursive tree hydro and coupled reaction/transport stepping
