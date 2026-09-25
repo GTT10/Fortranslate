@@ -455,6 +455,11 @@ contains
     end do
     do a=1,3
       b=modulo(a,3)+1;c=modulo(a+1,3)+1
+      if (trace_pressure) then
+        ! pc_transdd subtracts transverse work in ascending spatial order:
+        ! X <- Y,Z; Y <- X,Z; Z <- X,Y. The pressure subtraction is sequential.
+        b=merge(2,1,a==1);c=merge(2,3,a==3)
+      end if
       lower=1;upper=n;lower(a)=0;upper(a)=n(a)+1
       call correct_states(a,b,c,valid)
       if (.not.valid) return
