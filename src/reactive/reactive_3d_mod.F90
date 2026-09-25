@@ -753,7 +753,8 @@ contains
   ! One conservative CTU step. A failed final EOS recovery rolls back the
   ! complete field and limiter diagnostic; the caller can retry a smaller dt.
   subroutine advance_reactive_euler_ppm_ctu_3d(species,state,temperature,spacing,dt, &
-      steepening,flattening,solver,minimum_theta,ok)
+      steepening,flattening,solver,minimum_theta,ok,difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),minimum_theta
     real(dp), intent(in) :: spacing(3),dt
@@ -776,7 +777,7 @@ contains
     end if
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
     call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,steepening,flattening, &
-      solver,fx,fy,fz,theta,valid)
+      solver,fx,fy,fz,theta,valid,difmag=difmag)
     if (.not.valid) return
     candidate=state
     do k=1,n(3)
@@ -1818,7 +1819,8 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
       boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure)
+      inflow_mach,inflow_pressure,difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1881,6 +1883,10 @@ contains
     if (present(reconstruction)) selected_reconstruction = &
       trim(reconstruction)
     if (present(limiter)) selected_limiter = trim(limiter)
+    if (present(difmag)) then
+      if (.not.ieee_is_finite(difmag).or.difmag<0) return
+      if (difmag>0.and.selected_reconstruction/='characteristic_ppm') return
+    end if
     nvar = reactive_nvar(size(species))
     if (.not. valid_reactive_3d_shapes( &
           state, temperature, nvar, nx, ny, nz)) return
@@ -1923,7 +1929,7 @@ contains
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
         [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
         inflow_state, inflow_temperature,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -1932,7 +1938,7 @@ contains
           dx, dy, dz, dt, riemann_solver, local_ok)
       case ("characteristic_ppm")
         call advance_reactive_euler_ppm_ctu_3d(species,candidate_state,candidate_temperature,[dx,dy,dz],dt, &
-          .false.,.true.,riemann_solver,transverse_theta,local_ok)
+          .false.,.true.,riemann_solver,transverse_theta,local_ok,difmag=difmag)
       case ("characteristic_plm")
         call advance_reactive_euler_ssprk2_plm_3d( &
           species, candidate_state, candidate_temperature, nx, ny, nz, &
@@ -1975,7 +1981,8 @@ contains
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
       faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature, &
-      flux_x,flux_y,flux_z,outlet_pressure,inflow_mach,inflow_pressure)
+      flux_x,flux_y,flux_z,outlet_pressure,inflow_mach,inflow_pressure,difmag)
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     real(dp), intent(in), optional :: inflow_mach(6),inflow_pressure(6)
     ! Optional time-centered fluxes: upper faces, or all faces including index zero.
@@ -1995,6 +2002,10 @@ contains
     if (present(flux_x)) flux_x=0
     if (present(flux_y)) flux_y=0
     if (present(flux_z)) flux_z=0
+    if (present(difmag)) then
+      if (.not.ieee_is_finite(difmag).or.difmag<0) return
+      if (difmag>0.and.reconstruction/='characteristic_ppm') return
+    end if
     if ((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
     if(present(outlet_pressure)) then
       if(.not.all(ieee_is_finite(outlet_pressure))) return
@@ -2069,7 +2080,7 @@ contains
       if (.not.success) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,.false.,.true., &
         riemann_solver,fx,fy,fz,theta,success,inflow_faces=faces=='inflow', &
-        no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall')
+        no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall',difmag=difmag)
       if (.not.success) return
       success=.false.
       candidate=state

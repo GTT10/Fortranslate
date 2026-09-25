@@ -33,6 +33,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: boundary_faces(6) = ""
     real(dp) :: wall_temperature(6)=300.0_dp
     real(dp) :: inflow_mach(6)=-1.0_dp
+    real(dp) :: difmag=-1.0_dp ! -1 selects the solver policy; nonnegative overrides PPM.
     real(dp) :: outlet_pressure(6)=0.0_dp
     real(dp) :: wall_velocity(3,6)=0.0_dp
     real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
@@ -465,18 +466,18 @@ contains
   end function
 
   subroutine read_reactive_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm)
+      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
-    logical, intent(in), optional :: allow_characteristic_ppm
+    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag
 
     integer :: nx, ny, nz, maximum_steps, unit, io_status
     integer :: wave_number_x, wave_number_y, wave_number_z
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
-    real(dp) :: final_time, cfl, initial_temperature, initial_pressure
+    real(dp) :: final_time, cfl, initial_temperature, initial_pressure,difmag
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
     real(dp) :: initial_velocity_x, initial_velocity_y, initial_velocity_z
@@ -505,7 +506,7 @@ contains
     namelist /reactive_3d/ &
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
-      final_time, cfl, problem, reconstruction, limiter, &
+      final_time, cfl, problem, reconstruction, limiter, difmag, &
       thermo_model, riemann_solver, &
       boundary_condition, boundary_faces, wall_temperature, wall_velocity, inflow_temperature, inflow_pressure, inflow_velocity, &
       outlet_pressure, inflow_mach, inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
@@ -536,6 +537,7 @@ contains
     final_time = config%final_time
     cfl = config%cfl
     problem = config%problem
+    difmag=config%difmag
     reconstruction = config%reconstruction
     limiter = config%limiter
     thermo_model = config%thermo_model
@@ -621,6 +623,7 @@ contains
     config%final_time = final_time
     config%cfl = cfl
     config%problem = trim(problem)
+    config%difmag=difmag
     config%reconstruction = trim(reconstruction)
     config%limiter = trim(limiter)
     config%thermo_model = trim(thermo_model)
@@ -677,6 +680,13 @@ contains
     call validate_reactive_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
     if (.not.ok) return
+    if (config%difmag>=0) then
+      ok=.false.
+      if (present(allow_difmag)) ok=allow_difmag
+      if (.not.ok) then
+        message='Artificial-viscosity coefficient input is not connected in this application';return
+      end if
+    end if
     if (trim(config%reconstruction) == "characteristic_ppm") then
       ok = .false.
       if (present(allow_characteristic_ppm)) ok = allow_characteristic_ppm
@@ -719,6 +729,15 @@ contains
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
+    if (.not.ieee_is_finite(config%difmag)) then
+      message='Artificial-viscosity coefficient must be finite';return
+    end if
+    if (config%difmag<0.and.config%difmag/=-1) then
+      message='Artificial-viscosity coefficient must be nonnegative or -1 for automatic';return
+    end if
+    if (config%difmag>=0.and.config%reconstruction/='characteristic_ppm') then
+      message='Artificial-viscosity coefficient input requires characteristic_ppm';return
+    end if
     if (.not.all(ieee_is_finite(config%inflow_mach))) then
       message='Inflow Mach numbers must be finite'; return
     end if

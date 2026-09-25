@@ -44,7 +44,7 @@ contains
     character(len=32) :: faces(6)
     real(dp), allocatable :: inflow_state(:,:),inflow_y(:),inflow_x(:),inlet_cube(:,:,:,:)
     real(dp), allocatable :: inlet_ghost(:,:,:,:),inlet_ghost_t(:,:,:)
-    real(dp) :: mach_pressure(6)
+    real(dp) :: mach_pressure(6),difmag
     real(dp) :: inflow_t(6),inlet_temperature(2,2,2)
     real(dp) :: inlet_dt,inlet_transport_dt,inlet_diffusivity,face_dt,face_diffusivity,wall_dt
     real(dp), allocatable :: mass_fractions(:), primitive(:)
@@ -153,6 +153,10 @@ contains
       "Grid: nx=", config%nx, ", ny=", config%ny, ", nz=", config%nz
     write(*, '(a,1x,a)') "Problem:", trim(config%problem)
     write(*, '(a,1x,a)') "Thermodynamics:", trim(config%thermo_model)
+    difmag=0
+    if(config%reconstruction=='characteristic_ppm'.and.config%riemann_solver=='pelec') difmag=.1_dp
+    if(config%difmag>=0) difmag=config%difmag
+    write(*,'(a,es24.16)') 'Artificial-viscosity coefficient: ',difmag
     write(*, '(a,1x,a)') "Reconstruction:", trim(config%reconstruction)
     write(*, '(a,1x,a)') "Limiter:", trim(config%limiter)
     write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
@@ -245,7 +249,7 @@ contains
         chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change, &
         inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
         wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
+        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=difmag)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if
