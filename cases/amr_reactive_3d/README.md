@@ -319,3 +319,15 @@ See [the focused application check](../../docs/validation/ppm-two-level-applicat
 for the reacting, transporting physical-boundary/regrid fixture and its limits.
 The [MPI application check](../../docs/validation/ppm-mpi-two-level-application-20260925.md)
 records four-to-two-rank restart against serial output.
+
+### Artificial-viscosity coefficient
+
+Fixed/selected serial and MPI two-level applications accept `difmag` in
+`&reactive_3d`. Default `-1` selects 0.1 for PPM/pelec and zero otherwise.
+Explicit nonnegative input requires PPM; zero disables the correction.
+The resolved value reaches coarse and fine substeps and is included in the
+checkpoint reconstruction identity. Automatic and equivalent explicit values
+can resume each other; changed coefficients reject restart. Older PPM
+checkpoints without a coefficient identity are incompatible. PCM/PLM records
+retain their existing reconstruction identity. See
+[input/restart evidence](../../docs/validation/difmag-two-level-input-20260925.md).
