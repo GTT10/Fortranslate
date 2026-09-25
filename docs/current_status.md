@@ -34,6 +34,9 @@ walls now connect reflection, viscous stresses and heat transport
 ([checks](validation/sdc-walls-20260926.md)); AMR/MPI/EB SDC remain open.
 SDC now exports time-averaged hydro/transport face fluxes for future AMR
 conservation correction ([checks](validation/sdc-flux-export-20260926.md)).
+Paired state/source halo callbacks now support caller-owned boundary data
+([checks](validation/sdc-halo-callbacks-20260926.md)); hierarchy coordination
+and MPI exchange remain open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
