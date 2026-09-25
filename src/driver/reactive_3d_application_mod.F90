@@ -15,7 +15,7 @@ module reactive_3d_application_mod
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
   use reactive_3d_mod, only: &
-    compute_reactive_cfl_timestep_3d, advance_reactive_full_3d,advance_reactive_sdc_periodic_3d, &
+    compute_reactive_cfl_timestep_3d, advance_reactive_full_3d,advance_reactive_sdc_3d, &
     reactive_integrals_3d, reactive_extrema_3d
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d, reactive_isothermal_timestep_3d
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
@@ -252,7 +252,7 @@ contains
       dt = min(dt, config%final_time - time)
       if(config%time_integrator=='sdc') then
         step_boundary_change=0;step_transport_theta=1
-        call advance_reactive_sdc_periodic_3d(species,state,temperature,[dx,dy,dz],dt,time, &
+        call advance_reactive_sdc_3d(species,state,temperature,[dx,dy,dz],dt,time, &
           config%sdc_iterations,merge(2,1,config%transport_enabled),ok=ok,difmag=difmag, &
           external_force=config%external_forcing, &
           source_change=step_source_change,transport=sdc_transport, &
@@ -260,7 +260,8 @@ contains
             config%species_diffusion_enabled,config%barodiffusion_enabled],minimum_transport_theta=step_transport_theta, &
           reactions=sdc_reactions,reaction_source=sdc_reaction_source, &
           chemistry_relative_tolerance=config%chemistry_relative_tolerance, &
-          chemistry_absolute_tolerance=config%chemistry_absolute_tolerance)
+          chemistry_absolute_tolerance=config%chemistry_absolute_tolerance, &
+          boundary_faces=faces,boundary_change=step_boundary_change)
       else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &
