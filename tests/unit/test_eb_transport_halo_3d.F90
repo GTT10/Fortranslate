@@ -10,6 +10,7 @@ program test_eb_transport_halo_3d
   use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,physical_transport_fluxes_3d,reactive_isothermal_timestep_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d, &
+    advance_reactive_eb_transport_patch_euler_3d, &
     reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d,reactive_eb_isothermal_timestep_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
@@ -388,6 +389,9 @@ contains
     type(eb_geometry_3d) :: wall_extended,thin
     real(dp) :: wall_dt,regular_dt,thin_dt
     real(dp), allocatable :: moving(:,:,:,:),rx(:,:,:,:),ry(:,:,:,:),rz(:,:,:,:)
+    real(dp), allocatable :: patch_u(:,:,:,:),patch_t(:,:,:)
+    type(eb_integrated_flux_3d) :: patch_flux
+    real(dp) :: patch_theta
     integer :: kind,normal,which,point(3),component
     wall_config=config;wall_config%plane_axis='z';wall_config%plane_position=-10._dp
     if(mode==2) wall_config%plane_position=.31_dp
@@ -432,6 +436,28 @@ contains
       call require(expected(1)==0.and.all(expected(6:)==0),'impermeable wall species and mass flux')
       if(kind<3) call require(expected(5)==0,'adiabatic stationary wall does no work')
       if(kind==3) call require(real(1-2*which,dp)*expected(5)>0,'hot wall heat enters fluid')
+      if(kind==3) then
+        patch_u=moving;patch_t=t;patch_theta=19
+        call advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry,1.e-10_dp, &
+          .true.,.true.,.true.,.true.,patch_u,patch_t,patch_flux,patch_theta,ok,g,gt,faces,wall_faces,wall_t)
+        call require(ok,'isothermal patch update')
+        call require(maxval(abs(patch_flux%x-1.e-10_dp*x))<3.e-12_dp*max(1.e-30_dp,maxval(abs(1.e-10_dp*x))).and. &
+          maxval(abs(patch_flux%y-1.e-10_dp*y))<3.e-12_dp*max(1.e-30_dp,maxval(abs(1.e-10_dp*y))).and. &
+          maxval(abs(patch_flux%z-1.e-10_dp*z))<3.e-12_dp*max(1.e-30_dp,maxval(abs(1.e-10_dp*z))), &
+          'isothermal patch integrated flux agrees with public flux operator')
+        call reactive_eb_integrals_3d(moving,geometry,before,ok)
+        call require(ok,'isothermal patch initial inventory')
+        call reactive_eb_integrals_3d(patch_u,geometry,after,ok)
+        call require(ok.and.after(5)>before(5),'isothermal patch gains heat')
+        saved_flux=patch_flux;patch_u=moving;patch_t=t;patch_theta=19;wall_t=-1
+        call advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry,1.e-10_dp, &
+          .true.,.true.,.true.,.true.,patch_u,patch_t,patch_flux,patch_theta,ok,g,gt,faces,wall_faces,wall_t)
+        call require(.not.ok.and.all(patch_u==moving).and.all(patch_t==t).and.patch_theta==19, &
+          'invalid isothermal patch rollback')
+        call require(all(patch_flux%x==saved_flux%x).and.all(patch_flux%y==saved_flux%y).and. &
+          all(patch_flux%z==saved_flux%z),'invalid isothermal patch flux rollback')
+        wall_t=temp+100
+      end if
     end do
     end do
     wall_faces=kinds(kind)
