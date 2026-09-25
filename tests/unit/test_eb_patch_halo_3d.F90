@@ -90,7 +90,8 @@ program test_eb_patch_halo_3d
       end do
     end do
     call require(all(ghost(:,0,0,:)==0._dp),'unused corners zero')
-    call advance_reactive_eb_euler_3d(species,u,t,patch,'rusanov',1.e-10_dp,next,nt,ok,ghost,gt,flux)
+    ! This fixture deliberately constructs face-only halos.
+    call advance_reactive_eb_euler_3d(species,u,t,patch,'rusanov',1.e-10_dp,next,nt,ok,ghost,gt,flux,difmag=0._dp)
     call require(ok.and.maxval(abs(next-u))>1.e-10_dp,'patch update uses actual coarse donors')
     saved=ghost;saved_t=gt;saved_geometry=patch
     call fill_reactive_eb_patch_halo_3d(species,coarse,patch,lo+1,2,parent_u,parent_t,u,t,ghost,gt,ok)

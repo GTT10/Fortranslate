@@ -56,15 +56,21 @@ program test_eb_reactive_ghost_3d
         ghost(:,0,:,:)=ieee_value(0._dp,ieee_quiet_nan)
         gt(0,:,:)=ieee_value(0._dp,ieee_quiet_nan)
       end if
-      call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),base%x,base%y,base%z,ok)
+      call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),&
+        base%x,base%y,base%z,ok,difmag=0._dp)
       call require(ok,'legacy outflow flux')
       call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),flux%x,flux%y,flux%z, &
-        ok,ghost,gt)
+        ok,ghost,gt,difmag=0._dp)
       call require(ok.and.all(flux%x==base%x).and.all(flux%y==base%y).and.all(flux%z==base%z), &
         'outflow halo exact legacy parity including unused NaNs')
-      ghost=1.1_dp*ghost
+      ! The default positive viscosity requires volume fractions and complete halos.
       call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),flux%x,flux%y,flux%z, &
         ok,ghost,gt)
+      call require(.not.ok.and.all(flux%x==0._dp).and.all(flux%y==0._dp).and.all(flux%z==0._dp), &
+        'default viscosity rejects missing volume fraction halo')
+      ghost=1.1_dp*ghost
+      call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),flux%x,flux%y,flux%z, &
+        ok,ghost,gt,difmag=0._dp)
       call require(ok,'nonuniform boundary donor flux')
       do axis=1,3
         do side=0,1
@@ -92,7 +98,8 @@ program test_eb_reactive_ghost_3d
           end select
         end do
       end do
-      call advance_reactive_eb_euler_3d(species,state,temp,geometry,solvers(solver_id),dt,next,nt,ok,ghost,gt,integral)
+      call advance_reactive_eb_euler_3d(species,state,temp,geometry,solvers(solver_id),&
+        dt,next,nt,ok,ghost,gt,integral,difmag=0._dp)
       call require(ok.and.all(nt>0._dp),'halo Euler update')
       call require(all(integral%x==dt*flux%x).and.all(integral%y==dt*flux%y).and. &
         all(integral%z==dt*flux%z),'accepted integrated flux matches update')
@@ -114,15 +121,16 @@ program test_eb_reactive_ghost_3d
       end do
       saved_flux=integral
       ghost(1,5,4,4)=-1._dp
-      call advance_reactive_eb_euler_3d(species,state,temp,geometry,solvers(solver_id),dt,next,nt,ok,ghost,gt,integral)
+      call advance_reactive_eb_euler_3d(species,state,temp,geometry,solvers(solver_id),&
+        dt,next,nt,ok,ghost,gt,integral,difmag=0._dp)
       call require(.not.ok.and.all(next==state).and.all(nt==temp).and.all(integral%x==saved_flux%x).and. &
         all(integral%y==saved_flux%y).and.all(integral%z==saved_flux%z),'bad donor state and flux rollback')
       call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),flux%x,flux%y,flux%z, &
-        ok,ghost_state=ghost)
+        ok,ghost_state=ghost,difmag=0._dp)
       call require(.not.ok.and.all(flux%x==0._dp).and.all(flux%y==0._dp).and.all(flux%z==0._dp), &
         'incomplete halo rejected with zero flux')
       call reactive_eb_riemann_fluxes_3d(species,state,temp,geometry,solvers(solver_id),flux%x,flux%y,flux%z, &
-        ok,ghost(:,:4,:,:),gt)
+        ok,ghost(:,:4,:,:),gt,difmag=0._dp)
       call require(.not.ok.and.all(flux%x==0._dp).and.all(flux%y==0._dp).and.all(flux%z==0._dp), &
         'wrong halo dimensions rejected')
     end do
