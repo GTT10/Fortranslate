@@ -51,6 +51,31 @@ wall and chemistry inventories. CSVs are analysis outputs, not restart files. Ou
 not alias the gas, spray or geometry inputs; checks normalize lexical absolute
 paths, not filesystem symlinks.
 
+## Explicit gas inflow and outflow
+
+Fixed and selected executables accept `hydro_method='plm_ctu'` with
+`riemann_solver='pelec'` and six `boundary_faces` labels (`inflow` or `outflow`,
+in x-low, x-high, y-low, y-high, z-low, z-high order). For example, add to
+`gas.nml`:
+
+```fortran
+ hydro_method='plm_ctu', riemann_solver='pelec'
+ boundary_faces='outflow','outflow','inflow','outflow','outflow','outflow'
+ inflow_density(3)=.31, inflow_pressure(3)=135000
+ inflow_velocity(:,3)=0,200,0
+```
+
+Also set `particle_outflow=.true.` in `spray.nml`. Existing particles can leave
+through either open gas face; their inventory joins the exterior ledger.
+Gas inlets use the initial mixture composition and do not inject particles.
+The configured inlet states participate in hydro and transport timestep bounds.
+Checkpoint context includes all face labels and inlet density, pressure and
+velocity values, so changing these settings rejects continuation. Legacy
+boundary inputs retain their previous context. Explicit periodic and domain-wall
+labels remain unsupported for this spray application.
+
+See [focused application checks](../../docs/validation/eb-spray-inflow-application-20260925.md).
+
 ## External rate files
 
 Rate tables can also come from a separate optional group in `spray.nml`:

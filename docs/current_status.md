@@ -28,8 +28,10 @@ recursive library checks and fixed-mechanism changed-rank application continuati
 applications also connect CTU with method-bound continuation
 ([evidence](validation/serial-eb-spray-ctu-20260925.md)). The allocated serial
 EB spray library also forwards explicit inflow/outflow gas boundaries and
-escaped particle inventories; application dispatch remains pending
-([checks](validation/eb-spray-open-coupling-20260925.md)).
+escaped particle inventories
+([checks](validation/eb-spray-open-coupling-20260925.md)). Fixed/selected serial
+spray input, inlet timestep bounds and boundary-bound restart are connected
+([application checks](validation/eb-spray-inflow-application-20260925.md)).
 Serial/MPI fixed and selected EB tree gas applications now also accept CTU,
 including scheduled regridding and method-bound changed-rank continuation
 ([application checks](validation/eb-tree-ctu-application-20260925.md)).
