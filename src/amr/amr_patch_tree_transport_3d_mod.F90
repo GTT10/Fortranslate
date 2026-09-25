@@ -17,7 +17,94 @@ module amr_patch_tree_transport_3d_mod
   private
   public :: advance_amr_patch_tree_transport_3d,compute_amr_patch_tree_transport_timestep_3d
   public :: advance_amr_patch_tree_transport_level_3d
+  public :: compute_sdc_amr_patch_tree_transport_3d
 contains
+  subroutine compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,root_spacing,dt,faces, &
+      flags,transport_rate,integrated_flux,minimum_theta,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
+      outlet_pressure,inflow_mach,inflow_pressure)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: root_spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: flags(4)
+    type(amr_tree_state_3d), intent(inout) :: transport_rate
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    real(dp), intent(inout) :: minimum_theta
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    type(amr_tree_state_3d) :: packed,rates
+    type(amr_tree_flux_3d), allocatable :: flux(:)
+    real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp) :: rhs(reactive_nvar(size(species))),local_theta,candidate_theta
+    character(len=32) :: local_faces(6)
+    integer :: peer,n(3),i,j,k,axis,level,nvar
+    logical :: valid
+    ok=.false.;nvar=reactive_nvar(size(species));candidate_theta=1
+    if(.not.ieee_is_finite(dt).or.dt<=0) return
+    if(size(transport)/=size(species).or..not.valid_reactive_boundaries_3d(faces)) return
+    call prepare(tree,species,state,temperature,root_spacing,h,valid)
+    if(.not.valid) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(.not.valid) return
+    if(present(inflow_state)) then
+      if(.not.present(inflow_temperature)) return
+      if(any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
+      allocate(inlet(nvar+1,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+    end if
+    allocate(packed%fields(size(tree%nodes)),flux(size(tree%nodes)))
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      allocate(packed%fields(peer)%values(nvar+1,n(1),n(2),n(3)))
+      packed%fields(peer)%values(:nvar,:,:,:)=state%fields(peer)%values
+      packed%fields(peer)%values(nvar+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+    end do
+    rates=state
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
+        viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
+        coarse_limiter='mc',species_count=size(species), &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      if (.not.valid) return
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
+      if (.not.valid) return
+      allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
+      local_faces='outflow';level=tree%nodes(peer)%level+1
+      do axis=1,3
+        if (origin(axis,peer)==0) local_faces(2*axis-1)=faces(2*axis-1)
+        if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
+      end do
+      call physical_transport_ghosted_fluxes_3d(species,transport,state%fields(peer)%values, &
+        temperature%fields(peer)%values(1,:,:,:),ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer),dt,local_faces, &
+        flags(1),flags(2),flags(3),flags(4),fx,fy,fz,local_theta,valid,wall_temperature,wall_velocity)
+      candidate_theta=min(candidate_theta,local_theta)
+      if (.not.valid) return
+      do k=1,n(3)
+        do j=1,n(2)
+          do i=1,n(1)
+            rhs=-(fx(:,i+1,j,k)-fx(:,i,j,k))/h(1,peer) &
+              -(fy(:,i,j+1,k)-fy(:,i,j,k))/h(2,peer) &
+              -(fz(:,i,j,k+1)-fz(:,i,j,k))/h(3,peer)
+            rates%fields(peer)%values(:,i,j,k)=rhs
+          end do
+        end do
+      end do
+      flux(peer)%x=dt*fx
+      flux(peer)%y=dt*fy
+      flux(peer)%z=dt*fz
+      if(.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
+        .not.all(ieee_is_finite(flux(peer)%z))) return
+      deallocate(fx,fy,fz)
+    end do
+    if(.not.rates%is_valid(tree)) return
+    transport_rate=rates;integrated_flux=flux;minimum_theta=candidate_theta;ok=.true.
+  end subroutine compute_sdc_amr_patch_tree_transport_3d
+
   subroutine compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,state,temperature, &
       root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,ok,faces,wall_temperature)
     type(amr_patch_tree_3d), intent(in) :: tree

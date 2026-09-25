@@ -6,11 +6,13 @@ program test_amr_patch_tree_transport_3d
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d,reactive_transport_timestep_3d, &
-    reactive_isothermal_timestep_3d
+    reactive_isothermal_timestep_3d,reactive_transport_euler_update_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_transport_3d_mod, only: advance_amr_patch_tree_transport_3d,compute_amr_patch_tree_transport_timestep_3d
+  use amr_patch_tree_transport_3d_mod, only: compute_sdc_amr_patch_tree_transport_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -122,6 +124,7 @@ program test_amr_patch_tree_transport_3d
       call composite_integrals_amr_patch_tree_3d(tree,state,spacing,initial,ok)
       call require(ok,'initial inventory')
       dt=min(dt,1e-8_dp)
+      if(mode==1) call check_sdc_transport_stage()
       call advance_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
         .true.,.true.,.true.,.true.,budget,largest,theta,ok,wall_temperature=wall_t,wall_velocity=wall_v, &
         coarse_limiter=coarse_limiter,outlet_pressure=outlet, &
@@ -168,6 +171,43 @@ program test_amr_patch_tree_transport_3d
     end do
   end do
 contains
+  subroutine check_sdc_transport_stage()
+    type(amr_tree_state_3d) :: rates,candidate,prior
+    type(amr_tree_flux_3d), allocatable :: flux(:),prior_flux(:)
+    real(dp) :: before(12),after(12),correction(12),largest,minimum,expected(12,4,4,4),et(4,4,4),unused
+    integer :: peer
+    minimum=-1
+    call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],rates,flux,minimum,ok)
+    call require(ok.and.minimum>=0.and.minimum<=1,'SDC hierarchy transport rate and integrated flux')
+    candidate=state
+    do peer=1,size(tree%nodes)
+      candidate%fields(peer)%values=state%fields(peer)%values+dt*rates%fields(peer)%values
+    end do
+    if(geometry==1) then
+      call reactive_transport_euler_update_3d(species,transport,root,rt(1,:,:,:),4,4,4, &
+        spacing(1),spacing(2),spacing(3),dt,.true.,.true.,.true.,.true.,expected,et,unused,ok)
+      call require(ok,'SDC transport independent single-grid update')
+      call require(maxval(abs(candidate%fields(1)%values-expected)/max(1._dp,abs(expected)))<1e-12_dp, &
+        'SDC root transport matches existing Euler update')
+    end if
+    call composite_integrals_amr_patch_tree_3d(tree,state,spacing,before,ok)
+    call require(ok,'SDC transport initial inventory')
+    call reflux_amr_patch_tree_3d(tree,candidate,flux,spacing,faces,correction,largest,ok)
+    call require(ok,'SDC transport flux-register compatibility')
+    call composite_integrals_amr_patch_tree_3d(tree,candidate,spacing,after,ok)
+    call require(ok.and.maxval(abs(after-before)/max(1e-12_dp,abs(before)))<1e-12_dp, &
+      'SDC periodic composite transport conservation')
+    prior=rates;prior_flux=flux;unused=minimum
+    call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,-dt,faces, &
+      [.true.,.true.,.true.,.true.],rates,flux,minimum,ok)
+    call require(.not.ok.and.minimum==unused,'SDC transport invalid step preserves theta')
+    do peer=1,size(tree%nodes)
+      call require(all(rates%fields(peer)%values==prior%fields(peer)%values).and. &
+        all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
+        all(flux(peer)%z==prior_flux(peer)%z),'SDC transport stage output rollback')
+    end do
+  end subroutine check_sdc_transport_stage
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label
