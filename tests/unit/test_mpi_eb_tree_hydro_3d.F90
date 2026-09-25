@@ -128,8 +128,13 @@ contains
       error=maxval(abs(inventory-before-b-w)/max(1._dp,abs(before)))
       call require(error<3.e-14_dp,'MPI hydro conservation')
       if (rank==0) print *, 'MPI axis, nodes, mode, residual: ',axes(axis),count,mode,error
-      do failure=1,4
+      do failure=1,6
         if(failure==4.and.coefficient==0) cycle
+        do p=1,count
+          geometry(p)=saved%nodes(p)%geometry
+        end do
+        if(failure==5.and.rank==0) geometry(1)%halo_volume_fraction(0,0,0)=.5_dp
+        if(failure==6.and.rank==0) deallocate(geometry(1)%halo_volume_fraction)
         local_coefficient=coefficient
         if(failure==4.and.rank==0) local_coefficient=.05_dp
         local=initial;lt=it;b=17._dp;w=19._dp;dt=1.e-8_dp
@@ -153,6 +158,9 @@ contains
           call require(all(lt%fields(p)%values==it%fields(p)%values),'T rollback')
         end do
         call require(all(b==17._dp).and.all(w==19._dp),'ledger rollback')
+      end do
+      do p=1,count
+        geometry(p)=saved%nodes(p)%geometry
       end do
       deallocate(local%fields,lt%fields)
     end do

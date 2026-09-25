@@ -62,7 +62,9 @@ contains
     if (.not.ready) return
     do node=1,size(geometry)
       associate(g=>geometry(node))
-      elements=9_int64
+      ! Fixed-size optional-context record keeps collective counts equal even
+      ! when allocation presence differs across ranks.
+      elements=10_int64+product(int([g%nx,g%ny,g%nz],int64)+2_int64)
       elements=elements+size(g%volume_fraction,kind=int64)
       elements=elements+size(g%cell_centroid_x,kind=int64)
       elements=elements+size(g%cell_centroid_y,kind=int64)
@@ -93,7 +95,11 @@ contains
       call agree(ios==0,comm,ready)
       if (.not.ready) return
       packed(:9)=[g%x_lower,g%x_upper,g%y_lower,g%y_upper,g%z_lower,g%z_upper,g%dx,g%dy,g%dz]
-      offset=9
+      packed(10)=merge(1._dp,0._dp,allocated(g%halo_volume_fraction))
+      n=int(product(int([g%nx,g%ny,g%nz],int64)+2_int64))
+      packed(11:10+n)=-1._dp
+      if(allocated(g%halo_volume_fraction)) packed(11:10+n)=reshape(g%halo_volume_fraction,[n])
+      offset=10+n
       n=size(g%volume_fraction);packed(offset+1:offset+n)=reshape(g%volume_fraction,[n]);offset=offset+n
       n=size(g%cell_centroid_x);packed(offset+1:offset+n)=reshape(g%cell_centroid_x,[n]);offset=offset+n
       n=size(g%cell_centroid_y);packed(offset+1:offset+n)=reshape(g%cell_centroid_y,[n]);offset=offset+n
