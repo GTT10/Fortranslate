@@ -96,7 +96,8 @@ contains
     real(dp) :: state(nv,4,4,4),temp(4,4,4),source(nv,4,4,4),old(nv,4,4,4),ot(4,4,4),lim
     real(dp) :: halo_source(nv,-3:8,-3:8,-3:8),boundary(nv)
     character(len=8) :: walls(6)
-    integer :: component
+    real(dp) :: composed(nv,4,4,4),composed_t(4,4,4),boundary_ref(nv),transport_limit
+    integer :: component,bc
     ! Nonuniform fixture: periodic flux divergence must leave only source inventory.
     state=u;temp=t;source=0
     source(2,:,:,:)=.2_dp;source(5,:,:,:)=100._dp
@@ -126,10 +127,38 @@ contains
         boundary(component)-dt*sum(source(component,:,:,:))*.25_dp**3)< &
         3e-14_dp*max(1._dp,abs(sum(u(component,:,:,:)))*.25_dp**3),'boundary and source inventory separation')
     end do
+    do bc=1,2
+      walls='periodic'
+      if(bc==2) walls='outflow'
+      state=u;temp=t
+      call advance_reactive_transport_3d(species,transport,state,temp,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
+        .true.,.true.,.true.,.true.,transport_limit,ok,walls)
+      call require(ok,'source split first transport')
+      if(bc==1) then
+        call advance_reactive_euler_ppm_ctu_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt, &
+          .false.,.true.,'pelec',lim,ok,conserved_source=source)
+      else
+        call advance_reactive_boundary_hydro_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,walls, &
+          'characteristic_ppm','mc','pelec',boundary_ref,ok,conserved_source=halo_source)
+      end if
+      call require(ok,'source split reference hydro')
+      call advance_reactive_transport_3d(species,transport,state,temp,4,4,4,.25_dp,.25_dp,.25_dp,.5_dp*dt, &
+        .true.,.true.,.true.,.true.,transport_limit,ok,walls)
+      call require(ok,'source split second transport')
+      composed=u;composed_t=t
+      call advance_reactive_full_3d(species,reactions,transport,composed,composed_t,4,4,4, &
+        .25_dp,.25_dp,.25_dp,dt,'pelec',.false.,1e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,lim,ok, &
+        reconstruction='characteristic_ppm',boundary_faces=walls,conserved_source=halo_source)
+      call require(ok.and.all(composed==state).and.all(composed_t==temp),'exact source transport split')
+    end do
     state=u;temp=t;halo_source=0;halo_source(5,:,:,:)=-1e14_dp
     call advance_reactive_boundary_hydro_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,walls, &
       'characteristic_ppm','mc','pelec',boundary,ok,conserved_source=halo_source)
     call require(.not.ok.and.all(state==u).and.all(temp==t).and.all(boundary==0),'boundary source rollback')
+    call advance_reactive_full_3d(species,reactions,transport,state,temp,4,4,4, &
+      .25_dp,.25_dp,.25_dp,dt,'pelec',.false.,1e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,lim,ok, &
+      reconstruction='characteristic_ppm',boundary_faces=walls,conserved_source=halo_source,boundary_change=boundary)
+    call require(.not.ok.and.all(state==u).and.all(temp==t).and.all(boundary==0),'source split complete rollback')
     ! Uniform fields isolate the source increment, including density injection.
     do k=1,4
     do j=1,4

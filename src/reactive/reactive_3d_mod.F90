@@ -2080,7 +2080,10 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
       boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag)
+      inflow_mach,inflow_pressure,difmag,conserved_source)
+    ! Frozen source rates with four supplied ghost layers for physical boundaries.
+    real(dp), optional, intent(in) :: conserved_source(:,-3:,-3:,-3:)
+    real(dp), allocatable :: source_cells(:,:,:,:)
     real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -2165,6 +2168,12 @@ contains
     if (trim(selected_limiter) /= "minmod" .and. &
         trim(selected_limiter) /= "mc") return
 
+    if(present(conserved_source)) then
+      if(selected_reconstruction/='characteristic_ppm'.or.riemann_solver/='pelec') return
+      if(any(shape(conserved_source)/=[nvar,nx+8,ny+8,nz+8])) return
+      if(.not.all(ieee_is_finite(conserved_source))) return
+      source_cells=conserved_source(:,1:nx,1:ny,1:nz)
+    end if
     allocate(candidate_state, source=state)
     allocate(candidate_temperature, source=temperature)
     if (chemistry_enabled) then
@@ -2192,7 +2201,7 @@ contains
       call advance_reactive_boundary_hydro_3d(species, candidate_state, candidate_temperature, &
         [dx,dy,dz], dt, faces, selected_reconstruction, selected_limiter, riemann_solver, hydro_change, local_ok, &
         inflow_state, inflow_temperature,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag)
+        inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,difmag=difmag,conserved_source=conserved_source)
     else
       select case (trim(selected_reconstruction))
       case ("pcm")
@@ -2201,7 +2210,7 @@ contains
           dx, dy, dz, dt, riemann_solver, local_ok, difmag=explicit_viscosity)
       case ("characteristic_ppm")
         call advance_reactive_euler_ppm_ctu_3d(species,candidate_state,candidate_temperature,[dx,dy,dz],dt, &
-          .false.,.true.,riemann_solver,transverse_theta,local_ok,difmag=difmag)
+          .false.,.true.,riemann_solver,transverse_theta,local_ok,difmag=difmag,conserved_source=source_cells)
       case ("characteristic_plm")
         call advance_reactive_euler_ssprk2_plm_3d( &
           species, candidate_state, candidate_temperature, nx, ny, nz, &
