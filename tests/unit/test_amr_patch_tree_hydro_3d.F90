@@ -8,6 +8,8 @@ program test_amr_patch_tree_hydro_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d,compute_amr_patch_tree_cfl_3d
+  use amr_patch_tree_hydro_3d_mod, only: compute_sdc_amr_patch_tree_hydro_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(amr_patch_tree_3d) :: tree
@@ -72,6 +74,7 @@ program test_amr_patch_tree_hydro_3d
       call require(ok,'temperature initialization')
       call compute_amr_patch_tree_cfl_3d(tree,species,state,temperature,spacing,.15_dp,dt,ok)
       call require(ok.and.dt>0,'CFL')
+      if(ppm.and.mode==1) call check_sdc_hydro_stage()
       if (geometry==1) root_dt=dt
       expected_dt=huge(1.0_dp)
       do node=1,size(tree%nodes)
@@ -120,6 +123,42 @@ program test_amr_patch_tree_hydro_3d
     end do
   end do
 contains
+  subroutine check_sdc_hydro_stage()
+    type(amr_tree_state_3d) :: source,rates,candidate,expected,et,forced
+    type(amr_tree_flux_3d), allocatable :: flux(:),forced_flux(:)
+    real(dp) :: boundary(12),correction(12),maximum,change
+    integer :: peer
+    source=state
+    do peer=1,size(tree%nodes)
+      source%fields(peer)%values=0
+    end do
+    call compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,source,spacing,dt,faces, &
+      rates,flux,ok)
+    call require(ok,'SDC hierarchy CTU stage')
+    candidate=state
+    do peer=1,size(tree%nodes)
+      candidate%fields(peer)%values=state%fields(peer)%values+dt*rates%fields(peer)%values
+    end do
+    call reflux_amr_patch_tree_3d(tree,candidate,flux,spacing,faces,correction,maximum,ok)
+    call require(ok,'SDC stage integrated flux reflux')
+    expected=state;et=temperature
+    call advance_amr_patch_tree_hydro_3d(tree,species,expected,et,spacing,dt,faces, &
+      'characteristic_ppm','mc','pelec',boundary,maximum,ok)
+    call require(ok,'SDC hierarchy CTU reference')
+    do peer=1,size(tree%nodes)
+      call require(maxval(abs(candidate%fields(peer)%values-expected%fields(peer)%values)/ &
+        max(1._dp,abs(expected%fields(peer)%values)))<1e-12_dp,'SDC hydro stage plus reflux matches existing tree step')
+      source%fields(peer)%values(2,:,:,:)=20000
+    end do
+    call compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,source,spacing,dt,faces, &
+      forced,forced_flux,ok)
+    call require(ok,'SDC hierarchy signed source interpolation')
+    change=0
+    do peer=1,size(tree%nodes)
+      change=max(change,maxval(abs(forced%fields(peer)%values-rates%fields(peer)%values)))
+    end do
+    call require(change>1e-10_dp,'SDC predictor source changes CTU rate')
+  end subroutine check_sdc_hydro_stage
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label

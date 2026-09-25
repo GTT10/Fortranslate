@@ -15,7 +15,88 @@ module amr_patch_tree_hydro_3d_mod
   private
   public :: advance_amr_patch_tree_hydro_3d,compute_amr_patch_tree_cfl_3d
   public :: advance_amr_patch_tree_hydro_level_3d
+  public :: compute_sdc_amr_patch_tree_hydro_3d
 contains
+  subroutine compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,predictor_source,root_spacing, &
+      dt,faces,hydro_rate,integrated_flux,ok,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature,predictor_source
+    real(dp), intent(in) :: root_spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: hydro_rate
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6),difmag
+    type(amr_tree_state_3d) :: packed,rates
+    type(amr_tree_flux_3d), allocatable :: flux(:)
+    real(dp), allocatable :: h(:,:),ghost(:,:,:,:),source_ghost(:,:,:,:),inlet(:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp) :: theta,viscosity
+    logical :: valid,inlet_mask(6),wall_mask(6),reflecting(6),outflow(6)
+    character(len=32) :: source_faces(6)
+    integer :: peer,n(3),nv,i,j,k
+    ok=.false.;nv=reactive_nvar(size(species));viscosity=.1_dp
+    if(present(difmag)) viscosity=difmag
+    if(.not.all(ieee_is_finite([dt,viscosity])).or.dt<=0.or.viscosity<0) return
+    if(.not.valid_reactive_boundaries_3d(faces)) return
+    call prepare(tree,species,state,temperature,root_spacing,h,valid)
+    if(.not.valid) return
+    if(.not.predictor_source%is_valid(tree)) return
+    if(size(predictor_source%fields(1)%values,1)/=nv) return
+    if(present(inflow_state)) then
+      if(.not.present(inflow_temperature)) return
+      if(any(shape(inflow_state)/=[nv,6]).or.size(inflow_temperature)/=6) return
+      allocate(inlet(nv+1,6));inlet(:nv,:)=inflow_state;inlet(nv+1,:)=inflow_temperature
+    end if
+    source_faces=faces
+    where(source_faces/='periodic') source_faces='outflow'
+    allocate(packed%fields(size(tree%nodes)),flux(size(tree%nodes)))
+    rates=state
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      allocate(packed%fields(peer)%values(nv+1,n(1),n(2),n(3)))
+      packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
+      packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+    end do
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,inflow_state=inlet, &
+        coarse_limiter='mc',species_count=size(species),ghost_width=4,species=species,inflow_mach=inflow_mach, &
+        inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      if(.not.valid) return
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=4)
+      if(.not.valid) return
+      ! Rates are signed fields: use scalar coarse interpolation without the
+      ! state composition limiter or physical momentum reflection.
+      call fill_amr_patch_tree_ghosts_3d(tree,predictor_source,peer,source_faces,source_ghost,valid, &
+        coarse_limiter='mc',ghost_width=4)
+      if(.not.valid) return
+      call amr_tree_inflow_faces_3d(tree,peer,faces,inlet_mask,valid,wall_mask,reflecting,outflow)
+      if(.not.valid) return
+      allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+      call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),n,h(:,peer), &
+        dt,.false.,.true.,'pelec',fx,fy,fz,theta,valid,inflow_faces=inlet_mask,no_slip_faces=wall_mask, &
+        reflecting_faces=reflecting,outflow_faces=outflow,outlet_pressure=outlet_pressure,difmag=viscosity, &
+        conserved_source=source_ghost)
+      if(.not.valid) return
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        rates%fields(peer)%values(:,i,j,k)=-(fx(:,i,j,k)-fx(:,i-1,j,k))/h(1,peer)- &
+          (fy(:,i,j,k)-fy(:,i,j-1,k))/h(2,peer)-(fz(:,i,j,k)-fz(:,i,j,k-1))/h(3,peer)
+      end do
+      end do
+      end do
+      flux(peer)%x=dt*fx;flux(peer)%y=dt*fy;flux(peer)%z=dt*fz
+      if(.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
+        .not.all(ieee_is_finite(flux(peer)%z))) return
+      deallocate(fx,fy,fz)
+    end do
+    if(.not.rates%is_valid(tree)) return
+    hydro_rate=rates;integrated_flux=flux;ok=.true.
+  end subroutine compute_sdc_amr_patch_tree_hydro_3d
+
   subroutine compute_amr_patch_tree_cfl_3d(tree,species,state,temperature,root_spacing,cfl,dt,ok)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
