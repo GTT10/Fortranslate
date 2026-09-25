@@ -192,8 +192,9 @@ and tree/MPI boundary input remain open. Serial single-level spray boundary
 input now covers inflow/outflow, periodic and domain-wall gas conditions with
 specular particle reflection ([checks](validation/eb-spray-wall-20260926.md)).
 The serial EB tree halo API and common/recursive time updates now accept
-prescribed inflow states. MPI and application dispatch remain work
-([checks](validation/eb-tree-inflow-step-20260926.md)).
+prescribed inflow states. MPI gas stepping and fixed/selected application
+dispatch now include changed-rank restart; MPI spray and periodic/wall tree
+boundaries remain work ([checks](validation/eb-tree-inflow-application-20260926.md)).
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

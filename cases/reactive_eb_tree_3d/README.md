@@ -251,3 +251,28 @@ and positive, and resulting thermodynamic states must satisfy the mechanism EOS.
 These values are part of checkpoint identity. Method availability does not imply
 that every density discontinuity admits the reconstructed CTU states within the
 mechanism temperature bounds; timestep retries may still fail.
+
+## Prescribed inflow and outflow
+
+Serial/MPI fixed and selected gas executables accept explicit `boundary_faces`
+in x-low, x-high, y-low, y-high, z-low, z-high order. For example:
+
+```fortran
+ boundary_faces='inflow','outflow','outflow','outflow','outflow','outflow'
+ inflow_density(1)=.31, inflow_pressure(1)=135000
+ inflow_velocity(:,1)=100,0,0
+```
+
+Only `inflow` and `outflow` labels are currently supported by the tree path.
+Inlet composition is the initial gas mixture. `inflow_density` defaults to
+0.31 kg/m3, velocity to zero, and pressure must be positive on an inlet.
+Leave Mach controls inactive and input `inflow_temperature` at zero; inlet
+temperature is recovered from density, pressure and composition. The MPI root
+patch owner constructs inlet states once and broadcasts them, including for
+idle ranks. Regridding and restart retain those prescribed states.
+
+Both common and subcycled updates forward the controls. Automatic timestep
+selection uses boundary donor speeds and diffusivities. Restart context binds
+all six labels, densities, pressures and velocity vectors. Explicit boundaries
+are not yet accepted by the MPI spray executable. Legacy inputs retain their
+existing checkpoint envelope. See the [application checks](../../docs/validation/eb-tree-inflow-application-20260926.md).

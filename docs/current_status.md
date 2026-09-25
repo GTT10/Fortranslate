@@ -20,9 +20,11 @@ rollback checks
 ([checks](validation/mpi-eb-prescribed-halo-20260926.md)). Common and recursive
 MPI hydro now forward these controls with serial agreement
 ([checks](validation/mpi-eb-inflow-hydro-20260926.md)). MPI molecular transport,
-full reacting splits and donor timestep bounds are also connected; application
-input and restart context remain pending
-([checks](validation/mpi-eb-inflow-full-20260926.md)).
+full reacting splits and donor timestep bounds are also connected
+([checks](validation/mpi-eb-inflow-full-20260926.md)). Fixed/selected serial and
+MPI gas application inputs now connect prescribed inflow and boundary-bound
+changed-rank restart across scheduled regridding
+([checks](validation/eb-tree-inflow-application-20260926.md)).
 
 Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
 with the `pelec` Riemann solver, outflow halos, reaction/transport composition
