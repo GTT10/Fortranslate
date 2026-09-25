@@ -9,11 +9,16 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Serial EB tree halos also accept paired periodic faces, wrapping donor indices
+through peers and ancestors, including halos wider than the root domain
+([checks](validation/eb-tree-periodic-halo-20260926.md)). Periodic tree time
+updates remain rejected pending seam flux reconciliation; MPI periodic tree
+halos and application dispatch are not yet connected.
+
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
 ([checks](validation/eb-tree-prescribed-halo-20260926.md)). Common and recursive
-hydro/transport/reacting library updates now forward those conditions; MPI
-and application input remain pending
+hydro/transport/reacting library updates now forward those conditions
 ([checks](validation/eb-tree-inflow-step-20260926.md)). MPI halo exchange also
 accepts collectively agreed prescribed states, with serial agreement and idle-rank
 rollback checks
