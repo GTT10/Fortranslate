@@ -37,6 +37,9 @@ conservation correction ([checks](validation/sdc-flux-export-20260926.md)).
 Paired state/source halo callbacks now support caller-owned boundary data
 ([checks](validation/sdc-halo-callbacks-20260926.md)); hierarchy coordination
 and MPI exchange remain open.
+New-time source estimates can now persist across caller-coordinated iterations
+([checks](validation/sdc-iteration-state-20260926.md)); this is a library
+prerequisite, not completed hierarchy synchronization.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates

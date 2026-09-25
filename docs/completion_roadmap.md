@@ -336,7 +336,10 @@ are available for AMR flux registers
 reflux dispatch and AMR/MPI/EB SDC remain open. State/source halo callbacks now
 accept caller-owned neighbor and boundary data
 ([checks](validation/sdc-halo-callbacks-20260926.md)); hierarchy synchronization
-and actual coarse/fine interpolation remain open. Physical
+and actual coarse/fine interpolation remain open. New-time source estimates
+can persist across caller-coordinated iterations
+([checks](validation/sdc-iteration-state-20260926.md)); a hierarchy stage driver
+is still required. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
