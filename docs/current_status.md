@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The regular pressure-traced PPM transverse predictor now retains signed
+intermediate species weights as in the pinned passive kernels. Riemann forwarding
+and the separate accepted-cell rejection are checked
+([evidence](validation/ppm-signed-transverse-20260926.md)).
+
 PPM normal primitive-state prediction now agrees with compiled pinned PeleC
 projection bodies in 252 bounded cases
 ([comparison](validation/ppm-pinned-normal-20260926.md)). Full CTU external
