@@ -16,17 +16,21 @@ module mpi_eb_tree_halo_3d_mod
   public :: fill_mpi_eb_tree_halo_3d
 contains
   ! Collective PCM halos with outflow/Mach inlet and optional ancestor time interpolation.
-  ! Only face donors are exchanged; interior, solid faces, edges and corners are zero.
+  ! By default only face donors are exchanged; remaining slots are zero.
+  ! Optional volume fractions request complete fluid donors including corners.
+  ! Ancestor geometry uses PCM volume fractions, matching the serial halo API.
   ! Geometry is replicated. Output fields have spatial lower bounds zero.
   subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(eb_geometry_3d), intent(in) :: geometry(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
     type(amr_tree_state_3d), intent(inout) :: ghost,ghost_temperature
+    type(amr_tree_state_3d), optional, intent(inout) :: ghost_volume_fraction
+    type(amr_tree_state_3d) :: cv
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
@@ -45,28 +49,30 @@ contains
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
     integer :: i,j,k,donor,source(3),count,q
-    real(dp) :: controls(18),low_controls(18),high_controls(18),inlet(reactive_nvar(size(species)))
+    real(dp) :: controls(19),low_controls(19),high_controls(19),inlet(reactive_nvar(size(species)))
     real(dp) :: inlet_t
     integer :: inlet_face
-    logical :: valid,ready
+    logical :: valid,ready,full_halo
     ok=.false.;nv=reactive_nvar(size(species))
+    full_halo=present(ghost_volume_fraction)
     ! Agree on finite inlet controls before any rank starts donor exchange.
     controls(:6)=-1;controls(7:)=0;valid=.true.
     if (present(inflow_temperature).or.present(inflow_pressure)) valid=present(inflow_mach)
     if (present(inflow_mach)) controls(:6)=inflow_mach
     if (present(inflow_temperature)) controls(7:12)=inflow_temperature
     if (present(inflow_pressure)) controls(13:18)=inflow_pressure
+    controls(19)=merge(1._dp,0._dp,full_halo)
     valid=valid.and.all(ieee_is_finite(controls))
     call agree(valid,ready)
     if (.not.ready) return
-    valid=all(controls(:6)<=100).and.all(controls(13:)>=0).and.all(controls(13:)<=1e15_dp)
-    valid=valid.and..not.any(controls(13:)>0.and.controls(:6)<0)
+    valid=all(controls(:6)<=100).and.all(controls(13:18)>=0).and.all(controls(13:18)<=1e15_dp)
+    valid=valid.and..not.any(controls(13:18)>0.and.controls(:6)<0)
     valid=valid.and..not.any(controls(7:12)<=0.and.controls(:6)>=0)
     call agree(valid,ready)
     if (.not.ready) return
-    call MPI_Allreduce(controls,low_controls,18,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low_controls,19,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high_controls,18,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high_controls,19,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low_controls/=high_controls)) return
     ! Average only a private owner-local snapshot. This also validates geometry,
@@ -137,6 +143,21 @@ contains
       if (any(n>huge(1)-2)) then
         valid=.false.;exit
       end if
+      if(full_halo) then
+        faces=1
+        do axis=1,3
+          if(faces>int(huge(1)/max(nv,4),int64)/int(n(axis)+2,int64)) then
+            valid=.false.;exit
+          end if
+          faces=faces*int(n(axis)+2,int64)
+        end do
+        if(.not.valid) exit
+        if(faces>int(huge(1)/max(nv,4),int64)-maximum) then
+          valid=.false.;exit
+        end if
+        maximum=maximum+faces
+        cycle
+      end if
       do axis=1,3
         faces=int(n(axis),int64)*int(n(mod(axis,3)+1),int64)
         if (faces>(int(huge(1)/max(nv,4),int64)-maximum)/2_int64) then
@@ -151,6 +172,10 @@ contains
     allocate(requests(4,int(maximum)),destination(4,int(maximum)), &
       candidate%fields(size(owners)),ct%fields(size(owners)),stat=ios)
     valid=ios==0
+    if(valid.and.full_halo) then
+      allocate(cv%fields(size(owners)),stat=ios)
+      valid=ios==0
+    end if
     if (valid) then
       do node=1,size(owners)
         if (owners(node)/=rank) cycle
@@ -161,6 +186,13 @@ contains
           valid=.false.;exit
         end if
         candidate%fields(node)%values=0._dp;ct%fields(node)%values=0._dp
+        if(full_halo) then
+          allocate(cv%fields(node)%values(1,0:n(1)+1,0:n(2)+1,0:n(3)+1),stat=ios)
+          if(ios/=0) then
+            valid=.false.;exit
+          end if
+          cv%fields(node)%values=0
+        end if
       end do
     end if
     call agree(valid,ready)
@@ -180,14 +212,23 @@ contains
       do axis=1,3
       do side=0,1
         first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
+        if(full_halo) then
+          if(axis/=1.or.side/=0) cycle
+          first=0;last=n+1
+        end if
         do k=first(3),last(3)
         do j=first(2),last(2)
         do i=first(1),last(1)
           idx=[i,j,k];face=idx;face(axis)=side*n(axis)
-          metrics=face_metrics(geometry(target),axis,face)
-          if (metrics(1)<=0._dp) cycle
+          if(.not.full_halo) then
+            metrics=face_metrics(geometry(target),axis,face)
+            if (metrics(1)<=0._dp) cycle
+          end if
           global=origin(:,target)+int(idx-1,int64);donor=0
-          if (any(global<0_int64).or.any(global>=domain(:,level))) then
+          if(full_halo) global=max(0_int64,min(domain(:,level)-1,global))
+          if(full_halo.and.all(idx>=1).and.all(idx<=n)) then
+            donor=target;source=idx
+          else if (any(global<0_int64).or.any(global>=domain(:,level))) then
             donor=target;source=max(1,min(n,idx))
           else
             do depth=level,1,-1
@@ -204,8 +245,11 @@ contains
           if (donor==0) then
             valid=.false.;cycle
           end if
+          if(full_halo) cv%fields(target)%values(1,i,j,k)= &
+            geometry(donor)%volume_fraction(source(1),source(2),source(3))
           if (geometry(donor)%volume_fraction(source(1),source(2),source(3))<=0._dp) then
-            valid=.false.;cycle
+            if(.not.full_halo) valid=.false.
+            cycle
           end if
           count=count+1
           requests(:,count)=[donor,source];destination(:,count)=[target,idx]
@@ -258,8 +302,14 @@ contains
       level=tree%nodes(node)%level+1
       global=origin(:,node)+int([i,j,k]-1,int64);inlet_face=0
       do axis=1,3
-        if (global(axis)<0) inlet_face=2*axis-1
-        if (global(axis)>=domain(axis,level)) inlet_face=2*axis
+        if(full_halo) then
+          if(inlet_face/=0) cycle
+          if(global(axis)<0.and.controls(2*axis-1)>=0) inlet_face=2*axis-1
+          if(global(axis)>=domain(axis,level).and.controls(2*axis)>=0) inlet_face=2*axis
+        else
+          if (global(axis)<0) inlet_face=2*axis-1
+          if (global(axis)>=domain(axis,level)) inlet_face=2*axis
+        end if
       end do
       if (inlet_face>0) then
         if (controls(inlet_face)>=0) then
@@ -283,6 +333,7 @@ contains
     if (.not.ready) return
     call move_alloc(candidate%fields,ghost%fields)
     call move_alloc(ct%fields,ghost_temperature%fields)
+    if(full_halo) call move_alloc(cv%fields,ghost_volume_fraction%fields)
     ok=.true.
   contains
     subroutine agree(condition,result)

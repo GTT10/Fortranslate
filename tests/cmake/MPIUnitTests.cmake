@@ -1133,3 +1133,11 @@ if(PELEF_ENABLE_MPI)
   set_tests_properties(mpi_amr_viscosity_hierarchy_3d_np8 PROPERTIES TIMEOUT 240 PROCESSORS 8
     PASS_REGULAR_EXPRESSION "PASS: sparse PCM PLM viscosity hierarchy")
 endif()
+
+if(TARGET test_mpi_eb_tree_hydro_3d)
+  add_test(NAME unit_mpi_eb_tree_viscosity_3d_3
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_hydro_3d> ${MPIEXEC_POSTFLAGS} viscosity)
+  set_tests_properties(unit_mpi_eb_tree_viscosity_3d_3 PROPERTIES
+    TIMEOUT 120 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()

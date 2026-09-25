@@ -22,10 +22,14 @@ program test_mpi_eb_tree_hydro_3d
   type(reactive_eb_3d_config) :: config
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:)
   real(dp), allocatable :: before(:),after(:),boundary(:),wall(:)
-  real(dp) :: residual
+  real(dp) :: residual,coefficient
+  character(len=32) :: test_mode
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,rank,nranks,status
   logical :: ok
+  call get_command_argument(1,test_mode)
+  coefficient=0
+  if(test_mode=='viscosity') coefficient=.037_dp
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
@@ -70,7 +74,7 @@ program test_mpi_eb_tree_hydro_3d
   call require(ok,'initial inventory')
   saved=tree
   boundary=17._dp;wall=19._dp
-  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok)
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,difmag=coefficient)
   call require(ok,'tree hydro step')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
   call require(ok,'final inventory')
@@ -88,7 +92,7 @@ contains
   subroutine check_mpi_hydro()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)
-    real(dp) :: b(nv),w(nv),inventory(nv),error,dt
+    real(dp) :: b(nv),w(nv),inventory(nv),error,dt,local_coefficient
     integer :: owners(count),p,mode,failure
     logical :: good
     do p=1,count
@@ -104,9 +108,9 @@ contains
         allocate(lt%fields(p)%values(1,4,4,4))
         lt%fields(p)%values(1,:,:,:)=saved%nodes(p)%temperature
       end do
-      initial=local;it=lt;b=17._dp;w=19._dp
+      initial=local;it=lt;b=17._dp;w=19._dp;local_coefficient=coefficient
       call advance_mpi_eb_tree_hydro_3d(species,topology,owners,geometry,'hllc',1.e-8_dp, &
-        local,lt,b,w,MPI_COMM_WORLD,good)
+        local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient)
       call require(good,'MPI hydro')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'owner-local U')
@@ -121,16 +125,19 @@ contains
       error=maxval(abs(inventory-before-b-w)/max(1._dp,abs(before)))
       call require(error<3.e-14_dp,'MPI hydro conservation')
       if (rank==0) print *, 'MPI axis, nodes, mode, residual: ',axes(axis),count,mode,error
-      do failure=1,3
+      do failure=1,4
+        if(failure==4.and.coefficient==0) cycle
+        local_coefficient=coefficient
+        if(failure==4.and.rank==0) local_coefficient=.05_dp
         local=initial;lt=it;b=17._dp;w=19._dp;dt=1.e-8_dp
         if (failure==1) then
           call advance_mpi_eb_tree_hydro_3d(species,topology,owners,geometry,'invalid',dt, &
-            local,lt,b,w,MPI_COMM_WORLD,good)
+            local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient)
         else
           if (failure==2.and.rank==0) dt=2.e-8_dp
           if (failure==3.and.rank==owners(count)) local%fields(count)%values(1,4,4,4)=-1._dp
           call advance_mpi_eb_tree_hydro_3d(species,topology,owners,geometry,'hllc',dt, &
-            local,lt,b,w,MPI_COMM_WORLD,good)
+            local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient)
         end if
         call require(.not.good,'collective hydro rejection')
         if (failure==3.and.rank==owners(count)) then
