@@ -33,8 +33,11 @@ rollback ([checks](validation/eb-tree-periodic-full-mpi-flux-20260926.md)).
 Common and recursive MPI hydro now forward periodic labels through provisional
 endpoint and final flux synchronization, with focused PLM/CTU serial agreement
 and collective rollback checks
-([checks](validation/mpi-eb-periodic-hydro-20260926.md)). MPI periodic transport,
-reacting splits and application inputs remain pending.
+([checks](validation/mpi-eb-periodic-hydro-20260926.md)). MPI common/recursive
+transport and reacting splits also connect periodic synchronization, with
+serial agreement and collective rollback checks
+([checks](validation/mpi-eb-periodic-full-20260926.md)). Periodic tree
+application inputs remain pending.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
