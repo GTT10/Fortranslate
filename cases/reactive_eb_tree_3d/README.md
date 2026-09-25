@@ -322,5 +322,6 @@ flux and zero energy flux through stationary adiabatic walls, while retaining
 viscous momentum stress. CTU uses reflected configured geometry. Boundary labels
 are bound to checkpoint continuation, including across scheduled regridding
 and rank-count changes. `isothermal_wall` is not yet supported by this tree
-entry point. MPI tree spray rejects domain-wall labels until particle wall
-routing is connected. This input support is not physical wall-flow validation.
+entry point. MPI tree spray accepts these wall labels with
+`particle_outflow=.true.` and specular particle reflection; wall films and KH
+child generation remain unsupported with these explicit boundaries. This input support is not physical wall-flow validation.

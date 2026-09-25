@@ -26,12 +26,13 @@ def main():
     p.add_argument('--mach', action='store_true')
     p.add_argument('--inflow', action='store_true')
     p.add_argument('--periodic', action='store_true')
+    p.add_argument('--wall', action='store_true')
     p.add_argument('--difmag', type=float)
     p.add_argument('--pelemp-cap', action='store_true')
     a = p.parse_args()
-    if a.inflow or a.periodic:
+    if a.inflow or a.periodic or a.wall:
         assert not a.mach
-        assert not (a.inflow and a.periodic)
+        assert sum((a.inflow,a.periodic,a.wall))<=1
         a.ctu = True
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -75,8 +76,10 @@ def main():
                      "inflow_pressure(1)=135000,inflow_velocity(1,1)=100," + extra)
             spray = directory / 'spray.nml'
             spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1))
-        if a.periodic:
+        if a.periodic or a.wall:
             extra = ("boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic'," + extra)
+            if a.wall:
+                extra = extra.replace("'periodic'", "'no_slip_wall'")
             spray = directory / 'spray.nml'
             values = spray.read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
             values = values.replace('center=.0015,.001250001,.0015', 'center=.0015,.001250001,.003999999')
@@ -169,6 +172,8 @@ def main():
                 assert float(row['temperature']) != initial_t, row
                 if a.periodic:
                     assert 0 <= float(row['z']) < .001, row
+                if a.wall:
+                    assert .003 < float(row['z']) < .004 and float(row['w']) < 0, row
             component_sum = sum(float(v) for k, v in row.items() if k.startswith('component_mass_'))
             assert abs(float(row['mass']) - component_sum) <= 1e-14 * float(row['mass'])
         particles.append(drops)
@@ -218,6 +223,9 @@ def main():
         if a.periodic:
             mismatch = run(2, 'periodic_mismatch', f"restart_file='{archive}',"
                            "boundary_faces='outflow','outflow','outflow','outflow','periodic','periodic',", success=False)
+            assert not (mismatch / 'result.csv').exists()
+        if a.wall:
+            mismatch = run(2, 'wall_mismatch', f"restart_file='{archive}',boundary_faces(1:2)=2*'slip_wall',", success=False)
             assert not (mismatch / 'result.csv').exists()
         if a.inflow:
             mismatch = run(2, 'prescribed_mismatch', f"restart_file='{archive}',inflow_velocity(1,1)=101,", success=False)

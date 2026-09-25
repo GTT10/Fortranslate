@@ -652,8 +652,9 @@ contains
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     if(any(boundary_faces=='periodic').and.(wall_impacts.or.particle_options%khrt_children)) &
       error stop 'Periodic EB spray films and KH children are not connected'
-    if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) &
-      error stop 'MPI EB spray domain-wall routing is not connected'
+    if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall').and. &
+      (wall_impacts.or.particle_options%khrt_children)) &
+      error stop 'MPI EB spray domain-wall films and KH children are not connected'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)

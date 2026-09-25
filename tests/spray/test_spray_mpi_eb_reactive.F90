@@ -131,6 +131,13 @@ program test_spray_mpi_eb_reactive
     labels='periodic';labels(3:4)='outflow';open_boundary=.true.
     if(rank==nranks-1) drops(1)%position(1)=.00399999_dp
   end if
+  if(index(test_mode,'wall')>0) then
+    allocate(labels(6),open_boundary)
+    labels='outflow';labels(1:2)='no_slip_wall';open_boundary=.true.
+    if(rank==nranks-1) then
+      drops(1)%position(1)=1.e-8_dp;drops(1)%velocity(1)=-20._dp
+    end if
+  end if
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
   call advance()
@@ -171,6 +178,7 @@ program test_spray_mpi_eb_reactive
   call require(size(drops)==merge(1,0,rank==nranks-1),'final fine owner')
   if(rank==nranks-1) then
     call require(drops(1)%position(1)<.002_dp.and.drops(1)%position(2)>.00125_dp,'fine cell and fluid position')
+    if(index(test_mode,'wall')>0) call require(drops(1)%velocity(1)>0,'outer wall reflection')
     call require(drops(1)%temperature>350.and.drops(1)%mass<1e-12_dp,'heating and evaporation')
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if

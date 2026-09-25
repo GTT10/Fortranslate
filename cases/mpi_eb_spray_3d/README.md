@@ -425,3 +425,18 @@ explicit faces allow particle outflow. Restart retains the boundary labels;
 changing them is rejected. `wall_impacts` and `particle_options%khrt_children`
 must remain false for periodic cases. Specular reflection from the embedded
 surface remains available.
+
+## Adiabatic domain walls
+
+The tree input accepts `slip_wall` and `no_slip_wall` gas labels, for example:
+
+```fortran
+ boundary_faces='no_slip_wall','no_slip_wall','outflow','outflow','no_slip_wall','no_slip_wall'
+```
+
+Set `particle_outflow=.true.` in the spray input to enable explicit particle
+boundary routing. Particles reflect specularly at either wall label; the gas
+uses the corresponding slip/no-slip condition. Exterior particle impulse is
+included in the coupled boundary inventory. Wall labels are bound to restart.
+`wall_impacts` and `particle_options%khrt_children` must remain false with these
+explicit walls. Isothermal gas walls are not yet accepted by the tree input.
