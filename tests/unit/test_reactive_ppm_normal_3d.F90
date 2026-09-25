@@ -3,15 +3,44 @@ program test_reactive_ppm_normal_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
+  use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_3d_mod, only: compute_reactive_ppm_normal_fluxes_3d,compute_reactive_ppm_ctu_fluxes_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),reference(:,:),q(:),v(:),f(:)
   real(dp) :: speed,swap,dt,pi,phase,residual,theta,expected,error_normal,error_ctu,value
   integer :: nv,i,j,k,axis,mode,index(3),m
+  real(dp) :: stencil(12,-3:3),qm(12),qp(12),scratch(12),flat,ratio,temperature
+  integer :: status
+  character(len=32) :: argument
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
+  if(command_argument_count()>0) then
+    call get_command_argument(1,argument)
+    select case(trim(argument))
+    case('--thermo-stream')
+      do k=1,size(species)
+        write(*,'(16(es26.17e3,1x))') species(k)%molecular_weight,species(k)%temperature_mid, &
+          species(k)%low_coefficients,species(k)%high_coefficients
+      end do
+    case('--reference-stream')
+      do
+        read(*,*,iostat=status) stencil,flat,ratio
+        if(status<0) exit
+        if(status/=0) error stop 'invalid reference input'
+        call reactive_primitive_to_conserved(species,stencil(:,0),scratch,temperature,speed,ok)
+        call require(ok,'reference center EOS')
+        call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,speed,ratio, &
+          .false.,.false.,qm,qp,ok,flat)
+        call require(ok,'reference normal prediction')
+        write(*,'(24(es26.17e3,1x))') qm,qp
+      end do
+    case default
+      error stop 'unknown mode'
+    end select
+    stop
+  end if
   nv=reactive_nvar(size(species));pi=acos(-1._dp);dt=1e-5_dp
   allocate(u(nv,8,8,8),t(8,8,8),fx(nv,0:8,8,8),fy(nv,8,0:8,8),fz(nv,8,8,0:8))
   allocate(reference(nv,0:8),q(nv),v(nv),f(nv))
