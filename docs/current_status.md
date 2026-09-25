@@ -13,13 +13,15 @@ Regular fixed/selected gas input now selects nonreacting periodic SDC with
 external forcing through `time_integrator='sdc'`
 ([checks](validation/sdc-app-20260926.md)). Molecular transport now participates
 as an old/new source family ([checks](validation/sdc-transport-20260926.md)).
-Chemistry and broader boundary/AMR/MPI integration for SDC remain open.
+The library now couples chemistry into periodic SDC
+([checks](validation/sdc-reactions-20260926.md)); reacting application input and
+broader boundary/AMR/MPI integration remain open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
 ([checks](validation/forced-reactor-integrator-20260926.md)). Transactional
 full-interval subcycling is also implemented
-([checks](validation/forced-reactor-interval-20260926.md)); SDC connection remains open.
+([checks](validation/forced-reactor-interval-20260926.md)) and feeds this library coupling.
 
 Regular fixed/selected gas applications now accept force-per-volume input
 `external_forcing(3)` with PPM/PeleC, time-centered work and separate source

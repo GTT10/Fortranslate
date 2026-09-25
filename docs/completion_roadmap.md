@@ -312,8 +312,10 @@ variable density and externally changing internal energy
 substep now integrates the forced reactor
 ([checks](validation/forced-reactor-integrator-20260926.md)). Full-interval
 subcycling now preserves caller state on failure
-([checks](validation/forced-reactor-interval-20260926.md)); SDC reaction coupling
-remains open. Physical
+([checks](validation/forced-reactor-interval-20260926.md)). Periodic SDC library
+reaction coupling is implemented with a uniform reacting check
+([evidence](validation/sdc-reactions-20260926.md)); application routing and
+nonuniform reacting qualification remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
