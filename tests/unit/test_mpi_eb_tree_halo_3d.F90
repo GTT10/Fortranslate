@@ -101,6 +101,8 @@ program test_mpi_eb_tree_halo_3d
     call wide_checks()
     call wide_checks(.true.)
     call prescribed_checks()
+    call periodic_checks()
+    call wide_checks(periodic=.true.)
     call temporal_checks()
     ! Root unrefined boundary survives averaging, then fails donor EOS after exchange.
     if (rank==owners(1)) local%fields(1)%values(1,4,4,4)=-1._dp
@@ -126,6 +128,45 @@ program test_mpi_eb_tree_halo_3d
   if (rank==0) print *, 'PASS: MPI EB face halos, exact serial parity and rollback'
   call MPI_Finalize(status)
 contains
+  subroutine periodic_checks()
+    type(amr_tree_state_3d) :: volume
+    real(dp) :: serial_vf(0:5,0:5,0:5)
+    character(len=16) :: labels(6)
+    integer :: p
+    labels='outflow';labels(:4)='periodic'
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,ghost,gh_t,MPI_COMM_WORLD,ok, &
+      boundary_faces=labels)
+    call require(ok,'periodic MPI face halos')
+    call unchanged_inputs()
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call fill_reactive_eb_tree_halo_3d(species,tree,p,reference,reference_t,ok,boundary_faces=labels)
+      call require(ok.and.all(ghost%fields(p)%values==reference).and. &
+        all(gh_t%fields(p)%values(1,:,:,:)==reference_t),'periodic face exact serial parity')
+    end do
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,ghost,gh_t,MPI_COMM_WORLD,ok, &
+      boundary_faces=labels,ghost_volume_fraction=volume)
+    call require(ok,'periodic complete one-layer halo')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call fill_reactive_eb_tree_halo_3d(species,tree,p,reference,reference_t,ok, &
+        boundary_faces=labels,ghost_volume_fraction=serial_vf)
+      call require(ok.and.all(ghost%fields(p)%values==reference).and. &
+        all(gh_t%fields(p)%values(1,:,:,:)==reference_t).and. &
+        all(volume%fields(p)%values(1,:,:,:)==serial_vf),'periodic complete halo exact serial parity')
+    end do
+    saved_ghost=ghost;saved_gt=gh_t
+    if(rank==0) labels(:2)='outflow'
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,ghost,gh_t,MPI_COMM_WORLD,ok, &
+      boundary_faces=labels)
+    call require(.not.ok,'rank-disagreeing periodic labels reject')
+    call unchanged_halos()
+    labels='periodic'
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,ghost,gh_t,MPI_COMM_WORLD,ok, &
+      boundary_faces=labels)
+    call require(.not.ok,'incompatible periodic root faces reject')
+    call unchanged_halos()
+  end subroutine
   subroutine prescribed_checks()
     real(dp) :: inlet(nv,6),inlet_t(6)
     character(len=16) :: labels(6)
@@ -151,8 +192,8 @@ contains
     call require(.not.ok,'invalid prescribed EOS collective rejection')
     call unchanged_halos()
   end subroutine
-  subroutine wide_checks(prescribed)
-    logical, optional, intent(in) :: prescribed
+  subroutine wide_checks(prescribed,periodic)
+    logical, optional, intent(in) :: prescribed,periodic
     character(len=16), allocatable :: labels(:)
     real(dp), allocatable :: inlet(:,:),inlet_t(:)
     type(amr_tree_state_3d) :: metrics,wide_u,wide_t,wide_vf,old_u,old_t,old_vf,end_u
@@ -169,6 +210,10 @@ contains
         inlet(:,p)=real(p+1,dp)*u(:,1,1,3)
       end do
       inlet_t=t(1,1,3)
+    end if
+    if(present(periodic)) then
+      allocate(labels(6))
+      labels='outflow';labels(:4)='periodic'
     end if
     allocate(metrics%fields(5))
     do p=1,5
@@ -200,7 +245,7 @@ contains
       call require(all(wide_vf%fields(p)%values(1,:,:,:)==serial_vf),'wide fine-metric parity')
       call require(all(serial_vf==metrics%fields(p)%values(1,:,:,:)),'target geometry controls every halo layer')
     end do
-    if(rank==owners(1)) then
+    if(rank==owners(1).and..not.present(periodic)) then
       call require(all(wide_u%fields(1)%values(:,-5,1,3)==wide_u%fields(1)%values(:,0,1,3)), &
         'all six physical outflow layers use the same boundary donor')
     end if

@@ -7,7 +7,7 @@ module mpi_eb_tree_halo_3d_mod
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
   use eb_reactive_transfer_3d_mod, only: face_metrics
   use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
@@ -53,7 +53,7 @@ contains
     real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed,metrics(3)
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
-    integer :: i,j,k,donor,source(3),count,q,width
+    integer :: i,j,k,donor,source(3),count,q,width,wrap_axis
     real(dp) :: controls(29+6*reactive_nvar(size(species)))
     real(dp) :: low_controls(size(controls)),high_controls(size(controls)),inlet(reactive_nvar(size(species)))
     real(dp) :: inlet_t
@@ -70,9 +70,10 @@ contains
     if (present(inflow_temperature).or.present(inflow_pressure)) valid=present(inflow_mach)
     if(present(boundary_faces)) then
       valid=.not.present(inflow_mach).and..not.present(inflow_pressure)
-      valid=valid.and.all(boundary_faces=='inflow'.or.boundary_faces=='outflow')
+      valid=valid.and.all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic')
       controls(22)=1
-      controls(23:28)=merge(1._dp,0._dp,boundary_faces=='inflow')
+      controls(23:28)=merge(1._dp,0._dp,boundary_faces=='inflow')+ &
+        merge(2._dp,0._dp,boundary_faces=='periodic')
       if(any(boundary_faces=='inflow')) valid=valid.and.present(inflow_state).and.present(inflow_temperature)
     else
       valid=valid.and..not.present(inflow_state)
@@ -111,6 +112,10 @@ contains
     snapshot=state;st=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
     if (.not.ready) return
+    valid=.true.
+    if(present(boundary_faces)) valid=periodic_eb_faces_match(geometry(1),boundary_faces)
+    call agree(valid,ready)
+    if(.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
@@ -287,6 +292,10 @@ contains
             if (metrics(1)<=0._dp) cycle
           end if
           global=origin(:,target)+int(idx-1,int64);donor=0
+          do wrap_axis=1,3
+            if(controls(22+2*wrap_axis-1)==2) &
+              global(wrap_axis)=modulo(global(wrap_axis),domain(wrap_axis,level))
+          end do
           if(full_halo) global=max(0_int64,min(domain(:,level)-1,global))
           if(full_halo.and.all(idx>=1).and.all(idx<=n)) then
             donor=target;source=idx
@@ -314,6 +323,9 @@ contains
               cv%fields(target)%values(1,i,j,k)=target_volume_fraction%fields(target)%values(1,i,j,k)
             else if(allocated(geometry(target)%halo_volume_fraction)) then
               cell=global-origin(:,target)+1
+              do wrap_axis=1,3
+                if(controls(22+2*wrap_axis-1)==2) cell(wrap_axis)=idx(wrap_axis)
+              end do
               if(geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))>=0) &
                 cv%fields(target)%values(1,i,j,k)=geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))
             end if
@@ -376,15 +388,15 @@ contains
       do axis=1,3
         if(full_halo) then
           if(inlet_face/=0) cycle
-          if(global(axis)<0.and.(controls(2*axis-1)>=0.or.controls(22+2*axis-1)>0)) inlet_face=2*axis-1
-          if(global(axis)>=domain(axis,level).and.(controls(2*axis)>=0.or.controls(22+2*axis)>0)) inlet_face=2*axis
+          if(global(axis)<0.and.(controls(2*axis-1)>=0.or.controls(22+2*axis-1)==1)) inlet_face=2*axis-1
+          if(global(axis)>=domain(axis,level).and.(controls(2*axis)>=0.or.controls(22+2*axis)==1)) inlet_face=2*axis
         else
           if (global(axis)<0) inlet_face=2*axis-1
           if (global(axis)>=domain(axis,level)) inlet_face=2*axis
         end if
       end do
       if (inlet_face>0) then
-        if(controls(22+inlet_face)>0) then
+        if(controls(22+inlet_face)==1) then
           call reactive_conserved_to_primitive(species,inflow_state(:,inlet_face),controls(6+inlet_face), &
             primitive,recovered,speed,ready)
           if(.not.ready) then

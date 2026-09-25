@@ -1428,6 +1428,9 @@ contains
           volumes(i,j,k)=target_volume_fraction(i+width,j+width,k+width)
         else if(allocated(snapshot%nodes(target)%geometry%halo_volume_fraction)) then
           local=global-origin(:,target)+1
+          do axis=1,3
+            if(faces(2*axis-1)=='periodic') local(axis)=index(axis)
+          end do
           if(snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))>=0) &
             volumes(i,j,k)=snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))
         end if
