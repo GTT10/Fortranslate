@@ -292,8 +292,10 @@ accepts caller-supplied source halos and separates boundary/source inventories
 split now forwards these sources with exact transport-composition checks
 ([evidence](validation/ppm-source-split-20260926.md)). A regular-cell external
 force/work constructor now follows the pinned force-per-volume policy
-([checks](validation/external-force-source-20260926.md)); old/new work correction,
-application input and SDC integration remain open. Physical
+([checks](validation/external-force-source-20260926.md)). Old/new external work
+correction and a separate volume-source ledger now connect through full splitting
+([checks](validation/external-force-step-20260926.md)); application input and
+full SDC integration remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
