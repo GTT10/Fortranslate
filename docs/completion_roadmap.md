@@ -303,8 +303,10 @@ mapping ([checks](validation/sdc-state-assembly-20260926.md)). Nonreacting perio
 iteration now connects source callbacks, CTU and repeated state assembly
 ([checks](validation/sdc-periodic-iteration-20260926.md)). Fixed/selected regular
 gas input selects this nonreacting periodic path with external force and source
-ledgers ([checks](validation/sdc-app-20260926.md)); forced chemistry, molecular
-transport and broader boundary/AMR/MPI support remain open. Physical
+ledgers ([checks](validation/sdc-app-20260926.md)). Molecular transport now
+participates in old/new source evaluation with application inventory checks
+([evidence](validation/sdc-transport-20260926.md)); forced chemistry and broader
+boundary/AMR/MPI support remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
