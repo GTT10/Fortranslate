@@ -53,6 +53,10 @@ program test_eb_tree_subcycle_full_3d
     deallocate(mach,pin)
     allocate(faces(6));faces='outflow';faces(1)='inflow';faces(4)='inflow'
   end if
+  if(index(test_mode,'periodic')>0) then
+    deallocate(mach,pin)
+    allocate(faces(6));faces='periodic';faces(5:6)='outflow'
+  end if
   if (index(test_mode,'mach')==1) then
     mach(1)=.2_dp;mach(4)=.1_dp;pin(4)=120000
   end if
@@ -138,7 +142,7 @@ program test_eb_tree_subcycle_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
-  if(allocated(faces)) then
+  if(index(test_mode,'inflow')>0) then
     allocate(inlet(nv,6))
     call reactive_conserved_to_primitive(species,tree%nodes(1)%state(:,1,1,3), &
       tree%nodes(1)%temperature(1,1,3),primitive,et,speed,ok)
@@ -184,7 +188,7 @@ program test_eb_tree_subcycle_full_3d
             reference,exchange,stage_theta,ok,mach,tin,pin,boundary_faces=faces,inflow_state=inlet)
         end if
         call require(ok,'reference transport')
-        if (allocated(faces).or.index(test_mode,'mach')==1) &
+        if (index(test_mode,'inflow')>0.or.index(test_mode,'mach')==1) &
           call require(abs(exchange(5))>1e-12_dp,'active inlet transport energy flux')
         ref_b=ref_b+exchange;ref_theta=min(ref_theta,stage_theta)
         if (half==1) then
@@ -226,16 +230,20 @@ program test_eb_tree_subcycle_full_3d
   call require(all(boundary==17._dp).and.all(wall==19._dp).and.all(chemical==23._dp).and. &
     theta==29._dp,'complete diagnostic rollback')
   if (allocated(faces).or.index(test_mode,'mach')==1) then
-    tin(1)=ieee_value(0._dp,ieee_quiet_nan)
+    if(index(test_mode,'periodic')>0) then
+      faces(1)='outflow'
+    else
+      tin(1)=ieee_value(0._dp,ieee_quiet_nan)
+    end if
     call advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,1.e-8_dp,.true., &
       2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       'explicit',subcycling=recursive_steps,inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin, &
       difmag=coefficient,extended_geometry=extended, &
       boundary_faces=faces,inflow_state=inlet)
-    call require(.not.ok,'invalid inlet after private reaction')
+    call require(.not.ok,'invalid boundary after private reaction')
     call unchanged_tree()
     call require(all(boundary==17).and.all(wall==19).and.all(chemical==23).and.theta==29, &
-      'inlet failure diagnostic rollback')
+      'boundary failure diagnostic rollback')
   end if
   deallocate(u,t)
   end do
