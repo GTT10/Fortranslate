@@ -299,8 +299,10 @@ gas input and source-accounted diagnostics now connect external forcing
 ([checks](validation/external-force-app-20260926.md)); broader application routing
 and full SDC integration remain open. The reference-ordered SDC candidate
 assembler is now implemented and checked for source/hydro/reaction component
-mapping ([checks](validation/sdc-state-assembly-20260926.md)); iteration control
-and application dispatch are not yet connected. Physical
+mapping ([checks](validation/sdc-state-assembly-20260926.md)). Nonreacting periodic
+iteration now connects source callbacks, CTU and repeated state assembly
+([checks](validation/sdc-periodic-iteration-20260926.md)); forced chemistry, broader
+boundary/AMR/MPI support and application dispatch remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
