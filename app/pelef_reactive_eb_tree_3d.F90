@@ -188,9 +188,6 @@ program pelef_reactive_eb_tree_3d
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
   if (.not.ieee_is_finite(difmag).or.difmag<0) error stop 'Invalid artificial-viscosity coefficient'
-#ifdef PELEF_MPI_EB_SPRAY
-  if(difmag>0) error stop 'Artificial-viscosity input is not enabled in this application'
-#endif
   if (.not.all(ieee_is_finite(inflow_mach)).or.any(inflow_mach>100)) error stop 'Invalid inlet Mach'
   if (.not.all(ieee_is_finite(inflow_temperature))) error stop 'Invalid inlet temperature'
   if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
@@ -420,7 +417,7 @@ program pelef_reactive_eb_tree_3d
         films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -430,7 +427,7 @@ program pelef_reactive_eb_tree_3d
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &

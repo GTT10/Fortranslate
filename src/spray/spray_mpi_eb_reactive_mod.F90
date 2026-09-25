@@ -31,7 +31,7 @@ contains
       chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion,rtol,atol, &
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
       films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow, &
-      acceleration,source_change,inflow_mach,inflow_temperature,inflow_pressure)
+      acceleration,source_change,inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -49,6 +49,8 @@ contains
     logical, intent(in) :: chemistry,transport_enabled,viscosity,conduction,diffusion,barodiffusion
     integer, intent(out) :: particle_steps
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemical_change(:)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: coefficient,low_coefficient,high_coefficient
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
@@ -87,6 +89,15 @@ contains
     if(present(film_steps)) film_steps=0
     if(present(split_created)) split_created=0
     if(present(model_rejected)) model_rejected=.false.
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    valid=ieee_is_finite(coefficient).and.coefficient>=0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(coefficient,low_coefficient,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(coefficient,high_coefficient,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.low_coefficient/=high_coefficient) return
     accel=0;force_ledger=0
     if(present(acceleration)) accel=acceleration
     valid=all(ieee_is_finite(accel))
@@ -150,7 +161,7 @@ contains
     call advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       gas,temp,boundary,wall,chemical,theta,comm,valid,integrator,subcycling, &
-      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=coefficient)
     if(.not.valid) return
     if(present(films)) then
       call advance_mpi_amr_film_coupling(comm,species,transport,liquids,options,film_settings,gas,temp, &
