@@ -200,8 +200,10 @@ no restart interface. Serial fixed/selected regular spray now forwards the
 coefficient through coupled stepping and binds its resolved value to restart
 ([checks](validation/difmag-spray-input-20260925.md)). Regular MPI spray now forwards
 collectively agreed coefficients and binds restart context
-([checks](validation/difmag-mpi-spray-20260925.md)). AMR coefficient input
-and restart identity remain open. Regular MPI spray
+([checks](validation/difmag-mpi-spray-20260925.md)). Serial/MPI patch-tree common,
+level and recursive hydro now forward explicit coefficients with collective
+agreement and rollback ([checks](validation/difmag-amr-tree-hydro-20260925.md)).
+AMR reaction/transport composition, coefficient input and restart identity remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
