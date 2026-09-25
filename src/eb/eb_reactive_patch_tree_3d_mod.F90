@@ -566,7 +566,7 @@ contains
   subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
       rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
       wall_change,chemical_change,minimum_theta,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -579,6 +579,7 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
@@ -597,6 +598,15 @@ contains
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
+    if(present(wall_temperature)) then
+      if(.not.present(boundary_faces)) return
+      if(.not.all(ieee_is_finite(wall_temperature)).or.any(wall_temperature<=0)) return
+    end if
+    if(present(boundary_faces)) then
+      if(any(boundary_faces=='isothermal_wall')) then
+        if(.not.present(wall_temperature).or..not.transport_enabled.or..not.conduction) return
+      end if
+    end if
     candidate=tree
     allocate(boundary(nv),wall(nv),chemical(nv),exchange(nv),transport_sum(nv))
     chemical=0._dp;transport_sum=0._dp;theta=1._dp
@@ -610,12 +620,12 @@ contains
           call advance_reactive_eb_tree_subcycle_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
             diffusion,barodiffusion,candidate,exchange,stage_theta,valid, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-            boundary_faces=boundary_faces,inflow_state=inflow_state)
+            boundary_faces=boundary_faces,inflow_state=inflow_state,wall_temperature=wall_temperature)
         else
           call advance_reactive_eb_tree_transport_3d(species,transport,0.5_dp*dt,viscosity,conduction, &
             diffusion,barodiffusion,candidate,exchange,stage_theta,valid, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-            boundary_faces=boundary_faces,inflow_state=inflow_state)
+            boundary_faces=boundary_faces,inflow_state=inflow_state,wall_temperature=wall_temperature)
         end if
         if (.not.valid) return
         transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)

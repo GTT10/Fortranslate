@@ -114,7 +114,7 @@ contains
   subroutine advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -130,6 +130,7 @@ contains
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     real(dp), optional, intent(in) :: difmag
     real(dp) :: coefficient,coefficient_low,coefficient_high
@@ -147,6 +148,15 @@ contains
     if(present(difmag)) coefficient=difmag
     valid=ieee_is_finite(dt).and.ieee_is_finite(coefficient).and.coefficient>=0
     if (valid) valid=dt>0._dp
+    if(present(wall_temperature)) then
+      valid=valid.and.present(boundary_faces)
+      valid=valid.and.all(ieee_is_finite(wall_temperature)).and.all(wall_temperature>0)
+    end if
+    if(present(boundary_faces)) then
+      if(any(boundary_faces=='isothermal_wall')) then
+        valid=valid.and.present(wall_temperature).and.transport_enabled.and.conduction
+      end if
+    end if
     call agree(valid.and.size(boundary_change)==nv.and.size(wall_change)==nv.and.size(chemical_change)==nv,comm,ready)
     if (.not.ready) return
     call MPI_Allreduce(coefficient,coefficient_low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -172,12 +182,12 @@ contains
           call advance_mpi_eb_tree_subcycle_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
             viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-        boundary_faces=boundary_faces,inflow_state=inflow_state)
+        boundary_faces=boundary_faces,inflow_state=inflow_state,wall_temperature=wall_temperature)
         else
           call advance_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,0.5_dp*dt, &
             viscosity,conduction,diffusion,barodiffusion,candidate,ct,exchange,stage_theta,comm,valid, &
             inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-        boundary_faces=boundary_faces,inflow_state=inflow_state)
+        boundary_faces=boundary_faces,inflow_state=inflow_state,wall_temperature=wall_temperature)
         end if
         if (.not.valid) return
         transport_sum=transport_sum+exchange;theta=min(theta,stage_theta)

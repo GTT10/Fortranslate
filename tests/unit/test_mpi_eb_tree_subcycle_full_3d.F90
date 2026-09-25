@@ -36,7 +36,7 @@ program test_mpi_eb_tree_subcycle_full_3d
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,rank,nranks,status
   logical :: ok,chemistry_on,transport_on,recursive_steps
-  real(dp), allocatable :: mach(:),pin(:),inlet(:,:)
+  real(dp), allocatable :: mach(:),pin(:),inlet(:,:),wall_temperature(:)
   real(dp) :: tin(6)
   character(len=16), allocatable :: labels(:)
   character(len=32) :: test_mode,viscosity_mode,solver
@@ -61,6 +61,11 @@ program test_mpi_eb_tree_subcycle_full_3d
   if(index(test_mode,'wall')>0) then
     deallocate(mach,pin)
     allocate(labels(6));labels='outflow';labels(1:2)='slip_wall';labels(3:4)='no_slip_wall'
+  end if
+  if(index(test_mode,'isothermal')>0) then
+    deallocate(mach,pin)
+    allocate(labels(6),wall_temperature(6));labels='isothermal_wall';labels(5:6)='outflow'
+    wall_temperature=2000
   end if
   if (index(test_mode,'mach')==1) then
     mach(1)=.2_dp;mach(4)=.1_dp;pin(4)=120000
@@ -170,7 +175,7 @@ program test_mpi_eb_tree_subcycle_full_3d
       2.e-7_dp,1.e-12_dp,transport_on,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       integrators(integrator_index),subcycling=recursive_steps, &
       inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
-      boundary_faces=labels,inflow_state=inlet)
+      boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
     call require(ok,'combined step')
     call integrate_reactive_eb_tree_3d(tree,after,ok)
     call require(ok,'final inventory')
@@ -213,18 +218,18 @@ contains
     if(allocated(labels)) then
       call reactive_eb_tree_timestep_3d(species,transport,saved,.1_dp,.1_dp, &
         .true.,.true.,.true.,.true.,serial_dt,good,subcycling=recursive_steps, &
-        boundary_faces=labels,inflow_state=inlet,inflow_temperature=tin)
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=tin,wall_temperature=wall_temperature)
       call require(good,'serial prescribed inlet timestep')
       call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,.1_dp,.1_dp, &
         .true.,.true.,.true.,.true.,mpi_dt,MPI_COMM_WORLD,good,subcycling=recursive_steps, &
-        boundary_faces=labels,inflow_state=inlet,inflow_temperature=tin)
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=tin,wall_temperature=wall_temperature)
       call require(good.and.abs(mpi_dt-serial_dt)<=1e-14_dp*serial_dt,'MPI inlet timestep parity')
     end if
     call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,solver,1.e-8_dp, &
       chemistry_on,2.e-7_dp,1.e-12_dp,transport_on,.true.,.true.,.true.,.true., &
       local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,integrators(integrator_index),subcycling=recursive_steps, &
       inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
-      boundary_faces=labels,inflow_state=inlet)
+      boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
     call require(good,'MPI full step')
     do p=1,count
       call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'owner-local full U')
@@ -246,7 +251,7 @@ contains
         .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
         local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
         inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
-      boundary_faces=labels,inflow_state=inlet)
+      boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
       call require(.not.good,'late hydro rejection after reaction and transport')
       do p=1,count
         if (owners(p)/=rank) cycle
@@ -260,7 +265,7 @@ contains
           .false.,2.e-7_dp,1.e-12_dp,.false.,.true.,.true.,.true.,.true., &
           local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
           inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
-      boundary_faces=labels,inflow_state=inlet)
+      boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
         call require(.not.good,'rank-dependent inlet pressure rejected')
         pin(4)=120000
         if (rank==0) tin(1)=ieee_value(0._dp,ieee_quiet_nan)
@@ -268,7 +273,7 @@ contains
           .false.,2.e-7_dp,1.e-12_dp,.false.,.true.,.true.,.true.,.true., &
           local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
           inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
-      boundary_faces=labels,inflow_state=inlet)
+      boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
         call require(.not.good,'one-rank invalid inlet collectively rejected')
         tin=400
         do p=1,count
@@ -281,7 +286,9 @@ contains
       if(allocated(labels)) then
         saved_tin=tin(1)
         if(rank==0) then
-          if(index(test_mode,'periodic')>0.or.index(test_mode,'wall')>0) then
+          if(allocated(wall_temperature)) then
+            wall_temperature(1)=2001
+          else if(index(test_mode,'periodic')>0.or.index(test_mode,'wall')>0) then
             labels(1)='outflow'
           else
             tin(1)=ieee_value(0._dp,ieee_quiet_nan)
@@ -290,9 +297,11 @@ contains
         call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,solver,1.e-8_dp, &
           .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
           local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
-          inflow_temperature=tin,difmag=coefficient,extended_geometry=extended,boundary_faces=labels,inflow_state=inlet)
+          inflow_temperature=tin,difmag=coefficient,extended_geometry=extended, &
+          boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
         call require(.not.good,'invalid boundary after private reaction')
         tin(1)=saved_tin
+        if(allocated(wall_temperature)) wall_temperature=2000
         if(index(test_mode,'periodic')>0) labels(1)='periodic'
         if(index(test_mode,'wall')>0) labels(1)='slip_wall'
         do p=1,count
@@ -307,7 +316,7 @@ contains
         enabled,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
         local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
         inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient,extended_geometry=extended, &
-      boundary_faces=labels,inflow_state=inlet)
+      boundary_faces=labels,inflow_state=inlet,wall_temperature=wall_temperature)
       call require(.not.good,'different chemistry flags rejected')
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,solver,1.e-8_dp, &
         .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
