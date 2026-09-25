@@ -11,7 +11,7 @@ program test_spray_eb_tree_stencil
   real(dp) :: phi(0:8,0:8,0:8),position(3),zero(3)=0,spacing(3)=1,expected,total
   real(dp), allocatable :: w(:),v(:),saved_w(:),saved_v(:)
   integer, allocatable :: cells(:,:),saved(:,:)
-  integer :: j,q,node
+  integer :: i,j,q,node
   logical :: ok
   call initialize_amr_patch_3d(4,4,4,1,2,1,4,1,4,2,patch(1),ok)
   call require(ok,'patch')
@@ -50,6 +50,37 @@ program test_spray_eb_tree_stencil
   position=[3.9_dp,3.9_dp,3.9_dp]
   call run()
   call require(ok.and.abs(sum(w)-1)<1e-14_dp.and.all(cells(1,:)==1),'truncated root-boundary support')
+  position=[3.9_dp,3.9_dp,3.9_dp]
+  call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok,periodic=[.true.,.false.,.true.])
+  call require(ok.and.abs(sum(w)-1)<1e-14_dp,'periodic corner normalized support')
+  call require(any(cells(1,:)==1).and.any(cells(1,:)==2),'periodic seam reaches refined opposite side')
+  saved=cells;saved_w=w;saved_v=v
+  position=position+[4._dp,0._dp,-4._dp]
+  call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok,periodic=[.true.,.false.,.true.])
+  call require(ok.and.all(cells==saved).and.maxval(abs(w-saved_w))<1e-14_dp.and.all(v==saved_v), &
+    'periodic image invariance')
+  call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok,periodic=[.true.,.true.,.true.])
+  call require(.not.ok.and.all(cells==saved).and.maxval(abs(w-saved_w))<1e-14_dp.and.all(v==saved_v), &
+    'incompatible periodic normal rejects without output changes')
+  do j=0,8
+  do i=0,8
+    phi(i,j,:)=abs(real(i,dp)*.5_dp-2._dp)-.6_dp
+  end do
+  end do
+  call build_level_set_eb_geometry_3d(phi,zero,[4._dp,4._dp,4._dp],finest,ok)
+  call require(ok,'periodic geometry with central solid slab')
+  call coarsen_eb_geometry_3d(finest,2,g(1),ok)
+  call require(ok,'periodic slab root')
+  call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
+  call require(ok,'periodic slab child')
+  position=[3.9_dp,3.9_dp,3.9_dp]
+  call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok,periodic=[.true.,.false.,.true.])
+  call require(ok.and.any(cells(1,:)==2),'visibility follows seam instead of crossing central solid slab')
+  saved=cells;saved_w=w;saved_v=v
+  phi(0,8,8)=phi(0,8,8)+.1_dp
+  call eb_tree_spray_stencil(tree,g,phi,position,zero,spacing,cells,w,v,ok,periodic=[.true.,.false.,.true.])
+  call require(.not.ok.and.all(cells==saved).and.all(w==saved_w).and.all(v==saved_v), &
+    'nonperiodic nodal field rolls back outputs')
   print *, 'PASS: EB composite particle stencil at a cut coarse/fine interface'
 contains
   subroutine run()
