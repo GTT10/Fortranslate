@@ -25,10 +25,15 @@ program test_eb_tree_hydro_3d
   real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),expected(:)
   real(dp) :: mach(6),tin(6),pin(6),et
   integer :: face,idx(3),inside(3),dim
+  real(dp) :: coefficient
+  character(len=32) :: mode
   real(dp) :: residual
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count
   logical :: ok
+  call get_command_argument(1,mode)
+  coefficient=0
+  if(mode=='viscosity') coefficient=.037_dp
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   nv=reactive_nvar(size(species))
@@ -71,7 +76,7 @@ program test_eb_tree_hydro_3d
   call require(ok,'initial inventory')
   saved=tree
   boundary=17._dp;wall=19._dp
-  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok)
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,difmag=coefficient)
   call require(ok,'tree hydro step')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
   call require(ok,'final inventory')
@@ -101,14 +106,14 @@ program test_eb_tree_hydro_3d
     call require(ok.and.all(ghost(:,idx(1),idx(2),idx(3))==expected).and.gt(idx(1),idx(2),idx(3))==et, &
       'physical Mach face orientation and pressure')
   end do
-  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,mach,tin,pin)
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,mach,tin,pin,difmag=coefficient)
   call require(ok,'Mach EB tree hydro')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
   call require(ok,'Mach final inventory')
   residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
   call require(residual<3.e-14_dp,'Mach EB conservation with root boundary replacement')
   tree=saved;boundary=17;wall=19;tin(1)=ieee_value(0._dp,ieee_quiet_nan)
-  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,mach,tin,pin)
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,mach,tin,pin,difmag=coefficient)
   call require(.not.ok,'invalid Mach temperature rejected even on covered face')
   call unchanged_tree()
   call require(all(boundary==17).and.all(wall==19),'Mach diagnostics rollback')
@@ -116,12 +121,12 @@ program test_eb_tree_hydro_3d
   call fill_reactive_eb_tree_halo_3d(species,tree,1,ghost,gt,ok,inflow_mach=mach)
   call require(.not.ok.and.all(ghost==-17).and.all(gt==-19),'missing inlet temperature halo rollback')
   tree=saved;boundary=17._dp;wall=19._dp
-  call advance_reactive_eb_tree_hydro_3d(species,'invalid',1.e-8_dp,tree,boundary,wall,ok)
+  call advance_reactive_eb_tree_hydro_3d(species,'invalid',1.e-8_dp,tree,boundary,wall,ok,difmag=coefficient)
   call require(.not.ok,'invalid solver rejected')
   call unchanged_tree()
   call require(all(boundary==17._dp).and.all(wall==19._dp),'diagnostic rollback')
   tree%nodes(count)%state(1,4,4,4)=-1._dp;saved=tree
-  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok)
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,difmag=coefficient)
   call require(.not.ok,'invalid deep state rejected')
   call unchanged_tree()
   call require(all(boundary==17._dp).and.all(wall==19._dp),'deep failure diagnostic rollback')

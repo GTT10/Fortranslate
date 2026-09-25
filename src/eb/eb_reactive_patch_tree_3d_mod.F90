@@ -597,13 +597,16 @@ contains
   ! Serial common-interval Euler hydro, spatial PCM donors, outflow or Mach inlet edges.
   ! Every node reads the same averaged snapshot; all outputs commit together.
   subroutine advance_reactive_eb_tree_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: coefficient
+    real(dp), allocatable :: vf(:,:,:)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d) :: snapshot,candidate
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -615,6 +618,9 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
     snapshot=tree
     call average_down_reactive_eb_tree_3d(species,snapshot,valid)
     if (.not.valid) return
@@ -623,14 +629,16 @@ contains
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
       allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      if(coefficient>0) allocate(vf(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
-        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
       if (.not.valid) return
       call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
         snapshot%nodes(node)%geometry,solver,dt,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
-        valid,ghost,gt,flux(node))
+        valid,ghost,gt,flux(node),difmag=coefficient,ghost_volume_fraction=vf)
       if (.not.valid) return
       deallocate(ghost,gt)
+      if(allocated(vf)) deallocate(vf)
       allocate(source(nv,n(1),n(2),n(3)),exposed(n(1),n(2),n(3)));exposed=.true.
       do child=node+1,size(tree%nodes)
         if (tree%topology%nodes(child)%parent/=node) cycle
@@ -960,13 +968,20 @@ contains
 
   ! Six-face Mach < 0 retains outflow; active entries require inlet temperature.
   ! Pressure zero extrapolates the interior value; positive entries prescribe it.
+  ! Requesting volume fractions fills interior/edges/corners too. Ancestor
+  ! fractions use PCM donor values; physical corners use the first active inlet
+  ! axis (x, then y, then z). No geometric fine-cell reconstruction is implied.
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
-      ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure)
+      ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
     real(dp), intent(inout) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(inout) :: ghost_volume_fraction(0:,0:,0:)
+    real(dp), allocatable :: volumes(:,:,:)
+    integer :: inlet_face
+    logical, allocatable :: filled(:,:,:)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
     real(dp), optional, intent(in) :: ancestor_fraction(:)
@@ -995,6 +1010,9 @@ contains
     if (target<1.or.target>size(tree%nodes)) return
     n=tree%topology%nodes(target)%shape;level=tree%topology%nodes(target)%level+1
     if (any(shape(ghost)/=[nv,n+2]).or.any(shape(ghost_temperature)/=n+2)) return
+    if(present(ghost_volume_fraction)) then
+      if(any(shape(ghost_volume_fraction)/=n+2)) return
+    end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
     if (present(ancestor_start).or.present(ancestor_end).or.present(ancestor_fraction)) then
@@ -1010,6 +1028,7 @@ contains
     allocate(candidate(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1), &
       primitive(reactive_nprim(size(species))))
     candidate=0._dp;temps=0._dp
+    allocate(filled(0:n(1)+1,0:n(2)+1,0:n(3)+1));filled=.false.
     do axis=1,3
     do side=0,1
       first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
@@ -1083,11 +1102,76 @@ contains
         end if
         candidate(:,i,j,k)=value
         temps(i,j,k)=recovered
+        filled(i,j,k)=.true.
       end do
       end do
       end do
     end do
     end do
+    if(present(ghost_volume_fraction)) then
+      allocate(volumes(0:n(1)+1,0:n(2)+1,0:n(3)+1));volumes=0
+      do k=0,n(3)+1
+      do j=0,n(2)+1
+      do i=0,n(1)+1
+        index=[i,j,k];global=origin(:,target)+int(index-1,int64)
+        inlet_face=0
+        do axis=1,3
+          side=-1
+          if(global(axis)<0) side=0
+          if(global(axis)>=domain(axis,level)) side=1
+          if(side<0) cycle
+          if(mach(2*axis-1+side)>=0.and.inlet_face==0) inlet_face=2*axis-1+side
+        end do
+        global=max(0_int64,min(domain(:,level)-1,global))
+        donor=0
+        if(all(index>=1).and.all(index<=n)) then
+          donor=target;source=index
+        else
+          do depth=level,1,-1
+            mapped=global/(domain(:,level)/domain(:,depth))
+            do node=1,size(tree%nodes)
+              if(tree%topology%nodes(node)%level+1/=depth) cycle
+              local=mapped-origin(:,node)
+              if(any(local<0).or.any(local>=int(tree%topology%nodes(node)%shape,int64))) cycle
+              donor=node;source=int(local)+1;exit
+            end do
+            if(donor/=0) exit
+          end do
+        end if
+        if(donor==0) return
+        volumes(i,j,k)=snapshot%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))
+        if(volumes(i,j,k)<=0) cycle
+        if(filled(i,j,k)) cycle
+        value=snapshot%nodes(donor)%state(:,source(1),source(2),source(3))
+        guess=snapshot%nodes(donor)%temperature(source(1),source(2),source(3))
+        depth=tree%topology%nodes(donor)%level+1
+        if(present(ancestor_fraction)) then
+          if(depth<level) then
+            fraction=ancestor_fraction(depth)
+            value=(1-fraction)*ancestor_start%nodes(donor)%state(:,source(1),source(2),source(3))+ &
+              fraction*ancestor_end%nodes(donor)%state(:,source(1),source(2),source(3))
+            guess=(1-fraction)*ancestor_start%nodes(donor)%temperature(source(1),source(2),source(3))+ &
+              fraction*ancestor_end%nodes(donor)%temperature(source(1),source(2),source(3))
+          end if
+        end if
+        call reactive_conserved_to_primitive(species,value,guess,primitive,recovered,speed,valid)
+        if(.not.valid) return
+        if(inlet_face>0) then
+          if(pin(inlet_face)>0) then
+            call mach_inlet_ghost_3d(species,value,recovered,inlet_face,tin(inlet_face),mach(inlet_face), &
+              inlet_value,inlet_t,valid,inlet_pressure=pin(inlet_face))
+          else
+            call mach_inlet_ghost_3d(species,value,recovered,inlet_face,tin(inlet_face),mach(inlet_face), &
+              inlet_value,inlet_t,valid)
+          end if
+          if(.not.valid) return
+          value=inlet_value;recovered=inlet_t
+        end if
+        candidate(:,i,j,k)=value;temps(i,j,k)=recovered
+      end do
+      end do
+      end do
+    end if
     ! The peer overlay also verifies open-face aperture and centroid agreement,
     ! including peers that belong to different parent patches.
     do node=1,size(tree%nodes)
@@ -1098,7 +1182,9 @@ contains
         int(offset),snapshot%nodes(node)%state,snapshot%nodes(node)%temperature,candidate,temps,valid)
       if (.not.valid) return
     end do
-    ghost=candidate;ghost_temperature=temps;ok=.true.
+    ghost=candidate;ghost_temperature=temps
+    if(present(ghost_volume_fraction)) ghost_volume_fraction=volumes
+    ok=.true.
   contains
     logical function matching_snapshot(other) result(matches)
       type(eb_reactive_tree_3d), intent(in) :: other
