@@ -13,7 +13,8 @@ program test_reactive_eb_hydro_3d
     reactive_eb_flux_divergence_3d
   use eb_reactive_hydro_3d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
-    compute_reactive_eb_plm_normal_fluxes_3d,eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d, &
+    compute_reactive_eb_plm_normal_fluxes_3d,compute_reactive_eb_plm_ctu_fluxes_3d, &
+    eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
@@ -77,6 +78,7 @@ program test_reactive_eb_hydro_3d
   call verify_normal_prediction()
   call verify_normal_fluxes()
   call verify_transverse_prediction()
+  call verify_ctu_fluxes()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -257,6 +259,79 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_ctu_fluxes()
+    type(eb_geometry_3d) :: shape
+    type(eb_plm_face_prediction_3d) :: result(3),saved(3)
+    real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11)
+    real(dp) :: flat(0:9,0:9,0:9),source(nvar,8,8,8),esource(8,8,8)
+    real(dp) :: vel(3),rho,cs,tc,position,expected(nvar),u(nvar),dt,face_rho,coord(3),nan_value
+    integer :: cut,axis,ii,jj,kk,inside(3),idx(3),lo(3),hi(3)
+    logical :: valid
+    character(len=1), parameter :: axes(3)=['x','y','z']
+    vel=[7._dp,-3._dp,5._dp];dt=1e-6_dp;flat=1;nan_value=ieee_value(0._dp,ieee_quiet_nan)
+    do cut=0,3
+      position=.37_dp
+      if(cut==0) position=-.1_dp
+      call build_axis_plane_eb_geometry_3d(8,8,8,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
+        axes(max(1,cut)),position,shape,valid)
+      call require(valid,'CTU working geometry')
+      ghost=nan_value;gt=nan_value
+      do kk=-2,11
+      do jj=-2,11
+      do ii=-2,11
+        idx=[ii,jj,kk];inside=max(1,min(8,idx))
+        vf(ii,jj,kk)=shape%volume_fraction(inside(1),inside(2),inside(3))
+        if(vf(ii,jj,kk)==0.or.count(idx<1.or.idx>8)>1) cycle
+        rho=.31_dp
+        if(cut==0) rho=rho+.002_dp*sum(inside*[1,2,3])
+        call build_cell_state(rho,vel,ghost(:,ii,jj,kk),gt(ii,jj,kk),cs)
+      end do
+      end do
+      end do
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid)
+      call require(valid,'EB twelve-solve CTU flux pipeline')
+      do axis=1,3
+        lo=1;lo(axis)=0;hi=4
+        call require(all(lbound(result(axis)%flux)==[1,lo]).and.all(ubound(result(axis)%flux)==[nvar,hi]), &
+          'CTU cropped output bounds')
+        if(cut==0) then
+          coord=4;coord(axis)=4.5_dp
+          face_rho=.31_dp+.002_dp*sum(coord*[1._dp,2._dp,3._dp])-.5_dp*dt*.002_dp*8*sum(vel*[1._dp,2._dp,3._dp])
+          call require(abs(result(axis)%flux(1,2,2,2)-vel(axis)*face_rho)<2e-12_dp, &
+            'unsplit linear density advection through transverse corner fluxes')
+        else
+          call build_cell_state(.31_dp,vel,u,tc,cs)
+          expected=u*vel(axis);expected(axis+1)=expected(axis+1)+pressure;expected(5)=expected(5)+pressure*vel(axis)
+          do kk=lo(3),hi(3)
+          do jj=lo(2),hi(2)
+          do ii=lo(1),hi(1)
+            if(result(axis)%pressure(ii,jj,kk)==0) then
+              call require(all(result(axis)%flux(:,ii,jj,kk)==0),'closed final CTU flux')
+            else
+              call require(maxval(abs(result(axis)%flux(:,ii,jj,kk)-expected)/max(1._dp,abs(expected)))<3e-13_dp, &
+                'cut-cell uniform CTU intensive Euler flux')
+            end if
+          end do
+          end do
+          end do
+        end if
+      end do
+      saved=result;source=0;esource=0
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid, &
+        source=source,source_energy=esource)
+      call require(valid,'CTU zero primitive source')
+      do axis=1,3
+        call require(all(result(axis)%flux==saved(axis)%flux),'zero-source CTU exact parity')
+      end do
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,1._dp,flat,result,valid)
+      call require(.not.valid,'CTU failed stage rejects')
+      do axis=1,3
+        call require(all(result(axis)%flux==saved(axis)%flux).and.all(result(axis)%left==saved(axis)%left).and. &
+          all(result(axis)%right==saved(axis)%right).and.all(result(axis)%pressure==saved(axis)%pressure), &
+          'CTU stage failure rollback')
+      end do
+    end do
+  end subroutine verify_ctu_fluxes
   subroutine verify_transverse_prediction()
     real(dp) :: initial(nvar,2),q(nvar,2),e(2),original_energy(2),flx(nvar,2,2),p(2,2),v(2,2)
     real(dp) :: ta(2,2),na(2),coef(2),delta(nvar),wanted(nvar),source(nvar),base(nvar,2),base_e(2),nan_value

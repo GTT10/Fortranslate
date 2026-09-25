@@ -25,6 +25,7 @@ module eb_reactive_hydro_3d_mod
     real(dp), allocatable :: energy_left(:,:,:),energy_right(:,:,:),pressure(:,:,:),velocity(:,:,:)
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
+  public :: compute_reactive_eb_plm_ctu_fluxes_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
@@ -36,6 +37,174 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! Twelve Riemann solves: three normal, six single-transverse, three final.
+  ! Geometry includes a two-cell margin around the returned region. The normal
+  ! predictor additionally needs three state/metric halos outside this geometry.
+  ! Output indices describe cells 3:N-2, shifted down by two. Fluxes are intensive
+  ! face-center values, before viscosity or centroid interpolation.
+  subroutine compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
+      dt,flattening,prediction,ok,order,source,source_energy)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
+    real(dp), intent(in) :: dt,flattening(0:,0:,0:)
+    type(eb_plm_face_prediction_3d), intent(inout) :: prediction(3)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: order
+    real(dp), optional, intent(in) :: source(:,:,:,:),source_energy(:,:,:)
+    type(eb_plm_face_prediction_3d) :: normal(3),corner(3,3),final(3),candidate(3)
+    real(dp), allocatable :: gamma(:,:,:),sound(:,:,:)
+    real(dp) :: q(reactive_nvar(size(species))),recovered,speed,spacing(3)
+    integer :: n(3),nv,i,j,k,axis,t,lo(3),hi(3),idx(3),other(2),m
+    logical :: valid
+    ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=reactive_nvar(size(species))
+    if(any(n<5)) return
+    if(present(source).neqv.present(source_energy)) return
+    if(present(source)) then
+      if(any(shape(source)/=[nv,n]).or.any(shape(source_energy)/=n)) return
+    end if
+    call compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
+      dt,flattening,normal,valid,order)
+    if(.not.valid) return
+    spacing=[geometry%dx,geometry%dy,geometry%dz]
+    allocate(gamma(n(1),n(2),n(3)),sound(n(1),n(2),n(3)));gamma=0;sound=0
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%volume_fraction(i,j,k)<=0) cycle
+      call reactive_conserved_to_primitive(species,ghost(:,i,j,k),temperature(i,j,k),q,recovered,speed,valid)
+      if(.not.valid) return
+      gamma(i,j,k)=speed**2*q(1)/q(5);sound(i,j,k)=speed
+    end do
+    end do
+    end do
+    do axis=1,3
+      do t=1,3
+        if(t==axis) cycle
+        corner(axis,t)=normal(axis)
+        lo=2;lo(axis)=1;hi=n-1
+        do k=lo(3),hi(3)
+        do j=lo(2),hi(2)
+        do i=lo(1),hi(1)
+          call correct_face(axis,[t],[i,j,k],corner(axis,t),valid)
+          if(.not.valid) return
+        end do
+        end do
+        end do
+      end do
+    end do
+    do axis=1,3
+      m=0
+      do t=1,3
+        if(t==axis) cycle
+        m=m+1;other(m)=t
+      end do
+      final(axis)=normal(axis)
+      lo=3;lo(axis)=2;hi=n-2
+      do k=lo(3),hi(3)
+      do j=lo(2),hi(2)
+      do i=lo(1),hi(1)
+        call correct_face(axis,other,[i,j,k],final(axis),valid)
+        if(.not.valid) return
+      end do
+      end do
+      end do
+      associate(c=>candidate(axis),f=>final(axis))
+      idx=lo-2
+      allocate(c%left(nv,idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
+        c%right(nv,idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
+        c%flux(nv,idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
+        c%energy_left(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
+        c%energy_right(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
+        c%pressure(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
+        c%velocity(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2))
+      c%left=f%left(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      c%right=f%right(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      c%flux=f%flux(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      c%energy_left=f%energy_left(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      c%energy_right=f%energy_right(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      c%pressure=f%pressure(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      c%velocity=f%velocity(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
+      end associate
+    end do
+    prediction=candidate;ok=.true.
+  contains
+    real(dp) function area(direction,index) result(value)
+      integer, intent(in) :: direction,index(3)
+      select case(direction)
+      case(1);value=geometry%x_face_fraction(index(1),index(2),index(3))
+      case(2);value=geometry%y_face_fraction(index(1),index(2),index(3))
+      case(3);value=geometry%z_face_fraction(index(1),index(2),index(3))
+      end select
+    end function area
+    subroutine correct_face(direction,transverse,index,result,success)
+      integer, intent(in) :: direction,transverse(:),index(3)
+      type(eb_plm_face_prediction_3d), intent(inout) :: result
+      logical, intent(out) :: success
+      real(dp) :: states(nv,2),energies(2),ql(nv),qr(nv),f(nv),el,er
+      real(dp) :: tf(nv,2,size(transverse)),tp(2,size(transverse)),tv(2,size(transverse))
+      real(dp) :: ta(2,size(transverse)),coef(size(transverse)),na(2),ap,swap,pface,uface
+      integer :: side,d,face,cell(3),point(3),nt,normal_side,second
+      success=.false.;nt=size(transverse);ap=area(direction,index)
+      if(ap<=0) then
+        success=.true.;return
+      end if
+      do side=0,1
+        cell=index;cell(direction)=cell(direction)+side
+        states=0;energies=0;na=0;normal_side=2-side;na(normal_side)=ap
+        if(side==0) then
+          states(:,2)=normal(direction)%left(:,index(1),index(2),index(3))
+          energies(2)=normal(direction)%energy_left(index(1),index(2),index(3))
+        else
+          states(:,1)=normal(direction)%right(:,index(1),index(2),index(3))
+          energies(1)=normal(direction)%energy_right(index(1),index(2),index(3))
+        end if
+        do d=1,nt
+          coef(d)=dt/(3*spacing(transverse(d)))
+          if(nt==2) coef(d)=.5_dp*dt/spacing(transverse(d))
+          do face=1,2
+            point=cell;point(transverse(d))=point(transverse(d))+face-2
+            ta(face,d)=area(transverse(d),point)
+            if(nt==1) then
+              tf(:,face,d)=normal(transverse(d))%flux(:,point(1),point(2),point(3))
+              tp(face,d)=normal(transverse(d))%pressure(point(1),point(2),point(3))
+              tv(face,d)=normal(transverse(d))%velocity(point(1),point(2),point(3))
+            else
+              second=transverse(3-d)
+              tf(:,face,d)=corner(transverse(d),second)%flux(:,point(1),point(2),point(3))
+              tp(face,d)=corner(transverse(d),second)%pressure(point(1),point(2),point(3))
+              tv(face,d)=corner(transverse(d),second)%velocity(point(1),point(2),point(3))
+            end if
+          end do
+        end do
+        if(nt==2.and.present(source)) then
+          call apply_reactive_eb_transverse_3d(states,energies,gamma(cell(1),cell(2),cell(3)),na,ta,tf,tp,tv, &
+            coef,success,source(:,cell(1),cell(2),cell(3)),source_energy(cell(1),cell(2),cell(3)),.5_dp*dt)
+        else
+          call apply_reactive_eb_transverse_3d(states,energies,gamma(cell(1),cell(2),cell(3)),na,ta,tf,tp,tv,coef,success)
+        end if
+        if(.not.success) return
+        if(side==0) then
+          ql=states(:,2);el=energies(2)
+        else
+          qr=states(:,1);er=energies(1)
+        end if
+      end do
+      result%left(:,index(1),index(2),index(3))=ql;result%right(:,index(1),index(2),index(3))=qr
+      result%energy_left(index(1),index(2),index(3))=el;result%energy_right(index(1),index(2),index(3))=er
+      swap=ql(2);ql(2)=ql(direction+1);ql(direction+1)=swap
+      swap=qr(2);qr(2)=qr(direction+1);qr(direction+1)=swap
+      cell=index;cell(direction)=cell(direction)+1
+      call reactive_pelec_primitive_flux_x(species,ql,qr, &
+        .5_dp*(sound(index(1),index(2),index(3))+sound(cell(1),cell(2),cell(3))), &
+        f,success,interface_pressure=pface,interface_velocity=uface)
+      if(.not.success) return
+      swap=f(2);f(2)=f(direction+1);f(direction+1)=swap
+      result%flux(:,index(1),index(2),index(3))=f
+      result%pressure(index(1),index(2),index(3))=pface;result%velocity(index(1),index(2),index(3))=uface
+    end subroutine correct_face
+  end subroutine compute_reactive_eb_plm_ctu_fluxes_3d
 
   ! Pinned pc_transdo/pc_transdd for a cell's two normal face states.
   ! Fluxes are intensive and in global momentum order. For two transverse
