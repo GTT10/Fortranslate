@@ -128,6 +128,8 @@ program pelef_reactive_eb_tree_3d
   logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:),inlet_state(:,:),inlet_primitive(:)
+  real(dp) :: wall_temperature(6)=0
+  real(dp), allocatable :: active_wall_temperature(:)
   character(len=16) :: boundary_faces(6)='legacy'
   character(len=16), allocatable :: active_faces(:)
   real(dp) :: inflow_density(6)=.31_dp,inflow_velocity(3,6)=0,inlet_t,inlet_sound
@@ -151,7 +153,7 @@ program pelef_reactive_eb_tree_3d
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
-    regular_density,cut_density,initial_pressure, &
+    regular_density,cut_density,initial_pressure,wall_temperature, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -214,7 +216,7 @@ program pelef_reactive_eb_tree_3d
   if (any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) error stop 'Invalid inlet pressure'
   if(any(boundary_faces/='legacy')) then
     if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic'.and. &
-      boundary_faces/='slip_wall'.and.boundary_faces/='no_slip_wall')) &
+      boundary_faces/='slip_wall'.and.boundary_faces/='no_slip_wall'.and.boundary_faces/='isothermal_wall')) &
       error stop 'Invalid tree boundary faces'
     do inlet_face=1,5,2
       if((boundary_faces(inlet_face)=='periodic').neqv.(boundary_faces(inlet_face+1)=='periodic')) &
@@ -226,6 +228,17 @@ program pelef_reactive_eb_tree_3d
     if(any(inflow_density<=0).or.any(inflow_pressure<=0.and.boundary_faces=='inflow')) &
       error stop 'Nonpositive prescribed tree inlet'
     active_faces=boundary_faces
+  end if
+  if(.not.all(ieee_is_finite(wall_temperature))) error stop 'Invalid tree wall temperature'
+  if(any(boundary_faces=='isothermal_wall')) then
+    if(any(wall_temperature<=0)) error stop 'Isothermal tree walls require six positive temperatures'
+    if(.not.transport_enabled) error stop 'Isothermal tree walls require transport'
+#ifdef PELEF_MPI_EB_SPRAY
+    error stop 'Isothermal MPI EB spray forwarding is not connected'
+#endif
+    active_wall_temperature=wall_temperature
+  else if(any(wall_temperature/=0)) then
+    error stop 'Unused tree wall temperatures'
   end if
   if (any(inflow_temperature<=0.and.inflow_mach>=0)) error stop 'Active inlet requires positive temperature'
   if (.not.allocated(active_faces).and.any((inflow_temperature/=0.or.inflow_pressure/=0).and.inflow_mach<0)) &
@@ -444,12 +457,12 @@ program pelef_reactive_eb_tree_3d
       call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
         hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        boundary_faces=active_faces,inflow_state=inlet_state)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
 #else
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
         .true.,.true.,.true.,estimated_dt,ok,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        boundary_faces=active_faces,inflow_state=inlet_state)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
 #endif
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
@@ -499,7 +512,7 @@ program pelef_reactive_eb_tree_3d
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
@@ -508,7 +521,7 @@ program pelef_reactive_eb_tree_3d
         chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
@@ -1572,11 +1585,22 @@ contains
     character(len=16) :: stored_faces(6)
     integer :: stored_counts(6),stored_nspecies
     real(dp) :: stored_composition(size(species),6)
-    real(dp) :: stored_prescribed(30)
+    real(dp) :: stored_prescribed(30),stored_wall_temperature(6)
     real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl,stored_inlet(18)
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if(magic=='PELEF_EB_TREE_ISOTHERMAL_V1') then
+        if(.not.allocated(active_wall_temperature)) error stop 'Restart wall temperature mismatch'
+        read(stream,*,iostat=ios) stored_wall_temperature
+        if(ios/=0) error stop 'Missing restart wall temperatures'
+        if(.not.all(ieee_is_finite(stored_wall_temperature))) error stop 'Invalid restart wall temperatures'
+        if(any(stored_wall_temperature/=wall_temperature)) error stop 'Restart wall temperature mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if(ios/=0) error stop 'Missing isothermal application header'
+      else if(allocated(active_wall_temperature)) then
+        error stop 'Restart wall temperature mismatch'
+      end if
       if(magic=='PELEF_EB_TREE_INLET_COMPOSITION_V1') then
         read(stream,*,iostat=ios) stored_nspecies,stored_counts
         if(ios/=0) error stop 'Missing inlet composition dimensions'
@@ -1639,6 +1663,11 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if(allocated(active_wall_temperature)) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_ISOTHERMAL_V1'
+        if(ios==0) write(stream,'(6(es27.18e3,1x))',iostat=ios) wall_temperature
+        if(ios/=0) error stop 'Cannot write wall temperature context'
+      end if
       if(any(inflow_composition_count/=0)) then
         write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_INLET_COMPOSITION_V1'
         if(ios==0) write(stream,*,iostat=ios) size(species),inflow_composition_count

@@ -22,6 +22,7 @@ def main():
     boundaries.add_argument('--inflow', action='store_true')
     boundaries.add_argument('--periodic', action='store_true')
     boundaries.add_argument('--wall', action='store_true')
+    boundaries.add_argument('--isothermal', action='store_true')
     parser.add_argument('--inlet-composition', action='store_true')
     args = parser.parse_args()
     if args.inlet_composition and not args.inflow:
@@ -52,6 +53,9 @@ def main():
     if args.wall:
         template = template.replace('&eb_tree', "&eb_tree\n "
             "boundary_faces='slip_wall','slip_wall','no_slip_wall','no_slip_wall','no_slip_wall','no_slip_wall',", 1)
+    if args.isothermal:
+        template = template.replace('&eb_tree', "&eb_tree\n "
+            "boundary_faces=6*'isothermal_wall', wall_temperature=6*2000, automatic_timestep=.true.,", 1)
     env = os.environ.copy()
     env.pop('DISPLAY', None)
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
@@ -93,6 +97,11 @@ def main():
         assert len(fields) == len(budget)
         for field, row in zip(fields, budget):
             initial, final = float(row['initial']), float(row['final'])
+            if args.isothermal:
+                if field == 'rhoE':
+                    assert float(row['boundary']) > 0, 'heated walls must supply gas energy'
+                elif field == 'rho' or field.startswith('rhoY_'):
+                    assert float(row['boundary']) == 0, 'impermeable wall mass flux'
             inventory = math.fsum(float(cell[field]) * float(cell['fluid_volume']) for cell in cells)
             assert math.isfinite(inventory) and abs(inventory-final) <= 3e-14*max(1, abs(final))
             exchange = sum(float(row[key]) for key in ('boundary', 'wall', 'chemistry'))
@@ -130,6 +139,15 @@ def main():
         run('unsupported_thermal_wall', text=template.replace("'slip_wall'", "'isothermal_wall'"), success=False)
         run('conflicting_wall_mode', text=template.replace('&eb_tree', '&eb_tree\n inflow_mach(1)=.2,', 1), success=False)
         rejections += 3
+    if args.isothermal:
+        run('changed_temperature', 3, restart, template.replace('6*2000', '6*2001'), False)
+        run('missing_temperature', text=template.replace('wall_temperature=6*2000,', ''), success=False)
+        run('negative_temperature', text=template.replace('6*2000', '6*-1'), success=False)
+        run('disabled_transport', text=template.replace('transport_enabled=.true.', 'transport_enabled=.false.'), success=False)
+        run('removed_thermal_boundary', 3, restart,
+            template.replace("6*'isothermal_wall'", "6*'no_slip_wall'")
+            .replace('wall_temperature=6*2000,', ''), False)
+        rejections += 5
     print(f'PASS: {5 if args.inlet_composition else 4} successful runs, {rejections} expected rejections; maximum residual={worst:.6e}; artifacts={work}')
 
 

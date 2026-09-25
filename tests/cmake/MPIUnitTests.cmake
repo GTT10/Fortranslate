@@ -1212,6 +1212,13 @@ if(PELEF_ENABLE_MPI)
       --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/scheduled.nml"
       --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_ctu_application")
   set_tests_properties(regression_eb_tree_ctu_application PROPERTIES PROCESSORS 3 TIMEOUT 600)
+  add_test(NAME regression_eb_tree_isothermal_application
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_ctu_application.py"
+      --serial "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/scheduled.nml"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_isothermal_application" --isothermal)
+  set_tests_properties(regression_eb_tree_isothermal_application PROPERTIES PROCESSORS 3 TIMEOUT 600)
 endif()
 
 if(TARGET test_mpi_eb_tree_hydro_3d)

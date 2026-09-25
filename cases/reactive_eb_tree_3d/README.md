@@ -321,7 +321,30 @@ Wall ghosts reflect momentum. Molecular transport enforces zero mass/species
 flux and zero energy flux through stationary adiabatic walls, while retaining
 viscous momentum stress. CTU uses reflected configured geometry. Boundary labels
 are bound to checkpoint continuation, including across scheduled regridding
-and rank-count changes. `isothermal_wall` is not yet supported by this tree
-entry point. MPI tree spray accepts these wall labels with
+and rank-count changes. MPI tree spray accepts these adiabatic wall labels with
 `particle_outflow=.true.` and specular particle reflection; wall films and KH
 child generation remain unsupported with these explicit boundaries. This input support is not physical wall-flow validation.
+
+
+## Isothermal domain walls
+
+Fixed/selected serial and MPI gas executables also accept `isothermal_wall`:
+
+```fortran
+ boundary_faces=6*'isothermal_wall'
+ wall_temperature=6*2000
+ transport_enabled=.true.
+ automatic_timestep=.true.
+```
+
+Temperatures are in kelvin, ordered x-low, x-high, y-low, y-high, z-low, z-high.
+Supply six finite positive temperatures when any face is isothermal. Only
+isothermal faces use the heat-transfer values; molecular conduction is required.
+With no isothermal faces, leave `wall_temperature` at its default zero values.
+These stationary walls use no-slip momentum reflection, zero mass/species flux,
+and a conductive energy transfer recorded in the boundary budget. Common and
+recursive gas splits and automatic thermal timestep selection use these values.
+Checkpoint context binds all six temperatures and boundary labels; changing or
+removing thermal controls on restart rejects. Nonthermal checkpoint headers
+retain their existing format. MPI EB spray thermal forwarding remains unsupported
+and rejects at input. This is application integration, not physical validation.
