@@ -10,7 +10,8 @@ module eb_reactive_patch_tree_3d_mod
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
     reactive_eb_transport_patch_timestep_3d,reactive_eb_halo_bounds_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
-  use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d
+  use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d,advance_reactive_eb_plm_ctu_3d, &
+    compute_reactive_eb_flattening_3d,eb_plm_boundary_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
@@ -27,6 +28,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: build_eb_tree_extended_geometry_3d
   public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
   public :: reactive_eb_tree_timestep_3d
@@ -49,6 +51,85 @@ contains
     hi=[tree%nodes(node)%patch%coarse_i_upper,tree%nodes(node)%patch%coarse_j_upper, &
       tree%nodes(node)%patch%coarse_k_upper]
   end subroutine bounds
+
+  ! Build target-resolution margins from a finest domain padded by width times
+  ! the total refinement ratio. Geometry remains replicated for MPI callers.
+  subroutine build_eb_tree_extended_geometry_3d(topology,physical,finest,patches,ok,halo_width)
+    type(amr_patch_tree_3d), intent(in) :: topology
+    type(eb_geometry_3d), intent(in) :: physical(:),finest
+    type(eb_geometry_3d), allocatable, intent(inout) :: patches(:)
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: halo_width
+    type(eb_geometry_3d), allocatable :: levels(:),candidate(:)
+    type(eb_geometry_3d) :: center
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer(int64) :: padding
+    integer, allocatable :: ratios(:),margin(:)
+    integer :: width,count,level,node,n(3),lo(3),hi(3)
+    logical :: valid
+    ok=.false.;width=6
+    if(present(halo_width)) width=halo_width
+    if(width<1.or.width>huge(1)/4) return
+    call amr_tree_integer_layout_3d(topology,origin,domain,ratios,valid)
+    if(.not.valid.or..not.finest%is_valid()) return
+    if(size(physical)/=size(topology%nodes)) return
+    count=size(ratios)
+    padding=domain(1,count)/domain(1,1)
+    if(padding>int(huge(1)/2,int64)/width) return
+    padding=padding*width
+    if(any(domain(:,count)>int(huge(1),int64)-2*padding)) return
+    if(any(int([finest%nx,finest%ny,finest%nz],int64)/=domain(:,count)+2*padding)) return
+    allocate(levels(count),margin(count),candidate(size(physical)))
+    levels(count)=finest;margin(count)=int(padding)
+    do level=count,2,-1
+      if(mod(margin(level),ratios(level))/=0) return
+      margin(level-1)=margin(level)/ratios(level)
+      call coarsen_eb_geometry_3d(levels(level),ratios(level),levels(level-1),valid)
+      if(.not.valid) return
+    end do
+    do node=1,size(physical)
+      if(.not.physical(node)%is_valid()) return
+      level=topology%nodes(node)%level+1;n=topology%nodes(node)%shape
+      if(any([physical(node)%nx,physical(node)%ny,physical(node)%nz]/=n)) return
+      lo=int(origin(:,node))+1+margin(level)-width;hi=lo+n+2*width-1
+      call extract_eb_geometry_3d(levels(level),lo,hi,candidate(node),valid)
+      if(.not.valid) return
+      call extract_eb_geometry_3d(candidate(node),[width+1,width+1,width+1],n+width,center,valid)
+      if(.not.valid) return
+      if(.not.matching_eb_metrics_3d(center,physical(node))) return
+      ! Coordinates used during clipping can differ by roundoff after padding.
+      ! Keep the accepted physical patch metrics bit-for-bit, including its faces.
+      associate(g=>candidate(node),p=>physical(node))
+      g%volume_fraction(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%volume_fraction
+      g%cell_centroid_x(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%cell_centroid_x
+      g%cell_centroid_y(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%cell_centroid_y
+      g%cell_centroid_z(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%cell_centroid_z
+      g%boundary_area(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_area
+      g%boundary_centroid_x(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_centroid_x
+      g%boundary_centroid_y(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_centroid_y
+      g%boundary_centroid_z(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_centroid_z
+      g%boundary_normal_x(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_normal_x
+      g%boundary_normal_y(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_normal_y
+      g%boundary_normal_z(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_normal_z
+      g%boundary_normal_integral_x(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_normal_integral_x
+      g%boundary_normal_integral_y(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_normal_integral_y
+      g%boundary_normal_integral_z(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%boundary_normal_integral_z
+      g%cell_type(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%cell_type
+      g%x_face_fraction(width:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%x_face_fraction
+      g%x_face_centroid_y(width:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%x_face_centroid_y
+      g%x_face_centroid_z(width:width+n(1),width+1:width+n(2),width+1:width+n(3))=p%x_face_centroid_z
+      g%y_face_fraction(width+1:width+n(1),width:width+n(2),width+1:width+n(3))=p%y_face_fraction
+      g%y_face_centroid_x(width+1:width+n(1),width:width+n(2),width+1:width+n(3))=p%y_face_centroid_x
+      g%y_face_centroid_z(width+1:width+n(1),width:width+n(2),width+1:width+n(3))=p%y_face_centroid_z
+      g%z_face_fraction(width+1:width+n(1),width+1:width+n(2),width:width+n(3))=p%z_face_fraction
+      g%z_face_centroid_x(width+1:width+n(1),width+1:width+n(2),width:width+n(3))=p%z_face_centroid_x
+      g%z_face_centroid_y(width+1:width+n(1),width+1:width+n(2),width:width+n(3))=p%z_face_centroid_y
+      if(allocated(g%halo_volume_fraction)) g%halo_volume_fraction(1:g%nx,1:g%ny,1:g%nz)=g%volume_fraction
+      end associate
+      if(.not.candidate(node)%is_valid()) return
+    end do
+    call move_alloc(candidate,patches);ok=.true.
+  end subroutine build_eb_tree_extended_geometry_3d
 
   subroutine initialize_reactive_eb_tree_3d(species,topology,finest,root_state,root_temperature,tree,ok)
     type(nasa7_species), intent(in) :: species(:)
@@ -598,11 +679,18 @@ contains
     tree=candidate;boundary_change=boundary;minimum_theta=theta;ok=.true.
   end subroutine advance_reactive_eb_tree_transport_3d
 
-  ! Serial common-interval Euler hydro, spatial PCM donors, outflow or Mach inlet edges.
+  ! Serial common-interval hydro with PCM donors and outflow/Mach inlet edges.
+  ! Supplying extended geometry selects PLM CTU; omission retains PCM Euler.
   ! Every node reads the same averaged snapshot; all outputs commit together.
   subroutine advance_reactive_eb_tree_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
+    type(eb_geometry_3d) :: working,center
+    type(eb_plm_boundary_3d) :: physical_boundary
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: flat(:,:,:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
@@ -616,7 +704,7 @@ contains
     type(eb_integrated_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),source(:,:,:,:),boundary(:),wall(:)
     logical, allocatable :: exposed(:,:,:)
-    integer :: nv,node,child,n(3),lo(3),hi(3),c
+    integer :: nv,node,child,n(3),lo(3),hi(3),c,level
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
@@ -625,22 +713,65 @@ contains
     coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if(present(extended_geometry)) then
+      if(solver/='pelec'.or.size(extended_geometry)/=size(tree%nodes)) return
+      call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+      if(.not.valid) return
+      if(any(domain>int(huge(1)-4,int64))) return
+      do node=1,size(tree%nodes)
+        n=tree%topology%nodes(node)%shape
+        if(any([extended_geometry(node)%nx,extended_geometry(node)%ny,extended_geometry(node)%nz]/=n+12)) return
+        call extract_eb_geometry_3d(extended_geometry(node),[7,7,7],n+6,center,valid)
+        if(.not.valid) return
+        if(.not.matching_eb_metrics_3d(center,tree%nodes(node)%geometry)) return
+      end do
+    end if
     snapshot=tree
     call average_down_reactive_eb_tree_3d(species,snapshot,valid)
-    if (.not.valid) return
+    if(.not.valid) return
     candidate=snapshot
     allocate(flux(size(tree%nodes)),boundary(nv),wall(nv));wall=0._dp
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
+      if(present(extended_geometry)) then
+        allocate(ghost(nv,-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),gt(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6), &
+          vf(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),flat(0:n(1)+7,0:n(2)+7,0:n(3)+7))
+        call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
+          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=extended_geometry(node)%volume_fraction)
+        if(.not.valid) return
+        call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,working,valid)
+        if(.not.valid) return
+        call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,n+6,flat,valid)
+        if(.not.valid) return
+        level=tree%topology%nodes(node)%level+1
+        physical_boundary%lower=4-int(origin(:,node))
+        physical_boundary%upper=3+int(domain(:,level)-origin(:,node))
+        physical_boundary%faces='outflow'
+        if(present(inflow_mach)) then
+          where(inflow_mach>=0) physical_boundary%faces='inflow'
+        end if
+        call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,candidate%nodes(node)%state, &
+          candidate%nodes(node)%temperature,valid,difmag=coefficient,integrated_flux=flux(node),boundary=physical_boundary)
+        if(.not.valid) return
+        do c=1,nv
+          where(snapshot%nodes(node)%geometry%volume_fraction<=0) &
+            candidate%nodes(node)%state(c,:,:,:)=snapshot%nodes(node)%state(c,:,:,:)
+        end do
+        where(snapshot%nodes(node)%geometry%volume_fraction<=0) &
+          candidate%nodes(node)%temperature=snapshot%nodes(node)%temperature
+        deallocate(flat)
+      else
       allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       if(coefficient>0) allocate(vf(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid, &
         inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
-      if (.not.valid) return
+      if(.not.valid) return
       call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
         snapshot%nodes(node)%geometry,solver,dt,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
         valid,ghost,gt,flux(node),difmag=coefficient,ghost_volume_fraction=vf)
-      if (.not.valid) return
+      end if
+      if(.not.valid) return
       deallocate(ghost,gt)
       if(allocated(vf)) deallocate(vf)
       allocate(source(nv,n(1),n(2),n(3)),exposed(n(1),n(2),n(3)));exposed=.true.
@@ -651,7 +782,7 @@ contains
       end do
       call reactive_eb_slip_wall_source_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
         snapshot%nodes(node)%geometry,source,valid)
-      if (.not.valid) return
+      if(.not.valid) return
       associate(g=>snapshot%nodes(node)%geometry)
       do c=1,nv
         wall(c)=wall(c)+dt*g%dx*g%dy*g%dz*sum(source(c,:,:,:)*g%volume_fraction,mask=exposed)
@@ -660,7 +791,7 @@ contains
       deallocate(source,exposed)
     end do
     call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid)
-    if (.not.valid) return
+    if(.not.valid) return
     n=tree%topology%nodes(1)%shape
     associate(g=>tree%nodes(1)%geometry,f=>flux(1))
     do c=1,nv
