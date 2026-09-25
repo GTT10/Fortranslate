@@ -80,30 +80,48 @@ contains
     if (config%geometry_type=='extruded') identity='extruded:'//trim(config%extrusion_axis)
   end function
 
-  subroutine build_configured_eb_geometry_3d(config,geometry,ok,nodal_field)
+  subroutine build_configured_eb_geometry_3d(config,geometry,ok,nodal_field,halo)
     type(reactive_eb_3d_config), intent(in) :: config
     type(eb_geometry_3d), intent(inout) :: geometry
+    ! Nonperiodic EB2-style domain-face extension, in cells.
+    integer, optional, intent(in) :: halo
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: nodal_field(:,:,:)
     type(eb_geometry_3d) :: candidate
     type(eb_geometry_2d) :: section
-    real(dp), allocatable :: phi(:,:),nodal(:,:,:)
-    real(dp) :: lo(3),hi(3)
-    integer :: dims(3),axis,a,b,unit,status,header(2),volume_header(3),close_status
+    real(dp), allocatable :: phi(:,:),nodal(:,:,:),wide_phi(:,:),wide_nodal(:,:,:)
+    real(dp) :: lo(3),hi(3),spacing(3),position
+    integer :: dims(3),axis,a,b,unit,status,header(2),volume_header(3),close_status,h,i,j,k,point(3)
     character(len=1024) :: trailing
-    ok=.false.
+    ok=.false.;h=0
+    if(present(halo)) h=halo
+    if(h<0) return
+    dims=[config%nx,config%ny,config%nz]
+    lo=[config%x_lower,config%y_lower,config%z_lower]
+    hi=[config%x_upper,config%y_upper,config%z_upper]
+    if(any(dims<1).or..not.all(ieee_is_finite(lo)).or..not.all(ieee_is_finite(hi))) return
+    if(any(hi<=lo)) return
+    spacing=(hi-lo)/real(dims,dp)
+    lo=lo-h*spacing;hi=hi+h*spacing
     if (present(nodal_field).and.config%geometry_type/='level_set') return
     if (config%geometry_type=='plane') then
-      call build_axis_plane_eb_geometry_3d(config%nx,config%ny,config%nz,config%x_lower,config%x_upper, &
-        config%y_lower,config%y_upper,config%z_lower,config%z_upper,config%plane_axis,config%plane_position,candidate,ok)
+      select case(config%plane_axis)
+      case('x');axis=1
+      case('y');axis=2
+      case('z');axis=3
+      case default;return
+      end select
+      position=config%plane_position
+      if(h>0.and.position<=lo(axis)+h*spacing(axis)) position=min(position,lo(axis)-spacing(axis))
+      if(h>0.and.position>=hi(axis)-h*spacing(axis)) position=max(position,hi(axis)+spacing(axis))
+      call build_axis_plane_eb_geometry_3d(dims(1)+2*h,dims(2)+2*h,dims(3)+2*h,lo(1),hi(1), &
+        lo(2),hi(2),lo(3),hi(3),config%plane_axis,position,candidate,ok)
       if (ok) geometry=candidate
       return
     end if
     if (config%geometry_type=='level_set') then
       dims=[config%nx,config%ny,config%nz]
       if (any(dims<2)) return
-      lo=[config%x_lower,config%y_lower,config%z_lower]
-      hi=[config%x_upper,config%y_upper,config%z_upper]
       if (.not.all(ieee_is_finite(lo)).or..not.all(ieee_is_finite(hi)).or.any(hi<=lo)) return
       open(newunit=unit,file=trim(config%level_set_file),status='old',action='read',iostat=status)
       if (status/=0) return
@@ -129,6 +147,18 @@ contains
       end if
       close(unit,iostat=close_status)
       if (status/=0.or.close_status/=0) return
+      if(h>0) then
+        allocate(wide_nodal(0:dims(1)+2*h,0:dims(2)+2*h,0:dims(3)+2*h))
+        do k=0,dims(3)+2*h
+        do j=0,dims(2)+2*h
+        do i=0,dims(1)+2*h
+          point=max(0,min(dims,[i,j,k]-h))
+          wide_nodal(i,j,k)=nodal(point(1),point(2),point(3))
+        end do
+        end do
+        end do
+        call move_alloc(wide_nodal,nodal)
+      end if
       call build_level_set_eb_geometry_3d(nodal,lo,hi,candidate,ok)
       if (ok) then
         geometry=candidate
@@ -146,8 +176,6 @@ contains
     a=mod(axis,3)+1;b=mod(axis+1,3)+1
     dims=[config%nx,config%ny,config%nz]
     if (any(dims<2)) return
-    lo=[config%x_lower,config%y_lower,config%z_lower]
-    hi=[config%x_upper,config%y_upper,config%z_upper]
     if (.not.all(ieee_is_finite(lo)).or..not.all(ieee_is_finite(hi)).or.any(hi<=lo)) return
     open(newunit=unit,file=trim(config%section_file),status='old',action='read',iostat=status)
     if (status/=0) return
@@ -173,9 +201,18 @@ contains
     end if
     close(unit,iostat=close_status)
     if (status/=0.or.close_status/=0) return
+    if(h>0) then
+      allocate(wide_phi(0:dims(a)+2*h,0:dims(b)+2*h))
+      do j=0,dims(b)+2*h
+      do i=0,dims(a)+2*h
+        wide_phi(i,j)=phi(max(0,min(dims(a),i-h)),max(0,min(dims(b),j-h)))
+      end do
+      end do
+      call move_alloc(wide_phi,phi)
+    end if
     call build_eb_geometry_2d(phi,lo(a),hi(a),lo(b),hi(b),section,ok)
     if (.not.ok) return
-    call extrude_eb_geometry_3d(section,axis,dims(axis),lo(axis),hi(axis),candidate,ok)
+    call extrude_eb_geometry_3d(section,axis,dims(axis)+2*h,lo(axis),hi(axis),candidate,ok)
     if (ok) geometry=candidate
   end subroutine
 

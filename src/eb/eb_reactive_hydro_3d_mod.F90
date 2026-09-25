@@ -33,6 +33,7 @@ module eb_reactive_hydro_3d_mod
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
+  public :: advance_reactive_eb_outflow_ctu_3d
   public :: compute_reactive_eb_flattening_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
@@ -142,6 +143,59 @@ contains
     end do
     flattening=candidate;ok=.true.
   end subroutine compute_reactive_eb_flattening_3d
+
+  ! Application-facing outflow step. Extended geometry contains six physical
+  ! halo cells; use domain-face extension of the source geometry, not cell-metric
+  ! replication. State donors are nearest physical cells in each direction.
+  subroutine advance_reactive_eb_outflow_ctu_3d(species,state,temperature,extended,dt,new_state,new_temperature,ok, &
+      redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,shock_flattening)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
+    type(eb_geometry_3d), intent(in) :: extended
+    real(dp), intent(inout) :: new_state(:,:,:,:),new_temperature(:,:,:)
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(in) :: difmag,target_volume_fraction
+    integer, optional, intent(in) :: order
+    logical, optional, intent(in) :: shock_flattening
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    type(eb_geometry_3d) :: working
+    type(eb_plm_boundary_3d) :: boundary
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),flat(:,:,:)
+    integer :: n(3),nv,i,j,k,donor(3)
+    logical :: valid,use_flattening
+    ok=.false.;nv=reactive_nvar(size(species));n=shape(temperature)
+    if(any(n<1).or.any(shape(state)/=[nv,n])) return
+    if(any(shape(new_state)/=[nv,n]).or.any(shape(new_temperature)/=n)) return
+    if(any([extended%nx,extended%ny,extended%nz]/=n+12)) return
+    call extract_eb_geometry_3d(extended,[4,4,4],n+9,working,valid)
+    if(.not.valid) return
+    allocate(ghost(nv,-2:n(1)+9,-2:n(2)+9,-2:n(3)+9),gt(-2:n(1)+9,-2:n(2)+9,-2:n(3)+9), &
+      vf(-2:n(1)+9,-2:n(2)+9,-2:n(3)+9),flat(0:n(1)+7,0:n(2)+7,0:n(3)+7))
+    vf=extended%volume_fraction;ghost=0;gt=0;flat=1
+    do k=-2,n(3)+9
+    do j=-2,n(2)+9
+    do i=-2,n(1)+9
+      if(vf(i,j,k)<=0) cycle
+      donor=max(1,min(n,[i,j,k]-3))
+      ! Do not invent a fluid state if the supplied geometry needs a covered donor.
+      if(extended%volume_fraction(donor(1)+6,donor(2)+6,donor(3)+6)<=0) return
+      ghost(:,i,j,k)=state(:,donor(1),donor(2),donor(3))
+      gt(i,j,k)=temperature(donor(1),donor(2),donor(3))
+    end do
+    end do
+    end do
+    use_flattening=.true.
+    if(present(shock_flattening)) use_flattening=shock_flattening
+    if(use_flattening) then
+      call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,n+6,flat,valid)
+      if(.not.valid) return
+    end if
+    boundary%lower=4;boundary%upper=n+3;boundary%faces='outflow'
+    call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,new_state,new_temperature,ok, &
+      redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,boundary)
+  end subroutine advance_reactive_eb_outflow_ctu_3d
 
   ! Complete hydro update for the central cells 4:N-3 of a prepared working
   ! geometry. Physical boundary filling/flattening remain caller responsibilities.

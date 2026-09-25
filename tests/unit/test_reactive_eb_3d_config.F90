@@ -4,7 +4,8 @@ program test_reactive_eb_3d_config
   use precision_mod, only: dp
   use simulation_config_reactive_eb_3d_mod, only: &
     reactive_eb_3d_config, read_reactive_eb_3d_configuration, &
-    validate_reactive_eb_3d_configuration
+    validate_reactive_eb_3d_configuration,build_configured_eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,extract_eb_geometry_3d
   implicit none
 
   character(len=*), parameter :: path = "reactive_eb_3d_config_test.nml"
@@ -12,6 +13,8 @@ program test_reactive_eb_3d_config
   character(len=256) :: message
   logical :: ok
   integer :: unit
+
+  call verify_extended_geometry()
 
   config = reactive_eb_3d_config()
   call validate_reactive_eb_3d_configuration(config, ok, message)
@@ -172,6 +175,85 @@ program test_reactive_eb_3d_config
   write(*, '(a)') "test_reactive_eb_3d_config: PASS"
 
 contains
+  subroutine verify_extended_geometry()
+    type(reactive_eb_3d_config) :: cfg
+    type(eb_geometry_3d) :: base,wide,cropped,saved
+    real(dp), allocatable :: nodes(:,:,:),expanded(:,:,:)
+    real(dp) :: section(0:4,0:4),field(0:4,0:4,0:4),error
+    integer :: i,j,k,axis,kind,handle,point(3)
+    character(len=1), parameter :: axes(3)=['x','y','z']
+    logical :: valid
+    cfg=reactive_eb_3d_config();cfg%nx=4;cfg%ny=4;cfg%nz=4
+    cfg%plane_position=.395_dp
+    cfg%section_file='extended_eb_section.dat';cfg%level_set_file='extended_eb_volume.dat'
+    do k=0,4
+    do j=0,4
+    do i=0,4
+      field(i,j,k)=real(i,dp)+.5_dp*j+.25_dp*k-2.3_dp
+      section(i,j)=real(i,dp)+.5_dp*j-2.3_dp
+    end do
+    end do
+    end do
+    open(newunit=handle,file=trim(cfg%section_file),status='replace')
+    write(handle,*) 4,4
+    write(handle,*) section
+    close(handle)
+    open(newunit=handle,file=trim(cfg%level_set_file),status='replace')
+    write(handle,*) 4,4,4
+    write(handle,*) field
+    close(handle)
+    do kind=1,3
+      select case(kind)
+      case(1);cfg%geometry_type='plane'
+      case(2);cfg%geometry_type='extruded'
+      case(3);cfg%geometry_type='level_set'
+      end select
+      do axis=1,3
+        if(kind==3.and.axis>1) cycle
+        cfg%plane_axis=axes(axis);cfg%extrusion_axis=axes(axis)
+        if(kind==3) then
+          call build_configured_eb_geometry_3d(cfg,base,valid,nodal_field=nodes)
+          call require(valid,'base nodal geometry')
+          call build_configured_eb_geometry_3d(cfg,wide,valid,nodal_field=expanded,halo=6)
+        else
+          call build_configured_eb_geometry_3d(cfg,base,valid)
+          call require(valid,'base plane/extrusion geometry')
+          call build_configured_eb_geometry_3d(cfg,wide,valid,halo=6)
+        end if
+        call require(valid,'six-cell physical geometry extension')
+        call require(all([wide%nx,wide%ny,wide%nz]==16),'extended dimensions')
+        call extract_eb_geometry_3d(wide,[7,7,7],[10,10,10],cropped,valid)
+        call require(valid,'physical geometry recovery')
+        error=max(maxval(abs(cropped%volume_fraction-base%volume_fraction)), &
+          maxval(abs(cropped%x_face_fraction-base%x_face_fraction)), &
+          maxval(abs(cropped%y_face_fraction-base%y_face_fraction)), &
+          maxval(abs(cropped%z_face_fraction-base%z_face_fraction)), &
+          maxval(abs(cropped%cell_centroid_x-base%cell_centroid_x)), &
+          maxval(abs(cropped%cell_centroid_y-base%cell_centroid_y)), &
+          maxval(abs(cropped%cell_centroid_z-base%cell_centroid_z)), &
+          maxval(abs(cropped%boundary_area-base%boundary_area)))
+        call require(error<2e-12_dp.and.all(cropped%cell_type==base%cell_type), &
+          'extension preserves physical cut geometry')
+        if(kind==3) then
+          do k=0,16
+          do j=0,16
+          do i=0,16
+            point=max(0,min(4,[i,j,k]-6))
+            call require(expanded(i,j,k)==nodes(point(1),point(2),point(3)), &
+              'domain-face nodal extension includes edges and corners')
+          end do
+          end do
+          end do
+        end if
+      end do
+    end do
+    saved=wide
+    call build_configured_eb_geometry_3d(cfg,wide,valid,halo=-1)
+    call require(.not.valid.and.all(wide%volume_fraction==saved%volume_fraction),'negative halo rollback')
+    open(newunit=handle,file=trim(cfg%section_file),status='old');close(handle,status='delete')
+    open(newunit=handle,file=trim(cfg%level_set_file),status='old');close(handle,status='delete')
+  end subroutine verify_extended_geometry
+
 
   subroutine require(condition, label)
     logical, intent(in) :: condition
