@@ -128,7 +128,9 @@ halo API now constructs normal Riemann fluxes and Godunov pressure/velocity
 transverse correction now includes the joint aperture gate, pressure work and
 primitive sources ([checks](validation/eb-transverse-20260925.md)). The twelve-solve
 CTU flux pipeline is connected, including corrected Godunov pressure/velocity
-([checks](validation/eb-ctu-flux-20260925.md)). Viscosity/centroid flux processing,
+([checks](validation/eb-ctu-flux-20260925.md)). A connectivity-gated face-centroid
+flux interpolation API now follows the reference regular-area/aperture ordering
+([checks](validation/eb-centroid-flux-20260925.md)). CTU/viscosity/centroid assembly,
 conservative update/redistribution, application halo preparation and input
 selection remain before claiming EB Godunov parity.
 
