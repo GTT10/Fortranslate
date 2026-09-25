@@ -50,8 +50,10 @@ contains
   ! Positive coefficients zero closed faces; zero retains the identity policy.
   ! Fluxes remain intensive; the finite-volume caller supplies face areas.
   subroutine adjust_reactive_artificial_viscosity_3d(state,n,spacing,difmag, &
-      no_slip_faces,xflux,yflux,zflux,ok,volume_fraction,open_x,open_y,open_z)
+      no_slip_faces,xflux,yflux,zflux,ok,volume_fraction,open_x,open_y,open_z,boundary_lower,boundary_upper)
     integer, intent(in) :: n(3)
+    ! Physical face indices may lie inside an extended working region.
+    integer, optional, intent(in) :: boundary_lower(3),boundary_upper(3)
     real(dp), intent(in) :: state(:,0:,0:,0:),spacing(3),difmag
     logical, intent(in) :: no_slip_faces(6)
     real(dp), intent(inout) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:)
@@ -61,13 +63,19 @@ contains
     logical, optional, intent(in) :: open_x(0:,:,:),open_y(:,0:,:),open_z(:,:,0:)
     real(dp), allocatable :: velocity(:,:,:,:),divergence(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: derivatives(3),factor,total,candidate(size(state,1)),jump(size(state,1))
-    integer :: nv,i,j,k,a,b,c,s,t,point(3),low(3),high(3),limit(3),normal
+    integer :: nv,i,j,k,a,b,c,s,t,point(3),low(3),high(3),limit(3),normal,wall_lo(3),wall_hi(3)
     logical :: wall,eb,opened
     ok=.false.;nv=size(state,1)
     if (nv<6.or.any(n<1).or.any(shape(state)/=[nv,n+2])) return
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)]).or. &
         any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
     if (.not.all(ieee_is_finite([spacing,difmag])).or.any(spacing<=0).or.difmag<0) return
+    if(present(boundary_lower).neqv.present(boundary_upper)) return
+    wall_lo=0;wall_hi=n
+    if(present(boundary_lower)) then
+      wall_lo=boundary_lower;wall_hi=boundary_upper
+      if(any(wall_lo>=wall_hi)) return
+    end if
     eb=present(volume_fraction)
     if(eb.neqv.present(open_x)) return
     if(eb.neqv.present(open_y)) return
@@ -167,7 +175,7 @@ contains
         high=low;high(a)=high(a)+1
         jump=factor*(state(:,high(1),high(2),high(3))-state(:,low(1),low(2),low(3)))
         normal=low(a)
-        wall=(normal==0.and.no_slip_faces(2*a-1)).or.(normal==n(a).and.no_slip_faces(2*a))
+        wall=(normal==wall_lo(a).and.no_slip_faces(2*a-1)).or.(normal==wall_hi(a).and.no_slip_faces(2*a))
         if (wall) then
           jump(b+1)=0;jump(c+1)=0
         end if

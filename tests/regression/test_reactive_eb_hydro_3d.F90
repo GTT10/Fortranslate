@@ -1,12 +1,13 @@
 program test_reactive_eb_hydro_3d
   use precision_mod, only: dp
   use state_indices_mod, only: irho
+  use reactive_3d_mod, only: adjust_reactive_artificial_viscosity_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
-    reactive_species_component, reactive_primitive_to_conserved
+    reactive_species_component, reactive_primitive_to_conserved,reactive_pelec_primitive_flux_x
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, build_axis_plane_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_wall_flux_3d_mod, only: &
@@ -14,7 +15,7 @@ program test_reactive_eb_hydro_3d
   use eb_reactive_hydro_3d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
     compute_reactive_eb_plm_normal_fluxes_3d,compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d, &
-    eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d,compute_reactive_eb_flattening_3d, &
+    eb_plm_face_prediction_3d,eb_plm_boundary_3d,apply_reactive_eb_transverse_3d,compute_reactive_eb_flattening_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
@@ -82,6 +83,8 @@ program test_reactive_eb_hydro_3d
   call verify_ctu_fluxes()
   call verify_ctu_update()
   call verify_flattening()
+  call verify_physical_fluxes()
+  call verify_interior_wall_viscosity()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -262,6 +265,121 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_interior_wall_viscosity()
+    real(dp) :: u(nvar,0:5,0:5,0:5),fx(nvar,0:4,4,4),fy(nvar,4,0:4,4),fz(nvar,4,4,0:4)
+    integer :: ii,jj,kk,face
+    logical :: valid
+    u=0;u(1,:,:,:)=1;u(5,:,:,:)=1000;u(6,:,:,:)=1
+    do kk=0,5
+    do jj=0,5
+    do ii=0,5
+      u(2:4,ii,jj,kk)=-real(ii+jj+kk,dp)*[1._dp,2._dp,3._dp]
+    end do
+    end do
+    end do
+    fx=0;fy=0;fz=0
+    call adjust_reactive_artificial_viscosity_3d(u,[4,4,4],[1._dp,1._dp,1._dp],.1_dp, &
+      [.true.,.true.,.true.,.true.,.true.,.true.],fx,fy,fz,valid,boundary_lower=[1,1,1],boundary_upper=[3,3,3])
+    call require(valid,'interior physical wall viscosity')
+    do face=1,3,2
+      call require(all(fx(3:4,face,:,:)==0).and.all(fy(2,:,face,:)==0).and.all(fy(4,:,face,:)==0).and. &
+        all(fz(2:3,:,:,face)==0),'six interior no-slip faces exclude tangential viscosity')
+    end do
+    call require(all(fx(3:4,2,:,:)/=0).and.all(fy(2,:,2,:)/=0).and.all(fz(2:3,:,:,2)/=0), &
+      'ordinary interior faces retain tangential viscosity')
+    call require(all(fx(3:4,0,:,:)/=0).and.all(fx(3:4,4,:,:)/=0), &
+      'working-region edges are not physical walls')
+  end subroutine verify_interior_wall_viscosity
+
+  subroutine verify_physical_fluxes()
+    type(eb_geometry_3d) :: working
+    type(eb_plm_boundary_3d) :: boundary
+    type(eb_plm_face_prediction_3d) :: result(3),saved(3)
+    real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11)
+    real(dp) :: sound(-2:11,-2:11,-2:11),flat(0:9,0:9,0:9),q(nvar),ql(nvar),qr(nvar),expected(nvar)
+    real(dp) :: swap,pface,uface,cav,scale,updated(nvar,2,2,2),updated_t(2,2,2),ledger(nvar),wall(nvar),change
+    integer :: ii,jj,kk,mode,stage,axis,side,idx(3),cell(3),output(3)
+    character(len=24), parameter :: modes(5)=[character(len=24):: &
+      'outflow','slip_wall','no_slip_wall','isothermal_wall','symmetry']
+    logical :: valid
+    call build_axis_plane_eb_geometry_3d(8,8,8,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
+      'x',-.1_dp,working,valid)
+    call require(valid,'physical boundary working geometry')
+    vf=1;flat=1;boundary%lower=4;boundary%upper=5
+    do kk=-2,11
+    do jj=-2,11
+    do ii=-2,11
+      q(1)=.31_dp+.001_dp*(ii+jj+kk)
+      q(2:4)=[7._dp,-3._dp,5._dp]+.05_dp*[ii,jj,kk];q(5)=pressure
+      q(6:)=mass_fractions
+      q(6)=q(6)+.0001_dp*(ii+jj+kk);q(nvar)=q(nvar)-.0001_dp*(ii+jj+kk)
+      call reactive_primitive_to_conserved(species,q,ghost(:,ii,jj,kk),gt(ii,jj,kk),sound(ii,jj,kk),valid)
+      call require(valid,'physical flux input')
+    end do
+    end do
+    end do
+    do mode=1,size(modes)
+      boundary%faces=modes(mode)
+      do stage=1,2
+        if(stage==1) then
+          call compute_reactive_eb_plm_normal_fluxes_3d(species,working,ghost,gt,vf,1e-7_dp,flat, &
+            result,valid,boundary=boundary)
+        else
+          call compute_reactive_eb_plm_ctu_fluxes_3d(species,working,ghost,gt,vf,1e-7_dp,flat, &
+            result,valid,boundary=boundary)
+        end if
+        call require(valid,'physical normal and corrected CTU fluxes')
+        do axis=1,3
+        do side=1,3
+          idx=4
+          if(side==1) idx(axis)=3
+          if(side==2) idx(axis)=5
+          output=idx-2*(stage-1)
+          ql=result(axis)%left(:,output(1),output(2),output(3))
+          qr=result(axis)%right(:,output(1),output(2),output(3))
+          ! Independently apply the pinned local-argument rule. Species remain
+          ! donor-specific; interior faces (side 3) are deliberately untouched.
+          if(side==1) then
+            ql(1:5)=qr(1:5)
+            if(mode>1) ql(axis+1)=-qr(axis+1)
+          else if(side==2) then
+            qr(1:5)=ql(1:5)
+            if(mode>1) qr(axis+1)=-ql(axis+1)
+          end if
+          swap=ql(2);ql(2)=ql(axis+1);ql(axis+1)=swap
+          swap=qr(2);qr(2)=qr(axis+1);qr(axis+1)=swap
+          cell=idx;cell(axis)=cell(axis)+1
+          cav=.5_dp*(sound(idx(1),idx(2),idx(3))+sound(cell(1),cell(2),cell(3)))
+          call reactive_pelec_primitive_flux_x(species,ql,qr,cav,expected,valid, &
+            interface_pressure=pface,interface_velocity=uface)
+          call require(valid,'physical reference Riemann arguments')
+          swap=expected(2);expected(2)=expected(axis+1);expected(axis+1)=swap
+          scale=max(1._dp,maxval(abs(expected)))
+          call require(maxval(abs(result(axis)%flux(:,output(1),output(2),output(3))-expected))<1e-13_dp*scale, &
+            'six-face Riemann correction preserves species and interior fluxes')
+          call require(abs(result(axis)%pressure(output(1),output(2),output(3))-pface)<1e-10_dp.and. &
+            abs(result(axis)%velocity(output(1),output(2),output(3))-uface)<1e-12_dp, &
+            'physical Godunov pressure and velocity')
+        end do
+        end do
+      end do
+      call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,1e-7_dp,flat,updated,updated_t,valid, &
+        boundary=boundary,boundary_change=ledger,wall_change=wall)
+      call require(valid,'physical boundary complete CTU update')
+      do ii=1,nvar
+        change=sum(updated(ii,:,:,:)-ghost(ii,4:5,4:5,4:5))/8._dp**3
+        scale=max(1._dp,sum(abs(ghost(ii,4:5,4:5,4:5)))/8._dp**3)
+        call require(abs(change-ledger(ii)-wall(ii))<2e-12_dp*scale,'physical update inventory balance')
+      end do
+    end do
+    saved=result;boundary%faces(1)='invalid'
+    call compute_reactive_eb_plm_ctu_fluxes_3d(species,working,ghost,gt,vf,1e-7_dp,flat,result,valid,boundary=boundary)
+    call require(.not.valid,'invalid physical boundary rejection')
+    do axis=1,3
+      call require(all(result(axis)%flux==saved(axis)%flux),'physical boundary failure preserves output')
+    end do
+  end subroutine verify_physical_fluxes
+
   subroutine verify_flattening()
     real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11)
     real(dp) :: flat(0:9,0:9,0:9),q(nvar),cs,nan_value,vel(3),p

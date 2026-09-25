@@ -20,6 +20,12 @@ module eb_reactive_hydro_3d_mod
   implicit none
   private
 
+  type, public :: eb_plm_boundary_3d
+    ! Physical cell bounds in working-geometry coordinates, not cropped indices.
+    integer :: lower(3)=1,upper(3)=1
+    character(len=24) :: faces(6)='interior'
+  end type eb_plm_boundary_3d
+
   type, public :: eb_plm_face_prediction_3d
     ! Normal face index starts at zero, tangential indices at one.
     real(dp), allocatable :: left(:,:,:,:),right(:,:,:,:),flux(:,:,:,:)
@@ -39,6 +45,53 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  logical function valid_plm_boundary(boundary) result(valid)
+    type(eb_plm_boundary_3d), optional, intent(in) :: boundary
+    integer :: face
+    valid=.true.
+    if(.not.present(boundary)) return
+    valid=.false.
+    if(any(boundary%lower>boundary%upper)) return
+    do face=1,6
+      select case(trim(boundary%faces(face)))
+      case('interior','periodic','inflow','outflow','slip_wall','no_slip_wall','isothermal_wall','symmetry')
+      case default
+        return
+      end select
+    end do
+    valid=.true.
+  end function valid_plm_boundary
+
+  ! pc_cmpflx corrects only the local Riemann arguments. Reconstructed states,
+  ! species fractions and independently traced internal energy remain unchanged.
+  subroutine correct_plm_boundary(left,right,axis,face,boundary)
+    real(dp), intent(inout) :: left(:),right(:)
+    integer, intent(in) :: axis,face
+    type(eb_plm_boundary_3d), optional, intent(in) :: boundary
+    integer :: side
+    logical :: wall
+    if(.not.present(boundary)) return
+    if(face==boundary%lower(axis)-1) then
+      side=2*axis-1
+    else if(face==boundary%upper(axis)) then
+      side=2*axis
+    else
+      return
+    end if
+    select case(trim(boundary%faces(side)))
+    case('slip_wall','no_slip_wall','isothermal_wall','symmetry');wall=.true.
+    case('outflow');wall=.false.
+    case default;return
+    end select
+    if(mod(side,2)==1) then
+      left(1:5)=right(1:5)
+      if(wall) left(axis+1)=-right(axis+1)
+    else
+      right(1:5)=left(1:5)
+      if(wall) right(axis+1)=-left(axis+1)
+    end if
+  end subroutine correct_plm_boundary
 
   ! Cell flattening for the normal predictor. Inputs contain three halos;
   ! outputs include its one donor layer. Missing pencils and cut-cell pencils
@@ -94,8 +147,9 @@ contains
   ! geometry. Physical boundary filling/flattening remain caller responsibilities.
   subroutine advance_reactive_eb_plm_ctu_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
       new_state,new_temperature,ok,redistribution,difmag,integrated_flux,boundary_change,wall_change, &
-      target_volume_fraction,order)
+      target_volume_fraction,order,boundary)
     type(nasa7_species), intent(in) :: species(:)
+    type(eb_plm_boundary_3d), optional, intent(in) :: boundary
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
     real(dp), intent(in) :: dt,flattening(0:,0:,0:)
@@ -111,10 +165,10 @@ contains
     type(eb_integrated_flux_3d) :: flux
     real(dp), allocatable :: state(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),ct(:,:,:),rhs(:,:,:,:)
     real(dp) :: coefficient,target,total,recovered,speed,q(reactive_nvar(size(species)))
-    real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
-    integer :: n(3),m(3),nv,i,j,k,a,lo(4),hi(4)
+    real(dp) :: inventory_boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
+    integer :: n(3),m(3),nv,i,j,k,a,lo(4),hi(4),wall_lo(3),wall_hi(3)
     character(len=16) :: method
-    logical :: valid
+    logical :: valid,no_slip(6)
     ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
     if(any(n<7).or..not.geometry%is_valid()) return
     if(any(shape(new_state)/=[nv,n-6]).or.any(shape(new_temperature)/=n-6)) return
@@ -132,16 +186,21 @@ contains
       if(size(wall_change)/=nv) return
     end if
     call compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,valid,order)
+      dt,flattening,prediction,valid,order,boundary=boundary)
     if(.not.valid) return
     call extract_eb_geometry_3d(geometry,[3,3,3],n-2,margin,valid)
     if(.not.valid) return
     m=n-4
+    no_slip=.false.;wall_lo=0;wall_hi=m
+    if(present(boundary)) then
+      no_slip=boundary%faces=='no_slip_wall'.or.boundary%faces=='isothermal_wall'
+      wall_lo=boundary%lower-3;wall_hi=boundary%upper-2
+    end if
     call adjust_reactive_artificial_viscosity_3d(ghost(:,2:n(1)-1,2:n(2)-1,2:n(3)-1), &
-      m,[geometry%dx,geometry%dy,geometry%dz],coefficient,[.false.,.false.,.false.,.false.,.false.,.false.], &
+      m,[geometry%dx,geometry%dy,geometry%dz],coefficient,no_slip, &
       prediction(1)%flux,prediction(2)%flux,prediction(3)%flux,valid, &
       volume_fraction(2:n(1)-1,2:n(2)-1,2:n(3)-1), &
-      margin%x_face_fraction>0,margin%y_face_fraction>0,margin%z_face_fraction>0)
+      margin%x_face_fraction>0,margin%y_face_fraction>0,margin%z_face_fraction>0,wall_lo,wall_hi)
     if(.not.valid) return
     ! The viscosity API deliberately treats zero as identity. Godunov still
     ! normalizes species flux when viscosity is disabled.
@@ -178,7 +237,7 @@ contains
     allocate(rhs(nv,m(1),m(2),m(3)))
     call reactive_eb_flux_divergence_3d(species,state,temp,physical,flux%x,flux%y,flux%z,rhs,valid)
     if(.not.valid) return
-    call hydro_inventory_changes(species,state,temp,physical,dt,flux,boundary,wall,valid)
+    call hydro_inventory_changes(species,state,temp,physical,dt,flux,inventory_boundary,wall,valid)
     if(.not.valid) return
     allocate(candidate,mold=state);allocate(ct,mold=temp)
     select case(method)
@@ -207,7 +266,7 @@ contains
       .not.all(ieee_is_finite(flux%z))) return
     new_state=candidate;new_temperature=ct
     if(present(integrated_flux)) integrated_flux=flux
-    if(present(boundary_change)) boundary_change=boundary
+    if(present(boundary_change)) boundary_change=inventory_boundary
     if(present(wall_change)) wall_change=wall
     ok=.true.
   end subroutine advance_reactive_eb_plm_ctu_3d
@@ -218,12 +277,13 @@ contains
   ! Output indices describe cells 3:N-2, shifted down by two. Fluxes are intensive
   ! face-center values, before viscosity or centroid interpolation.
   subroutine compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,ok,order,source,source_energy)
+      dt,flattening,prediction,ok,order,source,source_energy,boundary)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
     real(dp), intent(in) :: dt,flattening(0:,0:,0:)
     type(eb_plm_face_prediction_3d), intent(inout) :: prediction(3)
+    type(eb_plm_boundary_3d), optional, intent(in) :: boundary
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
     real(dp), optional, intent(in) :: source(:,:,:,:),source_energy(:,:,:)
@@ -234,12 +294,13 @@ contains
     logical :: valid
     ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=reactive_nvar(size(species))
     if(any(n<5)) return
+    if(.not.valid_plm_boundary(boundary)) return
     if(present(source).neqv.present(source_energy)) return
     if(present(source)) then
       if(any(shape(source)/=[nv,n]).or.any(shape(source_energy)/=n)) return
     end if
     call compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,normal,valid,order)
+      dt,flattening,normal,valid,order,boundary)
     if(.not.valid) return
     spacing=[geometry%dx,geometry%dy,geometry%dz]
     allocate(gamma(n(1),n(2),n(3)),sound(n(1),n(2),n(3)));gamma=0;sound=0
@@ -367,6 +428,7 @@ contains
       end do
       result%left(:,index(1),index(2),index(3))=ql;result%right(:,index(1),index(2),index(3))=qr
       result%energy_left(index(1),index(2),index(3))=el;result%energy_right(index(1),index(2),index(3))=er
+      call correct_plm_boundary(ql,qr,direction,index(direction),boundary)
       swap=ql(2);ql(2)=ql(direction+1);ql(direction+1)=swap
       swap=qr(2);qr(2)=qr(direction+1);qr(direction+1)=swap
       cell=index;cell(direction)=cell(direction)+1
@@ -447,12 +509,13 @@ contains
   ! First Godunov stage only: intensive normal fluxes before transverse,
   ! viscosity, centroid interpolation or aperture/area integration.
   subroutine compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,ok,order)
+      dt,flattening,prediction,ok,order,boundary)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
     real(dp), intent(in) :: dt,flattening(0:,0:,0:)
     type(eb_plm_face_prediction_3d), intent(inout) :: prediction(3)
+    type(eb_plm_boundary_3d), optional, intent(in) :: boundary
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
     type(eb_plm_face_prediction_3d) :: candidate(3)
@@ -464,6 +527,7 @@ contains
     logical :: covered(-2:2),valid
     ok=.false.;nv=reactive_nvar(size(species));selected=4
     if(present(order)) selected=order
+    if(.not.valid_plm_boundary(boundary)) return
     if(.not.geometry%is_valid().or.(selected/=1.and.selected/=2.and.selected/=4)) return
     n=[geometry%nx,geometry%ny,geometry%nz];spacing=[geometry%dx,geometry%dy,geometry%dz]
     if(any(shape(ghost)/=[nv,n+6]).or.any(shape(temperature)/=n+6).or.any(shape(volume_fraction)/=n+6)) return
@@ -531,6 +595,7 @@ contains
         end do
         result%left(:,i,j,k)=ql;result%right(:,i,j,k)=qr
         result%energy_left(i,j,k)=el;result%energy_right(i,j,k)=er
+        call correct_plm_boundary(ql,qr,axis,idx(axis),boundary)
         swap=ql(2);ql(2)=ql(axis+1);ql(axis+1)=swap
         swap=qr(2);qr(2)=qr(axis+1);qr(axis+1)=swap
         cell=idx;cell(axis)=cell(axis)+1
