@@ -84,7 +84,7 @@ program pelef_reactive_eb_two_level_3d
   integer :: checkpoint_interval_steps=0,maximum_step_retries=12
   logical :: stop_after_checkpoint=.false.
   logical :: automatic_timestep=.false.,subcycling=.false.
-  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=0._dp
+  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=.1_dp
   real(dp) :: rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,viscosity_enabled=.true.
   logical :: thermal_conduction_enabled=.true.,species_diffusion_enabled=.true.,barodiffusion_enabled=.true.

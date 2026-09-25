@@ -150,7 +150,7 @@ program test_reactive_eb_3d_config
   write(unit, '(a)') "/"
   close(unit)
   call read_reactive_eb_3d_configuration(path, config, ok, message)
-  call require(ok .and. config%nx == 12 .and. &
+  call require(ok .and. config%difmag==.1_dp .and. config%nx == 12 .and. &
     trim(config%redistribution) == "state_redist" .and. &
     config%chemistry_enabled .and. &
     config%chemistry_relative_tolerance == 1.0e-8_dp .and. &

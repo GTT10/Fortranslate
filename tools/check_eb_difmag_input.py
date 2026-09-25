@@ -57,9 +57,13 @@ def main():
     for label, value in [('negative', '-1'), ('nonfinite', 'NaN')]:
         assert 'Invalid artificial-viscosity coefficient' in run(label, f'difmag={value}', False)
     baseline = run('baseline')
-    assert run('zero', 'difmag=0') == baseline
-    run('legacy_stop', "checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='zero.chk'")
-    assert run('zero_resume', "difmag=0, restart_file='zero.chk'") == baseline
+    assert run('explicit_default', 'difmag=.1') == baseline
+    run('default_stop', "checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='default.chk'")
+    assert run('default_resume', "difmag=.1, restart_file='default.chk'") == baseline
+    zero = run('zero', 'difmag=0')
+    run('legacy_stop', "difmag=0, checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='zero.chk'")
+    assert run('zero_resume', "difmag=0, restart_file='zero.chk'") == zero
+    assert diagnostic in run('zero_to_default', "restart_file='zero.chk'", False)
     print(f'PASS: EB coefficient input and exact restart; artifacts={work}')
 
 

@@ -120,7 +120,7 @@ program pelef_reactive_eb_tree_3d
   logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:)
-  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=0._dp
+  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=.1_dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z'

@@ -33,7 +33,7 @@ module simulation_config_reactive_eb_3d_mod
     character(len=512) :: level_set_file = ""
     character(len=8) :: plane_axis = "x"
     real(dp) :: plane_position = 0.395_dp
-    real(dp) :: difmag=0._dp
+    real(dp) :: difmag=.1_dp
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
@@ -338,7 +338,7 @@ contains
     config%restart_file = trim(restart_file)
     config%output_file = trim(output_file)
     if(difmag>0) then
-      ok=.false.
+      ok=.true.
       if(present(allow_difmag)) ok=allow_difmag
       if(.not.ok) then
         message='Artificial-viscosity input is not enabled in this application';return
