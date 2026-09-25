@@ -1,0 +1,13 @@
+&reactive_3d
+time_integrator='sdc',sdc_iterations=2
+nx=4,ny=4,nz=4,x_upper=.004,y_upper=.004,z_upper=.004
+final_time=1e-9,cfl=.004,maximum_steps=100
+problem='uniform_reactor',thermo_model='full_h2o2'
+x_h2=.29570,x_h=1e-5,x_o=1e-5,x_o2=.14784,x_oh=1e-5,x_n2=.55643
+reconstruction='characteristic_ppm',riemann_solver='pelec',boundary_condition='periodic'
+chemistry_enabled=.true.,transport_enabled=.true.
+initial_temperature=1100,initial_pressure=300000
+initial_velocity_x=20,initial_velocity_y=10,initial_velocity_z=-5
+external_forcing=20000,-30000,40000
+output_file='sdc_tree.csv'
+/

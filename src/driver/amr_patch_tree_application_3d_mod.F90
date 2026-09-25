@@ -27,7 +27,7 @@ module amr_patch_tree_application_3d_mod
     amr_tree_integer_layout_3d,average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d
   use amr_patch_tree_transport_3d_mod, only: compute_amr_patch_tree_transport_timestep_3d
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
@@ -48,11 +48,12 @@ contains
     type(amr_tree_checkpoint_3d) :: snapshot
     type(amr_patch_tree_3d), allocatable :: events(:)
     type(amr_tree_state_3d) :: state,temperature
+    type(amr_tree_state_3d), allocatable :: reaction_source
     integer, allocatable :: ratios(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     real(dp), allocatable :: x(:),y(:),z(:),root_h(:),h(:,:),recovered(:,:,:),mass_fractions(:),inlet_x(:)
     real(dp), allocatable :: initial(:),final(:),budget(:),change(:),inlet(:,:),q(:),inlet_cube(:,:,:,:)
-    real(dp), allocatable :: event_times(:)
+    real(dp), allocatable :: event_times(:),source_budget(:),source_change(:)
     real(dp) :: stop_time,max_remap_error
     real(dp) :: time,dt,transport_dt,diffusivity,base_density,correction,theta,max_correction,min_theta
     real(dp) :: inlet_t(6),inlet_temperature(2,2,2),inlet_dt,face_dt,sound,min_h(3),mach_pressure(6)
@@ -69,11 +70,12 @@ contains
     integer :: tile_shape(3),tag_buffer,maximum_nodes,last_tag_step
     real(dp) :: temperature_thresholds(maximum_tag_levels),tag_spacing(3)
     logical :: periodic(3),stop_after_checkpoint,subcycling
-    logical :: checkpoint_indexed
+    logical :: checkpoint_indexed,sdc
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,checkpoint_indexed
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
     namelist /amr_tree_timestepping/ subcycling
+    sdc=trim(config%time_integrator)=='sdc'
     subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
@@ -113,6 +115,14 @@ contains
         if (status/=0) error stop 'Invalid tree checkpoint configuration'
       end do
       close(unit)
+    end if
+    if (sdc) then
+      if (subcycling) error stop 'SDC tree subcycling is not implemented'
+      if (present(schedule_path).or.regrid_interval_steps>0) error stop 'SDC tree regridding is not implemented'
+      if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) &
+        error stop 'SDC tree reaction-source checkpoint is not implemented'
+    else
+      if (any(config%external_forcing/=0)) error stop 'Tree external forcing requires SDC'
     end if
     if (regrid_interval_steps<0) error stop 'Negative automatic tree regrid interval'
     if (regrid_interval_steps>0) then
@@ -191,6 +201,17 @@ contains
     allocate(h(3,count+1),state%fields(count+1),temperature%fields(count+1))
     allocate(mass_fractions(size(species)),inlet_x(size(species)),q(reactive_nvar(size(species))))
     allocate(initial(size(q)),final(size(q)),budget(size(q)),change(size(q)),inlet(size(q),6),inlet_cube(size(q),2,2,2))
+    allocate(source_budget(size(q)),source_change(size(q)))
+    source_budget=0;source_change=0
+    if (sdc.and.config%chemistry_enabled) then
+      allocate(reaction_source)
+      allocate(reaction_source%fields(count+1))
+      do node=1,count+1
+        n=tree%nodes(node)%shape
+        allocate(reaction_source%fields(node)%values(size(q)-4,n(1),n(2),n(3)))
+        reaction_source%fields(node)%values=0
+      end do
+    end if
     do node=1,count+1
       h(:,node)=root_h*real(domain(:,1),dp)/real(domain(:,tree%nodes(node)%level+1),dp)
       n=tree%nodes(node)%shape
@@ -333,13 +354,24 @@ contains
       if(any(config%inflow_mach>=0)) call limit_mach_step()
       do attempt=1,20
         if (time+dt<=time) error stop 'Tree timestep cannot advance time'
-        call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
-          config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
-          viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-          change,correction,theta,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling, &
-          outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
-          difmag=resolved_reactive_difmag_3d(config))
+        if (sdc) then
+          call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+        else
+          call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
+            viscosity,conduction,diffusion,barodiffusion, &
+            config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,correction,theta,ok,chemistry_integrator=chemistry_integrator,inflow_state=inlet,inflow_temperature=inlet_t, &
+            wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling, &
+            outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
+            difmag=resolved_reactive_difmag_3d(config))
+        end if
         if (ok) exit
         dt=.5_dp*dt
       end do
@@ -350,6 +382,7 @@ contains
         time=time+dt
       end if
       step=step+1;budget=budget+change
+      source_budget=source_budget+source_change
       max_correction=max(max_correction,correction);min_theta=min(min_theta,theta)
     end do
     call composite_integrals_amr_patch_tree_3d(tree,state,root_h,final,ok)
@@ -387,10 +420,18 @@ contains
     if (status/=0) error stop 'Cannot close tree CSV'
     open(newunit=unit,file=trim(config%output_file)//'.budget.csv',status='replace',action='write',iostat=status)
     if (status/=0) error stop 'Cannot open tree budget CSV'
-    write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change'
+    if (sdc) then
+      write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change,source_change'
+    else
+      write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change'
+    end if
     if (status/=0) error stop 'Cannot write tree budget header'
     do c=1,size(q)
-      write(unit,'(i0,3(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c)
+      if (sdc) then
+        write(unit,'(i0,4(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c),source_budget(c)
+      else
+        write(unit,'(i0,3(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c)
+      end if
       if (status/=0) error stop 'Cannot write tree budget row'
     end do
     close(unit,iostat=status)
