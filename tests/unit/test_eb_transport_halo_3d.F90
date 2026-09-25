@@ -22,6 +22,7 @@ program test_eb_transport_halo_3d
   type(eb_geometry_3d) :: geometry,extended
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: inflow(:,:),inflow_t(:),boundary(:),wall(:),chemical(:),before(:),after(:)
+  real(dp), allocatable :: reference_boundary(:),reference_wall(:),reference_chemical(:)
   character(len=16) :: labels(6)
   integer :: reacting
   type(reactive_eb_3d_config) :: config
@@ -46,6 +47,7 @@ program test_eb_transport_halo_3d
   allocate(u(nvar,4,4,4),t(4,4,4),rhs(nvar,4,4,4),g(nvar,0:5,0:5,0:5),gt(0:5,0:5,0:5))
   allocate(advanced(nvar,4,4,4),advanced_t(4,4,4))
   allocate(stage(nvar,4,4,4),stage_t(4,4,4),twice(nvar,4,4,4),twice_t(4,4,4))
+  allocate(reference_boundary(nvar),reference_wall(nvar),reference_chemical(nvar))
   allocate(inflow(nvar,6),inflow_t(6),boundary(nvar),wall(nvar),chemical(nvar),before(nvar),after(nvar))
   allocate(x(nvar,0:4,4,4),y(nvar,4,0:4,4),z(nvar,4,4,0:4))
   allocate(p(reactive_nprim(size(species))))
@@ -240,6 +242,18 @@ program test_eb_transport_halo_3d
       call require(maxval(abs(after-before-boundary-wall-chemical)/max(1._dp,abs(before)))<=2.e-12_dp, &
         'coupled CTU hydro transport and chemistry boundary inventory')
       if(reacting==1) call require(maxval(abs(chemical))>1.e-15_dp,'coupled chemistry has resolved exchange')
+      twice=advanced;twice_t=advanced_t
+      reference_boundary=boundary;reference_wall=wall;reference_chemical=chemical
+      provider_calls=0
+      call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
+        1.e-7_dp,reacting==1,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+        advanced,advanced_t,theta,ok,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+        extended_geometry=extended,boundary_faces=labels,inflow_state=inflow,inflow_temperature=inflow_t)
+      call require(ok.and.provider_calls==0,'built-in coupled inflow donor preparation')
+      call require(all(advanced==twice).and.all(advanced_t==twice_t), &
+        'built-in donors exactly match independently supplied stage donors')
+      call require(all(boundary==reference_boundary).and.all(wall==reference_wall).and. &
+        all(chemical==reference_chemical),'built-in donor ledgers match custom provider')
     end do
     provider_calls=0
     call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
@@ -264,7 +278,7 @@ program test_eb_transport_halo_3d
     call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
       1.e-7_dp,.false.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
       advanced,advanced_t,theta,ok,extended_geometry=extended,boundary_faces=labels)
-    call require(.not.ok.and.all(advanced==u).and.all(advanced_t==t),'explicit boundary requires transport provider')
+    call require(.not.ok.and.all(advanced==u).and.all(advanced_t==t),'built-in inflow requires prescribed state and temperature')
     labels='slip_wall';provider_calls=0
     call advance_reactive_eb_full_3d(species,reactions,transport,u,t,geometry,'pelec','state_redist', &
       1.e-7_dp,.false.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &

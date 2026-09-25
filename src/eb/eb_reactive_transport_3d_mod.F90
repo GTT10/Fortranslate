@@ -1,6 +1,7 @@
 module eb_reactive_transport_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,valid_reactive_boundaries_3d
   use state_indices_mod, only: iet
   use nasa7_thermo_mod, only: nasa7_species
   use gas_transport_mod, only: gas_transport_species
@@ -942,7 +943,8 @@ contains
       species, transport, state, temperature, geometry, interval, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      target_volume_fraction, minimum_theta, ok, prepare_halo, integrated_flux)
+      target_volume_fraction, minimum_theta, ok, prepare_halo, integrated_flux, &
+      boundary_faces,inflow_state,inflow_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -957,6 +959,8 @@ contains
     type(eb_integrated_flux_3d), allocatable :: flux_one,flux_two
     real(dp), allocatable :: ghost(:,:,:,:),ghost_temperature(:,:,:)
     logical :: faces(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
 
     real(dp), allocatable :: initial_state(:, :, :, :)
     real(dp), allocatable :: initial_temperature(:, :, :)
@@ -981,6 +985,13 @@ contains
         target_volume_fraction > 1.0_dp .or. &
         (barodiffusion_enabled .and. &
           .not. species_diffusion_enabled)) return
+    if(present(boundary_faces)) then
+      if(present(prepare_halo)) return
+      if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
+      if(any(boundary_faces/='outflow'.and.boundary_faces/='inflow')) return
+    else
+      if(present(inflow_state).or.present(inflow_temperature)) return
+    end if
     if (present(integrated_flux)) then
       allocate(flux_one,flux_two)
       allocate(flux_one%x(size(state,1),0:geometry%nx,geometry%ny,geometry%nz), &
@@ -1001,10 +1012,17 @@ contains
     allocate(euler_state, mold=state)
     allocate(euler_temperature, mold=temperature)
     faces=.false.
-    if (present(prepare_halo)) then
+    if (present(prepare_halo).or.present(boundary_faces)) then
       allocate(ghost(size(state,1),0:geometry%nx+1,0:geometry%ny+1,0:geometry%nz+1), &
         ghost_temperature(0:geometry%nx+1,0:geometry%ny+1,0:geometry%nz+1))
-      call prepare_halo(initial_state,initial_temperature,geometry,ghost,ghost_temperature,faces,local_ok)
+      if(present(prepare_halo)) then
+        call prepare_halo(initial_state,initial_temperature,geometry,ghost,ghost_temperature,faces,local_ok)
+      else
+        faces=.true.
+        call fill_reactive_boundary_ghosts_3d(initial_state,initial_temperature,boundary_faces, &
+          ghost,ghost_temperature,local_ok,viscous_wall=.true., &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=1)
+      end if
       if (.not.local_ok) return
     end if
     call reactive_eb_transport_euler_update_3d( &
@@ -1014,8 +1032,15 @@ contains
       target_volume_fraction, stage_state, stage_temperature, theta_one, &
       local_ok,ghost,ghost_temperature,faces,flux_one)
     if (.not. local_ok) return
-    if (present(prepare_halo)) then
-      call prepare_halo(stage_state,stage_temperature,geometry,ghost,ghost_temperature,faces,local_ok)
+    if (present(prepare_halo).or.present(boundary_faces)) then
+      if(present(prepare_halo)) then
+        call prepare_halo(stage_state,stage_temperature,geometry,ghost,ghost_temperature,faces,local_ok)
+      else
+        faces=.true.
+        call fill_reactive_boundary_ghosts_3d(stage_state,stage_temperature,boundary_faces, &
+          ghost,ghost_temperature,local_ok,viscous_wall=.true., &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=1)
+      end if
       if (.not.local_ok) return
     end if
     call reactive_eb_transport_euler_update_3d( &

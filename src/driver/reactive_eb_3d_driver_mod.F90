@@ -375,6 +375,8 @@ contains
     procedure(eb_transport_halo_provider_3d), optional :: prepare_transport_halo
     type(eb_integrated_flux_3d), allocatable :: transport_flux
     real(dp), allocatable :: transport_change(:),half_change(:)
+    character(len=32), allocatable :: transport_faces(:)
+    real(dp), allocatable :: transport_inflow(:,:),transport_inflow_temperature(:)
     real(dp), intent(in) :: dt, rtol, atol
     logical, intent(in) :: chemistry_enabled, transport_enabled
     logical, intent(in) :: viscosity_enabled, thermal_conduction_enabled
@@ -420,10 +422,9 @@ contains
     else
       if(present(inflow_state).or.present(inflow_temperature)) return
     end if
-    ! Explicit transport boundaries require a stage provider; a provider must
-    ! also identify the matching hydro boundaries. Its flux policy is caller-owned.
+    ! A custom stage provider must identify the matching hydro boundaries.
+    ! Without one, the common boundary filler supplies inflow/outflow donors.
     if(present(prepare_transport_halo).and..not.present(boundary_faces)) return
-    if(transport_enabled.and.present(boundary_faces).and..not.present(prepare_transport_halo)) return
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
@@ -469,7 +470,12 @@ contains
     if (.not. ieee_is_finite(target) .or. target <= 0.0_dp .or. &
         target > 1.0_dp) return
 
-    if(present(prepare_transport_halo).and.allocated(exchange_boundary)) then
+    if(present(boundary_faces).and..not.present(prepare_transport_halo)) then
+      allocate(transport_faces,source=hydro_faces)
+      if(present(inflow_state)) allocate(transport_inflow,source=inflow_state)
+      if(present(inflow_temperature)) allocate(transport_inflow_temperature,source=inflow_temperature)
+    end if
+    if(present(boundary_faces).and.allocated(exchange_boundary)) then
       allocate(transport_flux,transport_change(nvar),half_change(nvar))
       transport_change=0
     end if
@@ -505,7 +511,8 @@ contains
       species, transport, candidate_state, candidate_temperature, &
       geometry, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, target, theta_one, local_ok,prepare_transport_halo,transport_flux)
+      barodiffusion_enabled, target, theta_one, local_ok,prepare_transport_halo,transport_flux, &
+      transport_faces,transport_inflow,transport_inflow_temperature)
     if (.not. local_ok) return
     if(allocated(transport_flux)) then
       call transport_boundary_inventory(geometry,transport_flux,half_change,local_ok)
@@ -538,7 +545,8 @@ contains
       species, transport, candidate_state, candidate_temperature, &
       geometry, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
-      barodiffusion_enabled, target, theta_two, local_ok,prepare_transport_halo,transport_flux)
+      barodiffusion_enabled, target, theta_two, local_ok,prepare_transport_halo,transport_flux, &
+      transport_faces,transport_inflow,transport_inflow_temperature)
     if (.not. local_ok) return
     if(allocated(transport_flux)) then
       call transport_boundary_inventory(geometry,transport_flux,half_change,local_ok)
