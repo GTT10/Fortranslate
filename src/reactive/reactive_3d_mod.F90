@@ -2244,7 +2244,10 @@ contains
   ! array cannot enter a physical-cell flux. Only physical cells are advanced.
   subroutine advance_reactive_boundary_hydro_3d(species,state,temperature,spacing,dt, &
       faces,reconstruction,limiter,riemann_solver,boundary_change,ok,inflow_state,inflow_temperature, &
-      flux_x,flux_y,flux_z,outlet_pressure,inflow_mach,inflow_pressure,difmag)
+      flux_x,flux_y,flux_z,outlet_pressure,inflow_mach,inflow_pressure,difmag,conserved_source)
+    ! Source rates include four caller-supplied halo layers, matching the CTU flux API.
+    ! boundary_change contains boundary flux only, excluding volume sources.
+    real(dp), optional, intent(in) :: conserved_source(:,-3:,-3:,-3:)
     real(dp), optional, intent(in) :: difmag
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     real(dp), intent(in), optional :: inflow_mach(6),inflow_pressure(6)
@@ -2298,6 +2301,11 @@ contains
     if (reconstruction/="pcm" .and. reconstruction/="characteristic_plm" .and. &
         reconstruction/="characteristic_ppm") return
     if (limiter/="mc" .and. limiter/="minmod") return
+    if(present(conserved_source)) then
+      if(reconstruction/='characteristic_ppm'.or.riemann_solver/='pelec') return
+      if(any(shape(conserved_source)/=[size(state,1),n+8])) return
+      if(.not.all(ieee_is_finite(conserved_source))) return
+    end if
     if (reconstruction=="characteristic_ppm") then
       call boundary_ppm(local_ok)
       ok=local_ok
@@ -2346,7 +2354,7 @@ contains
         riemann_solver,fx,fy,fz,theta,success,inflow_faces=faces=='inflow', &
         no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall',difmag=difmag, &
         reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall', &
-        outflow_faces=faces=='outflow',outlet_pressure=outlet_pressure)
+        outflow_faces=faces=='outflow',outlet_pressure=outlet_pressure,conserved_source=conserved_source)
       if (.not.success) return
       success=.false.
       candidate=state
@@ -2359,6 +2367,7 @@ contains
       end do
       end do
       end do
+      if(present(conserved_source)) candidate=candidate+dt*conserved_source(:,1:n(1),1:n(2),1:n(3))
       call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),recovered,success)
       if (.not.success) return
       change=0

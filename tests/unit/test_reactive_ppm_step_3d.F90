@@ -94,6 +94,8 @@ program test_reactive_ppm_step_3d
 contains
   subroutine check_source_step()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),source(nv,4,4,4),old(nv,4,4,4),ot(4,4,4),lim
+    real(dp) :: halo_source(nv,-3:8,-3:8,-3:8),boundary(nv)
+    character(len=8) :: walls(6)
     integer :: component
     ! Nonuniform fixture: periodic flux divergence must leave only source inventory.
     state=u;temp=t;source=0
@@ -108,6 +110,26 @@ contains
         'periodic source inventory')
     end do
     call require(maxval(abs(sum(state(6:,:,:,:),dim=1)-state(1,:,:,:)))<3e-14_dp,'source species closure')
+    state=u;temp=t;walls='outflow'
+    do k=-3,8
+    do j=-3,8
+    do i=-3,8
+      halo_source(:,i,j,k)=source(:,1,1,1)
+    end do
+    end do
+    end do
+    call advance_reactive_boundary_hydro_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,walls, &
+      'characteristic_ppm','mc','pelec',boundary,ok,conserved_source=halo_source)
+    call require(ok,'boundary source CTU step')
+    do component=1,nv
+      call require(abs((sum(state(component,:,:,:))-sum(u(component,:,:,:)))*.25_dp**3- &
+        boundary(component)-dt*sum(source(component,:,:,:))*.25_dp**3)< &
+        3e-14_dp*max(1._dp,abs(sum(u(component,:,:,:)))*.25_dp**3),'boundary and source inventory separation')
+    end do
+    state=u;temp=t;halo_source=0;halo_source(5,:,:,:)=-1e14_dp
+    call advance_reactive_boundary_hydro_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,walls, &
+      'characteristic_ppm','mc','pelec',boundary,ok,conserved_source=halo_source)
+    call require(.not.ok.and.all(state==u).and.all(temp==t).and.all(boundary==0),'boundary source rollback')
     ! Uniform fields isolate the source increment, including density injection.
     do k=1,4
     do j=1,4
