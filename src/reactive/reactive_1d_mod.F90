@@ -1046,6 +1046,13 @@ contains
     factor=merge(center(2)*dtdx,1._dp,center(2)>=0)
     plus(6:)=center(6:)+.5_dp*(1-factor)*slope(6:)
     ok=all(ieee_is_finite(minus)).and.all(ieee_is_finite(plus))
+    if (ok) ok=all(minus(6:)>=0).and.all(plus(6:)>=0).and.sum(minus(6:))>0.and.sum(plus(6:))>0
+    if (ok) then
+      ! Independently limited species slopes need not sum to zero. Restore the
+      ! face composition simplex before PeleF's normalized-composition EOS.
+      minus(6:)=minus(6:)/sum(minus(6:))
+      plus(6:)=plus(6:)/sum(plus(6:))
+    end if
     if (.not.ok) then
       minus=0;plus=0
     end if

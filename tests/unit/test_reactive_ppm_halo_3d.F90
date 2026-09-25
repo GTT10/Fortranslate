@@ -176,6 +176,16 @@ contains
     call require(valid.and.all(qm==stencil(:,0)).and.all(qp==stencil(:,0)),'PLM fully flattened predictor')
     call reconstruct_pelec_plm_cell(stencil(:,-2:2),c,1._dp,1._dp,qm,qp,valid)
     call require(.not.valid.and.all(qm==0).and.all(qp==0),'PLM CFL rollback')
+    block
+      real(dp) :: mixture(nv,-2:2)
+      mixture=stencil(:,-2:2)
+      mixture(6,:)=[.1_dp,.1_dp,.2_dp,.3_dp,.3_dp]
+      mixture(7,:)=[.2_dp,.25_dp,.2_dp,.1_dp,.05_dp]
+      mixture(nv,:)=1-mixture(6,:)-mixture(7,:)
+      call reconstruct_pelec_plm_cell(mixture,c,1e-5_dp,1._dp,qm,qp,valid)
+      call require(valid.and.abs(sum(qm(6:))-1)<3e-16_dp.and.abs(sum(qp(6:))-1)<3e-16_dp, &
+        'independently limited PLM species remain normalized')
+    end block
     flat=reactive_ppm_flattening_coefficient(pressure,velocity)
     call require(flat==0,'transverse compressive shock detected')
     call reconstruct_reactive_characteristic_ppm_cell_2d(species,stencil,c,1e-5_dp, &
