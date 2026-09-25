@@ -6,7 +6,7 @@ program test_reactive_ppm_step_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
-  use reactive_3d_mod, only: compute_reactive_external_source_3d
+  use reactive_3d_mod, only: compute_reactive_external_source_3d,construct_reactive_sdc_state_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -35,6 +35,7 @@ program test_reactive_ppm_step_3d
   end do
   end do
   end do
+  call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
   do m=1,nv
@@ -93,6 +94,32 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+  subroutine check_sdc_assembly()
+    real(dp) :: old(nv,2,2,2),state(nv,2,2,2),os(nv,2,2,2,2),ns(nv,2,2,2,2)
+    real(dp) :: hydro(nv,2,2,2),reaction(nv-4,2,2,2),expected(nv,2,2,2)
+    integer :: component
+    do component=1,nv
+      old(component,:,:,:)=component
+    end do
+    os(:,:,:,:,1)=2;ns(:,:,:,:,1)=6
+    os(:,:,:,:,2)=-4;ns(:,:,:,:,2)=8
+    hydro=3;reaction=0;reaction(1,:,:,:)=2;reaction(nv-5,:,:,:)=-2;reaction(nv-4,:,:,:)=5
+    state=-1;expected=old+1.125_dp
+    expected(6,:,:,:)=expected(6,:,:,:)+.25_dp
+    expected(nv,:,:,:)=expected(nv,:,:,:)-.25_dp
+    expected(5,:,:,:)=expected(5,:,:,:)+.625_dp
+    call construct_reactive_sdc_state_3d(old,.125_dp,os,ns,state,ok,hydro,reaction)
+    call require(ok.and.all(state==expected),'SDC multiple sources hydro and reaction assembly')
+    call construct_reactive_sdc_state_3d(old,.125_dp,os(:,:,:,:,:0),ns(:,:,:,:,:0),state,ok)
+    call require(ok.and.all(state==old),'SDC empty source list identity')
+    call construct_reactive_sdc_state_3d(old,.125_dp,os,ns,state,ok,reaction_source=reaction)
+    call require(ok.and.all(state(1:4,:,:,:)==old(1:4,:,:,:)+.75_dp),'SDC reactions exclude density and momentum')
+    expected=state
+    call construct_reactive_sdc_state_3d(old,-.125_dp,os,ns,state,ok)
+    call require(.not.ok.and.all(state==expected),'SDC invalid interval preserves candidate')
+    call construct_reactive_sdc_state_3d(old,.125_dp,os,ns(:,:,:,:,:1),state,ok)
+    call require(.not.ok.and.all(state==expected),'SDC inconsistent source lists preserve candidate')
+  end subroutine check_sdc_assembly
   subroutine check_source_step()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),source(nv,4,4,4),old(nv,4,4,4),ot(4,4,4),lim
     real(dp) :: halo_source(nv,-3:8,-3:8,-3:8),boundary(nv)

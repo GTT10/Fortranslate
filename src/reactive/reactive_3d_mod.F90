@@ -23,6 +23,7 @@ module reactive_3d_mod
   public :: adjust_reactive_artificial_viscosity_3d
   public :: reactive_ppm_transverse_pressure_3d
   public :: compute_reactive_external_source_3d
+  public :: construct_reactive_sdc_state_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
@@ -45,6 +46,46 @@ module reactive_3d_mod
   public :: reactive_extrema_3d
 
 contains
+
+  ! Pinned Advance.cpp::construct_Snew. Source-list order and new-before-old
+  ! additions are intentional. EOS recovery belongs to the iteration driver.
+  subroutine construct_reactive_sdc_state_3d(old_state,dt,old_sources,new_sources,state,ok, &
+      hydro_source,reaction_source)
+    real(dp), intent(in) :: old_state(:,:,:,:),dt,old_sources(:,:,:,:,:),new_sources(:,:,:,:,:)
+    real(dp), intent(inout) :: state(:,:,:,:)
+    real(dp), optional, intent(in) :: hydro_source(:,:,:,:),reaction_source(:,:,:,:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:)
+    integer :: dimensions(4),n,nv
+    ok=.false.;dimensions=shape(old_state);nv=dimensions(1)
+    if(nv<6.or.any(dimensions(2:)<1).or.any(shape(state)/=dimensions)) return
+    if(any(shape(old_sources)/=[dimensions,size(old_sources,5)])) return
+    if(any(shape(new_sources)/=shape(old_sources))) return
+    if(.not.ieee_is_finite(dt).or.dt<0) return
+    if(.not.all(ieee_is_finite(old_state)).or..not.all(ieee_is_finite(old_sources)).or. &
+      .not.all(ieee_is_finite(new_sources))) return
+    if(present(hydro_source)) then
+      if(any(shape(hydro_source)/=dimensions)) return
+      if(.not.all(ieee_is_finite(hydro_source))) return
+    end if
+    if(present(reaction_source)) then
+      ! Reaction layout: species density rates, followed by total-energy rate.
+      if(any(shape(reaction_source)/=[nv-4,dimensions(2:)])) return
+      if(.not.all(ieee_is_finite(reaction_source))) return
+    end if
+    candidate=old_state
+    do n=1,size(old_sources,5)
+      candidate=candidate+(.5_dp*dt)*new_sources(:,:,:,:,n)
+      candidate=candidate+(.5_dp*dt)*old_sources(:,:,:,:,n)
+    end do
+    if(present(hydro_source)) candidate=candidate+dt*hydro_source
+    if(present(reaction_source)) then
+      candidate(6:,:,:,:)=candidate(6:,:,:,:)+dt*reaction_source(:nv-5,:,:,:)
+      candidate(5,:,:,:)=candidate(5,:,:,:)+dt*reaction_source(nv-4,:,:,:)
+    end if
+    if(.not.all(ieee_is_finite(candidate))) return
+    state=candidate;ok=.true.
+  end subroutine construct_reactive_sdc_state_3d
 
   ! Pinned External.cpp: force per volume, and mechanical work u dot force.
   ! The caller controls the state time level and supplies any needed halos.
