@@ -17,7 +17,7 @@ program test_reactive_eb_hydro_3d
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
     compute_reactive_eb_plm_normal_fluxes_3d,compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d, &
     eb_plm_face_prediction_3d,eb_plm_boundary_3d,apply_reactive_eb_transverse_3d,compute_reactive_eb_flattening_3d, &
-    advance_reactive_eb_euler_3d,advance_reactive_eb_outflow_ctu_3d, &
+    advance_reactive_eb_euler_3d,advance_reactive_eb_outflow_ctu_3d,advance_reactive_eb_boundary_ctu_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
@@ -87,6 +87,7 @@ program test_reactive_eb_hydro_3d
   call verify_physical_fluxes()
   call verify_interior_wall_viscosity()
   call verify_outflow_ctu()
+  call verify_boundary_ctu()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -271,7 +272,8 @@ contains
     type(reactive_eb_3d_config) :: cfg
     type(eb_geometry_3d) :: wide,physical
     real(dp) :: u(nvar,4,4,4),t(4,4,4),updated(nvar,4,4,4),ut(4,4,4),boundary(nvar),wall(nvar),cs,vel(3),change,scale
-    integer :: axis,mode,ii,jj,kk,c
+    integer :: axis,mode,ii,jj,kk,c,tangent
+    character(len=24) :: faces(6)
     character(len=1), parameter :: axes(3)=['x','y','z']
     character(len=12), parameter :: modes(3)=[character(len=12)::'none','flux_redist','state_redist']
     logical :: valid
@@ -301,6 +303,16 @@ contains
           call require(abs(change-boundary(c)-wall(c))<2e-12_dp*scale,'outflow CTU inventory closure')
         end do
       end do
+      faces='outflow';tangent=modulo(axis,3)+1
+      faces(2*tangent-1:2*tangent)='slip_wall'
+      call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces, &
+        boundary_change=boundary,wall_change=wall)
+      call require(valid,'cut geometry with tangential physical walls')
+      do c=1,nvar
+        change=sum((updated(c,:,:,:)-u(c,:,:,:))*physical%volume_fraction)/64
+        scale=max(1._dp,sum(abs(u(c,:,:,:))*physical%volume_fraction)/64)
+        call require(abs(change-boundary(c)-wall(c))<2e-12_dp*scale,'cut physical-wall CTU conservation')
+      end do
       updated=-17;ut=-18;boundary=-19;wall=-20
       call advance_reactive_eb_outflow_ctu_3d(species,u,t,wide,-1._dp,updated,ut,valid, &
         boundary_change=boundary,wall_change=wall)
@@ -308,6 +320,64 @@ contains
         'outflow CTU transactional failure')
     end do
   end subroutine verify_outflow_ctu
+
+  subroutine verify_boundary_ctu()
+    type(reactive_eb_3d_config) :: cfg
+    type(eb_geometry_3d) :: wide
+    type(eb_integrated_flux_3d) :: flux
+    real(dp) :: u(nvar,4,4,4),t(4,4,4),updated(nvar,4,4,4),ut(4,4,4),boundary(nvar),wall(nvar)
+    real(dp) :: inlet(nvar,6),tin(6),cs,change,scale
+    character(len=24) :: faces(6)
+    character(len=24), parameter :: kinds(5)=[character(len=24):: &
+      'periodic','slip_wall','no_slip_wall','isothermal_wall','inflow']
+    integer :: axis,mode,i,j,k,c
+    logical :: valid
+    cfg=reactive_eb_3d_config();cfg%nx=4;cfg%ny=4;cfg%nz=4;cfg%plane_position=-1
+    call build_configured_eb_geometry_3d(cfg,wide,valid,halo=6)
+    call require(valid.and.all(wide%volume_fraction==1),'physical boundary regular geometry')
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      call build_cell_state(.31_dp+.002_dp*(i+j+k),[1._dp,2._dp,3._dp],u(:,i,j,k),t(i,j,k),cs)
+    end do
+    end do
+    end do
+    do c=1,6
+      inlet(:,c)=u(:,2,2,2);tin(c)=t(2,2,2)
+    end do
+    do axis=1,3
+    do mode=1,5
+      faces='outflow';faces(2*axis-1:2*axis)=kinds(mode)
+      call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces, &
+        integrated_flux=flux,boundary_change=boundary,wall_change=wall,inflow_state=inlet,inflow_temperature=tin)
+      call require(valid,'physical boundary CTU step')
+      do c=1,nvar
+        change=sum(updated(c,:,:,:)-u(c,:,:,:))/64
+        scale=max(1._dp,sum(abs(u(c,:,:,:)))/64)
+        call require(abs(change-boundary(c)-wall(c))<2e-12_dp*scale,'physical boundary inventory closure')
+      end do
+      if(mode>=2.and.mode<=4) then
+        select case(axis)
+        case(1)
+          call require(all(flux%x(1,0,:,:)==0).and.all(flux%x(1,4,:,:)==0),'x wall mass closure')
+        case(2)
+          call require(all(flux%y(1,:,0,:)==0).and.all(flux%y(1,:,4,:)==0),'y wall mass closure')
+        case(3)
+          call require(all(flux%z(1,:,:,0)==0).and.all(flux%z(1,:,:,4)==0),'z wall mass closure')
+        end select
+      end if
+    end do
+    end do
+    updated=-17;ut=-18;boundary=-19;wall=-20
+    faces='outflow';faces(1)='inflow'
+    call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces, &
+      boundary_change=boundary,wall_change=wall)
+    call require(.not.valid.and.all(updated==-17).and.all(ut==-18).and.all(boundary==-19).and.all(wall==-20), &
+      'missing inflow transactional rejection')
+    faces(1)='periodic'
+    call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces)
+    call require(.not.valid.and.all(updated==-17).and.all(ut==-18),'unpaired periodic rejection')
+  end subroutine verify_boundary_ctu
 
   subroutine verify_interior_wall_viscosity()
     real(dp) :: u(nvar,0:5,0:5,0:5),fx(nvar,0:4,4,4),fy(nvar,4,0:4,4),fz(nvar,4,4,0:4)

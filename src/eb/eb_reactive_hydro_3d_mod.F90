@@ -1,6 +1,7 @@
 module eb_reactive_hydro_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: map_reactive_boundary_donor_3d,valid_reactive_boundaries_3d
   use reactive_3d_mod, only: adjust_reactive_artificial_viscosity_3d
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
@@ -33,6 +34,7 @@ module eb_reactive_hydro_3d_mod
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
+  public :: advance_reactive_eb_boundary_ctu_3d
   public :: advance_reactive_eb_outflow_ctu_3d
   public :: compute_reactive_eb_flattening_3d
   public :: predict_reactive_eb_plm_cell_3d
@@ -160,12 +162,42 @@ contains
     logical, optional, intent(in) :: shock_flattening
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    call advance_reactive_eb_boundary_ctu_3d(species,state,temperature,extended,dt,new_state,new_temperature,ok, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,shock_flattening)
+  end subroutine advance_reactive_eb_outflow_ctu_3d
+
+  subroutine advance_reactive_eb_boundary_ctu_3d(species,state,temperature,extended,dt, &
+      new_state,new_temperature,ok,boundary_faces, &
+      redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,shock_flattening, &
+      inflow_state,inflow_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
+    type(eb_geometry_3d), intent(in) :: extended
+    real(dp), intent(inout) :: new_state(:,:,:,:),new_temperature(:,:,:)
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(in) :: difmag,target_volume_fraction
+    integer, optional, intent(in) :: order
+    logical, optional, intent(in) :: shock_flattening
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
+    real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp) :: shift(3)
+    logical :: reflect(3)
     type(eb_geometry_3d) :: working
     type(eb_plm_boundary_3d) :: boundary
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),flat(:,:,:),candidate(:,:,:,:),ct(:,:,:)
-    integer :: n(3),nv,i,j,k,donor(3)
+    integer :: n(3),nv,i,j,k,donor(3),inlet,axis
     logical :: valid,use_flattening
     ok=.false.;nv=reactive_nvar(size(species));n=shape(temperature)
+    if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
+    if(any(boundary_faces=='inflow')) then
+      if(.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      if(any(shape(inflow_state)/=[nv,6]).or.size(inflow_temperature)/=6) return
+      if(.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
+    end if
     if(any(n<1).or.any(shape(state)/=[nv,n])) return
     if(any(shape(new_state)/=[nv,n]).or.any(shape(new_temperature)/=n)) return
     if(any([extended%nx,extended%ny,extended%nz]/=n+12)) return
@@ -178,11 +210,19 @@ contains
     do j=-2,n(2)+9
     do i=-2,n(1)+9
       if(vf(i,j,k)<=0) cycle
-      donor=max(1,min(n,[i,j,k]-3))
-      ! Do not invent a fluid state if the supplied geometry needs a covered donor.
-      if(extended%volume_fraction(donor(1)+6,donor(2)+6,donor(3)+6)<=0) return
-      ghost(:,i,j,k)=state(:,donor(1),donor(2),donor(3))
-      gt(i,j,k)=temperature(donor(1),donor(2),donor(3))
+      call map_reactive_boundary_donor_3d([i,j,k]-3,n,boundary_faces,.false.,donor,reflect,shift,inlet,valid)
+      if(.not.valid) return
+      if(inlet>0) then
+        ghost(:,i,j,k)=inflow_state(:,inlet);gt(i,j,k)=inflow_temperature(inlet)
+      else
+        ! Open target geometry cannot obtain fluid state from a covered donor.
+        if(extended%volume_fraction(donor(1)+6,donor(2)+6,donor(3)+6)<=0) return
+        ghost(:,i,j,k)=state(:,donor(1),donor(2),donor(3))
+        gt(i,j,k)=temperature(donor(1),donor(2),donor(3))
+      end if
+      do axis=1,3
+        if(reflect(axis)) ghost(axis+1,i,j,k)=-ghost(axis+1,i,j,k)
+      end do
     end do
     end do
     end do
@@ -192,7 +232,7 @@ contains
       call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,n+6,flat,valid)
       if(.not.valid) return
     end if
-    boundary%lower=4;boundary%upper=n+3;boundary%faces='outflow'
+    boundary%lower=4;boundary%upper=n+3;boundary%faces=boundary_faces
     candidate=state;ct=temperature
     call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,candidate,ct,ok, &
       redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,boundary)
@@ -207,7 +247,7 @@ contains
     end do
     end do
     new_state=candidate;new_temperature=ct
-  end subroutine advance_reactive_eb_outflow_ctu_3d
+  end subroutine advance_reactive_eb_boundary_ctu_3d
 
   ! Complete hydro update for the central cells 4:N-3 of a prepared working
   ! geometry. Physical boundary filling/flattening remain caller responsibilities.
