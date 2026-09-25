@@ -19,7 +19,7 @@ module reactive_transport_3d_mod
 
   real(dp), parameter :: species_safety = 0.90_dp
 
-  public :: reactive_isothermal_timestep_3d
+  public :: reactive_isothermal_timestep_3d,wall_heat_transfer_3d
   public :: reactive_transport_fluxes_3d
   public :: physical_transport_fluxes_3d, physical_transport_budget_3d
   public :: physical_transport_ghosted_fluxes_3d

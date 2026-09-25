@@ -361,7 +361,7 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, new_state, &
       new_temperature, minimum_transport_theta, ok, target_volume_fraction, &
       chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry, &
-      boundary_faces,inflow_state,inflow_temperature,prepare_transport_halo)
+      boundary_faces,inflow_state,inflow_temperature,prepare_transport_halo,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -370,7 +370,7 @@ contains
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     character(len=*), intent(in) :: solver, redistribution
     character(len=*), optional, intent(in) :: boundary_faces(6)
-    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(6)
     character(len=32) :: hydro_faces(6)
     procedure(eb_transport_halo_provider_3d), optional :: prepare_transport_halo
     type(eb_integrated_flux_3d), allocatable :: transport_flux
@@ -442,6 +442,7 @@ contains
       exchange_chemistry=0._dp
     end if
     if (.not. transport_enabled) then
+      if(present(wall_temperature)) return
       call advance_reactive_eb_strang_3d( &
         species, reactions, state, temperature, geometry, solver, &
         redistribution, dt, chemistry_enabled, rtol, atol, new_state, &
@@ -451,10 +452,16 @@ contains
       return
     end if
 
-    ! Stage ghosts alone do not establish periodic seam synchronization or
-    ! physical wall traction/heat fluxes. Enable these after their flux policies.
     if(present(boundary_faces)) then
-      if(any(hydro_faces/='outflow'.and.hydro_faces/='inflow')) return
+      if(any(hydro_faces=='periodic')) return
+      if(present(prepare_transport_halo)) then
+        if(any(hydro_faces/='outflow'.and.hydro_faces/='inflow')) return
+      end if
+      if(any(hydro_faces=='isothermal_wall')) then
+        if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return
+      end if
+    else
+      if(present(wall_temperature)) return
     end if
     if (size(transport) /= size(species)) return
     if (.not. ieee_is_finite(dt) .or. dt <= 0.0_dp .or. &
@@ -512,7 +519,7 @@ contains
       geometry, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, target, theta_one, local_ok,prepare_transport_halo,transport_flux, &
-      transport_faces,transport_inflow,transport_inflow_temperature)
+      transport_faces,transport_inflow,transport_inflow_temperature,wall_temperature)
     if (.not. local_ok) return
     if(allocated(transport_flux)) then
       call transport_boundary_inventory(geometry,transport_flux,half_change,local_ok)
@@ -546,7 +553,7 @@ contains
       geometry, 0.5_dp * dt, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, &
       barodiffusion_enabled, target, theta_two, local_ok,prepare_transport_halo,transport_flux, &
-      transport_faces,transport_inflow,transport_inflow_temperature)
+      transport_faces,transport_inflow,transport_inflow_temperature,wall_temperature)
     if (.not. local_ok) return
     if(allocated(transport_flux)) then
       call transport_boundary_inventory(geometry,transport_flux,half_change,local_ok)

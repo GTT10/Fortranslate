@@ -9,7 +9,7 @@ module eb_reactive_transport_3d_mod
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_conserved_to_primitive
   use reactive_transport_3d_mod, only: &
-    reactive_transport_face_flux_3d, reactive_transport_timestep_3d
+    reactive_transport_face_flux_3d, reactive_transport_timestep_3d,wall_heat_transfer_3d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
@@ -578,7 +578,7 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces)
+      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces,physical_faces,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -594,12 +594,16 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     logical, optional, intent(in) :: boundary_faces(6)
+    character(len=*), optional, intent(in) :: physical_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     logical :: enabled_faces(6)
     real(dp), allocatable :: donor_primitive(:)
     real(dp) :: donor_temperature,sound_speed,spacing(3),face_area,species_energy
     integer :: axis,side,start(3),finish(3),inside(3),outside(3),v,d
     real(dp), allocatable :: left(:),right(:),boundary_flux(:)
-    real(dp) :: left_t,right_t
+    real(dp) :: left_t,right_t,wall_heat,wall_rate
+    character(len=32) :: label
+    integer :: face
 
     real(dp), allocatable :: primitive(:, :, :, :)
     real(dp), allocatable :: checked_temperature(:, :, :)
@@ -644,6 +648,15 @@ contains
     if (present(ghost_state)) then
       if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
       if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+    end if
+    if(present(physical_faces)) then
+      if(.not.valid_reactive_boundaries_3d(physical_faces)) return
+      if(any(physical_faces=='periodic')) return
+      if(any(physical_faces=='isothermal_wall')) then
+        if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return
+      end if
+    else
+      if(present(wall_temperature)) return
     end if
     if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &
         species_diffusion_enabled)) then
@@ -768,10 +781,39 @@ contains
                     gradient(v,d)=active_velocity_derivative(primitive,geometry,inside(1),inside(2),inside(3),v,d)
                   end do
                 end do
+                label=''
+                face=2*axis-1+side
+                if(present(physical_faces)) label=physical_faces(face)
+                select case(label)
+                case('slip_wall')
+                  do d=1,3
+                    if(d/=axis) gradient(axis,d)=0
+                  end do
+                case('no_slip_wall','isothermal_wall')
+                  do d=1,3
+                    if(d/=axis) gradient(:,d)=0
+                  end do
+                end select
                 call reactive_transport_face_flux_3d(species,transport,left,right,left_t,right_t,spacing(axis),axis, &
                   gradient,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled, &
                   barodiffusion_enabled,boundary_flux,species_energy,local_ok)
                 if (.not.local_ok) return
+                select case(label)
+                case('slip_wall','no_slip_wall','isothermal_wall')
+                  boundary_flux(1)=0;boundary_flux(6:)=0;species_energy=0
+                  boundary_flux(iet)=0
+                  if(label=='slip_wall') then
+                    do v=1,3
+                      if(v/=axis) boundary_flux(v+1)=0
+                    end do
+                  else if(label=='isothermal_wall') then
+                    call wall_heat_transfer_3d(species,transport,state(:,inside(1),inside(2),inside(3)), &
+                      checked_temperature(inside(1),inside(2),inside(3)),wall_temperature(face), &
+                      spacing(axis),wall_heat,wall_rate,local_ok)
+                    if(.not.local_ok) return
+                    boundary_flux(iet)=real(1-2*side,dp)*wall_heat
+                  end if
+                end select
                 select case(axis)
                 case(1)
                   x_flux(:,i,j,k)=boundary_flux;species_energy_x(i,j,k)=species_energy
@@ -831,7 +873,7 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux)
+      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux,physical_faces,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -844,6 +886,8 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     logical, optional, intent(in) :: boundary_faces(6)
+    character(len=*), optional, intent(in) :: physical_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
 
     real(dp), allocatable :: x_flux(:, :, :, :)
@@ -860,7 +904,8 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces)
+      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, &
+      physical_faces,wall_temperature)
     if (.not.ok) return
     if (present(integrated_flux)) then
       x_flux=dt*x_flux;y_flux=dt*y_flux;z_flux=dt*z_flux
@@ -880,7 +925,7 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, new_state, new_temperature, &
-      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux)
+      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux,physical_faces,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -894,6 +939,8 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     logical, optional, intent(in) :: boundary_faces(6)
+    character(len=*), optional, intent(in) :: physical_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
 
     real(dp), allocatable :: rhs(:, :, :, :),candidate(:,:,:,:),candidate_temperature(:,:,:)
@@ -927,7 +974,7 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      minimum_theta, local_ok, ghost_state, ghost_temperature, boundary_faces, flux)
+      minimum_theta, local_ok, ghost_state, ghost_temperature, boundary_faces, flux,physical_faces,wall_temperature)
     if (.not. local_ok) return
     allocate(candidate,mold=state);allocate(candidate_temperature,mold=temperature)
     call advance_reactive_eb_state_redistributed_3d( &
@@ -944,7 +991,7 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, minimum_theta, ok, prepare_halo, integrated_flux, &
-      boundary_faces,inflow_state,inflow_temperature)
+      boundary_faces,inflow_state,inflow_temperature,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -960,7 +1007,7 @@ contains
     real(dp), allocatable :: ghost(:,:,:,:),ghost_temperature(:,:,:)
     logical :: faces(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
-    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(6)
 
     real(dp), allocatable :: initial_state(:, :, :, :)
     real(dp), allocatable :: initial_temperature(:, :, :)
@@ -988,9 +1035,12 @@ contains
     if(present(boundary_faces)) then
       if(present(prepare_halo)) return
       if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
-      if(any(boundary_faces/='outflow'.and.boundary_faces/='inflow')) return
+      if(any(boundary_faces=='periodic')) return
+      if(any(boundary_faces=='isothermal_wall')) then
+        if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return
+      end if
     else
-      if(present(inflow_state).or.present(inflow_temperature)) return
+      if(present(inflow_state).or.present(inflow_temperature).or.present(wall_temperature)) return
     end if
     if (present(integrated_flux)) then
       allocate(flux_one,flux_two)
@@ -1030,7 +1080,7 @@ contains
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, stage_state, stage_temperature, theta_one, &
-      local_ok,ghost,ghost_temperature,faces,flux_one)
+      local_ok,ghost,ghost_temperature,faces,flux_one,boundary_faces,wall_temperature)
     if (.not. local_ok) return
     if (present(prepare_halo).or.present(boundary_faces)) then
       if(present(prepare_halo)) then
@@ -1048,7 +1098,7 @@ contains
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, euler_state, euler_temperature, theta_two, &
-      local_ok,ghost,ghost_temperature,faces,flux_two)
+      local_ok,ghost,ghost_temperature,faces,flux_two,boundary_faces,wall_temperature)
     if (.not. local_ok) return
 
     allocate(candidate_state, source=0.5_dp * (initial_state + euler_state))

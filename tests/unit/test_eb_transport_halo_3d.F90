@@ -7,8 +7,8 @@ program test_eb_transport_halo_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_species_component, &
     reactive_mass_fraction_component,reactive_primitive_to_conserved,reactive_conserved_to_primitive
-  use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d
+  use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,physical_transport_fluxes_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,build_level_set_eb_geometry_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d, &
     reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
@@ -285,9 +285,93 @@ program test_eb_transport_halo_3d
       advanced,advanced_t,theta,ok,extended_geometry=extended,boundary_faces=labels, &
       prepare_transport_halo=prepare_stage_halo)
     call require(.not.ok.and.provider_calls==0,'unsupported physical wall transport rejects before stepping')
+    call verify_wall_transport()
   end do
   write(*,'(a)') 'test_eb_transport_halo_3d: PASS'
 contains
+  subroutine verify_wall_transport()
+    character(len=16), parameter :: kinds(3)=[character(len=16)::'slip_wall','no_slip_wall','isothermal_wall']
+    character(len=16) :: wall_faces(6)
+    real(dp) :: wall_t(6),weights(3),rho,theta_ref,phi(0:16,0:16,0:16),coordinate
+    type(eb_geometry_3d) :: wall_extended
+    real(dp), allocatable :: moving(:,:,:,:),rx(:,:,:,:),ry(:,:,:,:),rz(:,:,:,:)
+    integer :: kind,normal,which,point(3),component
+    wall_extended=extended
+    if(mode==2) then
+      ! Repeated wall reflection reaches covered donors when halo width exceeds
+      ! this small domain. Geometry must reflect with the state, not extrapolate.
+      do k=0,16
+        coordinate=modulo(-1.5_dp+.25_dp*k,2._dp)
+        phi(:,:,k)=min(coordinate,2._dp-coordinate)-.31_dp
+      end do
+      call build_level_set_eb_geometry_3d(phi,[-1.5_dp,-1.5_dp,-1.5_dp], &
+        [2.5_dp,2.5_dp,2.5_dp],wall_extended,ok)
+      call require(ok,'reflected wall geometry')
+    end if
+    allocate(moving,source=u)
+    allocate(rx(nvar,0:4,4,4),ry(nvar,4,0:4,4),rz(nvar,4,4,0:4))
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      rho=moving(1,i,j,k)
+      moving(5,i,j,k)=moving(5,i,j,k)-sum(moving(2:4,i,j,k)**2)/(2*rho)+25*rho
+      moving(2:4,i,j,k)=rho*[3._dp,4._dp,5._dp]
+    end do
+    end do
+    end do
+    wall_t=temp+100
+    weights=[geometry%dx,geometry%dy,geometry%dz]
+    do kind=1,3
+    do normal=1,3
+    do which=0,1
+      if(mode==2.and.normal==3.and.which==0) cycle
+      wall_faces='outflow';wall_faces(2*normal-1+which)=kinds(kind)
+      call fill_reactive_boundary_ghosts_3d(moving,t,wall_faces,g,gt,ok,viscous_wall=.true.,ghost_width=1)
+      call require(ok,'wall donor fill')
+      faces=.true.
+      call reactive_eb_transport_fluxes_rhs_3d(species,transport,moving,t,geometry,0._dp, &
+        .true.,.true.,.true.,.true.,rhs,x,y,z,theta,ok,g,gt,faces,wall_faces,wall_t)
+      call require(ok,'EB wall transport flux')
+      call physical_transport_fluxes_3d(species,transport,moving,t,[4,4,4],weights,0._dp,wall_faces, &
+        .true.,.true.,.true.,.true.,rx,ry,rz,theta_ref,ok,wall_temperature=wall_t)
+      call require(ok,'regular wall transport reference')
+      point=3;point(normal)=4*which
+      select case(normal)
+      case(1);expected=x(:,point(1),point(2),point(3));uniform=rx(:,point(1),point(2),point(3))
+      case(2);expected=y(:,point(1),point(2),point(3));uniform=ry(:,point(1),point(2),point(3))
+      case(3);expected=z(:,point(1),point(2),point(3));uniform=rz(:,point(1),point(2),point(3))
+      end select
+      call require(maxval(abs(expected-uniform))<=3.e-12_dp*max(1._dp,maxval(abs(uniform))), &
+        'wall flux agrees with regular transport reference for uniform moving state')
+      call require(expected(1)==0.and.all(expected(6:)==0),'impermeable wall species and mass flux')
+      if(kind<3) call require(expected(5)==0,'adiabatic stationary wall does no work')
+      if(kind==3) call require(real(1-2*which,dp)*expected(5)>0,'hot wall heat enters fluid')
+    end do
+    end do
+    wall_faces=kinds(kind)
+    call advance_reactive_eb_full_3d(species,reactions,transport,moving,t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+      advanced,advanced_t,theta,ok,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+      extended_geometry=wall_extended,boundary_faces=wall_faces,wall_temperature=wall_t)
+    call require(ok,'coupled wall reaction transport CTU step')
+    call reactive_eb_integrals_3d(moving,geometry,before,ok)
+    call require(ok,'wall initial inventory')
+    call reactive_eb_integrals_3d(advanced,geometry,after,ok)
+    call require(ok,'wall final inventory')
+    call require(maxval(abs(after-before-boundary-wall-chemical)/max(1._dp,abs(before)))<=2.e-12_dp, &
+      'coupled wall inventory closes')
+    do component=6,nvar
+      call require(abs(boundary(component))<=1.e-25_dp,'no wall species exchange')
+    end do
+    end do
+    wall_t=-1;wall_faces='isothermal_wall';boundary=-81
+    call advance_reactive_eb_full_3d(species,reactions,transport,moving,t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.false.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+      advanced,advanced_t,theta,ok,boundary_change=boundary,extended_geometry=wall_extended, &
+      boundary_faces=wall_faces,wall_temperature=wall_t)
+    call require(.not.ok.and.all(advanced==moving).and.all(advanced_t==t).and.all(boundary==-81), &
+      'invalid wall temperature rolls back state and boundary ledger')
+  end subroutine verify_wall_transport
   subroutine prepare_stage_halo(state,temperature,metrics,ghost,ghost_temperature,enabled,valid)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)
     type(eb_geometry_3d), intent(in) :: metrics
