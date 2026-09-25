@@ -233,7 +233,10 @@ serial-versus-MPI equivalence checks
 ([evidence](validation/amr-tree-default-difmag-20260925.md)). Serial/MPI
 older two-level hydro now also resolves and forwards 0.1 on every coarse/fine
 stage, with eight-rank default-versus-explicit checks
-([evidence](validation/two-level-default-difmag-20260925.md)). The viscosity kernel now accepts
+([evidence](validation/two-level-default-difmag-20260925.md)). Regular MPI
+spray hydro/coupling library defaults now also resolve to 0.1, with four-rank
+PLM/PPM omitted-versus-explicit checks
+([evidence](validation/mpi-spray-library-default-20260925.md)). The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
 ([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and
