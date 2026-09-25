@@ -7,7 +7,7 @@ program test_implicit_h2o2_reactor
   use h2o2_full_thermo_mod, only: full_nspecies, load_h2o2_full_thermo
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use constant_volume_reactor_mod, only: &
-    advance_constant_volume_implicit_adaptive,forced_reactor_rhs,reactor_rhs
+    advance_constant_volume_implicit_adaptive,forced_reactor_rhs,reactor_rhs,advance_forced_reactor_implicit_adaptive
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -19,6 +19,7 @@ program test_implicit_h2o2_reactor
   logical :: ok
   type(elementary_reaction), allocatable :: inert(:)
   real(dp) :: rhoy(full_nspecies),source(full_nspecies),rates(full_nspecies),baseline(full_nspecies),source_t
+  real(dp) :: forced_t,forced_accepted,forced_next,saved(full_nspecies)
 
   call load_h2o2_full_thermo(species, ok)
   if (.not. ok) error stop "Failed to load full thermo"
@@ -57,11 +58,26 @@ program test_implicit_h2o2_reactor
   call forced_reactor_rhs(species,reactions,density*target_energy,.25_dp,rhoy,source,.2_dp*target_energy, &
     temperature,rates,source_t,ok)
   if(ok.or.any(rates/=0).or.source_t/=0) error stop 'forced RHS invalid species zero outputs'
+  rhoy=density*y;source=.2_dp*y;forced_t=temperature
+  call advance_forced_reactor_implicit_adaptive(species,inert,density*target_energy,0._dp,source, &
+    .2_dp*target_energy,.25_dp,1e-6_dp,1e-12_dp,rhoy,forced_t,forced_accepted,forced_next,ok)
+  if(.not.ok.or.forced_accepted/=.25_dp.or.maxval(abs(rhoy-(density+.05_dp)*y))>1e-14_dp.or. &
+    abs(forced_t-temperature)>1e-8_dp) error stop 'forced inert integration'
+  saved=rhoy
+  call advance_forced_reactor_implicit_adaptive(species,inert,density*target_energy,0._dp,source, &
+    .2_dp*target_energy,-.25_dp,1e-6_dp,1e-12_dp,rhoy,forced_t,forced_accepted,forced_next,ok)
+  if(ok.or.any(rhoy/=saved).or.forced_accepted/=0.or.forced_next/=0) error stop 'forced step rollback'
+  rhoy=density*y;source=0;forced_t=temperature
+  call advance_forced_reactor_implicit_adaptive(species,reactions,density*target_energy,0._dp,source, &
+    0._dp,1e-7_dp,1e-6_dp,density*1e-12_dp,rhoy,forced_t,forced_accepted,forced_next,ok)
+  if(.not.ok) error stop 'forced zero-source integration'
   call advance_constant_volume_implicit_adaptive( &
     species, reactions, density, target_energy, 1.0e-7_dp, 1.0e-6_dp, &
     1.0e-12_dp, y, temperature, accepted, next_step, newton_iterations, &
     rejected, ok)
   if (.not. ok) error stop "Implicit adaptive step failed"
+  if(abs(forced_accepted-accepted)>1e-15_dp.or.maxval(abs(rhoy/density-y))>1e-10_dp.or. &
+    abs(forced_t-temperature)>1e-6_dp) error stop 'forced zero-source integrator limit'
   if (accepted <= 0.0_dp .or. next_step <= 0.0_dp) then
     error stop "Implicit adaptive step returned invalid time steps"
   end if
@@ -75,5 +91,14 @@ program test_implicit_h2o2_reactor
       > 5.0e-10_dp) then
     error stop "Implicit step violated constant-volume energy"
   end if
+  rhoy=density*y;source=.2_dp*y;forced_t=temperature
+  call advance_forced_reactor_implicit_adaptive(species,reactions,density*target_energy,0._dp,source, &
+    .2_dp*target_energy,1e-7_dp,1e-6_dp,1e-12_dp,rhoy,forced_t,forced_accepted,forced_next,ok)
+  if(.not.ok.or.forced_accepted<=0) error stop 'forced reacting integration'
+  if(abs(sum(rhoy)-(density+.2_dp*forced_accepted))>1e-13_dp) error stop 'forced reacting mass inventory'
+  call mixture_mass_properties(species,rhoy/sum(rhoy),forced_t,molecular_weight,gas_constant, &
+    cp,cv,gamma,enthalpy,final_energy,entropy,ok)
+  if(.not.ok.or.abs(sum(rhoy)*final_energy-(density+.2_dp*forced_accepted)*target_energy)/ &
+    max(1._dp,abs(density*target_energy))>5e-10_dp) error stop 'forced reacting energy inventory'
   write(*, '(a)') "test_implicit_h2o2_reactor: PASS"
 end program test_implicit_h2o2_reactor

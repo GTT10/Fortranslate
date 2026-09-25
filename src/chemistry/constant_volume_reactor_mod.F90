@@ -16,6 +16,7 @@ module constant_volume_reactor_mod
   public :: reactor_specific_internal_energy
   public :: reactor_rhs
   public :: forced_reactor_rhs
+  public :: advance_forced_reactor_implicit_adaptive
   public :: advance_constant_volume_adaptive
   public :: reactor_reduced_jacobian
   public :: backward_euler_trial
@@ -58,6 +59,89 @@ contains
     if(.not.all(ieee_is_finite(candidate))) return
     derivative=candidate;temperature=candidate_temperature;ok=.true.
   end subroutine forced_reactor_rhs
+
+  ! Accept one adaptive substep. The caller retains rhoe(0), advances elapsed
+  ! by accepted_time_step, and repeats until its requested interval is covered.
+  ! absolute_tolerance is in species-density units, not mass-fraction units.
+  subroutine advance_forced_reactor_implicit_adaptive(species,reactions,initial_energy_density,elapsed, &
+      external_species,external_energy,requested_time_step,relative_tolerance,absolute_tolerance, &
+      species_density,temperature,accepted_time_step,next_time_step,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: initial_energy_density,elapsed,external_species(:),external_energy
+    real(dp), intent(in) :: requested_time_step,relative_tolerance,absolute_tolerance
+    real(dp), intent(inout) :: species_density(:),temperature
+    real(dp), intent(out) :: accepted_time_step,next_time_step
+    logical, intent(out) :: ok
+    real(dp) :: full(size(species)),half(size(species)),middle(size(species)),candidate(size(species))
+    real(dp) :: rates(size(species)),tf,th,tm,tc,h,err,factor
+    logical :: good,extrapolated_ok
+    integer :: attempt
+
+    accepted_time_step=0;next_time_step=0;ok=.false.
+    if(.not.all(ieee_is_finite([requested_time_step,relative_tolerance,absolute_tolerance]))) return
+    if(min(requested_time_step,relative_tolerance,absolute_tolerance)<=0) return
+    call forced_reactor_rhs(species,reactions,initial_energy_density,elapsed,species_density, &
+      external_species,external_energy,temperature,rates,tc,good)
+    if(.not.good) return
+    h=requested_time_step
+    do attempt=1,reactor_max_step_attempts
+      if(elapsed+h<=elapsed) return
+      call trial(species_density,temperature,elapsed,h,full,tf,good)
+      if(good) call trial(species_density,temperature,elapsed,.5_dp*h,middle,tm,good)
+      if(good) call trial(middle,tm,elapsed+.5_dp*h,.5_dp*h,half,th,good)
+      if(.not.good) then
+        h=.25_dp*h
+        cycle
+      end if
+      err=normalized_error(full,tf,half,th,relative_tolerance,absolute_tolerance)
+      if(.not.ieee_is_finite(err)) then
+        h=.25_dp*h
+        cycle
+      end if
+      if(err>1) then
+        h=h*max(.1_dp,.9_dp*err**(-.5_dp))
+        cycle
+      end if
+      candidate=2*half-full
+      call forced_reactor_rhs(species,reactions,initial_energy_density,elapsed+h,candidate, &
+        external_species,external_energy,th,rates,tc,extrapolated_ok)
+      if(.not.extrapolated_ok) then
+        candidate=half
+        tc=th
+      end if
+      factor=2
+      if(err>1e-12_dp) factor=min(2._dp,max(.2_dp,.9_dp*err**(-.5_dp)))
+      species_density=candidate;temperature=tc
+      accepted_time_step=h;next_time_step=h*factor;ok=.true.
+      return
+    end do
+  contains
+    subroutine trial(start,start_temperature,time,step,finish,finish_temperature,valid)
+      real(dp), intent(in) :: start(:),start_temperature,time,step
+      real(dp), intent(out) :: finish(:),finish_temperature
+      logical, intent(out) :: valid
+      real(dp) :: density,energy,reference(size(species)),y(size(species)),end_y(size(species))
+      real(dp) :: unused(size(species))
+      integer :: iterations
+      valid=.false.;finish=0;finish_temperature=0
+      density=sum(start)+step*sum(external_species)
+      if(.not.ieee_is_finite(density).or.density<=0) return
+      energy=(initial_energy_density+(time+step)*external_energy)/density
+      if(.not.ieee_is_finite(energy)) return
+      reference=(start+step*external_species)/density
+      if(size(reactions)==0) then
+        finish=start+step*external_species
+        call forced_reactor_rhs(species,reactions,initial_energy_density,time+step,finish, &
+          external_species,external_energy,start_temperature,unused,finish_temperature,valid)
+        return
+      end if
+      y=start/sum(start)
+      call backward_euler_trial(species,reactions,density,energy,y,start_temperature,step, &
+        relative_tolerance,absolute_tolerance/density,end_y,finish_temperature,iterations,valid,reference)
+      if(valid) finish=density*end_y
+    end subroutine trial
+  end subroutine advance_forced_reactor_implicit_adaptive
 
   real(dp) function reactor_specific_internal_energy( &
       species, mass_fractions, temperature, ok) result(internal_energy)
@@ -405,7 +489,7 @@ contains
   subroutine backward_euler_trial( &
       species, reactions, density, target_internal_energy, initial_state, &
       initial_temperature, time_step, relative_tolerance, absolute_tolerance, &
-      updated_state, updated_temperature, newton_iterations, ok)
+      updated_state, updated_temperature, newton_iterations, ok, residual_reference)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: density, target_internal_energy
@@ -414,6 +498,10 @@ contains
     real(dp), intent(out) :: updated_state(:), updated_temperature
     integer, intent(out) :: newton_iterations
     logical, intent(out) :: ok
+
+    ! Optional externally forced reference need not lie in the simplex;
+    ! initial_state remains a physical Newton starting guess.
+    real(dp), intent(in), optional :: residual_reference(:)
 
     integer, parameter :: maximum_newton_iterations = 20
     integer, parameter :: maximum_line_search_iterations = 24
@@ -447,7 +535,14 @@ contains
     allocate(jacobian(reduced_size, reduced_size))
     allocate(matrix(reduced_size, reduced_size), correction(reduced_size))
     reduced_initial = initial_state(1:reduced_size)
-    reduced_state = reduced_initial
+    if(present(residual_reference)) then
+      ok=size(residual_reference)==nspecies
+      if(.not.ok) return
+      ok=all(ieee_is_finite(residual_reference))
+      if(.not.ok) return
+      reduced_initial=residual_reference(1:reduced_size)
+    end if
+    reduced_state = initial_state(1:reduced_size)
     temperature = initial_temperature
 
     do iteration = 1, maximum_newton_iterations
