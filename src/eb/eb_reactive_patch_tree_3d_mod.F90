@@ -535,8 +535,9 @@ contains
   subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
       rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
       wall_change,chemical_change,minimum_theta,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     character(len=*), intent(in) :: solver
@@ -587,10 +588,12 @@ contains
       if (half==1) then
         if (recursive_steps) then
           call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,candidate,boundary,wall,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=difmag)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            difmag=difmag,extended_geometry=extended_geometry)
         else
           call advance_reactive_eb_tree_hydro_3d(species,solver,dt,candidate,boundary,wall,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=difmag)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            difmag=difmag,extended_geometry=extended_geometry)
         end if
         if (.not.valid) return
       else if (chemistry_enabled) then
@@ -810,8 +813,9 @@ contains
   ! Each level advances together, with ratio fine substeps, time-interpolated
   ! ancestor donors, per-substep peer fluxes and interval-local reflux.
   subroutine advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
@@ -820,7 +824,8 @@ contains
     real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     call advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=difmag)
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            difmag=difmag,extended_geometry=extended_geometry)
   end subroutine advance_reactive_eb_tree_subcycle_hydro_3d
 
   subroutine advance_reactive_eb_tree_subcycle_transport_3d(species,transport,dt,viscosity,conduction, &
@@ -842,8 +847,9 @@ contains
 
   subroutine advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta, &
-      inflow_mach,inflow_temperature,inflow_pressure,difmag)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
@@ -860,7 +866,8 @@ contains
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: clock_start(:),clock_dt(:),wall(:),boundary(:)
     real(dp) :: theta,coefficient
-    integer :: nv,levels,c,n(3)
+    type(eb_geometry_3d) :: center
+    integer :: nv,levels,c,n(3),node
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
@@ -868,6 +875,18 @@ contains
     if (.not.valid_tree(tree,nv)) return
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
+    if(present(extended_geometry)) then
+      if(present(transport).or.solver/='pelec') return
+      if(size(extended_geometry)/=size(tree%nodes)) return
+      if(any(domain>int(huge(1)-4,int64))) return
+      do node=1,size(tree%nodes)
+        n=tree%topology%nodes(node)%shape
+        if(any([extended_geometry(node)%nx,extended_geometry(node)%ny,extended_geometry(node)%nz]/=n+12)) return
+        call extract_eb_geometry_3d(extended_geometry(node),[7,7,7],n+6,center,valid)
+        if(.not.valid) return
+        if(.not.matching_eb_metrics_3d(center,tree%nodes(node)%geometry)) return
+      end do
+    end if
     if (present(transport)) then
       if (.not.(present(viscosity).and.present(conduction).and.present(diffusion).and. &
         present(barodiffusion).and.present(minimum_theta))) return
@@ -909,6 +928,9 @@ contains
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
       type(eb_reactive_tree_3d) :: snapshot
+      type(eb_geometry_3d) :: working
+      type(eb_plm_boundary_3d) :: physical_boundary
+      real(dp), allocatable :: flat(:,:,:)
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),source(:,:,:,:),fraction(:),vf(:,:,:)
       logical, allocatable :: exposed(:,:,:)
       real(dp) :: elapsed,sub_dt,stage_theta
@@ -926,11 +948,30 @@ contains
         if (tree%topology%nodes(node)%level/=level) cycle
         starts%nodes(node)=snapshot%nodes(node)
         fraction=max(0._dp,min(1._dp,(time-clock_start(:level))/clock_dt(:level)))
+        if(present(extended_geometry)) then
+          allocate(ghost(nv,-5:d(1)+6,-5:d(2)+6,-5:d(3)+6),gt(-5:d(1)+6,-5:d(2)+6,-5:d(3)+6), &
+            vf(-5:d(1)+6,-5:d(2)+6,-5:d(3)+6),flat(0:d(1)+7,0:d(2)+7,0:d(3)+7))
+          call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction, &
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+            ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=extended_geometry(node)%volume_fraction)
+          if(.not.valid) return
+          call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],d+9,working,valid)
+          if(.not.valid) return
+          call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,d+6,flat,valid)
+          if(.not.valid) return
+          physical_boundary%lower=4-int(origin(:,node))
+          physical_boundary%upper=3+int(domain(:,level+1)-origin(:,node))
+          physical_boundary%faces='outflow'
+          if(present(inflow_mach)) then
+            where(inflow_mach>=0) physical_boundary%faces='inflow'
+          end if
+        else
         allocate(ghost(nv,0:d(1)+1,0:d(2)+1,0:d(3)+1),gt(0:d(1)+1,0:d(2)+1,0:d(3)+1))
         if(coefficient>0) allocate(vf(0:d(1)+1,0:d(2)+1,0:d(3)+1))
         call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction, &
           inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
         if (.not.valid) return
+        end if
         if (present(transport)) then
           faces=[origin(1,node)>0,origin(1,node)+int(d(1),int64)<domain(1,level+1), &
             origin(2,node)>0,origin(2,node)+int(d(2),int64)<domain(2,level+1), &
@@ -941,6 +982,17 @@ contains
             candidate%nodes(node)%temperature,flux(node),stage_theta,valid,ghost,gt,faces)
           if (.not.valid) return
           theta=min(theta,stage_theta)
+        else if(present(extended_geometry)) then
+          call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,interval,flat,candidate%nodes(node)%state, &
+            candidate%nodes(node)%temperature,valid,difmag=coefficient,integrated_flux=flux(node),boundary=physical_boundary)
+          if(.not.valid) return
+          do component=1,nv
+            where(snapshot%nodes(node)%geometry%volume_fraction<=0) &
+              candidate%nodes(node)%state(component,:,:,:)=snapshot%nodes(node)%state(component,:,:,:)
+          end do
+          where(snapshot%nodes(node)%geometry%volume_fraction<=0) &
+            candidate%nodes(node)%temperature=snapshot%nodes(node)%temperature
+          deallocate(flat)
         else
         call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
           snapshot%nodes(node)%geometry,solver,interval,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
