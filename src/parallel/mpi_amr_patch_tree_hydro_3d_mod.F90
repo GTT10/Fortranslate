@@ -217,13 +217,14 @@ contains
           end if
           if (reconstruction=='characteristic_ppm') then
             block
-              logical :: inflow_mask(6)
-              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success)
+              logical :: inflow_mask(6),wall_mask(6)
+              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success,wall_mask)
               if (.not.success) exit
               fx=0;fy=0;fz=0
             call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
               n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
-              fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success,inflow_faces=inflow_mask)
+              fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success, &
+              inflow_faces=inflow_mask,no_slip_faces=wall_mask)
             end block
           else if (reconstruction=='pcm') then
             call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &

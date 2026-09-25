@@ -2683,18 +2683,22 @@ contains
       real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
       real(dp) :: theta
       integer :: i,j,k
-      logical :: inflow_mask(6)
+      logical :: inflow_mask(6),wall_mask(6)
       call build_mpi_amr_sparse_boundary_halos_3d(distribution,state,temperature,faces,ghost,gt,local_ok, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,species=species, &
         outlet_pressure=outlet_pressure,ghost_width=4)
       if (.not.local_ok) return
       allocate(first_flux_x(nvar,0:local_count,ny,nz),first_flux_y(nvar,local_count,0:ny,nz), &
         first_flux_z(nvar,local_count,ny,0:nz))
+      wall_mask=faces=='no_slip_wall'.or.faces=='isothermal_wall'
+      wall_mask(1)=wall_mask(1).and.distribution%coarse_first==1
+      wall_mask(2)=wall_mask(2).and.distribution%coarse_last==patch%coarse_nx
       inflow_mask=faces=='inflow'
       inflow_mask(1)=inflow_mask(1).and.distribution%coarse_first==1
       inflow_mask(2)=inflow_mask(2).and.distribution%coarse_last==patch%coarse_nx
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[local_count,ny,nz],[dx,dy,dz],dt, &
-        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok,inflow_faces=inflow_mask)
+        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok,inflow_faces=inflow_mask, &
+        no_slip_faces=wall_mask)
       call sparse_collective_logical_and_3d(distribution%comm,local_ok,global_ok)
       if (.not.global_ok) return
       allocate(candidate_state,mold=state)
@@ -3105,7 +3109,7 @@ contains
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
     real(dp) :: theta
     integer :: i,j,k
-    logical :: local_ok,inflow_mask(6)
+    logical :: local_ok,inflow_mask(6),wall_mask(6),physical_mask(6)
     integer :: nvar, local_count, ny, nz
 
     ok = .false.
@@ -3134,16 +3138,19 @@ contains
       if (.not.local_ok) return
       allocate(first_flux_x(nvar,0:local_count,ny,nz),first_flux_y(nvar,local_count,0:ny,nz), &
         first_flux_z(nvar,local_count,ny,0:nz))
-      inflow_mask=.false.
+      inflow_mask=.false.;wall_mask=.false.
       if (present(boundary_faces)) then
-        inflow_mask=boundary_faces=='inflow'.and. &
+        physical_mask= &
           [patch%coarse_i_lower==1.and.distribution%fine_first==1, &
            patch%coarse_i_upper==patch%coarse_nx.and.distribution%fine_last==patch%fine_nx(), &
            patch%coarse_j_lower==1,patch%coarse_j_upper==patch%coarse_ny, &
            patch%coarse_k_lower==1,patch%coarse_k_upper==patch%coarse_nz]
+        inflow_mask=physical_mask.and.boundary_faces=='inflow'
+        wall_mask=physical_mask.and.(boundary_faces=='no_slip_wall'.or.boundary_faces=='isothermal_wall')
       end if
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[local_count,ny,nz],[dx,dy,dz],dt, &
-        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok,inflow_faces=inflow_mask)
+        .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,theta,local_ok,inflow_faces=inflow_mask, &
+        no_slip_faces=wall_mask)
       if (.not.local_ok) return
       allocate(candidate_state,mold=state)
       allocate(candidate_temperature,mold=temperature)

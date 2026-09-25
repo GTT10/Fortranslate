@@ -943,7 +943,8 @@ contains
       if (.not.local_ok) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[nx,ny,nz],[dx,dy,dz],dt, &
         .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,minimum_theta,local_ok, &
-        inflow_faces=physical_touch.and.physical_faces=='inflow')
+        inflow_faces=physical_touch.and.physical_faces=='inflow', &
+        no_slip_faces=physical_touch.and.(physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'))
       if (.not.local_ok) return
       ! Match the regular-grid CTU conservative update, including operation order.
       do k=1,nz

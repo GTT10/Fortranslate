@@ -78,6 +78,15 @@ program test_reactive_ppm_halo_3d
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,g,gt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
         .true.,.true.,solver,hx,hy,hz,halo_theta,ok)
       call require(ok.and.all(hx==fx).and.all(hy==fy).and.all(hz==fz),'halo default uses pressure tracing')
+      call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
+        .true.,.true.,solver,fx,fy,fz,theta,ok,difmag=0._dp)
+      call require(ok.and.(any(hx/=fx).or.any(hy/=fy).or.any(hz/=fz)),'default viscosity changes compressive flux')
+      call adjust_reactive_artificial_viscosity_3d(g(:,4:9,4:9,4:9),[4,4,4],[.25_dp,.25_dp,.25_dp], &
+        .1_dp,[(.false.,m=1,6)],fx,fy,fz,ok)
+      call require(ok.and.all(hx==fx).and.all(hy==fy).and.all(hz==fz),'CTU then viscosity exact composition')
+      call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
+        .true.,.true.,solver,fx,fy,fz,theta,ok,difmag=-1._dp)
+      call require(.not.ok.and.all(fx==0).and.all(fy==0).and.all(fz==0),'invalid viscosity unpublished flux')
     end if
     deallocate(u,t,fx,fy,fz)
   end do

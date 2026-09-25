@@ -32,25 +32,30 @@ module amr_patch_tree_ghost_3d_mod
     end subroutine
   end interface
 contains
-  subroutine amr_tree_inflow_faces_3d(tree,node,faces,mask,ok)
+  subroutine amr_tree_inflow_faces_3d(tree,node,faces,mask,ok,no_slip_mask)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: node
     character(len=*), intent(in) :: faces(6)
     logical, intent(out) :: mask(6),ok
+    logical, optional, intent(out) :: no_slip_mask(6)
+    logical :: touched(6)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer :: axis,level
     mask=.false.;ok=.false.
+    if (present(no_slip_mask)) no_slip_mask=.false.
     if (.not.allocated(tree%nodes)) return
     if (node<1.or.node>size(tree%nodes)) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) return
     level=tree%nodes(node)%level+1
     do axis=1,3
-      mask(2*axis-1)=faces(2*axis-1)=='inflow'.and.origin(axis,node)==0
-      mask(2*axis)=faces(2*axis)=='inflow'.and. &
+      touched(2*axis-1)=origin(axis,node)==0
+      touched(2*axis)= &
         origin(axis,node)+int(tree%nodes(node)%shape(axis),int64)==domain(axis,level)
     end do
+    mask=touched.and.faces=='inflow'
+    if (present(no_slip_mask)) no_slip_mask=touched.and.(faces=='no_slip_wall'.or.faces=='isothermal_wall')
   end subroutine amr_tree_inflow_faces_3d
 
   ! Packed ghosts hold conserved components followed by one temperature guess.

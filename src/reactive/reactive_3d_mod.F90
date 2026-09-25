@@ -291,7 +291,7 @@ contains
   ! The pelec solver uses separate primitive pressure work; other solvers use
   ! conservative/EOS correction. An explicit override supports kernel audits.
   subroutine compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),dt
     logical, intent(in) :: steepening,flattening
@@ -299,6 +299,8 @@ contains
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
     logical, optional, intent(in) :: pressure_tracing
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: viscosity
     logical :: trace_pressure
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
     character(len=32) :: faces(6)
@@ -315,14 +317,17 @@ contains
     if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
     trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
-    if (trace_pressure) then
+    viscosity=merge(.1_dp,0._dp,trace_pressure)
+    if (present(difmag)) viscosity=difmag
+    if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
+    if (trace_pressure.or.viscosity>0) then
       if (any(shape(state)/=[nv,n])) return
       faces='periodic'
       allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),gt(n(1)+8,n(2)+8,n(3)+8))
       call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,ghost_width=4)
       if (.not.valid) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,steepening,flattening,solver, &
-        xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=.true.)
+        xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=trace_pressure,difmag=viscosity)
       return
     end if
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
@@ -412,7 +417,7 @@ contains
   ! Four supplied ghost layers; physical cells are 1:n. No periodic wrapping
   ! or ghost filling occurs here. Corner solves are bounded to their consumers.
   subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces,difmag,no_slip_faces)
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
@@ -420,7 +425,10 @@ contains
     character(len=*), intent(in) :: solver
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: pressure_tracing,inflow_faces(6)
+    logical, optional, intent(in) :: pressure_tracing,inflow_faces(6),no_slip_faces(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: viscosity
+    logical :: walls(6)
     real(dp), allocatable :: cell_flat(:,:,:)
     real(dp) :: pressure_pencil(-3:3),velocity_pencil(-3:3)
     logical :: trace_pressure
@@ -439,6 +447,11 @@ contains
     trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
     if (trace_pressure.and.solver/="pelec") return
+    viscosity=merge(.1_dp,0._dp,trace_pressure)
+    if (present(difmag)) viscosity=difmag
+    if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
+    walls=.false.
+    if (present(no_slip_faces)) walls=no_slip_faces
     nv=reactive_nvar(size(species))
     ! Supplied halos support a single owned cell on an MPI slab.
     if (any(n<1)) return
@@ -564,6 +577,12 @@ contains
     end do
     if (trace_pressure.and.present(inflow_faces)) then
       call replace_inflow_fluxes(valid)
+      if (.not.valid) return
+    end if
+    if (viscosity>0) then
+      call adjust_reactive_artificial_viscosity_3d(ghost(:,0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+        n,spacing,viscosity,walls,final(:,0:n(1),1:n(2),1:n(3),1), &
+        final(:,1:n(1),0:n(2),1:n(3),2),final(:,1:n(1),1:n(2),0:n(3),3),valid)
       if (.not.valid) return
     end if
     xflux=final(:,0:n(1),1:n(2),1:n(3),1)
@@ -2049,7 +2068,8 @@ contains
       call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,success,ghost_width=4)
       if (.not.success) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,.false.,.true., &
-        riemann_solver,fx,fy,fz,theta,success,inflow_faces=faces=='inflow')
+        riemann_solver,fx,fy,fz,theta,success,inflow_faces=faces=='inflow', &
+        no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall')
       if (.not.success) return
       success=.false.
       candidate=state

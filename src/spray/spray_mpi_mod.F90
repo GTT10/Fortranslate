@@ -1248,7 +1248,7 @@ contains
   contains
     subroutine ppm_step()
       real(dp) :: theta
-      logical :: inflow_mask(6)
+      logical :: inflow_mask(6),wall_mask(6)
       ppm_faces='periodic'
       if(present(faces)) ppm_faces=faces
       call fill_mpi_les_boundary_ghosts_3d(comm,species,gas,temp,cells,ppm_faces,4,halo,halo_t,valid, &
@@ -1257,11 +1257,14 @@ contains
       call agree()
       if (.not.agreed) return
       allocate(fx(nvar,0:nx,ny,nz),fy(nvar,nx,0:ny,nz),fz(nvar,nx,ny,0:nz))
+      wall_mask=ppm_faces=='no_slip_wall'.or.ppm_faces=='isothermal_wall'
+      wall_mask(1)=wall_mask(1).and.rank==0
+      wall_mask(2)=wall_mask(2).and.rank==nranks-1
       inflow_mask=ppm_faces=='inflow'
       inflow_mask(1)=inflow_mask(1).and.rank==0
       inflow_mask(2)=inflow_mask(2).and.rank==nranks-1
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,halo_t,extent,spacing,dt,.false.,.true., &
-        solver,fx,fy,fz,theta,valid,inflow_faces=inflow_mask)
+        solver,fx,fy,fz,theta,valid,inflow_faces=inflow_mask,no_slip_faces=wall_mask)
       call agree()
       if (.not.agreed) return
       do k=1,nz
