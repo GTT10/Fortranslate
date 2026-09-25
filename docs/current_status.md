@@ -22,8 +22,11 @@ state correction across the seam
 ([checks](validation/eb-periodic-peer-flux-20260926.md)). Serial tree traversal
 now reconciles periodic peers and mirrors restricted fine transfers into the
 opposite coarse face. Common-step PCM and PLM/CTU hydro connect that path
-([checks](validation/eb-tree-periodic-flux-20260926.md)). Periodic recursive
-updates, transport and MPI time updates remain pending.
+([checks](validation/eb-tree-periodic-flux-20260926.md)). Serial common and
+recursive molecular transport and recursive hydro now forward periodic
+controls, including provisional endpoint correction before descendant time
+interpolation ([checks](validation/eb-tree-periodic-recursive-20260926.md)).
+Periodic MPI time updates and reacting-split qualification remain pending.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
