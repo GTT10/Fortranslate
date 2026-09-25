@@ -8,6 +8,7 @@ program test_spray_mpi_eb_reactive
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
+  use eb_reactive_patch_tree_3d_mod, only: build_eb_tree_extended_geometry_3d
   use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
@@ -21,7 +22,8 @@ program test_spray_mpi_eb_reactive
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: boundary(:),chemical(:)
   real(dp) :: theta
-  character(len=8) :: solver
+  character(len=16) :: solver,test_mode
+  logical :: recursive_steps
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
@@ -30,13 +32,17 @@ program test_spray_mpi_eb_reactive
   real(dp) :: rho,cp,e,amount
   type(amr_patch_3d) :: patch(1)
   type(amr_patch_tree_3d) :: tree
-  type(eb_geometry_3d) :: finest,g(2)
+  type(eb_geometry_3d) :: finest,g(2),extended_finest
+  type(eb_geometry_3d), allocatable :: extended(:)
+  real(dp) :: extended_phi(0:32,0:32,0:32)
   type(amr_tree_state_3d) :: field,temp,saved,saved_t
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: positions(:,:),feedback(:,:),cell(:),primitive(:),y(:),total(:),parent(:),fine(:)
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=.001_dp,t,sound,r,volume
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
   logical :: ok
+  call get_command_argument(1,test_mode)
+  recursive_steps=test_mode=='ctu-subcycle'
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -55,6 +61,16 @@ program test_spray_mpi_eb_reactive
   call require(ok,'root geometry')
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
+  if(index(test_mode,'ctu')==1) then
+    do j=0,32
+      extended_phi(:,j,:)=real(max(0,min(8,j-12)),dp)*.0005_dp-.00125_dp
+    end do
+    call build_level_set_eb_geometry_3d(extended_phi,[-.006_dp,-.006_dp,-.006_dp], &
+      [.010_dp,.010_dp,.010_dp],extended_finest,ok)
+    call require(ok,'extended nodal geometry')
+    call build_eb_tree_extended_geometry_3d(tree,g,extended_finest,extended,ok)
+    call require(ok,'CTU patch geometry')
+  end if
   call load_h2o2_full_thermo(species,ok)
   call require(ok,'thermo');nv=reactive_nvar(size(species))
   allocate(cell(nv),primitive(nv),y(size(species)),total(nv),parent(nv),fine(nv))
@@ -117,6 +133,7 @@ program test_spray_mpi_eb_reactive
   end do
   call require(all(boundary==43).and.all(chemical==44).and.theta==45,'gas diagnostics rollback')
   solver='hllc'
+  if(index(test_mode,'ctu')==1) solver='pelec'
   call inventory(before)
   call advance()
   call require(ok.and.steps>1,'distributed EB interval')
@@ -136,7 +153,8 @@ contains
   subroutine advance()
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
-      .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit')
+      .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &
+      subcycling=recursive_steps,extended_geometry=extended)
   end subroutine
   subroutine inventory(result)
     real(dp), intent(out) :: result(:)

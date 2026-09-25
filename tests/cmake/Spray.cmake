@@ -957,3 +957,22 @@ if(TARGET pelef_mpi_spray_3d)
         --work-dir "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_plm_difmag_restart")
     set_tests_properties(spray_mpi_plm_difmag_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
 endif()
+
+if(TARGET test_spray_mpi_eb_reactive)
+  foreach(ctu_mode IN ITEMS ctu ctu-subcycle)
+    add_test(NAME spray_mpi_eb_reactive_${ctu_mode}
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 4 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} ${ctu_mode})
+    set_tests_properties(spray_mpi_eb_reactive_${ctu_mode} PROPERTIES
+      TIMEOUT 180 PROCESSORS 4 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()
+
+if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
+  add_test(NAME spray_mpi_eb_ctu_restart
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
+      --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_ctu_restart"
+      --ctu --restart)
+  set_tests_properties(spray_mpi_eb_ctu_restart PROPERTIES TIMEOUT 600 PROCESSORS 4 LABELS "spray;mpi;eb")
+endif()

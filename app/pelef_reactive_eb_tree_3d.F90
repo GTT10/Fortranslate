@@ -195,9 +195,6 @@ program pelef_reactive_eb_tree_3d
   if(min(regular_density,cut_density,initial_pressure)<=0) error stop 'Nonpositive initial state'
   if(hydro_method/='pcm'.and.hydro_method/='plm_ctu') error stop 'Invalid hydro method'
   if(hydro_method=='plm_ctu'.and.riemann_solver/='pelec') error stop 'CTU requires pelec solver'
-#ifdef PELEF_MPI_EB_SPRAY
-  if(hydro_method/='pcm') error stop 'CTU is not connected to EB spray'
-#endif
   if (.not.ieee_is_finite(difmag).or.difmag<0) error stop 'Invalid artificial-viscosity coefficient'
   if (.not.all(ieee_is_finite(inflow_mach)).or.any(inflow_mach>100)) error stop 'Invalid inlet Mach'
   if (.not.all(ieee_is_finite(inflow_temperature))) error stop 'Invalid inlet temperature'
@@ -445,7 +442,8 @@ program pelef_reactive_eb_tree_3d
         films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -455,7 +453,8 @@ program pelef_reactive_eb_tree_3d
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
