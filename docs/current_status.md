@@ -14,6 +14,9 @@ external forcing through `time_integrator='sdc'`
 ([checks](validation/sdc-app-20260926.md)). Molecular transport now participates
 as an old/new source family ([checks](validation/sdc-transport-20260926.md)).
 Chemistry and broader boundary/AMR/MPI integration for SDC remain open.
+The variable-density forced chemistry RHS is now available as a library
+building block ([checks](validation/forced-reactor-rhs-20260926.md)); its time
+integrator and SDC connection remain open.
 
 Regular fixed/selected gas applications now accept force-per-volume input
 `external_forcing(3)` with PPM/PeleC, time-centered work and separate source
