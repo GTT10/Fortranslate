@@ -24,7 +24,8 @@ contains
   ! from the target resolution's extended geometry; coarse metric substitution is forbidden.
   subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction,halo_width,target_volume_fraction)
+      inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction,halo_width,target_volume_fraction, &
+      boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -53,8 +54,11 @@ contains
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
     integer :: i,j,k,donor,source(3),count,q,width
-    real(dp) :: controls(21),low_controls(21),high_controls(21),inlet(reactive_nvar(size(species)))
+    real(dp) :: controls(29+6*reactive_nvar(size(species)))
+    real(dp) :: low_controls(size(controls)),high_controls(size(controls)),inlet(reactive_nvar(size(species)))
     real(dp) :: inlet_t
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
     integer :: inlet_face
     logical :: valid,ready,full_halo
     ok=.false.;nv=reactive_nvar(size(species))
@@ -64,6 +68,23 @@ contains
     ! Agree on finite inlet controls before any rank starts donor exchange.
     controls(:6)=-1;controls(7:)=0;valid=.true.
     if (present(inflow_temperature).or.present(inflow_pressure)) valid=present(inflow_mach)
+    if(present(boundary_faces)) then
+      valid=.not.present(inflow_mach).and..not.present(inflow_pressure)
+      valid=valid.and.all(boundary_faces=='inflow'.or.boundary_faces=='outflow')
+      controls(22)=1
+      controls(23:28)=merge(1._dp,0._dp,boundary_faces=='inflow')
+      if(any(boundary_faces=='inflow')) valid=valid.and.present(inflow_state).and.present(inflow_temperature)
+    else
+      valid=valid.and..not.present(inflow_state)
+    end if
+    if(present(inflow_state)) then
+      controls(29)=1
+      if(all(shape(inflow_state)==[nv,6])) then
+        controls(30:)=reshape(inflow_state,[6*nv])
+      else
+        valid=.false.
+      end if
+    end if
     if (present(inflow_mach)) controls(:6)=inflow_mach
     if (present(inflow_temperature)) controls(7:12)=inflow_temperature
     if (present(inflow_pressure)) controls(13:18)=inflow_pressure
@@ -80,9 +101,9 @@ contains
     valid=valid.and..not.any(controls(7:12)<=0.and.controls(:6)>=0)
     call agree(valid,ready)
     if (.not.ready) return
-    call MPI_Allreduce(controls,low_controls,21,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low_controls,size(controls),MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high_controls,21,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high_controls,size(controls),MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low_controls/=high_controls)) return
     ! Average only a private owner-local snapshot. This also validates geometry,
@@ -355,15 +376,22 @@ contains
       do axis=1,3
         if(full_halo) then
           if(inlet_face/=0) cycle
-          if(global(axis)<0.and.controls(2*axis-1)>=0) inlet_face=2*axis-1
-          if(global(axis)>=domain(axis,level).and.controls(2*axis)>=0) inlet_face=2*axis
+          if(global(axis)<0.and.(controls(2*axis-1)>=0.or.controls(22+2*axis-1)>0)) inlet_face=2*axis-1
+          if(global(axis)>=domain(axis,level).and.(controls(2*axis)>=0.or.controls(22+2*axis)>0)) inlet_face=2*axis
         else
           if (global(axis)<0) inlet_face=2*axis-1
           if (global(axis)>=domain(axis,level)) inlet_face=2*axis
         end if
       end do
       if (inlet_face>0) then
-        if (controls(inlet_face)>=0) then
+        if(controls(22+inlet_face)>0) then
+          call reactive_conserved_to_primitive(species,inflow_state(:,inlet_face),controls(6+inlet_face), &
+            primitive,recovered,speed,ready)
+          if(.not.ready) then
+            valid=.false.;cycle
+          end if
+          values(:,q)=inflow_state(:,inlet_face)
+        else if (controls(inlet_face)>=0) then
           if (controls(12+inlet_face)>0) then
             call mach_inlet_ghost_3d(species,values(:,q),recovered,inlet_face,controls(6+inlet_face), &
               controls(inlet_face),inlet,inlet_t,ready,inlet_pressure=controls(12+inlet_face))
