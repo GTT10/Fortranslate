@@ -21,6 +21,9 @@ program test_reactive_pelec_riemann
   real(dp) :: interface_density, interface_velocity, interface_pressure
   real(dp) :: velocity, transverse_y, transverse_z
   logical :: ok
+  integer :: status,k
+  character(len=32) :: mode
+  real(dp) :: cav
 
   call load_h2o2_elementary_thermo(species, ok)
   if (.not. ok) error stop "Failed to load PeleC Riemann thermodynamics"
@@ -29,6 +32,30 @@ program test_reactive_pelec_riemann
   allocate(bad_state(reactive_nvar(7)))
   allocate(flux(reactive_nvar(7)), selected_flux(reactive_nvar(7)))
   allocate(expected(reactive_nvar(7)))
+
+  if (command_argument_count()>0) then
+    call get_command_argument(1,mode)
+    select case(trim(mode))
+    case('--thermo-stream')
+      do k=1,size(species)
+        write(*,'(16(es26.17e3,1x))') species(k)%molecular_weight,species(k)%temperature_mid, &
+          species(k)%low_coefficients,species(k)%high_coefficients
+      end do
+    case('--reference-stream')
+      do
+        read(*,*,iostat=status) ql,qr,cav
+        if (status<0) exit
+        if (status/=0) error stop 'invalid reference input'
+        call reactive_pelec_primitive_flux_x(species,ql,qr,cav,flux,ok, &
+          interface_velocity=interface_velocity,interface_pressure=interface_pressure)
+        if (.not.ok) error stop 'inadmissible reference state'
+        write(*,'(14(es26.17e3,1x))') flux,interface_velocity,interface_pressure
+      end do
+    case default
+      error stop 'unknown mode'
+    end select
+    stop
+  end if
 
   xl = [0.29570_dp, 1.0e-5_dp, 1.0e-5_dp, 0.14784_dp, &
     1.0e-5_dp, 0.0_dp, 0.55643_dp]
