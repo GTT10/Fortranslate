@@ -31,26 +31,16 @@ admissibility limits still apply.
 Specified-state and Mach inflow now reach SDC hydro and molecular transport
 ([checks](validation/sdc-inflow-20260926.md)). Slip, no-slip and isothermal
 walls now connect reflection, viscous stresses and heat transport
-([checks](validation/sdc-walls-20260926.md)); AMR/MPI/EB SDC remain open.
-SDC now exports time-averaged hydro/transport face fluxes for future AMR
-conservation correction ([checks](validation/sdc-flux-export-20260926.md)).
-Paired state/source halo callbacks now support caller-owned boundary data
-([checks](validation/sdc-halo-callbacks-20260926.md)); hierarchy coordination
-and MPI exchange remain open.
-New-time source estimates can now persist across caller-coordinated iterations
-([checks](validation/sdc-iteration-state-20260926.md)); this is a library
-prerequisite, not completed hierarchy synchronization.
-The transactional SDC reaction stage is now independently callable
-([checks](validation/sdc-reaction-stage-20260926.md)) for that coordination.
-The AMR patch-tree wrapper now executes this reaction stage transactionally
-across levels ([checks](validation/sdc-tree-reaction-20260926.md)); full
-hierarchy SDC stepping is still incomplete.
-The hierarchy hydro stage now fills coarse/fine state/source halos and returns
-rates plus register-compatible fluxes
-([checks](validation/sdc-tree-hydro-20260926.md)).
-The hierarchy transport stage now returns rates and register-compatible fluxes
-([checks](validation/sdc-tree-transport-20260926.md)); the combined SDC loop
-remains open.
+([checks](validation/sdc-walls-20260926.md)).
+
+The serial AMR library now runs common-step SDC across the whole patch tree,
+including hydro, molecular transport, forcing, reactions, reflux and final
+restriction ([checks](validation/sdc-tree-loop-20260926.md)). All patches finish
+one stage before the next begins. Face-flux export and caller-owned halo APIs
+remain available ([fluxes](validation/sdc-flux-export-20260926.md),
+[halos](validation/sdc-halo-callbacks-20260926.md)). AMR application routing,
+reaction-source restart, recursive SDC subcycling and MPI/EB SDC remain open.
+
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates

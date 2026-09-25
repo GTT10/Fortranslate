@@ -330,27 +330,12 @@ SDC prescribed outlet pressure now reaches hydro and transport
 inflow now share existing ghost and transport treatment in SDC
 ([checks](validation/sdc-inflow-20260926.md)). Slip, no-slip and isothermal
 wall dispatch now reaches SDC hydro and transport
-([checks](validation/sdc-walls-20260926.md)). Full-face hydro/transport fluxes
-are available for AMR flux registers
-([checks](validation/sdc-flux-export-20260926.md)); halo interpolation,
-reflux dispatch and AMR/MPI/EB SDC remain open. State/source halo callbacks now
-accept caller-owned neighbor and boundary data
-([checks](validation/sdc-halo-callbacks-20260926.md)); hierarchy synchronization
-and actual coarse/fine interpolation remain open. New-time source estimates
-can persist across caller-coordinated iterations
-([checks](validation/sdc-iteration-state-20260926.md)); a hierarchy stage driver
-is still required. The reaction stage is independently callable
-([checks](validation/sdc-reaction-stage-20260926.md)) so hierarchy drivers can
-separate source evaluation from reaction integration. A transactional AMR
-patch-tree reaction wrapper is now available
-([checks](validation/sdc-tree-reaction-20260926.md)); the full hierarchy
-hydro/source/reflux driver remains open. A hierarchy hydro stage now supplies
-coarse/fine-interpolated CTU rates and integrated fluxes
-([checks](validation/sdc-tree-hydro-20260926.md)); full source/transport and
-reaction-stage orchestration remains open. The hierarchy transport evaluator
-now exposes rates and integrated face fluxes without premature reflux
-([checks](validation/sdc-tree-transport-20260926.md)); combining all stages into
-the SDC hierarchy loop remains open. Physical
+([checks](validation/sdc-walls-20260926.md)). Full-face hydro/transport fluxes,
+coarse/fine halo interpolation and separate reaction/transport stages now feed
+a common-step serial AMR SDC loop with final reflux/restriction
+([checks](validation/sdc-tree-loop-20260926.md)). Remaining SDC work includes
+AMR application routing, persistent reaction-source restart, recursive
+subcycling, MPI/EB integration and broader qualification. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
