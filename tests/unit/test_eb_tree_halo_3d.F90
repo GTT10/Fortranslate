@@ -21,7 +21,8 @@ program test_eb_tree_halo_3d
   real(dp), allocatable :: inlet(:,:),wide(:,:,:,:),wide_t(:,:,:),vf(:,:,:),target_vf(:,:,:)
   real(dp) :: inlet_t(6)
   character(len=16) :: faces(6)
-  integer :: i,j,k
+  integer :: i,j,k,ix,iy,sx,sy
+  real(dp), allocatable :: reflected(:)
   real(dp) :: expected_fraction
   integer :: nv,node,endpoint
   logical :: ok
@@ -180,6 +181,42 @@ program test_eb_tree_halo_3d
   call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
     ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
   call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'incompatible periodic EB faces')
+  do node=1,size(tree%nodes)
+    tree%nodes(node)%state(2,:,:,:)=tree%nodes(node)%state(1,:,:,:)
+    tree%nodes(node)%state(3,:,:,:)=2*tree%nodes(node)%state(1,:,:,:)
+    tree%nodes(node)%state(4,:,:,:)=3*tree%nodes(node)%state(1,:,:,:)
+    tree%nodes(node)%state(5,:,:,:)=tree%nodes(node)%state(5,:,:,:)+7*tree%nodes(node)%state(1,:,:,:)
+  end do
+  start=tree
+  call average_down_reactive_eb_tree_3d(species,start,ok)
+  call require(ok,'wall donor restriction')
+  allocate(reflected(nv))
+  faces='outflow';faces(1:2)='slip_wall';faces(3:4)='no_slip_wall'
+  call fill_reactive_eb_tree_halo_3d(species,tree,2,ghost,gt,ok,boundary_faces=faces)
+  reflected=start%nodes(2)%state(:,1,2,2);reflected(2)=-reflected(2)
+  call require(ok.and.all(ghost(:,0,2,2)==reflected),'one-layer slip wall reflection')
+  reflected=start%nodes(2)%state(:,2,1,2);reflected(2:4)=-reflected(2:4)
+  call require(all(ghost(:,2,0,2)==reflected),'one-layer no-slip wall reflection')
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
+  call require(ok,'wide mixed wall halo')
+  do j=0,15
+  do i=0,15
+    ix=modulo(i-6,8);iy=modulo(j-6,8)
+    sx=1;sy=1
+    if(ix>=4) sx=-1
+    if(iy>=4) sy=-1
+    ix=min(ix,7-ix)+1;iy=min(iy,7-iy)+1
+    reflected=start%nodes(1)%state(:,ix,iy,4)
+    reflected(2:4)=reflected(2:4)*real([sx*sy,sy,sy],dp)
+    call require(all(wide(:,i,j,9)==reflected),'six-layer mixed wall corner parity')
+    call require(wide_t(i,j,9)>0,'wall donor temperature')
+  end do
+  end do
+  faces(1)='isothermal_wall';wide=17;wide_t=19;vf=23
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
+    ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
+  call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'unsupported thermal wall rollback')
   print *, 'test_eb_tree_halo_3d: PASS'
 contains
   subroutine require(condition,label)

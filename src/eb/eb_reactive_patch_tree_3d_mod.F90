@@ -1317,7 +1317,7 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
     character(len=16) :: faces(6)
-    integer :: inlet_face
+    integer :: inlet_face,momentum_sign(3)
     logical, allocatable :: filled(:,:,:)
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
@@ -1337,7 +1337,8 @@ contains
     if(width>1.and.(.not.present(ghost_volume_fraction).or..not.present(target_volume_fraction))) return
     faces='outflow'
     if(present(boundary_faces)) then
-      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) return
+      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic'.and. &
+        boundary_faces/='slip_wall'.and.boundary_faces/='no_slip_wall')) return
       if(present(inflow_mach).or.present(inflow_pressure)) return
       faces=boundary_faces
       if(any(faces=='inflow')) then
@@ -1471,6 +1472,8 @@ contains
         if(physical) then
           call prescribed_inlet(2*axis-1+side,valid)
           if(.not.valid) return
+          if(faces(2*axis-1+side)=='slip_wall') value(1+axis)=-value(1+axis)
+          if(faces(2*axis-1+side)=='no_slip_wall') value(2:4)=-value(2:4)
         end if
         candidate(:,i,j,k)=value
         temps(i,j,k)=recovered
@@ -1495,9 +1498,7 @@ contains
           if(side<0) cycle
           if((mach(2*axis-1+side)>=0.or.faces(2*axis-1+side)=='inflow').and.inlet_face==0) inlet_face=2*axis-1+side
         end do
-        do axis=1,3
-          if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
-        end do
+        call map_wall_donor(global,momentum_sign)
         global=max(0_int64,min(domain(:,level)-1,global))
         donor=0
         if(all(index>=1).and.all(index<=n)) then
@@ -1521,7 +1522,9 @@ contains
         else if(allocated(snapshot%nodes(target)%geometry%halo_volume_fraction)) then
           local=global-origin(:,target)+1
           do axis=1,3
-            if(faces(2*axis-1)=='periodic') local(axis)=index(axis)
+            if(faces(2*axis-1)=='periodic'.or.faces(2*axis-1)=='slip_wall'.or. &
+              faces(2*axis-1)=='no_slip_wall'.or.faces(2*axis)=='slip_wall'.or. &
+              faces(2*axis)=='no_slip_wall') local(axis)=index(axis)
           end do
           if(snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))>=0) &
             volumes(i,j,k)=snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))
@@ -1559,6 +1562,7 @@ contains
           value=inlet_value;recovered=inlet_t
           end if
         end if
+        value(2:4)=value(2:4)*real(momentum_sign,dp)
         candidate(:,i,j,k)=value;temps(i,j,k)=recovered
       end do
       end do
@@ -1579,6 +1583,33 @@ contains
     if(present(ghost_volume_fraction)) ghost_volume_fraction=volumes
     ok=.true.
   contains
+    subroutine map_wall_donor(position,signs)
+      integer(int64), intent(inout) :: position(3)
+      integer, intent(out) :: signs(3)
+      integer :: direction,face
+      signs=1
+      do direction=1,3
+        if(faces(2*direction-1)=='periodic') then
+          position(direction)=modulo(position(direction),domain(direction,level))
+          cycle
+        end if
+        do while(position(direction)<0.or.position(direction)>=domain(direction,level))
+          face=2*direction
+          if(position(direction)<0) face=face-1
+          if(faces(face)/='slip_wall'.and.faces(face)/='no_slip_wall') exit
+          if(faces(face)=='no_slip_wall') then
+            signs=-signs
+          else
+            signs(direction)=-signs(direction)
+          end if
+          if(position(direction)<0) then
+            position(direction)=-position(direction)-1
+          else
+            position(direction)=2*domain(direction,level)-position(direction)-1
+          end if
+        end do
+      end do
+    end subroutine
     subroutine prescribed_inlet(face,accepted)
       integer, intent(in) :: face
       logical, intent(out) :: accepted
