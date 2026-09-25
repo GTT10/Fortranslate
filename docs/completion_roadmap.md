@@ -145,8 +145,11 @@ reaction/transport and bind checkpoint continuation to the hydro method
 ([checks](validation/eb-ctu-application-20260925.md)). Serial/MPI patch-tree
 halo APIs now accept six-layer target-resolution metrics with peer/ancestor
 exchange and temporal interpolation ([checks](validation/eb-wide-halo-20260925.md)).
-Extended patch geometry preparation, CTU tree stepping/reflux and other physical
-boundary halo preparation remain before claiming EB Godunov parity.
+A conservative extended-geometry builder and serial common-interval CTU
+patch stepping now connect peer synchronization and coarse/fine reflux
+([checks](validation/eb-tree-ctu-20260925.md)). Recursive/MPI CTU stepping,
+application selection and other physical boundary halo preparation remain
+before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
