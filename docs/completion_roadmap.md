@@ -190,8 +190,11 @@ normal-projection/full-CTU parity and broader qualification remain open.
 The reference also adjusts final fluxes with compressive artificial viscosity
 (default `difmag=0.1`). A regular-cell nodal-divergence/flux-correction API now
 implements this step with no-slip tangential exclusions and species-flux
-normalization ([checks](validation/artificial-viscosity-20260925.md)); application
-dispatch, coefficient input and boundary-mask propagation remain to be connected. Regular MPI spray
+normalization ([checks](validation/artificial-viscosity-20260925.md)). Periodic and
+halo CTU now apply coefficient 0.1 by default with the `pelec` pressure policy;
+regular, AMR, tree and MPI spray callers provide physical no-slip masks
+([checks](validation/ppm-viscosity-dispatch-20260925.md)). The CTU API accepts an
+explicit coefficient; namelist input and its restart identity remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
