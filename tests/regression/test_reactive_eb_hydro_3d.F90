@@ -71,6 +71,7 @@ program test_reactive_eb_hydro_3d
   call verify_uniform_tangent_update("z", "pelec", &
     [18.0_dp, -11.0_dp, 0.0_dp])
   call verify_small_cell_hydro_relief()
+  call verify_viscosity()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -251,6 +252,51 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+
+  subroutine verify_viscosity()
+    real(dp), allocatable :: base(:,:,:,:),rhs(:,:,:,:),saved(:,:,:,:),saved_t(:,:,:)
+    real(dp), parameter :: step=1e-8_dp
+    call build_axis_plane_eb_geometry_3d(nx,ny,nz,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
+      'x',.37_dp,geometry,ok)
+    call require(ok,'viscosity geometry')
+    state=0;temperature=0
+    do k=1,nz
+    do j=1,ny
+    do i=1,nx
+      if(geometry%volume_fraction(i,j,k)==0) cycle
+      call build_cell_state(.31_dp+.001_dp*i,[-real(i,dp),-2._dp*j,-3._dp*k], &
+        state_cell,base_temperature,sound_speed)
+      state(:,i,j,k)=state_cell;temperature(i,j,k)=base_temperature
+    end do
+    end do
+    end do
+    saved=state;saved_t=temperature
+    call reactive_eb_outflow_riemann_fluxes_3d(species,state,temperature,geometry,'pelec', &
+      x_flux,y_flux,z_flux,ok,difmag=0._dp)
+    call require(ok,'zero EB coefficient')
+    base=x_flux
+    call reactive_eb_outflow_riemann_fluxes_3d(species,state,temperature,geometry,'pelec', &
+      x_flux,y_flux,z_flux,ok,difmag=.037_dp)
+    call require(ok.and.any(x_flux/=base),'EB viscosity changes open flux')
+    call require(all(x_flux(:,0:3,:,:)==0),'EB viscosity preserves closed flux')
+    allocate(rhs,mold=state)
+    call reactive_eb_flux_divergence_3d(species,state,temperature,geometry,x_flux,y_flux,z_flux,rhs,ok)
+    call require(ok,'corrected EB divergence')
+    call advance_reactive_eb_euler_3d(species,state,temperature,geometry,'pelec',step,new_state,new_temperature,ok, &
+      difmag=.037_dp)
+    call require(ok,'EB viscosity Euler step')
+    call require(maxval(abs(new_state-(state+step*rhs))/max(1._dp,abs(new_state)))<2e-14_dp, &
+      'Euler uses corrected intensive flux with geometry divergence')
+    call advance_reactive_eb_redistributed_euler_3d(species,state,temperature,geometry,'pelec', &
+      step,new_state,new_temperature,ok,difmag=.037_dp)
+    call require(ok,'EB viscosity flux redistribution')
+    call advance_reactive_eb_state_redistributed_euler_3d(species,state,temperature,geometry,'pelec', &
+      step,new_state,new_temperature,ok,difmag=.037_dp)
+    call require(ok,'EB viscosity state redistribution')
+    call advance_reactive_eb_euler_3d(species,state,temperature,geometry,'pelec',step,new_state,new_temperature,ok, &
+      difmag=-1._dp)
+    call require(.not.ok.and.all(new_state==saved).and.all(new_temperature==saved_t),'negative EB coefficient rollback')
+  end subroutine verify_viscosity
 
   subroutine verify_small_cell_hydro_relief()
     real(dp), allocatable :: raw_rhs(:, :, :, :)

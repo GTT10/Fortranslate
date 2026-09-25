@@ -1,6 +1,7 @@
 module eb_reactive_hydro_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use reactive_3d_mod, only: adjust_reactive_artificial_viscosity_3d
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
@@ -31,7 +32,7 @@ contains
 
   subroutine reactive_eb_outflow_riemann_fluxes_3d( &
       species, state, temperature, geometry, solver, x_flux, y_flux, &
-      z_flux, ok, ghost_state, ghost_temperature)
+      z_flux, ok, ghost_state, ghost_temperature, difmag, ghost_volume_fraction, no_slip_faces)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -41,9 +42,16 @@ contains
     real(dp), intent(out) :: z_flux(:, :, :, 0:)
     logical, intent(out) :: ok
     ! Optional face halo, indexed 0:n+1 in each spatial direction. Only open
-    ! boundary-face donors are read; interior, edge and corner slots are unused.
+    ! boundary-face donors are read for zero/omitted viscosity. Positive difmag
+    ! also needs edge/corner state donors and a matching volume-fraction halo.
     ! With no halo, retain the historical extrapolated-outflow boundary states.
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), optional, intent(in) :: difmag,ghost_volume_fraction(0:,0:,0:)
+    logical, optional, intent(in) :: no_slip_faces(6)
+    real(dp), allocatable :: halo(:,:,:,:),vf(:,:,:)
+    real(dp) :: coefficient
+    logical :: walls(6)
+    integer :: n(3),q(3)
     real(dp), allocatable :: left_state(:),right_state(:)
     real(dp) :: left_temperature,right_temperature
 
@@ -79,6 +87,18 @@ contains
     if (present(ghost_state)) then
       if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
       if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+    end if
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    n=[geometry%nx,geometry%ny,geometry%nz]
+    if(coefficient>0) then
+      ! Positive viscosity needs a complete corner halo, not just face donors.
+      if(present(ghost_state).neqv.present(ghost_volume_fraction)) return
+      if(present(ghost_volume_fraction)) then
+        if(any(shape(ghost_volume_fraction)/=n+2)) return
+        if(any(ghost_volume_fraction(1:n(1),1:n(2),1:n(3))/=geometry%volume_fraction)) return
+      end if
     end if
     allocate(left_state(nvar),right_state(nvar))
 
@@ -176,6 +196,30 @@ contains
         any(.not. ieee_is_finite(candidate_y)) .or. &
         any(.not. ieee_is_finite(candidate_z))) return
 
+    if(coefficient>0) then
+      allocate(halo(nvar,0:n(1)+1,0:n(2)+1,0:n(3)+1),vf(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      if(present(ghost_state)) then
+        halo=ghost_state;vf=ghost_volume_fraction
+      else
+        do k=0,n(3)+1
+        do j=0,n(2)+1
+        do i=0,n(1)+1
+          q=max(1,min(n,[i,j,k]))
+          halo(:,i,j,k)=state(:,q(1),q(2),q(3))
+          vf(i,j,k)=geometry%volume_fraction(q(1),q(2),q(3))
+        end do
+        end do
+        end do
+      end if
+      halo(:,1:n(1),1:n(2),1:n(3))=state
+      walls=.false.
+      if(present(no_slip_faces)) walls=no_slip_faces
+      call adjust_reactive_artificial_viscosity_3d(halo,n,[geometry%dx,geometry%dy,geometry%dz], &
+        coefficient,walls,candidate_x,candidate_y,candidate_z,face_ok,vf, &
+        geometry%x_face_fraction>0,geometry%y_face_fraction>0,geometry%z_face_fraction>0)
+      if(.not.face_ok) return
+    end if
+
     x_flux = candidate_x
     y_flux = candidate_y
     z_flux = candidate_z
@@ -183,7 +227,8 @@ contains
   end subroutine reactive_eb_outflow_riemann_fluxes_3d
 
   subroutine build_reactive_eb_conservative_rhs_3d( &
-      species, state, temperature, geometry, solver, rhs, ok, ghost_state, ghost_temperature, flux)
+      species, state, temperature, geometry, solver, rhs, ok, ghost_state, ghost_temperature, flux, &
+      difmag, ghost_volume_fraction, no_slip_faces)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -191,6 +236,8 @@ contains
     real(dp), intent(out) :: rhs(:, :, :, :)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), optional, intent(in) :: difmag,ghost_volume_fraction(0:,0:,0:)
+    logical, optional, intent(in) :: no_slip_faces(6)
     type(eb_integrated_flux_3d), optional, intent(inout) :: flux
 
     real(dp), allocatable :: x_flux(:, :, :, :), y_flux(:, :, :, :)
@@ -213,7 +260,7 @@ contains
     allocate(z_flux(nvar, geometry%nx, geometry%ny, 0:geometry%nz))
     call reactive_eb_outflow_riemann_fluxes_3d( &
       species, state, temperature, geometry, solver, x_flux, y_flux, &
-      z_flux, local_ok, ghost_state, ghost_temperature)
+      z_flux, local_ok, ghost_state, ghost_temperature,difmag,ghost_volume_fraction,no_slip_faces)
     if (.not. local_ok) return
     call reactive_eb_flux_divergence_3d( &
       species, state, temperature, geometry, x_flux, y_flux, z_flux, &
@@ -230,7 +277,8 @@ contains
 
   subroutine advance_reactive_eb_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok, ghost_state, ghost_temperature, integrated_flux)
+      new_temperature, ok, ghost_state, ghost_temperature, integrated_flux, &
+      difmag, ghost_volume_fraction, no_slip_faces)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -240,6 +288,8 @@ contains
     real(dp), intent(out) :: new_temperature(:, :, :)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    real(dp), optional, intent(in) :: difmag,ghost_volume_fraction(0:,0:,0:)
+    logical, optional, intent(in) :: no_slip_faces(6)
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
     type(eb_integrated_flux_3d) :: flux
 
@@ -266,10 +316,12 @@ contains
     allocate(rhs(nvar, geometry%nx, geometry%ny, geometry%nz))
     if (present(integrated_flux)) then
       call build_reactive_eb_conservative_rhs_3d( &
-        species,state,temperature,geometry,solver,rhs,local_ok,ghost_state,ghost_temperature,flux)
+        species,state,temperature,geometry,solver,rhs,local_ok,ghost_state,ghost_temperature,flux, &
+        difmag,ghost_volume_fraction,no_slip_faces)
     else
       call build_reactive_eb_conservative_rhs_3d( &
-        species,state,temperature,geometry,solver,rhs,local_ok,ghost_state,ghost_temperature)
+        species,state,temperature,geometry,solver,rhs,local_ok,ghost_state,ghost_temperature, &
+        difmag=difmag,ghost_volume_fraction=ghost_volume_fraction,no_slip_faces=no_slip_faces)
     end if
     if (.not. local_ok) return
 
@@ -306,7 +358,7 @@ contains
 
   subroutine advance_reactive_eb_redistributed_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok, boundary_change, wall_change)
+      new_temperature, ok, boundary_change, wall_change, difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -315,6 +367,7 @@ contains
     real(dp), intent(out) :: new_state(:, :, :, :)
     real(dp), intent(out) :: new_temperature(:, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: difmag
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
     type(eb_integrated_flux_3d) :: flux
     real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
@@ -344,13 +397,13 @@ contains
     allocate(rhs(nvar, geometry%nx, geometry%ny, geometry%nz))
     if (present(boundary_change).or.present(wall_change)) then
       call build_reactive_eb_conservative_rhs_3d( &
-        species,state,temperature,geometry,solver,rhs,local_ok,flux=flux)
+        species,state,temperature,geometry,solver,rhs,local_ok,flux=flux,difmag=difmag)
       if (.not.local_ok) return
       call hydro_inventory_changes(species,state,temperature,geometry,dt,flux,boundary,wall,local_ok)
       if (.not.local_ok) return
     else
       call build_reactive_eb_conservative_rhs_3d( &
-        species,state,temperature,geometry,solver,rhs,local_ok)
+        species,state,temperature,geometry,solver,rhs,local_ok,difmag=difmag)
       if (.not.local_ok) return
     end if
 
@@ -365,7 +418,7 @@ contains
 
   subroutine advance_reactive_eb_state_redistributed_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok, target_volume_fraction, boundary_change, wall_change)
+      new_temperature, ok, target_volume_fraction, boundary_change, wall_change, difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -374,6 +427,7 @@ contains
     real(dp), intent(out) :: new_state(:, :, :, :)
     real(dp), intent(out) :: new_temperature(:, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: difmag
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
     type(eb_integrated_flux_3d) :: flux
     real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
@@ -405,13 +459,13 @@ contains
     allocate(rhs(nvar, geometry%nx, geometry%ny, geometry%nz))
     if (present(boundary_change).or.present(wall_change)) then
       call build_reactive_eb_conservative_rhs_3d( &
-        species,state,temperature,geometry,solver,rhs,local_ok,flux=flux)
+        species,state,temperature,geometry,solver,rhs,local_ok,flux=flux,difmag=difmag)
       if (.not.local_ok) return
       call hydro_inventory_changes(species,state,temperature,geometry,dt,flux,boundary,wall,local_ok)
       if (.not.local_ok) return
     else
       call build_reactive_eb_conservative_rhs_3d( &
-        species,state,temperature,geometry,solver,rhs,local_ok)
+        species,state,temperature,geometry,solver,rhs,local_ok,difmag=difmag)
       if (.not.local_ok) return
     end if
 
