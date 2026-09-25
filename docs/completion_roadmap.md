@@ -186,8 +186,9 @@ binding are connected ([checks](validation/eb-wall-application-20260925.md)).
 The periodic transport operator now wraps gradients and shares aperture-weighted
 seam fluxes and species limiter coefficients
 ([checks](validation/eb-periodic-transport-20260925.md)). Periodic configured geometry,
-coupled/application dispatch, independent inlet mixtures and spray/tree/MPI boundary
-input remain open.
+coupled gas dispatch and fixed/selected application restart are now connected
+([checks](validation/eb-periodic-application-20260925.md)). Independent inlet mixtures
+and spray/tree/MPI boundary input remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

@@ -35,8 +35,7 @@ and selected single-level gas executables support these inputs:
 Physical boundary inputs require `plm_ctu` and `pelec`. Ghost donors are rebuilt
 at every transport stage and hydro update. Open-face donor signal speeds and
 transport diffusivity limit the time step. Restart requires the same boundary
-labels and inlet data. Periodic transport remains unsupported;
-these inputs are not yet enabled in the spray or tree front ends.
+labels and inlet data. These inputs are not yet enabled in the spray or tree front ends.
 
 See the [inflow/restart checks](../../docs/validation/eb-inflow-application-20260925.md).
 
@@ -51,7 +50,19 @@ its existing model; these controls apply to the six Cartesian domain faces.
 
 Extended plane, extruded and nodal geometry reflects at fixed walls, including
 repeated reflection when the six-cell halo exceeds the physical grid width.
-Outflow/inflow faces retain extrapolated geometry. Moving walls and periodic
-transport remain outside this input path. These are numerical integration cases,
+Outflow/inflow faces retain extrapolated geometry. Moving walls remain outside
+this input path. These are numerical integration cases,
 not physical wall-flow validation. See the
 [wall application checks](../../docs/validation/eb-wall-application-20260925.md).
+
+## Periodic domain faces
+
+`plm_ctu_periodic.nml` pairs the lower/upper y and z faces as `periodic`, tangent
+to the plane cut. Specify both faces of each periodic direction. Geometry wraps
+at these faces, and the application checks matching apertures, face centroids and
+wrapped halo cell metrics. A cut plane with solid on one x face and fluid on the
+other cannot be periodic in x and is rejected before stepping.
+
+Periodic hydro and transport use the same labels; transport shares seam transfer
+and species limiter coefficients. Restart requires the same periodic pairs.
+See the [periodic application checks](../../docs/validation/eb-periodic-application-20260925.md).

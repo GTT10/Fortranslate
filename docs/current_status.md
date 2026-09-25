@@ -19,7 +19,9 @@ donor timestep bounds and boundary-bound restart are also connected for fixed an
 selected single-level gas applications
 ([checks](validation/eb-inflow-application-20260925.md)). Fixed domain-wall inputs also
 connect reflected geometry, thermal timestep limits and temperature-bound restart
-([checks](validation/eb-wall-application-20260925.md)).
+([checks](validation/eb-wall-application-20260925.md)). Paired periodic faces also connect
+wrapped geometry, coupled transport/CTU and changed-boundary restart rejection
+([checks](validation/eb-periodic-application-20260925.md)).
 MPI EB spray also forwards CTU through the gas/particle split, with common and
 recursive library checks and fixed-mechanism changed-rank application continuation
 ([evidence](validation/mpi-eb-spray-ctu-20260925.md)). Serial EB spray fixed/selected
