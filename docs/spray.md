@@ -859,7 +859,10 @@ to PPM checkpoint context, so automatic and explicit equivalent values can
 resume each other, while changed coefficients are rejected. PPM checkpoints
 from before this context addition are incompatible; the default PCM/PLM context
 is unchanged. See [input and restart checks](validation/difmag-spray-input-20260925.md).
-MPI and AMR spray coefficient input remains pending.
+Regular MPI spray also accepts `difmag` in `&mpi_spray`, checks collective
+agreement, and binds the resolved coefficient to restart context
+([checks](validation/difmag-mpi-spray-20260925.md)). AMR spray coefficient
+input remains pending.
 
 ## Build and run
 
