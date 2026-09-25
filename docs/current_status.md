@@ -36,8 +36,11 @@ and collective rollback checks
 ([checks](validation/mpi-eb-periodic-hydro-20260926.md)). MPI common/recursive
 transport and reacting splits also connect periodic synchronization, with
 serial agreement and collective rollback checks
-([checks](validation/mpi-eb-periodic-full-20260926.md)). Periodic tree
-application inputs remain pending.
+([checks](validation/mpi-eb-periodic-full-20260926.md)). Fixed/selected serial
+and MPI gas applications now accept paired periodic input, wrap geometry
+padding and retain boundary identity across scheduled regridding and changed-rank
+restart ([checks](validation/eb-tree-periodic-application-20260926.md)).
+MPI EB spray periodic input remains rejected pending particle coupling.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
