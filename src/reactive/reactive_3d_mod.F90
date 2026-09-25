@@ -16,7 +16,7 @@ module reactive_3d_mod
     reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d, &
     apply_reactive_transverse_correction_2d
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
-  use reactive_transport_3d_mod, only: advance_reactive_transport_3d
+  use reactive_transport_3d_mod, only: advance_reactive_transport_3d,reactive_transport_fluxes_3d
   implicit none
   private
 
@@ -58,7 +58,8 @@ contains
   ! Nonreacting periodic do_sdc_iteration. Source callbacks produce physical
   ! cell rates; the CTU wrapper supplies periodic source halos.
   subroutine advance_reactive_sdc_periodic_3d(species,state,temperature,spacing,dt,time,iterations, &
-      source_count,evaluate_sources,ok,difmag,external_force,source_change)
+      source_count,evaluate_sources,ok,difmag,external_force,source_change, &
+      transport,transport_flags,minimum_transport_theta)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -66,20 +67,32 @@ contains
     procedure(reactive_sdc_source_evaluator), optional :: evaluate_sources
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,external_force(3)
-    real(dp), optional, intent(out) :: source_change(:)
+    real(dp), optional, intent(out) :: source_change(:),minimum_transport_theta
+    type(gas_transport_species), optional, intent(in) :: transport(:)
+    logical, optional, intent(in) :: transport_flags(4)
+    logical :: flags(4)
+    real(dp) :: source_theta
+    real(dp), allocatable :: tx(:,:,:,:),ty(:,:,:,:),tz(:,:,:,:)
     real(dp), allocatable :: old_sources(:,:,:,:,:),new_sources(:,:,:,:,:),predictor(:,:,:,:),zero(:,:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),hydro(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: theta,inventory(size(state,1))
     integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    flags=.true.;source_theta=1
+    if(present(transport_flags)) flags=transport_flags
+    if(present(minimum_transport_theta)) minimum_transport_theta=1
+    if(present(transport)) then
+      if(present(evaluate_sources).or.size(transport)/=size(species)) return
+      allocate(tx,mold=state);allocate(ty,mold=state);allocate(tz,mold=state)
+    end if
     if(present(source_change)) then
       source_change=0
       if(size(source_change)/=nv) return
     end if
     if(present(evaluate_sources).eqv.present(external_force)) return
     if(present(external_force)) then
-      if(source_count/=1.or..not.all(ieee_is_finite(external_force))) return
+      if(source_count/=merge(2,1,present(transport)).or..not.all(ieee_is_finite(external_force))) return
     end if
     if(any(n<2).or.any(shape(state)/=[nv,n]).or.iterations<1.or.source_count<0) return
     if(.not.all(ieee_is_finite([spacing,dt,time]))) return
@@ -93,7 +106,7 @@ contains
     if(present(evaluate_sources)) then
       call evaluate_sources(state,ct,time,old_sources,valid)
     else
-      call compute_reactive_external_source_3d(state,external_force,old_sources(:,:,:,:,1),valid)
+      call builtin_sources(state,ct,old_sources,valid)
     end if
     if(.not.valid) return
     new_sources=old_sources
@@ -119,7 +132,7 @@ contains
       if(present(evaluate_sources)) then
         call evaluate_sources(candidate,ct,time+dt,new_sources,valid)
       else
-        call compute_reactive_external_source_3d(candidate,external_force,new_sources(:,:,:,:,1),valid)
+        call builtin_sources(candidate,ct,new_sources,valid)
       end if
       if(.not.valid) return
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
@@ -137,7 +150,23 @@ contains
     end do
     if(.not.all(ieee_is_finite(inventory))) return
     if(present(source_change)) source_change=inventory
+    if(present(minimum_transport_theta)) minimum_transport_theta=source_theta
     state=candidate;temperature=ct;ok=.true.
+  contains
+    subroutine builtin_sources(u,t,rates,good)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
+      real(dp), intent(out) :: rates(:,:,:,:,:)
+      logical, intent(out) :: good
+      real(dp) :: transport_theta
+      rates=0
+      call compute_reactive_external_source_3d(u,external_force,rates(:,:,:,:,1),good)
+      if(.not.good.or..not.present(transport)) return
+      call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
+        spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
+      if(.not.good) return
+      call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,2),good)
+      if(good) source_theta=min(source_theta,transport_theta)
+    end subroutine builtin_sources
   end subroutine advance_reactive_sdc_periodic_3d
 
   ! Pinned Advance.cpp::construct_Snew. Source-list order and new-before-old

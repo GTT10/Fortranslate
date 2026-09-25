@@ -1,0 +1,16 @@
+&reactive_3d
+time_integrator='sdc', sdc_iterations=3
+nx=4, ny=4, nz=4
+x_upper=.004,y_upper=.004,z_upper=.004
+final_time=1e-7, maximum_steps=100
+problem='reactive_hotspot'
+hotspot_center_x=.002,hotspot_center_y=.002,hotspot_center_z=.002,hotspot_width=.001
+reconstruction='characteristic_ppm', riemann_solver='pelec'
+thermo_model='full_h2o2'
+boundary_condition='periodic'
+chemistry_enabled=.false., transport_enabled=.true.
+initial_temperature=900, initial_pressure=300000
+initial_velocity_x=20, initial_velocity_y=10, initial_velocity_z=-5
+external_forcing=20000,-30000,40000
+output_file='sdc_transport_3d.csv'
+/

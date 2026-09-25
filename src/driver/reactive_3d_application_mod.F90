@@ -38,6 +38,7 @@ contains
     real(dp), intent(in) :: base_mole_fractions(:)
     character(len=*), intent(in), optional :: chemistry_integrator
 
+    type(gas_transport_species), allocatable :: sdc_transport(:)
     real(dp), allocatable :: x(:), y(:), z(:)
     real(dp), allocatable :: state(:, :, :, :), temperature(:, :, :)
     real(dp), allocatable :: initial_totals(:), final_totals(:), boundary_totals(:), step_boundary_change(:)
@@ -74,6 +75,7 @@ contains
     allocate(state(nvar, config%nx, config%ny, config%nz))
     allocate(temperature(config%nx, config%ny, config%nz))
     allocate(initial_totals(nvar), final_totals(nvar), boundary_totals(nvar), step_boundary_change(nvar))
+    if(config%time_integrator=='sdc'.and.config%transport_enabled) sdc_transport=transport
     boundary_totals=0.0_dp
     allocate(source_totals(nvar),step_source_change(nvar));source_totals=0
     if(any(config%external_forcing/=0)) external_force=config%external_forcing
@@ -243,8 +245,11 @@ contains
       if(config%time_integrator=='sdc') then
         step_boundary_change=0;step_transport_theta=1
         call advance_reactive_sdc_periodic_3d(species,state,temperature,[dx,dy,dz],dt,time, &
-          config%sdc_iterations,1,ok=ok,difmag=difmag,external_force=config%external_forcing, &
-          source_change=step_source_change)
+          config%sdc_iterations,merge(2,1,config%transport_enabled),ok=ok,difmag=difmag, &
+          external_force=config%external_forcing, &
+          source_change=step_source_change,transport=sdc_transport, &
+          transport_flags=[config%viscosity_enabled,config%thermal_conduction_enabled, &
+            config%species_diffusion_enabled,config%barodiffusion_enabled],minimum_transport_theta=step_transport_theta)
       else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &
