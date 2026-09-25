@@ -18,7 +18,9 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--selected', action='store_true')
     parser.add_argument('--uniform-density', action='store_true')
-    parser.add_argument('--inflow', action='store_true')
+    boundaries = parser.add_mutually_exclusive_group()
+    boundaries.add_argument('--inflow', action='store_true')
+    boundaries.add_argument('--periodic', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work.resolve()))
@@ -36,6 +38,9 @@ def main():
         template = template.replace('&eb_tree', "&eb_tree\n "
             "boundary_faces='inflow','outflow','outflow','outflow','outflow','outflow', "
             "inflow_pressure(1)=135000, inflow_velocity(1,1)=100,", 1)
+    if args.periodic:
+        template = template.replace('&eb_tree', "&eb_tree\n "
+            "boundary_faces='periodic','periodic','periodic','periodic','outflow','outflow',", 1)
     env = os.environ.copy()
     env.pop('DISPLAY', None)
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
@@ -91,6 +96,11 @@ def main():
         run('changed_inlet', 3, restart, template.replace('inflow_velocity(1,1)=100', 'inflow_velocity(1,1)=101'), False)
         run('changed_boundary', 3, restart, template.replace("'inflow'", "'outflow'"), False)
         run('conflicting_mode', text=template.replace('&eb_tree', '&eb_tree\n inflow_mach(1)=.2,', 1), success=False)
+        rejections += 3
+    if args.periodic:
+        run('changed_boundary', 3, restart, template.replace("'periodic'", "'outflow'"), False)
+        run('unpaired_boundary', text=template.replace("'periodic'", "'outflow'", 1), success=False)
+        run('incompatible_geometry', text=template.replace("'outflow'", "'periodic'"), success=False)
         rejections += 3
     print(f'PASS: 4 successful runs, {rejections} expected rejections; maximum residual={worst:.6e}; artifacts={work}')
 

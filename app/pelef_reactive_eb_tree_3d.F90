@@ -205,7 +205,15 @@ program pelef_reactive_eb_tree_3d
   if (.not.all(ieee_is_finite(inflow_pressure))) error stop 'Invalid inlet pressure'
   if (any(inflow_pressure<0).or.any(inflow_pressure>1e15_dp)) error stop 'Invalid inlet pressure'
   if(any(boundary_faces/='legacy')) then
-    if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) error stop 'Invalid tree boundary faces'
+    if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) &
+      error stop 'Invalid tree boundary faces'
+#ifdef PELEF_MPI_EB_SPRAY
+    if(any(boundary_faces=='periodic')) error stop 'Periodic MPI EB spray coupling is not connected'
+#endif
+    do inlet_face=1,5,2
+      if((boundary_faces(inlet_face)=='periodic').neqv.(boundary_faces(inlet_face+1)=='periodic')) &
+        error stop 'Unpaired periodic tree faces'
+    end do
     if(any(inflow_mach>=0).or.any(inflow_temperature/=0)) error stop 'Conflicting tree inlet modes'
     if(.not.all(ieee_is_finite(inflow_density)).or..not.all(ieee_is_finite(inflow_velocity))) &
       error stop 'Invalid prescribed tree inlet'
@@ -302,6 +310,7 @@ program pelef_reactive_eb_tree_3d
   config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
   config%redistribution='none';config%riemann_solver=riemann_solver;config%difmag=difmag
   config%hydro_method=hydro_method
+  if(allocated(active_faces)) config%boundary_faces=active_faces
   config%regular_density=regular_density;config%cut_density=cut_density;config%initial_pressure=initial_pressure
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
   config%chemistry_relative_tolerance=rtol;config%chemistry_absolute_tolerance=atol

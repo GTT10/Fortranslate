@@ -263,7 +263,7 @@ in x-low, x-high, y-low, y-high, z-low, z-high order. For example:
  inflow_velocity(:,1)=100,0,0
 ```
 
-Only `inflow` and `outflow` labels are currently supported by the tree path.
+Gas executables also accept paired `periodic` labels as described below.
 Inlet composition is the initial gas mixture. `inflow_density` defaults to
 0.31 kg/m3, velocity to zero, and pressure must be positive on an inlet.
 Leave Mach controls inactive and input `inflow_temperature` at zero; inlet
@@ -277,3 +277,17 @@ all six labels, densities, pressures and velocity vectors. The MPI spray executa
 `particle_outflow=.true.` in its spray input. Particle injection remains
 controlled by the separate injection schedule. Legacy inputs retain their
 existing checkpoint envelope. See the [application checks](../../docs/validation/eb-tree-inflow-application-20260926.md).
+
+## Periodic gas boundaries
+
+For a z-normal plane, x and y can be periodic:
+
+```fortran
+ boundary_faces='periodic','periodic','periodic','periodic','outflow','outflow'
+```
+
+Both faces of an axis must be periodic and the opposing EB face metrics must
+match. Geometry padding wraps periodic donor nodes for PLM/CTU. Common and
+recursive gas updates, automatic timestep selection, scheduled regridding and
+restart use the same labels. Changing labels on restart is rejected.
+MPI EB spray currently rejects periodic input pending particle coupling.
