@@ -157,7 +157,11 @@ coupled common/recursive dispatch now also match serial
 ([checks](validation/mpi-eb-ctu-recursive-20260925.md)). Fixed/selected serial/MPI
 tree application selection, scheduled regridding and changed-rank restart are
 connected ([checks](validation/eb-tree-ctu-application-20260925.md)). Other physical
-boundary halo preparation and spray coupling remain before claiming EB Godunov parity.
+boundary halo preparation remains before claiming EB Godunov parity. MPI EB
+spray now forwards CTU through coupled gas stepping and checkpoint identity
+([checks](validation/mpi-eb-spray-ctu-20260925.md)). The serial single-level spray
+entry still needs CTU dispatch; broader physical-boundary preparation and complete
+reference parity remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

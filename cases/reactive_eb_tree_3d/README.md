@@ -242,8 +242,8 @@ Set `hydro_method='plm_ctu'` and `riemann_solver='pelec'` for serial or MPI gas
 executables, including selected mechanisms. See `plm_ctu.nml`. PCM remains the
 default. CTU supports common/recursive intervals and rebuilds its extended
 geometry cache after scheduled/adaptive topology changes and restart. Checkpoints
-bind the hydro method; changing it on continuation is rejected. This selector
-is not connected to the EB spray executable.
+bind the hydro method; changing it on continuation is rejected. The MPI EB spray executable also forwards this selector through its coupled
+gas update; its gas checkpoint enforces the same method identity.
 
 `regular_density`, `cut_density` and `initial_pressure` specify the density-sheet
 initial state (SI units); defaults remain 0.31, 0.93 and 135000. All must be finite

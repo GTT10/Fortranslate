@@ -390,3 +390,12 @@ See [focused checks](../../docs/validation/mpi-eb-spray-difmag-20260925.md).
 
 The EB coefficient default changed to 0.1; old zero-policy checkpoints require
 explicit `difmag=0`. See [default-policy checks](../../docs/validation/eb-default-difmag-20260925.md).
+
+### CTU gas update
+
+The tree input accepts `hydro_method='plm_ctu'` with `riemann_solver='pelec'`.
+The coupled MPI gas update supports common or recursive intervals. Method
+identity is checked when restoring the gas snapshot. Focused fixed-mechanism
+2-to-4-rank continuation and coupled conservation checks are recorded in
+[the CTU evidence](../../docs/validation/mpi-eb-spray-ctu-20260925.md); these do
+not establish nozzle, diesel ignition or validated LES behavior.
