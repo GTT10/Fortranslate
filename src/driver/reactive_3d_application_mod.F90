@@ -261,7 +261,8 @@ contains
           reactions=sdc_reactions,reaction_source=sdc_reaction_source, &
           chemistry_relative_tolerance=config%chemistry_relative_tolerance, &
           chemistry_absolute_tolerance=config%chemistry_absolute_tolerance, &
-          boundary_faces=faces,boundary_change=step_boundary_change,outlet_pressure=config%outlet_pressure)
+          boundary_faces=faces,boundary_change=step_boundary_change,outlet_pressure=config%outlet_pressure, &
+          inflow_state=inflow_state,inflow_temperature=inflow_t,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
       else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &

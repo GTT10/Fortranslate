@@ -66,7 +66,8 @@ contains
   subroutine advance_reactive_sdc_periodic_3d(species,state,temperature,spacing,dt,time,iterations, &
       source_count,evaluate_sources,ok,difmag,external_force,source_change, &
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
-      chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure)
+      chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
+      inflow_state,inflow_temperature,inflow_mach,inflow_pressure)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -83,6 +84,7 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
     real(dp), optional, intent(in) :: outlet_pressure(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),inflow_mach(6),inflow_pressure(6)
     character(len=16) :: faces(6)
     real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source_ghost(:,:,:,:)
     integer :: index(3),a
@@ -107,7 +109,8 @@ contains
       if(size(boundary_change)/=nv) return
     end if
     if(.not.valid_reactive_boundaries_3d(faces)) return
-    if(any(faces/='periodic'.and.faces/='outflow')) return
+    if(any(faces/='periodic'.and.faces/='outflow'.and.faces/='inflow')) return
+    if(present(inflow_pressure).and..not.present(inflow_mach)) return
     if(present(outlet_pressure)) then
       if(.not.all(ieee_is_finite(outlet_pressure))) return
       if(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
@@ -154,7 +157,13 @@ contains
     if(any(faces/='periodic')) then
       allocate(ghost(nv,n(1)+8,n(2)+8,n(3)+8),ghost_t(n(1)+8,n(2)+8,n(3)+8))
       allocate(source_ghost(nv,-3:n(1)+4,-3:n(2)+4,-3:n(3)+4))
-      call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,ghost_t,valid,ghost_width=4)
+      if(present(inflow_mach)) then
+        call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,inflow_mach,ghost,ghost_t,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_width=4)
+      else
+        call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,ghost_t,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=4)
+      end if
       if(.not.valid) return
       call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,ghost_t,valid,ghost_width=4)
       if(.not.valid) return
@@ -195,7 +204,7 @@ contains
         end do
         call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,ghost_t,n,spacing,dt,.false.,.true.,'pelec', &
           fx,fy,fz,theta,valid,difmag=difmag,conserved_source=source_ghost,outflow_faces=faces=='outflow', &
-          outlet_pressure=outlet_pressure)
+          outlet_pressure=outlet_pressure,inflow_faces=faces=='inflow')
       end if
       if(.not.valid) return
       do k=1,n(3)
@@ -288,7 +297,8 @@ contains
         call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,2),good)
       else
         call physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
-          flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,outlet_pressure=outlet_pressure)
+          flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,outlet_pressure=outlet_pressure, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
         if(.not.good) return
         do kk=1,n(3)
         do jj=1,n(2)
