@@ -45,6 +45,9 @@ The transactional SDC reaction stage is now independently callable
 The AMR patch-tree wrapper now executes this reaction stage transactionally
 across levels ([checks](validation/sdc-tree-reaction-20260926.md)); full
 hierarchy SDC stepping is still incomplete.
+The hierarchy hydro stage now fills coarse/fine state/source halos and returns
+rates plus register-compatible fluxes
+([checks](validation/sdc-tree-hydro-20260926.md)).
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates

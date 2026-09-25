@@ -344,7 +344,10 @@ is still required. The reaction stage is independently callable
 separate source evaluation from reaction integration. A transactional AMR
 patch-tree reaction wrapper is now available
 ([checks](validation/sdc-tree-reaction-20260926.md)); the full hierarchy
-hydro/source/reflux driver remains open. Physical
+hydro/source/reflux driver remains open. A hierarchy hydro stage now supplies
+coarse/fine-interpolated CTU rates and integrated fluxes
+([checks](validation/sdc-tree-hydro-20260926.md)); full source/transport and
+reaction-stage orchestration remains open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
