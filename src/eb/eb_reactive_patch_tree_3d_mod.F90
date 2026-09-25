@@ -454,7 +454,7 @@ contains
   subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
       rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
       wall_change,chemical_change,minimum_theta,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -464,6 +464,7 @@ contains
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     logical, optional, intent(in) :: subcycling
@@ -478,6 +479,9 @@ contains
     if (.not.valid_tree(tree,nv)) return
     recursive_steps=.false.
     if (present(subcycling)) recursive_steps=subcycling
+    if(present(difmag)) then
+      if(.not.ieee_is_finite(difmag).or.difmag<0) return
+    end if
     candidate=tree
     allocate(boundary(nv),wall(nv),chemical(nv),exchange(nv),transport_sum(nv))
     chemical=0._dp;transport_sum=0._dp;theta=1._dp
@@ -502,10 +506,10 @@ contains
       if (half==1) then
         if (recursive_steps) then
           call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,candidate,boundary,wall,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=difmag)
         else
           call advance_reactive_eb_tree_hydro_3d(species,solver,dt,candidate,boundary,wall,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=difmag)
         end if
         if (.not.valid) return
       else if (chemistry_enabled) then
@@ -675,16 +679,17 @@ contains
   ! Each level advances together, with ratio fine substeps, time-interpolated
   ! ancestor donors, per-substep peer fluxes and interval-local reflux.
   subroutine advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     call advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
-      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=difmag)
   end subroutine advance_reactive_eb_tree_subcycle_hydro_3d
 
   subroutine advance_reactive_eb_tree_subcycle_transport_3d(species,transport,dt,viscosity,conduction, &
@@ -706,13 +711,14 @@ contains
 
   subroutine advance_reactive_eb_tree_subcycle_operator_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
       transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     character(len=*), intent(in) :: solver
     real(dp), intent(in) :: dt
     type(eb_reactive_tree_3d), intent(inout) :: tree
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     type(gas_transport_species), optional, intent(in) :: transport(:)
     logical, optional, intent(in) :: viscosity,conduction,diffusion,barodiffusion
@@ -722,7 +728,7 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: clock_start(:),clock_dt(:),wall(:),boundary(:)
-    real(dp) :: theta
+    real(dp) :: theta,coefficient
     integer :: nv,levels,c,n(3)
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
@@ -736,6 +742,10 @@ contains
         present(barodiffusion).and.present(minimum_theta))) return
       if (any(ratios>huge(1)/ratios)) return
     end if
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if(present(transport).and.coefficient>0) return
     theta=1._dp
     levels=size(ratios);candidate=tree
     call average_down_reactive_eb_tree_3d(species,candidate,valid)
@@ -767,7 +777,7 @@ contains
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
       type(eb_reactive_tree_3d) :: snapshot
-      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),source(:,:,:,:),fraction(:)
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),source(:,:,:,:),fraction(:),vf(:,:,:)
       logical, allocatable :: exposed(:,:,:)
       real(dp) :: elapsed,sub_dt,stage_theta
       integer :: node,peer,owner,receiver,axis,child,substep,d(3),lo(3),hi(3),component,substeps
@@ -785,8 +795,9 @@ contains
         starts%nodes(node)=snapshot%nodes(node)
         fraction=max(0._dp,min(1._dp,(time-clock_start(:level))/clock_dt(:level)))
         allocate(ghost(nv,0:d(1)+1,0:d(2)+1,0:d(3)+1),gt(0:d(1)+1,0:d(2)+1,0:d(3)+1))
+        if(coefficient>0) allocate(vf(0:d(1)+1,0:d(2)+1,0:d(3)+1))
         call fill_reactive_eb_tree_halo_3d(species,snapshot,node,ghost,gt,valid,starts,ends,fraction, &
-          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+          inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
         if (.not.valid) return
         if (present(transport)) then
           faces=[origin(1,node)>0,origin(1,node)+int(d(1),int64)<domain(1,level+1), &
@@ -801,10 +812,11 @@ contains
         else
         call advance_reactive_eb_euler_3d(species,snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
           snapshot%nodes(node)%geometry,solver,interval,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
-          valid,ghost,gt,flux(node))
+          valid,ghost,gt,flux(node),difmag=coefficient,ghost_volume_fraction=vf)
         end if
         if (.not.valid) return
         deallocate(ghost,gt)
+        if(allocated(vf)) deallocate(vf)
         if (present(transport)) cycle
         allocate(source(nv,d(1),d(2),d(3)),exposed(d(1),d(2),d(3)));exposed=.true.
         do child=node+1,size(tree%nodes)

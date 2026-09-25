@@ -28,13 +28,17 @@ program test_eb_tree_subcycle_full_3d
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:)
   real(dp), allocatable :: before(:),after(:),boundary(:),primitive(:),wall(:),chemical(:),exchange(:),ref_b(:),ref_w(:),ref_c(:)
   real(dp), allocatable :: ref_h(:)
-  real(dp) :: residual,theta,speed,ref_theta,stage_theta
+  real(dp) :: residual,theta,speed,ref_theta,stage_theta,coefficient
+  character(len=16) :: viscosity_mode
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,half
   logical :: ok,chemistry_on,transport_on,recursive_steps
   real(dp) :: mach(6),tin(6),pin(6)
   character(len=16) :: test_mode
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
+  call get_command_argument(2,viscosity_mode)
+  coefficient=0
+  if(viscosity_mode=='viscosity') coefficient=.037_dp
   call get_command_argument(1,test_mode)
   recursive_steps=trim(test_mode)/='mach-common'
   mach=-1;tin=400;pin=0
@@ -105,7 +109,7 @@ program test_eb_tree_subcycle_full_3d
     call advance_reactive_eb_tree_full_3d(species,reactions,transport,'hllc',1.e-8_dp,chemistry_on, &
       2.e-7_dp,1.e-12_dp,transport_on,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       integrators(integrator_index),subcycling=recursive_steps, &
-      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient)
     call require(ok,'combined step')
     call integrate_reactive_eb_tree_3d(tree,after,ok)
     call require(ok,'final inventory')
@@ -136,9 +140,11 @@ program test_eb_tree_subcycle_full_3d
         ref_b=ref_b+exchange;ref_theta=min(ref_theta,stage_theta)
         if (half==1) then
           if (recursive_steps) then
-            call advance_reactive_eb_tree_subcycle_hydro_3d(species,'hllc',1.e-8_dp,reference,exchange,ref_w,ok,mach,tin,pin)
+            call advance_reactive_eb_tree_subcycle_hydro_3d(species,'hllc',1.e-8_dp,reference,exchange,ref_w,ok, &
+              mach,tin,pin,difmag=coefficient)
           else
-            call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,reference,exchange,ref_w,ok,mach,tin,pin)
+            call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,reference,exchange,ref_w,ok, &
+              mach,tin,pin,difmag=coefficient)
           end if
           call require(ok,'reference hydro')
           ref_h=exchange
@@ -162,7 +168,7 @@ program test_eb_tree_subcycle_full_3d
   call advance_reactive_eb_tree_full_3d(species,reactions,transport,'invalid',1.e-8_dp,.true., &
     2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
       'explicit',subcycling=recursive_steps, &
-      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+      inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient)
   call require(.not.ok,'failure after earlier stages')
   call unchanged_tree()
   call require(all(boundary==17._dp).and.all(wall==19._dp).and.all(chemical==23._dp).and. &
@@ -171,7 +177,7 @@ program test_eb_tree_subcycle_full_3d
     tin(1)=ieee_value(0._dp,ieee_quiet_nan)
     call advance_reactive_eb_tree_full_3d(species,reactions,transport,'hllc',1.e-8_dp,.true., &
       2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
-      'explicit',subcycling=recursive_steps,inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin)
+      'explicit',subcycling=recursive_steps,inflow_mach=mach,inflow_temperature=tin,inflow_pressure=pin,difmag=coefficient)
     call require(.not.ok,'invalid inlet after private reaction')
     call unchanged_tree()
     call require(all(boundary==17).and.all(wall==19).and.all(chemical==23).and.theta==29, &

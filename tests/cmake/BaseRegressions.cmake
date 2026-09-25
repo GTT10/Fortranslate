@@ -971,3 +971,6 @@ set_tests_properties(amr_two_level_ppm_restart_3d PROPERTIES TIMEOUT 300)
 add_test(NAME unit_amr_reactive_3d_difmag_checkpoint COMMAND test_amr_reactive_3d_checkpoint difmag)
 
 add_test(NAME unit_eb_tree_viscosity_3d COMMAND test_eb_tree_hydro_3d viscosity)
+
+add_test(NAME unit_eb_tree_viscosity_subcycle_full_3d COMMAND test_eb_tree_subcycle_full_3d mach viscosity)
+set_tests_properties(unit_eb_tree_viscosity_subcycle_full_3d PROPERTIES TIMEOUT 240)
