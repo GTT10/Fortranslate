@@ -5,7 +5,8 @@ module eb_reactive_hydro_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
-    reactive_riemann_flux_x,reconstruct_pelec_plm_cell,compute_pelec_plm_slopes,reactive_pelec_primitive_flux_x
+    reactive_riemann_flux_x,reconstruct_pelec_plm_cell,compute_pelec_plm_slopes,reactive_pelec_primitive_flux_x, &
+    reactive_ppm_flattening_coefficient
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
@@ -26,6 +27,7 @@ module eb_reactive_hydro_3d_mod
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
+  public :: compute_reactive_eb_flattening_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
@@ -37,6 +39,56 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! Cell flattening for the normal predictor. Inputs contain three halos;
+  ! outputs include its one donor layer. Missing pencils and cut-cell pencils
+  ! retain unity, following flatten_eb. Covered storage is never inspected.
+  subroutine compute_reactive_eb_flattening_3d(species,ghost,temperature,volume_fraction,n,flattening,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    integer, intent(in) :: n(3)
+    real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
+    real(dp), intent(inout) :: flattening(0:,0:,0:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:)
+    real(dp) :: pressure(-3:3),velocity(-3:3),vf(-3:3),q(reactive_nvar(size(species))),recovered,speed
+    integer :: i,j,k,axis,d,idx(3),point(3)
+    logical :: valid
+    ok=.false.
+    if(any(n<1)) return
+    if(any(shape(ghost)/=[reactive_nvar(size(species)),n+6]).or.any(shape(temperature)/=n+6).or. &
+      any(shape(volume_fraction)/=n+6).or.any(shape(flattening)/=n+2)) return
+    if(.not.all(ieee_is_finite(volume_fraction))) return
+    if(any(volume_fraction<0).or.any(volume_fraction>1)) return
+    allocate(candidate(0:n(1)+1,0:n(2)+1,0:n(3)+1));candidate=1
+    do k=0,n(3)+1
+    do j=0,n(2)+1
+    do i=0,n(1)+1
+      idx=[i,j,k]
+      ! Normal prediction uses face donors, never exterior edge/corner donors.
+      if(count(idx<1.or.idx>n)>1.or.volume_fraction(i,j,k)<=0) cycle
+      do axis=1,3
+        if(idx(axis)-3< -2.or.idx(axis)+3>n(axis)+3) cycle
+        do d=-3,3
+          point=idx;point(axis)=point(axis)+d
+          vf(d)=volume_fraction(point(1),point(2),point(3))
+        end do
+        ! Cut cells disable the reference shock sensor in this direction.
+        ! Also avoid undefined thermodynamics in a fully covered pencil.
+        if(any(vf<1)) cycle
+        do d=-3,3
+          point=idx;point(axis)=point(axis)+d
+          call reactive_conserved_to_primitive(species,ghost(:,point(1),point(2),point(3)), &
+            temperature(point(1),point(2),point(3)),q,recovered,speed,valid)
+          if(.not.valid) return
+          pressure(d)=q(5);velocity(d)=q(axis+1)
+        end do
+        candidate(i,j,k)=min(candidate(i,j,k),reactive_ppm_flattening_coefficient(pressure,velocity))
+      end do
+    end do
+    end do
+    end do
+    flattening=candidate;ok=.true.
+  end subroutine compute_reactive_eb_flattening_3d
 
   ! Complete hydro update for the central cells 4:N-3 of a prepared working
   ! geometry. Physical boundary filling/flattening remain caller responsibilities.

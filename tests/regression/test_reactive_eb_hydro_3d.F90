@@ -14,7 +14,7 @@ program test_reactive_eb_hydro_3d
   use eb_reactive_hydro_3d_mod, only: &
     reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
     compute_reactive_eb_plm_normal_fluxes_3d,compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d, &
-    eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d, &
+    eb_plm_face_prediction_3d,apply_reactive_eb_transverse_3d,compute_reactive_eb_flattening_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
@@ -81,6 +81,7 @@ program test_reactive_eb_hydro_3d
   call verify_transverse_prediction()
   call verify_ctu_fluxes()
   call verify_ctu_update()
+  call verify_flattening()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -261,6 +262,46 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_flattening()
+    real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11)
+    real(dp) :: flat(0:9,0:9,0:9),q(nvar),cs,nan_value,vel(3),p
+    integer :: axis,ii,jj,kk,idx(3),offset,point(3)
+    logical :: valid
+    nan_value=ieee_value(0._dp,ieee_quiet_nan)
+    do axis=1,3
+      vf=1
+      do kk=-2,11
+      do jj=-2,11
+      do ii=-2,11
+        idx=[ii,jj,kk];p=100000._dp
+        if(idx(axis)>=5) p=200000._dp
+        vel=0;vel(axis)=real(5-idx(axis),dp)
+        q(1)=.31_dp;q(2:4)=vel;q(5)=p;q(6:)=mass_fractions
+        call reactive_primitive_to_conserved(species,q,ghost(:,ii,jj,kk),gt(ii,jj,kk),cs,valid)
+        call require(valid,'flattening input state')
+      end do
+      end do
+      end do
+      call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,[8,8,8],flat,valid)
+      call require(valid.and.flat(4,4,4)==0,'compressive shock flattening in each axis')
+      call require(flat(1,1,1)==1.and.flat(0,0,0)==1,'smooth and unused donors retain unity')
+      do offset=-3,3
+        point=4;point(axis)=point(axis)+offset
+        vf(point(1),point(2),point(3))=.5_dp
+        call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,[8,8,8],flat,valid)
+        call require(valid.and.flat(4,4,4)==1,'each cut neighbor disables directional shock sensor')
+        vf(point(1),point(2),point(3))=1
+      end do
+      ! Invalid active thermodynamics must preserve the previous output.
+      ghost(:,4,4,4)=nan_value;flat=-7
+      call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,[8,8,8],flat,valid)
+      call require(.not.valid.and.all(flat==-7),'flattening transactional invalid state')
+      vf=0;ghost=nan_value;gt=nan_value
+      call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,[8,8,8],flat,valid)
+      call require(valid.and.all(flat==1),'covered flattening ignores poisoned storage')
+    end do
+  end subroutine verify_flattening
+
   subroutine verify_ctu_update()
     type(eb_geometry_3d) :: working,physical
     type(eb_integrated_flux_3d) :: integral,saved_flux
@@ -286,12 +327,14 @@ contains
       do ii=-2,11
         idx=[ii,jj,kk];inside=max(1,min(8,idx))
         vf(ii,jj,kk)=working%volume_fraction(inside(1),inside(2),inside(3))
-        if(vf(ii,jj,kk)==0.or.count(idx<1.or.idx>8)>1) cycle
+        if(vf(ii,jj,kk)==0) cycle
         vel=[4._dp,2._dp,-1._dp]-.1_dp*inside
         call build_cell_state(.31_dp+.001_dp*sum(inside),vel,ghost(:,ii,jj,kk),gt(ii,jj,kk),cs)
       end do
       end do
       end do
+      call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,[8,8,8],flat,valid)
+      call require(valid,'CTU update flattening preparation')
       initial=ghost(:,4:5,4:5,4:5)
       do kk=1,2
       do jj=1,2
