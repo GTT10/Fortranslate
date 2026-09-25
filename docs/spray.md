@@ -861,8 +861,10 @@ from before this context addition are incompatible; the default PCM/PLM context
 is unchanged. See [input and restart checks](validation/difmag-spray-input-20260925.md).
 Regular MPI spray also accepts `difmag` in `&mpi_spray`, checks collective
 agreement, and binds the resolved coefficient to restart context
-([checks](validation/difmag-mpi-spray-20260925.md)). AMR spray coefficient
-input remains pending.
+([checks](validation/difmag-mpi-spray-20260925.md)). MPI AMR spray also reads the
+coefficient from the gas namelist and includes
+its resolved value in the shared gas checkpoint context
+([checks](validation/difmag-amr-input-20260925.md)).
 
 ## Build and run
 
