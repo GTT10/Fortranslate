@@ -273,6 +273,7 @@ idle ranks. Regridding and restart retain those prescribed states.
 
 Both common and subcycled updates forward the controls. Automatic timestep
 selection uses boundary donor speeds and diffusivities. Restart context binds
-all six labels, densities, pressures and velocity vectors. Explicit boundaries
-are not yet accepted by the MPI spray executable. Legacy inputs retain their
+all six labels, densities, pressures and velocity vectors. The MPI spray executable also accepts these explicit boundaries; set
+`particle_outflow=.true.` in its spray input. Particle injection remains
+controlled by the separate injection schedule. Legacy inputs retain their
 existing checkpoint envelope. See the [application checks](../../docs/validation/eb-tree-inflow-application-20260926.md).

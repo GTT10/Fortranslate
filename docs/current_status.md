@@ -24,7 +24,10 @@ full reacting splits and donor timestep bounds are also connected
 ([checks](validation/mpi-eb-inflow-full-20260926.md)). Fixed/selected serial and
 MPI gas application inputs now connect prescribed inflow and boundary-bound
 changed-rank restart across scheduled regridding
-([checks](validation/eb-tree-inflow-application-20260926.md)).
+([checks](validation/eb-tree-inflow-application-20260926.md)). MPI EB spray now
+also forwards prescribed inflow through the coupled split and application,
+with fixed-mechanism changed-rank continuation checks
+([checks](validation/mpi-eb-spray-inflow-20260926.md)).
 
 Single-level fixed/selected EB applications now offer `hydro_method='plm_ctu'`
 with the `pelec` Riemann solver, outflow halos, reaction/transport composition

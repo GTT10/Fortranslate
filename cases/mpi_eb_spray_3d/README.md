@@ -399,3 +399,13 @@ identity is checked when restoring the gas snapshot. Focused fixed-mechanism
 2-to-4-rank continuation and coupled conservation checks are recorded in
 [the CTU evidence](../../docs/validation/mpi-eb-spray-ctu-20260925.md); these do
 not establish nozzle, diesel ignition or validated LES behavior.
+
+## Prescribed gas inflow
+
+The tree gas input accepts explicit `boundary_faces`, `inflow_density`,
+`inflow_pressure` and `inflow_velocity`, as described in the
+[tree case guide](../reactive_eb_tree_3d/README.md#prescribed-inflow-and-outflow).
+Set `particle_outflow=.true.` in `spray.nml`. Both gas inflow and outflow faces
+allow existing particles to leave; the gas inlet does not create particles.
+Changed gas boundary controls reject restart. See the
+[fixed-mechanism MPI checks](../../docs/validation/mpi-eb-spray-inflow-20260926.md).
