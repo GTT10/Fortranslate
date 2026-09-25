@@ -43,8 +43,11 @@ restart ([checks](validation/eb-tree-periodic-application-20260926.md)).
 MPI EB spray periodic input remains rejected pending particle coupling.
 The composite EB particle stencil now accepts periodic axes and checks
 visibility along segmented, wrapped paths to donor centroids
-([checks](validation/eb-tree-periodic-stencil-20260926.md)). MPI field exchange
-and particle stepping have not yet enabled this path.
+([checks](validation/eb-tree-periodic-stencil-20260926.md)). MPI particle field
+sampling and gas deposition now route those periodic donors to their owners,
+with conservation and rollback checks
+([checks](validation/mpi-eb-periodic-field-20260926.md)). Particle stepping
+has not yet enabled this path.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
