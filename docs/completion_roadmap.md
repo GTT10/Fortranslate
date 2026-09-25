@@ -138,7 +138,10 @@ flattening preparation API now feeds the prepared-halo update
 ([checks](validation/eb-flattening-20260925.md)). Physical wall/outflow Riemann
 corrections and interior physical-wall viscosity masks now reach the complete
 prepared CTU update ([checks](validation/eb-physical-flux-20260925.md)).
-Application halo/geometry preparation, input selection and coupled
+Configured plane/extruded/nodal geometry now supports domain-face extension,
+and an outflow entry prepares state halos and flattening before the CTU update
+([checks](validation/eb-extended-geometry-20260925.md)). Application input and
+reaction/transport integration, other boundary halo preparation and coupled
 MPI/AMR dispatch remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
