@@ -150,7 +150,9 @@ patch stepping now connect peer synchronization and coarse/fine reflux
 ([checks](validation/eb-tree-ctu-20260925.md)). Serial recursive CTU stepping
 and coupled reaction/transport composition now also connect time-interpolated
 ancestor halos and accumulated fine fluxes
-([checks](validation/eb-tree-ctu-subcycle-20260925.md)). MPI CTU stepping,
+([checks](validation/eb-tree-ctu-subcycle-20260925.md)). MPI common CTU steps
+now match serial under distributed and idle-rank ownership
+([checks](validation/mpi-eb-ctu-common-20260925.md)). MPI recursive CTU and coupled dispatch,
 tree application selection and other physical boundary halo preparation remain
 before claiming EB Godunov parity.
 
