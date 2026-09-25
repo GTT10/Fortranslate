@@ -769,8 +769,8 @@ contains
     end if
     if(config%time_integrator=='sdc') then
       if(config%reconstruction/='characteristic_ppm'.or.config%riemann_solver/='pelec'.or. &
-        config%chemistry_enabled.or.any(faces/='periodic')) then
-        message='SDC requires periodic nonreacting PPM/PeleC';return
+        any(faces/='periodic')) then
+        message='SDC requires periodic PPM/PeleC';return
       end if
     end if
     if(.not.all(ieee_is_finite(config%external_forcing))) then

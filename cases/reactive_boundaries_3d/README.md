@@ -156,15 +156,20 @@ application families whose input reader has not enabled this feature.
 These regular gas executables have no checkpoint interface. This option does
 not establish full SDC integration or physical forcing validation.
 
-## Periodic nonreacting SDC
+## Periodic SDC
 
 `time_integrator='sdc'` selects iterative source-coupled CTU, with
 `sdc_iterations=2` by default. The default integrator remains `split`.
-The current application path requires periodic boundaries, PPM/PeleC,
-`chemistry_enabled=.false.`. Molecular transport is evaluated as an old/new
+The current application path requires periodic boundaries and PPM/PeleC.
+With `chemistry_enabled=.true.`, it uses forced adaptive implicit chemistry
+and retains reaction sources between steps. The chemistry tolerances apply;
+the absolute tolerance is scaled by the cell's starting density for the
+species-density reactor. Molecular transport is evaluated as an old/new
 SDC source when `transport_enabled=.true.`, using the existing transport flags
 and stable timestep. It supports the external force input above. Unsupported combinations fail before stepping.
 
 Run `pelef_reactive_3d cases/reactive_boundaries_3d/external_forcing_sdc.nml`
 for the two-iteration example. Fixed/selected gas variants share the driver;
-SDC is not yet enabled for AMR, MPI, EB or chemistry.
+SDC is not yet enabled for AMR, MPI or EB. `sdc_reacting.nml` provides a
+uniform reacting example with transport and external forcing; this is a
+bounded numerical example, not physical ignition validation.

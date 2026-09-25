@@ -39,6 +39,8 @@ contains
     character(len=*), intent(in), optional :: chemistry_integrator
 
     type(gas_transport_species), allocatable :: sdc_transport(:)
+    type(elementary_reaction), allocatable :: sdc_reactions(:)
+    real(dp), allocatable :: sdc_reaction_source(:,:,:,:)
     real(dp), allocatable :: x(:), y(:), z(:)
     real(dp), allocatable :: state(:, :, :, :), temperature(:, :, :)
     real(dp), allocatable :: initial_totals(:), final_totals(:), boundary_totals(:), step_boundary_change(:)
@@ -76,6 +78,10 @@ contains
     allocate(temperature(config%nx, config%ny, config%nz))
     allocate(initial_totals(nvar), final_totals(nvar), boundary_totals(nvar), step_boundary_change(nvar))
     if(config%time_integrator=='sdc'.and.config%transport_enabled) sdc_transport=transport
+    if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
+      sdc_reactions=reactions
+      allocate(sdc_reaction_source(nvar-4,config%nx,config%ny,config%nz));sdc_reaction_source=0
+    end if
     boundary_totals=0.0_dp
     allocate(source_totals(nvar),step_source_change(nvar));source_totals=0
     if(any(config%external_forcing/=0)) external_force=config%external_forcing
@@ -148,7 +154,9 @@ contains
       "PeleF " // pelef_version // " " // trim(application_label)
     if (len_trim(bundle_sha256) > 0) then
       write(*, '(a,1x,a)') "Bundle SHA-256:", trim(bundle_sha256)
-      if (present(chemistry_integrator)) then
+      if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
+        write(*,'(a)') 'Chemistry integrator: forced adaptive implicit (SDC)'
+      else if (present(chemistry_integrator)) then
         write(*, '(a,1x,a)') "Chemistry integrator:", &
           trim(chemistry_integrator)
       end if
@@ -249,7 +257,10 @@ contains
           external_force=config%external_forcing, &
           source_change=step_source_change,transport=sdc_transport, &
           transport_flags=[config%viscosity_enabled,config%thermal_conduction_enabled, &
-            config%species_diffusion_enabled,config%barodiffusion_enabled],minimum_transport_theta=step_transport_theta)
+            config%species_diffusion_enabled,config%barodiffusion_enabled],minimum_transport_theta=step_transport_theta, &
+          reactions=sdc_reactions,reaction_source=sdc_reaction_source, &
+          chemistry_relative_tolerance=config%chemistry_relative_tolerance, &
+          chemistry_absolute_tolerance=config%chemistry_absolute_tolerance)
       else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &
@@ -267,7 +278,7 @@ contains
         external_force=external_force,source_change=step_source_change)
       end if
       if (.not. ok) then
-        error stop "Reactive 3D split update rejected its candidate"
+        error stop "Reactive 3D update rejected its candidate"
       end if
       source_totals=source_totals+step_source_change
       boundary_totals = boundary_totals + step_boundary_change
