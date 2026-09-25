@@ -15,7 +15,9 @@ Serial common/recursive tree temperature forwarding now passes heated-wall
 conservation checks ([evidence](validation/eb-tree-isothermal-transport-20260926.md)).
 MPI common/recursive transport now agrees on wall temperatures and matches
 serial ([checks](validation/mpi-eb-isothermal-transport-20260926.md)). Thermal
-timestep bounds and full reacting temperature forwarding remain open.
+timestep bounds now connect in serial with an active-bound check
+([evidence](validation/eb-tree-isothermal-timestep-20260926.md)); MPI thermal
+selection and full reacting temperature forwarding remain open.
 
 MPI EB particle drift now supports specular domain-wall reflection with exterior
 impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
