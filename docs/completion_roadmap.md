@@ -230,7 +230,10 @@ flux APIs now default to 0.1 independently of solver/reconstruction
 low-level and hierarchy wrappers still require review. Serial/MPI AMR tree
 common/level hydro now resolves omission to 0.1, with common/recursive
 serial-versus-MPI equivalence checks
-([evidence](validation/amr-tree-default-difmag-20260925.md)). The viscosity kernel now accepts
+([evidence](validation/amr-tree-default-difmag-20260925.md)). Serial/MPI
+older two-level hydro now also resolves and forwards 0.1 on every coarse/fine
+stage, with eight-rank default-versus-explicit checks
+([evidence](validation/two-level-default-difmag-20260925.md)). The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
 ([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and
