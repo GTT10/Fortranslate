@@ -35,18 +35,25 @@ contains
 
   ! Geometry is replicated; U/T remain allocated only on whole-patch owners.
   ! Check every metric exactly across ranks, then the coarsened parent relation.
-  subroutine validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nvar,comm,ok)
+  subroutine validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nvar,comm,ok,padding)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
     type(eb_geometry_3d), intent(in) :: geometry(:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: padding
+    integer :: width,width_min,width_max
     type(eb_geometry_3d) :: coarse,section
     real(dp), allocatable :: packed(:),reference(:)
     integer(int64) :: elements
     integer :: node,parent,lo(3),hi(3),status,ios,offset,n
     logical :: valid,ready
-    ok=.false.
+    ok=.false.;width=0
+    if(present(padding)) width=padding
+    call MPI_Allreduce(width,width_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(width,width_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.width_min/=width_max.or.width<0.or.width>huge(1)/4) return
     call validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,ready)
     if (.not.ready) return
     call agree(size(geometry)==size(tree%nodes),comm,ready)
@@ -56,7 +63,10 @@ contains
       if (.not.geometry(node)%is_valid()) then
         valid=.false.;cycle
       end if
-      if (any([geometry(node)%nx,geometry(node)%ny,geometry(node)%nz]/=tree%nodes(node)%shape)) valid=.false.
+      if(any(tree%nodes(node)%shape>huge(1)-2*width)) then
+        valid=.false.;cycle
+      end if
+      if(any([geometry(node)%nx,geometry(node)%ny,geometry(node)%nz]/=tree%nodes(node)%shape+2*width)) valid=.false.
     end do
     call agree(valid,comm,ready)
     if (.not.ready) return
@@ -130,7 +140,8 @@ contains
       if (.not.ready) return
       deallocate(packed,reference)
       end associate
-      if (node==1) cycle
+      ! Padded caches are checked against physical centers by their consumer.
+      if (node==1.or.width>0) cycle
       parent=tree%nodes(node)%parent
       call bounds(tree,node,lo,hi)
       call coarsen_eb_geometry_3d(geometry(node),tree%nodes(node)%patch%refinement_ratio,coarse,valid)
