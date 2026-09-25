@@ -170,8 +170,11 @@ transport Euler stage now accepts prepared donors and returns transactional
 integrated face fluxes ([checks](validation/eb-transport-redistributed-halos-20260925.md));
 SSPRK2 now invokes a caller-supplied donor provider at both stages and returns
 weighted integrated fluxes ([checks](validation/eb-transport-stage-halos-20260925.md)).
-Coupled-driver dispatch, concrete physical-boundary providers and boundary flux
-policies remain open.
+Single-level coupled CTU now forwards inflow/outflow labels and a transport donor
+provider with combined hydro/transport boundary accounting
+([checks](validation/eb-coupled-inflow-boundaries-20260925.md)). Concrete production
+providers, periodic/wall transport flux policies and application/tree/MPI dispatch
+remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
