@@ -9,7 +9,7 @@ program test_spray_eb_reactive
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
-  use spray_eb_reactive_mod, only: advance_eb_spray_reactive
+  use spray_eb_reactive_mod, only: advance_eb_spray_reactive,advance_eb_spray_reactive_allocated
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   implicit none
@@ -26,12 +26,16 @@ program test_spray_eb_reactive
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
-  type(spray_parcel) :: drops(1),saved_drop
-  real(dp) :: phi(0:4,0:4,0:4),t,sound,r,temperature(4,4,4),saved_t(4,4,4),masses(2,1),saved_mass(2,1)
+  type(spray_parcel), allocatable :: drops(:)
+  type(spray_parcel) :: saved_drop
+  real(dp) :: phi(0:4,0:4,0:4),t,sound,r,temperature(4,4,4),saved_t(4,4,4),saved_mass(2,1)
+  real(dp), allocatable :: masses(:,:),inlet(:,:),inlet_t(:)
+  character(len=16) :: faces(6)
   real(dp) :: ledger(5),interval=1e-8_dp
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
   logical :: ok
+  allocate(drops(1),masses(2,1))
   call get_command_argument(1,mode)
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
@@ -122,8 +126,49 @@ program test_spray_eb_reactive
   call require(all(abs(after-before-boundary-wall-chemical-force)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'fixed-array external force composite conservation')
   call require(all(state(:,1,:,:)==0).and.all(temperature(1,:,:)==42),'force leaves covered cells unchanged')
+  if(mode=='ctu') then
+    state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass;accel=0
+    allocate(inlet(nv,6),inlet_t(6))
+    do i=1,6
+      inlet(:,i)=cell
+    end do
+    inlet_t=t;faces='outflow';faces(3)='inflow'
+    call inventory(before)
+    call advance_open()
+    call require(ok.and.steps>1,'open boundary gas and spray coupling')
+    call inventory(after)
+    call require(all(abs(after-before-boundary-wall-chemical)<= &
+      3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'open boundary coupled inventory')
+    state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass
+    boundary=42;wall=42;chemical=42;theta=42
+    faces(3)='periodic'
+    call advance_open()
+    call require(.not.ok.and.steps==0.and.all(state==saved).and.all(temperature==saved_t), &
+      'unsupported particle boundary rollback')
+    call require(all(boundary==42).and.all(wall==42).and.all(chemical==42).and.theta==42.and. &
+      all(drops(1)%position==saved_drop%position).and.all(masses==saved_mass),'boundary failure ledger rollback')
+    faces(3)='inflow';inlet(1,3)=-1
+    call advance_open()
+    call require(.not.ok.and.all(state==saved).and.all(masses==saved_mass).and.all(boundary==42), &
+      'invalid inlet rollback after particle half')
+    inlet(:,3)=cell
+    ! A parcel leaves through a gas inlet. Its inventory must be removed once.
+    drops(1)%position=[.003_dp,1e-9_dp,.002_dp];drops(1)%velocity=[0._dp,-20._dp,0._dp]
+    call inventory(before)
+    call advance_open()
+    call require(ok.and.all(drops%mass==0).and.all(masses==0),'parcel exit through inlet')
+    call inventory(after)
+    call require(all(abs(after-before-boundary-wall-chemical)<= &
+      3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'exiting parcel coupled inventory')
+  end if
   print *, 'PASS: reactive EB gas and spray composition with atomic ledgers'
 contains
+  subroutine advance_open()
+    call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+      drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
+      2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
+      extended_geometry=extended,boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t)
+  end subroutine
   subroutine advance()
     call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
@@ -142,6 +187,7 @@ contains
     end do
     end do
     end do
+    if(all(drops%mass==0)) return
     call liquid_mixture_properties(liquids,masses(:,1)/drops(1)%mass,drops(1)%temperature,rho,cp,e,ok)
     call require(ok,'liquid inventory')
     amount=drops(1)%mass*drops(1)%multiplicity
