@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+PPM normal primitive-state prediction now agrees with compiled pinned PeleC
+projection bodies in 252 bounded cases
+([comparison](validation/ppm-pinned-normal-20260926.md)). Full CTU external
+parity and physical validation remain open.
+
 Serial single-level EB KH eligibility now previews the complete boundary flight,
 including periodic wraps and reflecting domain walls. Fixed-mechanism periodic
 and wall cases preserve children and pending inventories through restart

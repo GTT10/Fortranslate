@@ -271,7 +271,9 @@ common and recursive stepping now also forwards physical inflow masks
 ([checks](validation/ppm-tree-inflow-20260925.md)). Regular MPI spray hydro now
 forwards domain-end inflow masks too
 ([checks](validation/ppm-regular-mpi-inflow-20260925.md)). External
-normal-projection/full-CTU parity and broader qualification remain open.
+normal primitive projection now agrees in a bounded 252-case compiled-kernel
+comparison ([checks](validation/ppm-pinned-normal-20260926.md)). Full-CTU parity
+and broader qualification remain open.
 The reference also adjusts final fluxes with compressive artificial viscosity
 (default `difmag=0.1`). A regular-cell nodal-divergence/flux-correction API now
 implements this step with no-slip tangential exclusions and species-flux
