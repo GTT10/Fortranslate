@@ -70,6 +70,7 @@ contains
     real(dp), optional, intent(inout) :: source_change(:)
     real(dp) :: accel(3),low_accel(3),high_accel(3),force_ledger(reactive_nvar(size(species)))
     logical, optional, intent(in) :: particle_outflow
+    character(len=32), allocatable :: particle_faces(:)
     logical :: outflow
     real(dp), allocatable :: half_exterior(:)
     real(dp) :: exterior(reactive_nvar(size(species)))
@@ -118,7 +119,11 @@ contains
     if(present(particle_outflow)) outflow=particle_outflow
     valid=.true.
     if(present(boundary_faces)) then
-      valid=all(boundary_faces=='inflow'.or.boundary_faces=='outflow')
+      valid=all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic')
+      if(any(boundary_faces=='periodic')) then
+        particle_faces=boundary_faces
+        where(particle_faces=='inflow') particle_faces='outflow'
+      end if
       valid=valid.and.outflow
     else
       valid=.not.present(inflow_state)
@@ -275,16 +280,16 @@ contains
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
           wall_films=patches,film_mass=patch_mass,film_settings=film_settings, &
-          eb_geometry=geometry,nodal_phi=phi,model_rejected=rejected,eb_outflow_change=half_exterior)
+          eb_geometry=geometry,nodal_phi=phi,model_rejected=rejected,eb_outflow_change=half_exterior,boundary_faces=particle_faces)
         if(present(model_rejected)) model_rejected=rejected
       else if(present(last_id)) then
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,last_id=watermark,boundary_change=exchange, &
-          eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=half_exterior)
+          eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=half_exterior,boundary_faces=particle_faces)
       else
         call advance_mpi_amr_mixture_coupling(comm,species,transport,liquids,options,gas,temp,tree,owners, &
           drops,masses,lower,spacing,.5_dp*dt,steps,valid,boundary_change=exchange, &
-          eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=half_exterior)
+          eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=half_exterior,boundary_faces=particle_faces)
       end if
       if(valid.and.outflow) exterior=exterior+half_exterior
     end subroutine

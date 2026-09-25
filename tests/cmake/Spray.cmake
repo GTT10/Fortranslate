@@ -573,6 +573,11 @@ if(PELEF_ENABLE_SPRAY)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_impact_step> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_mpi_eb_impact_step_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
+      add_test(NAME spray_mpi_eb_periodic_step_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_eb_step> ${MPIEXEC_POSTFLAGS} periodic)
+      set_tests_properties(spray_mpi_eb_periodic_step_${ranks} PROPERTIES
+        LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_eb_step_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_step> ${MPIEXEC_POSTFLAGS})
@@ -966,7 +971,7 @@ if(TARGET pelef_mpi_spray_3d)
 endif()
 
 if(TARGET test_spray_mpi_eb_reactive)
-  foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle)
+  foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle ctu-periodic ctu-periodic-subcycle)
     add_test(NAME spray_mpi_eb_reactive_${ctu_mode}
       COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 4 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} ${ctu_mode})

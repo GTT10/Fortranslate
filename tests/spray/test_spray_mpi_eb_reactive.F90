@@ -126,6 +126,11 @@ program test_spray_mpi_eb_reactive
     end do
     inlet_t=t
   end if
+  if(index(test_mode,'periodic')>0) then
+    allocate(labels(6),open_boundary)
+    labels='periodic';labels(3:4)='outflow';open_boundary=.true.
+    if(rank==nranks-1) drops(1)%position(1)=.00399999_dp
+  end if
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
   call advance()

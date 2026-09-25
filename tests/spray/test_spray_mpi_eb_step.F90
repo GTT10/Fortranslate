@@ -31,11 +31,21 @@ program test_spray_mpi_eb_step
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=.001_dp,t,sound,r,volume
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
   logical :: ok
+  character(len=16) :: mode
+  character(len=32), allocatable :: faces(:)
+  real(dp), allocatable :: exterior(:)
+  integer :: initial_rank,final_rank
+  call get_command_argument(1,mode)
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
   call require(nranks==2.or.nranks==4,'rank count')
   owners=[0,nranks-1]
+  initial_rank=nranks-1;final_rank=0
+  if(mode=='periodic') then
+    initial_rank=0;final_rank=nranks-1
+    allocate(faces(6));faces='periodic';faces(3:4)='outflow'
+  end if
   call initialize_amr_patch_3d(4,4,4,1,2,1,4,1,4,2,patch(1),ok)
   call require(ok,'patch')
   call initialize_amr_patch_tree_3d([4,4,4],[1],patch,tree,ok)
@@ -84,18 +94,22 @@ program test_spray_mpi_eb_step
   call require(ok,'water')
   call initialize_spray_liquid(species,'H2O2',800._dp,2000._dp,350._dp,101325._dp,1e6_dp,liquids(2),ok)
   call require(ok,'peroxide')
-  allocate(drops(merge(1,0,rank==nranks-1)),masses(2,merge(1,0,rank==nranks-1)),before(nv),after(nv),ledger(nv))
-  if(rank==nranks-1) then
+  allocate(drops(merge(1,0,rank==initial_rank)),masses(2,merge(1,0,rank==initial_rank)),before(nv),after(nv),ledger(nv))
+  if(rank==initial_rank) then
     drops(1)=spray_parcel(1_int64,[.00199_dp,.001250001_dp,.0015_dp], &
       [20._dp,-20._dp,5._dp],1e-12_dp,350._dp,100._dp)
+    if(allocated(faces)) drops(1)%position(1)=.00399_dp
     masses(:,1)=drops(1)%mass*[.25_dp,.75_dp]
+  end if
+  if(allocated(faces)) then
+    allocate(exterior(nv));exterior=23
   end if
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   ledger=42;options%maximum_substeps=1
   call advance()
   call require(.not.ok.and.steps==0.and.all(ledger==42),'whole interval failure and ledger rollback')
   call require(all(masses==saved_mass).and.size(drops)==size(saved_drops),'particle population rollback')
-  if(rank==nranks-1) call require(all(drops(1)%position==saved_drops(1)%position),'particle position rollback')
+  if(rank==initial_rank) call require(all(drops(1)%position==saved_drops(1)%position),'particle position rollback')
   do node=1,2
     if(owners(node)/=rank) cycle
     call require(all(field%fields(node)%values==saved%fields(node)%values),'gas rollback')
@@ -109,9 +123,15 @@ program test_spray_mpi_eb_step
   call require(all(abs(after-before-ledger)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'composite gas parcel wall conservation')
   call require(ledger(3)>0,'reflected wall impulse')
-  call require(size(drops)==merge(1,0,rank==0),'final exposed coarse owner')
-  if(rank==0) then
-    call require(drops(1)%position(1)>.002_dp.and.drops(1)%position(2)>.00125_dp,'coarse crossing and fluid position')
+  if(allocated(exterior)) call require(all(exterior==0),'periodic crossing has no exterior loss')
+  call require(size(drops)==merge(1,0,rank==final_rank),'final gas patch owner')
+  if(rank==final_rank) then
+    if(allocated(faces)) then
+      call require(drops(1)%position(1)<.002_dp.and.drops(1)%position(1)>=0,'periodic crossing to refined owner')
+    else
+      call require(drops(1)%position(1)>.002_dp,'coarse crossing')
+    end if
+    call require(drops(1)%position(2)>.00125_dp,'fluid position')
     call require(drops(1)%temperature>350.and.drops(1)%mass<1e-12_dp,'heating and evaporation')
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if
@@ -120,7 +140,8 @@ program test_spray_mpi_eb_step
 contains
   subroutine advance()
     call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
-      tree,owners,drops,masses,zero,spacing,2e-5_dp,steps,ok,boundary_change=ledger,eb_geometry=g,nodal_phi=phi)
+      tree,owners,drops,masses,zero,spacing,2e-5_dp,steps,ok,boundary_change=ledger,eb_geometry=g,nodal_phi=phi, &
+      boundary_faces=faces,eb_outflow_change=exterior)
   end subroutine
   subroutine inventory(result)
     real(dp), intent(out) :: result(:)

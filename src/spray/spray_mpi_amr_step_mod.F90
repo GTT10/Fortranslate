@@ -97,7 +97,10 @@ contains
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
-    if(present(eb_geometry)) valid=valid.and..not.present(boundary_faces)
+    if(present(eb_geometry).and.present(boundary_faces)) then
+      valid=valid.and.all(faces=='periodic'.or.faces=='outflow')
+      valid=valid.and.present(eb_outflow_change).and..not.present(wall_films).and..not.options%khrt_children
+    end if
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
@@ -330,6 +333,7 @@ contains
           if(allocated(impact_exterior)) then
             if(allocated(liquid_energies)) deallocate(liquid_energies)
             allocate(liquid_energies(size(trial)));liquid_energies=0;outflow_faces='outflow'
+            if(present(boundary_faces)) outflow_faces=faces
             do p=1,size(trial)
               if(trial(p)%mass<=0) cycle
               call liquid_mixture_properties(components,next_mass(:,p)/trial(p)%mass,trial(p)%temperature,rho,cp,e,valid)
