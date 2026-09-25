@@ -181,3 +181,10 @@ older selected schema-2 two-level checkpoints are rejected rather than migrated.
 Fixed schema-1 records and the single-level API's optional schema-2 path remain
 available. [Element/checkpoint evidence](../../docs/validation/eb-carbon-checkpoint-20260917.md).
 [Selected application evidence](../../docs/validation/eb-selected-two-level-20260917.md).
+
+## Artificial viscosity
+
+`&eb_two_level` accepts finite nonnegative `difmag` for both single-patch and
+multipatch gas stepping. Default zero preserves the previous flux policy;
+negative values, including -1, are invalid. Restart requires the same positive
+coefficient. See [focused input/restart checks](../../docs/validation/eb-two-level-difmag-input-20260925.md).
