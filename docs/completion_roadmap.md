@@ -230,7 +230,10 @@ halos must include corner states and matching volume fractions
 tree hydro now requests complete donor halos and forwards explicit coefficients
 ([checks](validation/eb-tree-viscosity-20260925.md)). Its coarse/fine volume
 fractions use PCM ancestor values; reference geometry fidelity remains open,
-as does MPI coefficient/halo wiring. Serial recursive hydro and full
+as does recursive/coupled MPI coefficient wiring. MPI common-step hydro now
+fetches complete owner-local halos and applies agreed coefficients, with
+three-rank serial parity
+([checks](validation/mpi-eb-tree-viscosity-20260925.md)). Serial recursive hydro and full
 reaction/transport composition now forward the coefficient and request
 time-interpolated complete halos
 ([checks](validation/eb-tree-viscosity-split-20260925.md)). Regular MPI spray PLM hydro now
