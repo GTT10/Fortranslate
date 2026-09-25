@@ -16,6 +16,7 @@ p.add_argument('--selected', action='store_true')
 p.add_argument('--ctu', action='store_true')
 p.add_argument('--inflow', action='store_true')
 p.add_argument('--periodic', action='store_true')
+p.add_argument('--wall', action='store_true')
 p.add_argument('--scheduled', action='store_true')
 p.add_argument('--restart', action='store_true')
 p.add_argument('--split', action='store_true')
@@ -25,9 +26,10 @@ p.add_argument('--force', action='store_true')
 p.add_argument('--difmag', type=float)
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
-if a.inflow or a.periodic:
+if a.inflow or a.periodic or a.wall:
     a.ctu = True
-if a.periodic:
+if a.periodic or a.wall:
+    assert not (a.periodic and a.wall)
     assert not any((a.inflow, a.scheduled, a.impacts, a.split, a.khrt, a.outflow, a.force))
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -44,9 +46,12 @@ if a.inflow:
     (work / 'gas.nml').write_text(gas)
     spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
     (work / 'spray.nml').write_text(spray)
-if a.periodic:
+if a.periodic or a.wall:
     gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d',
         "&reactive_eb_3d\n boundary_faces='outflow','outflow','periodic','periodic','periodic','periodic',", 1)
+    if a.wall:
+        gas = gas.replace("'periodic'", "'isothermal_wall'").replace('&reactive_eb_3d',
+            '&reactive_eb_3d\n wall_temperature=1200,1200,1200,1200,1200,1200,', 1)
     (work / 'gas.nml').write_text(gas)
     spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
     spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
@@ -118,6 +123,11 @@ if a.outflow and not a.impacts:
     assert all(float(row['mass']) == 0 and float(row['component_mass_1']) == 0 for row in rows)
     boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
     assert float(boundary_line.split(':', 1)[1].split()[0]) < 0
+elif a.wall:
+    assert len(rows) == 2
+    assert all(.003 < float(row['y']) < .004 and float(row['mass']) > 0 for row in rows)
+    assert all(float(row['temperature']) > 350 and float(row['v']) < 0 for row in rows)
+    assert all(math.isfinite(float(value)) for row in rows for value in row.values())
 elif a.periodic:
     assert len(rows) == 2
     assert all(0 <= float(row['y']) < .001 and float(row['mass']) > 0 for row in rows)
@@ -240,7 +250,7 @@ if a.restart:
         for name, altered in [
             ('changed_inlet', resume.replace('inflow_velocity(2,3)=200', 'inflow_velocity(2,3)=201')),
             ('changed_faces', resume.replace("'inflow'", "'outflow'")),
-            ('unsupported_wall', resume.replace("'inflow'", "'slip_wall'")),
+            ('invalid_boundary', resume.replace("'inflow'", "'invalid'")),
         ]:
             (work / f'{name}.nml').write_text(altered)
             rejected = subprocess.run([exe, f'{name}.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
@@ -272,6 +282,19 @@ if a.restart:
         rejected = subprocess.run([exe, 'gas.nml', 'periodic_impacts.nml'], cwd=work, capture_output=True, text=True)
         (work / 'periodic_impacts.log').write_text(rejected.stdout + rejected.stderr)
         assert rejected.returncode != 0 and 'does not support impact films' in rejected.stderr
+    if a.wall:
+        for name, altered in [
+            ('changed_wall', resume.replace('1200', '1201')),
+            ('invalid_wall', resume.replace('1200', '-1')),
+            ('changed_wall_type', resume.replace("'isothermal_wall'", "'no_slip_wall'")),
+        ]:
+            (work / f'{name}.nml').write_text(altered)
+            rejected = subprocess.run([exe, f'{name}.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+            (work / f'{name}.log').write_text(rejected.stdout + rejected.stderr)
+            assert rejected.returncode != 0, name
+            assert (work / 'gas.csv').read_bytes() == full_gas
+            assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
+            assert (work / 'gas.csv.films.csv').read_bytes() == full_films
     if a.difmag is not None:
         for name, value in [('changed_difmag', a.difmag + .01), ('negative_difmag', -1), ('nan_difmag', 'NaN')]:
             altered = resume.replace(f'difmag={a.difmag}', f'difmag={value}')

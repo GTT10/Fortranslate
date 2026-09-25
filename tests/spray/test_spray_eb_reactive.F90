@@ -29,8 +29,9 @@ program test_spray_eb_reactive
   type(spray_parcel), allocatable :: drops(:)
   type(spray_parcel) :: saved_drop
   real(dp) :: phi(0:4,0:4,0:4),t,sound,r,temperature(4,4,4),saved_t(4,4,4),saved_mass(2,1)
-  real(dp), allocatable :: masses(:,:),inlet(:,:),inlet_t(:)
+  real(dp), allocatable :: masses(:,:),inlet(:,:),inlet_t(:),wall_t(:)
   character(len=16) :: faces(6)
+  character(len=16), parameter :: wall_modes(3)=[character(len=16)::'slip_wall','no_slip_wall','isothermal_wall']
   real(dp) :: ledger(5),interval=1e-8_dp
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
@@ -169,6 +170,25 @@ program test_spray_eb_reactive
     call inventory(after)
     call require(all(abs(after-before-boundary-wall-chemical)<= &
       3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'periodic gas and particle inventory')
+    do i=1,3
+      state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass
+      faces='outflow';faces(3:6)=wall_modes(i)
+      if(i==3) then
+        allocate(wall_t(6));wall_t=1200
+      end if
+      drops(1)%position=[.003_dp,.003999999_dp,.002_dp];drops(1)%velocity=[0._dp,20._dp,0._dp]
+      call inventory(before)
+      call advance_open()
+      call require(ok.and.drops(1)%mass>0.and.drops(1)%velocity(2)<0,'coupled domain wall reflection')
+      call inventory(after)
+      call require(all(abs(after-before-boundary-wall-chemical)<= &
+        3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'domain wall gas and particle inventory')
+    end do
+    state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass;boundary=42
+    wall_t=-1
+    call advance_open()
+    call require(.not.ok.and.all(state==saved).and.all(masses==saved_mass).and.all(boundary==42), &
+      'invalid wall temperature coupled rollback')
   end if
   print *, 'PASS: reactive EB gas and spray composition with atomic ledgers'
 contains
@@ -176,7 +196,8 @@ contains
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
       2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
-      extended_geometry=extended,boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t)
+      extended_geometry=extended,boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t, &
+      wall_temperature=wall_t)
   end subroutine
   subroutine advance()
     call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &

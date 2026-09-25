@@ -61,7 +61,7 @@ contains
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
       ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected, &
       split_created,particle_outflow,acceleration,source_change,difmag,extended_geometry, &
-      boundary_faces,inflow_state,inflow_temperature)
+      boundary_faces,inflow_state,inflow_temperature,wall_temperature)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -87,7 +87,7 @@ contains
     real(dp) :: accel(3),force_ledger(reactive_nvar(size(species)))
     logical, optional, intent(in) :: particle_outflow
     character(len=*), optional, intent(in) :: boundary_faces(6)
-    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(6)
     logical :: impacts,rejected,outflow
     character(len=16) :: outer_faces(6)
     real(dp) :: first_exterior(reactive_nvar(size(species))),second_exterior(reactive_nvar(size(species)))
@@ -127,20 +127,20 @@ contains
     ! Gas inlets do not inject parcels. Existing parcels may leave through
     ! either open gas face; their removed inventory enters the same ledger.
     if(present(boundary_faces)) then
-      if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) return
       if(.not.valid_spray_boundary_faces(boundary_faces)) return
-      if(impacts.and.any(boundary_faces=='periodic')) return
+      if(impacts.and.any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) return
       if(.not.present(extended_geometry)) return
       if(present(particle_outflow)) then
         if(.not.particle_outflow) return
       end if
       outflow=.true.
     else
-      if(present(inflow_state).or.present(inflow_temperature)) return
+      if(present(inflow_state).or.present(inflow_temperature).or.present(wall_temperature)) return
     end if
     outer_faces='outflow';first_exterior=0;second_exterior=0
     if(present(boundary_faces)) then
-      where(boundary_faces=='periodic') outer_faces='periodic'
+      outer_faces=boundary_faces
+      where(boundary_faces=='inflow') outer_faces='outflow'
     end if
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
@@ -188,7 +188,7 @@ contains
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,next_gas,next_temp, &
       theta,valid,target_volume_fraction,chemistry_integrator,boundary,wall,chemical,difmag=difmag, &
       extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
-      inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature)
     if (.not.valid) return
     if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &

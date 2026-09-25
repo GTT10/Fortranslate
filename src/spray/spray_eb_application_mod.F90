@@ -15,7 +15,8 @@ module spray_eb_application_mod
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,write_reactive_eb_3d_csv, &
     reactive_eb_integrals_3d
   use reactive_eb_cfl_3d_mod, only: compute_reactive_eb_cfl_timestep_3d
-  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d,reactive_eb_halo_bounds_3d
+  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d, &
+    reactive_eb_halo_bounds_3d,reactive_eb_isothermal_timestep_3d
   use spray_parcel_mod
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
@@ -101,8 +102,8 @@ contains
     type(eb_geometry_3d) :: g
     type(eb_geometry_3d), allocatable :: extended_geometry
     character(len=16), allocatable :: boundary_faces(:)
-    real(dp), allocatable :: inlet(:,:),inlet_t(:),primitive(:),ghost(:,:,:,:),ghost_t(:,:,:)
-    real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate
+    real(dp), allocatable :: inlet(:,:),inlet_t(:),primitive(:),ghost(:,:,:,:),ghost_t(:,:,:),wall_t(:)
+    real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate,wall_dt
     integer :: face
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
@@ -196,12 +197,9 @@ contains
       if(injection_times(n)<injection_times(n-1)) error stop 'Injection times must be nondecreasing'
     end do
     if(any(config%boundary_faces/='legacy')) then
-      if(any(config%boundary_faces/='inflow'.and.config%boundary_faces/='outflow'.and. &
-        config%boundary_faces/='periodic')) &
-        error stop 'EB spray supports only explicit inflow/outflow/periodic faces'
       if(.not.particle_outflow) error stop 'Explicit EB spray boundaries require particle_outflow'
-      if(wall_impacts.and.any(config%boundary_faces=='periodic')) &
-        error stop 'Periodic EB spray does not support impact films'
+      if(wall_impacts.and.any(config%boundary_faces/='inflow'.and.config%boundary_faces/='outflow')) &
+        error stop 'Periodic or domain-wall EB spray does not support impact films'
     end if
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
@@ -348,6 +346,7 @@ contains
     if(.not.ok) error stop 'Invalid EB initial gas'
     if(any(config%boundary_faces/='legacy')) then
       allocate(boundary_faces,source=config%boundary_faces)
+      if(any(boundary_faces=='isothermal_wall')) allocate(wall_t,source=config%wall_temperature)
       allocate(inlet(nv,6),inlet_t(6),primitive(reactive_nprim(size(species))))
       allocate(ghost(nv,0:config%nx+1,0:config%ny+1,0:config%nz+1), &
         ghost_t(0:config%nx+1,0:config%ny+1,0:config%nz+1))
@@ -442,6 +441,12 @@ contains
           dt=min(dt,config%transport_cfl/donor_rate)
         end if
       end if
+      if(allocated(wall_t)) then
+        call reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,g, &
+          boundary_faces,wall_t,config%transport_cfl,wall_dt,ok)
+        if(.not.ok) error stop 'Invalid EB spray wall thermal timestep'
+        dt=min(dt,wall_dt)
+      end if
       do attempt=1,30
         ok=.false.
         if(dt<=0.or.time+dt<=time) exit
@@ -454,7 +459,7 @@ contains
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
           walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf, &
           difmag=config%difmag,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
-          inflow_state=inlet,inflow_temperature=inlet_t)
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
@@ -465,7 +470,7 @@ contains
           last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow, &
           acceleration=acceleration,source_change=sf, &
           difmag=config%difmag,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
-          inflow_state=inlet,inflow_temperature=inlet_t)
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
         end if
         if(ok) exit
         dt=.5_dp*dt
@@ -559,6 +564,8 @@ contains
             config%inflow_density(j),config%inflow_pressure(j),config%inflow_velocity(:,j)
         end do
       end if
+      if(ios==0.and.allocated(wall_t)) &
+        write(scratch,'(a,6(1x,es27.18e3))',iostat=ios) 'wall-v1',wall_t
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)
         if(ios==0) write(scratch,*,iostat=ios) species(j)
