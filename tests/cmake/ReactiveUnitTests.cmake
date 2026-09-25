@@ -678,6 +678,7 @@ add_test(NAME unit_eb_two_level_transport_3d COMMAND test_eb_two_level_transport
 add_executable(test_eb_two_level_full_3d unit/test_eb_two_level_full_3d.F90)
 target_link_libraries(test_eb_two_level_full_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_two_level_full_3d COMMAND test_eb_two_level_full_3d)
+add_test(NAME unit_eb_two_level_viscosity_full_3d COMMAND test_eb_two_level_full_3d viscosity)
 
 add_test(
   NAME regression_reactive_eb_two_level_3d

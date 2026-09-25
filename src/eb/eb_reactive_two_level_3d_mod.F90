@@ -670,12 +670,13 @@ contains
   ! order. Only exposed coarse cells and active fine cells own chemical solves.
   subroutine advance_reactive_eb_two_level_strang_3d(species,reactions,coarse,fine,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,coarse_state,coarse_temperature,fine_state,fine_temperature, &
-      boundary_change,wall_change,chemistry_change,ok,chemistry_integrator,subcycle)
+      boundary_change,wall_change,chemistry_change,ok,chemistry_integrator,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt,rtol,atol
     logical, intent(in) :: chemistry_enabled
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
@@ -686,19 +687,20 @@ contains
     character(len=*), optional, intent(in) :: chemistry_integrator
     call advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt,chemistry_enabled,rtol,atol, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-      ok,chemistry_integrator,subcycle=subcycle)
+      ok,chemistry_integrator,subcycle=subcycle,difmag=difmag)
   end subroutine advance_reactive_eb_two_level_strang_3d
 
   subroutine advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-      minimum_theta,ok,chemistry_integrator,subcycle)
+      minimum_theta,ok,chemistry_integrator,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt,rtol,atol
     logical, intent(in) :: chemistry_enabled,transport_enabled,viscosity,conduction,diffusion,barodiffusion
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:),fine_state(:,:,:,:),fine_temperature(:,:,:)
@@ -709,11 +711,11 @@ contains
     if (transport_enabled) then
       call advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt,chemistry_enabled,rtol,atol, &
         coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-        ok,chemistry_integrator,transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
+        ok,chemistry_integrator,transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle,difmag)
     else
       call advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt,chemistry_enabled,rtol,atol, &
         coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,chemistry_change, &
-        ok,chemistry_integrator,subcycle=subcycle)
+        ok,chemistry_integrator,subcycle=subcycle,difmag=difmag)
       if (ok) minimum_theta=1._dp
     end if
   end subroutine advance_reactive_eb_two_level_full_3d
@@ -721,12 +723,13 @@ contains
   subroutine advance_two_level_split(species,reactions,coarse,fine,lower,ratio,solver,dt, &
       chemistry_enabled,rtol,atol,coarse_state,coarse_temperature,fine_state,fine_temperature, &
       boundary_change,wall_change,chemistry_change,ok,chemistry_integrator, &
-      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle)
+      transport,viscosity,conduction,diffusion,barodiffusion,minimum_theta,subcycle,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     character(len=*), intent(in) :: solver
+    real(dp), optional, intent(in) :: difmag
     real(dp), intent(in) :: dt,rtol,atol
     logical, intent(in) :: chemistry_enabled
     real(dp), intent(inout) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
@@ -756,10 +759,13 @@ contains
       end if
     end if
     ok=.false.;nvar=reactive_nvar(size(species))
+    if(present(difmag)) then
+      if(.not.ieee_is_finite(difmag).or.difmag<0) return
+    end if
     if (size(chemistry_change)/=nvar) return
     if (.not.chemistry_enabled.and..not.present(transport)) then
       call hydro_step(species,coarse,fine,lower,ratio,solver,dt, &
-        coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok)
+        coarse_state,coarse_temperature,fine_state,fine_temperature,boundary_change,wall_change,ok,difmag=difmag)
       if (ok) chemistry_change=0._dp
       return
     end if
@@ -793,7 +799,7 @@ contains
       if (.not.valid) return
     end if
     call hydro_step(species,coarse,fine,lower,ratio,solver,dt, &
-      candidate,temps,child,child_t,boundary,wall,valid)
+      candidate,temps,child,child_t,boundary,wall,valid,difmag=difmag)
     if (.not.valid) return
     if (present(transport)) then
       call transport_half(valid)
