@@ -220,8 +220,10 @@ the coefficient before flux integration and reflux, including recursive
 subcycling ([checks](validation/pcm-plm-tree-viscosity-20260925.md)). PCM/PLM
 application defaults now resolve to the reference 0.1 through shared regular
 gas configuration, including AMR checkpoint identity
-([checks](validation/regular-gas-default-difmag-20260925.md)). Direct-library,
-separate regular spray and EB default unification remain open. The viscosity kernel now accepts
+([checks](validation/regular-gas-default-difmag-20260925.md)). Serial/MPI regular spray
+now also defaults to 0.1 with changed-rank restart evidence
+([checks](validation/spray-default-difmag-20260925.md)). Direct-library and EB
+default unification remain open. The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
 ([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and

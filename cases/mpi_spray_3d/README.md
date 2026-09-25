@@ -423,7 +423,9 @@ same-rank and 2-to-4-rank continuation evidence; selected PPM was compiled
 but not executed in that check. See the
 [application evidence](../../docs/validation/ppm-regular-mpi-application-20260925.md).
 
-`difmag=-1` (default) selects coefficient 0.1 for PPM/pelec and zero otherwise.
+`difmag=-1` (default) selects coefficient 0.1 for every supported reconstruction
+and solver. Older zero-policy checkpoints require explicit `difmag=0`; see
+[default-policy checks](../../docs/validation/spray-default-difmag-20260925.md).
 PLM and PPM accept explicit nonnegative values; zero disables artificial viscosity.
 The resolved coefficient participates in collective agreement and checkpoint
 identity. Equivalent automatic/explicit choices can resume each other; changed

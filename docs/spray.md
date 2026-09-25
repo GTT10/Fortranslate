@@ -851,14 +851,15 @@ with fixed changed-rank continuation
 [checks](validation/ppm-regular-mpi-application-20260925.md).
 MPI AMR spray instead uses the gas namelist's `reconstruction` selector.
 
-For serial fixed/selected spray, `difmag=-1` (the default) selects `0.1` for
-PPM with `riemann_solver='pelec'` and zero otherwise. An explicit nonnegative
+For serial fixed/selected spray, `difmag=-1` (the default) selects `0.1`
+for all supported reconstructions and solvers. An explicit nonnegative
 `difmag` also works with PCM/PLM; zero disables the correction. Nonfinite values and
 negative values other than `-1` are rejected. The resolved coefficient is bound
 to checkpoint context for PPM and positive PCM/PLM settings, so automatic and explicit equivalent values can
 resume each other, while changed coefficients are rejected. PPM checkpoints
-from before this context addition are incompatible; the default PCM/PLM context
-is unchanged. See [PPM checks](validation/difmag-spray-input-20260925.md) and
+from before this context addition are incompatible. Older zero-policy PCM/PLM
+checkpoints require explicit `difmag=0`. See the
+[reference-default checks](validation/spray-default-difmag-20260925.md). See [PPM checks](validation/difmag-spray-input-20260925.md) and
 [PLM input/restart checks](validation/spray-plm-difmag-input-20260925.md).
 Regular MPI spray also accepts `difmag` in `&mpi_spray`, checks collective
 agreement, and binds the resolved coefficient to restart context
