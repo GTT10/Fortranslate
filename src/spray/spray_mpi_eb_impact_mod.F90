@@ -21,7 +21,8 @@ contains
   ! Film queries use the pre-event distributed film population. Wall receives budget.
   ! Caller owns remaining flight, compaction and final particle/film migration.
   subroutine impact_mpi_level_set(comm,components,properties,settings,phi,molecular_weights,pressure, &
-      previous,lower,upper,parcels,component_mass,films,film_mass,last_id,hit,fractions,wall_change,ok,model_rejected)
+      previous,lower,upper,parcels,component_mass,films,film_mass,last_id,hit,fractions,wall_change,ok, &
+      model_rejected,periodic_length)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: properties
@@ -35,6 +36,7 @@ contains
     logical, allocatable, intent(inout) :: hit(:)
     real(dp), allocatable, intent(inout) :: fractions(:)
     real(dp), intent(inout) :: wall_change(5)
+    real(dp), optional, intent(in) :: periodic_length(3)
     logical, optional, intent(out) :: model_rejected
     logical, intent(out) :: ok
     integer, allocatable :: indices(:)
@@ -126,7 +128,7 @@ contains
     call agree()
     if (.not.agreed) return
     call sample_mpi_wall_film_thickness(comm,films,location(:,:ne),normal(:,:ne), &
-      1e-10_dp*maxval(upper-lower),thickness,valid)
+      1e-10_dp*maxval(upper-lower),thickness,valid,periodic_length)
     if (.not.valid) return
     data(4,:)=thickness/diameters
     rejected=.false.

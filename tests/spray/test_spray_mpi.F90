@@ -941,7 +941,7 @@ contains
   subroutine check_film_query()
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: pos(:,:),normal(:,:),thickness(:),saved_thickness(:)
-    real(dp) :: expected,tolerance
+    real(dp) :: expected,tolerance,length(3)
     integer :: np,nq
     np=merge(2,0,rank<nranks-1);nq=merge(4,0,rank>0)
     allocate(patches(np),pos(3,nq),normal(3,nq),thickness(1));thickness=123
@@ -963,6 +963,18 @@ contains
       call require(thickness(2)==0.and.thickness(3)==0,'MPI film footprint and plane exclusion')
       call require(abs(thickness(4)-.01_dp*(nranks-1))<1e-15_dp,'MPI film normal filtering')
     end if
+    length=[.5_dp,0._dp,0._dp]
+    call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,1e-8_dp,thickness,ok,length)
+    call require(ok,'periodic film query')
+    if(nq>0) call require(abs(thickness(2)-expected)<1e-14_dp*expected,'remote periodic film image')
+    if(np>0) patches%diameter=1.2_dp
+    call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,1e-8_dp,thickness,ok,length)
+    call require(ok,'overlapping periodic film images')
+    if(nq>0) call require(abs(thickness(1)-3*expected)<1e-14_dp*expected,'all overlapping images summed')
+    saved_thickness=thickness
+    if(rank==0) length(1)=.6_dp
+    call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,1e-8_dp,thickness,ok,length)
+    call require(.not.ok.and.all(thickness==saved_thickness),'periodic length disagreement rollback')
     saved_thickness=thickness;tolerance=1e-8_dp
     if (rank==0) tolerance=2e-8_dp
     call sample_mpi_wall_film_thickness(MPI_COMM_WORLD,patches,pos,normal,tolerance,thickness,ok)

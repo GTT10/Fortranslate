@@ -324,14 +324,17 @@ contains
 
   ! Query distributed circular stationary film footprints without replicating films.
   ! Bounded query batches visit every rank; rank-local film inventories stay local.
-  subroutine sample_mpi_wall_film_thickness(comm,films,positions,normals,plane_tolerance,thickness,ok)
+  subroutine sample_mpi_wall_film_thickness(comm,films,positions,normals,plane_tolerance,thickness,ok,periodic_length)
     type(MPI_Comm), intent(in) :: comm
     type(spray_wall_film), intent(in) :: films(:)
     real(dp), intent(in) :: positions(:,:),normals(:,:),plane_tolerance
     real(dp), allocatable, intent(inout) :: thickness(:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: periodic_length(3)
     real(dp), allocatable :: query(:,:),local(:),total(:),candidate(:)
-    real(dp) :: delta(3),minimum,maximum,limit
+    real(dp) :: delta(3),minimum,maximum,limit,length(3),low_length(3),high_length(3),offset(3),radius
+    integer :: axis,first(3),last(3),i,j,k
+    integer(int64) :: images
     integer :: rank,nranks,ierr,source,nq,count_queries,q,p
     logical :: valid,agreed
     ok=.false.;nq=size(positions,2)
@@ -339,6 +342,16 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
+    length=0
+    if(present(periodic_length)) length=periodic_length
+    valid=all(ieee_is_finite(length)).and.all(length>=0).and.all(length<=1e9_dp)
+    valid=valid.and.all(length==0.or.length>=1e-12_dp)
+    call agree()
+    if(.not.agreed) return
+    call MPI_Allreduce(length,low_length,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(length,high_length,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(low_length/=high_length)) return
     valid=size(films)<=1000000.and.nq<=125000.and.size(positions,1)==3.and.all(shape(normals)==[3,nq])
     valid=valid.and.ieee_is_finite(plane_tolerance)
     valid=valid.and.plane_tolerance>=0.and.plane_tolerance<=1e9_dp
@@ -376,13 +389,38 @@ contains
       do q=1,count_queries
         do p=1,size(films)
           if (maxval(abs(films(p)%normal-query(4:,q)))>1e-12_dp) cycle
-          delta=query(:3,q)-films(p)%position
-          if (abs(dot_product(delta,query(4:,q)))>plane_tolerance) cycle
-          if (norm2(delta)>.5_dp*films(p)%diameter) cycle
-          if (films(p)%height>limit-local(q)) then
-            valid=.false.;exit
-          end if
-          local(q)=local(q)+films(p)%height
+          offset=query(:3,q)-films(p)%position;radius=.5_dp*films(p)%diameter
+          first=0;last=0;images=1
+          do axis=1,3
+            if(length(axis)==0) cycle
+            offset(axis)=modulo(offset(axis)+.5_dp*length(axis),length(axis))-.5_dp*length(axis)
+            if(radius/length(axis)>500000) then
+              valid=.false.;exit
+            end if
+            first(axis)=ceiling((-radius-offset(axis))/length(axis))
+            last(axis)=floor((radius-offset(axis))/length(axis))
+            images=images*int(max(0,last(axis)-first(axis)+1),int64)
+            if(images>1000000_int64) then
+              valid=.false.;exit
+            end if
+          end do
+          if(.not.valid) exit
+          do k=first(3),last(3)
+          do j=first(2),last(2)
+          do i=first(1),last(1)
+            delta=offset+real([i,j,k],dp)*length
+            if (abs(dot_product(delta,query(4:,q)))>plane_tolerance) cycle
+            if (norm2(delta)>radius) cycle
+            if (films(p)%height>limit-local(q)) then
+              valid=.false.;exit
+            end if
+            local(q)=local(q)+films(p)%height
+          end do
+          if(.not.valid) exit
+          end do
+          if(.not.valid) exit
+          end do
+          if(.not.valid) exit
         end do
         if (.not.valid) exit
       end do
