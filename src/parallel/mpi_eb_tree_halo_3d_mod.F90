@@ -18,11 +18,13 @@ contains
   ! Collective PCM halos with outflow/Mach inlet and optional ancestor time interpolation.
   ! By default only face donors are exchanged; remaining slots are zero.
   ! Optional volume fractions request complete fluid donors including corners.
-  ! Ancestor geometry uses PCM volume fractions, matching the serial halo API.
-  ! Geometry is replicated. Output fields have spatial lower bounds zero.
+  ! Without explicit target metrics, ancestor geometry uses PCM volume fractions.
+  ! Geometry is replicated. Spatial bounds are 1-halo_width:N+halo_width (default width 1).
+  ! Wider halos require owner-local target_volume_fraction fields on those bounds,
+  ! from the target resolution's extended geometry; coarse metric substitution is forbidden.
   subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction)
+      inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction,halo_width,target_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -30,6 +32,8 @@ contains
     type(amr_tree_state_3d), intent(in) :: state,temperature
     type(amr_tree_state_3d), intent(inout) :: ghost,ghost_temperature
     type(amr_tree_state_3d), optional, intent(inout) :: ghost_volume_fraction
+    integer, optional, intent(in) :: halo_width
+    type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
     type(amr_tree_state_3d) :: cv
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
@@ -48,13 +52,15 @@ contains
     real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed,metrics(3)
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
-    integer :: i,j,k,donor,source(3),count,q
-    real(dp) :: controls(19),low_controls(19),high_controls(19),inlet(reactive_nvar(size(species)))
+    integer :: i,j,k,donor,source(3),count,q,width
+    real(dp) :: controls(21),low_controls(21),high_controls(21),inlet(reactive_nvar(size(species)))
     real(dp) :: inlet_t
     integer :: inlet_face
     logical :: valid,ready,full_halo
     ok=.false.;nv=reactive_nvar(size(species))
     full_halo=present(ghost_volume_fraction)
+    width=1
+    if(present(halo_width)) width=halo_width
     ! Agree on finite inlet controls before any rank starts donor exchange.
     controls(:6)=-1;controls(7:)=0;valid=.true.
     if (present(inflow_temperature).or.present(inflow_pressure)) valid=present(inflow_mach)
@@ -62,6 +68,10 @@ contains
     if (present(inflow_temperature)) controls(7:12)=inflow_temperature
     if (present(inflow_pressure)) controls(13:18)=inflow_pressure
     controls(19)=merge(1._dp,0._dp,full_halo)
+    controls(20)=real(width,dp);controls(21)=merge(1._dp,0._dp,present(target_volume_fraction))
+    valid=valid.and.width>=1.and.width<=huge(1)/4
+    if(width>1) valid=valid.and.full_halo.and.present(target_volume_fraction)
+    if(present(target_volume_fraction)) valid=valid.and.full_halo
     valid=valid.and.all(ieee_is_finite(controls))
     call agree(valid,ready)
     if (.not.ready) return
@@ -70,9 +80,9 @@ contains
     valid=valid.and..not.any(controls(7:12)<=0.and.controls(:6)>=0)
     call agree(valid,ready)
     if (.not.ready) return
-    call MPI_Allreduce(controls,low_controls,19,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low_controls,21,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high_controls,19,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high_controls,21,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low_controls/=high_controls)) return
     ! Average only a private owner-local snapshot. This also validates geometry,
@@ -136,20 +146,51 @@ contains
         end if
       end do
     end if
+    if(present(target_volume_fraction)) then
+      valid=allocated(target_volume_fraction%fields)
+      call agree(valid,ready)
+      if(.not.ready) return
+      call agree(size(target_volume_fraction%fields)==size(owners),ready)
+      if(.not.ready) return
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        if(any(n>huge(1)-2*width)) then
+          valid=.false.;exit
+        end if
+        if(.not.allocated(target_volume_fraction%fields(node)%values)) then
+          valid=.false.;exit
+        end if
+        associate(v=>target_volume_fraction%fields(node)%values)
+        if(any(shape(v)/=[1,n+2*width]).or.any(lbound(v)/=[1,1-width,1-width,1-width])) then
+          valid=.false.;exit
+        end if
+        if(.not.all(ieee_is_finite(v))) then
+          valid=.false.;exit
+        end if
+        if(any(v<0).or.any(v>1)) then
+          valid=.false.;exit
+        end if
+        if(any(v(1,1:n(1),1:n(2),1:n(3))/=geometry(node)%volume_fraction)) valid=.false.
+        end associate
+      end do
+      call agree(valid,ready)
+      if(.not.ready) return
+    end if
     maximum=0_int64;valid=.true.
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
-      if (any(n>huge(1)-2)) then
+      if (any(n>huge(1)-2*width)) then
         valid=.false.;exit
       end if
       if(full_halo) then
         faces=1
         do axis=1,3
-          if(faces>int(huge(1)/max(nv,4),int64)/int(n(axis)+2,int64)) then
+          if(faces>int(huge(1)/max(nv,4),int64)/int(n(axis)+2*width,int64)) then
             valid=.false.;exit
           end if
-          faces=faces*int(n(axis)+2,int64)
+          faces=faces*int(n(axis)+2*width,int64)
         end do
         if(.not.valid) exit
         if(faces>int(huge(1)/max(nv,4),int64)-maximum) then
@@ -180,14 +221,14 @@ contains
       do node=1,size(owners)
         if (owners(node)/=rank) cycle
         n=tree%nodes(node)%shape
-        allocate(candidate%fields(node)%values(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1), &
-          ct%fields(node)%values(1,0:n(1)+1,0:n(2)+1,0:n(3)+1),stat=ios)
+        allocate(candidate%fields(node)%values(nv,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width), &
+          ct%fields(node)%values(1,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width),stat=ios)
         if (ios/=0) then
           valid=.false.;exit
         end if
         candidate%fields(node)%values=0._dp;ct%fields(node)%values=0._dp
         if(full_halo) then
-          allocate(cv%fields(node)%values(1,0:n(1)+1,0:n(2)+1,0:n(3)+1),stat=ios)
+          allocate(cv%fields(node)%values(1,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width),stat=ios)
           if(ios/=0) then
             valid=.false.;exit
           end if
@@ -214,7 +255,7 @@ contains
         first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
         if(full_halo) then
           if(axis/=1.or.side/=0) cycle
-          first=0;last=n+1
+          first=1-width;last=n+width
         end if
         do k=first(3),last(3)
         do j=first(2),last(2)
@@ -248,7 +289,9 @@ contains
           if(full_halo) cv%fields(target)%values(1,i,j,k)= &
             geometry(donor)%volume_fraction(source(1),source(2),source(3))
           if(full_halo) then
-            if(allocated(geometry(target)%halo_volume_fraction)) then
+            if(present(target_volume_fraction)) then
+              cv%fields(target)%values(1,i,j,k)=target_volume_fraction%fields(target)%values(1,i,j,k)
+            else if(allocated(geometry(target)%halo_volume_fraction)) then
               cell=global-origin(:,target)+1
               if(geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))>=0) &
                 cv%fields(target)%values(1,i,j,k)=geometry(target)%halo_volume_fraction(cell(1),cell(2),cell(3))
@@ -256,7 +299,7 @@ contains
             if(cv%fields(target)%values(1,i,j,k)<=0) cycle
           end if
           if (geometry(donor)%volume_fraction(source(1),source(2),source(3))<=0._dp) then
-            if(.not.full_halo) valid=.false.
+            if(.not.full_halo.or.width>1) valid=.false.
             cycle
           end if
           count=count+1

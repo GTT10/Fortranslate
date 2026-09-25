@@ -984,11 +984,17 @@ contains
   ! Requesting volume fractions fills interior/edges/corners too. Ancestor
   ! fractions use PCM donor values; physical corners use the first active inlet
   ! axis (x, then y, then z). No geometric fine-cell reconstruction is implied.
+  ! Wider halos require explicit target-resolution volume fractions, including
+  ! edges/corners. Actual output bounds correspond to 1-width:N+width; array
+  ! assignment preserves caller bounds. Width one retains the legacy face route.
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
-      ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction)
+      ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure, &
+      ghost_volume_fraction,halo_width,target_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
+    integer, optional, intent(in) :: halo_width
+    real(dp), optional, intent(in) :: target_volume_fraction(:,:,:)
     real(dp), intent(inout) :: ghost(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(inout) :: ghost_volume_fraction(0:,0:,0:)
@@ -1004,10 +1010,13 @@ contains
     integer(int64) :: global(3),mapped(3),local(3),offset(3)
     real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),primitive(:)
     real(dp) :: area,guess,recovered,speed,fraction,value(reactive_nvar(size(species)))
-    integer :: n(3),nv,level,depth,node,donor,index(3),inside(3),source(3),first(3),last(3),axis,side,i,j,k
+    integer :: n(3),nv,level,depth,node,donor,index(3),inside(3),source(3),first(3),last(3),axis,side,i,j,k,width
     real(dp) :: mach(6),pin(6),tin(6),inlet_value(reactive_nvar(size(species))),inlet_t
     logical :: valid,physical
-    ok=.false.;nv=reactive_nvar(size(species))
+    ok=.false.;nv=reactive_nvar(size(species));width=1
+    if(present(halo_width)) width=halo_width
+    if(width<1.or.width>huge(1)/4) return
+    if(width>1.and.(.not.present(ghost_volume_fraction).or..not.present(target_volume_fraction))) return
     mach=-1;pin=0;tin=0
     if (present(inflow_temperature).or.present(inflow_pressure)) then
       if (.not.present(inflow_mach)) return
@@ -1022,9 +1031,18 @@ contains
     if (.not.valid_tree(tree,nv)) return
     if (target<1.or.target>size(tree%nodes)) return
     n=tree%topology%nodes(target)%shape;level=tree%topology%nodes(target)%level+1
-    if (any(shape(ghost)/=[nv,n+2]).or.any(shape(ghost_temperature)/=n+2)) return
+    if(any(n>huge(1)-2*width)) return
+    if (any(shape(ghost)/=[nv,n+2*width]).or.any(shape(ghost_temperature)/=n+2*width)) return
     if(present(ghost_volume_fraction)) then
-      if(any(shape(ghost_volume_fraction)/=n+2)) return
+      if(any(shape(ghost_volume_fraction)/=n+2*width)) return
+    end if
+    if(present(target_volume_fraction)) then
+      if(.not.present(ghost_volume_fraction)) return
+      if(any(shape(target_volume_fraction)/=n+2*width)) return
+      if(.not.all(ieee_is_finite(target_volume_fraction))) return
+      if(any(target_volume_fraction<0).or.any(target_volume_fraction>1)) return
+      if(any(target_volume_fraction(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))/= &
+        tree%nodes(target)%geometry%volume_fraction)) return
     end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
@@ -1038,10 +1056,12 @@ contains
     snapshot=tree
     call average_down_reactive_eb_tree_3d(species,snapshot,valid)
     if (.not.valid) return
-    allocate(candidate(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+    allocate(candidate(nv,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width), &
+      temps(1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width), &
       primitive(reactive_nprim(size(species))))
     candidate=0._dp;temps=0._dp
-    allocate(filled(0:n(1)+1,0:n(2)+1,0:n(3)+1));filled=.false.
+    allocate(filled(1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width));filled=.false.
+    if(width==1) then
     do axis=1,3
     do side=0,1
       first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
@@ -1121,11 +1141,12 @@ contains
       end do
     end do
     end do
+    end if
     if(present(ghost_volume_fraction)) then
-      allocate(volumes(0:n(1)+1,0:n(2)+1,0:n(3)+1));volumes=0
-      do k=0,n(3)+1
-      do j=0,n(2)+1
-      do i=0,n(1)+1
+      allocate(volumes(1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width));volumes=0
+      do k=1-width,n(3)+width
+      do j=1-width,n(2)+width
+      do i=1-width,n(1)+width
         index=[i,j,k];global=origin(:,target)+int(index-1,int64)
         inlet_face=0
         do axis=1,3
@@ -1153,12 +1174,15 @@ contains
         end if
         if(donor==0) return
         volumes(i,j,k)=snapshot%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))
-        if(allocated(snapshot%nodes(target)%geometry%halo_volume_fraction)) then
+        if(present(target_volume_fraction)) then
+          volumes(i,j,k)=target_volume_fraction(i+width,j+width,k+width)
+        else if(allocated(snapshot%nodes(target)%geometry%halo_volume_fraction)) then
           local=global-origin(:,target)+1
           if(snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))>=0) &
             volumes(i,j,k)=snapshot%nodes(target)%geometry%halo_volume_fraction(local(1),local(2),local(3))
         end if
         if(volumes(i,j,k)<=0) cycle
+        if(width>1.and.snapshot%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))<=0) return
         if(filled(i,j,k)) cycle
         value=snapshot%nodes(donor)%state(:,source(1),source(2),source(3))
         guess=snapshot%nodes(donor)%temperature(source(1),source(2),source(3))
@@ -1197,7 +1221,8 @@ contains
       offset=origin(:,node)-origin(:,target)
       if (any(offset < -int(tree%topology%nodes(node)%shape,int64)).or.any(offset>int(n,int64))) cycle
       call overlay_reactive_eb_peer_halo_3d(species,snapshot%nodes(target)%geometry,snapshot%nodes(node)%geometry, &
-        int(offset),snapshot%nodes(node)%state,snapshot%nodes(node)%temperature,candidate,temps,valid)
+        int(offset),snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
+        candidate(:,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1),valid)
       if (.not.valid) return
     end do
     ghost=candidate;ghost_temperature=temps

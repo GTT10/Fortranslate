@@ -98,6 +98,7 @@ program test_mpi_eb_tree_halo_3d
       call require(all(ghost%fields(node)%values==reference),'exact serial face U and inactive zeros')
       call require(all(gh_t%fields(node)%values(1,:,:,:)==reference_t),'exact serial face T')
     end do
+    call wide_checks()
     call temporal_checks()
     ! Root unrefined boundary survives averaging, then fails donor EOS after exchange.
     if (rank==owners(1)) local%fields(1)%values(1,4,4,4)=-1._dp
@@ -123,6 +124,83 @@ program test_mpi_eb_tree_halo_3d
   if (rank==0) print *, 'PASS: MPI EB face halos, exact serial parity and rollback'
   call MPI_Finalize(status)
 contains
+  subroutine wide_checks()
+    type(amr_tree_state_3d) :: metrics,wide_u,wide_t,wide_vf,old_u,old_t,old_vf,end_u
+    type(eb_reactive_tree_3d) :: end_tree
+    type(eb_geometry_3d) :: extended
+    real(dp) :: serial_u(nv,-5:10,-5:10,-5:10),serial_t(-5:10,-5:10,-5:10),serial_vf(-5:10,-5:10,-5:10)
+    real(dp) :: spacing(3),lo(3),hi(3)
+    integer :: p,width,depth
+    real(dp) :: fractions(2)
+    allocate(metrics%fields(5))
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      spacing=[geometry(p)%dx,geometry(p)%dy,geometry(p)%dz]
+      lo=[geometry(p)%x_lower,geometry(p)%y_lower,geometry(p)%z_lower]-6*spacing
+      hi=[geometry(p)%x_upper,geometry(p)%y_upper,geometry(p)%z_upper]+6*spacing
+      call build_axis_plane_eb_geometry_3d(16,16,16,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),'z',.31_dp,extended,ok)
+      call require(ok,'wide target geometry')
+      allocate(metrics%fields(p)%values(1,-5:10,-5:10,-5:10))
+      metrics%fields(p)%values(1,:,:,:)=extended%volume_fraction
+      ! Preserve the exact metrics produced by hierarchy coarsening in the center.
+      metrics%fields(p)%values(1,1:4,1:4,1:4)=geometry(p)%volume_fraction
+    end do
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,wide_u,wide_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=wide_vf,halo_width=6,target_volume_fraction=metrics)
+    call require(ok,'six-layer MPI EB halos')
+    do p=1,5
+      call require(allocated(wide_u%fields(p)%values).eqv.(owners(p)==rank),'wide halos remain owner local')
+      if(owners(p)/=rank) cycle
+      call fill_reactive_eb_tree_halo_3d(species,tree,p,serial_u,serial_t,ok,ghost_volume_fraction=serial_vf, &
+        halo_width=6,target_volume_fraction=metrics%fields(p)%values(1,:,:,:))
+      call require(ok,'six-layer serial EB halos')
+      call require(all(lbound(wide_u%fields(p)%values)==[1,-5,-5,-5]),'wide halo spatial bounds')
+      call require(all(wide_u%fields(p)%values==serial_u),'wide peer/ancestor/outflow U parity')
+      call require(all(wide_t%fields(p)%values(1,:,:,:)==serial_t),'wide peer/ancestor/outflow T parity')
+      call require(all(wide_vf%fields(p)%values(1,:,:,:)==serial_vf),'wide fine-metric parity')
+      call require(all(serial_vf==metrics%fields(p)%values(1,:,:,:)),'target geometry controls every halo layer')
+    end do
+    if(rank==owners(1)) then
+      call require(all(wide_u%fields(1)%values(:,-5,1,3)==wide_u%fields(1)%values(:,0,1,3)), &
+        'all six physical outflow layers use the same boundary donor')
+    end if
+    end_u=local;end_tree=tree;fractions=[.25_dp,.75_dp]
+    do p=1,5
+      end_tree%nodes(p)%state=2*tree%nodes(p)%state
+      if(owners(p)/=rank) cycle
+      end_u%fields(p)%values=2*local%fields(p)%values
+    end do
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,wide_u,wide_t,MPI_COMM_WORLD,ok, &
+      ancestor_start=local,ancestor_end=end_u,temperature_start=lt,temperature_end=lt,ancestor_fraction=fractions, &
+      ghost_volume_fraction=wide_vf,halo_width=6,target_volume_fraction=metrics)
+    call require(ok,'wide temporal MPI halos')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      depth=topology%nodes(p)%level
+      call fill_reactive_eb_tree_halo_3d(species,tree,p,serial_u,serial_t,ok,tree,end_tree,fractions(:depth), &
+        ghost_volume_fraction=serial_vf,halo_width=6,target_volume_fraction=metrics%fields(p)%values(1,:,:,:))
+      call require(ok,'wide temporal serial halos')
+      call require(all(wide_u%fields(p)%values==serial_u).and.all(wide_t%fields(p)%values(1,:,:,:)==serial_t), &
+        'wide ancestor time interpolation matches serial exactly')
+    end do
+    old_u=wide_u;old_t=wide_t;old_vf=wide_vf
+    width=6
+    if(rank==0) width=5
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,wide_u,wide_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=wide_vf,halo_width=width,target_volume_fraction=metrics)
+    call require(.not.ok,'collective wide halo mismatch rejection')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(wide_u%fields(p)%values==old_u%fields(p)%values).and. &
+        all(wide_t%fields(p)%values==old_t%fields(p)%values).and. &
+        all(wide_vf%fields(p)%values==old_vf%fields(p)%values),'wide collective rollback')
+    end do
+    if(rank==owners(1)) metrics%fields(1)%values(1,1,1,1)=.5_dp
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,wide_u,wide_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=wide_vf,halo_width=6,target_volume_fraction=metrics)
+    call require(.not.ok,'wide central geometry mismatch rejection')
+  end subroutine wide_checks
+
   subroutine temporal_checks()
     type(eb_reactive_tree_3d) :: start_tree,end_tree
     type(amr_tree_state_3d) :: start_u,end_u,start_t,end_t
