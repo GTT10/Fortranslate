@@ -1,4 +1,23 @@
+module sdc_test_source_mod
+  use precision_mod, only: dp
+  implicit none
+  logical :: sdc_failure=.false.
+  integer :: sdc_calls=0
+contains
+  subroutine sdc_test_sources(state,temp,time,sources,valid)
+    real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
+    real(dp), intent(out) :: sources(:,:,:,:,:)
+    logical, intent(out) :: valid
+    sdc_calls=sdc_calls+1;sources=0;valid=.false.
+    if(sdc_failure.and.time>0) return
+    if(any(temp<=0)) return
+    sources(:,:,:,:,1)=12._dp*state;sources(:,:,:,:,2)=-2._dp*state
+    valid=.true.
+  end subroutine sdc_test_sources
+end module sdc_test_source_mod
+
 program test_reactive_ppm_step_3d
+  use sdc_test_source_mod, only: sdc_test_sources,sdc_failure,sdc_calls
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -6,7 +25,7 @@ program test_reactive_ppm_step_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_euler_ppm_ctu_3d,advance_reactive_full_3d,advance_reactive_boundary_hydro_3d
-  use reactive_3d_mod, only: compute_reactive_external_source_3d,construct_reactive_sdc_state_3d
+  use reactive_3d_mod, only: compute_reactive_external_source_3d,construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -35,6 +54,7 @@ program test_reactive_ppm_step_3d
   end do
   end do
   end do
+  call check_sdc_iteration()
   call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
@@ -94,6 +114,36 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+
+  subroutine check_sdc_iteration()
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),old(nv,4,4,4),ot(4,4,4),factor,expected_factor
+    integer :: iterations,iteration
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      old(:,i,j,k)=u(:,1,1,1);ot(i,j,k)=t(1,1,1)
+    end do
+    end do
+    end do
+    do iterations=1,3,2
+      state=old;temp=ot;sdc_calls=0
+      call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+        iterations,2,sdc_test_sources,ok)
+      factor=1
+      do iteration=1,iterations
+        factor=1+5*dt*(1+factor)
+      end do
+      expected_factor=1+5*dt*(1+factor)
+      call require(ok.and.sdc_calls==iterations+1,'SDC old source once and new source each iteration')
+      call require(maxval(abs(state-expected_factor*old)/max(1._dp,abs(old)))<3e-14_dp, &
+        'SDC rebuilds from old state instead of accumulating steps')
+    end do
+    state=old;temp=ot;sdc_failure=.true.
+    call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,2,sdc_test_sources,ok)
+    call require(.not.ok.and.all(state==old).and.all(temp==ot),'SDC new source failure rolls back entire step')
+    sdc_failure=.false.
+  end subroutine check_sdc_iteration
   subroutine check_sdc_assembly()
     real(dp) :: old(nv,2,2,2),state(nv,2,2,2),os(nv,2,2,2,2),ns(nv,2,2,2,2)
     real(dp) :: hydro(nv,2,2,2),reaction(nv-4,2,2,2),expected(nv,2,2,2)

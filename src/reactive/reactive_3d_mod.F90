@@ -23,7 +23,7 @@ module reactive_3d_mod
   public :: adjust_reactive_artificial_viscosity_3d
   public :: reactive_ppm_transverse_pressure_3d
   public :: compute_reactive_external_source_3d
-  public :: construct_reactive_sdc_state_3d
+  public :: construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
   public :: compute_reactive_ppm_ctu_fluxes_3d
@@ -45,7 +45,74 @@ module reactive_3d_mod
   public :: reactive_integrals_3d
   public :: reactive_extrema_3d
 
+  abstract interface
+    subroutine reactive_sdc_source_evaluator(state,temperature,time,sources,ok)
+      import dp
+      real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time
+      real(dp), intent(out) :: sources(:,:,:,:,:)
+      logical, intent(out) :: ok
+    end subroutine reactive_sdc_source_evaluator
+  end interface
 contains
+
+  ! Nonreacting periodic do_sdc_iteration. Source callbacks produce physical
+  ! cell rates; the CTU wrapper supplies periodic source halos.
+  subroutine advance_reactive_sdc_periodic_3d(species,state,temperature,spacing,dt,time,iterations, &
+      source_count,evaluate_sources,ok,difmag)
+    type(nasa7_species), intent(in) :: species(:)
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: spacing(3),dt,time
+    integer, intent(in) :: iterations,source_count
+    procedure(reactive_sdc_source_evaluator) :: evaluate_sources
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: difmag
+    real(dp), allocatable :: old_sources(:,:,:,:,:),new_sources(:,:,:,:,:),predictor(:,:,:,:),zero(:,:,:,:)
+    real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),hydro(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp) :: theta
+    integer :: n(3),nv,iteration,i,j,k
+    logical :: valid
+    ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
+    if(any(n<2).or.any(shape(state)/=[nv,n]).or.iterations<1.or.source_count<0) return
+    if(.not.all(ieee_is_finite([spacing,dt,time]))) return
+    if(any(spacing<=0).or.dt<=0) return
+    allocate(old_sources(nv,n(1),n(2),n(3),source_count),new_sources(nv,n(1),n(2),n(3),source_count))
+    allocate(predictor,mold=state);allocate(zero,mold=state);zero=0
+    allocate(candidate,mold=state);allocate(ct,mold=temperature);allocate(recovered,mold=temperature);allocate(hydro,mold=state)
+    allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
+    call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
+    if(.not.valid) return
+    call evaluate_sources(state,ct,time,old_sources,valid)
+    if(.not.valid) return
+    new_sources=old_sources
+    do iteration=1,iterations
+      ! Hydro.cpp sums half new then half old rates, without including hydro itself.
+      call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid)
+      if(.not.valid) return
+      call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,.false.,.true.,'pelec', &
+        fx,fy,fz,theta,valid,difmag=difmag,conserved_source=predictor)
+      if(.not.valid) return
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        hydro(:,i,j,k)=-(fx(:,i,j,k)-fx(:,i-1,j,k))/spacing(1)- &
+          (fy(:,i,j,k)-fy(:,i,j-1,k))/spacing(2)-(fz(:,i,j,k)-fz(:,i,j,k-1))/spacing(3)
+      end do
+      end do
+      end do
+      call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
+      if(.not.valid) return
+      call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
+      if(.not.valid) return
+      call evaluate_sources(candidate,ct,time+dt,new_sources,valid)
+      if(.not.valid) return
+      call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
+      if(.not.valid) return
+      call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
+      ct=recovered
+      if(.not.valid) return
+    end do
+    state=candidate;temperature=ct;ok=.true.
+  end subroutine advance_reactive_sdc_periodic_3d
 
   ! Pinned Advance.cpp::construct_Snew. Source-list order and new-before-old
   ! additions are intentional. EOS recovery belongs to the iteration driver.
