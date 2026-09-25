@@ -26,6 +26,10 @@ Riemann corrections reach regular serial/MPI AMR and MPI spray dispatch, while
 explicit pressure outlets retain their prescribed donors
 ([checks](validation/ppm-physical-riemann-20260926.md)).
 
+EB PLM normal prediction also preserves independently limited species weights
+at open faces, with final CTU species-flux normalization retained
+([regression](validation/eb-plm-species-20260926.md)).
+
 Serial single-level EB KH eligibility now previews the complete boundary flight,
 including periodic wraps and reflecting domain walls. Fixed-mechanism periodic
 and wall cases preserve children and pending inventories through restart
