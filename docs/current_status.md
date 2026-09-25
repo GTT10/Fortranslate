@@ -11,7 +11,9 @@ Older milestone prose remains historical detail, not a current global status.
 
 Patch Euler transport now accepts isothermal wall temperatures with transactional
 heat-flux checks ([evidence](validation/eb-isothermal-patch-20260926.md)).
-Tree/MPI temperature forwarding remains open.
+Serial common/recursive tree temperature forwarding now passes heated-wall
+conservation checks ([evidence](validation/eb-tree-isothermal-transport-20260926.md)).
+MPI forwarding and thermal timestep bounds remain open.
 
 MPI EB particle drift now supports specular domain-wall reflection with exterior
 impulse accounting ([checks](validation/mpi-eb-wall-particle-20260926.md)).
