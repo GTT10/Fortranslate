@@ -227,7 +227,10 @@ rejection ([checks](validation/eb-default-difmag-20260925.md)). Direct-library
 default unification remains open. Regular boundary/full-composition and PPM
 flux APIs now default to 0.1 independently of solver/reconstruction
 ([checks](validation/regular-library-default-difmag-20260925.md)); remaining
-low-level and hierarchy wrappers still require review. The viscosity kernel now accepts
+low-level and hierarchy wrappers still require review. Serial/MPI AMR tree
+common/level hydro now resolves omission to 0.1, with common/recursive
+serial-versus-MPI equivalence checks
+([evidence](validation/amr-tree-default-difmag-20260925.md)). The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
 ([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and
