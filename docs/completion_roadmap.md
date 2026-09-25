@@ -196,7 +196,10 @@ regular, AMR, tree and MPI spray callers provide physical no-slip masks
 ([checks](validation/ppm-viscosity-dispatch-20260925.md)). The CTU API accepts an
 explicit coefficient. Fixed/selected regular gas namelist input now exposes it
 ([checks](validation/difmag-regular-input-20260925.md)); those executables have
-no restart interface. AMR/spray coefficient input and restart identity remain open. Regular MPI spray
+no restart interface. Serial fixed/selected regular spray now forwards the
+coefficient through coupled stepping and binds its resolved value to restart
+([checks](validation/difmag-spray-input-20260925.md)). MPI spray and AMR
+coefficient input and restart identity remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity

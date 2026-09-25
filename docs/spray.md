@@ -851,6 +851,16 @@ with fixed changed-rank continuation
 [checks](validation/ppm-regular-mpi-application-20260925.md).
 MPI AMR spray instead uses the gas namelist's `reconstruction` selector.
 
+For serial fixed/selected spray, `difmag=-1` (the default) selects `0.1` for
+PPM with `riemann_solver='pelec'` and zero otherwise. An explicit nonnegative
+`difmag` requires PPM; zero disables the correction. Nonfinite values and
+negative values other than `-1` are rejected. The resolved coefficient is bound
+to PPM checkpoint context, so automatic and explicit equivalent values can
+resume each other, while changed coefficients are rejected. PPM checkpoints
+from before this context addition are incompatible; the default PCM/PLM context
+is unchanged. See [input and restart checks](validation/difmag-spray-input-20260925.md).
+MPI and AMR spray coefficient input remains pending.
+
 ## Build and run
 
 A fixed H2/O2 gas mechanism with water droplets requires no new dependencies:
