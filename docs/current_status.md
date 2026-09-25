@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Serial single-level EB KH eligibility now previews the complete boundary flight,
+including periodic wraps and reflecting domain walls. Fixed-mechanism periodic
+and wall cases preserve children and pending inventories through restart
+([checks](validation/serial-eb-boundary-khrt-20260926.md)).
+
 The serial EB impact interval now supports periodic crossings and specular
 domain reflection before EB deposition, using the shared periodic film-image
 counter ([checks](validation/serial-eb-periodic-impact-20260926.md)). Single-level
