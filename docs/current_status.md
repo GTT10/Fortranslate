@@ -93,7 +93,7 @@ restart ([checks](validation/eb-tree-periodic-application-20260926.md)).
 MPI EB spray also accepts periodic input, with fixed-mechanism 2/4-rank
 comparison and 2-to-4-rank restart checks
 ([checks](validation/mpi-eb-periodic-application-20260926.md)). Periodic
-wall-impact/film and KH child-generation combinations reject at input.
+wall-impact/film combinations reject at input.
 The composite EB particle stencil now accepts periodic axes and checks
 visibility along segmented, wrapped paths to donor centroids
 ([checks](validation/eb-tree-periodic-stencil-20260926.md)). MPI particle field
@@ -102,8 +102,9 @@ with conservation and rollback checks
 ([checks](validation/mpi-eb-periodic-field-20260926.md)). Mixed-particle drift
 and reacting MPI EB spray coupling now forward periodic faces through field
 exchange, drift and migration, with common/recursive CTU conservation checks
-([checks](validation/mpi-eb-periodic-step-20260926.md)). Periodic film and
-KH child-generation combinations remain unsupported.
+([checks](validation/mpi-eb-periodic-step-20260926.md)). Periodic KH child
+generation now follows wrapped parent flight and passes changed-rank continuation
+([evidence](validation/mpi-eb-periodic-khrt-20260926.md)); periodic films remain unsupported.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
