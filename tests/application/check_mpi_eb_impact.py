@@ -16,12 +16,15 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--khrt', action='store_true')
 p.add_argument('--domain-wall', action='store_true')
+p.add_argument('--periodic', action='store_true')
 p.add_argument('--pcm', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--specular-outflow', action='store_true')
 p.add_argument('--force', action='store_true')
 a = p.parse_args()
+if a.periodic:
+    assert a.khrt and not a.domain_wall, '--periodic requires KH without --domain-wall'
 if a.pcm:
     assert a.domain_wall, '--pcm requires --domain-wall'
 if a.domain_wall:
@@ -63,6 +66,9 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         if not a.pcm:
             tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
         controls += "boundary_faces='no_slip_wall','no_slip_wall','outflow','outflow','outflow','outflow',"
+    if a.periodic:
+        tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
+        controls += "boundary_faces='periodic','periodic','outflow','outflow','outflow','outflow',"
     if a.selected:
         controls += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
     (directory / 'tree.nml').write_text(tree.replace('&eb_tree', '&eb_tree\n' + controls + extra, 1))
@@ -81,7 +87,7 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
         spray = spray.replace('&eb_spray', "&eb_spray\n particle_options%breakup_model='khrt',"
                               'particle_options%khrt_children=.true.,particle_options%khrt_reference_diameter_cubed=1.e-25,'
                               'particle_options%drag=.false.,particle_options%heat=.false.,particle_options%evaporation=.false.,', 1)
-    if a.domain_wall:
+    if a.domain_wall or a.periodic:
         spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
         spray = spray.replace('center=.0015,.0015,.0015', 'center=.003999999,.0015,.0015')
     if mode == 'split':
@@ -129,6 +135,8 @@ for mode in (('deposit',) if a.force else ('outflow',) if a.specular_outflow els
         assert sorted(int(r['id']) for r in particles) == list(range(1, len(particles)+1))
         if a.domain_wall:
             assert all(float(r['u']) < 0 and 0 < float(r['x']) < .004 for r in particles)
+        elif a.periodic:
+            assert all(float(r['u']) > 0 and 0 <= float(r['x']) < .001 for r in particles)
         else:
             assert all(float(r['u']) > 0 and float(r['x']) > .0015 for r in particles)
     elif a.outflow:

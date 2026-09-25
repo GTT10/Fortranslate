@@ -65,6 +65,10 @@ contains
     real(dp), allocatable :: patch_mass(:,:),trial_patch_mass(:,:),impact_previous(:,:),impact_pressure(:)
     real(dp) :: mw(size(components)),impact_wall(5),wall_ledger(5)
     logical, allocatable :: hit(:),eligible(:)
+    type(spray_parcel) :: preview(1)
+    logical :: preview_contact(1)
+    real(dp) :: preview_change(5),preview_exterior(5)
+    integer :: preview_hits
     logical :: crossing
     real(dp) :: crossing_fraction,crossing_position(3),crossing_normal(3)
     integer :: crossing_cell(3)
@@ -100,7 +104,6 @@ contains
     if(present(eb_geometry).and.present(boundary_faces)) then
       valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
       valid=valid.and.present(eb_outflow_change).and..not.present(wall_films)
-      if(any(faces=='periodic')) valid=valid.and..not.options%khrt_children
     end if
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
@@ -301,6 +304,19 @@ contains
             ! on that substep. Unhit parents and their children then drift together.
             do p=1,np
               if(trial(p)%mass<=0) cycle
+              if(present(boundary_faces)) then
+                if(any(faces=='periodic')) then
+                  ! Use the same segmented flight as the eventual drift, including
+                  ! EB or reflecting-wall contacts after a periodic crossing.
+                  preview(1)=trial(p);preview_contact=.false.
+                  preview_change=0;preview_exterior=0;preview_hits=0
+                  call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,preview, &
+                    preview_change,preview_hits,valid,faces,[0._dp],preview_exterior,preview_contact)
+                  if(.not.valid) exit
+                  eligible(p)=.not.preview_contact(1)
+                  cycle
+                end if
+              end if
               crossing=.false.;crossing_fraction=0;crossing_position=0;crossing_normal=0;crossing_cell=0
               delta=dt*trial(p)%velocity;finish=trial(p)%position+delta
               if(present(eb_outflow_change)) then

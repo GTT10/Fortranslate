@@ -660,8 +660,8 @@ contains
     if(code/=0) error stop 'Invalid MPI EB spray input'
     if(allocated(active_faces).and..not.particle_outflow) &
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
-    if(any(boundary_faces=='periodic').and.(wall_impacts.or.particle_options%khrt_children)) &
-      error stop 'Periodic EB spray films and KH children are not connected'
+    if(any(boundary_faces=='periodic').and.wall_impacts) &
+      error stop 'Periodic EB spray films are not connected'
     if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
       boundary_faces=='isothermal_wall').and. &
       wall_impacts) &

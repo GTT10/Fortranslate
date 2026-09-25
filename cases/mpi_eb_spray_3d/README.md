@@ -422,9 +422,12 @@ in the spray input. For the supplied y-normal plane geometry:
 Gas and particle exchange use wrapped donors. Parcels crossing periodic faces
 wrap into the domain and migrate to the resulting gas-patch owner. Other
 explicit faces allow particle outflow. Restart retains the boundary labels;
-changing them is rejected. `wall_impacts` and `particle_options%khrt_children`
-must remain false for periodic cases. Specular reflection from the embedded
-surface remains available.
+changing them is rejected. `wall_impacts` must remain false for periodic cases.
+KH child generation is supported. Parent eligibility checks the complete wrapped
+flight with the same drift routine used for movement. Periodic crossings permit
+release; EB or reflecting domain-wall contacts suppress release for that substep.
+Children then drift and migrate with their parent population. Specular reflection
+from the embedded surface remains available.
 
 ## Adiabatic domain walls
 
@@ -458,5 +461,4 @@ particles reflect specularly without a direct particle-wall heat model.
 Gas heat transfer and particle domain-wall impulse enter the boundary ledger.
 The common/recursive coupled transaction includes both processes. Restart binds
 all six wall temperatures; changed values reject before continuation. The
-domain-wall film restriction above also applies to thermal walls. Periodic KH
-child generation remains unsupported.
+domain-wall film restriction above also applies to thermal walls.

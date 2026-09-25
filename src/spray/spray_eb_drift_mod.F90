@@ -13,13 +13,15 @@ contains
   ! change is particle inventory after minus before (the wall receives -change).
   ! Publish the entire population and diagnostics only after every path succeeds.
   subroutine drift_spray_level_set(phi,lower,upper,dt,maximum_hits,parcels,change,hits,ok, &
-      outer_faces,specific_energy,outer_change)
+      outer_faces,specific_energy,outer_change,wall_contact)
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),dt
     integer, intent(in) :: maximum_hits
     type(spray_parcel), intent(inout) :: parcels(:)
     real(dp), intent(inout) :: change(5)
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
+    logical, optional, intent(inout) :: wall_contact(:)
+    logical :: contacted(size(parcels))
     character(len=*), optional, intent(in) :: outer_faces(6)
     real(dp), optional, intent(in) :: specific_energy(:)
     real(dp), optional, intent(inout) :: outer_change(5)
@@ -30,6 +32,10 @@ contains
     integer :: p,n,cell(3),count,allocation_status
     logical :: hit,valid
     ok=.false.
+    if(present(wall_contact)) then
+      if(size(wall_contact)/=size(parcels)) return
+    end if
+    contacted=.false.
     if (.not.ieee_is_finite(dt)) return
     if (dt<0.or.dt>1e6_dp.or.maximum_hits<0.or.maximum_hits>1024.or.size(parcels)>1000000) return
     ! Validate geometry independently of fluid location for empty populations too.
@@ -112,6 +118,7 @@ contains
             exterior(5)=exterior(5)-weight*(specific_energy(p)+.5_dp*sum(trial(p)%velocity**2))
             trial(p)%mass=0
           case default
+            contacted(p)=.true.
             trial(p)%velocity(axis)=-trial(p)%velocity(axis)
             exterior(2:4)=exterior(2:4)+weight*(trial(p)%velocity-old_velocity)
           end select
@@ -120,6 +127,7 @@ contains
           cycle
         end if
         if (n==maximum_hits) return
+        contacted(p)=.true.
         vn=dot_product(trial(p)%velocity,normal)
         if (vn>=0) return
         old_velocity=trial(p)%velocity
@@ -142,6 +150,7 @@ contains
       end if
     end do
     if(present(outer_change)) outer_change=exterior
+    if(present(wall_contact)) wall_contact=contacted
     parcels=trial;change=delta;hits=count;ok=.true.
   end subroutine
 end module

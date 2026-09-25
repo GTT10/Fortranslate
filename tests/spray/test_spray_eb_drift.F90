@@ -8,7 +8,7 @@ program test_spray_eb_drift
   real(dp) :: exterior(5),energy(2)=10
   character(len=16) :: faces(6)
   integer :: i,j,k,hits
-  logical :: ok
+  logical :: ok,contact(2)
   ! Oblique plane x+y=1, fluid to the upper right. Tangential z motion persists.
   do k=0,2
   do j=0,2
@@ -55,32 +55,41 @@ program test_spray_eb_drift
   end do
   p=saved;p(1)%position=[.75_dp,1._dp,1._dp];p(1)%velocity=[-1._dp,0._dp,0._dp];p(2)%mass=0
   saved=p;faces='outflow';change=42;exterior=43;hits=17
-  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
   call require(ok.and.hits==2.and.p(1)%mass==0,'EB then exterior escape')
+  call require(contact(1).and..not.contact(2),'EB contact mask')
   call require(abs(change(2)-.06_dp)<1e-14_dp.and.abs(exterior(2)+.03_dp)<1e-14_dp,'separate wall and outflow impulse')
   call require(abs(exterior(1)+.03_dp)<1e-14_dp.and.abs(exterior(5)+.315_dp)<1e-14_dp,'outflow mass and liquid energy')
   ! Same earliest-event ordering with exterior specular reflection.
   p=saved;faces(2)='slip_wall'
-  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
   call require(ok.and.hits==2.and.abs(p(1)%position(1)-1.75_dp)<1e-14_dp,'EB then exterior reflection')
   call require(p(1)%velocity(1)==-1.and.abs(change(2)+exterior(2))<1e-14_dp,'two wall impulses cancel')
   ! Multiple periodic wraps require matching geometry at the seam.
   p=saved;p(1)%position=1;p(1)%velocity=[0._dp,0._dp,5._dp];saved=p
   faces='outflow';faces(5:6)='periodic'
-  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
   call require(ok.and.hits==3.and.abs(p(1)%position(3))<1e-14_dp,'periodic multiple wraps')
   call require(all(change==0).and.all(exterior==0),'periodic inventory unchanged')
+  call require(.not.any(contact),'periodic crossings are not wall contacts')
+  contact=.true.
   p=saved;change=42;exterior=43;hits=17
-  call drift_spray_level_set(phi,lo,hi,1._dp,2,p,change,hits,ok,faces,energy,exterior)
+  call drift_spray_level_set(phi,lo,hi,1._dp,2,p,change,hits,ok,faces,energy,exterior,contact)
   call require(.not.ok.and.all(p(1)%position==saved(1)%position),'combined event limit rollback')
   call require(all(change==42).and.all(exterior==43).and.hits==17,'combined diagnostics rollback')
+  call require(all(contact),'contact mask rollback')
   faces(1:2)='periodic'
-  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
   call require(.not.ok.and.all(exterior==43),'nonperiodic EB seam rejected')
+  p=saved;p(1)%position=[.75_dp,1._dp,1.9_dp];p(1)%velocity=[-1._dp,0._dp,2._dp]
+  faces='outflow';faces(5:6)='periodic'
+  call drift_spray_level_set(phi,lo,hi,.5_dp,8,p,change,hits,ok,faces,energy,exterior,contact)
+  call require(ok.and.contact(1).and.p(1)%velocity(1)>0,'EB contact after periodic wrap')
+  change=42;exterior=43;hits=17
   ! A later solid start rolls back an earlier outflow.
   faces='outflow';p=saved;p(1)%position(1)=1.9_dp;p(1)%velocity=[1._dp,0._dp,0._dp]
   p(2)=p(1);p(2)%id=2;p(2)%position(1)=.1_dp;saved=p
-  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior)
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
   call require(.not.ok.and.p(1)%mass==saved(1)%mass.and.all(exterior==43),'late invalid start preserves escaped parcel')
   print *, 'PASS: transactional EB and exterior parcel drift'
 contains
