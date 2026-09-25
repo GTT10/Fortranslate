@@ -58,6 +58,10 @@ module simulation_config_reactive_eb_3d_mod
     real(dp) :: initial_velocity_x = 0.0_dp
     real(dp) :: initial_velocity_y = 0.0_dp
     real(dp) :: initial_velocity_z = 0.0_dp
+    integer :: inflow_composition_count(6)=0
+    character(len=selected_composition_name_length) :: &
+      inflow_composition_species(reactive_eb_3d_max_species,6)=''
+    real(dp) :: inflow_composition_mole_fractions(reactive_eb_3d_max_species,6)=0._dp
     integer :: composition_count = 0
     character(len=selected_composition_name_length) :: &
       composition_species(reactive_eb_3d_max_species) = ""
@@ -79,7 +83,21 @@ contains
 
   pure logical function valid_reactive_eb_boundaries(config) result(valid)
     type(reactive_eb_3d_config), intent(in) :: config
+    integer :: face
+    logical :: ok
+    character(len=256) :: message
     valid=.false.
+    do face=1,6
+      if(config%inflow_composition_count(face)==0) then
+        if(any(config%inflow_composition_species(:,face)/='').or. &
+          any(config%inflow_composition_mole_fractions(:,face)/=0._dp)) return
+      else
+        if(config%boundary_faces(face)/='inflow') return
+        call validate_selected_composition_fields('EB inlet',config%inflow_composition_count(face), &
+          config%inflow_composition_species(:,face),config%inflow_composition_mole_fractions(:,face),ok,message)
+        if(.not.ok) return
+      end if
+    end do
     if(.not.all(ieee_is_finite(config%inflow_density)).or..not.all(ieee_is_finite(config%inflow_pressure)).or. &
       .not.all(ieee_is_finite(config%inflow_velocity))) return
     if(any(config%inflow_density<=0).or.any(config%inflow_pressure<=0)) return
@@ -296,12 +314,12 @@ contains
   end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries)
+      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu,allow_boundaries
+    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition
 
     integer :: nx, ny, nz, maximum_steps, checkpoint_interval_steps
     integer :: unit, io_status
@@ -320,6 +338,10 @@ contains
     real(dp) :: inflow_density(6),inflow_pressure(6),inflow_velocity(3,6),wall_temperature(6)
     character(len=32) :: riemann_solver, redistribution, thermo_model
     character(len=512) :: checkpoint_file, restart_file, output_file
+    integer :: inflow_composition_count(6)
+    character(len=selected_composition_name_length) :: &
+      inflow_composition_species(reactive_eb_3d_max_species,6)
+    real(dp) :: inflow_composition_mole_fractions(reactive_eb_3d_max_species,6)
     integer :: composition_count
     character(len=selected_composition_name_length) :: &
       composition_species(reactive_eb_3d_max_species)
@@ -334,6 +356,7 @@ contains
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, hydro_method, &
       geometry_type,extrusion_axis,section_file,level_set_file, &
+      inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
       boundary_faces,inflow_density,inflow_pressure,inflow_velocity,wall_temperature, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
@@ -389,6 +412,9 @@ contains
     initial_velocity_x = config%initial_velocity_x
     initial_velocity_y = config%initial_velocity_y
     initial_velocity_z = config%initial_velocity_z
+    inflow_composition_count=config%inflow_composition_count
+    inflow_composition_species=config%inflow_composition_species
+    inflow_composition_mole_fractions=config%inflow_composition_mole_fractions
     composition_count = config%composition_count
     composition_species = config%composition_species
     composition_mole_fractions = config%composition_mole_fractions
@@ -457,6 +483,9 @@ contains
     config%initial_velocity_x = initial_velocity_x
     config%initial_velocity_y = initial_velocity_y
     config%initial_velocity_z = initial_velocity_z
+    config%inflow_composition_count=inflow_composition_count
+    config%inflow_composition_species=inflow_composition_species
+    config%inflow_composition_mole_fractions=inflow_composition_mole_fractions
     config%composition_count = composition_count
     config%composition_species = composition_species
     config%composition_mole_fractions = composition_mole_fractions
@@ -465,6 +494,13 @@ contains
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
     config%output_file = trim(output_file)
+    if(any(inflow_composition_count/=0)) then
+      ok=.false.
+      if(present(allow_inlet_composition)) ok=allow_inlet_composition
+      if(.not.ok) then
+        message='Independent EB inlet composition is not enabled in this application';return
+      end if
+    end if
     if(any(boundary_faces/='legacy')) then
       ok=.false.
       if(present(allow_boundaries)) ok=allow_boundaries

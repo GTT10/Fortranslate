@@ -30,12 +30,23 @@ and selected single-level gas executables support these inputs:
   six `legacy` labels retain the previous boundary behavior; mixing modes rejects.
 - `inflow_density(6)`, `inflow_pressure(6)`, `inflow_velocity(3,6)`: prescribed
   inlet density in kg/m³, pressure in Pa and Cartesian velocity in m/s. The inlet
-  uses the initial mixture composition, including selected-mechanism composition.
+  defaults to the initial mixture composition, including selected-mechanism composition.
+- `inflow_composition_count(6)`, `inflow_composition_species(:,face)`, and
+  `inflow_composition_mole_fractions(:,face)`: optional independent inlet mixtures.
+  For example, set `inflow_composition_count(3)=3`,
+  `inflow_composition_species(1:3,3)='H2','O2','N2'`, and
+  `inflow_composition_mole_fractions(1:3,3)=.1,.2,.7` for the lower y inlet.
+  Mole fractions are normalized; names must be unique and in the active mechanism.
+  Count zero inherits initial gas. Unused names/values must be blank/zero.
+  Overrides require an inflow face. Inlet temperature follows from density,
+  pressure and the resolved mixture.
 
 Physical boundary inputs require `plm_ctu` and `pelec`. Ghost donors are rebuilt
 at every transport stage and hydro update. Open-face donor signal speeds and
 transport diffusivity limit the time step. Restart requires the same boundary
-labels and inlet data. These inputs are not yet enabled in the spray or tree front ends.
+labels and inlet data, including the exact composition count, species order and
+input fractions. The tree front end has corresponding per-face composition
+inputs; the single-level spray front end currently rejects composition overrides.
 
 See the [inflow/restart checks](../../docs/validation/eb-inflow-application-20260925.md).
 

@@ -16,7 +16,9 @@ def main():
     parser.add_argument('--inflow', action='store_true', help='Exercise prescribed physical inflow and restart binding')
     parser.add_argument('--wall', action='store_true', help='Exercise fixed wall transport and thermal restart binding')
     parser.add_argument('--periodic', action='store_true', help='Exercise periodic tangential EB boundaries')
+    parser.add_argument('--inlet-composition', action='store_true')
     args = parser.parse_args()
+    assert not args.inlet_composition or args.inflow
     assert sum([args.inflow,args.wall,args.periodic])<=1, 'Choose one boundary fixture'
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
@@ -41,6 +43,11 @@ def main():
  inflow_density(3)=.31, inflow_pressure(3)=135000., inflow_velocity(2,3)=200.,
 """
 
+    if args.inlet_composition:
+        base += """inflow_composition_count(3)=3,
+ inflow_composition_species(1:3,3)='H2','O2','N2',
+ inflow_composition_mole_fractions(1:3,3)=.1,.2,.7,
+"""
     if args.selected:
         base += """thermo_model='selected', composition_count=7,
  composition_species='N2','H2O','OH','O2','O','H','H2',
@@ -102,9 +109,23 @@ def main():
     if args.inflow:
         for name, changed in [('inlet_mismatch', 'inflow_velocity(2,3)=201.'),
                               ('boundary_mismatch', "boundary_faces(3)='outflow'")]:
-            assert 'Failed to restart public 3D EB state' in run(
+            expected = ('Invalid EB boundary configuration' if args.inlet_composition and
+                        name == 'boundary_mismatch' else 'Failed to restart public 3D EB state')
+            assert expected in run(
                 name, coupled + changed + ", restart_file='step.chk'", False)
         assert 'Invalid EB boundary configuration' in run('invalid_inlet', 'inflow_density(3)=-1.', False)
+    if args.inlet_composition:
+        changed = 'inflow_composition_mole_fractions(1:3,3)=.2,.2,.6, '
+        assert run('alternate', coupled + changed) != reference
+        assert 'Failed to restart public 3D EB state' in run(
+            'composition_mismatch', coupled + changed + "restart_file='step.chk'", False)
+        assert 'Failed to restart public 3D EB state' in run(
+            'removed_composition', coupled + "inflow_composition_count(3)=0, "
+            "inflow_composition_species(1:3,3)=3*'', inflow_composition_mole_fractions(1:3,3)=3*0., restart_file='step.chk'", False)
+        assert 'Invalid EB inlet composition' in run(
+            'unknown_species', "inflow_composition_species(1,3)='missing'", False)
+        assert 'Invalid EB boundary configuration' in run(
+            'negative_fraction', 'inflow_composition_mole_fractions(1,3)=-.1', False)
     print(f'PASS: EB CTU hydro, reacting/coupled stepping, exact restart and input rejection; artifacts={work}')
 
 

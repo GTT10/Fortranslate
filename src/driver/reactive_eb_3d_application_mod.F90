@@ -1,5 +1,7 @@
 module reactive_eb_3d_application_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use selected_composition_mod, only: resolve_selected_composition
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use state_indices_mod, only: ncons, imx, imy, imz
@@ -52,6 +54,7 @@ contains
     real(dp), allocatable :: inlet(:,:),inlet_t(:),ghost(:,:,:,:),ghost_t(:,:,:),primitive(:)
     real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate,wall_dt
     real(dp), allocatable :: wall_t(:)
+    real(dp) :: seed_mass(size(species)),inlet_mole(size(species))
     integer :: face
     real(dp), allocatable :: state(:, :, :, :), new_state(:, :, :, :)
     real(dp), allocatable :: temperature(:, :, :), new_temperature(:, :, :)
@@ -137,9 +140,22 @@ contains
       call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1), &
         primitive,inlet_temp,inlet_sound,ok)
       if(.not.ok) error stop 'Failed to obtain EB inlet composition'
+      seed_mass=primitive(6:)
       do face=1,6
         inlet(:,face)=state(:,1,1,1);inlet_t(face)=temperature(1,1,1)
         if(boundary_faces(face)/='inflow') cycle
+        primitive(6:)=seed_mass
+        if(config%inflow_composition_count(face)/=0) then
+          call resolve_selected_composition('EB inlet',config%inflow_composition_count(face), &
+            config%inflow_composition_species(:,face),config%inflow_composition_mole_fractions(:,face), &
+            species,inlet_mole,ok,message)
+          if(.not.ok) then
+            write(*,'(a)') trim(message)
+            error stop 'Invalid EB inlet composition'
+          end if
+          call mass_fractions_from_mole_fractions(species,inlet_mole,primitive(6:),ok)
+          if(.not.ok) error stop 'Invalid EB inlet mass fractions'
+        end if
         primitive(1)=config%inflow_density(face);primitive(2:4)=config%inflow_velocity(:,face)
         primitive(5)=config%inflow_pressure(face)
         call reactive_primitive_to_conserved(species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)

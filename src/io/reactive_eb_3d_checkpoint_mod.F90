@@ -90,7 +90,7 @@ contains
     real(dp), optional, intent(in) :: element_atoms(:,:)
     real(dp), optional, intent(in) :: boundary_change(:),wall_change(:),chemistry_change(:)
 
-    integer :: element_index
+    integer :: element_index,face,component
     integer :: unit, status, nvar, species_index, reaction_index,plog_index
     integer :: efficiency_size
     integer :: transport_index, i, j, k, schema
@@ -387,6 +387,20 @@ contains
       merge(1, 0, config%stop_after_checkpoint)
     if (status /= 0) go to 900
 
+    if(any(config%inflow_composition_count/=0)) then
+      write(unit,'(a)',iostat=status) 'INLET_COMPOSITION_V1'
+      if(status/=0) go to 900
+      write(unit,*,iostat=status) config%inflow_composition_count
+      if(status/=0) go to 900
+      do face=1,6
+        do component=1,config%inflow_composition_count(face)
+          write(unit,'(a)',iostat=status) trim(config%inflow_composition_species(component,face))
+          if(status/=0) go to 900
+          write(unit,'(es27.18e3)',iostat=status) config%inflow_composition_mole_fractions(component,face)
+          if(status/=0) go to 900
+        end do
+      end do
+    end if
     write(unit, '(a)', iostat=status) "GEOMETRY"
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
@@ -551,6 +565,8 @@ contains
     real(dp) :: stored_atoms(size(species))
     real(dp) :: candidate_boundary(reactive_nvar(size(species))),candidate_wall(reactive_nvar(size(species)))
     real(dp) :: candidate_chemistry(reactive_nvar(size(species)))
+    integer :: inlet_counts(6),face,component
+    real(dp) :: inlet_fraction
     integer :: element_index,stored_element_count
     real(dp) :: stored_species_values(18), expected_species_values(18)
     real(dp) :: stored_rate_values(9), expected_rate_values(9)
@@ -963,6 +979,26 @@ contains
 
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
+    if(trim(marker)=='INLET_COMPOSITION_V1') then
+      read(unit,*,iostat=status) inlet_counts
+      if(status/=0) go to 900
+      if(any(inlet_counts/=config%inflow_composition_count)) go to 900
+      do face=1,6
+        do component=1,inlet_counts(face)
+          read(unit,'(a)',iostat=status) stored_name
+          if(status/=0) go to 900
+          if(stored_name/=config%inflow_composition_species(component,face)) go to 900
+          read(unit,*,iostat=status) inlet_fraction
+          if(status/=0) go to 900
+          if(.not.ieee_is_finite(inlet_fraction)) go to 900
+          if(inlet_fraction/=config%inflow_composition_mole_fractions(component,face)) go to 900
+        end do
+      end do
+      read(unit,'(a)',iostat=status) marker
+      if(status/=0) go to 900
+    else if(any(config%inflow_composition_count/=0)) then
+      go to 900
+    end if
     if (trim(marker) /= "GEOMETRY") go to 900
     read(unit, *, iostat=status) stored_geometry_dims
     if (status /= 0) go to 900
