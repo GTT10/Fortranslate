@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Regular zero-source CTU transverse updates now have compiled pinned-kernel
+agreement in 144 cases across all three normal axes, including signed species
+and pressure floors ([checks](validation/ppm-pinned-transverse-20260926.md)).
+
 The regular pressure-traced PPM transverse predictor now retains signed
 intermediate species weights as in the pinned passive kernels. Riemann forwarding
 and the separate accepted-cell rejection are checked

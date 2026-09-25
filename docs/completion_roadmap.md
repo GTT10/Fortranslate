@@ -273,7 +273,9 @@ forwards domain-end inflow masks too
 ([checks](validation/ppm-regular-mpi-inflow-20260925.md)). External
 normal primitive projection now preserves independent species weights and agrees
 in a bounded 315-case compiled-kernel comparison
-([checks](validation/ppm-mixture-projection-20260926.md)). Full-CTU parity
+([checks](validation/ppm-mixture-projection-20260926.md)). Regular zero-source
+single/double transverse kernels also agree in 144 compiled-reference cases
+([checks](validation/ppm-pinned-transverse-20260926.md)). Full-CTU assembly parity
 and broader qualification remain open.
 The reference also adjusts final fluxes with compressive artificial viscosity
 (default `difmag=0.1`). A regular-cell nodal-divergence/flux-correction API now
