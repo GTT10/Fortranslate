@@ -968,7 +968,9 @@ contains
         .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,minimum_theta,local_ok, &
         inflow_faces=physical_touch.and.physical_faces=='inflow', &
         no_slip_faces=physical_touch.and.(physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'), &
-        difmag=difmag)
+        reflecting_faces=physical_touch.and.(physical_faces=='slip_wall'.or. &
+          physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'), &
+        outflow_faces=physical_touch.and.physical_faces=='outflow',difmag=difmag,outlet_pressure=outlet_pressure)
       if (.not.local_ok) return
       ! Match the regular-grid CTU conservative update, including operation order.
       do k=1,nz

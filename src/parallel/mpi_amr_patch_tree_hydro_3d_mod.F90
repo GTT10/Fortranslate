@@ -221,14 +221,15 @@ contains
           end if
           if (reconstruction=='characteristic_ppm') then
             block
-              logical :: inflow_mask(6),wall_mask(6)
-              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success,wall_mask)
+              logical :: inflow_mask(6),wall_mask(6),reflecting_mask(6),outflow_mask(6)
+              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success,wall_mask,reflecting_mask,outflow_mask)
               if (.not.success) exit
               fx=0;fy=0;fz=0
             call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
               n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
               fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success, &
-              inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity)
+              inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity, &
+              reflecting_faces=reflecting_mask,outflow_faces=outflow_mask,outlet_pressure=outlet_pressure)
             end block
           else if (reconstruction=='pcm') then
             call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
@@ -240,8 +241,8 @@ contains
           if (.not.success) exit
           if(viscosity>0.and.reconstruction/='characteristic_ppm') then
             block
-              logical :: inflow_mask(6),wall_mask(6)
-              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success,wall_mask)
+              logical :: inflow_mask(6),wall_mask(6),reflecting_mask(6),outflow_mask(6)
+              call amr_tree_inflow_faces_3d(tree,peer,faces,inflow_mask,success,wall_mask,reflecting_mask,outflow_mask)
               if (.not.success) exit
               call adjust_reactive_artificial_viscosity_3d(ghost(:nvar,2:n(1)+3,2:n(2)+3,2:n(3)+3), &
                 n,h(:,peer),viscosity,wall_mask,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &

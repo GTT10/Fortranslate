@@ -481,7 +481,8 @@ contains
   ! Four supplied ghost layers; physical cells are 1:n. No periodic wrapping
   ! or ghost filling occurs here. Corner solves are bounded to their consumers.
   subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces,difmag,no_slip_faces)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces,difmag,no_slip_faces, &
+      reflecting_faces,outflow_faces,outlet_pressure)
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
@@ -490,9 +491,10 @@ contains
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
     logical, optional, intent(in) :: pressure_tracing,inflow_faces(6),no_slip_faces(6)
-    real(dp), optional, intent(in) :: difmag
+    logical, optional, intent(in) :: reflecting_faces(6),outflow_faces(6)
+    real(dp), optional, intent(in) :: difmag,outlet_pressure(6)
     real(dp) :: viscosity
-    logical :: walls(6)
+    logical :: walls(6),reflecting(6),outflow(6)
     real(dp), allocatable :: cell_flat(:,:,:)
     real(dp) :: pressure_pencil(-3:3),velocity_pencil(-3:3)
     logical :: trace_pressure
@@ -514,6 +516,15 @@ contains
     viscosity=.1_dp
     if (present(difmag)) viscosity=difmag
     if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
+    reflecting=.false.;outflow=.false.
+    if(present(reflecting_faces)) reflecting=reflecting_faces
+    if(present(outflow_faces)) outflow=outflow_faces
+    if(any(reflecting.and.outflow)) return
+    if(present(outlet_pressure)) then
+      if(.not.all(ieee_is_finite(outlet_pressure))) return
+      ! Prescribed-pressure outlets retain their EOS-adjusted exterior donor.
+      outflow=outflow.and.outlet_pressure<=0
+    end if
     walls=.false.
     if (present(no_slip_faces)) walls=no_slip_faces
     nv=reactive_nvar(size(species))
@@ -675,6 +686,24 @@ contains
     zflux=final(:,1:n(1),1:n(2),0:n(3),3)
     minimum_theta=theta;ok=.true.
   contains
+    subroutine correct_boundary_states(direction,point,left,right)
+      integer, intent(in) :: direction,point(3)
+      real(dp), intent(inout) :: left(:),right(:)
+      integer :: face
+      face=0
+      if(point(direction)==0) face=2*direction-1
+      if(point(direction)==n(direction)) face=2*direction
+      if(face==0) return
+      if(.not.(reflecting(face).or.outflow(face))) return
+      ! pc_cmpflx corrects only hydro variables; passive face weights persist.
+      if(mod(face,2)==1) then
+        left(1:5)=right(1:5)
+        if(reflecting(face)) left(direction+1)=-right(direction+1)
+      else
+        right(1:5)=left(1:5)
+        if(reflecting(face)) right(direction+1)=-left(direction+1)
+      end if
+    end subroutine correct_boundary_states
     subroutine replace_inflow_fluxes(good)
       logical, intent(out) :: good
       integer :: face,side,direction,cell(3),point(3),ii,jj,kk,shift
@@ -808,6 +837,7 @@ contains
         hi=[i,j,k];hi(direction)=hi(direction)+1
         if (trace_pressure) then
           qm=plus(:,i,j,k);qp=minus(:,hi(1),hi(2),hi(3))
+          call correct_boundary_states(direction,[i,j,k],qm,qp)
           swap=qm(2);qm(2)=qm(direction+1);qm(direction+1)=swap
           swap=qp(2);qp(2)=qp(direction+1);qp(direction+1)=swap
           call reactive_pelec_primitive_flux_x(species,qm,qp,.5_dp*(sound(i,j,k)+sound(hi(1),hi(2),hi(3))), &
@@ -2216,7 +2246,9 @@ contains
       if (.not.success) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,.false.,.true., &
         riemann_solver,fx,fy,fz,theta,success,inflow_faces=faces=='inflow', &
-        no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall',difmag=difmag)
+        no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall',difmag=difmag, &
+        reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall', &
+        outflow_faces=faces=='outflow',outlet_pressure=outlet_pressure)
       if (.not.success) return
       success=.false.
       candidate=state

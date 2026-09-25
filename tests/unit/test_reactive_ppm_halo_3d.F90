@@ -196,8 +196,57 @@ program test_reactive_ppm_halo_3d
     faces,'characteristic_ppm','mc','hllc',change,ok,flux_x=hx,flux_y=hy,flux_z=hz)
   call require(ok.and.all(u==saved).and.all(change==0),'stationary wall equilibrium')
   call require(all(hx(1,:,:,:)==0).and.all(hy(1,:,:,:)==0).and.all(hz(1,:,:,:)==0),'impermeable wall flux')
+  call check_physical_riemann()
   print *, 'test_reactive_ppm_halo_3d: PASS' 
 contains
+  subroutine check_physical_riemann()
+    real(dp) :: halo(nv,12,12,12),ht(12,12,12),cell(nv),primitive(nv),ct,cs
+    integer :: ii,jj,kk
+    primitive=0;primitive(1)=1;primitive(2:4)=[20._dp,10._dp,-5._dp]
+    primitive(5)=500000;primitive(nv)=1
+    call reactive_primitive_to_conserved(species,primitive,cell,ct,cs,ok)
+    call require(ok,'physical Riemann fixture')
+    do kk=1,12
+    do jj=1,12
+    do ii=1,12
+      halo(:,ii,jj,kk)=cell;ht(ii,jj,kk)=ct
+    end do
+    end do
+    end do
+    ! Deliberately unreflected supplied donors: the face solver must enforce walls.
+    call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,ht,[4,4,4],[.25_dp,.25_dp,.25_dp],0._dp, &
+      .false.,.false.,'pelec',hx,hy,hz,halo_theta,ok,difmag=0._dp,reflecting_faces=[(.true.,m=1,6)])
+    call require(ok,'six physical wall Riemann corrections')
+    call require(all(hx(1,0,:,:)==0).and.all(hx(1,4,:,:)==0).and. &
+      all(hy(1,:,0,:)==0).and.all(hy(1,:,4,:)==0).and. &
+      all(hz(1,:,:,0)==0).and.all(hz(1,:,:,4)==0),'six walls have exact zero mass flux')
+    call require(all(hx(5:,0,:,:)==0).and.all(hx(5:,4,:,:)==0).and. &
+      all(hy(5:,:,0,:)==0).and.all(hy(5:,:,4,:)==0).and. &
+      all(hz(5:,:,:,0)==0).and.all(hz(5:,:,:,4)==0),'six walls have zero energy and species flux')
+    primitive(2)=-80
+    call reactive_primitive_to_conserved(species,primitive,cell,ct,cs,ok)
+    call require(ok,'outflow donor fixture')
+    do kk=1,12
+    do jj=1,12
+    do ii=1,4
+      halo(:,ii,jj,kk)=cell;ht(ii,jj,kk)=ct
+    end do
+    end do
+    end do
+    call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,ht,[4,4,4],[.25_dp,.25_dp,.25_dp],0._dp, &
+      .false.,.false.,'pelec',hx,hy,hz,halo_theta,ok,difmag=0._dp, &
+      outflow_faces=[.true.,.false.,.false.,.false.,.false.,.false.])
+    call require(ok.and.maxval(abs(hx(1,0,:,:)-20._dp))<1e-12_dp,'outflow uses interior hydro state')
+    call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,ht,[4,4,4],[.25_dp,.25_dp,.25_dp],0._dp, &
+      .false.,.false.,'pelec',hx,hy,hz,halo_theta,ok,difmag=0._dp, &
+      outflow_faces=[.true.,.false.,.false.,.false.,.false.,.false.], &
+      outlet_pressure=[500000._dp,0._dp,0._dp,0._dp,0._dp,0._dp])
+    call require(ok.and.all(abs(hx(1,0,:,:)-20._dp)>1),'prescribed-pressure outlet retains exterior state')
+    call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,ht,[4,4,4],[.25_dp,.25_dp,.25_dp],0._dp, &
+      .false.,.false.,'pelec',hx,hy,hz,halo_theta,ok,reflecting_faces=[(.true.,m=1,6)], &
+      outflow_faces=[(.true.,m=1,6)])
+    call require(.not.ok.and.all(hx==0).and.all(hy==0).and.all(hz==0),'conflicting boundary masks reject')
+  end subroutine check_physical_riemann
   subroutine check_artificial_viscosity()
     real(dp) :: cells(7,0:3,0:3,0:3),ax(7,0:2,2,2),ay(7,2,0:2,2),az(7,2,2,0:2)
     real(dp) :: keepx(7,0:2,2,2),keepy(7,2,0:2,2),keepz(7,2,2,0:2),rho,expected_flux(7)
