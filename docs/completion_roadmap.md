@@ -308,8 +308,10 @@ participates in old/new source evaluation with application inventory checks
 ([evidence](validation/sdc-transport-20260926.md)); forced chemistry and broader
 boundary/AMR/MPI support remain open. The forced chemistry RHS now supports
 variable density and externally changing internal energy
-([checks](validation/forced-reactor-rhs-20260926.md)); forced time integration
-and SDC reaction coupling remain open. Physical
+([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive implicit
+substep now integrates the forced reactor
+([checks](validation/forced-reactor-integrator-20260926.md)); full-interval
+subcycling and SDC reaction coupling remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
