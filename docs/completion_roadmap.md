@@ -347,7 +347,10 @@ patch-tree reaction wrapper is now available
 hydro/source/reflux driver remains open. A hierarchy hydro stage now supplies
 coarse/fine-interpolated CTU rates and integrated fluxes
 ([checks](validation/sdc-tree-hydro-20260926.md)); full source/transport and
-reaction-stage orchestration remains open. Physical
+reaction-stage orchestration remains open. The hierarchy transport evaluator
+now exposes rates and integrated face fluxes without premature reflux
+([checks](validation/sdc-tree-transport-20260926.md)); combining all stages into
+the SDC hierarchy loop remains open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

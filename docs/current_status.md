@@ -48,6 +48,9 @@ hierarchy SDC stepping is still incomplete.
 The hierarchy hydro stage now fills coarse/fine state/source halos and returns
 rates plus register-compatible fluxes
 ([checks](validation/sdc-tree-hydro-20260926.md)).
+The hierarchy transport stage now returns rates and register-compatible fluxes
+([checks](validation/sdc-tree-transport-20260926.md)); the combined SDC loop
+remains open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
