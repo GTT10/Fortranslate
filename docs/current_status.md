@@ -26,7 +26,11 @@ opposite coarse face. Common-step PCM and PLM/CTU hydro connect that path
 recursive molecular transport and recursive hydro now forward periodic
 controls, including provisional endpoint correction before descendant time
 interpolation ([checks](validation/eb-tree-periodic-recursive-20260926.md)).
-Periodic MPI time updates and reacting-split qualification remain pending.
+Periodic common/recursive reacting PLM/CTU splits now pass focused explicit
+and implicit chemistry checks. MPI flux synchronization also accepts periodic
+faces with exact serial agreement, owner-local transfers and collective
+rollback ([checks](validation/eb-tree-periodic-full-mpi-flux-20260926.md)).
+Periodic MPI time-update dispatch remains pending.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
