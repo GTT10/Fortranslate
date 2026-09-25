@@ -32,9 +32,10 @@ program test_reactive_ppm_normal_3d
         integer :: ii,jj,kk,flatten_flag,boundary_mode
         real(dp) :: cg(12,12,12,12),cgt(12,12,12)
         character(len=16) :: faces(6)
-        real(dp) :: viscosity,inlet(12,6),inlet_t(6)
+        real(dp) :: viscosity,inlet(12,6),inlet_t(6),forcing
+        real(dp), allocatable :: src(:,:,:,:),srce(:,:,:)
         do
-          read(*,*,iostat=status) dt,flatten_flag,viscosity,boundary_mode
+          read(*,*,iostat=status) dt,flatten_flag,viscosity,boundary_mode,forcing
           if(status<0) exit
           if(status/=0) error stop 'invalid CTU interval'
           do kk=1,4
@@ -47,9 +48,20 @@ program test_reactive_ppm_normal_3d
           end do
           end do
           end do
+          if(allocated(src)) deallocate(src,srce)
+          if(forcing/=0) then
+            ii=4
+            if(boundary_mode/=0) ii=12
+            allocate(src(12,ii,ii,ii),srce(ii,ii,ii));src=0;srce=forcing*5e3_dp
+            src(1,:,:,:)=forcing*.2_dp;src(2,:,:,:)=forcing*300
+            src(3,:,:,:)=forcing*(-400);src(4,:,:,:)=forcing*200
+            src(5,:,:,:)=forcing*(-2e4_dp)
+            src(6,:,:,:)=forcing*10;src(7,:,:,:)=forcing*(-10)
+          end if
           if(boundary_mode==0) then
             call compute_reactive_ppm_ctu_fluxes_3d(species,cu,ct,[.25_dp,.25_dp,.25_dp],dt, &
-              .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity)
+              .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity, &
+              primitive_source=src,energy_source=srce)
           else
             select case(boundary_mode)
             case(1);faces='outflow'
@@ -65,7 +77,8 @@ program test_reactive_ppm_normal_3d
             call compute_reactive_ppm_halo_ctu_fluxes_3d(species,cg,cgt,[4,4,4],[.25_dp,.25_dp,.25_dp],dt, &
               .false.,flatten_flag/=0,'pelec',cx,cy,cz,theta,ok,difmag=viscosity, &
               reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall', &
-              outflow_faces=faces=='outflow',no_slip_faces=faces=='no_slip_wall',inflow_faces=faces=='inflow')
+              outflow_faces=faces=='outflow',no_slip_faces=faces=='no_slip_wall',inflow_faces=faces=='inflow', &
+              primitive_source=src,energy_source=srce)
           end if
           call require(ok,'CTU reference fluxes')
           do kk=1,4

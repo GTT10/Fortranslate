@@ -2,7 +2,7 @@
 """Compare unchanged pinned twelve-solve CTU assembly on small periodic grids.
 
 The serial array shim executes reference loops; EOS uses exported NASA7 data.
-WENO and forcing are off. Optional shock/viscosity and physical-boundary cases.
+WENO is off. Optional shock/viscosity and physical-boundary cases.
 """
 from __future__ import annotations
 import argparse
@@ -18,8 +18,8 @@ from check_pinned_riemann_kernel import PREFIX
 DRIVER=r'''
 int main(){
  for(auto& row:thermo)for(double& v:row)if(!(std::cin>>v))return 2;
- double dt,difmag;int flattening,boundary;std::cout<<std::setprecision(17);
- while(std::cin>>dt>>flattening>>difmag>>boundary){
+ double dt,difmag,forcing;int flattening,boundary;std::cout<<std::setprecision(17);
+ while(std::cin>>dt>>flattening>>difmag>>boundary>>forcing){
   double cells[4][4][4][12];
   for(auto& plane:cells)for(auto& row:plane)for(auto& cell:row)for(double& v:cell)if(!(std::cin>>v))return 3;
   using namespace amrex;
@@ -28,6 +28,11 @@ int main(){
   FArrayBox fx(fb,NVAR),fy(fb,NVAR),fz(fb,NVAR),qx(fb,NGDNV),qy(fb,NGDNV),qz(fb,NGDNV),area(fb,1);
   auto q=prim.array(),qa=aux.array(),vv=vol.array(),aa=area.array(),u=cons.array(),div=divergence.array();EOS eos;
   ParallelFor(wide,[&](int i,int j,int k){
+   auto source=src.array();
+   source(i,j,k,QRHO)=forcing*.2;
+   source(i,j,k,QU)=forcing*300.;source(i,j,k,QV)=forcing*(-400.);source(i,j,k,QW)=forcing*200.;
+   source(i,j,k,QPRES)=forcing*(-2e4);source(i,j,k,QREINT)=forcing*5e3;
+   source(i,j,k,QFS)=forcing*10.;source(i,j,k,QFS+1)=forcing*(-10.);
    int idx[3]={i,j,k};double sign[3]={1.,1.,1.};
    for(int d=0;d<3;d++){
     if(boundary==0)idx[d]=(idx[d]%4+4)%4;
@@ -78,6 +83,7 @@ def main():
     p.add_argument('--cxx',default='c++')
     p.add_argument('--shock-viscosity',action='store_true')
     p.add_argument('--physical-boundaries',action='store_true')
+    p.add_argument('--sources',action='store_true')
     a=p.parse_args();root=Path(__file__).resolve().parents[1]
     pin=json.loads((root/'references/pelec_baseline.json').read_text())['pelec']['commit']
     names=('PPM.H','PPM.cpp','Riemann.H','Godunov.H','Godunov.cpp','Hydro.H','PLM.H')
@@ -110,7 +116,9 @@ def main():
     if a.shock_viscosity:configs += [(3,1e-5,flat,visc,0) for visc in (0.,.1) for flat in (0,1)]
     if a.physical_boundaries:
         configs += [(2,1e-5,1,visc,bc) for bc in (1,2,3,4) for visc in (0.,.1)]
-    for mode,dt,flat,visc,boundary in configs:
+    configs=[c+(0.,) for c in configs]
+    if a.sources:configs += [(2,1e-5,1,visc,bc,1.) for bc in range(5) for visc in (0.,.1)]
+    for mode,dt,flat,visc,boundary,forcing in configs:
         rows=[]
         for k in range(4):
             for j in range(4):
@@ -130,7 +138,7 @@ def main():
                         temp=900
                         velocity=[40. if i<2 else -40.,10*math.sin(phase),5*math.cos(phase)]
                     rows.append([pressure/(r*temp)]+velocity+[pressure]+y)
-        cases.append(f'{dt} {flat} {visc} {boundary}\n'+''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows))
+        cases.append(f'{dt} {flat} {visc} {boundary} {forcing}\n'+''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows))
     inputs=''.join(cases);(work/'inputs.txt').write_text(inputs)
     ref=run([str(work/'reference')],input=thermo+inputs)
     actual=run([exe,'--ctu-stream'],input=inputs)
@@ -150,7 +158,7 @@ def main():
         for table in (expected,observed):
             assert table[6*240:7*240]!=table[7*240:8*240], 'flattening inactive'
             assert table[6*240:7*240]!=table[8*240:9*240], 'viscosity inactive'
-    report=dict(physical_boundaries=a.physical_boundaries,shock_viscosity=a.shock_viscosity,reference_commit=pin,source_sha256={n:hashlib.sha256(s.encode()).hexdigest() for n,s in sources.items()},
+    report=dict(sources=a.sources,physical_boundaries=a.physical_boundaries,shock_viscosity=a.shock_viscosity,reference_commit=pin,source_sha256={n:hashlib.sha256(s.encode()).hexdigest() for n,s in sources.items()},
                 shim_sha256=hashlib.sha256(shim.encode()).hexdigest(),
                 eos_adapter_sha256=hashlib.sha256(PREFIX.encode()).hexdigest(),
                 compiler=run([a.cxx,'--version']).splitlines()[0],

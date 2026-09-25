@@ -373,7 +373,7 @@ contains
   ! The pelec solver uses separate primitive pressure work; other solvers use
   ! conservative/EOS correction. An explicit override supports kernel audits.
   subroutine compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt, &
-      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,difmag)
+      steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,difmag,primitive_source,energy_source)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3),dt
     logical, intent(in) :: steepening,flattening
@@ -381,7 +381,8 @@ contains
     real(dp), intent(out) :: xflux(:,0:,:,:),yflux(:,:,0:,:),zflux(:,:,:,0:),minimum_theta
     logical, intent(out) :: ok
     logical, optional, intent(in) :: pressure_tracing
-    real(dp), optional, intent(in) :: difmag
+    real(dp), optional, intent(in) :: difmag,primitive_source(:,:,:,:),energy_source(:,:,:)
+    real(dp), allocatable :: source_ghost(:,:,:,:),energy_ghost(:,:,:)
     real(dp) :: viscosity
     logical :: trace_pressure
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
@@ -399,6 +400,22 @@ contains
     if (any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
     trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
+    if(present(primitive_source).neqv.present(energy_source)) return
+    if(present(primitive_source)) then
+      if(.not.trace_pressure) return
+      if(any(shape(primitive_source)/=[nv,n]).or.any(shape(energy_source)/=n)) return
+      allocate(source_ghost(nv,-3:n(1)+4,-3:n(2)+4,-3:n(3)+4))
+      allocate(energy_ghost(-3:n(1)+4,-3:n(2)+4,-3:n(3)+4))
+      do k=-3,n(3)+4
+      do j=-3,n(2)+4
+      do i=-3,n(1)+4
+        index=modulo([i,j,k]-1,n)+1
+        source_ghost(:,i,j,k)=primitive_source(:,index(1),index(2),index(3))
+        energy_ghost(i,j,k)=energy_source(index(1),index(2),index(3))
+      end do
+      end do
+      end do
+    end if
     viscosity=.1_dp
     if (present(difmag)) viscosity=difmag
     if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
@@ -409,7 +426,8 @@ contains
       call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,gt,valid,ghost_width=4)
       if (.not.valid) return
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt,steepening,flattening,solver, &
-        xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=trace_pressure,difmag=viscosity)
+        xflux,yflux,zflux,minimum_theta,ok,pressure_tracing=trace_pressure,difmag=viscosity, &
+        primitive_source=source_ghost,energy_source=energy_ghost)
       return
     end if
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
@@ -500,7 +518,7 @@ contains
   ! or ghost filling occurs here. Corner solves are bounded to their consumers.
   subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
       steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces,difmag,no_slip_faces, &
-      reflecting_faces,outflow_faces,outlet_pressure)
+      reflecting_faces,outflow_faces,outlet_pressure,primitive_source,energy_source)
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
@@ -510,6 +528,7 @@ contains
     logical, intent(out) :: ok
     logical, optional, intent(in) :: pressure_tracing,inflow_faces(6),no_slip_faces(6)
     logical, optional, intent(in) :: reflecting_faces(6),outflow_faces(6)
+    real(dp), optional, intent(in) :: primitive_source(:,-3:,-3:,-3:),energy_source(-3:,-3:,-3:)
     real(dp), optional, intent(in) :: difmag,outlet_pressure(6)
     real(dp) :: viscosity
     logical :: walls(6),reflecting(6),outflow(6)
@@ -546,6 +565,12 @@ contains
     walls=.false.
     if (present(no_slip_faces)) walls=no_slip_faces
     nv=reactive_nvar(size(species))
+    if(present(primitive_source).neqv.present(energy_source)) return
+    if(present(primitive_source)) then
+      if(.not.trace_pressure) return
+      if(any(shape(primitive_source)/=[nv,n+8]).or.any(shape(energy_source)/=n+8)) return
+      if(.not.all(ieee_is_finite(primitive_source)).or..not.all(ieee_is_finite(energy_source))) return
+    end if
     ! Supplied halos support a single owned cell on an MPI slab.
     if (any(n<1)) return
     if (any(shape(ghost)/=[nv,n+8]).or.any(shape(gt)/=n+8)) return
@@ -821,6 +846,17 @@ contains
             vl(2)=corner_face(2,lo(1),lo(2),lo(3),second,transverse)
             vh(2)=corner_face(2,i,j,k,second,transverse)
             weights=[.5_dp*dt/spacing(transverse),.5_dp*dt/spacing(second)]
+          end if
+          if(second/=0.and.present(primitive_source)) then
+            call reactive_ppm_transverse_pressure_3d(nm(:,i,j,k,direction),pnminus(i,j,k,direction),delta,gamma, &
+              pl,ph,vl,vh,weights,minus(:,i,j,k),internal_energy,good, &
+              primitive_source(:,i,j,k),energy_source(i,j,k),.5_dp*dt)
+            if(.not.good) return
+            call reactive_ppm_transverse_pressure_3d(np(:,i,j,k,direction),pnplus(i,j,k,direction),delta,gamma, &
+              pl,ph,vl,vh,weights,plus(:,i,j,k),internal_energy,good, &
+              primitive_source(:,i,j,k),energy_source(i,j,k),.5_dp*dt)
+            if(.not.good) return
+            cycle
           end if
           offset=merge(1,2,second==0)
           call reactive_ppm_transverse_pressure_3d(nm(:,i,j,k,direction),pnminus(i,j,k,direction),delta,gamma, &
