@@ -931,6 +931,9 @@ contains
     end do
     inlet=spread(c0(:,1,1,1),2,6);it=ct0(1,1,1)
     faces='outflow';faces(1)='slip_wall';faces(3)='inflow';faces(5)='no_slip_wall'
+    if (present(ppm_mode)) then
+      if (ppm_mode.and.lo==1) faces(1)='inflow'
+    end if
     call composite_integrals_amr_3d(c0,f0,wall_patch,dx,dy,dz,before,ok)
     call require(ok,'physical hierarchy initial inventory')
     tw=600;tw(2)=900;wv=0;wv(2,1)=20;wv(3,2)=-10
@@ -1057,7 +1060,10 @@ contains
       if (mode==2) method='characteristic_plm'
       if (use_ppm) then
         method='characteristic_ppm';pressure=0
-        if (trial==2) pressure(2)=102325
+        if (trial==1) faces(1:2)='inflow'
+        if (trial==2) then
+          faces(1)='slip_wall';faces(2)='outflow';pressure(2)=102325
+        end if
         if (trial==3) faces='periodic'
       end if
       reference=coarse_state;rt=coarse_temperature
