@@ -197,7 +197,9 @@ dispatch now include changed-rank restart
 ([checks](validation/eb-tree-inflow-application-20260926.md)). Tree applications
 also accept independent named mixtures per inlet face
 ([checks](validation/eb-tree-inlet-composition-20260926.md)). Periodic gas and MPI
-spray boundaries are connected; domain-wall tree boundaries remain open.
+spray boundaries are connected; adiabatic tree gas wall inputs and restart are connected
+([checks](validation/eb-tree-wall-application-20260926.md)). Isothermal tree walls
+and MPI spray wall routing remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing

@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Fixed/selected tree gas applications now expose slip/no-slip adiabatic walls,
+with scheduled regridding and changed-rank restart checked on an enclosed
+planar fixture ([evidence](validation/eb-tree-wall-application-20260926.md)).
+
 Serial EB tree halo construction now accepts adiabatic slip/no-slip walls,
 including reflected six-layer corner donors with nonzero momentum
 ([checks](validation/eb-tree-wall-halo-20260926.md)). MPI wall halo exchange
