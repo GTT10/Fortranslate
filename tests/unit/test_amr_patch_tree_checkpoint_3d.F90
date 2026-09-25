@@ -36,7 +36,10 @@ program test_amr_patch_tree_checkpoint_3d
   call build_context(config,context)
   changed=config;changed%difmag=0
   call build_context(changed,other)
-  call require(context==other,'automatic and zero non-PPM coefficient identity')
+  call require(context/=other,'automatic and zero non-PPM coefficient identity differ')
+  changed%difmag=.1_dp
+  call build_context(changed,other)
+  call require(context==other,'automatic and explicit reference coefficient identity')
   changed%difmag=.037_dp
   call build_context(changed,other)
   call require(context/=other,'positive non-PPM coefficient identity')

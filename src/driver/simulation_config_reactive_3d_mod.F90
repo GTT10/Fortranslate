@@ -33,7 +33,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: boundary_faces(6) = ""
     real(dp) :: wall_temperature(6)=300.0_dp
     real(dp) :: inflow_mach(6)=-1.0_dp
-    real(dp) :: difmag=-1.0_dp ! -1 selects the solver policy; nonnegative overrides regular hydro.
+    real(dp) :: difmag=-1.0_dp ! -1 selects the PeleC default 0.1; nonnegative overrides regular hydro.
     real(dp) :: outlet_pressure(6)=0.0_dp
     real(dp) :: wall_velocity(3,6)=0.0_dp
     real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
@@ -101,8 +101,7 @@ contains
     type(reactive_3d_config), intent(in) :: config
     coefficient=config%difmag
     if(coefficient/=-1._dp) return
-    coefficient=0
-    if(config%reconstruction=='characteristic_ppm'.and.config%riemann_solver=='pelec') coefficient=.1_dp
+    coefficient=.1_dp
   end function resolved_reactive_difmag_3d
 
 

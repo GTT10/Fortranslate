@@ -223,7 +223,7 @@ program test_amr_reactive_3d_checkpoint
     checkpoint_path,species,incompatible_config,amr_config,patch, &
     coarse_state,coarse_temperature,fine_state,fine_temperature, &
     time,steps,initial_integrals,maximum_reflux,ok,message)
-  call require(ok.eqv.(variant/='difmag'),'coefficient restart identity')
+  call require(.not.ok,'changed coefficient restart identity rejected')
   call require(all(coarse_state==saved_coarse_state).and.all(fine_state==saved_fine_state), &
     'coefficient identity preserves state')
 

@@ -11,7 +11,7 @@ module reactive_3d_application_mod
   use mixture_thermo_mod, only: mixture_density, mass_fractions_from_mole_fractions
   use selected_composition_mod, only: resolve_selected_composition
   use simulation_config_reactive_3d_mod, only: reactive_3d_config, resolved_reactive_boundaries_3d, &
-    fill_mach_inlet_boundary_ghosts_3d
+    fill_mach_inlet_boundary_ghosts_3d,resolved_reactive_difmag_3d
   use reactive_entropy_wave_3d_problem_mod, only: &
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
   use reactive_3d_mod, only: &
@@ -153,9 +153,7 @@ contains
       "Grid: nx=", config%nx, ", ny=", config%ny, ", nz=", config%nz
     write(*, '(a,1x,a)') "Problem:", trim(config%problem)
     write(*, '(a,1x,a)') "Thermodynamics:", trim(config%thermo_model)
-    difmag=0
-    if(config%reconstruction=='characteristic_ppm'.and.config%riemann_solver=='pelec') difmag=.1_dp
-    if(config%difmag>=0) difmag=config%difmag
+    difmag=resolved_reactive_difmag_3d(config)
     write(*,'(a,es24.16)') 'Artificial-viscosity coefficient: ',difmag
     write(*, '(a,1x,a)') "Reconstruction:", trim(config%reconstruction)
     write(*, '(a,1x,a)') "Limiter:", trim(config%limiter)

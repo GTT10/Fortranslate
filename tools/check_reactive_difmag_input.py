@@ -33,7 +33,7 @@ def main():
         if success:
             coefficient=float(next(x.split(':')[1] for x in log.splitlines()
                                    if x.startswith('Artificial-viscosity coefficient:')))
-            default=0.1 if scheme=='characteristic_ppm' else 0.0
+            default=0.1
             assert coefficient==(default if value is None or value=='-1' else float(value))
             return (work/(name+'.csv')).read_bytes()
         assert not (work/(name+'.csv')).exists()
@@ -45,7 +45,8 @@ def main():
     run('invalid','-2',success=False)
     for scheme in ('pcm','characteristic_plm'):
         automatic=run(scheme+'_auto',scheme=scheme)
-        assert run(scheme+'_zero','0',scheme)==automatic
+        assert run(scheme+'_default','.1',scheme)==automatic
+        assert run(scheme+'_zero','0',scheme)!=automatic
         assert run(scheme+'_sentinel','-1',scheme)==automatic
         assert run(scheme+'_positive','.037',scheme)!=automatic
     print(f'PASS: coefficient input, dispatch and rejection; artifacts={work}')
