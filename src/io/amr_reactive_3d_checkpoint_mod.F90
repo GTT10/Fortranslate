@@ -22,6 +22,7 @@ module amr_reactive_3d_checkpoint_mod
   use simulation_config_amr_reactive_3d_mod, only: amr_reactive_3d_config
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, restrict_average_3d
+  use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
   private
 
@@ -49,6 +50,15 @@ module amr_reactive_3d_checkpoint_mod
   public :: read_amr_reactive_3d_checkpoint
 
 contains
+  pure function checkpoint_reconstruction_identity(flow) result(identity)
+    type(reactive_3d_config), intent(in) :: flow
+    character(len=128) :: identity
+    identity=trim(flow%reconstruction)
+    if(flow%reconstruction=='characteristic_ppm') then
+      write(identity,'(a,1x,a,1x,es27.18e3)') trim(flow%reconstruction),'difmag-v1',resolved_reactive_difmag_3d(flow)
+    end if
+  end function checkpoint_reconstruction_identity
+
   function amr_reactive_boundary_signature_3d(config) result(signature)
     type(reactive_3d_config), intent(in) :: config
     character(len=32768) :: signature
@@ -530,7 +540,7 @@ contains
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(flow_config%boundary_condition)
     if (status /= 0) go to 900
-    write(unit, '(a)', iostat=status) trim(flow_config%reconstruction)
+    write(unit, '(a)', iostat=status) trim(checkpoint_reconstruction_identity(flow_config))
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(flow_config%limiter)
     if (status /= 0) go to 900
@@ -819,7 +829,7 @@ contains
       go to 900
     read(unit, '(a)', iostat=status) stored_reconstruction
     if (status /= 0) go to 900
-    if (trim(stored_reconstruction) /= trim(flow_config%reconstruction)) &
+    if (trim(stored_reconstruction) /= trim(checkpoint_reconstruction_identity(flow_config))) &
       go to 900
     read(unit, '(a)', iostat=status) stored_limiter
     if (status /= 0) go to 900
@@ -1180,7 +1190,7 @@ contains
       go to 900
     read(unit, '(a)', iostat=status) stored_reconstruction
     if (status /= 0) go to 900
-    if (trim(stored_reconstruction) /= trim(flow_config%reconstruction)) &
+    if (trim(stored_reconstruction) /= trim(checkpoint_reconstruction_identity(flow_config))) &
       go to 900
     read(unit, '(a)', iostat=status) stored_limiter
     if (status /= 0) go to 900
@@ -2204,6 +2214,15 @@ contains
     if (any(touched.and.faces=='periodic')) geometry_matches=.false.
     if (any(touched).and.amr_config%regrid_interval_steps>0.and. &
         .not.amr_config%regrid_physical_boundaries) geometry_matches=.false.
+    if(.not.ieee_is_finite(flow_config%difmag)) then
+      matches=.false.;return
+    end if
+    if(flow_config%difmag<0.and.flow_config%difmag/=-1._dp) then
+      matches=.false.;return
+    end if
+    if(flow_config%difmag>0.and.flow_config%reconstruction/='characteristic_ppm') then
+      matches=.false.;return
+    end if
     matches = patch%is_valid() .and. &
       patch%coarse_nx == flow_config%nx .and. &
       patch%coarse_ny == flow_config%ny .and. &

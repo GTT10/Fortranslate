@@ -16,6 +16,8 @@ def main() -> None:
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--reacting', action='store_true')
     parser.add_argument('--ppm', action='store_true')
+    parser.add_argument('--difmag', action='store_true')
+    parser.add_argument('--selected', action='store_true')
     parser.add_argument('--riemann-solver', choices=('hllc', 'pelec'), default='hllc')
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--touching', action='store_true')
@@ -29,6 +31,10 @@ def main() -> None:
     parser.add_argument('--restart-ranks', type=int, default=2)
     parser.add_argument('--reference-executable', type=Path)
     args = parser.parse_args()
+    if args.difmag and (not args.ppm or args.riemann_solver != 'pelec'):
+        parser.error('--difmag requires --ppm --riemann-solver pelec')
+    if args.selected and not args.pressure_outlet:
+        parser.error('--selected currently requires --pressure-outlet')
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     executable = args.executable.resolve()
@@ -66,8 +72,14 @@ def main() -> None:
     for label in labels:
         source = template.replace('riemann_solver = "hllc"',
                                   f'riemann_solver = "{args.riemann_solver}"')
+        if args.selected:
+            source = source.replace('thermo_model = "full_h2o2"', 'thermo_model = "selected"')
+            source = source.replace('&reactive_3d', "&reactive_3d\n composition_count=3,\n"
+                                    " composition_species='H2','O2','N2',composition_mole_fractions=2.,1.,3.76,\n")
         if args.ppm:
             source = source.replace('characteristic_plm', 'characteristic_ppm')
+        if args.difmag:
+            source = source.replace('&reactive_3d', '&reactive_3d\n difmag=0.1,')
         if args.reacting:
             source = source.replace('chemistry_enabled = .false.', 'chemistry_enabled = .true.')
             source = source.replace('final_time = 1.0e-8', 'final_time = 1.0e-10')
@@ -115,6 +127,15 @@ def main() -> None:
         if label == 'dynamic' or args.dynamic_touching or args.pressure_outlet:
             assert 'Regrid at step 0:' in stopped
         resumed = run(f'{label}_resumed', source, f"restart_file='{label}.chk',")
+        if args.difmag:
+            assert 'difmag-v1' in (work / f'{label}.chk').read_text()
+            auto_source = source.replace('difmag=0.1,', 'difmag=-1,')
+            run(f'{label}_auto', auto_source, f"restart_file='{label}.chk',")
+            for level in ('coarse', 'fine'):
+                require_equal(work / f'{label}_resumed_{level}.csv',
+                              work / f'{label}_auto_{level}.csv', f'{label}_auto_{level}')
+            run(f'{label}_changed_coefficient', source.replace('difmag=0.1,', 'difmag=0.2,'),
+                f"restart_file='{label}.chk',", success=False)
         if args.ppm:
             assert 'Reconstruction: characteristic_ppm' in reference
             if args.riemann_solver == 'pelec':
@@ -169,10 +190,11 @@ def main() -> None:
             run(f'{label}_tolerance', changed_tolerance, f"restart_file='{label}.chk',", success=False)
             checkpoint = work / f'{label}.chk'
             original_checkpoint = checkpoint.read_text()
-            assert 'FIXED_CONTEXT' in original_checkpoint
-            wrong_integrator = 'implicit' if label == 'elementary' else 'explicit'
+            context_marker = 'SELECTED_CONTEXT' if args.selected else 'FIXED_CONTEXT'
+            assert context_marker in original_checkpoint
             lines = original_checkpoint.splitlines()
-            context_line = lines.index('FIXED_CONTEXT')
+            context_line = lines.index(context_marker)
+            wrong_integrator = 'implicit' if lines[context_line + 2] == 'explicit' else 'explicit'
             lines[context_line + 2] = wrong_integrator
             checkpoint.write_text('\n'.join(lines) + '\n')
             run(f'{label}_integrator', source, f"restart_file='{label}.chk',", success=False)

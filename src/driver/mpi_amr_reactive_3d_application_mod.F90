@@ -35,6 +35,7 @@ module mpi_amr_reactive_3d_application_mod
   use amr_reactive_3d_checkpoint_mod, only: &
     amr_reactive_3d_transport_operator,amr_reactive_boundary_signature_3d
   use mpi_amr_checkpoint_3d_mod, only: write_mpi_amr_checkpoint_3d,read_mpi_amr_checkpoint_3d
+  use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
   private
 
@@ -475,7 +476,8 @@ contains
           step_transport_theta, step_reflux, ok, &
           chemistry_integrator=chemistry_integrator,boundary_faces=active_faces,boundary_change=step_boundary, &
           inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-          wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
+          wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+          difmag=resolved_reactive_difmag_3d(config))
       else
         call advance_mpi_amr_sparse_full_3d( &
           distribution, species, reactions, transport, patch, hierarchy, &
@@ -487,7 +489,8 @@ contains
           config%species_diffusion_enabled, config%barodiffusion_enabled, &
           step_transport_theta, step_reflux, ok,boundary_faces=active_faces,boundary_change=step_boundary, &
           inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-          wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
+          wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+          difmag=resolved_reactive_difmag_3d(config))
       end if
       call collective_require( &
         ok, "MPI 3D AMR reactive split rejected its candidate", 4)

@@ -32,6 +32,7 @@ module amr_reactive_3d_application_mod
     write_amr_reactive_3d_checkpoint, read_amr_reactive_3d_checkpoint, &
     read_dynamic_amr_reactive_3d_checkpoint
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
+  use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
   private
 
@@ -441,7 +442,8 @@ contains
         config%reconstruction, config%limiter, &
         chemistry_integrator=chemistry_integrator,boundary_faces=active_faces,boundary_change=step_boundary, &
         inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
-        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure)
+        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+          difmag=resolved_reactive_difmag_3d(config))
       if (.not. ok) error stop "3D AMR reactive split rejected its candidate"
       boundary_total=boundary_total+step_boundary
       maximum_reflux = max(maximum_reflux, step_reflux)
