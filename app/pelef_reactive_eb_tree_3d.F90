@@ -207,9 +207,6 @@ program pelef_reactive_eb_tree_3d
   if(any(boundary_faces/='legacy')) then
     if(any(boundary_faces/='inflow'.and.boundary_faces/='outflow'.and.boundary_faces/='periodic')) &
       error stop 'Invalid tree boundary faces'
-#ifdef PELEF_MPI_EB_SPRAY
-    if(any(boundary_faces=='periodic')) error stop 'Periodic MPI EB spray coupling is not connected'
-#endif
     do inlet_face=1,5,2
       if((boundary_faces(inlet_face)=='periodic').neqv.(boundary_faces(inlet_face+1)=='periodic')) &
         error stop 'Unpaired periodic tree faces'
@@ -643,6 +640,8 @@ contains
     if(code/=0) error stop 'Invalid MPI EB spray input'
     if(allocated(active_faces).and..not.particle_outflow) &
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
+    if(any(boundary_faces=='periodic').and.(wall_impacts.or.particle_options%khrt_children)) &
+      error stop 'Periodic EB spray films and KH children are not connected'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)

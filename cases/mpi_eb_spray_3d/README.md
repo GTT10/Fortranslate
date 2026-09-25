@@ -409,3 +409,19 @@ Set `particle_outflow=.true.` in `spray.nml`. Both gas inflow and outflow faces
 allow existing particles to leave; the gas inlet does not create particles.
 Changed gas boundary controls reject restart. See the
 [fixed-mechanism MPI checks](../../docs/validation/mpi-eb-spray-inflow-20260926.md).
+
+## Periodic boundaries
+
+Set paired `periodic` labels in the tree input and `particle_outflow=.true.`
+in the spray input. For the supplied y-normal plane geometry:
+
+```fortran
+ boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic'
+```
+
+Gas and particle exchange use wrapped donors. Parcels crossing periodic faces
+wrap into the domain and migrate to the resulting gas-patch owner. Other
+explicit faces allow particle outflow. Restart retains the boundary labels;
+changing them is rejected. `wall_impacts` and `particle_options%khrt_children`
+must remain false for periodic cases. Specular reflection from the embedded
+surface remains available.

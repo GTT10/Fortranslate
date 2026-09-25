@@ -25,11 +25,13 @@ def main():
     p.add_argument('--profiles', action='store_true')
     p.add_argument('--mach', action='store_true')
     p.add_argument('--inflow', action='store_true')
+    p.add_argument('--periodic', action='store_true')
     p.add_argument('--difmag', type=float)
     p.add_argument('--pelemp-cap', action='store_true')
     a = p.parse_args()
-    if a.inflow:
+    if a.inflow or a.periodic:
         assert not a.mach
+        assert not (a.inflow and a.periodic)
         a.ctu = True
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
@@ -73,6 +75,13 @@ def main():
                      "inflow_pressure(1)=135000,inflow_velocity(1,1)=100," + extra)
             spray = directory / 'spray.nml'
             spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1))
+        if a.periodic:
+            extra = ("boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic'," + extra)
+            spray = directory / 'spray.nml'
+            values = spray.read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+            values = values.replace('center=.0015,.001250001,.0015', 'center=.0015,.001250001,.003999999')
+            values = values.replace('axis=0.,-1.,0.', 'axis=0.,-1.,1.')
+            spray.write_text(values)
         if a.mach:
             extra = ('inflow_mach(4)=.1,inflow_temperature(4)=400.,inflow_pressure(4)=120000.,'
                      'automatic_timestep=.true.,subcycling=.true.,' + extra)
@@ -158,6 +167,8 @@ def main():
             else:
                 assert float(row['y']) > .00125 and float(row['v']) > 0, row
                 assert float(row['temperature']) != initial_t, row
+                if a.periodic:
+                    assert 0 <= float(row['z']) < .001, row
             component_sum = sum(float(v) for k, v in row.items() if k.startswith('component_mass_'))
             assert abs(float(row['mass']) - component_sum) <= 1e-14 * float(row['mass'])
         particles.append(drops)
@@ -204,6 +215,10 @@ def main():
                 log = (mismatch / 'run.log').read_text()
                 assert ('Gas snapshot restore failed' if label == 'coefficient_mismatch'
                         else 'Invalid artificial-viscosity coefficient') in log
+        if a.periodic:
+            mismatch = run(2, 'periodic_mismatch', f"restart_file='{archive}',"
+                           "boundary_faces='outflow','outflow','outflow','outflow','periodic','periodic',", success=False)
+            assert not (mismatch / 'result.csv').exists()
         if a.inflow:
             mismatch = run(2, 'prescribed_mismatch', f"restart_file='{archive}',inflow_velocity(1,1)=101,", success=False)
             assert 'Restart prescribed inlet mismatch' in (mismatch / 'run.log').read_text()

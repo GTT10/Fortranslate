@@ -290,4 +290,5 @@ Both faces of an axis must be periodic and the opposing EB face metrics must
 match. Geometry padding wraps periodic donor nodes for PLM/CTU. Common and
 recursive gas updates, automatic timestep selection, scheduled regridding and
 restart use the same labels. Changing labels on restart is rejected.
-MPI EB spray currently rejects periodic input pending particle coupling.
+MPI EB spray also accepts periodic faces with `particle_outflow=.true.`;
+periodic wall-impact/film and KH child-generation combinations are rejected.
