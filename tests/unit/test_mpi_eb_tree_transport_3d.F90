@@ -138,6 +138,31 @@ contains
         lt%fields(p)%values(1,:,:,:)=saved%nodes(p)%temperature
       end do
       initial=local;it=lt;b=17._dp;limiter=19._dp
+      if(allocated(wall_t)) then
+        do recursive_mode=0,1
+          call reactive_eb_tree_timestep_3d(species,transport,saved,.5_dp,1.e-12_dp,.true., &
+            .false.,.true.,.false.,old_dt,good,subcycling=recursive_mode==1)
+          call require(good,'thermal baseline timestep')
+          call reactive_eb_tree_timestep_3d(species,transport,saved,.5_dp,1.e-12_dp,.true., &
+            .false.,.true.,.false.,expected_dt,good,subcycling=recursive_mode==1, &
+            boundary_faces=labels,wall_temperature=wall_t)
+          call require(good.and.expected_dt<=old_dt,'serial thermal bound')
+          if(recursive_mode==1) call require(expected_dt<old_dt,'thermal bound is active')
+          call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,.5_dp,1.e-12_dp,.true., &
+            .false.,.true.,.false.,actual_dt,MPI_COMM_WORLD,good,subcycling=recursive_mode==1, &
+            boundary_faces=labels,wall_temperature=wall_t)
+          call require(good.and.actual_dt==expected_dt,'exact MPI thermal timestep')
+          if(rank==0) print *, 'thermal dt baseline, serial, MPI: ',old_dt,expected_dt,actual_dt
+          actual_dt=17
+          if(rank==0) wall_t(1)=2001
+          call mpi_eb_tree_timestep_3d(species,transport,topology,owners,geometry,local,lt,.5_dp,1.e-12_dp,.true., &
+            .false.,.true.,.false.,actual_dt,MPI_COMM_WORLD,good,subcycling=recursive_mode==1, &
+            boundary_faces=labels,wall_temperature=wall_t)
+          call require(.not.good.and.actual_dt==17,'rank-dependent wall temperature preserves timestep')
+          wall_t=2000
+        end do
+      end if
+
       do recursive_mode=0,1
       do estimate_mode=1,3
         hcfl=.5_dp;tcfl=.35_dp
