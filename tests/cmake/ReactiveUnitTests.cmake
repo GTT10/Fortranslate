@@ -863,3 +863,11 @@ add_test(NAME reactive_eb_tree_3d_difmag_input COMMAND "${Python3_EXECUTABLE}"
   --executable "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
   --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_tree_3d_difmag_input")
 set_tests_properties(reactive_eb_tree_3d_difmag_input PROPERTIES TIMEOUT 180)
+
+foreach(layout reference multipatch)
+  add_test(NAME reactive_eb_two_level_difmag_${layout} COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tools/check_eb_difmag_input.py" --two-level ${layout}
+    --executable "$<TARGET_FILE:pelef_reactive_eb_two_level_3d>"
+    --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_two_level_difmag_${layout}")
+  set_tests_properties(reactive_eb_two_level_difmag_${layout} PROPERTIES TIMEOUT 180)
+endforeach()

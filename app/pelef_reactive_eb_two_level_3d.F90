@@ -84,14 +84,14 @@ program pelef_reactive_eb_two_level_3d
   integer :: checkpoint_interval_steps=0,maximum_step_retries=12
   logical :: stop_after_checkpoint=.false.
   logical :: automatic_timestep=.false.,subcycling=.false.
-  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp
+  real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=0._dp
   real(dp) :: rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,viscosity_enabled=.true.
   logical :: thermal_conduction_enabled=.true.,species_diffusion_enabled=.true.,barodiffusion_enabled=.true.
   namelist /eb_two_level/ nx,ny,nz,refinement_ratio,fine_lower,fine_upper,maximum_steps,geometry_type,plane_axis, &
     extrusion_axis,level_set_file,section_file,output_file,domain_lower,domain_upper,plane_position,time_step,final_time, &
     rtol,atol,chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
-    species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver, &
+    species_diffusion_enabled,barodiffusion_enabled,chemistry_integrator,riemann_solver,difmag, &
     checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,maximum_step_retries, &
     automatic_timestep,hydro_cfl,transport_cfl,subcycling,patch_count,patch_lower,patch_upper, &
     composition_count,composition_species,composition_mole_fractions, &
@@ -145,6 +145,7 @@ program pelef_reactive_eb_two_level_3d
     error stop 'Invalid two-level physical controls'
   if (barodiffusion_enabled.and..not.species_diffusion_enabled.and.transport_enabled) &
     error stop 'Barodiffusion requires species diffusion'
+  if(.not.ieee_is_finite(difmag).or.difmag<0) error stop 'Invalid artificial-viscosity coefficient'
   select case(trim(riemann_solver))
   case('rusanov','hllc','pelec')
   case default;error stop 'Invalid Riemann solver'
@@ -171,7 +172,7 @@ program pelef_reactive_eb_two_level_3d
       error stop 'Checkpoint aliases another file'
   end if
   config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
-  config%redistribution='none'
+  config%redistribution='none';config%difmag=difmag
   config%maximum_steps=maximum_steps;config%final_time=final_time;config%riemann_solver=riemann_solver
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
   config%chemistry_relative_tolerance=rtol;config%chemistry_absolute_tolerance=atol
@@ -284,12 +285,13 @@ program pelef_reactive_eb_two_level_3d
       if (patch_count==1) then
       call advance_reactive_eb_two_level_full_3d(species,reactions,transport,coarse,fine,fine_lower,refinement_ratio, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
-        species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling)
+        species_diffusion_enabled,barodiffusion_enabled,uc,tc,uf,tf,boundary,wall,chemical,theta,ok, &
+        chemistry_integrator,subcycling,difmag=difmag)
       else
         call advance_reactive_eb_multipatch_full_3d(species,reactions,transport,coarse,patch_lower(:,1:patch_count), &
           refinement_ratio,riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled, &
           thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled,uc,tc,patches, &
-          boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling)
+          boundary,wall,chemical,theta,ok,chemistry_integrator,subcycling,difmag=difmag)
         call bind_first_patch()
       end if
       if (ok) exit

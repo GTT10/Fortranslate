@@ -11,6 +11,7 @@ def main():
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--tree', action='store_true')
+    parser.add_argument('--two-level', choices=('reference', 'multipatch'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     source = (root / 'cases/reactive_eb_3d/density_sheet_state.nml').read_text()
@@ -20,6 +21,12 @@ def main():
         source = (root / 'cases/reactive_eb_tree_3d/input.nml').read_text()
         source = source.replace('&eb_tree', '&eb_tree\n subcycling=.true.,', 1)
         source = source.replace("output_file='eb_tree.csv'", "output_file = 'reactive_eb_3d_state.csv'")
+    if args.two_level:
+        source = (root / f'cases/reactive_eb_two_level_3d/{args.two_level}.nml').read_text()
+        source = source.replace('&eb_two_level', '&eb_two_level\n subcycling=.true.,', 1)
+        source = source.replace('automatic_timestep=.true.', 'automatic_timestep=.false.')
+        for output in ('eb_two_level.csv', 'eb_multipatch.csv'):
+            source = source.replace(f"output_file='{output}'", "output_file = 'reactive_eb_3d_state.csv'")
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
 
@@ -43,7 +50,10 @@ def main():
     assert stopped != reference, 'checkpoint must stop before final output'
     assert run('resumed', "difmag=.037, restart_file='step.chk'") == reference
     log = run('changed', "difmag=.05, restart_file='step.chk'", False)
-    assert ('Invalid tree checkpoint record' if args.tree else 'Failed to restart public 3D EB state') in log
+    diagnostic = 'Invalid tree checkpoint record' if args.tree else 'Failed to restart public 3D EB state'
+    if args.two_level:
+        diagnostic = 'Invalid two-level patch record'
+    assert diagnostic in log
     for label, value in [('negative', '-1'), ('nonfinite', 'NaN')]:
         assert 'Invalid artificial-viscosity coefficient' in run(label, f'difmag={value}', False)
     baseline = run('baseline')
