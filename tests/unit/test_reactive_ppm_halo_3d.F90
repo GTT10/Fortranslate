@@ -3,7 +3,7 @@ program test_reactive_ppm_halo_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_ppm_flattening_coefficient, &
-    reconstruct_pelec_plm_cell,compute_pelec_plm_slopes
+    reconstruct_pelec_plm_cell,compute_pelec_plm_slopes,reactive_pelec_primitive_flux_x
   use reactive_2d_mod, only: reconstruct_reactive_characteristic_ppm_cell_2d
   use reactive_3d_mod, only: compute_reactive_ppm_ctu_fluxes_3d,compute_reactive_ppm_halo_ctu_fluxes_3d
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,reactive_ppm_transverse_pressure_3d, &
@@ -347,6 +347,8 @@ contains
   end subroutine
   subroutine check_pressure_work()
     real(dp) :: normal(7),delta(7),primitive(7),e
+    real(dp) :: cell(nv),faceq(nv),flux(nv),difference(nv),base(nv),restored(nv),temp,c
+    integer :: directions
     ! Corrected rho=2, momentum=(2,4,0), rhoE=30; therefore rhoe=25.
     normal=[3._dp,3._dp,6._dp,0._dp,40._dp,1._dp,2._dp]
     delta=[1._dp,1._dp,2._dp,0._dp,10._dp,.25_dp,.75_dp]
@@ -359,6 +361,29 @@ contains
       [10._dp,20._dp],[20._dp,10._dp],[2._dp,3._dp],[3._dp,2._dp], &
       [.1_dp,.2_dp],primitive,e,ok)
     call require(ok.and.abs(primitive(5)-104.6_dp)<1e-13_dp.and.e==25,'double transverse pressure work')
+    ! The pinned passive transverse kernels preserve signed face weights.
+    ! Accepted cell compositions still use the ordinary nonnegative EOS gate.
+    base=0;base(1)=1;base(2)=100;base(5)=300000;base(nv)=1
+    call reactive_primitive_to_conserved(species,base,cell,temp,c,ok)
+    call require(ok,'signed transverse fixture')
+    difference=0;difference(6)=1e-3_dp;difference(nv)=-1e-3_dp
+    do directions=1,2
+      call reactive_ppm_transverse_pressure_3d(cell,base(5),difference,1.4_dp, &
+        spread(100._dp,1,directions),spread(100._dp,1,directions), &
+        spread(0._dp,1,directions),spread(0._dp,1,directions), &
+        spread(.1_dp,1,directions),faceq,e,ok)
+      call require(ok,'signed transient species after transverse correction')
+      call require(faceq(6)==-1e-3_dp.and.faceq(nv)==1.001_dp,'unclipped transverse species')
+      call require(abs(sum(faceq(6:))-1)<1e-14_dp,'transverse species closure')
+      call reactive_pelec_primitive_flux_x(species,faceq,faceq,c,flux,ok)
+      call require(ok,'signed face reaches Riemann solver')
+      call require(abs(sum(flux(6:))-flux(1))<1e-12_dp,'signed face mass flux closure')
+      call reactive_primitive_to_conserved(species,faceq,restored,temp,c,ok)
+      call require(.not.ok,'signed face is not an admissible cell composition')
+      ! Refresh sound speed after the intentionally failed ordinary EOS call.
+      call reactive_primitive_to_conserved(species,base,restored,temp,c,ok)
+      call require(ok,'restore fixture sound speed')
+    end do
     delta(1)=4
     call reactive_ppm_transverse_pressure_3d(normal,100._dp,delta,1.4_dp, &
       [10._dp],[20._dp],[2._dp],[3._dp],[.1_dp],primitive,e,ok)

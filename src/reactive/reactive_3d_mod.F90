@@ -220,7 +220,10 @@ contains
     if (normal(1)<=density_floor.or.normal_pressure<=0.or.gamma<=0.or.any(scale<0).or. &
         any(lower_pressure<=0).or.any(upper_pressure<=0)) return
     state=normal-delta
-    if (state(1)<=density_floor.or.any(state(6:)<0)) return
+    if (state(1)<=density_floor) return
+    ! pc_transdo_passive/pc_transdd_passive retain signed predictor weights.
+    ! They are consumed by the primitive Riemann path; accepted cell species
+    ! remain subject to the ordinary conserved-state/EOS validation.
     candidate(1)=state(1);candidate(2:4)=state(2:4)/state(1);candidate(6:)=state(6:)/state(1)
     pressure=normal_pressure
     do axis=1,nd
