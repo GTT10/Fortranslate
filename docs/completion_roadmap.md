@@ -174,8 +174,10 @@ Single-level coupled CTU now forwards inflow/outflow labels and a transport dono
 provider with combined hydro/transport boundary accounting
 ([checks](validation/eb-coupled-inflow-boundaries-20260925.md)). Built-in inflow/outflow donors now reuse the regular boundary filler at every
 transport stage ([checks](validation/eb-built-in-inflow-donors-20260925.md)).
-Periodic/wall transport flux policies, input/timestep/restart wiring and
-application/tree/MPI dispatch remain open.
+Fixed/selected single-level gas applications now connect inflow/outflow input,
+open-face donor timestep bounds and boundary-bound restart
+([checks](validation/eb-inflow-application-20260925.md)). Periodic/wall transport,
+independent inlet mixture selection and spray/tree/MPI boundary dispatch remain open.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
