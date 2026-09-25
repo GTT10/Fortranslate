@@ -339,7 +339,9 @@ accept caller-owned neighbor and boundary data
 and actual coarse/fine interpolation remain open. New-time source estimates
 can persist across caller-coordinated iterations
 ([checks](validation/sdc-iteration-state-20260926.md)); a hierarchy stage driver
-is still required. Physical
+is still required. The reaction stage is independently callable
+([checks](validation/sdc-reaction-stage-20260926.md)) so hierarchy drivers can
+separate source evaluation from reaction integration. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
