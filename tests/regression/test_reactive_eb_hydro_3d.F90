@@ -12,10 +12,11 @@ program test_reactive_eb_hydro_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_flux_divergence_3d
   use eb_reactive_hydro_3d_mod, only: &
-    reactive_eb_outflow_riemann_fluxes_3d, &
+    reactive_eb_outflow_riemann_fluxes_3d,predict_reactive_eb_plm_cell_3d, &
     advance_reactive_eb_euler_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   implicit none
 
   integer, parameter :: nx = 10
@@ -72,6 +73,7 @@ program test_reactive_eb_hydro_3d
     [18.0_dp, -11.0_dp, 0.0_dp])
   call verify_small_cell_hydro_relief()
   call verify_viscosity()
+  call verify_normal_prediction()
 
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
@@ -252,6 +254,64 @@ program test_reactive_eb_hydro_3d
   write(*, '(a)') "test_reactive_eb_hydro_3d: PASS"
 
 contains
+  subroutine verify_normal_prediction()
+    real(dp) :: q(nvar,-2:2),e(-2:2),qm(nvar),qp(nvar),em,ep,area(2),nan_value
+    logical :: covered(-2:2),valid
+    integer :: axis,mask,j
+    nan_value=ieee_value(0._dp,ieee_quiet_nan)
+    do axis=1,3
+      do mask=0,3
+        do j=-2,2
+          q(:,j)=0;q(1,j)=1+.02_dp*j;q(5,j)=135000
+          q(2:4,j)=[3._dp,5._dp,7._dp]+j*[.1_dp,.2_dp,.3_dp]
+          q(nvar,j)=1;e(j)=300000+200*j
+        end do
+        covered=.false.;area=[merge(.7_dp,0._dp,btest(mask,0)),merge(.4_dp,0._dp,btest(mask,1))]
+        call predict_reactive_eb_plm_cell_3d(q,e,400._dp,axis,.01_dp,0._dp,1._dp,covered,area, &
+          qm,qp,em,ep,valid)
+        call require(valid,'EB PLM normal predictor')
+        if(area(1)>0) then
+          call require(abs(qm(1)-.99_dp)<1e-14_dp.and.abs(em-299900)<1e-10_dp,'lower density/internal energy trace')
+          call require(maxval(abs(qm(2:4)-([3._dp,5._dp,7._dp]-.5_dp*[.1_dp,.2_dp,.3_dp])))<1e-14_dp, &
+            'lower rotated velocities')
+        else
+          call require(all(qm==0).and.em==0,'closed lower face zero')
+        end if
+        if(area(2)>0) then
+          call require(abs(qp(1)-1.01_dp)<1e-14_dp.and.abs(ep-300100)<1e-10_dp,'upper density/internal energy trace')
+          call require(maxval(abs(qp(2:4)-([3._dp,5._dp,7._dp]+.5_dp*[.1_dp,.2_dp,.3_dp])))<1e-14_dp, &
+            'upper rotated velocities')
+        else
+          call require(all(qp==0).and.ep==0,'closed upper face zero')
+        end if
+      end do
+      covered(-2)=.true.;q(:,-2)=nan_value;e(-2)=nan_value
+      call predict_reactive_eb_plm_cell_3d(q,e,400._dp,axis,.01_dp,0._dp,1._dp,covered,[1._dp,1._dp], &
+        qm,qp,em,ep,valid)
+      call require(valid.and.abs(em-(300000._dp-100._dp*4/3))<1e-10_dp.and. &
+        abs(ep-(300000._dp+100._dp*4/3))<1e-10_dp,'EB energy slope order fallback')
+      call predict_reactive_eb_plm_cell_3d(q,e,400._dp,axis,.01_dp,1e-6_dp,0._dp,covered,[1._dp,1._dp], &
+        qm,qp,em,ep,valid)
+      call require(valid.and.all(qm==q(:,0)).and.all(qp==q(:,0)).and.em==e(0).and.ep==e(0), &
+        'flattened finite-time EB predictor')
+      call predict_reactive_eb_plm_cell_3d(q,e,400._dp,axis,.01_dp,1._dp,1._dp,covered,[1._dp,1._dp], &
+        qm,qp,em,ep,valid)
+      call require(.not.valid.and.all(qm==0).and.all(qp==0).and.em==0.and.ep==0,'normal CFL zero outputs')
+      covered=.false.
+      do j=-2,2
+        q(:,j)=0;q(1,j)=1+.02_dp*j;q(5,j)=135000;q(nvar,j)=1
+        q(axis+1,j)=-20;e(j)=300000+200*j
+      end do
+      call predict_reactive_eb_plm_cell_3d(q,e,400._dp,axis,.01_dp,1e-6_dp,1._dp,covered,[1._dp,1._dp], &
+        qm,qp,em,ep,valid)
+      call require(valid.and.abs(em-299900.2_dp)<1e-10_dp.and.abs(ep-300096.2_dp)<1e-10_dp, &
+        'finite-time internal energy contact-wave integration')
+    end do
+    q=nan_value;e=nan_value;covered=.true.
+    call predict_reactive_eb_plm_cell_3d(q,e,400._dp,1,.01_dp,1e-6_dp,1._dp,covered,[0._dp,0._dp], &
+      qm,qp,em,ep,valid)
+    call require(valid.and.all(qm==0).and.all(qp==0).and.em==0.and.ep==0,'fully closed predictor ignores covered state')
+  end subroutine verify_normal_prediction
 
   subroutine verify_viscosity()
     real(dp), allocatable :: base(:,:,:,:),rhs(:,:,:,:),saved(:,:,:,:),saved_t(:,:,:)

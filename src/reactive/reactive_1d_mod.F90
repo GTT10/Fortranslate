@@ -1043,20 +1043,32 @@ contains
 
   ! Pinned PLM.H: fourth-order primitive slopes and pc_plm_d wave tracing.
   ! Only variables consumed by pc_cmpflx are returned (rho,u,v,w,p,Y).
-  pure subroutine reconstruct_pelec_plm_cell(stencil,sound,dtdx,flat,minus,plus,ok,order,covered)
+  pure subroutine reconstruct_pelec_plm_cell(stencil,sound,dtdx,flat,minus,plus,ok,order,covered,face_open)
     real(dp), intent(in) :: stencil(:,-2:),sound,dtdx,flat
     real(dp), intent(out) :: minus(:),plus(:)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
-    logical, optional, intent(in) :: covered(-2:)
+    logical, optional, intent(in) :: covered(-2:),face_open(2)
     real(dp) :: slope(size(stencil,1)),center(size(stencil,1))
     real(dp) :: w(3),rho,c2,am,ap,a0,factor,acoustic,contact
     integer :: selected,nv
-    logical :: valid
+    logical :: valid,opened(2)
     minus=0;plus=0;ok=.false.;nv=size(stencil,1)
     if (nv<6.or.size(stencil,2)/=5.or.size(minus)/=nv.or.size(plus)/=nv) return
-    if (.not.all(ieee_is_finite(stencil(:,0))).or..not.all(ieee_is_finite([sound,dtdx,flat]))) return
-    if (sound<=0.or.dtdx<0.or.flat<0.or.flat>1) return
+    if(.not.all(ieee_is_finite([sound,dtdx,flat]))) return
+    if(sound<=0.or.dtdx<0.or.flat<0.or.flat>1) return
+    if(present(order)) then
+      if(order/=1.and.order/=2.and.order/=4) return
+    end if
+    if(present(covered)) then
+      if(size(covered)/=5) return
+    end if
+    opened=.true.
+    if(present(face_open)) opened=face_open
+    if(.not.any(opened)) then
+      ok=.true.;return
+    end if
+    if (.not.all(ieee_is_finite(stencil(:,0)))) return
     center=stencil(:,0);rho=center(1);c2=sound**2
     if (rho<=density_floor.or.center(5)<=pressure_floor) return
     w=[center(2)-sound,center(2),center(2)+sound]
@@ -1088,13 +1100,15 @@ contains
     minus(6:)=center(6:)+.5_dp*(-1-factor)*slope(6:)
     factor=merge(center(2)*dtdx,1._dp,center(2)>=0)
     plus(6:)=center(6:)+.5_dp*(1-factor)*slope(6:)
+    if(.not.opened(1)) minus=0
+    if(.not.opened(2)) plus=0
     ok=all(ieee_is_finite(minus)).and.all(ieee_is_finite(plus))
-    if (ok) ok=all(minus(6:)>=0).and.all(plus(6:)>=0).and.sum(minus(6:))>0.and.sum(plus(6:))>0
-    if (ok) then
-      ! Independently limited species slopes need not sum to zero. Restore the
-      ! face composition simplex before PeleF's normalized-composition EOS.
-      minus(6:)=minus(6:)/sum(minus(6:))
-      plus(6:)=plus(6:)/sum(plus(6:))
+    if(ok.and.opened(1)) ok=all(minus(6:)>=0).and.sum(minus(6:))>0
+    if(ok.and.opened(2)) ok=all(plus(6:)>=0).and.sum(plus(6:))>0
+    if(ok) then
+      ! Independently limited species slopes need not sum to zero.
+      if(opened(1)) minus(6:)=minus(6:)/sum(minus(6:))
+      if(opened(2)) plus(6:)=plus(6:)/sum(plus(6:))
     end if
     if (.not.ok) then
       minus=0;plus=0

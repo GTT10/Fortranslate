@@ -5,7 +5,7 @@ module eb_reactive_hydro_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
-    reactive_riemann_flux_x
+    reactive_riemann_flux_x,reconstruct_pelec_plm_cell,compute_pelec_plm_slopes
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
@@ -19,6 +19,7 @@ module eb_reactive_hydro_3d_mod
   implicit none
   private
 
+  public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
   public :: advance_reactive_eb_redistributed_euler_3d
@@ -29,6 +30,68 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! Pinned pc_plm_d_eb normal prediction. Primitive layout is rho,u,v,w,p,Y;
+  ! rhoe is kept separately for subsequent EB transverse pressure/energy work.
+  subroutine predict_reactive_eb_plm_cell_3d(stencil,rhoe,sound,axis,dx,dt,flat,covered,area, &
+      minus,plus,energy_minus,energy_plus,ok,order)
+    real(dp), intent(in) :: stencil(:,-2:),rhoe(-2:),sound,dx,dt,flat,area(2)
+    integer, intent(in) :: axis
+    logical, intent(in) :: covered(-2:)
+    real(dp), intent(out) :: minus(:),plus(:),energy_minus,energy_plus
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: order
+    real(dp) :: rotated(size(stencil,1),-2:2),qm(size(stencil,1)),qp(size(stencil,1))
+    real(dp) :: energy_stencil(1,-2:2),energy_slope(1),slope(size(stencil,1))
+    real(dp) :: w(3),rho,c2,enth,am,ap,a0e,contact,acoustic,dtdx,em,ep
+    logical :: opened(2),valid
+    integer :: selected,nv
+    minus=0;plus=0;energy_minus=0;energy_plus=0;ok=.false.
+    nv=size(stencil,1);selected=4
+    if(present(order)) selected=order
+    if(nv<6.or.size(stencil,2)/=5.or.size(rhoe)/=5.or.size(covered)/=5) return
+    if(size(minus)/=nv.or.size(plus)/=nv.or.axis<1.or.axis>3) return
+    if(.not.all(ieee_is_finite([sound,dx,dt,flat,area]))) return
+    if(sound<=0.or.dx<=0.or.dt<0.or.flat<0.or.flat>1.or.any(area<0).or.any(area>1)) return
+    if(selected/=1.and.selected/=2.and.selected/=4) return
+    opened=area>0
+    if(.not.any(opened)) then
+      ok=.true.;return
+    end if
+    if(covered(0).or..not.ieee_is_finite(rhoe(0))) return
+    rotated=stencil
+    rotated(2,:)=stencil(axis+1,:);rotated(axis+1,:)=stencil(2,:)
+    dtdx=dt/dx
+    call reconstruct_pelec_plm_cell(rotated,sound,dtdx,flat,qm,qp,valid,selected,covered,opened)
+    if(.not.valid) return
+    call compute_pelec_plm_slopes(rotated,flat,selected,slope,valid,covered)
+    if(.not.valid) return
+    energy_stencil(1,:)=rhoe
+    call compute_pelec_plm_slopes(energy_stencil,flat,selected,energy_slope,valid,covered)
+    if(.not.valid) return
+    rho=rotated(1,0);c2=sound**2
+    enth=((rhoe(0)+rotated(5,0))/rho)/c2
+    w=[rotated(2,0)-sound,rotated(2,0),rotated(2,0)+sound]
+    am=.5_dp*(slope(5)/(rho*sound)-slope(2))*rho/sound
+    ap=.5_dp*(slope(5)/(rho*sound)+slope(2))*rho/sound
+    a0e=energy_slope(1)-slope(5)*enth
+    em=0;ep=0
+    if(opened(1)) then
+      acoustic=.25_dp*dtdx*(w(1)-w(3))*(1-sign(1._dp,w(3)))*ap
+      contact=.25_dp*dtdx*(w(1)-w(2))*(1-sign(1._dp,w(2)))*a0e
+      em=rhoe(0)-.5_dp*(1+dtdx*min(w(1),0._dp))*energy_slope(1)+acoustic*enth*c2+contact
+    end if
+    if(opened(2)) then
+      acoustic=.25_dp*dtdx*(w(3)-w(1))*(1+sign(1._dp,w(1)))*am
+      contact=.25_dp*dtdx*(w(3)-w(2))*(1+sign(1._dp,w(2)))*a0e
+      ep=rhoe(0)+.5_dp*(1-dtdx*max(w(3),0._dp))*energy_slope(1)+acoustic*enth*c2+contact
+    end if
+    if(.not.all(ieee_is_finite([em,ep]))) return
+    minus=qm;plus=qp
+    minus(2)=qm(axis+1);minus(axis+1)=qm(2)
+    plus(2)=qp(axis+1);plus(axis+1)=qp(2)
+    energy_minus=em;energy_plus=ep;ok=.true.
+  end subroutine predict_reactive_eb_plm_cell_3d
 
   subroutine reactive_eb_outflow_riemann_fluxes_3d( &
       species, state, temperature, geometry, solver, x_flux, y_flux, &
