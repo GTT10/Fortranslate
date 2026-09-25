@@ -214,8 +214,7 @@ two-level applications now expose input and bind the resolved coefficient to
 restart identity ([checks](validation/difmag-two-level-input-20260925.md)).
 Regular serial PCM/PLM library stepping now applies explicit positive coefficients
 at both SSPRK2 stages, including mean face fluxes and boundary accounting
-([checks](validation/pcm-plm-viscosity-20260925.md)). Omitted/zero PCM/PLM coefficients
-retain the existing policy. Serial/MPI tree common and level hydro now apply
+([checks](validation/pcm-plm-viscosity-20260925.md)). Explicit zero retains the unadjusted PCM/PLM calculation. Serial/MPI tree common and level hydro now apply
 the coefficient before flux integration and reflux, including recursive
 subcycling ([checks](validation/pcm-plm-tree-viscosity-20260925.md)). PCM/PLM
 application defaults now resolve to the reference 0.1 through shared regular
@@ -223,11 +222,12 @@ gas configuration, including AMR checkpoint identity
 ([checks](validation/regular-gas-default-difmag-20260925.md)). Serial/MPI regular spray
 now also defaults to 0.1 with changed-rank restart evidence
 ([checks](validation/spray-default-difmag-20260925.md)). EB application inputs also now default to 0.1 with zero-to-default restart
-rejection ([checks](validation/eb-default-difmag-20260925.md)). Direct-library
-default unification remains open. Regular boundary/full-composition and PPM
+rejection ([checks](validation/eb-default-difmag-20260925.md)). Regular boundary/full-composition and PPM
 flux APIs now default to 0.1 independently of solver/reconstruction
-([checks](validation/regular-library-default-difmag-20260925.md)); remaining
-low-level and hierarchy wrappers still require review. Serial/MPI AMR tree
+([checks](validation/regular-library-default-difmag-20260925.md)). Periodic
+PCM/PLM direct stepping and the older Strang wrapper now accept the coefficient
+and default to 0.1, preserving explicit-zero dispatch
+([checks](validation/periodic-api-difmag-20260925.md)). Serial/MPI AMR tree
 common/level hydro now resolves omission to 0.1, with common/recursive
 serial-versus-MPI equivalence checks
 ([evidence](validation/amr-tree-default-difmag-20260925.md)). Serial/MPI
