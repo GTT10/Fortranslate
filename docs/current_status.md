@@ -21,8 +21,10 @@ integration remains open.
 The SDC library additionally supports zero-gradient outflow with separate
 boundary inventories ([checks](validation/sdc-outflow-20260926.md)). Fixed/selected
 application routing now exposes this path, including a nonuniform reacting
-check ([evidence](validation/sdc-outflow-app-20260926.md)); physical-boundary
-transport remains open.
+check ([evidence](validation/sdc-outflow-app-20260926.md)). Outflow molecular
+transport now participates with separate boundary accounting
+([checks](validation/sdc-outflow-transport-20260926.md)); other physical
+boundary types remain open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates
