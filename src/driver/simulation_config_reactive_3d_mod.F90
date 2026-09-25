@@ -772,9 +772,6 @@ contains
         any(faces/='periodic'.and.faces/='outflow')) then
         message='SDC requires PPM/PeleC with periodic or outflow faces';return
       end if
-      if(any(faces/='periodic').and.config%transport_enabled) then
-        message='SDC physical-boundary transport is not yet supported';return
-      end if
       if(any(config%outlet_pressure/=0)) then
         message='SDC prescribed outlet pressure is not yet supported';return
       end if

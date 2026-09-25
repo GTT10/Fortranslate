@@ -161,8 +161,8 @@ not establish full SDC integration or physical forcing validation.
 `time_integrator='sdc'` selects iterative source-coupled CTU, with
 `sdc_iterations=2` by default. The default integrator remains `split`.
 The current application path requires PPM/PeleC and periodic or zero-gradient
-outflow boundaries. Outflow requires `transport_enabled=.false.`; prescribed
-outlet pressure, inflow and walls are not yet connected to SDC. Boundary flux
+outflow boundaries. Molecular transport is supported at outflow boundaries;
+prescribed outlet pressure, inflow and walls are not yet connected to SDC. Boundary flux
 inventories are recorded separately from volume sources.
 With `chemistry_enabled=.true.`, it uses forced adaptive implicit chemistry
 and retains reaction sources between steps. The chemistry tolerances apply;
@@ -177,3 +177,4 @@ SDC is not yet enabled for AMR, MPI or EB. `sdc_reacting.nml` provides a
 uniform reacting example with transport and external forcing; this is a
 bounded numerical example, not physical ignition validation.
 `sdc_outflow.nml` exercises a reacting hotspot with external force and outflow.
+Set `transport_enabled=.true.` in that example to include molecular transport.

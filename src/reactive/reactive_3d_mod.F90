@@ -17,7 +17,8 @@ module reactive_3d_mod
     reactive_riemann_flux_y, advance_reactive_chemistry_2d, reconstruct_reactive_characteristic_ppm_cell_2d, &
     apply_reactive_transverse_correction_2d
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
-  use reactive_transport_3d_mod, only: advance_reactive_transport_3d,reactive_transport_fluxes_3d
+  use reactive_transport_3d_mod, only: advance_reactive_transport_3d,reactive_transport_fluxes_3d, &
+    physical_transport_fluxes_3d,physical_transport_budget_3d
   implicit none
   private
 
@@ -85,6 +86,7 @@ contains
     real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source_ghost(:,:,:,:)
     integer :: index(3),a
     real(dp) :: boundary_inventory(size(state,1))
+    real(dp) :: transport_rate(size(state,1)),old_transport_rate(size(state,1)),new_transport_rate(size(state,1))
     real(dp), allocatable :: ir(:,:,:,:)
     real(dp) :: rtol,atol,rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
     integer :: chemistry_steps
@@ -105,7 +107,7 @@ contains
     end if
     if(.not.valid_reactive_boundaries_3d(faces)) return
     if(any(faces/='periodic'.and.faces/='outflow')) return
-    if(any(faces/='periodic').and.present(transport)) return
+    transport_rate=0;old_transport_rate=0;new_transport_rate=0
     rtol=1e-6_dp;atol=1e-12_dp
     if(present(chemistry_relative_tolerance)) rtol=chemistry_relative_tolerance
     if(present(chemistry_absolute_tolerance)) atol=chemistry_absolute_tolerance
@@ -122,7 +124,11 @@ contains
     if(present(minimum_transport_theta)) minimum_transport_theta=1
     if(present(transport)) then
       if(present(evaluate_sources).or.size(transport)/=size(species)) return
-      allocate(tx,mold=state);allocate(ty,mold=state);allocate(tz,mold=state)
+      if(all(faces=='periodic')) then
+        allocate(tx,mold=state);allocate(ty,mold=state);allocate(tz,mold=state)
+      else
+        allocate(tx(nv,0:n(1),n(2),n(3)),ty(nv,n(1),0:n(2),n(3)),tz(nv,n(1),n(2),0:n(3)))
+      end if
     end if
     if(present(source_change)) then
       source_change=0
@@ -154,6 +160,7 @@ contains
     end if
     if(.not.valid) return
     new_sources=old_sources
+    old_transport_rate=transport_rate
     do iteration=1,iterations
       ! Hydro.cpp sums half new then half old rates, without including hydro itself.
       call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,reaction_source=ir)
@@ -200,6 +207,7 @@ contains
         call builtin_sources(candidate,ct,new_sources,valid)
       end if
       if(.not.valid) return
+      new_transport_rate=transport_rate
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
       if(.not.valid) return
       if(present(reactions)) then
@@ -246,6 +254,9 @@ contains
         (sum(fz(component,:,:,0))-sum(fz(component,:,:,n(3))))*spacing(1)*spacing(2))
     end do
     if(.not.all(ieee_is_finite(boundary_inventory))) return
+    boundary_inventory=boundary_inventory+.5_dp*dt*(old_transport_rate+new_transport_rate)
+    inventory=inventory-.5_dp*dt*(old_transport_rate+new_transport_rate)
+    if(.not.all(ieee_is_finite(boundary_inventory)).or..not.all(ieee_is_finite(inventory))) return
     if(present(boundary_change)) boundary_change=boundary_inventory
     if(present(source_change)) source_change=inventory
     if(present(minimum_transport_theta)) minimum_transport_theta=source_theta
@@ -257,13 +268,29 @@ contains
       real(dp), intent(out) :: rates(:,:,:,:,:)
       logical, intent(out) :: good
       real(dp) :: transport_theta
+      integer :: ii,jj,kk
       rates=0
       call compute_reactive_external_source_3d(u,external_force,rates(:,:,:,:,1),good)
       if(.not.good.or..not.present(transport)) return
-      call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
-        spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
-      if(.not.good) return
-      call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,2),good)
+      if(all(faces=='periodic')) then
+        call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
+          spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
+        if(.not.good) return
+        call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,2),good)
+      else
+        call physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
+          flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
+        if(.not.good) return
+        do kk=1,n(3)
+        do jj=1,n(2)
+        do ii=1,n(1)
+          rates(:,ii,jj,kk,2)=-(tx(:,ii,jj,kk)-tx(:,ii-1,jj,kk))/spacing(1)- &
+            (ty(:,ii,jj,kk)-ty(:,ii,jj-1,kk))/spacing(2)-(tz(:,ii,jj,kk)-tz(:,ii,jj,kk-1))/spacing(3)
+        end do
+        end do
+        end do
+        call physical_transport_budget_3d(tx,ty,tz,n,spacing,1._dp,transport_rate,good)
+      end if
       if(good) source_theta=min(source_theta,transport_theta)
     end subroutine builtin_sources
   end subroutine advance_reactive_sdc_periodic_3d
