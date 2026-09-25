@@ -33,7 +33,7 @@ module eb_reactive_transport_3d_mod
 
   real(dp), parameter :: species_safety = 0.90_dp
 
-  public :: reactive_eb_halo_bounds_3d
+  public :: reactive_eb_halo_bounds_3d,reactive_eb_isothermal_timestep_3d
   public :: reactive_eb_transport_timestep_3d,reactive_eb_transport_patch_timestep_3d
   public :: reactive_eb_transport_fluxes_rhs_3d
   public :: reactive_eb_transport_rhs_3d
@@ -41,6 +41,66 @@ module eb_reactive_transport_3d_mod
   public :: advance_reactive_eb_transport_3d,advance_reactive_eb_transport_patch_euler_3d
 
 contains
+  ! Rate from the same half-cell heat-transfer law used by wall face fluxes.
+  ! Multiplying by aperture/kappa accounts for the actual fluid heat capacity.
+  subroutine reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,geometry,faces,wall_t,cfl,dt,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),wall_t(6),cfl
+    type(eb_geometry_3d), intent(in) :: geometry
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+    real(dp) :: spacing(3),heat,rate,area,weighted,cell_rate,maximum_rate,candidate,vf
+    integer :: n(3),idx(3),i,j,k,face,axis,side
+    logical :: valid
+    dt=0;ok=.false.
+    if(.not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
+    if(.not.valid_reactive_boundaries_3d(faces).or..not.ieee_is_finite(cfl)) return
+    if(cfl<=0.or.cfl>.5_dp) return
+    n=[geometry%nx,geometry%ny,geometry%nz];spacing=[geometry%dx,geometry%dy,geometry%dz]
+    maximum_rate=0
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+      idx=[i,j,k];cell_rate=0;vf=geometry%volume_fraction(i,j,k)
+      if(vf<=0) return
+      do face=1,6
+        if(faces(face)/='isothermal_wall') cycle
+        axis=(face+1)/2;side=modulo(face+1,2)
+        if(side==0.and.idx(axis)/=1) cycle
+        if(side==1.and.idx(axis)/=n(axis)) cycle
+        select case(axis)
+        case(1);area=geometry%x_face_fraction(side*n(1),j,k)
+        case(2);area=geometry%y_face_fraction(i,side*n(2),k)
+        case(3);area=geometry%z_face_fraction(i,j,side*n(3))
+        end select
+        if(area<=0) cycle
+        call wall_heat_transfer_3d(species,transport,state(:,i,j,k),temperature(i,j,k), &
+          wall_t(face),spacing(axis),heat,rate,valid)
+        if(.not.valid) return
+        weighted=rate*area
+        if(weighted>huge(1._dp)*vf) return
+        weighted=weighted/vf
+        if(weighted>huge(1._dp)-cell_rate) return
+        cell_rate=cell_rate+weighted
+      end do
+      maximum_rate=max(maximum_rate,cell_rate)
+    end do
+    end do
+    end do
+    candidate=huge(1._dp)
+    if(maximum_rate>0) then
+      if(maximum_rate<1) then
+        if(cfl>huge(1._dp)*maximum_rate) return
+      end if
+      candidate=cfl/maximum_rate
+    end if
+    if(.not.ieee_is_finite(candidate).or.candidate<=0) return
+    dt=candidate;ok=.true.
+  end subroutine reactive_eb_isothermal_timestep_3d
+
   ! Bounds from open face donors only. Edge/corner and covered-face padding may
   ! be zero or nonfinite and must never enter the physical timestep estimate.
   subroutine reactive_eb_halo_bounds_3d(species,transport,geometry,ghost,temperature, &

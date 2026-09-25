@@ -7,10 +7,10 @@ program test_eb_transport_halo_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_species_component, &
     reactive_mass_fraction_component,reactive_primitive_to_conserved,reactive_conserved_to_primitive
-  use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,physical_transport_fluxes_3d
+  use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,physical_transport_fluxes_3d,reactive_isothermal_timestep_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,build_level_set_eb_geometry_3d
   use eb_reactive_transport_3d_mod, only: reactive_eb_transport_fluxes_rhs_3d, &
-    reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d
+    reactive_eb_transport_euler_update_3d,advance_reactive_eb_transport_3d,reactive_eb_isothermal_timestep_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d, &
@@ -293,7 +293,8 @@ contains
     character(len=16), parameter :: kinds(3)=[character(len=16)::'slip_wall','no_slip_wall','isothermal_wall']
     character(len=16) :: wall_faces(6)
     real(dp) :: wall_t(6),weights(3),rho,theta_ref,phi(0:16,0:16,0:16),coordinate
-    type(eb_geometry_3d) :: wall_extended
+    type(eb_geometry_3d) :: wall_extended,thin
+    real(dp) :: wall_dt,regular_dt,thin_dt
     real(dp), allocatable :: moving(:,:,:,:),rx(:,:,:,:),ry(:,:,:,:),rz(:,:,:,:)
     integer :: kind,normal,which,point(3),component
     wall_extended=extended
@@ -364,6 +365,24 @@ contains
       call require(abs(boundary(component))<=1.e-25_dp,'no wall species exchange')
     end do
     end do
+    wall_faces='isothermal_wall'
+    call reactive_eb_isothermal_timestep_3d(species,transport,moving,t,geometry,wall_faces,wall_t,.35_dp,wall_dt,ok)
+    call require(ok.and.wall_dt>0,'EB wall thermal bound')
+    call reactive_isothermal_timestep_3d(species,transport,moving,t,weights,wall_faces,wall_t,.35_dp,regular_dt,ok)
+    call require(ok.and.abs(wall_dt-regular_dt)<=3.e-12_dp*regular_dt, &
+      'full-fluid and tangential-cut wall bounds match regular corner rate')
+    call build_axis_plane_eb_geometry_3d(4,4,4,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'x',.95_dp,thin,ok)
+    call require(ok,'thin fluid wall geometry')
+    wall_faces='outflow';wall_faces(2)='isothermal_wall'
+    call reactive_isothermal_timestep_3d(species,transport,moving,t,weights,wall_faces,wall_t,.35_dp,regular_dt,ok)
+    call require(ok,'regular single-wall rate')
+    wall_faces(1)='isothermal_wall';wall_t(1)=-1
+    call reactive_eb_isothermal_timestep_3d(species,transport,moving,t,thin,wall_faces,wall_t,.35_dp,thin_dt,ok)
+    call require(ok.and.abs(thin_dt-.2_dp*regular_dt)<=3.e-12_dp*regular_dt, &
+      'thin-cell aperture over fluid volume strengthens wall bound; covered wall ignored')
+    wall_t(2)=-1
+    call reactive_eb_isothermal_timestep_3d(species,transport,moving,t,thin,wall_faces,wall_t,.35_dp,thin_dt,ok)
+    call require(.not.ok.and.thin_dt==0,'invalid active wall resets thermal timestep')
     wall_t=-1;wall_faces='isothermal_wall';boundary=-81
     call advance_reactive_eb_full_3d(species,reactions,transport,moving,t,geometry,'pelec','state_redist', &
       1.e-7_dp,.false.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
