@@ -1,0 +1,14 @@
+&reactive_3d
+nx=4, ny=4, nz=4
+x_upper=0.25, y_upper=0.25, z_upper=0.25
+final_time=1e-5, maximum_steps=100
+problem='uniform_reactor'
+reconstruction='characteristic_ppm', riemann_solver='pelec'
+thermo_model='full_h2o2'
+boundary_condition='periodic'
+chemistry_enabled=.false., transport_enabled=.false.
+initial_temperature=900, initial_pressure=300000
+initial_velocity_x=20, initial_velocity_y=10, initial_velocity_z=-5
+external_forcing=20000,-30000,40000
+output_file='external_forcing_3d.csv'
+/

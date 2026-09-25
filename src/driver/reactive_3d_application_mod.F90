@@ -44,6 +44,7 @@ contains
     character(len=32) :: faces(6)
     real(dp), allocatable :: inflow_state(:,:),inflow_y(:),inflow_x(:),inlet_cube(:,:,:,:)
     real(dp), allocatable :: inlet_ghost(:,:,:,:),inlet_ghost_t(:,:,:)
+    real(dp), allocatable :: external_force(:),source_totals(:),step_source_change(:)
     real(dp) :: mach_pressure(6),difmag
     real(dp) :: inflow_t(6),inlet_temperature(2,2,2)
     real(dp) :: inlet_dt,inlet_transport_dt,inlet_diffusivity,face_dt,face_diffusivity,wall_dt
@@ -74,6 +75,8 @@ contains
     allocate(temperature(config%nx, config%ny, config%nz))
     allocate(initial_totals(nvar), final_totals(nvar), boundary_totals(nvar), step_boundary_change(nvar))
     boundary_totals=0.0_dp
+    allocate(source_totals(nvar),step_source_change(nvar));source_totals=0
+    if(any(config%external_forcing/=0)) external_force=config%external_forcing
     faces=resolved_reactive_boundaries_3d(config)
     allocate(mass_fractions(size(species)))
     allocate(primitive(reactive_nprim(size(species))))
@@ -247,10 +250,12 @@ contains
         chemistry_integrator=chemistry_integrator, boundary_faces=faces, boundary_change=step_boundary_change, &
         inflow_state=inflow_state,inflow_temperature=inflow_t,wall_temperature=config%wall_temperature, &
         wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=difmag)
+        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=difmag, &
+        external_force=external_force,source_change=step_source_change)
       if (.not. ok) then
         error stop "Reactive 3D split update rejected its candidate"
       end if
+      source_totals=source_totals+step_source_change
       boundary_totals = boundary_totals + step_boundary_change
       minimum_transport_theta = min( &
         minimum_transport_theta, step_transport_theta)
@@ -262,10 +267,10 @@ contains
       state, config%nx, config%ny, config%nz, dx, dy, dz, final_totals, ok)
     if (.not. ok) error stop "Failed to integrate final reactive 3D state"
     maximum_euler_conservation_error = maxval( &
-      abs(final_totals(1:ncons) - initial_totals(1:ncons) - boundary_totals(1:ncons)) / &
+      abs(final_totals(1:ncons) - initial_totals(1:ncons) - boundary_totals(1:ncons) - source_totals(1:ncons)) / &
         max(1.0_dp, abs(initial_totals(1:ncons))))
     maximum_all_component_conservation_error = maxval( &
-      abs(final_totals - initial_totals - boundary_totals) / max(1.0_dp, abs(initial_totals)))
+      abs(final_totals - initial_totals - boundary_totals - source_totals) / max(1.0_dp, abs(initial_totals)))
     maximum_species_change = maxval(abs( &
       final_totals(6:nvar) - initial_totals(6:nvar)))
     call reactive_extrema_3d( &
@@ -275,7 +280,7 @@ contains
       maximum_closure_error, ok)
     if (.not. ok) error stop "Final reactive 3D state is not physical"
 
-    if (trim(config%problem) == "entropy_wave" .and. all(faces=="periodic")) then
+    if (trim(config%problem) == "entropy_wave" .and. all(faces=="periodic").and..not.allocated(external_force)) then
       density_l1_error = 0.0_dp
       do k = 1, config%nz
         do j = 1, config%ny
@@ -306,6 +311,7 @@ contains
       error stop "Reactive 3D species-closure gate failed"
     end if
     write(*, '(a,*(es24.16,1x))') "Integrated boundary change: ", boundary_totals
+    write(*, '(a,*(es24.16,1x))') "Integrated source change: ", source_totals
     call write_reactive_3d_csv( &
       trim(config%output_file), species, x, y, z, state, temperature, &
       config%nx, config%ny, config%nz, time, ok, message)
@@ -317,7 +323,7 @@ contains
     write(*, '(a,i0)') "Completed steps: ", step
     write(*, '(a,es24.16)') "Final time: ", time
     write(*, '(a,es24.16)') "Base density: ", base_density
-    if (trim(config%problem) == "entropy_wave" .and. all(faces=="periodic")) then
+    if (trim(config%problem) == "entropy_wave" .and. all(faces=="periodic").and..not.allocated(external_force)) then
       write(*, '(a,es24.16)') "Density L1 error: ", density_l1_error
     else
       write(*, '(a)') "Density L1 error: not applicable"

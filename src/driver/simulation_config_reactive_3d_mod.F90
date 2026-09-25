@@ -33,6 +33,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: boundary_faces(6) = ""
     real(dp) :: wall_temperature(6)=300.0_dp
     real(dp) :: inflow_mach(6)=-1.0_dp
+    real(dp) :: external_forcing(3)=0.0_dp ! Force per volume, N/m^3.
     real(dp) :: difmag=-1.0_dp ! -1 selects the PeleC default 0.1; nonnegative overrides regular hydro.
     real(dp) :: outlet_pressure(6)=0.0_dp
     real(dp) :: wall_velocity(3,6)=0.0_dp
@@ -474,18 +475,19 @@ contains
   end function
 
   subroutine read_reactive_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag)
+      path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag, &
+      allow_external_forcing)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
-    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag
+    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing
 
     integer :: nx, ny, nz, maximum_steps, unit, io_status
     integer :: wave_number_x, wave_number_y, wave_number_z
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
-    real(dp) :: final_time, cfl, initial_temperature, initial_pressure,difmag
+    real(dp) :: final_time, cfl, initial_temperature, initial_pressure,difmag,external_forcing(3)
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
     real(dp) :: initial_velocity_x, initial_velocity_y, initial_velocity_z
@@ -514,7 +516,7 @@ contains
     namelist /reactive_3d/ &
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
-      final_time, cfl, problem, reconstruction, limiter, difmag, &
+      final_time, cfl, problem, reconstruction, limiter, difmag, external_forcing, &
       thermo_model, riemann_solver, &
       boundary_condition, boundary_faces, wall_temperature, wall_velocity, inflow_temperature, inflow_pressure, inflow_velocity, &
       outlet_pressure, inflow_mach, inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
@@ -545,6 +547,7 @@ contains
     final_time = config%final_time
     cfl = config%cfl
     problem = config%problem
+    external_forcing=config%external_forcing
     difmag=config%difmag
     reconstruction = config%reconstruction
     limiter = config%limiter
@@ -631,6 +634,7 @@ contains
     config%final_time = final_time
     config%cfl = cfl
     config%problem = trim(problem)
+    config%external_forcing=external_forcing
     config%difmag=difmag
     config%reconstruction = trim(reconstruction)
     config%limiter = trim(limiter)
@@ -688,6 +692,13 @@ contains
     call validate_reactive_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
     if (.not.ok) return
+    if(any(config%external_forcing/=0)) then
+      ok=.false.
+      if(present(allow_external_forcing)) ok=allow_external_forcing
+      if(.not.ok) then
+        message='External forcing input is not connected in this application';return
+      end if
+    end if
     if (config%difmag>=0) then
       ok=.false.
       if (present(allow_difmag)) ok=allow_difmag
@@ -737,6 +748,14 @@ contains
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
+    if(.not.all(ieee_is_finite(config%external_forcing))) then
+      message='External forcing must be finite';return
+    end if
+    if(any(config%external_forcing/=0)) then
+      if(config%reconstruction/='characteristic_ppm'.or.config%riemann_solver/='pelec') then
+        message='External forcing requires characteristic_ppm and pelec';return
+      end if
+    end if
     if (.not.ieee_is_finite(config%difmag)) then
       message='Artificial-viscosity coefficient must be finite';return
     end if

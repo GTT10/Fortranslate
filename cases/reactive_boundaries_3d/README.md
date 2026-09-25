@@ -140,3 +140,18 @@ x/z faces and adiabatic y walls. See [focused evidence](../../docs/validation/mo
 Moving geometry, characteristic inflow, general AMR/EB boundaries and particle boundary
 coupling remain open. The padded-grid implementation prioritizes reuse of the
 existing numerical fluxes; memory/scaling qualification remains open.
+
+## External forcing
+
+Regular fixed/selected gas applications accept `external_forcing(3)` in N/m³
+(force per volume), default zero. It requires `characteristic_ppm` and `pelec`.
+The momentum source equals this vector; energy uses the average of old/new
+velocity dot force. `Integrated source change` reports volume sources separately
+from `Integrated boundary change`; conservation diagnostics subtract both.
+
+Run `pelef_reactive_3d cases/reactive_boundaries_3d/external_forcing.nml` for a
+small uniform periodic example. The selected executable needs its usual named
+composition and `thermo_model='selected'`. Nonzero forcing is rejected by
+application families whose input reader has not enabled this feature.
+These regular gas executables have no checkpoint interface. This option does
+not establish full SDC integration or physical forcing validation.
