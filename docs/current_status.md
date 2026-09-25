@@ -40,14 +40,18 @@ serial agreement and collective rollback checks
 and MPI gas applications now accept paired periodic input, wrap geometry
 padding and retain boundary identity across scheduled regridding and changed-rank
 restart ([checks](validation/eb-tree-periodic-application-20260926.md)).
-MPI EB spray periodic input remains rejected pending particle coupling.
+MPI EB spray periodic application input remains rejected pending application
+and restart qualification.
 The composite EB particle stencil now accepts periodic axes and checks
 visibility along segmented, wrapped paths to donor centroids
 ([checks](validation/eb-tree-periodic-stencil-20260926.md)). MPI particle field
 sampling and gas deposition now route those periodic donors to their owners,
 with conservation and rollback checks
-([checks](validation/mpi-eb-periodic-field-20260926.md)). Particle stepping
-has not yet enabled this path.
+([checks](validation/mpi-eb-periodic-field-20260926.md)). Mixed-particle drift
+and reacting MPI EB spray coupling now forward periodic faces through field
+exchange, drift and migration, with common/recursive CTU conservation checks
+([checks](validation/mpi-eb-periodic-step-20260926.md)). Periodic film and
+KH child-generation combinations remain unsupported.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
