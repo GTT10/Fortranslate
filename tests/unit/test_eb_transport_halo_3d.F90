@@ -360,6 +360,15 @@ contains
     end if
     call require(maxval(abs(after-before-boundary)/max(1._dp,abs(before)))<=2.e-12_dp, &
       'periodic SSPRK2 inventory closes without seam leakage')
+    call advance_reactive_eb_full_3d(species,reactions,transport,varying,varying_t,geometry,'pelec','state_redist', &
+      1.e-7_dp,.true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
+      advanced,advanced_t,theta,ok,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+      extended_geometry=extended,boundary_faces=periodic_faces)
+    call require(ok,'periodic coupled reaction transport CTU')
+    call reactive_eb_integrals_3d(advanced,geometry,after,ok)
+    call require(ok,'periodic coupled final inventory')
+    call require(maxval(abs(after-before-boundary-wall-chemical)/max(1._dp,abs(before)))<=2.e-12_dp, &
+      'periodic coupled inventory closes')
     call build_axis_plane_eb_geometry_3d(4,4,4,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'x',.31_dp,incompatible,ok)
     call require(ok.and.incompatible%is_valid(),'valid nonperiodic geometry for seam rejection')
     twice=advanced;twice_t=advanced_t;saved_flux=integrated

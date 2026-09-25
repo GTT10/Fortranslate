@@ -61,9 +61,71 @@ module eb_geometry_3d_mod
 
   public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
 
-  public :: coarsen_eb_geometry_3d,extract_eb_geometry_3d
+  public :: coarsen_eb_geometry_3d,extract_eb_geometry_3d,periodic_eb_faces_match
 
 contains
+
+  ! Check domain seams and, when supplied, wrapped metric donors in the halo.
+  pure logical function periodic_eb_faces_match(g,faces,halo) result(valid)
+    type(eb_geometry_3d), intent(in) :: g
+    character(len=*), intent(in) :: faces(6)
+    integer, optional, intent(in) :: halo
+    integer :: h,n(3),a,lo(3),hi(3),i,j,k,side,layer,q(3),donor(3)
+    real(dp), parameter :: tol=256*epsilon(1._dp)
+    valid=.true.
+    if(.not.any(faces=='periodic')) return
+    valid=.false.;h=0
+    if(present(halo)) h=halo
+    if(h<0.or..not.g%is_valid()) return
+    if(h>min(g%nx,g%ny,g%nz)/2) return
+    n=[g%nx,g%ny,g%nz]-2*h
+    if(any(n<1)) return
+    do a=1,3
+      if((faces(2*a-1)=='periodic').neqv.(faces(2*a)=='periodic')) return
+      if(faces(2*a-1)/='periodic') cycle
+      lo=h+1;hi=h+n
+      select case(a)
+      case(1)
+        if(.not.same_face(g%x_face_fraction(h,lo(2):hi(2),lo(3):hi(3)), &
+          g%x_face_fraction(hi(1),lo(2):hi(2),lo(3):hi(3)), &
+          g%x_face_centroid_y(h,lo(2):hi(2),lo(3):hi(3)),g%x_face_centroid_y(hi(1),lo(2):hi(2),lo(3):hi(3)), &
+          g%x_face_centroid_z(h,lo(2):hi(2),lo(3):hi(3)),g%x_face_centroid_z(hi(1),lo(2):hi(2),lo(3):hi(3)))) return
+      case(2)
+        if(.not.same_face(g%y_face_fraction(lo(1):hi(1),h,lo(3):hi(3)), &
+          g%y_face_fraction(lo(1):hi(1),hi(2),lo(3):hi(3)), &
+          g%y_face_centroid_x(lo(1):hi(1),h,lo(3):hi(3)),g%y_face_centroid_x(lo(1):hi(1),hi(2),lo(3):hi(3)), &
+          g%y_face_centroid_z(lo(1):hi(1),h,lo(3):hi(3)),g%y_face_centroid_z(lo(1):hi(1),hi(2),lo(3):hi(3)))) return
+      case(3)
+        if(.not.same_face(g%z_face_fraction(lo(1):hi(1),lo(2):hi(2),h), &
+          g%z_face_fraction(lo(1):hi(1),lo(2):hi(2),hi(3)), &
+          g%z_face_centroid_x(lo(1):hi(1),lo(2):hi(2),h),g%z_face_centroid_x(lo(1):hi(1),lo(2):hi(2),hi(3)), &
+          g%z_face_centroid_y(lo(1):hi(1),lo(2):hi(2),h),g%z_face_centroid_y(lo(1):hi(1),lo(2):hi(2),hi(3)))) return
+      end select
+      do side=0,1
+      do layer=1,h
+        lo=h+1;hi=h+n
+        lo(a)=merge(h+1-layer,h+n(a)+layer,side==0);hi(a)=lo(a)
+        do k=lo(3),hi(3)
+        do j=lo(2),hi(2)
+        do i=lo(1),hi(1)
+          q=[i,j,k];donor=q;donor(a)=h+1+modulo(q(a)-h-1,n(a))
+          if(abs(g%volume_fraction(i,j,k)-g%volume_fraction(donor(1),donor(2),donor(3)))>tol) return
+          if(abs(g%cell_centroid_x(i,j,k)-g%cell_centroid_x(donor(1),donor(2),donor(3)))>tol) return
+          if(abs(g%cell_centroid_y(i,j,k)-g%cell_centroid_y(donor(1),donor(2),donor(3)))>tol) return
+          if(abs(g%cell_centroid_z(i,j,k)-g%cell_centroid_z(donor(1),donor(2),donor(3)))>tol) return
+        end do
+        end do
+        end do
+      end do
+      end do
+    end do
+    valid=.true.
+  contains
+    pure logical function same_face(left,right,lc1,rc1,lc2,rc2) result(same)
+      real(dp), intent(in) :: left(:,:),right(:,:),lc1(:,:),rc1(:,:),lc2(:,:),rc2(:,:)
+      same=all(abs(left-right)<=tol*max(left,right)).and.all(abs(lc1-rc1)<=tol).and.all(abs(lc2-rc2)<=tol)
+    end function same_face
+  end function periodic_eb_faces_match
 
   subroutine extract_eb_geometry_3d(source,lower,upper,patch,ok)
     type(eb_geometry_3d), intent(in) :: source

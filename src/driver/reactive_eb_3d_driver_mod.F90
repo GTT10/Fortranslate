@@ -12,7 +12,7 @@ module reactive_eb_3d_driver_mod
     reactive_mass_fraction_component, reactive_conserved_to_primitive, &
     reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d,extract_eb_geometry_3d
+    eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d,extract_eb_geometry_3d,periodic_eb_faces_match
   use eb_reactive_hydro_3d_mod, only: &
     advance_reactive_eb_redistributed_euler_3d,advance_reactive_eb_boundary_ctu_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
@@ -237,6 +237,7 @@ contains
       if(.not.present(extended_geometry)) return
       if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
       hydro_faces=boundary_faces
+      if(.not.periodic_eb_faces_match(extended_geometry,hydro_faces,6)) return
     else
       if(present(inflow_state).or.present(inflow_temperature)) return
     end if
@@ -419,6 +420,7 @@ contains
       if(.not.present(extended_geometry)) return
       if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
       hydro_faces=boundary_faces
+      if(.not.periodic_eb_faces_match(extended_geometry,hydro_faces,6)) return
     else
       if(present(inflow_state).or.present(inflow_temperature)) return
     end if
@@ -453,7 +455,6 @@ contains
     end if
 
     if(present(boundary_faces)) then
-      if(any(hydro_faces=='periodic')) return
       if(present(prepare_transport_halo)) then
         if(any(hydro_faces/='outflow'.and.hydro_faces/='inflow')) return
       end if

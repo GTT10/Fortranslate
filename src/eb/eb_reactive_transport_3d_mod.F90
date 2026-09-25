@@ -11,7 +11,7 @@ module eb_reactive_transport_3d_mod
   use reactive_transport_3d_mod, only: &
     reactive_transport_face_flux_3d, reactive_transport_timestep_3d,wall_heat_transfer_3d
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d
+    eb_geometry_3d, eb_covered_cell_3d,periodic_eb_faces_match
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_redistribution_3d_mod, only: &
     advance_reactive_eb_state_redistributed_3d
@@ -691,21 +691,10 @@ contains
     periodic=.false.
     if(present(physical_faces)) then
       if(.not.valid_reactive_boundaries_3d(physical_faces)) return
+      if(.not.periodic_eb_faces_match(geometry,physical_faces)) return
       do axis=1,3
         periodic(axis)=physical_faces(2*axis-1)=='periodic'
-        if(.not.periodic(axis)) cycle
-        if(.not.all(enabled_faces(2*axis-1:2*axis))) return
-        select case(axis)
-        case(1)
-          if(any(abs(geometry%x_face_fraction(0,:,:)-geometry%x_face_fraction(geometry%nx,:,:))> &
-            256*epsilon(1._dp)*max(geometry%x_face_fraction(0,:,:),geometry%x_face_fraction(geometry%nx,:,:)))) return
-        case(2)
-          if(any(abs(geometry%y_face_fraction(:,0,:)-geometry%y_face_fraction(:,geometry%ny,:))> &
-            256*epsilon(1._dp)*max(geometry%y_face_fraction(:,0,:),geometry%y_face_fraction(:,geometry%ny,:)))) return
-        case(3)
-          if(any(abs(geometry%z_face_fraction(:,:,0)-geometry%z_face_fraction(:,:,geometry%nz))> &
-            256*epsilon(1._dp)*max(geometry%z_face_fraction(:,:,0),geometry%z_face_fraction(:,:,geometry%nz)))) return
-        end select
+        if(periodic(axis).and..not.all(enabled_faces(2*axis-1:2*axis))) return
       end do
       if(any(physical_faces=='isothermal_wall')) then
         if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return

@@ -15,8 +15,9 @@ def main():
     parser.add_argument('--selected', action='store_true', help='Use the selected H2O2 fixture')
     parser.add_argument('--inflow', action='store_true', help='Exercise prescribed physical inflow and restart binding')
     parser.add_argument('--wall', action='store_true', help='Exercise fixed wall transport and thermal restart binding')
+    parser.add_argument('--periodic', action='store_true', help='Exercise periodic tangential EB boundaries')
     args = parser.parse_args()
-    assert not (args.inflow and args.wall), 'Choose one boundary fixture'
+    assert sum([args.inflow,args.wall,args.periodic])<=1, 'Choose one boundary fixture'
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     base = """&reactive_eb_3d
@@ -28,6 +29,9 @@ def main():
  initial_velocity_y=2., initial_velocity_z=-1.,
  redistribution='state_redist',
 """
+
+    if args.periodic:
+        base += "boundary_faces='outflow','outflow','periodic','periodic','periodic','periodic',\n"
 
     if args.wall:
         base += "boundary_faces=6*'no_slip_wall',\n"
@@ -81,10 +85,15 @@ def main():
     stopped = run('stopped', coupled + "checkpoint_interval_steps=1, stop_after_checkpoint=.true., checkpoint_file='step.chk'")
     assert stopped != reference
     assert run('resumed', coupled + "restart_file='step.chk'") == reference
-    assert ('Invalid EB boundary configuration' if (args.inflow or args.wall) else 'Failed to restart public 3D EB state') in run(
+    assert ('Invalid EB boundary configuration' if (args.inflow or args.wall or args.periodic) else 'Failed to restart public 3D EB state') in run(
         'method_mismatch', coupled + "hydro_method='pcm', restart_file='step.chk'", False)
-    assert ('Invalid EB boundary configuration' if (args.inflow or args.wall) else 'requires the pelec Riemann solver') in run('solver_mismatch', "riemann_solver='hllc'", False)
-    assert ('Invalid EB boundary configuration' if (args.inflow or args.wall) else 'hydro_method must be') in run('invalid_method', "hydro_method='unknown'", False)
+    assert ('Invalid EB boundary configuration' if (args.inflow or args.wall or args.periodic) else 'requires the pelec Riemann solver') in run('solver_mismatch', "riemann_solver='hllc'", False)
+    assert ('Invalid EB boundary configuration' if (args.inflow or args.wall or args.periodic) else 'hydro_method must be') in run('invalid_method', "hydro_method='unknown'", False)
+    if args.periodic:
+        assert 'Failed to restart public 3D EB state' in run(
+            'periodic_mismatch', coupled + "boundary_faces(3:4)=2*'outflow', restart_file='step.chk'", False)
+        assert 'Invalid EB boundary configuration' in run('unpaired_periodic', "boundary_faces(3)='outflow'", False)
+        assert 'Failed to build public 3D EB geometry' in run('nonperiodic_geometry', "boundary_faces=6*'periodic'", False)
     if args.wall:
         assert 'Failed to restart public 3D EB state' in run(
             'wall_mismatch', coupled + "wall_temperature(2)=1250., restart_file='step.chk'", False)

@@ -38,6 +38,12 @@ program test_reactive_eb_3d_config
   config%wall_temperature(1)=-1
   call validate_reactive_eb_3d_configuration(config,ok,message)
   call require(.not.ok,'invalid wall temperature rejects')
+  config%wall_temperature=1000;config%boundary_faces='periodic'
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(ok,'paired periodic boundary configuration')
+  config%boundary_faces(2)='outflow'
+  call validate_reactive_eb_3d_configuration(config,ok,message)
+  call require(.not.ok,'unpaired periodic boundary rejects')
 
 
   config = reactive_eb_3d_config()
@@ -203,7 +209,7 @@ contains
     type(reactive_eb_3d_config) :: cfg
     type(eb_geometry_3d) :: base,wide,cropped,saved
     real(dp), allocatable :: nodes(:,:,:),expanded(:,:,:)
-    real(dp) :: section(0:4,0:4),field(0:4,0:4,0:4),error,shift(3)
+    real(dp) :: section(0:4,0:4),field(0:4,0:4,0:4),error,shift(3),wave(0:4)
     logical :: reflect(3)
     integer :: boundary_mode,donor(3),inlet
     integer :: i,j,k,axis,kind,handle,point(3)
@@ -299,6 +305,45 @@ contains
       end do
     end do
     end do
+    wave=[1._dp,0._dp,-1._dp,0._dp,1._dp]
+    do k=0,4
+    do j=0,4
+    do i=0,4
+      field(i,j,k)=wave(i)+.5_dp*wave(j)+.25_dp*wave(k)-.1_dp
+      section(i,j)=wave(i)+.5_dp*wave(j)-.1_dp
+    end do
+    end do
+    end do
+    open(newunit=handle,file=trim(cfg%section_file),status='replace')
+    write(handle,*) 4,4
+    write(handle,*) section
+    close(handle)
+    open(newunit=handle,file=trim(cfg%level_set_file),status='replace')
+    write(handle,*) 4,4,4
+    write(handle,*) field
+    close(handle)
+    cfg%boundary_faces='periodic'
+    do kind=2,3
+      cfg%geometry_type='extruded'
+      if(kind==3) cfg%geometry_type='level_set'
+      call build_configured_eb_geometry_3d(cfg,base,valid)
+      call require(valid,'periodic physical geometry')
+      call build_configured_eb_geometry_3d(cfg,wide,valid,halo=6)
+      call require(valid,'periodic extended geometry')
+      do k=1,16
+      do j=1,16
+      do i=1,16
+        point=modulo([i,j,k]-7,4)+1
+        call require(abs(wide%volume_fraction(i,j,k)-base%volume_fraction(point(1),point(2),point(3)))<2e-12_dp, &
+          'periodic repeated metric donors include edges and corners')
+      end do
+      end do
+      end do
+    end do
+    saved=wide
+    cfg%geometry_type='plane';cfg%plane_axis='x'
+    call build_configured_eb_geometry_3d(cfg,wide,valid,halo=6)
+    call require(.not.valid.and.all(wide%volume_fraction==saved%volume_fraction),'nonperiodic plane rejects without publishing')
     saved=wide
     call build_configured_eb_geometry_3d(cfg,wide,valid,halo=-1)
     call require(.not.valid.and.all(wide%volume_fraction==saved%volume_fraction),'negative halo rollback')

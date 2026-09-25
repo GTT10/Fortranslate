@@ -3,8 +3,9 @@ module simulation_config_reactive_eb_3d_mod
   use precision_mod, only: dp
   use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
-    extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
+    extrude_eb_geometry_3d,build_level_set_eb_geometry_3d,periodic_eb_faces_match
   use nasa7_thermo_mod, only: nasa7_species
+  use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   use selected_composition_mod, only: &
     selected_composition_max_species, selected_composition_name_length, &
     validate_selected_composition_fields, resolve_selected_composition
@@ -90,9 +91,7 @@ contains
     if(any(config%boundary_faces=='isothermal_wall')) then
       if(.not.config%transport_enabled.or..not.config%thermal_conduction_enabled) return
     end if
-    valid=all(config%boundary_faces=='inflow'.or.config%boundary_faces=='outflow'.or. &
-      config%boundary_faces=='slip_wall'.or.config%boundary_faces=='no_slip_wall'.or. &
-      config%boundary_faces=='isothermal_wall')
+    valid=valid_reactive_boundaries_3d(config%boundary_faces)
   end function valid_reactive_eb_boundaries
 
   function reactive_eb_geometry_identity(config) result(identity)
@@ -112,6 +111,10 @@ contains
     integer, intent(in) :: index,n
     character(len=*), intent(in) :: lower_face,upper_face
     donor=index
+    if(lower_face=='periodic'.and.upper_face=='periodic') then
+      if(donor<0.or.donor>n) donor=modulo(donor,n)
+      return
+    end if
     do while(donor<0.or.donor>n)
       if(donor<0) then
         if(reflected_eb_face(lower_face)) then
@@ -161,7 +164,7 @@ contains
       case default;return
       end select
       if(h>0.and.(reflected_eb_face(config%boundary_faces(2*axis-1)).or. &
-        reflected_eb_face(config%boundary_faces(2*axis)))) then
+        reflected_eb_face(config%boundary_faces(2*axis)).or.config%boundary_faces(2*axis)=='periodic')) then
         allocate(wide_nodal(0:dims(1)+2*h,0:dims(2)+2*h,0:dims(3)+2*h))
         do k=0,dims(3)+2*h
         do j=0,dims(2)+2*h
@@ -174,6 +177,7 @@ contains
         end do
         end do
         call build_level_set_eb_geometry_3d(wide_nodal,lo,hi,candidate,ok)
+        if(ok) ok=periodic_eb_faces_match(candidate,config%boundary_faces,h)
         if(ok) geometry=candidate
         return
       end if
@@ -182,6 +186,7 @@ contains
       if(h>0.and.position>=hi(axis)-h*spacing(axis)) position=max(position,hi(axis)+spacing(axis))
       call build_axis_plane_eb_geometry_3d(dims(1)+2*h,dims(2)+2*h,dims(3)+2*h,lo(1),hi(1), &
         lo(2),hi(2),lo(3),hi(3),config%plane_axis,position,candidate,ok)
+      if(ok) ok=periodic_eb_faces_match(candidate,config%boundary_faces,h)
       if (ok) geometry=candidate
       return
     end if
@@ -230,6 +235,7 @@ contains
         call move_alloc(wide_nodal,nodal)
       end if
       call build_level_set_eb_geometry_3d(nodal,lo,hi,candidate,ok)
+      if(ok) ok=periodic_eb_faces_match(candidate,config%boundary_faces,h)
       if (ok) then
         geometry=candidate
         if (present(nodal_field)) call move_alloc(nodal,nodal_field)
@@ -285,6 +291,7 @@ contains
     call build_eb_geometry_2d(phi,lo(a),hi(a),lo(b),hi(b),section,ok)
     if (.not.ok) return
     call extrude_eb_geometry_3d(section,axis,dims(axis)+2*h,lo(axis),hi(axis),candidate,ok)
+    if(ok) ok=periodic_eb_faces_match(candidate,config%boundary_faces,h)
     if (ok) geometry=candidate
   end subroutine
 
