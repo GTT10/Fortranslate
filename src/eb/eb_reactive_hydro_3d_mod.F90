@@ -540,7 +540,7 @@ contains
       cell=index;cell(direction)=cell(direction)+1
       call reactive_pelec_primitive_flux_x(species,ql,qr, &
         .5_dp*(sound(index(1),index(2),index(3))+sound(cell(1),cell(2),cell(3))), &
-        f,success,interface_pressure=pface,interface_velocity=uface)
+        f,success,interface_pressure=pface,interface_velocity=uface,passive_upwind=.true.)
       if(.not.success) return
       swap=f(2);f(2)=f(direction+1);f(direction+1)=swap
       result%flux(:,index(1),index(2),index(3))=f
@@ -707,7 +707,7 @@ contains
         swap=qr(2);qr(2)=qr(axis+1);qr(axis+1)=swap
         cell=idx;cell(axis)=cell(axis)+1
         call reactive_pelec_primitive_flux_x(species,ql,qr,.5_dp*(sound(i,j,k)+sound(cell(1),cell(2),cell(3))), &
-          f,valid,interface_pressure=pface,interface_velocity=uface)
+          f,valid,interface_pressure=pface,interface_velocity=uface,passive_upwind=.true.)
         if(.not.valid) return
         swap=f(2);f(2)=f(axis+1);f(axis+1)=swap
         result%flux(:,i,j,k)=f;result%pressure(i,j,k)=pface;result%velocity(i,j,k)=uface

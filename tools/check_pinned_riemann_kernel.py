@@ -65,6 +65,7 @@ def main() -> None:
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--cxx', default='c++')
+    parser.add_argument('--face-flux', action='store_true', help='include pc_cmpflx passive upwinding')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     pin = json.loads((root/'references/pelec_baseline.json').read_text())['pelec']['commit']
@@ -73,7 +74,15 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     (work/'Riemann.H').write_text(header)
     cpp = work/'reference.cpp'
-    cpp.write_text(PREFIX + function(header,'riemann') + DRIVER)
+    driver = DRIVER
+    passive = ''
+    if args.face_flux:
+        godunov = run(['git','-C',str(args.reference),'show',f'{pin}:Source/Godunov.H'])
+        (work/'Godunov.H').write_text(godunov)
+        passive = function(godunov,'pc_cmpflx_passive')
+        driver = driver.replace('  for(double v:f)',
+            '  for(int n=0;n<7;n++)pc_cmpflx_passive(us,f[0],l[5+n],r[5+n],f[5+n]);\n  for(double v:f)')
+    cpp.write_text(PREFIX + function(header,'riemann') + passive + driver)
     command = [args.cxx,'-std=c++17','-O0','-ffp-contract=off',str(cpp),'-o',str(work/'reference')]
     run(command)
     exe = str(args.executable.resolve())
@@ -112,10 +121,17 @@ def main() -> None:
             q[0] = q[4]/(gas_constant*900)
             right = state(velocity, False)
             rows.append(q+right+[700.])
+    if args.face_flux:
+        for weight in (.8, 1.2):
+            for velocity in (-2500., -100., 0., 100., 2500.):
+                left=state(velocity,False);right=state(velocity,False)
+                left[5:]=[v*weight for v in left[5:]]
+                right[5:]=[v*(2-weight) for v in right[5:]]
+                rows.append(left+right+[700.])
     inputs=''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows)
     (work/'inputs.txt').write_text(inputs)
     ref=run([str(work/'reference')],input=thermo+inputs)
-    actual=run([exe,'--reference-stream'],input=inputs)
+    actual=run([exe,'--face-stream' if args.face_flux else '--reference-stream'],input=inputs)
     (work/'reference.txt').write_text(ref)
     (work/'actual.txt').write_text(actual)
     a=[[float(v) for v in row.split()] for row in ref.splitlines()]
@@ -129,8 +145,9 @@ def main() -> None:
         assert err<=3e-12,(i,err,expected,observed)
         worst=max(worst,err)
     report=dict(reference_commit=pin,header_sha256=hashlib.sha256(header.encode()).hexdigest(),
+                godunov_sha256=hashlib.sha256(godunov.encode()).hexdigest() if args.face_flux else None,
                 executable_sha256=hashlib.sha256(args.executable.read_bytes()).hexdigest(),
-                cases=len(rows),values=14*len(rows),max_scaled_error=worst,tolerance=3e-12,
+                face_flux=args.face_flux,cases=len(rows),values=14*len(rows),max_scaled_error=worst,tolerance=3e-12,
                 compile_command=command,eos='NASA7 SI adapter using exported PeleF coefficients',status='PASS')
     (work/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))

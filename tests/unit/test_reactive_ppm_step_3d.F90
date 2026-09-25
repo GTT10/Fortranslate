@@ -44,7 +44,7 @@ program test_reactive_ppm_step_3d
   u=saved;t=st
   do step=1,4
     call advance_reactive_euler_ppm_ctu_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
-      .false.,.true.,solver,theta,ok)
+      .false.,.true.,solver,theta,ok,difmag=merge(0._dp,.1_dp,mod(step,2)==0))
     call require(ok.and.theta>=0.and.theta<=1.and.all(t>0),'accepted CTU step')
     do m=1,nv
       after=sum(u(m,:,:,:));residual=abs(after-before(m))/max(1._dp,abs(before(m)))

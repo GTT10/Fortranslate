@@ -496,11 +496,13 @@ contains
   ! Pressure-traced face states enter without a conserved-to-primitive round trip.
   ! cav is the neighboring cell-centered sound-speed mean used by PeleC.
   subroutine reactive_pelec_primitive_flux_x(species,ql,qr,cav,flux,ok, &
-      interface_density,interface_velocity,interface_pressure)
+      interface_density,interface_velocity,interface_pressure,passive_upwind)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: ql(:),qr(:),cav
     real(dp), intent(out) :: flux(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: passive_upwind
+    real(dp) :: contact
     real(dp), optional, intent(out) :: interface_density,interface_velocity,interface_pressure
     real(dp) :: scratch(reactive_nvar(size(species))),tl,tr,cl,cr
     real(dp) :: candidate(reactive_nvar(size(species)))
@@ -517,8 +519,25 @@ contains
     call reconstructed_pelec_state(species,qr,scratch,tr,cr,right_ok)
     if (.not.(left_ok.and.right_ok)) return
     call reactive_pelec_flux_core(species,ql,qr,cl,cr,.true.,cav,candidate,ok, &
-      interface_density,interface_velocity,interface_pressure)
-    if (ok) flux=candidate
+      interface_density,interface_velocity,interface_pressure,contact_velocity=contact)
+    if (.not.ok) return
+    if(present(passive_upwind)) then
+      if(passive_upwind) then
+        ! pc_cmpflx discards the Riemann species flux and upwinds the raw
+        ! face weights using contact speed, before final flux normalization.
+        if(contact>0) then
+          candidate(6:)=candidate(1)*ql(6:)
+        else if(contact<0) then
+          candidate(6:)=candidate(1)*qr(6:)
+        else
+          candidate(6:)=candidate(1)*.5_dp*(ql(6:)+qr(6:))
+        end if
+      end if
+    end if
+    if(.not.all(ieee_is_finite(candidate))) then
+      ok=.false.;return
+    end if
+    flux=candidate
   end subroutine reactive_pelec_primitive_flux_x
 
   ! Pinned Fuego RPY2Cs/RYP2E evaluate reconstructed species weights without
@@ -567,7 +586,7 @@ contains
 
   subroutine reactive_pelec_flux_core( &
       species, ql, qr, cl, cr, primitive_input, cav, flux, ok, interface_density, &
-      interface_velocity, interface_pressure)
+      interface_velocity, interface_pressure, contact_velocity)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: ql(:),qr(:),cl,cr,cav
     logical, intent(in) :: primitive_input
@@ -575,6 +594,7 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: interface_density
     real(dp), intent(out), optional :: interface_velocity
+    real(dp), intent(out), optional :: contact_velocity
     real(dp), intent(out), optional :: interface_pressure
 
     real(dp), allocatable :: qorigin(:), qstar(:), qinterface(:)
@@ -596,6 +616,7 @@ contains
     real(dp) :: star_pressure_floor
     integer :: nspecies, nvar, k
 
+    if(present(contact_velocity)) contact_velocity=0
     flux = 0.0_dp
     ok = .false.
     if (present(interface_density)) interface_density = 0.0_dp
@@ -799,6 +820,7 @@ contains
     if (present(interface_density)) interface_density = rho_interface
     if (present(interface_velocity)) interface_velocity = velocity_at_interface
     if (present(interface_pressure)) interface_pressure = pressure_at_interface
+    if(present(contact_velocity)) contact_velocity=velocity_star
     ok = .true.
   end subroutine reactive_pelec_flux_core
 

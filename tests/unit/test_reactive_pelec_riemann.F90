@@ -41,13 +41,14 @@ program test_reactive_pelec_riemann
         write(*,'(16(es26.17e3,1x))') species(k)%molecular_weight,species(k)%temperature_mid, &
           species(k)%low_coefficients,species(k)%high_coefficients
       end do
-    case('--reference-stream')
+    case('--reference-stream','--face-stream')
       do
         read(*,*,iostat=status) ql,qr,cav
         if (status<0) exit
         if (status/=0) error stop 'invalid reference input'
         call reactive_pelec_primitive_flux_x(species,ql,qr,cav,flux,ok, &
-          interface_velocity=interface_velocity,interface_pressure=interface_pressure)
+          interface_velocity=interface_velocity,interface_pressure=interface_pressure, &
+          passive_upwind=trim(mode)=='--face-stream')
         if (.not.ok) error stop 'inadmissible reference state'
         write(*,'(14(es26.17e3,1x))') flux,interface_velocity,interface_pressure
       end do

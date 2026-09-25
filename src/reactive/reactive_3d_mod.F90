@@ -655,6 +655,21 @@ contains
         final(:,1:n(1),0:n(2),1:n(3),2),final(:,1:n(1),1:n(2),0:n(3),3),valid)
       if (.not.valid) return
     end if
+    if(trace_pressure.and.viscosity==0) then
+      do a=1,3
+        lower=1;upper=n;lower(a)=0
+        do k=lower(3),upper(3)
+        do j=lower(2),upper(2)
+        do i=lower(1),upper(1)
+          ! pc_norm_spec_flx runs even when artificial viscosity is disabled.
+          speed=sum(final(6:,i,j,k,a))
+          if(speed/=0) final(6:,i,j,k,a)=final(6:,i,j,k,a)*(final(1,i,j,k,a)/speed)
+        end do
+        end do
+        end do
+      end do
+      if(.not.all(ieee_is_finite(final))) return
+    end if
     xflux=final(:,0:n(1),1:n(2),1:n(3),1)
     yflux=final(:,1:n(1),0:n(2),1:n(3),2)
     zflux=final(:,1:n(1),1:n(2),0:n(3),3)
@@ -692,7 +707,7 @@ contains
           end do
           point=[ii,jj,kk];point(direction)=point(direction)+1
           call reactive_pelec_primitive_flux_x(species,left,right, &
-            .5_dp*(sound(ii,jj,kk)+sound(point(1),point(2),point(3))),rotated,good)
+            .5_dp*(sound(ii,jj,kk)+sound(point(1),point(2),point(3))),rotated,good,passive_upwind=.true.)
           if (.not.good) return
           swap=rotated(2);rotated(2)=rotated(direction+1);rotated(direction+1)=swap
           final(:,ii,jj,kk,direction)=rotated
@@ -796,7 +811,8 @@ contains
           swap=qm(2);qm(2)=qm(direction+1);qm(direction+1)=swap
           swap=qp(2);qp(2)=qp(direction+1);qp(direction+1)=swap
           call reactive_pelec_primitive_flux_x(species,qm,qp,.5_dp*(sound(i,j,k)+sound(hi(1),hi(2),hi(3))), &
-            flux(:,i,j,k),good,interface_velocity=face_result(2,i,j,k),interface_pressure=face_result(1,i,j,k))
+            flux(:,i,j,k),good,interface_velocity=face_result(2,i,j,k), &
+            interface_pressure=face_result(1,i,j,k),passive_upwind=.true.)
           if (.not.good) return
           swap=flux(2,i,j,k);flux(2,i,j,k)=flux(direction+1,i,j,k);flux(direction+1,i,j,k)=swap
           cycle

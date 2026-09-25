@@ -106,9 +106,18 @@ program test_reactive_ppm_halo_3d
       call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
         .true.,.true.,solver,fx,fy,fz,theta,ok,difmag=0._dp)
       call require(ok.and.(any(hx/=fx).or.any(hy/=fy).or.any(hz/=fz)),'default viscosity changes compressive flux')
+      call require(maxval(abs(sum(fx(6:,:,:,:),dim=1)-fx(1,:,:,:)))<= &
+        3e-14_dp*max(1._dp,maxval(abs(fx(1,:,:,:)))),'zero viscosity x species normalization')
+      call require(maxval(abs(sum(fy(6:,:,:,:),dim=1)-fy(1,:,:,:)))<= &
+        3e-14_dp*max(1._dp,maxval(abs(fy(1,:,:,:)))),'zero viscosity y species normalization')
+      call require(maxval(abs(sum(fz(6:,:,:,:),dim=1)-fz(1,:,:,:)))<= &
+        3e-14_dp*max(1._dp,maxval(abs(fz(1,:,:,:)))),'zero viscosity z species normalization')
       call adjust_reactive_artificial_viscosity_3d(g(:,4:9,4:9,4:9),[4,4,4],[.25_dp,.25_dp,.25_dp], &
         .1_dp,[(.false.,m=1,6)],fx,fy,fz,ok)
-      call require(ok.and.all(hx==fx).and.all(hy==fy).and.all(hz==fz),'CTU then viscosity exact composition')
+      ! Zero-viscosity output is now species-normalized. Normalization before
+      ! adding viscosity does not commute with normalization after it.
+      call require(ok.and.all(hx(1:5,:,:,:)==fx(1:5,:,:,:)).and.all(hy(1:5,:,:,:)==fy(1:5,:,:,:)).and. &
+        all(hz(1:5,:,:,:)==fz(1:5,:,:,:)),'CTU then viscosity exact hydro composition')
       call compute_reactive_ppm_ctu_fluxes_3d(species,u,t,[.25_dp,.25_dp,.25_dp],dt, &
         .true.,.true.,solver,fx,fy,fz,theta,ok,difmag=-1._dp)
       call require(.not.ok.and.all(fx==0).and.all(fy==0).and.all(fz==0),'invalid viscosity unpublished flux')
