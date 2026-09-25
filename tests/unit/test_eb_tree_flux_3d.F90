@@ -24,13 +24,19 @@ program test_eb_tree_flux_3d
   real(dp), allocatable :: before(:),after(:),boundary(:),basis(:)
   real(dp) :: volume,residual
   character(len=1), parameter :: axes(3)=['x','y','z']
-  integer :: nv,node,axis,count,i,j,k
+  character(len=16), allocatable :: faces(:)
+  integer :: nv,node,axis,count,i,j,k,trial
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   nv=reactive_nvar(size(species))
   allocate(before(nv),after(nv),boundary(nv),basis(nv))
+  do trial=1,2
+  if(trial==2) allocate(faces(6))
   do axis=1,3
+  if(allocated(faces)) then
+    faces='periodic';faces(2*axis-1:2*axis)='outflow'
+  end if
   do count=4,5
   call initialize_amr_patch_3d(4,4,4,1,2,1,2,2,3,2,boxes(1),ok)
   call require(ok,'child left')
@@ -40,6 +46,12 @@ program test_eb_tree_flux_3d
   call require(ok,'grandchild left')
   call initialize_amr_patch_3d(4,4,4,1,2,3,4,2,3,2,boxes(4),ok)
   call require(ok,'grandchild right')
+  if(trial==2) then
+    call initialize_amr_patch_3d(4,4,4,1,2,3,4,2,3,2,boxes(3),ok)
+    call require(ok,'periodic grandchild left')
+    call initialize_amr_patch_3d(4,4,4,3,4,3,4,2,3,2,boxes(4),ok)
+    call require(ok,'periodic grandchild right')
+  end if
   if (count==5) then
     call initialize_amr_patch_tree_3d([4,4,4],[1,1,2,3],boxes,topology,ok)
   else
@@ -95,7 +107,7 @@ program test_eb_tree_flux_3d
     end associate
   end do
   saved=tree;raw=flux
-  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok)
+  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,boundary_faces=faces)
   call require(ok,'flux synchronization')
   call require(any(flux(1)%x/=raw(1)%x),'nontrivial coarse replacement')
   call integrate_reactive_eb_tree_3d(tree,after,ok)
@@ -110,6 +122,21 @@ program test_eb_tree_flux_3d
   end do
   end do
   end associate
+  if(allocated(faces)) then
+    associate(g=>tree%nodes(1)%geometry,f=>flux(1))
+    do k=1,nv
+      if(faces(1)=='periodic') call require(maxval(abs(g%x_face_fraction(0,:,:)*f%x(k,0,:,:)- &
+        g%x_face_fraction(4,:,:)*f%x(k,4,:,:)))<1.e-14_dp*max(1._dp,maxval(abs(f%x(k,:,:,:)))), &
+        'root periodic x transfer agrees')
+      if(faces(3)=='periodic') call require(maxval(abs(g%y_face_fraction(:,0,:)*f%y(k,:,0,:)- &
+        g%y_face_fraction(:,4,:)*f%y(k,:,4,:)))<1.e-14_dp*max(1._dp,maxval(abs(f%y(k,:,:,:)))), &
+        'root periodic y transfer agrees')
+      if(faces(5)=='periodic') call require(maxval(abs(g%z_face_fraction(:,:,0)*f%z(k,:,:,0)- &
+        g%z_face_fraction(:,:,4)*f%z(k,:,:,4)))<1.e-14_dp*max(1._dp,maxval(abs(f%z(k,:,:,:)))), &
+        'root periodic z transfer agrees')
+    end do
+    end associate
+  end if
   residual=maxval(abs(after-before-boundary)/max(1._dp,abs(before)))
   print *, 'axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'composite conservation including physical boundaries')
@@ -117,15 +144,23 @@ program test_eb_tree_flux_3d
   tree=saved;bad=raw
   bad(count)%x(1,0,1,1)=ieee_value(1._dp,ieee_quiet_nan)
   flux=bad
-  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok)
+  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,boundary_faces=faces)
   call require(.not.ok,'nonfinite flux rejected')
   call unchanged_tree()
   do node=1,count-1
     call require(all(flux(node)%x==bad(node)%x),'earlier flux rollback')
   end do
   ! Finite but enormous density transfer fails EOS after private changes.
-  bad=raw;bad(count)%x(1,4,:,:)=1.e20_dp;flux=bad
-  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok)
+  bad=raw
+  if(trial==1) then
+    bad(count)%x(1,4,:,:)=1.e20_dp
+  else if(axis==1) then
+    bad(1)%y(1,:,0,:)=1.e20_dp
+  else
+    bad(1)%x(1,0,:,:)=1.e20_dp
+  end if
+  flux=bad
+  call synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,boundary_faces=faces)
   call require(.not.ok,'nonphysical correction rejected')
   call unchanged_tree()
   do node=1,count
@@ -133,6 +168,7 @@ program test_eb_tree_flux_3d
       all(flux(node)%z==bad(node)%z),'all flux rollback')
   end do
   deallocate(u,t,flux)
+  end do
   end do
   end do
   print *, 'test_eb_tree_flux_3d: PASS'

@@ -27,6 +27,7 @@ program test_eb_tree_hydro_3d
   real(dp) :: mach(6),tin(6),pin(6),et
   integer :: face,idx(3),inside(3),dim
   real(dp) :: coefficient,sound
+  character(len=16) :: periodic_faces(6)
   character(len=32) :: mode
   real(dp) :: residual
   character(len=1), parameter :: axes(3)=['x','y','z']
@@ -138,6 +139,23 @@ program test_eb_tree_hydro_3d
   print *, 'CTU axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'CTU conservative peer and coarse/fine flux synchronization')
   call require(any(tree%nodes(count)%state/=ctu_start%nodes(count)%state),'nontrivial deep CTU update')
+  periodic_faces='periodic';periodic_faces(2*axis-1:2*axis)='outflow'
+  tree=ctu_start
+  call advance_reactive_eb_tree_hydro_3d(species,'pelec',1.e-8_dp,tree,boundary,wall,ok, &
+    difmag=coefficient,extended_geometry=extended,boundary_faces=periodic_faces)
+  call require(ok,'periodic CTU common tree step')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'periodic CTU inventory')
+  residual=maxval(abs(after-ctu_before-boundary-wall)/max(1._dp,abs(ctu_before)))
+  call require(residual<3.e-14_dp,'periodic CTU composite conservation')
+  tree=saved
+  call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok, &
+    difmag=coefficient,boundary_faces=periodic_faces)
+  call require(ok,'periodic PCM common tree step')
+  call integrate_reactive_eb_tree_3d(tree,after,ok)
+  call require(ok,'periodic PCM inventory')
+  residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
+  call require(residual<3.e-14_dp,'periodic PCM composite conservation')
   tree=saved;boundary=17;wall=19
   call advance_reactive_eb_tree_hydro_3d(species,'hllc',1.e-8_dp,tree,boundary,wall,ok,extended_geometry=extended)
   call require(.not.ok.and.all(boundary==17).and.all(wall==19),'CTU incompatible solver rollback')

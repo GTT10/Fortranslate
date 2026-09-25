@@ -732,9 +732,6 @@ contains
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     if (.not.valid_tree(tree,nv)) return
-    if(present(boundary_faces)) then
-      if(any(boundary_faces=='periodic')) return
-    end if
     coefficient=.1_dp
     if(present(difmag)) coefficient=difmag
     if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
@@ -818,7 +815,7 @@ contains
       end associate
       deallocate(source,exposed)
     end do
-    call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid)
+    call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,valid,boundary_faces=boundary_faces)
     if(.not.valid) return
     n=tree%topology%nodes(1)%shape
     associate(g=>tree%nodes(1)%geometry,f=>flux(1))
@@ -1110,24 +1107,34 @@ contains
   ! Input states have already accepted each node's raw time-integrated flux.
   ! Replace shared transfers from finest to coarsest on exposed cells only,
   ! then average down. Publish corrected states and effective fluxes together.
-  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,minimum_level,maximum_level)
+  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,minimum_level,maximum_level,boundary_faces)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(inout) :: tree
     type(eb_integrated_flux_3d), intent(inout) :: flux(:)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: minimum_level,maximum_level
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    character(len=16) :: faces(6)
+    real(dp) :: period(3),length(3)
     type(eb_reactive_tree_3d) :: candidate
     type(eb_integrated_flux_3d), allocatable :: effective(:)
-    type(eb_integrated_flux_3d) :: restricted
+    type(eb_integrated_flux_3d) :: restricted,owned
     type(eb_geometry_3d) :: section
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: offset(3),section_origin(3)
-    integer :: nv,node,peer,owner,receiver,axis,depth,parent,child,lo(3),hi(3),d(3),ratio,first_level,last_level
+    integer :: nv,node,peer,owner,receiver,axis,depth,parent,child,lo(3),hi(3),d(3),ratio,first_level,last_level,seam,side
     logical, allocatable :: refined(:,:,:)
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
     if (.not.valid_tree(tree,nv)) return
+    faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    if(any(faces/='outflow'.and.faces/='inflow'.and.faces/='periodic')) return
+    if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
+    associate(g=>tree%nodes(1)%geometry)
+    length=[g%x_upper-g%x_lower,g%y_upper-g%y_lower,g%z_upper-g%z_lower]
+    end associate
     first_level=0;last_level=tree%topology%level_count()-1
     if (present(minimum_level)) first_level=minimum_level
     if (present(maximum_level)) last_level=maximum_level
@@ -1162,6 +1169,28 @@ contains
       if (.not.valid) return
     end do
     end do
+    ! Canonical raw periodic transfer comes from the high-domain face.
+    ! Copy owner flux so a patch spanning the domain can receive its own seam.
+    do seam=1,3
+      if(faces(2*seam-1)/='periodic') cycle
+      period=0;period(seam)=length(seam)
+      do owner=1,size(flux)
+        depth=tree%topology%nodes(owner)%level
+        if(depth<first_level.or.depth>last_level) cycle
+        if(origin(seam,owner)+tree%topology%nodes(owner)%shape(seam)/=domain(seam,depth+1)) cycle
+        owned=effective(owner)
+        do receiver=1,size(flux)
+          if(tree%topology%nodes(receiver)%level/=depth.or.origin(seam,receiver)/=0) cycle
+          offset=origin(:,receiver)-origin(:,owner)
+          offset(seam)=offset(seam)+domain(seam,depth+1)
+          if(.not.seam_overlap(offset,tree%topology%nodes(owner)%shape, &
+            tree%topology%nodes(receiver)%shape,seam)) cycle
+          call reconcile_reactive_eb_peer_flux_3d(species,tree%nodes(owner)%geometry,tree%nodes(receiver)%geometry, &
+            int(offset),owned,effective(receiver),ok=valid,periodic_length=period)
+          if(.not.valid) return
+        end do
+      end do
+    end do
     do depth=last_level,first_level,-1
     do node=1,size(flux)
       if (tree%topology%nodes(node)%level/=depth) cycle
@@ -1195,11 +1224,44 @@ contains
           restricted,effective(peer),ok=valid)
         if (.not.valid) return
       end do
+      ! A restricted fine face also replaces the opposite periodic parent
+      ! face, including a root that is both parent and opposite receiver.
+      do seam=1,3
+        if(faces(2*seam-1)/='periodic') cycle
+        period=0;period(seam)=length(seam)
+        do side=0,1
+          if(side==0.and.section_origin(seam)/=0) cycle
+          if(side==1.and.section_origin(seam)+hi(seam)-lo(seam)+1/=domain(seam,depth)) cycle
+          do peer=1,size(flux)
+            if(tree%topology%nodes(peer)%level/=depth-1) cycle
+            if(side==0.and.origin(seam,peer)+tree%topology%nodes(peer)%shape(seam)/=domain(seam,depth)) cycle
+            if(side==1.and.origin(seam,peer)/=0) cycle
+            offset=origin(:,peer)-section_origin
+            offset(seam)=offset(seam)+int(2*side-1,int64)*domain(seam,depth)
+            if(.not.seam_overlap(offset,hi-lo+1,tree%topology%nodes(peer)%shape,seam)) cycle
+            call reconcile_reactive_eb_peer_flux_3d(species,section,tree%nodes(peer)%geometry,int(offset), &
+              restricted,effective(peer),ok=valid,periodic_length=period)
+            if(.not.valid) return
+          end do
+        end do
+      end do
     end do
     end do
     call average_down_reactive_eb_tree_3d(species,candidate,valid)
     if (.not.valid) return
     tree=candidate;flux=effective;ok=.true.
+  contains
+    pure logical function seam_overlap(displacement,owner_shape,receiver_shape,normal) result(overlap)
+      integer(int64), intent(in) :: displacement(3)
+      integer, intent(in) :: owner_shape(3),receiver_shape(3),normal
+      integer :: tangent
+      overlap=.true.
+      do tangent=1,3
+        if(tangent==normal) cycle
+        if(displacement(tangent)>=owner_shape(tangent).or. &
+          displacement(tangent)+receiver_shape(tangent)<=0) overlap=.false.
+      end do
+    end function seam_overlap
   end subroutine synchronize_reactive_eb_tree_flux_3d
 
   ! Six-face Mach < 0 retains outflow; active entries require inlet temperature.
