@@ -21,7 +21,7 @@ contains
   ! Recursive hydro intervals with time-interpolated PCM ancestors and flux accumulation.
   subroutine advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,state,temperature, &
       boundary_change,wall_change,comm,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -32,6 +32,8 @@ contains
     real(dp), intent(inout) :: boundary_change(:),wall_change(:)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: coefficient
     logical, intent(out) :: ok
     type(amr_tree_state_3d) :: candidate,ct,starts,ends,start_t,end_t
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -43,7 +45,9 @@ contains
     character(len=32) :: reference
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
-    valid=ieee_is_finite(dt)
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    valid=ieee_is_finite(dt).and.ieee_is_finite(coefficient).and.coefficient>=0
     if (valid) valid=dt>0._dp
     valid=valid.and.size(boundary_change)==nv.and.size(wall_change)==nv.and.len_trim(solver)<=len(reference)
     call agree(valid,ready)
@@ -52,6 +56,10 @@ contains
     if (status/=MPI_SUCCESS) return
     call MPI_Allreduce(dt,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS.or.low/=high) return
+    call MPI_Allreduce(coefficient,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(coefficient,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low/=high) return
     reference=solver
     call MPI_Bcast(reference,len(reference),MPI_CHARACTER,0,comm,status)
     call agree(status==MPI_SUCCESS.and.trim(solver)==trim(reference),ready)
@@ -100,7 +108,7 @@ contains
       real(dp), intent(in) :: time,interval
       type(eb_integrated_flux_3d), allocatable, intent(out) :: total(:)
       logical, intent(out) :: good
-      type(amr_tree_state_3d) :: snapshot,st,ghost,gt
+      type(amr_tree_state_3d) :: snapshot,st,ghost,gt,vf
       type(eb_integrated_flux_3d), allocatable :: fine(:)
       real(dp), allocatable :: source(:,:,:,:)
       logical, allocatable :: exposed(:,:,:)
@@ -130,17 +138,30 @@ contains
       end do
       call agree(valid,ready)
       if (.not.ready) return
+      if(coefficient>0) then
+      call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
+        starts,ends,start_t,end_t,fractions, &
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf)
+      else
       call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,snapshot,st,ghost,gt,comm,ready, &
         starts,ends,start_t,end_t,fractions, &
         inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      end if
       if (.not.ready) return
       do node=1,size(owners)
         if (owners(node)/=rank.or.tree%nodes(node)%level/=level) cycle
         d=tree%nodes(node)%shape
         work_stamp=tree_work_start()
+        if(coefficient>0) then
+        call advance_reactive_eb_euler_3d(species,snapshot%fields(node)%values,st%fields(node)%values(1,:,:,:), &
+          geometry(node),solver,interval,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
+          valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),total(node), &
+          difmag=coefficient,ghost_volume_fraction=vf%fields(node)%values(1,:,:,:))
+        else
         call advance_reactive_eb_euler_3d(species,snapshot%fields(node)%values,st%fields(node)%values(1,:,:,:), &
           geometry(node),solver,interval,candidate%fields(node)%values,ct%fields(node)%values(1,:,:,:), &
           valid,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:),total(node))
+        end if
         call tree_work_stop(node,work_stamp)
         if (.not.valid) exit
         allocate(source(nv,d(1),d(2),d(3)),exposed(d(1),d(2),d(3)),stat=ios)

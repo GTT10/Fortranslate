@@ -114,7 +114,7 @@ contains
   subroutine advance_mpi_eb_tree_full_3d(species,reactions,transport,tree,owners,geometry,solver,dt, &
       chemistry_enabled,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       state,temperature,boundary_change,wall_change,chemical_change,minimum_theta,comm,ok,integrator,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure,difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -128,6 +128,8 @@ contains
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),minimum_theta
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: coefficient,coefficient_low,coefficient_high
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     logical, optional, intent(in) :: subcycling
@@ -138,10 +140,16 @@ contains
     integer :: flags(3),low(3),high(3),status,nv,half
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
-    valid=ieee_is_finite(dt)
+    coefficient=0
+    if(present(difmag)) coefficient=difmag
+    valid=ieee_is_finite(dt).and.ieee_is_finite(coefficient).and.coefficient>=0
     if (valid) valid=dt>0._dp
     call agree(valid.and.size(boundary_change)==nv.and.size(wall_change)==nv.and.size(chemical_change)==nv,comm,ready)
     if (.not.ready) return
+    call MPI_Allreduce(coefficient,coefficient_low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(coefficient,coefficient_high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.coefficient_low/=coefficient_high) return
     recursive_steps=.false.
     if (present(subcycling)) recursive_steps=subcycling
     flags=merge(1,0,[chemistry_enabled,transport_enabled,recursive_steps])
@@ -173,10 +181,10 @@ contains
         if (recursive_steps) then
           call advance_mpi_eb_tree_subcycle_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct, &
             boundary,wall,comm,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=coefficient)
         else
           call advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,candidate,ct,boundary,wall,comm,valid, &
-            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+            inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,difmag=coefficient)
         end if
         if (.not.valid) return
       else if (chemistry_enabled) then
