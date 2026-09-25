@@ -120,9 +120,11 @@ initial/scheduled injection, component budgets and density-based injection speed
 
 EB hydro currently uses cell-centered Riemann states. The pinned PLM covered-cell
 slope policy (4th/2nd/zero fallback) is now available through the normal PLM
-reconstruction API ([checks](validation/eb-plm-slope-20260925.md)). EB-specific
-normal prediction, transverse correction, centroid flux interpolation and
-application dispatch remain to be connected before claiming EB Godunov parity.
+reconstruction API ([checks](validation/eb-plm-slope-20260925.md)). An aperture-aware
+three-direction normal predictor now returns primitive states and independently
+traced internal energy ([checks](validation/eb-plm-normal-20260925.md)). Wide halo
+preparation, Riemann/CTU integration, transverse correction, centroid flux
+interpolation and application dispatch remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
