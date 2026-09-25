@@ -176,9 +176,11 @@ and profile integration now agree with compiled pinned C++ bodies in a bounded
 The primitive Riemann entry also agrees with the pinned compiled kernel using a
 NASA7 EOS adapter in 56 cases ([checks](validation/riemann-pinned-kernel-20260925.md)).
 Double-transverse pressure subtraction now follows the pinned spatial order
-([checks](validation/ppm-transverse-order-20260925.md)). The pinned final PLM
-flux replacement at hard inflow/user boundaries remains to be connected;
-external normal-projection/full-CTU parity and broader qualification remain open. Regular MPI spray
+([checks](validation/ppm-transverse-order-20260925.md)). Regular-grid inflow
+faces now receive final fourth-order-slope PLM flux replacement
+([checks](validation/ppm-inflow-plm-20260925.md)). AMR/MPI boundary-mask
+propagation, external normal-projection/full-CTU parity and broader
+qualification remain open. Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
