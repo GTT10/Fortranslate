@@ -218,13 +218,16 @@ at both SSPRK2 stages, including mean face fluxes and boundary accounting
 retain the existing policy. Serial/MPI tree common and level hydro now apply
 the coefficient before flux integration and reflux, including recursive
 subcycling ([checks](validation/pcm-plm-tree-viscosity-20260925.md)). PCM/PLM
-input/default/restart policy, remaining MPI two-level AMR propagation, and EB
+input/default/restart policy and EB
 artificial-viscosity dispatch remain open. Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies
 explicit PCM/PLM coefficients on coarse and fine stages before flux averaging
-and reflux ([checks](validation/pcm-plm-two-level-viscosity-20260925.md)). Regular MPI spray
+and reflux ([checks](validation/pcm-plm-two-level-viscosity-20260925.md)). MPI
+two-level AMR now applies the same corrections using local coarse/fine halos,
+with eight-rank serial parity
+([checks](validation/mpi-two-level-viscosity-20260925.md)). Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity
