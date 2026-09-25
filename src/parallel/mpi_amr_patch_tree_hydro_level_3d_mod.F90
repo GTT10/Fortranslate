@@ -20,7 +20,7 @@ module mpi_amr_patch_tree_hydro_level_3d_mod
 contains
   subroutine advance_mpi_amr_tree_hydro_level_3d(tree,owners,species,state,temperature,depth,root_spacing,dt,faces, &
       reconstruction,limiter,solver,integrated_flux,comm,ok,coarse_start,coarse_end,fractions_start,fractions_end, &
-      inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -36,12 +36,13 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
-    real(dp) :: pressure(6),mach(6),pin(6),tin(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: pressure(6),mach(6),pin(6),tin(6),viscosity
     type(amr_tree_state_3d) :: initial,candidate,temps
     real(dp), allocatable :: h(:,:),inlet(:,:)
     integer :: flags(5),minimum_flags(5),maximum_flags(5)
     integer :: node,nvar,rank,status,ios,parent,width
-    real(dp) :: controls(28),low(28),high(28)
+    real(dp) :: controls(29),low(29),high(29)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
     character(len=:), allocatable :: donor_limiter
@@ -54,6 +55,9 @@ contains
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    viscosity=0
+    if(reconstruction=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    if(present(difmag)) viscosity=difmag
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
     mach=-1;pin=0;tin=0
@@ -74,8 +78,9 @@ contains
     valid=valid.and.all(ieee_is_finite(tin)).and..not.any(tin<=0.and.mach>=0)
     call agree(valid)
     if(.not.valid) return
-    controls=[root_spacing,dt,pressure,mach,tin,pin]
+    controls=[root_spacing,dt,pressure,mach,tin,pin,viscosity]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
+    valid=valid.and.viscosity>=0.and.(viscosity==0.or.reconstruction=='characteristic_ppm')
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
       if (pressure(node)>0.and.faces(node)/='outflow') valid=.false.
@@ -92,9 +97,9 @@ contains
     end do
     call agree(valid)
     if (.not.valid) return
-    call MPI_Allreduce(controls,low,28,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,29,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,28,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,29,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     options(:6)=faces;options(7)=reconstruction;options(8)=limiter;options(9)=solver
@@ -257,7 +262,7 @@ contains
             call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
               n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
               fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success, &
-              inflow_faces=inflow_mask,no_slip_faces=wall_mask)
+              inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity)
             end block
           else if (reconstruction=='pcm') then
             call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &

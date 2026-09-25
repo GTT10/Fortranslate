@@ -41,7 +41,7 @@ contains
   end subroutine
   subroutine advance_amr_patch_tree_hydro_3d(tree,species,state,temperature,root_spacing,dt,faces, &
       reconstruction,limiter,solver,boundary_change,maximum_correction,ok,inflow_state,inflow_temperature,outlet_pressure, &
-      inflow_mach,inflow_pressure)
+      inflow_mach,inflow_pressure,difmag)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -49,7 +49,8 @@ contains
     character(len=*), intent(in) :: faces(6),reconstruction,limiter,solver
     real(dp), intent(inout) :: boundary_change(:),maximum_correction
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
-    real(dp) :: mach(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: mach(6),viscosity
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     type(amr_tree_state_3d) :: initial,candidate,temps,stage_temperature
@@ -58,6 +59,12 @@ contains
     integer :: node,nvar
     logical :: valid
     ok=.false.
+    viscosity=0
+    if(reconstruction=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    if(present(difmag)) viscosity=difmag
+    if(.not.ieee_is_finite(viscosity)) return
+    if(viscosity<0) return
+    if(viscosity>0.and.reconstruction/='characteristic_ppm') return
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))
@@ -165,7 +172,7 @@ contains
           call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
             fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success, &
-              inflow_faces=inflow_mask,no_slip_faces=wall_mask)
+              inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity)
           end block
         else if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
@@ -218,7 +225,7 @@ contains
   ! without restriction/reflux; the subcycle owner must synchronize levels.
   subroutine advance_amr_patch_tree_hydro_level_3d(tree,species,state,temperature,depth,root_spacing,dt,faces, &
       reconstruction,limiter,solver,integrated_flux,ok,coarse_start,coarse_end,fractions_start,fractions_end, &
-      inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -227,7 +234,8 @@ contains
     character(len=*), intent(in) :: faces(6),reconstruction,limiter,solver
     type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
-    real(dp) :: mach(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: mach(6),viscosity
     logical, intent(out) :: ok
     ! Endpoints pack conserved components followed by a temperature guess.
     type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
@@ -239,6 +247,12 @@ contains
     integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint,width,stage_count
     logical :: valid
     ok=.false.
+    viscosity=0
+    if(reconstruction=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    if(present(difmag)) viscosity=difmag
+    if(.not.ieee_is_finite(viscosity)) return
+    if(viscosity<0) return
+    if(viscosity>0.and.reconstruction/='characteristic_ppm') return
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     if (depth<0.or.depth>=tree%level_count()) return
@@ -312,7 +326,7 @@ contains
           call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
             fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,valid, &
-              inflow_faces=inflow_mask,no_slip_faces=wall_mask)
+              inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity)
           end block
         else if (reconstruction=='pcm') then
           call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
