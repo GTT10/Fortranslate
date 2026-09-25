@@ -54,6 +54,10 @@ program test_mpi_eb_tree_subcycle_full_3d
     deallocate(mach,pin)
     allocate(labels(6));labels='outflow';labels(1)='inflow';labels(4)='inflow'
   end if
+  if(index(test_mode,'periodic')>0) then
+    deallocate(mach,pin)
+    allocate(labels(6));labels='periodic';labels(5:6)='outflow'
+  end if
   if (index(test_mode,'mach')==1) then
     mach(1)=.2_dp;mach(4)=.1_dp;pin(4)=120000
   end if
@@ -141,7 +145,7 @@ program test_mpi_eb_tree_subcycle_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
-  if(allocated(labels)) then
+  if(index(test_mode,'inflow')>0) then
     allocate(inlet(nv,6))
     call reactive_conserved_to_primitive(species,tree%nodes(1)%state(:,1,1,3), &
       tree%nodes(1)%temperature(1,1,3),primitive,et,speed,ok)
@@ -272,19 +276,26 @@ contains
       end if
       if(allocated(labels)) then
         saved_tin=tin(1)
-        if(rank==0) tin(1)=ieee_value(0._dp,ieee_quiet_nan)
+        if(rank==0) then
+          if(index(test_mode,'periodic')>0) then
+            labels(1)='outflow'
+          else
+            tin(1)=ieee_value(0._dp,ieee_quiet_nan)
+          end if
+        end if
         call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,solver,1.e-8_dp, &
           .true.,2.e-7_dp,1.e-12_dp,.true.,.true.,.true.,.true.,.true., &
           local,lt,b,w,chem,limiter,MPI_COMM_WORLD,good,'explicit',subcycling=recursive_steps, &
           inflow_temperature=tin,difmag=coefficient,extended_geometry=extended,boundary_faces=labels,inflow_state=inlet)
-        call require(.not.good,'invalid prescribed inlet after private reaction')
+        call require(.not.good,'invalid boundary after private reaction')
         tin(1)=saved_tin
+        if(index(test_mode,'periodic')>0) labels(1)='periodic'
         do p=1,count
           if(owners(p)/=rank) cycle
           call require(all(local%fields(p)%values==initial%fields(p)%values).and. &
-            all(lt%fields(p)%values==it%fields(p)%values),'prescribed inlet full rollback')
+            all(lt%fields(p)%values==it%fields(p)%values),'boundary full rollback')
         end do
-        call require(all(b==17).and.all(w==19).and.all(chem==23).and.limiter==29,'prescribed inlet ledger rollback')
+        call require(all(b==17).and.all(w==19).and.all(chem==23).and.limiter==29,'boundary ledger rollback')
       end if
       enabled=rank==0
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,owners,geometry,solver,1.e-8_dp, &

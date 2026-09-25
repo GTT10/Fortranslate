@@ -49,7 +49,6 @@ contains
     valid=ieee_is_finite(dt)
     if (valid) valid=dt>0._dp
     valid=valid.and.size(boundary_change)==nv
-    if(present(boundary_faces)) valid=valid.and..not.any(boundary_faces=='periodic')
     call agree(valid,ready)
     if (.not.ready) return
     call MPI_Allreduce(dt,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -159,7 +158,7 @@ contains
       call agree(valid.and.ieee_is_finite(local_theta),ready)
       if (.not.ready) return
       call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,total,comm,ready, &
-        level,level,peers_only=.true.)
+        level,level,peers_only=.true.,boundary_faces=boundary_faces)
       if (.not.ready) return
       do node=1,size(owners)
         if (owners(node)/=rank.or.tree%nodes(node)%level/=level) cycle
@@ -184,7 +183,7 @@ contains
         end do
       end if
       call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,total,comm,ready, &
-        level,min(level+1,levels-1))
+        level,min(level+1,levels-1),boundary_faces=boundary_faces)
       if (.not.ready) return
       good=.true.
     end subroutine advance_level
