@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Regular pressure-traced CTU now applies physical wall/outflow hydro-state
+corrections at each Riemann stage. Serial/MPI AMR and MPI spray dispatch forward
+physical-face masks; explicit pressure outlets retain their prescribed donors
+([checks](validation/ppm-physical-riemann-20260926.md)).
+
 Regular and EB CTU now use the pinned contact-speed species upwinding after
 Riemann solves; regular final fluxes also normalize species at zero viscosity
 ([repair and checks](validation/ppm-passive-flux-20260926.md)).
