@@ -15,6 +15,7 @@ p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--ctu', action='store_true')
 p.add_argument('--inflow', action='store_true')
+p.add_argument('--periodic', action='store_true')
 p.add_argument('--scheduled', action='store_true')
 p.add_argument('--restart', action='store_true')
 p.add_argument('--split', action='store_true')
@@ -24,8 +25,10 @@ p.add_argument('--force', action='store_true')
 p.add_argument('--difmag', type=float)
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
-if a.inflow:
+if a.inflow or a.periodic:
     a.ctu = True
+if a.periodic:
+    assert not any((a.inflow, a.scheduled, a.impacts, a.split, a.khrt, a.outflow, a.force))
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
 for name in ('gas.nml', 'spray.nml', 'level_set.dat'):
@@ -40,6 +43,14 @@ if a.inflow:
         " inflow_velocity(2,3)=200,", 1)
     (work / 'gas.nml').write_text(gas)
     spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+    (work / 'spray.nml').write_text(spray)
+if a.periodic:
+    gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d',
+        "&reactive_eb_3d\n boundary_faces='outflow','outflow','periodic','periodic','periodic','periodic',", 1)
+    (work / 'gas.nml').write_text(gas)
+    spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
+    spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
+                          'center=.003,.003999999,.002, axis=0,1,0')
     (work / 'spray.nml').write_text(spray)
 if a.selected:
     gas = (work / 'gas.nml').read_text().replace("thermo_model='elementary'", "thermo_model='selected'")
@@ -107,6 +118,11 @@ if a.outflow and not a.impacts:
     assert all(float(row['mass']) == 0 and float(row['component_mass_1']) == 0 for row in rows)
     boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
     assert float(boundary_line.split(':', 1)[1].split()[0]) < 0
+elif a.periodic:
+    assert len(rows) == 2
+    assert all(0 <= float(row['y']) < .001 and float(row['mass']) > 0 for row in rows)
+    assert all(float(row['temperature']) > 350 and float(row['v']) > 0 for row in rows)
+    assert all(math.isfinite(float(value)) for row in rows for value in row.values())
 elif a.khrt:
     assert len(rows)>2 and (len(rows)-2)%4==0
     assert [int(row['id']) for row in rows] == list(range(1,len(rows)+1))
@@ -238,6 +254,24 @@ if a.restart:
         rejected = subprocess.run([exe, 'gas.nml', 'closed_particles.nml'], cwd=work, capture_output=True, text=True)
         (work / 'closed_particles.log').write_text(rejected.stdout + rejected.stderr)
         assert rejected.returncode != 0 and 'require particle_outflow' in rejected.stderr
+    if a.periodic:
+        for name, altered in [
+            ('changed_periodic', resume.replace("'periodic'", "'outflow'")),
+            ('unpaired_periodic', resume.replace("'periodic'", "'outflow'", 1)),
+            ('incompatible_geometry', resume.replace("'outflow','outflow'", "'periodic','periodic'")),
+        ]:
+            (work / f'{name}.nml').write_text(altered)
+            rejected = subprocess.run([exe, f'{name}.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+            (work / f'{name}.log').write_text(rejected.stdout + rejected.stderr)
+            assert rejected.returncode != 0, name
+            assert (work / 'gas.csv').read_bytes() == full_gas
+            assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
+            assert (work / 'gas.csv.films.csv').read_bytes() == full_films
+        (work / 'periodic_impacts.nml').write_text((work / 'spray.nml').read_text().replace(
+            '&eb_spray', '&eb_spray\n wall_impacts=.true.,', 1))
+        rejected = subprocess.run([exe, 'gas.nml', 'periodic_impacts.nml'], cwd=work, capture_output=True, text=True)
+        (work / 'periodic_impacts.log').write_text(rejected.stdout + rejected.stderr)
+        assert rejected.returncode != 0 and 'does not support impact films' in rejected.stderr
     if a.difmag is not None:
         for name, value in [('changed_difmag', a.difmag + .01), ('negative_difmag', -1), ('nan_difmag', 'NaN')]:
             altered = resume.replace(f'difmag={a.difmag}', f'difmag={value}')

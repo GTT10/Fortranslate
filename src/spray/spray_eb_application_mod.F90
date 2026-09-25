@@ -196,9 +196,12 @@ contains
       if(injection_times(n)<injection_times(n-1)) error stop 'Injection times must be nondecreasing'
     end do
     if(any(config%boundary_faces/='legacy')) then
-      if(any(config%boundary_faces/='inflow'.and.config%boundary_faces/='outflow')) &
-        error stop 'EB spray supports only explicit inflow/outflow faces'
+      if(any(config%boundary_faces/='inflow'.and.config%boundary_faces/='outflow'.and. &
+        config%boundary_faces/='periodic')) &
+        error stop 'EB spray supports only explicit inflow/outflow/periodic faces'
       if(.not.particle_outflow) error stop 'Explicit EB spray boundaries require particle_outflow'
+      if(wall_impacts.and.any(config%boundary_faces=='periodic')) &
+        error stop 'Periodic EB spray does not support impact films'
     end if
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
@@ -628,7 +631,8 @@ contains
         else
           if(drops(q)%id/=int(q,int64)) error stop 'Restart parcel ID sequence mismatch'
         end if
-        call eb_spray_stencil(g,phi,drops(q)%position,cells,weights,volumes,valid)
+        call eb_spray_stencil(g,phi,drops(q)%position,cells,weights,volumes,valid, &
+          config%boundary_faces(1:6:2)=='periodic')
         if(.not.valid) error stop 'Restart parcel outside fluid'
       end do
       if (wall_impacts) then
@@ -669,7 +673,8 @@ contains
       if(ios/=0) error stop 'Cannot allocate scheduled injection'
       candidate(:old_count)=drops;candidate_mass(:,:old_count)=masses
       do q=1,nadd
-        call eb_spray_stencil(g,phi,added(q)%position,cells,weights,volumes,valid)
+        call eb_spray_stencil(g,phi,added(q)%position,cells,weights,volumes,valid, &
+          config%boundary_faces(1:6:2)=='periodic')
         if(.not.valid) error stop 'EB injection point is not in fluid'
         added(q)%material_id=port
         candidate(old_count+q)=added(q)
