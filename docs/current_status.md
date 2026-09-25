@@ -69,7 +69,10 @@ full reacting splits and donor timestep bounds are also connected
 ([checks](validation/mpi-eb-inflow-full-20260926.md)). Fixed/selected serial and
 MPI gas application inputs now connect prescribed inflow and boundary-bound
 changed-rank restart across scheduled regridding
-([checks](validation/eb-tree-inflow-application-20260926.md)). MPI EB spray now
+([checks](validation/eb-tree-inflow-application-20260926.md)). Tree application
+inlets also accept per-face named mole fractions independently of initial gas,
+with resolved composition bound to restart
+([checks](validation/eb-tree-inlet-composition-20260926.md)). MPI EB spray now
 also forwards prescribed inflow through the coupled split and application,
 with fixed-mechanism changed-rank continuation checks
 ([checks](validation/mpi-eb-spray-inflow-20260926.md)).
