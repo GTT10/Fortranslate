@@ -34,6 +34,13 @@ program test_amr_patch_tree_checkpoint_3d
   call reactive_3d_mole_fractions(config,7,x,ok)
   call require(ok,'composition')
   call build_context(config,context)
+  changed=config;changed%difmag=0
+  call build_context(changed,other)
+  call require(context==other,'automatic and zero non-PPM coefficient identity')
+  changed%difmag=.037_dp
+  call build_context(changed,other)
+  call require(context/=other,'positive non-PPM coefficient identity')
+
   changed=config;changed%final_time=2e-6_dp;changed%maximum_steps=2000;changed%output_file='elsewhere.csv'
   call build_context(changed,other)
   call require(context==other,'continuation controls excluded')

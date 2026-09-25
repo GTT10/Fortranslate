@@ -33,7 +33,7 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: boundary_faces(6) = ""
     real(dp) :: wall_temperature(6)=300.0_dp
     real(dp) :: inflow_mach(6)=-1.0_dp
-    real(dp) :: difmag=-1.0_dp ! -1 selects the solver policy; nonnegative overrides PPM.
+    real(dp) :: difmag=-1.0_dp ! -1 selects the solver policy; nonnegative overrides regular hydro.
     real(dp) :: outlet_pressure(6)=0.0_dp
     real(dp) :: wall_velocity(3,6)=0.0_dp
     real(dp) :: inflow_temperature(6)=1000.0_dp, inflow_pressure(6)=101325.0_dp
@@ -743,9 +743,6 @@ contains
     end if
     if (config%difmag<0.and.config%difmag/=-1) then
       message='Artificial-viscosity coefficient must be nonnegative or -1 for automatic';return
-    end if
-    if (config%difmag>=0.and.config%reconstruction/='characteristic_ppm') then
-      message='Artificial-viscosity coefficient input requires characteristic_ppm';return
     end if
     if (.not.all(ieee_is_finite(config%inflow_mach))) then
       message='Inflow Mach numbers must be finite'; return

@@ -54,7 +54,7 @@ contains
     type(reactive_3d_config), intent(in) :: flow
     character(len=128) :: identity
     identity=trim(flow%reconstruction)
-    if(flow%reconstruction=='characteristic_ppm') then
+    if(flow%reconstruction=='characteristic_ppm'.or.resolved_reactive_difmag_3d(flow)>0) then
       write(identity,'(a,1x,a,1x,es27.18e3)') trim(flow%reconstruction),'difmag-v1',resolved_reactive_difmag_3d(flow)
     end if
   end function checkpoint_reconstruction_identity
@@ -2218,9 +2218,6 @@ contains
       matches=.false.;return
     end if
     if(flow_config%difmag<0.and.flow_config%difmag/=-1._dp) then
-      matches=.false.;return
-    end if
-    if(flow_config%difmag>0.and.flow_config%reconstruction/='characteristic_ppm') then
       matches=.false.;return
     end if
     matches = patch%is_valid() .and. &

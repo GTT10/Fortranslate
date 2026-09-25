@@ -967,3 +967,5 @@ add_test(NAME amr_two_level_ppm_restart_3d
     --ppm --riemann-solver pelec --pressure-outlet --reacting --executable "$<TARGET_FILE:pelef_amr_reactive_3d>"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_two_level_ppm_restart_3d")
 set_tests_properties(amr_two_level_ppm_restart_3d PROPERTIES TIMEOUT 300)
+
+add_test(NAME unit_amr_reactive_3d_difmag_checkpoint COMMAND test_amr_reactive_3d_checkpoint difmag)

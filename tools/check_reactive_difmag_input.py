@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check regular PPM coefficient dispatch, automatic default and invalid input."""
+"""Check regular hydro coefficient dispatch, automatic default and invalid input."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -33,7 +33,8 @@ def main():
         if success:
             coefficient=float(next(x.split(':')[1] for x in log.splitlines()
                                    if x.startswith('Artificial-viscosity coefficient:')))
-            assert coefficient==(0.1 if value is None or value=='-1' else float(value))
+            default=0.1 if scheme=='characteristic_ppm' else 0.0
+            assert coefficient==(default if value is None or value=='-1' else float(value))
             return (work/(name+'.csv')).read_bytes()
         assert not (work/(name+'.csv')).exists()
         assert 'Artificial-viscosity coefficient' in log
@@ -42,7 +43,11 @@ def main():
     assert run('automatic_sentinel','-1')==automatic
     assert run('disabled','0')!=automatic
     run('invalid','-2',success=False)
-    run('unsupported_scheme','.1','pcm',False)
+    for scheme in ('pcm','characteristic_plm'):
+        automatic=run(scheme+'_auto',scheme=scheme)
+        assert run(scheme+'_zero','0',scheme)==automatic
+        assert run(scheme+'_sentinel','-1',scheme)==automatic
+        assert run(scheme+'_positive','.037',scheme)!=automatic
     print(f'PASS: coefficient input, dispatch and rejection; artifacts={work}')
 
 

@@ -53,8 +53,11 @@ contains
     if (len_trim(identity)==0.or.(integrator/='explicit'.and.integrator/='implicit')) return
     if (.not.valid_context(trim(schedule_identity)//achar(10))) return
     ! Capture all configuration fields except continuation limits/output path.
+    if(.not.ieee_is_finite(config%difmag)) return
+    if(config%difmag<0.and.config%difmag/=-1._dp) return
     canonical=config;canonical%final_time=0;canonical%maximum_steps=0;canonical%output_file=''
-    if(canonical%reconstruction=='characteristic_ppm') canonical%difmag=resolved_reactive_difmag_3d(config)
+    canonical%difmag=resolved_reactive_difmag_3d(config)
+    if(canonical%reconstruction/='characteristic_ppm'.and.canonical%difmag==0) canonical%difmag=-1
     open(newunit=unit,status='scratch',access='stream',form='formatted',delim='quote',iostat=status)
     if (status/=0) return
     write(unit,*,iostat=status) canonical

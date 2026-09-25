@@ -112,6 +112,7 @@ program test_amr_reactive_3d_checkpoint
   config%riemann_solver = "pelec"
   config%reconstruction = "characteristic_plm"
   config%limiter = "mc"
+  if(variant=='difmag') config%difmag=.037_dp
   config%maximum_steps = 100
   config%final_time = 1.0e-6_dp
   amr_config = amr_reactive_3d_config()
@@ -212,6 +213,19 @@ program test_amr_reactive_3d_checkpoint
     time == saved_time .and. steps == saved_steps .and. &
     maximum_reflux == saved_maximum_reflux, &
     "checkpoint metadata exact round trip")
+
+  if(variant=='difmag') then
+    incompatible_config=config;incompatible_config%difmag=.05_dp
+  else
+    incompatible_config=config;incompatible_config%difmag=0
+  end if
+  call read_amr_reactive_3d_checkpoint( &
+    checkpoint_path,species,incompatible_config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature, &
+    time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(ok.eqv.(variant/='difmag'),'coefficient restart identity')
+  call require(all(coarse_state==saved_coarse_state).and.all(fine_state==saved_fine_state), &
+    'coefficient identity preserves state')
 
   transport_config = config
   transport_config%transport_enabled = .true.
