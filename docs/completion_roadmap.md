@@ -282,8 +282,10 @@ double-transverse kernel now accepts primitive sources and agrees in 216 compile
 reference cases ([checks](validation/ppm-transverse-source-20260926.md)); full
 periodic/halo CTU source routing now also agrees in 28 full-assembly cases
 ([checks](validation/ppm-ctu-source-20260926.md)). Cell-local conserved-source conversion
-is implemented ([checks](validation/ppm-source-conversion-20260926.md)); grid
-routing and application integration remain open. Physical
+is implemented ([checks](validation/ppm-source-conversion-20260926.md)). Grid
+conversion now feeds periodic/halo CTU directly
+([checks](validation/ppm-conserved-source-20260926.md)); application integration
+remains open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

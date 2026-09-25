@@ -21,8 +21,10 @@ Optional primitive sources now reach the periodic and supplied-halo PPM CTU
 flux APIs, with 28 compiled-reference assembly cases
 ([evidence](validation/ppm-ctu-source-20260926.md)). Cell-local conserved-source
 conversion now follows the pinned policy
-([checks](validation/ppm-source-conversion-20260926.md)); grid routing and
-application source generation remain open.
+([checks](validation/ppm-source-conversion-20260926.md)). Conserved source grids
+now feed periodic/halo CTU directly, with 38 compiled-reference assembly cases
+([checks](validation/ppm-conserved-source-20260926.md)); application source
+generation and integration remain open.
 
 The pressure path preserves independent and signed face species weights and
 uses contact-speed passive upwinding
