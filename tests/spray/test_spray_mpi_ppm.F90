@@ -10,7 +10,7 @@ program test_spray_mpi_ppm
   type(nasa7_species), allocatable :: species(:)
   real(dp) :: global(12,8,4,4),gt(8,4,4),reference(12,8,4,4),rt(8,4,4),q(12),sound
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:),saved(:,:,:,:),st(:,:,:)
-  real(dp) :: budget(12),expected(12),mach(6),tin(6),pin(6)
+  real(dp) :: budget(12),expected(12),mach(6),tin(6),pin(6),coefficient
   real(dp), parameter :: spacing(3)=[.125_dp,.25_dp,.25_dp],dt=1e-5_dp
   character(len=32) :: faces(6),reconstruction,solver
   integer :: rank,nranks,ierr,nx,first,i,j,k,mode,policy,face
@@ -32,9 +32,12 @@ program test_spray_mpi_ppm
   end do
   end do
   end do
-  do policy=1,2
+  do policy=1,3
     solver="hllc"
-    if(policy==2) solver="pelec"
+    if(policy>=2) solver="pelec"
+    coefficient=0
+    if(policy==2) coefficient=.1_dp
+    if(policy==3) coefficient=.037_dp
   do mode=1,8
     faces='periodic';mach=-1;tin=0;pin=0
     if(mode>=2) then
@@ -46,16 +49,17 @@ program test_spray_mpi_ppm
     end if
     reference=global;rt=gt
     call advance_reactive_boundary_hydro_3d(species,reference,rt,spacing,dt,faces, &
-      'characteristic_ppm','mc',solver,expected,ok,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin)
+      'characteristic_ppm','mc',solver,expected,ok,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin,difmag=coefficient)
     call require(ok,'serial reference')
     u=global(:,first:first+nx-1,:,:);t=gt(first:first+nx-1,:,:)
     saved=u;st=t
     if(mode==1) then
       call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],dt,solver,'mc',ok, &
-        reconstruction='characteristic_ppm')
+        reconstruction='characteristic_ppm',difmag=coefficient)
     else
       call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],dt,solver,'mc',ok, &
-        faces,budget,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin,reconstruction='characteristic_ppm')
+        faces,budget,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin, &
+        reconstruction='characteristic_ppm',difmag=coefficient)
       call require(maxval(abs(budget-expected)/max(1._dp,abs(expected)))<2e-13_dp,'surface budget parity')
     end if
     call require(ok,'MPI PPM')
@@ -63,7 +67,8 @@ program test_spray_mpi_ppm
     call require(all(t==rt(first:first+nx-1,:,:)),'exact serial temperature')
     u=saved;t=st
     call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],1._dp,solver,'mc',ok, &
-      faces,budget,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin,reconstruction='characteristic_ppm')
+      faces,budget,inflow_temperature=tin,inflow_mach=mach,inflow_pressure=pin, &
+        reconstruction='characteristic_ppm',difmag=coefficient)
     call require(.not.ok.and.all(u==saved).and.all(t==st).and.all(budget==0),'collective CFL rollback')
     reconstruction='characteristic_ppm'
     if(rank==nranks-1) reconstruction='characteristic_plm'
@@ -72,6 +77,16 @@ program test_spray_mpi_ppm
     call require(.not.ok.and.all(u==saved).and.all(t==st),'collective selector mismatch')
   end do
   end do
+  coefficient=.037_dp
+  if(rank==nranks-1) coefficient=.05_dp
+  call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],dt,solver,'mc',ok, &
+    reconstruction='characteristic_ppm',difmag=coefficient)
+  call require(.not.ok.and.all(u==saved).and.all(t==st),'collective coefficient mismatch rollback')
+  coefficient=.037_dp
+  if(rank==nranks-1) coefficient=-1._dp
+  call advance_mpi_spray_hydro(MPI_COMM_WORLD,species,u,t,spacing,[8,4,4],dt,solver,'mc',ok, &
+    reconstruction='characteristic_ppm',difmag=coefficient)
+  call require(.not.ok.and.all(u==saved).and.all(t==st),'collective invalid coefficient rollback')
   if(rank==0) print *, 'PASS: short-slab PPM, serial parity, boundary budget and collective rollback'
   call MPI_Finalize(ierr)
 contains

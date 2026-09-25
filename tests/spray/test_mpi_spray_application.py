@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--rate-files', action='store_true')
     parser.add_argument('--ppm', action='store_true')
+    parser.add_argument('--difmag', type=float)
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
     parser.add_argument('--dynamic-walls', action='store_true')
@@ -35,6 +36,10 @@ def main():
     source = args.input.read_text()
     if args.ppm:
         source = source.replace('&mpi_spray', "&mpi_spray\n hydro_reconstruction='characteristic_ppm',")
+    if args.difmag is not None:
+        if not args.ppm or not math.isfinite(args.difmag) or args.difmag < 0:
+            parser.error('--difmag requires --ppm and a finite nonnegative coefficient')
+        source = source.replace('&mpi_spray', f"&mpi_spray\n difmag={args.difmag}, solver='pelec',")
     input_path = args.input.resolve()
     if args.pressure_outlet:
         if args.les_model not in ('wale', 'vreman'):
@@ -75,7 +80,11 @@ def main():
     (work / 'run.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
     history = rows(work / 'periodic_mixture.history.csv')
-    assert len(history) == 3 and int(history[-1]['step']) == 2
+    final_step = int(history[-1]['step'])
+    assert final_step >= 2 and len(history) == final_step + 1
+    if args.difmag is None:
+        assert final_step == 2
+    split_time = history[1]['time'] if args.difmag is not None else '1e-8'
     assert math.isclose(float(history[-1]['time']), 2e-8, rel_tol=1e-14)
     for row in history:
         assert all(math.isfinite(float(value)) for value in row.values())
@@ -163,7 +172,7 @@ def main():
         print(f'PASS MPI rate files, inline parity and changed-rank restart: {work}')
         return
 
-    run_variant('split', args.ranks, " checkpoint_path='split.chk'", stop='1e-8')
+    run_variant('split', args.ranks, " checkpoint_path='split.chk'", stop=split_time)
     assert (work / 'split.chk').is_file()
     reference_gas = snapshots('periodic_mixture', 'gas', ['i', 'j', 'k'])
     reference_particles = snapshots('periodic_mixture', 'particles', ['id'])
@@ -181,7 +190,7 @@ def main():
                     else:
                         assert math.isclose(float(actual[key][column]), float(value), rel_tol=2e-11, abs_tol=1e-25), (name, key, column)
         resumed_history = rows(work / f'{name}.history.csv')
-        assert int(resumed_history[0]['step']) == 1 and int(resumed_history[-1]['step']) == 2
+        assert int(resumed_history[0]['step']) == 1 and int(resumed_history[-1]['step']) == final_step
         assert int(resumed_history[-1]['parcels']) == 4
         assert abs(float(resumed_history[-1]['relative_energy_error'])) < 2e-11
     if args.mach_inlet:
@@ -200,9 +209,28 @@ def main():
     if args.ppm:
         run_variant('changed_reconstruction', args.ranks,
                     " restart_path='split.chk', hydro_reconstruction='characteristic_plm'", expect_success=False)
-        assert 'Restart rejected' in (work / 'changed_reconstruction.log').read_text()
+        diagnostic = ('Artificial-viscosity input requires characteristic_ppm' if args.difmag is not None
+                      else 'Restart rejected')
+        assert diagnostic in (work / 'changed_reconstruction.log').read_text()
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
+    if args.difmag is not None:
+        for label, value, diagnostic in [
+            ('changed_difmag', args.difmag + .1, 'Restart rejected'),
+            ('invalid_difmag', -2, 'Invalid artificial-viscosity coefficient'),
+            ('nonfinite_difmag', 'NaN', 'Invalid artificial-viscosity coefficient'),
+        ]:
+            run_variant(label, args.ranks, f"restart_path='split.chk', difmag={value}", expect_success=False)
+            assert diagnostic in (work / f'{label}.log').read_text()
+            assert not (work / f'{label}.history.csv').exists()
+        run_variant('auto_split', args.ranks, "difmag=-1, checkpoint_path='auto.chk'", stop='1e-8')
+        run_variant('auto_resume', 6 - args.ranks, "difmag=-1, restart_path='auto.chk'")
+        run_variant('explicit_resume', 6 - args.ranks, "difmag=.1, restart_path='auto.chk'")
+        for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+            assert snapshots('auto_resume', suffix, keys) == snapshots('explicit_resume', suffix, keys)
+        assert rows(work / 'auto_resume.history.csv') == rows(work / 'explicit_resume.history.csv')
+        print('PASS MPI difmag input and changed-rank restart; artifacts:', work)
+        return
     if args.les_model:
         original_source = source
         for label, replacement, diagnostic in [

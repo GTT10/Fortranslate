@@ -83,6 +83,7 @@ contains
   real(dp) :: outlet_pressure(6)=0
   real(dp) :: les_ci=0,les_cs=0,les_prt=.7_dp,les_sct=.7_dp
   character(len=24) :: liquid_species(2)=[character(len=24)::'H2O','H2O2'],chemistry='implicit'
+  real(dp) :: difmag=-1._dp
   character(len=32) :: hydro_reconstruction='characteristic_plm'
   character(len=16) :: solver='hllc',limiter='mc',les_model='smagorinsky',les_test_filter='box'
   integer :: les_test_ratio=2,les_grid_ratio=1
@@ -101,7 +102,8 @@ contains
   namelist /mpi_spray/ cells,spacing,lower,gas_density,gas_temperature,gas_velocity,gas_fractions, &
     number,total_mass,center,axis,speed,half_angle,diameter,drop_temperature,fractions, &
     liquid_density,liquid_cp,boiling_temperature,latent_heat,liquid_species,final_time,dt_max,cfl, &
-    rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,hydro_reconstruction,output_prefix,restart_path,checkpoint_path, &
+    rtol,atol,max_steps,transport_flags,chemistry,solver,limiter,hydro_reconstruction,difmag, &
+    output_prefix,restart_path,checkpoint_path, &
     injection_events,injection_start,injection_interval,injection_profile_points, &
     injection_profile_times,injection_profile_rates,port_count,port_events,port_number,port_start,port_interval, &
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
@@ -235,6 +237,14 @@ contains
   end do
   call require(hydro_reconstruction=='characteristic_plm'.or.hydro_reconstruction=='characteristic_ppm', &
     'Invalid hydro reconstruction')
+  call require(ieee_is_finite(difmag),'Invalid artificial-viscosity coefficient')
+  call require(difmag>=0.or.difmag==-1._dp,'Invalid artificial-viscosity coefficient')
+  call require(difmag<0.or.hydro_reconstruction=='characteristic_ppm', &
+    'Artificial-viscosity input requires characteristic_ppm')
+  if(difmag==-1._dp) then
+    difmag=0
+    if(hydro_reconstruction=='characteristic_ppm'.and.solver=='pelec') difmag=.1_dp
+  end if
   ! Bind all physical/evolution inputs, excluding rank count, paths, stop time
   ! and the maximum-step guard, which may change when continuing a run.
   write(checkpoint_context,'(*(g0,1x))',iostat=status) 'mpi-spray-application-v2', &
@@ -246,6 +256,11 @@ contains
   if(hydro_reconstruction=='characteristic_ppm') then
     call require(len_trim(checkpoint_context)+31<=len(checkpoint_context),'Hydro context too long')
     checkpoint_context=trim(checkpoint_context)//' mpi-hydro-characteristic-ppm-v1'
+    write(profile_context,'(*(g0,1x))',iostat=status) 'ppm-difmag-v1',difmag
+    call require(status==0,'Artificial-viscosity context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint artificial-viscosity context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end if
   if (injection_profile_points>0) then
     write(profile_context,'(*(g0,1x))',iostat=status) 'linear-injection-profile-v1',injection_profile_points, &
@@ -479,7 +494,7 @@ contains
         les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
         les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=mach_pressure,hydro_reconstruction=hydro_reconstruction)
+        inflow_mach=inflow_mach,inflow_pressure=mach_pressure,hydro_reconstruction=hydro_reconstruction,difmag=difmag)
       else
       call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
         state,temperature,parcels,masses,lower,spacing,cells,[nranks,1,1],dt,rtol,atol,chemistry,substeps,ok, &
@@ -487,7 +502,7 @@ contains
         inlet_state,inlet_temperature,wall_temperature,wall_velocity,les_model=les_model, &
         les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
         les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-        inflow_mach=inflow_mach,inflow_pressure=mach_pressure,hydro_reconstruction=hydro_reconstruction)
+        inflow_mach=inflow_mach,inflow_pressure=mach_pressure,hydro_reconstruction=hydro_reconstruction,difmag=difmag)
       end if
       if (ok) exit
       dt=.5_dp*dt

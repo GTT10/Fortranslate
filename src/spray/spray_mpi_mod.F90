@@ -1108,9 +1108,11 @@ contains
   end subroutine
 
   subroutine advance_mpi_spray_hydro(comm,species,state,temperature,spacing,cells,dt,solver,limiter,ok, &
-      faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,reconstruction)
+      faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,reconstruction,difmag)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: viscosity
     real(dp) :: pressure(6)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -1126,7 +1128,7 @@ contains
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),next_temp(:,:,:)
     real(dp), allocatable :: halo(:,:,:,:),halo_t(:,:,:),send(:,:,:,:),left(:,:,:,:),right(:,:,:,:)
     real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
-    real(dp) :: controls(10),minimum(10),maximum(10),rhs(size(state,1))
+    real(dp) :: controls(11),minimum(11),maximum(11),rhs(size(state,1))
     real(dp) :: local_change(size(state,1)),global_change(size(state,1)),rate(size(state,1))
     integer :: config(8),minconfig(8),maxconfig(8),rank,nranks,ierr,first(3),extent(3)
     integer :: nx,ny,nz,nvar,stage,i,j,k,jm,km,previous,next,solver_code,limiter_code,reconstruction_code
@@ -1136,6 +1138,9 @@ contains
     reconstruction_code=0
     if(hydro=='characteristic_plm') reconstruction_code=1
     if(hydro=='characteristic_ppm') reconstruction_code=2
+    viscosity=0
+    if(hydro=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    if(present(difmag)) viscosity=difmag
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
     if (present(boundary_change)) boundary_change=0
@@ -1163,16 +1168,19 @@ contains
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     if (any(pressure>0)) valid=valid.and.present(faces)
     if (present(faces)) valid=valid.and..not.any(pressure>0.and.faces/='outflow')
+    valid=valid.and.ieee_is_finite(viscosity)
+    valid=valid.and.viscosity>=0.and.(viscosity==0.or.reconstruction_code==2)
     call agree()
     if (.not.agreed) return
-    config=[cells,nvar,solver_code,limiter_code,merge(1,0,present(faces)),reconstruction_code];controls=[spacing,dt,pressure]
+    config=[cells,nvar,solver_code,limiter_code,merge(1,0,present(faces)),reconstruction_code]
+    controls=[spacing,dt,pressure,viscosity]
     call MPI_Allreduce(config,minconfig,8,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(config,maxconfig,8,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,minimum,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(controls,minimum,11,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minconfig/=maxconfig).or.any(minimum/=maximum)) return
     call spray_cartesian_block(cells,[nranks,1,1],rank,first,extent,valid)
@@ -1264,7 +1272,7 @@ contains
       inflow_mask(1)=inflow_mask(1).and.rank==0
       inflow_mask(2)=inflow_mask(2).and.rank==nranks-1
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,halo,halo_t,extent,spacing,dt,.false.,.true., &
-        solver,fx,fy,fz,theta,valid,inflow_faces=inflow_mask,no_slip_faces=wall_mask)
+        solver,fx,fy,fz,theta,valid,inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity)
       call agree()
       if (.not.agreed) return
       do k=1,nz
@@ -1356,7 +1364,7 @@ contains
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure,hydro_reconstruction)
+      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure,hydro_reconstruction,difmag)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1371,6 +1379,8 @@ contains
     character(len=*), optional, intent(in) :: les_model,les_test_filter
     integer, optional, intent(in) :: les_test_ratio,les_grid_ratio
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: difmag
+    real(dp) :: viscosity
     real(dp) :: pressure(6)
     real(dp), optional, intent(in) :: les_ci
     real(dp) :: isotropic
@@ -1403,7 +1413,7 @@ contains
     integer(int64) :: candidate_id
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),masses(:,:)
-    real(dp) :: controls(28),minimum(28),maximum(28),chemistry_interval,transport_theta
+    real(dp) :: controls(29),minimum(29),maximum(29),chemistry_interval,transport_theta
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks,reconstruction_code
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
@@ -1459,6 +1469,9 @@ contains
       case('pelec');hydro_code=3
       end select
     end if
+    viscosity=0
+    if(reconstruction_code==2.and.hydro_code==3) viscosity=.1_dp
+    if(present(difmag)) viscosity=difmag
     if (present(hydro_limiter)) then
       select case(trim(hydro_limiter))
       case('minmod');limit_code=1
@@ -1494,6 +1507,9 @@ contains
       valid=valid.and.hydro_code>0.and.limit_code>0.and.all(parts==[nranks,1,1])
     end if
     valid=valid.and.reconstruction_code>0
+    valid=valid.and.ieee_is_finite(viscosity)
+    valid=valid.and.viscosity>=0.and.(viscosity==0.or.reconstruction_code==2)
+    if(present(difmag)) valid=valid.and.present(hydro_solver)
     if(present(hydro_reconstruction)) valid=valid.and.present(hydro_solver)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -1501,10 +1517,10 @@ contains
     controls=[interval,rtol,atol,real(method_code,dp),real(hydro_code,dp),real(limit_code,dp), &
       merge(1.0_dp,0.0_dp,enabled),sgs,merge(1.0_dp,0.0_dp,present(boundary_faces)),merge(1.0_dp,0.0_dp,present(wall_films)), &
       real(les_code,dp),real(filter_code,dp),real(test_ratio,dp),real(grid_ratio,dp),&
-      merge(1._dp,0._dp,harmonic),isotropic,pressure,real(reconstruction_code,dp)]
-    call MPI_Allreduce(controls,minimum,28,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      merge(1._dp,0._dp,harmonic),isotropic,pressure,real(reconstruction_code,dp),viscosity]
+    call MPI_Allreduce(controls,minimum,29,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,28,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(controls,maximum,29,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(minimum/=maximum)) return
     candidate_id=0
@@ -1562,7 +1578,7 @@ contains
       end if
       call advance_mpi_spray_hydro(comm,species,gas,temp,spacing,cells,interval,hydro_solver,hydro_limiter,valid, &
         boundary_faces,stage_change,inflow_state,inflow_temperature,outlet_pressure=pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,reconstruction=hydro_reconstruction)
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,reconstruction=hydro_reconstruction,difmag=viscosity)
       if (.not.valid) return
       if (allocated(stage_change)) ledger=ledger+stage_change
       if (sgs(1)>0.or.isotropic>0) then
