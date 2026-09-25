@@ -15,9 +15,104 @@ module eb_reactive_wall_flux_3d_mod
 
   public :: reactive_eb_slip_wall_flux_3d
   public :: reactive_eb_slip_wall_source_3d
-  public :: reactive_eb_flux_divergence_3d
+  public :: reactive_eb_flux_divergence_3d,interpolate_reactive_eb_centroid_fluxes_3d
 
 contains
+
+  ! Geometry/face-center fluxes include one surrounding cell. Return central
+  ! cells 2:N-1, reindexed from one. Reference pc_ext_flx_eb weights only
+  ! the regular face area, so interpolate intensive flux here and retain the
+  ! existing divergence API's single aperture multiplication.
+  subroutine interpolate_reactive_eb_centroid_fluxes_3d(geometry,x,y,z,fx,fy,fz,ok)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: x(:,0:,:,:),y(:,:,0:,:),z(:,:,:,0:)
+    real(dp), intent(inout) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: cx(:,:,:,:),cy(:,:,:,:),cz(:,:,:,:)
+    real(dp) :: offset(2),fraction(2),weight,value(size(x,1)),ap
+    integer :: n(3),nv,axis,b,c,i,j,k,lo(3),hi(3),index(3),owner(3),face(3),donor(3),shift(2),s,t
+    logical :: valid
+    ok=.false.;nv=size(x,1);n=[geometry%nx,geometry%ny,geometry%nz]
+    if(.not.geometry%is_valid().or.any(n<3).or.nv<1) return
+    if(any(shape(x)/=[nv,n(1)+1,n(2),n(3)]).or.any(shape(y)/=[nv,n(1),n(2)+1,n(3)]).or. &
+      any(shape(z)/=[nv,n(1),n(2),n(3)+1])) return
+    if(any(shape(fx)/=[nv,n(1)-1,n(2)-2,n(3)-2]).or.any(shape(fy)/=[nv,n(1)-2,n(2)-1,n(3)-2]).or. &
+      any(shape(fz)/=[nv,n(1)-2,n(2)-2,n(3)-1])) return
+    allocate(cx(nv,0:n(1)-2,n(2)-2,n(3)-2),cy(nv,n(1)-2,0:n(2)-2,n(3)-2), &
+      cz(nv,n(1)-2,n(2)-2,0:n(3)-2));cx=0;cy=0;cz=0
+    do axis=1,3
+      b=merge(2,1,axis==1);c=merge(2,3,axis==3)
+      lo=2;lo(axis)=1;hi=n-1
+      do k=lo(3),hi(3)
+      do j=lo(2),hi(2)
+      do i=lo(1),hi(1)
+        index=[i,j,k];ap=area(axis,index)
+        if(ap<=0) cycle
+        offset=0
+        select case(axis)
+        case(1);offset=[geometry%x_face_centroid_y(i,j,k),geometry%x_face_centroid_z(i,j,k)]
+        case(2);offset=[geometry%y_face_centroid_x(i,j,k),geometry%y_face_centroid_z(i,j,k)]
+        case(3);offset=[geometry%z_face_centroid_x(i,j,k),geometry%z_face_centroid_y(i,j,k)]
+        end select
+        fraction=0;shift=int(sign(1._dp,offset))
+        if(ap<1) then
+          ! Reference connectivity comes from the cell on the positive side
+          ! of this face, including the upper output boundary's halo cell.
+          owner=index;owner(axis)=index(axis)+1
+          face=owner
+          if(shift(1)<0) face(b)=face(b)-1
+          if(area(b,face)>0) fraction(1)=abs(offset(1))
+          face=owner
+          if(shift(2)<0) face(c)=face(c)-1
+          if(area(c,face)>0) fraction(2)=abs(offset(2))
+        end if
+        value=0
+        do t=0,1
+        do s=0,1
+          weight=merge(fraction(1),1-fraction(1),s==1)*merge(fraction(2),1-fraction(2),t==1)
+          if(weight==0) cycle
+          donor=index;donor(b)=donor(b)+s*shift(1);donor(c)=donor(c)+t*shift(2)
+          call add_weighted_flux(axis,donor,weight,value,valid)
+          if(.not.valid) return
+        end do
+        end do
+        if(.not.all(ieee_is_finite(value))) return
+        select case(axis)
+        case(1);cx(:,i-1,j-1,k-1)=value
+        case(2);cy(:,i-1,j-1,k-1)=value
+        case(3);cz(:,i-1,j-1,k-1)=value
+        end select
+      end do
+      end do
+      end do
+    end do
+    fx=cx;fy=cy;fz=cz;ok=.true.
+  contains
+    real(dp) function area(direction,idx) result(a)
+      integer, intent(in) :: direction,idx(3)
+      select case(direction)
+      case(1);a=geometry%x_face_fraction(idx(1),idx(2),idx(3))
+      case(2);a=geometry%y_face_fraction(idx(1),idx(2),idx(3))
+      case(3);a=geometry%z_face_fraction(idx(1),idx(2),idx(3))
+      end select
+    end function area
+    subroutine add_weighted_flux(direction,idx,w,total,success)
+      integer, intent(in) :: direction,idx(3)
+      real(dp), intent(in) :: w
+      real(dp), intent(inout) :: total(:)
+      logical, intent(out) :: success
+      real(dp) :: flux(nv),a
+      success=.true.;a=area(direction,idx)
+      if(a==0) return
+      select case(direction)
+      case(1);flux=x(:,idx(1),idx(2),idx(3))
+      case(2);flux=y(:,idx(1),idx(2),idx(3))
+      case(3);flux=z(:,idx(1),idx(2),idx(3))
+      end select
+      success=all(ieee_is_finite(flux))
+      if(success) total=total+w*flux
+    end subroutine add_weighted_flux
+  end subroutine interpolate_reactive_eb_centroid_fluxes_3d
 
   subroutine reactive_eb_slip_wall_flux_3d( &
       species, conserved, temperature_guess, fluid_normal, flux, &

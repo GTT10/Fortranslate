@@ -14,7 +14,7 @@ program test_eb_reactive_wall_flux_3d
     build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_slip_wall_flux_3d, reactive_eb_slip_wall_source_3d, &
-    reactive_eb_flux_divergence_3d
+    reactive_eb_flux_divergence_3d,interpolate_reactive_eb_centroid_fluxes_3d
   implicit none
 
   integer, parameter :: nx = 10
@@ -196,9 +196,89 @@ program test_eb_reactive_wall_flux_3d
   call require(.not. ok .and. maxval(abs(source)) == 0.0_dp, &
     "failed wall source transaction")
 
+  call check_centroid_interpolation()
   write(*, '(a)') "test_eb_reactive_wall_flux_3d: PASS"
 
 contains
+  subroutine check_centroid_interpolation()
+    type(eb_geometry_3d) :: g
+    real(dp) :: phi(0:6,0:6,0:6),x(2,0:6,6,6),y(2,6,0:6,6),z(2,6,6,0:6)
+    real(dp) :: fx(2,0:4,4,4),fy(2,4,0:4,4),fz(2,4,4,0:4)
+    real(dp) :: sx(2,0:4,4,4),sy(2,4,0:4,4),sz(2,4,4,0:4),offset(2),ap,val(2),expected
+    integer :: mode,ii,jj,kk,axis,lo(3),hi(3),idx(3),b,c,bilinear_faces
+    logical :: valid
+    do mode=0,2
+      do kk=0,6
+      do jj=0,6
+      do ii=0,6
+        phi(ii,jj,kk)=1
+        if(mode>0) phi(ii,jj,kk)=(ii+jj+kk-7.3_dp)*merge(1._dp,-1._dp,mode==1)
+      end do
+      end do
+      end do
+      call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[6._dp,6._dp,6._dp],g,valid)
+      call require(valid,'centroid interpolation geometry')
+      x=ieee_value(0._dp,ieee_quiet_nan);y=ieee_value(0._dp,ieee_quiet_nan);z=ieee_value(0._dp,ieee_quiet_nan)
+      do axis=1,3
+        lo=1;lo(axis)=0;hi=6;b=merge(2,1,axis==1);c=merge(2,3,axis==3)
+        do kk=lo(3),hi(3)
+        do jj=lo(2),hi(2)
+        do ii=lo(1),hi(1)
+          idx=[ii,jj,kk]
+          val=[2._dp,1._dp+2*idx(b)+3*idx(c)+.5_dp*idx(b)*idx(c)]
+          select case(axis)
+          case(1)
+            if(g%x_face_fraction(ii,jj,kk)>0) x(:,ii,jj,kk)=val
+          case(2)
+            if(g%y_face_fraction(ii,jj,kk)>0) y(:,ii,jj,kk)=val
+          case(3)
+            if(g%z_face_fraction(ii,jj,kk)>0) z(:,ii,jj,kk)=val
+          end select
+        end do
+        end do
+        end do
+      end do
+      fx=-17;fy=-18;fz=-19
+      call interpolate_reactive_eb_centroid_fluxes_3d(g,x,y,z,fx,fy,fz,valid)
+      call require(valid,'centroid interpolation ignores closed input faces')
+      bilinear_faces=0
+      do axis=1,3
+        lo=2;lo(axis)=1;hi=5;b=merge(2,1,axis==1);c=merge(2,3,axis==3)
+        do kk=lo(3),hi(3)
+        do jj=lo(2),hi(2)
+        do ii=lo(1),hi(1)
+          idx=[ii,jj,kk]
+          select case(axis)
+          case(1)
+            ap=g%x_face_fraction(ii,jj,kk);offset=[g%x_face_centroid_y(ii,jj,kk),g%x_face_centroid_z(ii,jj,kk)]
+            val=fx(:,ii-1,jj-1,kk-1)
+          case(2)
+            ap=g%y_face_fraction(ii,jj,kk);offset=[g%y_face_centroid_x(ii,jj,kk),g%y_face_centroid_z(ii,jj,kk)]
+            val=fy(:,ii-1,jj-1,kk-1)
+          case(3)
+            ap=g%z_face_fraction(ii,jj,kk);offset=[g%z_face_centroid_x(ii,jj,kk),g%z_face_centroid_y(ii,jj,kk)]
+            val=fz(:,ii-1,jj-1,kk-1)
+          end select
+          if(ap==0) then
+            call require(all(val==0),'closed centroid flux zero')
+          else
+            expected=1+2*(idx(b)+offset(1))+3*(idx(c)+offset(2))+.5_dp*(idx(b)+offset(1))*(idx(c)+offset(2))
+            call require(abs(val(1)-2)<1e-14_dp.and.abs(val(2)-expected)<1e-12_dp, &
+              'constant and bilinear field exact at face centroid')
+            if(all(abs(offset)>1e-8_dp)) bilinear_faces=bilinear_faces+1
+          end if
+        end do
+        end do
+        end do
+      end do
+      if(mode>0) call require(bilinear_faces>0,'oblique geometry exercises both tangential offsets')
+      if(mode==0) then
+        sx=fx;sy=fy;sz=fz;x(:,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
+        call interpolate_reactive_eb_centroid_fluxes_3d(g,x,y,z,fx,fy,fz,valid)
+        call require(.not.valid.and.all(fx==sx).and.all(fy==sy).and.all(fz==sz),'centroid interpolation rollback')
+      end if
+    end do
+  end subroutine check_centroid_interpolation
 
   subroutine verify_plane_balance(axis, momentum_component)
     character(len=*), intent(in) :: axis
