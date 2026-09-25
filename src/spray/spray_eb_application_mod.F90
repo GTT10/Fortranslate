@@ -7,13 +7,15 @@ module spray_eb_application_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim, &
+    reactive_conserved_to_primitive,reactive_primitive_to_conserved
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,write_reactive_eb_3d_csv, &
     reactive_eb_integrals_3d
   use reactive_eb_cfl_3d_mod, only: compute_reactive_eb_cfl_timestep_3d
-  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d
+  use eb_reactive_transport_3d_mod, only: reactive_eb_transport_timestep_3d,reactive_eb_halo_bounds_3d
   use spray_parcel_mod
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
   use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
@@ -98,6 +100,10 @@ contains
       port_radii,port_discharge_coefficients,port_nozzles,port_sizes,particle_outflow,acceleration
     type(eb_geometry_3d) :: g
     type(eb_geometry_3d), allocatable :: extended_geometry
+    character(len=16), allocatable :: boundary_faces(:)
+    real(dp), allocatable :: inlet(:,:),inlet_t(:),primitive(:),ghost(:,:,:,:),ghost_t(:,:,:)
+    real(dp) :: inlet_sound,inlet_temp,donor_speeds(4),donor_diffusivity,donor_rate
+    integer :: face
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
     type(spray_liquid) :: effective
@@ -189,6 +195,11 @@ contains
     do n=2,injection_events
       if(injection_times(n)<injection_times(n-1)) error stop 'Injection times must be nondecreasing'
     end do
+    if(any(config%boundary_faces/='legacy')) then
+      if(any(config%boundary_faces/='inflow'.and.config%boundary_faces/='outflow')) &
+        error stop 'EB spray supports only explicit inflow/outflow faces'
+      if(.not.particle_outflow) error stop 'Explicit EB spray boundaries require particle_outflow'
+    end if
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
     if(config%hydro_method=='plm_ctu') then
@@ -332,6 +343,23 @@ contains
     allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv),initial(nv))
     call initialize_reactive_eb_density_sheet_3d(species,config,g,state,temperature,ok,mole_fractions)
     if(.not.ok) error stop 'Invalid EB initial gas'
+    if(any(config%boundary_faces/='legacy')) then
+      allocate(boundary_faces,source=config%boundary_faces)
+      allocate(inlet(nv,6),inlet_t(6),primitive(reactive_nprim(size(species))))
+      allocate(ghost(nv,0:config%nx+1,0:config%ny+1,0:config%nz+1), &
+        ghost_t(0:config%nx+1,0:config%ny+1,0:config%nz+1))
+      call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1), &
+        primitive,inlet_temp,inlet_sound,ok)
+      if(.not.ok) error stop 'Failed to obtain EB inlet composition'
+      do face=1,6
+        inlet(:,face)=state(:,1,1,1);inlet_t(face)=temperature(1,1,1)
+        if(boundary_faces(face)/='inflow') cycle
+        primitive(1)=config%inflow_density(face);primitive(2:4)=config%inflow_velocity(:,face)
+        primitive(5)=config%inflow_pressure(face)
+        call reactive_primitive_to_conserved(species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
+        if(.not.ok) error stop 'Invalid prescribed EB inlet thermodynamic state'
+      end do
+    end if
     if (walls%evolve.and..not.wall_impacts) error stop 'Film evolution requires wall_impacts'
     if (wall_impacts) then
       if (options%surface_tension<1e-8_dp.or.liquid_viscosity_at_temperature(options,liquid_temperature)<=0) &
@@ -394,6 +422,23 @@ contains
         if(.not.ok) error stop 'Invalid EB transport bound'
         dt=min(dt,transport_dt)
       end if
+      if(allocated(boundary_faces)) then
+        call fill_reactive_boundary_ghosts_3d(state,temperature,boundary_faces,ghost,ghost_t,ok, &
+          viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,ghost_width=1)
+        if(.not.ok) error stop 'Failed to prepare EB timestep boundary donors'
+        call reactive_eb_halo_bounds_3d(species,transport,g,ghost,ghost_t,config%transport_enabled, &
+          config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
+          donor_speeds,donor_diffusivity,ok)
+        if(.not.ok) error stop 'Failed to compute EB boundary timestep bounds'
+        donor_rate=sum(donor_speeds(:3)/[g%dx,g%dy,g%dz])
+        if(.not.ieee_is_finite(donor_rate)) error stop 'Invalid EB boundary signal rate'
+        if(donor_rate>0) dt=min(dt,config%cfl/donor_rate)
+        if(config%transport_enabled.and.donor_diffusivity>0) then
+          donor_rate=donor_diffusivity*sum(1._dp/[g%dx,g%dy,g%dz]**2)
+          if(.not.ieee_is_finite(donor_rate)) error stop 'Invalid EB boundary diffusion rate'
+          dt=min(dt,config%transport_cfl/donor_rate)
+        end if
+      end if
       do attempt=1,30
         ok=.false.
         if(dt<=0.or.time+dt<=time) exit
@@ -405,7 +450,8 @@ contains
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
           walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf, &
-          difmag=config%difmag,extended_geometry=extended_geometry)
+          difmag=config%difmag,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
+          inflow_state=inlet,inflow_temperature=inlet_t)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
@@ -415,7 +461,8 @@ contains
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
           last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow, &
           acceleration=acceleration,source_change=sf, &
-          difmag=config%difmag,extended_geometry=extended_geometry)
+          difmag=config%difmag,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
+          inflow_state=inlet,inflow_temperature=inlet_t)
         end if
         if(ok) exit
         dt=.5_dp*dt
@@ -502,6 +549,13 @@ contains
         write(scratch,'(a,1x,es27.18e3)',iostat=ios) 'difmag-v1',config%difmag
       if(ios==0.and.config%hydro_method/='pcm') &
         write(scratch,'(a,1x,a)',iostat=ios) 'hydro-v1',trim(config%hydro_method)
+      if(ios==0.and.allocated(boundary_faces)) then
+        write(scratch,'(a)',iostat=ios) 'boundary-v1'
+        do j=1,6
+          if(ios==0) write(scratch,'(a,5(1x,es27.18e3))',iostat=ios) trim(boundary_faces(j)), &
+            config%inflow_density(j),config%inflow_pressure(j),config%inflow_velocity(:,j)
+        end do
+      end if
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)
         if(ios==0) write(scratch,*,iostat=ios) species(j)

@@ -24,7 +24,8 @@ program pelef_eb_spray_3d
   end if
   call get_command_argument(1, input_path)
   call read_reactive_eb_3d_configuration( &
-    trim(input_path), config, ok, message, allow_difmag=.true.,allow_ctu=.true.)
+    trim(input_path), config, ok, message, allow_difmag=.true.,allow_ctu=.true., &
+    allow_boundaries=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
