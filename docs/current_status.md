@@ -28,6 +28,8 @@ boundary types remain open.
 Prescribed outlet pressure now reaches both SDC hydro and transport
 ([checks](validation/sdc-pressure-outlet-20260926.md)); existing ghost-state
 admissibility limits still apply.
+Specified-state and Mach inflow now reach SDC hydro and molecular transport
+([checks](validation/sdc-inflow-20260926.md)); wall boundaries remain open.
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
 implicit substep now integrates these rates

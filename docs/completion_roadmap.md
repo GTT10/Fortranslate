@@ -326,7 +326,9 @@ now participates in old/new source evaluation and boundary accounting
 ([checks](validation/sdc-outflow-transport-20260926.md)); other physical
 boundary types remain open.
 SDC prescribed outlet pressure now reaches hydro and transport
-([checks](validation/sdc-pressure-outlet-20260926.md)). Physical
+([checks](validation/sdc-pressure-outlet-20260926.md)). Specified-state and Mach
+inflow now share existing ghost and transport treatment in SDC
+([checks](validation/sdc-inflow-20260926.md)); walls remain open. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded
