@@ -733,13 +733,13 @@ contains
         species, coarse_candidate, coarse_candidate_temperature, &
         patch%coarse_nx, patch%coarse_ny, patch%coarse_nz, &
         dx, dy, dz, dt, riemann_solver, coarse_flux_x, coarse_flux_y, &
-        coarse_flux_z, local_ok)
+        coarse_flux_z, local_ok, difmag=explicit_viscosity)
     case ("characteristic_plm")
       call advance_reactive_euler_ssprk2_plm_with_fluxes_3d( &
         species, coarse_candidate, coarse_candidate_temperature, &
         patch%coarse_nx, patch%coarse_ny, patch%coarse_nz, &
         dx, dy, dz, dt, selected_limiter, riemann_solver, &
-        coarse_flux_x, coarse_flux_y, coarse_flux_z, local_ok)
+        coarse_flux_x, coarse_flux_y, coarse_flux_z, local_ok, difmag=explicit_viscosity)
     end select
     end if
     if (.not. local_ok) return

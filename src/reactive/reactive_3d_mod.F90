@@ -986,12 +986,13 @@ contains
 
   subroutine advance_reactive_euler_ssprk2_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
-      riemann_solver, ok)
+      riemann_solver, ok, difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
     real(dp), intent(in) :: dx, dy, dz, dt
     character(len=*), intent(in) :: riemann_solver
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
 
     real(dp), allocatable :: old_state(:, :, :, :)
@@ -1002,6 +1003,8 @@ contains
     real(dp), allocatable :: stage_temperature(:, :, :)
     real(dp), allocatable :: updated_temperature(:, :, :)
     logical :: local_ok
+    real(dp) :: coefficient, boundary_change(size(state,1))
+    character(len=8) :: faces(6)
     integer :: nvar
 
     ok = .false.
@@ -1010,6 +1013,17 @@ contains
           state, temperature, nvar, nx, ny, nz)) return
     if (.not. ieee_is_finite(dt)) return
     if (nx < 2 .or. ny < 2 .or. nz < 2 .or. dt <= 0.0_dp) return
+
+    coefficient=.1_dp
+    if (present(difmag)) coefficient=difmag
+    if (.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if (coefficient>0) then
+      faces='periodic'
+      call advance_reactive_boundary_hydro_3d(species,state,temperature,[dx,dy,dz],dt, &
+        faces,'pcm','mc',riemann_solver,boundary_change,ok, &
+        difmag=coefficient)
+      return
+    end if
 
     allocate(old_state(nvar, nx, ny, nz))
     allocate(stage_state(nvar, nx, ny, nz))
@@ -1538,7 +1552,7 @@ contains
 
   subroutine advance_reactive_euler_ssprk2_with_fluxes_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
-      riemann_solver, flux_x, flux_y, flux_z, ok)
+      riemann_solver, flux_x, flux_y, flux_z, ok, difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
@@ -1547,6 +1561,7 @@ contains
     real(dp), intent(out) :: flux_x(:, :, :, :)
     real(dp), intent(out) :: flux_y(:, :, :, :)
     real(dp), intent(out) :: flux_z(:, :, :, :)
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
 
     real(dp), allocatable :: old_state(:, :, :, :)
@@ -1563,6 +1578,8 @@ contains
     real(dp), allocatable :: stage_temperature(:, :, :)
     real(dp), allocatable :: updated_temperature(:, :, :)
     logical :: local_ok
+    real(dp) :: coefficient, boundary_change(size(state,1))
+    character(len=8) :: faces(6)
     integer :: nvar
 
     flux_x = 0.0_dp
@@ -1577,6 +1594,17 @@ contains
     if (any(shape(flux_x) /= shape(state)) .or. &
         any(shape(flux_y) /= shape(state)) .or. &
         any(shape(flux_z) /= shape(state))) return
+
+    coefficient=.1_dp
+    if (present(difmag)) coefficient=difmag
+    if (.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if (coefficient>0) then
+      faces='periodic'
+      call advance_reactive_boundary_hydro_3d(species,state,temperature,[dx,dy,dz],dt, &
+        faces,'pcm','mc',riemann_solver,boundary_change,ok, flux_x=flux_x,flux_y=flux_y,flux_z=flux_z, &
+        difmag=coefficient)
+      return
+    end if
 
     allocate(old_state(nvar, nx, ny, nz))
     allocate(stage_state(nvar, nx, ny, nz))
@@ -1635,12 +1663,13 @@ contains
 
   subroutine advance_reactive_euler_ssprk2_plm_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
-      limiter, riemann_solver, ok)
+      limiter, riemann_solver, ok, difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
     real(dp), intent(in) :: dx, dy, dz, dt
     character(len=*), intent(in) :: limiter, riemann_solver
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
 
     real(dp), allocatable :: flux_x(:, :, :, :)
@@ -1658,12 +1687,12 @@ contains
     allocate(flux_z(nvar, nx, ny, nz))
     call advance_reactive_euler_ssprk2_plm_with_fluxes_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
-      limiter, riemann_solver, flux_x, flux_y, flux_z, ok)
+      limiter, riemann_solver, flux_x, flux_y, flux_z, ok, difmag=difmag)
   end subroutine advance_reactive_euler_ssprk2_plm_3d
 
   subroutine advance_reactive_euler_ssprk2_plm_with_fluxes_3d( &
       species, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
-      limiter, riemann_solver, flux_x, flux_y, flux_z, ok)
+      limiter, riemann_solver, flux_x, flux_y, flux_z, ok, difmag)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
@@ -1672,6 +1701,7 @@ contains
     real(dp), intent(out) :: flux_x(:, :, :, :)
     real(dp), intent(out) :: flux_y(:, :, :, :)
     real(dp), intent(out) :: flux_z(:, :, :, :)
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
 
     real(dp), allocatable :: old_state(:, :, :, :)
@@ -1688,6 +1718,8 @@ contains
     real(dp), allocatable :: stage_temperature(:, :, :)
     real(dp), allocatable :: updated_temperature(:, :, :)
     logical :: local_ok
+    real(dp) :: coefficient, boundary_change(size(state,1))
+    character(len=8) :: faces(6)
     integer :: nvar
 
     flux_x = 0.0_dp
@@ -1702,6 +1734,17 @@ contains
     if (any(shape(flux_x) /= shape(state)) .or. &
         any(shape(flux_y) /= shape(state)) .or. &
         any(shape(flux_z) /= shape(state))) return
+
+    coefficient=.1_dp
+    if (present(difmag)) coefficient=difmag
+    if (.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    if (coefficient>0) then
+      faces='periodic'
+      call advance_reactive_boundary_hydro_3d(species,state,temperature,[dx,dy,dz],dt, &
+        faces,'characteristic_plm',limiter,riemann_solver,boundary_change,ok, flux_x=flux_x,flux_y=flux_y,flux_z=flux_z, &
+        difmag=coefficient)
+      return
+    end if
 
     allocate(old_state, source=state)
     allocate(stage_state(nvar, nx, ny, nz))
@@ -1813,7 +1856,7 @@ contains
 
   subroutine advance_reactive_strang_3d( &
       species, reactions, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
-      riemann_solver, chemistry_enabled, rtol, atol, ok, chemistry_integrator)
+      riemann_solver, chemistry_enabled, rtol, atol, ok, chemistry_integrator, difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -1821,6 +1864,7 @@ contains
     real(dp), intent(in) :: dx, dy, dz, dt, rtol, atol
     character(len=*), intent(in) :: riemann_solver
     logical, intent(in) :: chemistry_enabled
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     character(len=*), intent(in), optional :: chemistry_integrator
 
@@ -1830,6 +1874,9 @@ contains
     integer :: nvar
 
     ok = .false.
+    if (present(difmag)) then
+      if (.not.ieee_is_finite(difmag).or.difmag<0) return
+    end if
     nvar = reactive_nvar(size(species))
     if (.not. valid_reactive_3d_shapes( &
           state, temperature, nvar, nx, ny, nz)) return
@@ -1851,7 +1898,7 @@ contains
     end if
     call advance_reactive_euler_ssprk2_3d( &
       species, candidate_state, candidate_temperature, nx, ny, nz, &
-      dx, dy, dz, dt, riemann_solver, local_ok)
+      dx, dy, dz, dt, riemann_solver, local_ok, difmag=difmag)
     if (.not. local_ok) return
     if (chemistry_enabled) then
       call advance_reactive_chemistry_3d( &
@@ -1990,14 +2037,14 @@ contains
       case ("pcm")
         call advance_reactive_euler_ssprk2_3d( &
           species, candidate_state, candidate_temperature, nx, ny, nz, &
-          dx, dy, dz, dt, riemann_solver, local_ok)
+          dx, dy, dz, dt, riemann_solver, local_ok, difmag=explicit_viscosity)
       case ("characteristic_ppm")
         call advance_reactive_euler_ppm_ctu_3d(species,candidate_state,candidate_temperature,[dx,dy,dz],dt, &
           .false.,.true.,riemann_solver,transverse_theta,local_ok,difmag=difmag)
       case ("characteristic_plm")
         call advance_reactive_euler_ssprk2_plm_3d( &
           species, candidate_state, candidate_temperature, nx, ny, nz, &
-          dx, dy, dz, dt, selected_limiter, riemann_solver, local_ok)
+          dx, dy, dz, dt, selected_limiter, riemann_solver, local_ok, difmag=explicit_viscosity)
       end select
     end if
     if (.not. local_ok) return

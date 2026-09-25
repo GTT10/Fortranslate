@@ -6,6 +6,9 @@ program test_reactive_pcm_plm_viscosity_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: advance_reactive_boundary_hydro_3d,advance_reactive_full_3d
+  use reactive_3d_mod, only: advance_reactive_euler_ssprk2_3d,advance_reactive_euler_ssprk2_with_fluxes_3d, &
+    advance_reactive_euler_ssprk2_plm_3d,advance_reactive_euler_ssprk2_plm_with_fluxes_3d,advance_reactive_strang_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   implicit none
   integer, parameter :: n=4,nv=12
   type(nasa7_species), allocatable :: species(:)
@@ -87,8 +90,84 @@ program test_reactive_pcm_plm_viscosity_3d
       call require(.not.ok.and.all(u==initial).and.all(t==initial_t).and.all(change==0),'negative input rollback')
     end do
   end do
+  call check_periodic_entry_points()
   print *, 'PASS: PCM/PLM viscosity, mean flux, conservation, coupled dispatch and rollback'
 contains
+  subroutine check_periodic_entry_points()
+    real(dp) :: ax(nv,n,n,n),ay(nv,n,n,n),az(nv,n,n,n)
+    real(dp), allocatable :: coefficient
+    integer :: entry,policy,ii,jj,kk,im,jm,km
+    do entry=1,5
+      scheme='pcm'
+      if(entry==3.or.entry==4) scheme='characteristic_plm'
+      faces='periodic'
+      do policy=1,6
+        if(allocated(coefficient)) deallocate(coefficient)
+        if(policy>1) allocate(coefficient)
+        select case(policy)
+        case(2)
+          coefficient=.1_dp
+        case(3)
+          coefficient=.037_dp
+        case(4)
+          coefficient=0._dp
+        case(5)
+          coefficient=-1._dp
+        case(6)
+          coefficient=ieee_value(0._dp,ieee_quiet_nan)
+        end select
+        u=initial;t=initial_t;ax=1;ay=1;az=1
+        select case(entry)
+        case(1)
+          call advance_reactive_euler_ssprk2_3d(species,u,t,n,n,n,spacing(1),spacing(2),spacing(3),dt, &
+            'pelec',ok,difmag=coefficient)
+        case(2)
+          call advance_reactive_euler_ssprk2_with_fluxes_3d(species,u,t,n,n,n,spacing(1),spacing(2),spacing(3),dt, &
+            'pelec',ax,ay,az,ok,difmag=coefficient)
+        case(3)
+          call advance_reactive_euler_ssprk2_plm_3d(species,u,t,n,n,n,spacing(1),spacing(2),spacing(3),dt, &
+            'mc','pelec',ok,difmag=coefficient)
+        case(4)
+          call advance_reactive_euler_ssprk2_plm_with_fluxes_3d(species,u,t,n,n,n,spacing(1),spacing(2),spacing(3),dt, &
+            'mc','pelec',ax,ay,az,ok,difmag=coefficient)
+        case(5)
+          call advance_reactive_strang_3d(species,reactions,u,t,n,n,n,spacing(1),spacing(2),spacing(3),dt, &
+            'pelec',.false.,0._dp,0._dp,ok,difmag=coefficient)
+        end select
+        if(policy>=5) then
+          call require(.not.ok.and.all(u==initial).and.all(t==initial_t),'periodic invalid coefficient rollback')
+          if(mod(entry,2)==0) call require(all(ax==0).and.all(ay==0).and.all(az==0),'invalid coefficient zero flux')
+          cycle
+        end if
+        call require(ok,'periodic direct update')
+        reference=u;rt=t
+        baseline=initial;bt=initial_t
+        if(policy==4) then
+          call advance_reactive_full_3d(species,reactions,transport,baseline,bt,n,n,n, &
+            spacing(1),spacing(2),spacing(3),dt,'pelec',.false.,0._dp,0._dp, &
+            .false.,.false.,.false.,.false.,.false.,theta,ok,reconstruction=scheme,difmag=0._dp)
+        else
+          call advance_reactive_boundary_hydro_3d(species,baseline,bt,spacing,dt,faces,scheme,'mc','pelec',change,ok, &
+            flux_x=fx,flux_y=fy,flux_z=fz,difmag=coefficient)
+          if(mod(entry,2)==0) call require(all(ax==fx(:,1:,:,:)).and.all(ay==fy(:,:,1:,:)).and. &
+            all(az==fz(:,:,:,1:)),'periodic direct corrected flux parity')
+        end if
+        call require(ok.and.all(reference==baseline).and.all(rt==bt),'periodic direct and full dispatch parity')
+        if(mod(entry,2)/=0) cycle
+        do kk=1,n
+        do jj=1,n
+        do ii=1,n
+          im=modulo(ii-2,n)+1;jm=modulo(jj-2,n)+1;km=modulo(kk-2,n)+1
+          prediction=initial(:,ii,jj,kk)-dt*((ax(:,ii,jj,kk)-ax(:,im,jj,kk))/spacing(1)+ &
+            (ay(:,ii,jj,kk)-ay(:,ii,jm,kk))/spacing(2)+(az(:,ii,jj,kk)-az(:,ii,jj,km))/spacing(3))
+          call require(maxval(abs(reference(:,ii,jj,kk)-prediction)/max(1._dp,abs(prediction)))<2e-13_dp, &
+            'periodic direct mean flux conservation')
+        end do
+        end do
+        end do
+      end do
+    end do
+  end subroutine check_periodic_entry_points
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label
