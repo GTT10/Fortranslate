@@ -327,3 +327,11 @@ Gas and live particles receive impulse/work; stationary attached films do not.
 exterior and chemistry budgets. Nonzero acceleration adds an `_EXT_V1`
 checkpoint inventory and the setting is part of restart context. See
 [restart evidence](../../docs/validation/spray-eb-acceleration-application-20260918.md).
+
+## Artificial viscosity
+
+The gas namelist accepts finite nonnegative `difmag` (default zero). Positive
+values apply the EB gas flux correction between particle half steps and must
+match when restarting. Negative values, including -1, are invalid. See the
+[focused evidence](../../docs/validation/eb-spray-difmag-20260925.md) for checked
+configurations and checkpoint-format compatibility limits.
