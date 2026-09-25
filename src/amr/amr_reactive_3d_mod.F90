@@ -462,7 +462,9 @@ contains
       fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
       chemistry_enabled, rtol, atol, maximum_reflux_correction, ok, &
       reconstruction, limiter, chemistry_integrator, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure, &
+      difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(amr_patch_3d), intent(in) :: patch
@@ -513,7 +515,8 @@ contains
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
         maximum_reflux_correction, ok, reconstruction, limiter, &
-        boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
+        boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure, &
+        difmag=difmag)
       return
     end if
 
@@ -550,7 +553,8 @@ contains
       species, patch, coarse_candidate, coarse_candidate_temperature, &
       fine_candidate, fine_candidate_temperature, dx, dy, dz, dt, &
       riemann_solver, candidate_reflux, local_ok, reconstruction, limiter, &
-      boundary_faces,candidate_boundary,inflow_state,inflow_temperature,outlet_pressure)
+      boundary_faces,candidate_boundary,inflow_state,inflow_temperature,outlet_pressure, &
+        difmag=difmag)
     if (.not. local_ok) return
 
     if (present(chemistry_integrator)) then
@@ -584,7 +588,9 @@ contains
       species, patch, coarse_state, coarse_temperature, &
       fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
       maximum_reflux_correction, ok, reconstruction, limiter, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure, &
+      difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     type(amr_patch_3d) :: interpolation_patch
@@ -650,6 +656,11 @@ contains
       selected_reconstruction = trim(reconstruction)
     end if
     if (present(limiter)) selected_limiter = trim(limiter)
+    if(present(difmag)) then
+      if(.not.ieee_is_finite(difmag)) return
+      if(difmag<0) return
+      if(difmag>0.and.selected_reconstruction/='characteristic_ppm') return
+    end if
     if (.not. valid_amr_reactive_shapes( &
           species, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature)) return
@@ -701,14 +712,16 @@ contains
     if (present(boundary_faces)) then
       call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
         boundary_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
-        inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z,outlet_pressure)
+        inflow_state,inflow_temperature,coarse_flux_x,coarse_flux_y,coarse_flux_z,outlet_pressure, &
+        difmag=difmag)
     else
     select case (trim(selected_reconstruction))
     case ("characteristic_ppm")
       periodic_faces="periodic"
       call advance_reactive_boundary_hydro_3d(species,coarse_candidate,coarse_candidate_temperature,[dx,dy,dz],dt, &
         periodic_faces,selected_reconstruction,selected_limiter,riemann_solver,boundary_total,local_ok, &
-        flux_x=coarse_flux_x,flux_y=coarse_flux_y,flux_z=coarse_flux_z)
+        flux_x=coarse_flux_x,flux_y=coarse_flux_y,flux_z=coarse_flux_z, &
+        difmag=difmag)
     case ("pcm")
       call advance_reactive_euler_ssprk2_with_fluxes_3d( &
         species, coarse_candidate, coarse_candidate_temperature, &
@@ -784,7 +797,8 @@ contains
         dx / real(ratio, dp), dy / real(ratio, dp), &
         dz / real(ratio, dp), fine_dt, alpha_start, alpha_end, &
         riemann_solver, selected_reconstruction, selected_limiter, &
-        fine_flux_x, fine_flux_y, fine_flux_z, local_ok,touched,boundary_faces,inflow_state,inflow_temperature,outlet_pressure)
+        fine_flux_x, fine_flux_y, fine_flux_z, local_ok,touched,boundary_faces,inflow_state,inflow_temperature,outlet_pressure, &
+        difmag=difmag)
       else
       call advance_fine_patch_ssprk2_3d( &
         species, patch, coarse_start, coarse_start_temperature, &
@@ -793,7 +807,8 @@ contains
         dx / real(ratio, dp), dy / real(ratio, dp), &
         dz / real(ratio, dp), fine_dt, alpha_start, alpha_end, &
         riemann_solver, selected_reconstruction, selected_limiter, &
-        fine_flux_x, fine_flux_y, fine_flux_z, local_ok)
+        fine_flux_x, fine_flux_y, fine_flux_z, local_ok, &
+        difmag=difmag)
       end if
       if (.not. local_ok) return
       call accumulate_fine_interface_fluxes_3d( &
@@ -846,7 +861,9 @@ contains
       coarse_end, coarse_end_temperature, state, temperature, &
       dx, dy, dz, dt, alpha_start, alpha_end, riemann_solver, &
       reconstruction, limiter, face_flux_x, face_flux_y, face_flux_z, ok,touched,faces,inflow_state,inflow_temperature, &
-        outlet_pressure)
+        outlet_pressure, &
+      difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(in) :: coarse_start(:, :, :, :)
@@ -944,7 +961,8 @@ contains
       call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,[nx,ny,nz],[dx,dy,dz],dt, &
         .false.,.true.,riemann_solver,first_flux_x,first_flux_y,first_flux_z,minimum_theta,local_ok, &
         inflow_faces=physical_touch.and.physical_faces=='inflow', &
-        no_slip_faces=physical_touch.and.(physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'))
+        no_slip_faces=physical_touch.and.(physical_faces=='no_slip_wall'.or.physical_faces=='isothermal_wall'), &
+        difmag=difmag)
       if (.not.local_ok) return
       ! Match the regular-grid CTU conservative update, including operation order.
       do k=1,nz
@@ -2025,7 +2043,9 @@ contains
       species, patch, coarse_state, coarse_temperature, fine_state, &
       fine_temperature, dx, dy, dz, dt, riemann_solver, &
       maximum_reflux_correction, ok, reconstruction, limiter, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure, &
+      difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_3d), intent(in) :: patch
     real(dp), intent(inout) :: coarse_state(:, :, :, :)
@@ -2050,27 +2070,31 @@ contains
           fine_temperature, dx, dy, dz, dt, riemann_solver, &
           maximum_reflux_correction, ok, reconstruction=reconstruction, &
           limiter=limiter, boundary_faces=boundary_faces,boundary_change=boundary_change, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure, &
+        difmag=difmag)
       else
         call advance_amr_reactive_hydro_3d( &
           species, patch, coarse_state, coarse_temperature, fine_state, &
           fine_temperature, dx, dy, dz, dt, riemann_solver, &
           maximum_reflux_correction, ok, reconstruction=reconstruction, &
           boundary_faces=boundary_faces,boundary_change=boundary_change, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure, &
+        difmag=difmag)
       end if
     else if (present(limiter)) then
       call advance_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
         maximum_reflux_correction, ok, limiter=limiter, boundary_faces=boundary_faces,boundary_change=boundary_change, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure, &
+        difmag=difmag)
     else
       call advance_amr_reactive_hydro_3d( &
         species, patch, coarse_state, coarse_temperature, fine_state, &
         fine_temperature, dx, dy, dz, dt, riemann_solver, &
         maximum_reflux_correction, ok,boundary_faces=boundary_faces,boundary_change=boundary_change, &
-        inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure)
+        inflow_state=inflow_state,inflow_temperature=inflow_temperature,outlet_pressure=outlet_pressure, &
+        difmag=difmag)
     end if
   end subroutine dispatch_amr_reactive_hydro_3d
 

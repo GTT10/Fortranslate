@@ -213,7 +213,9 @@ contains
       barodiffusion_enabled, minimum_transport_theta, &
       maximum_reflux_correction, ok, reconstruction, limiter, &
       chemistry_integrator, &
-      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure)
+      boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      difmag)
+    real(dp), optional, intent(in) :: difmag
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -267,7 +269,8 @@ contains
         fine_state, fine_temperature, dx, dy, dz, dt, riemann_solver, &
         chemistry_enabled, rtol, atol, candidate_reflux, ok, &
         selected_reconstruction, selected_limiter, chemistry_integrator, &
-        boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure)
+        boundary_faces,boundary_change,inflow_state,inflow_temperature,outlet_pressure, &
+        difmag=difmag)
       if (ok) maximum_reflux_correction = candidate_reflux
       return
     end if
@@ -315,7 +318,8 @@ contains
       species, patch, coarse_candidate, coarse_candidate_temperature, &
       fine_candidate, fine_candidate_temperature, dx, dy, dz, dt, &
       riemann_solver, hydro_reflux, local_ok, selected_reconstruction, &
-      selected_limiter,boundary_faces,stage_boundary,inflow_state,inflow_temperature,outlet_pressure)
+      selected_limiter,boundary_faces,stage_boundary,inflow_state,inflow_temperature,outlet_pressure, &
+        difmag=difmag)
     if (.not. local_ok) return
     boundary_total=boundary_total+stage_boundary
     candidate_reflux = max(candidate_reflux, hydro_reflux)

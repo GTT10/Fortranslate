@@ -842,16 +842,20 @@ contains
   end subroutine check_boundary_distribution
 
   subroutine check_periodic_ppm_hierarchy()
+    real(dp) :: coefficient
     type(mpi_amr_sparse_hierarchy_3d) :: h,saved
     real(dp), allocatable :: c(:,:,:,:),ct(:,:,:),f(:,:,:,:),ft(:,:,:),gc(:,:,:,:),gt(:,:,:),gf(:,:,:,:),gft(:,:,:)
     real(dp) :: r,rr
+    coefficient=.037_dp
     c=coarse_state;ct=coarse_temperature;f=fine_state;ft=fine_temperature
     h=sparse_hierarchy;saved=h
     call advance_amr_reactive_hydro_3d(species,patch,c,ct,f,ft,dx,dy,dz,1e-7_dp,config%riemann_solver,rr,ok, &
-      'characteristic_ppm','mc')
+      'characteristic_ppm','mc', &
+        difmag=coefficient)
     call require(ok,'serial periodic PPM hierarchy')
     call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1e-7_dp, &
-      config%riemann_solver,'characteristic_ppm','mc',r,ok)
+      config%riemann_solver,'characteristic_ppm','mc',r,ok, &
+        difmag=coefficient)
     call require(ok,'MPI periodic PPM hierarchy')
     call gather_mpi_amr_sparse_hierarchy_3d(sparse_distribution,patch,0,h,gc,gt,gf,gft,ok)
     call require(ok,'periodic PPM hierarchy gather')
@@ -861,11 +865,18 @@ contains
     end if
     h=saved
     call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1._dp, &
-      config%riemann_solver,'characteristic_ppm','mc',r,ok)
+      config%riemann_solver,'characteristic_ppm','mc',r,ok, &
+        difmag=coefficient)
     call require(.not.ok.and.r==0.and.sparse_hierarchies_bits_match(h,saved),'periodic PPM hierarchy CFL rollback')
+    h=saved
+    if(sparse_distribution%rank==0) coefficient=.05_dp
+    call advance_mpi_amr_sparse_hydro_3d(sparse_distribution,species,patch,h,dx,dy,dz,1e-7_dp, &
+      config%riemann_solver,'characteristic_ppm','mc',r,ok,difmag=coefficient)
+    call require(.not.ok.and.r==0.and.sparse_hierarchies_bits_match(h,saved),'coefficient mismatch rollback')
   end subroutine check_periodic_ppm_hierarchy
 
   subroutine check_physical_hierarchy(geometry,pressure_mode,reaction_mode,transport_mode,ppm_mode)
+    real(dp) :: coefficient
     logical, optional, intent(in) :: pressure_mode,reaction_mode,transport_mode,ppm_mode
     real(dp) :: outlet(6),test_dt
     integer :: first_mode
@@ -943,6 +954,8 @@ contains
       if (present(ppm_mode)) then
         if (ppm_mode) method='characteristic_ppm'
       end if
+      coefficient=0
+      if(method=='characteristic_ppm') coefficient=.037_dp
       if (mode>=5) faces(1:2)="isothermal_wall"
       c=c0;ct=ct0;f=f0;ft=ft0
       if (mode==5) then
@@ -952,14 +965,17 @@ contains
         call advance_amr_reactive_full_3d(species,reactions,transport,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,thr,rr,ok,method,'mc', &
           boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it, &
-          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
+          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet, &
+        difmag=coefficient)
       else if (mode>2) then
         call advance_amr_reactive_strang_3d(species,reactions,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
           config%riemann_solver,.true.,2e-7_dp,1e-12_dp,rr,ok,method,'mc', &
-          boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet)
+          boundary_faces=faces,boundary_change=expected,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet, &
+        difmag=coefficient)
       else
       call advance_amr_reactive_hydro_3d(species,wall_patch,c,ct,f,ft,dx,dy,dz,test_dt, &
-        config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it,outlet)
+        config%riemann_solver,rr,ok,method,'mc',faces,expected,inlet,it,outlet, &
+        difmag=coefficient)
       end if
       call require(ok,'serial physical hierarchy advance')
       call scatter_mpi_amr_sparse_hierarchy_3d(dist,species,wall_patch,0,c0,ct0,f0,ft0,h,ok)
@@ -972,14 +988,17 @@ contains
         call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
-          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
+          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet, &
+        difmag=coefficient)
       else if (mode>2) then
         call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
-          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet)
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet, &
+        difmag=coefficient)
       else
       call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,test_dt, &
-        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet)
+        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet, &
+        difmag=coefficient)
       end if
       call require(ok,'sparse physical hierarchy advance')
       call require(all(abs(budget-expected)<=2e-11_dp*max(abs(expected),1e-20_dp)), &
@@ -1017,14 +1036,17 @@ contains
         call advance_mpi_amr_sparse_full_3d(dist,species,reactions,transport,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,.true.,.true.,.true.,.true.,.true.,th,r,ok, &
           boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it, &
-          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet)
+          wall_temperature=tw,wall_velocity=wv,outlet_pressure=outlet, &
+        difmag=coefficient)
       else if (mode>2) then
         call advance_mpi_amr_sparse_strang_3d(dist,species,reactions,wall_patch,h,dx,dy,dz,test_dt, &
           config%riemann_solver,method,'mc',.true.,2e-7_dp,1e-12_dp,r,ok, &
-          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet)
+          boundary_faces=faces,boundary_change=budget,inflow_state=inlet,inflow_temperature=it,outlet_pressure=outlet, &
+        difmag=coefficient)
       else
       call advance_mpi_amr_sparse_hydro_3d(dist,species,wall_patch,h,dx,dy,dz,test_dt, &
-        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet)
+        config%riemann_solver,method,'mc',r,ok,faces,budget,inlet,it,outlet, &
+        difmag=coefficient)
       end if
       call require(.not.ok.and.sparse_hierarchies_bits_match(h,saved).and.r==0.and.all(budget==0), &
         'physical hierarchy failure restores both levels and diagnostics')
@@ -1034,6 +1056,7 @@ contains
   end subroutine check_physical_hierarchy
 
   subroutine check_physical_coarse_hydro(ppm)
+    real(dp) :: coefficient
     real(dp), allocatable :: u(:,:,:,:),t(:,:,:),reference(:,:,:,:),rt(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp), allocatable :: inlet(:,:),it(:),ledger(:),expected(:),sx(:,:,:,:),sy(:,:,:,:),sz(:,:,:,:)
     logical, optional, intent(in) :: ppm
@@ -1043,6 +1066,8 @@ contains
     integer :: mode,lo,hi,nv,trial
     use_ppm=.false.
     if (present(ppm)) use_ppm=ppm
+    coefficient=0
+    if(use_ppm) coefficient=.037_dp
     lo=sparse_distribution%coarse_first;hi=sparse_distribution%coarse_last;nv=size(coarse_state,1)
     allocate(inlet(nv,6),it(6),ledger(nv),expected(nv))
     allocate(sx,mold=coarse_state);allocate(sy,mold=coarse_state);allocate(sz,mold=coarse_state)
@@ -1068,11 +1093,13 @@ contains
       end if
       reference=coarse_state;rt=coarse_temperature
       call advance_reactive_boundary_hydro_3d(species,reference,rt,[dx,dy,dz],1e-7_dp, &
-        faces,method,'mc',config%riemann_solver,expected,ok,inlet,it,sx,sy,sz,pressure)
+        faces,method,'mc',config%riemann_solver,expected,ok,inlet,it,sx,sy,sz,pressure, &
+        difmag=coefficient)
       call require(ok,'serial physical coarse hydro reference')
       u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
       call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it,pressure)
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it,pressure, &
+        difmag=coefficient)
       call require(ok,'sparse physical coarse hydro advance')
       call require(all(u==reference(:,lo:hi,:,:)).and.all(t==rt(lo:hi,:,:)), &
         'sparse physical coarse state and temperature exactly match serial')
@@ -1086,7 +1113,8 @@ contains
       if (use_ppm.and.trial==3) then
         u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
         call advance_mpi_amr_sparse_periodic_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
-          config%riemann_solver,method,'mc',fx,fy,fz,ok)
+          config%riemann_solver,method,'mc',fx,fy,fz,ok, &
+        difmag=coefficient)
         call require(ok.and.all(u==reference(:,lo:hi,:,:)).and.all(t==rt(lo:hi,:,:)), &
           'PPM periodic coarse update matches serial exactly')
         call require(all(fx(:,1:,:,:)==sx(:,lo:hi,:,:)).and.all(fy==sy(:,lo:hi,:,:)).and. &
@@ -1095,7 +1123,8 @@ contains
       u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
       if (sparse_distribution%rank==0) inlet(1,3)=-1
       call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
-        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it,pressure)
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok,inlet,it,pressure, &
+        difmag=coefficient)
       call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
         all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0), &
         'physical hydro rank-local invalid inlet rolls back collectively')
@@ -1104,13 +1133,15 @@ contains
     if (use_ppm) then
       u=sparse_hierarchy%coarse_state;t=sparse_hierarchy%coarse_temperature
       call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1._dp, &
-        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok)
+        config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok, &
+        difmag=coefficient)
       call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
         all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0),'PPM coarse CFL rollback')
       if (sparse_distribution%rank==0) method='characteristic_plm'
       if (sparse_distribution%nranks>1) then
         call advance_mpi_amr_sparse_boundary_hydro_3d(sparse_distribution,species,patch,u,t,dx,dy,dz,1e-7_dp, &
-          config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok)
+          config%riemann_solver,method,'mc',fx,fy,fz,faces,ledger,ok, &
+        difmag=coefficient)
         call require(.not.ok.and.all(u==sparse_hierarchy%coarse_state).and. &
           all(t==sparse_hierarchy%coarse_temperature).and.all(ledger==0),'PPM rank selector mismatch rollback')
       end if
