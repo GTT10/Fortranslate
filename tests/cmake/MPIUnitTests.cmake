@@ -1236,3 +1236,13 @@ if(PELEF_ENABLE_MPI)
       TIMEOUT 120 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   endforeach()
 endif()
+
+if(PELEF_ENABLE_MPI)
+  foreach(wall_step IN ITEMS hydro subcycle_hydro)
+    add_test(NAME unit_mpi_eb_tree_wall_${wall_step}_3d
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_${wall_step}_3d> ${MPIEXEC_POSTFLAGS} ctu-wall)
+    set_tests_properties(unit_mpi_eb_tree_wall_${wall_step}_3d PROPERTIES
+      TIMEOUT 120 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()

@@ -120,6 +120,9 @@ program test_mpi_eb_tree_subcycle_hydro_3d
   if(index(test_mode,'periodic')>0) then
     allocate(labels(6));labels='periodic';labels(5:6)='outflow'
   end if
+  if(index(test_mode,'wall')>0) then
+    allocate(labels(6));labels='outflow';labels(1:2)='slip_wall';labels(3:4)='no_slip_wall'
+  end if
   boundary=17._dp;wall=19._dp
   call advance_reactive_eb_tree_subcycle_hydro_3d(species,solver,1.e-8_dp,tree,boundary,wall,ok, &
     difmag=coefficient,extended_geometry=extended, &
@@ -179,7 +182,7 @@ contains
       call require(error<3.e-14_dp,'MPI hydro conservation')
       if (rank==0) print *, 'MPI axis, nodes, mode, residual: ',axes(axis),count,mode,error
       do failure=1,10
-        if(failure==10.and.index(test_mode,'periodic')==0) cycle
+        if(failure==10.and.index(test_mode,'periodic')==0.and.index(test_mode,'wall')==0) cycle
         if(failure==9.and..not.allocated(inlet)) cycle
         if(failure>=7.and.index(test_mode,'ctu')/=1) cycle
         if(allocated(extended)) trial_extended=extended
@@ -209,7 +212,10 @@ contains
             local,lt,b,w,MPI_COMM_WORLD,good,difmag=local_coefficient,extended_geometry=trial_extended, &
         boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
         end if
-        if(failure==10.and.rank==0) labels(:2)='periodic'
+        if(failure==10.and.rank==0) then
+          labels(:2)='periodic'
+          if(index(test_mode,'wall')>0) labels(:2)='slip_wall'
+        end if
         if(failure==9.and.rank==0) inlet(1,1)=inlet_density
         call require(.not.good,'collective hydro rejection')
         if (failure==3.and.rank==owners(count)) then

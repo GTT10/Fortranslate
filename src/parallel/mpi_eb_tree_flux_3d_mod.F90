@@ -69,11 +69,13 @@ contains
     if (.not.ready) return
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
-    valid=all(faces=='outflow'.or.faces=='inflow'.or.faces=='periodic')
+    valid=all(faces=='outflow'.or.faces=='inflow'.or.faces=='periodic'.or. &
+      faces=='slip_wall'.or.faces=='no_slip_wall')
     valid=valid.and.periodic_eb_faces_match(geometry(1),faces)
     call agree(valid,comm,ready)
     if(.not.ready) return
-    codes=merge(1,0,faces=='inflow')+merge(2,0,faces=='periodic')
+    codes=merge(1,0,faces=='inflow')+merge(2,0,faces=='periodic')+ &
+      merge(3,0,faces=='slip_wall')+merge(4,0,faces=='no_slip_wall')
     call MPI_Allreduce(codes,low_codes,6,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(codes,high_codes,6,MPI_INTEGER,MPI_MAX,comm,status)
