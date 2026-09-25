@@ -1197,3 +1197,13 @@ if(TARGET test_mpi_eb_tree_subcycle_full_3d)
     set_tests_properties(unit_mpi_eb_tree_${ctu_mode}_full_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 300)
   endforeach()
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_test(NAME regression_eb_tree_ctu_application
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_eb_tree_ctu_application.py"
+      --serial "$<TARGET_FILE:pelef_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --input "${PROJECT_SOURCE_DIR}/cases/reactive_eb_tree_3d/scheduled.nml"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/eb_tree_ctu_application")
+  set_tests_properties(regression_eb_tree_ctu_application PROPERTIES PROCESSORS 3 TIMEOUT 600)
+endif()

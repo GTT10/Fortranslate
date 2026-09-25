@@ -60,6 +60,7 @@ program pelef_reactive_eb_tree_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d, &
+    build_eb_tree_extended_geometry_3d, &
     remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length
@@ -120,11 +121,12 @@ program pelef_reactive_eb_tree_3d
   logical :: automatic_timestep=.false.,subcycling=.false.
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:)
+  real(dp) :: regular_density=.31_dp,cut_density=.93_dp,initial_pressure=135000._dp
   real(dp) :: hydro_cfl=.5_dp,transport_cfl=.35_dp,difmag=.1_dp
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z'
-  character(len=16) :: riemann_solver='rusanov'
+  character(len=16) :: riemann_solver='rusanov',hydro_method='pcm'
 #ifdef PELEF_SELECTED_EB_TREE
   character(len=16) :: chemistry_integrator=selected_integrator
 #else
@@ -136,7 +138,8 @@ program pelef_reactive_eb_tree_3d
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
-    inflow_mach,inflow_temperature,inflow_pressure,difmag, &
+    inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method, &
+    regular_density,cut_density,initial_pressure, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -147,7 +150,8 @@ program pelef_reactive_eb_tree_3d
   type(gas_transport_species), allocatable :: transport(:)
   type(amr_patch_tree_3d) :: topology
   type(amr_patch_tree_3d), allocatable :: layouts(:)
-  type(eb_geometry_3d), allocatable :: geometry_levels(:)
+  type(eb_geometry_3d), allocatable :: geometry_levels(:),extended_levels(:),extended_geometry(:)
+  integer, allocatable :: cached_descriptors(:,:)
   type(eb_reactive_tree_3d) :: tree
   type(eb_tree_checkpoint_3d) :: record
   type(eb_geometry_3d) :: finest,coarse
@@ -187,6 +191,13 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+  if(.not.all(ieee_is_finite([regular_density,cut_density,initial_pressure]))) error stop 'Invalid initial state'
+  if(min(regular_density,cut_density,initial_pressure)<=0) error stop 'Nonpositive initial state'
+  if(hydro_method/='pcm'.and.hydro_method/='plm_ctu') error stop 'Invalid hydro method'
+  if(hydro_method=='plm_ctu'.and.riemann_solver/='pelec') error stop 'CTU requires pelec solver'
+#ifdef PELEF_MPI_EB_SPRAY
+  if(hydro_method/='pcm') error stop 'CTU is not connected to EB spray'
+#endif
   if (.not.ieee_is_finite(difmag).or.difmag<0) error stop 'Invalid artificial-viscosity coefficient'
   if (.not.all(ieee_is_finite(inflow_mach)).or.any(inflow_mach>100)) error stop 'Invalid inlet Mach'
   if (.not.all(ieee_is_finite(inflow_temperature))) error stop 'Invalid inlet temperature'
@@ -280,6 +291,8 @@ program pelef_reactive_eb_tree_3d
   config%extrusion_axis=extrusion_axis;config%section_file=section_file;config%level_set_file=level_set_file
   config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
   config%redistribution='none';config%riemann_solver=riemann_solver;config%difmag=difmag
+  config%hydro_method=hydro_method
+  config%regular_density=regular_density;config%cut_density=cut_density;config%initial_pressure=initial_pressure
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
   config%chemistry_relative_tolerance=rtol;config%chemistry_absolute_tolerance=atol
   config%viscosity_enabled=.true.;config%thermal_conduction_enabled=.true.
@@ -296,6 +309,20 @@ program pelef_reactive_eb_tree_3d
     call coarsen_eb_geometry_3d(geometry_levels(depth),shared_ratios(depth),geometry_levels(depth-1),ok)
     if (.not.ok) error stop 'Cannot coarsen geometry'
   end do
+  if(hydro_method=='plm_ctu') then
+    common=6
+    do depth=2,size(shared_ratios)
+      if(common>huge(1)/shared_ratios(depth)) error stop 'CTU padding too large'
+      common=common*shared_ratios(depth)
+    end do
+    allocate(extended_levels(size(shared_ratios)))
+    call build_configured_eb_geometry_3d(config,extended_levels(size(shared_ratios)),ok,halo=common)
+    if(.not.ok) error stop 'Cannot build extended finest geometry'
+    do depth=size(shared_ratios),2,-1
+      call coarsen_eb_geometry_3d(extended_levels(depth),shared_ratios(depth),extended_levels(depth-1),ok)
+      if(.not.ok) error stop 'Cannot coarsen extended geometry'
+    end do
+  end if
   coarse=geometry_levels(1)
 #ifdef PELEF_SELECTED_EB_TREE
   call load_selected_thermo(species,ok)
@@ -377,6 +404,7 @@ program pelef_reactive_eb_tree_3d
     call inject_due_events()
 #endif
     if(record%time>=final_time.or.record%steps>=maximum_steps) exit
+    call refresh_ctu_geometry()
     dt=min(time_step,final_time-record%time)
 #ifdef PELEF_MPI_EB_SPRAY
     if(next_injection<=injection_events) dt=min(dt,injection_times(next_injection)-record%time)
@@ -433,14 +461,16 @@ program pelef_reactive_eb_tree_3d
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry)
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
         chemistry_integrator,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure,difmag=difmag)
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry)
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
@@ -1186,6 +1216,34 @@ contains
     if (.not.valid) error stop 'Cannot activate scheduled tree'
     topology=layouts(stage);regrid_stage=stage
   end subroutine
+  subroutine refresh_ctu_geometry()
+    type(eb_geometry_3d), allocatable :: physical(:)
+    integer, allocatable :: descriptors(:,:)
+    integer :: p
+    logical :: valid
+    if(hydro_method/='plm_ctu') return
+    allocate(descriptors(12,size(topology%nodes)))
+    do p=1,size(topology%nodes)
+      descriptors(:,p)=descriptor_for(topology,p)
+    end do
+    if(allocated(cached_descriptors)) then
+      if(all(shape(cached_descriptors)==shape(descriptors))) then
+        if(all(cached_descriptors==descriptors)) return
+      end if
+    end if
+    allocate(physical(size(topology%nodes)))
+    do p=1,size(topology%nodes)
+#ifdef PELEF_MPI_EB_TREE
+      physical(p)=mpi_geometry(p)
+#else
+      physical(p)=tree%nodes(p)%geometry
+#endif
+    end do
+    call build_eb_tree_extended_geometry_3d(topology,physical,extended_levels(topology%level_count()), &
+      extended_geometry,valid)
+    if(.not.valid) error stop 'Cannot build CTU patch geometry cache'
+    call move_alloc(descriptors,cached_descriptors)
+  end subroutine refresh_ctu_geometry
   function descriptor_for(layout,index) result(descriptor)
     type(amr_patch_tree_3d), intent(in) :: layout
     integer, intent(in) :: index
