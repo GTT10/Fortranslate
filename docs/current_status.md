@@ -13,8 +13,10 @@ MPI EB deposition/splash and stationary films can now coexist with specular
 outer-domain walls. Remaining flight and separate exterior/EB budgets are
 preserved through regrid and changed-rank continuation
 ([checks](validation/mpi-eb-film-domain-reflection-20260926.md)). Periodic film thickness queries now sum all overlapping images across ranks
-([checks](validation/mpi-periodic-film-query-20260926.md)); periodic film flight/
-exchange integration and film creation on outer domain faces remain open.
+([checks](validation/mpi-periodic-film-query-20260926.md)). Periodic EB impact
+flight and film/gas exchange now connect through regrid and changed-rank restart
+([evidence](validation/mpi-eb-periodic-film-20260926.md)). Film creation on outer
+domain faces remains open.
 
 MPI EB KH child generation now accepts explicit nonperiodic domain walls,
 with wall-before-release ordering and CTU regrid/changed-rank continuation
@@ -100,7 +102,7 @@ restart ([checks](validation/eb-tree-periodic-application-20260926.md)).
 MPI EB spray also accepts periodic input, with fixed-mechanism 2/4-rank
 comparison and 2-to-4-rank restart checks
 ([checks](validation/mpi-eb-periodic-application-20260926.md)). Periodic
-wall-impact/film combinations reject at input.
+EB impact/film combinations are also connected, as described above.
 The composite EB particle stencil now accepts periodic axes and checks
 visibility along segmented, wrapped paths to donor centroids
 ([checks](validation/eb-tree-periodic-stencil-20260926.md)). MPI particle field
@@ -111,7 +113,7 @@ and reacting MPI EB spray coupling now forward periodic faces through field
 exchange, drift and migration, with common/recursive CTU conservation checks
 ([checks](validation/mpi-eb-periodic-step-20260926.md)). Periodic KH child
 generation now follows wrapped parent flight and passes changed-rank continuation
-([evidence](validation/mpi-eb-periodic-khrt-20260926.md)); periodic films remain unsupported.
+([evidence](validation/mpi-eb-periodic-khrt-20260926.md)).
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
