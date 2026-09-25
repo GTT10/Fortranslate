@@ -9,6 +9,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Regular and EB CTU now use the pinned contact-speed species upwinding after
+Riemann solves; regular final fluxes also normalize species at zero viscosity
+([repair and checks](validation/ppm-passive-flux-20260926.md)).
+
 Regular zero-source CTU transverse updates now have compiled pinned-kernel
 agreement in 144 cases across all three normal axes, including signed species
 and pressure floors ([checks](validation/ppm-pinned-transverse-20260926.md)).

@@ -275,8 +275,10 @@ normal primitive projection now preserves independent species weights and agrees
 in a bounded 315-case compiled-kernel comparison
 ([checks](validation/ppm-mixture-projection-20260926.md)). Regular zero-source
 single/double transverse kernels also agree in 144 compiled-reference cases
-([checks](validation/ppm-pinned-transverse-20260926.md)). Full-CTU assembly parity
-and broader qualification remain open.
+([checks](validation/ppm-pinned-transverse-20260926.md)). Godunov contact-speed
+species upwinding and zero-viscosity final normalization now connect through
+regular/EB CTU ([checks](validation/ppm-passive-flux-20260926.md)). Full-CTU
+assembly parity and broader qualification remain open.
 The reference also adjusts final fluxes with compressive artificial viscosity
 (default `difmag=0.1`). A regular-cell nodal-divergence/flux-correction API now
 implements this step with no-slip tangential exclusions and species-flux
