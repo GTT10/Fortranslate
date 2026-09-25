@@ -15,7 +15,9 @@ and method-bound checkpoint continuation. PCM remains the default. Fixed and
 selected H2O2 coupled continuation passed focused checks
 ([evidence](validation/eb-ctu-application-20260925.md),
 [input example](../cases/reactive_eb_3d/plm_ctu.nml)). This does not yet connect
-CTU to EB tree/MPI/spray paths or qualify a physical wall-flow solution.
+CTU to EB tree applications, MPI or spray paths or qualify a physical wall-flow solution.
+Serial EB tree library operators support common and recursive CTU steps with
+reaction/transport composition ([checks](validation/eb-tree-ctu-subcycle-20260925.md)).
 
 The pinned nozzle Mach-inlet state kernel is now available for six faces, with
 interior composition and extrapolated or prescribed pressure

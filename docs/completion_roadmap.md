@@ -147,8 +147,11 @@ halo APIs now accept six-layer target-resolution metrics with peer/ancestor
 exchange and temporal interpolation ([checks](validation/eb-wide-halo-20260925.md)).
 A conservative extended-geometry builder and serial common-interval CTU
 patch stepping now connect peer synchronization and coarse/fine reflux
-([checks](validation/eb-tree-ctu-20260925.md)). Recursive/MPI CTU stepping,
-application selection and other physical boundary halo preparation remain
+([checks](validation/eb-tree-ctu-20260925.md)). Serial recursive CTU stepping
+and coupled reaction/transport composition now also connect time-interpolated
+ancestor halos and accumulated fine fluxes
+([checks](validation/eb-tree-ctu-subcycle-20260925.md)). MPI CTU stepping,
+tree application selection and other physical boundary halo preparation remain
 before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
