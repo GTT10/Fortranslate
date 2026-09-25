@@ -20,6 +20,7 @@ program test_mpi_amr_patch_tree_subcycle_3d
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
+  real(dp), allocatable :: serial_coefficient,mpi_coefficient
   real(dp) :: coefficient
   character(len=32) :: faces(6),reconstruction,arg,solver
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
@@ -92,15 +93,26 @@ program test_mpi_amr_patch_tree_subcycle_3d
     call require(ok.and.dt==expected_dt,'exact scaled CFL')
     coefficient=0
     if(ppm.or.trim(arg)=='viscosity') coefficient=.037_dp
+    if(allocated(serial_coefficient)) deallocate(serial_coefficient)
+    if(allocated(mpi_coefficient)) deallocate(mpi_coefficient)
+    if(trim(arg)=='default') then
+      if(mod(mode,2)==0) then
+        serial_coefficient=.1_dp
+      else
+        mpi_coefficient=.1_dp
+      end if
+    else
+      serial_coefficient=coefficient;mpi_coefficient=coefficient
+    end if
     oracle=global;oracle_t=reference;dt=.1_dp*expected_dt
     call advance_amr_patch_tree_subcycle_hydro_3d(tree,species,oracle,oracle_t,spacing,dt,faces,reconstruction,'mc',solver, &
       serial_budget,serial_largest,ok,inflow_state=inlet,inflow_temperature=inlet_t,level_steps=serial_steps, &
       outlet_pressure=pressure, &
-      inflow_mach=mach,inflow_pressure=pin,difmag=coefficient)
+      inflow_mach=mach,inflow_pressure=pin,difmag=serial_coefficient)
     call require(ok,'serial hydro oracle')
     call advance_mpi_amr_tree_subcycle_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces,reconstruction,'mc',solver, &
       budget,largest,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t,level_steps=steps,outlet_pressure=pressure, &
-      inflow_mach=mach,inflow_pressure=pin,difmag=coefficient)
+      inflow_mach=mach,inflow_pressure=pin,difmag=mpi_coefficient)
     call require(ok,'distributed recursive hydro')
     call require(all(steps==[1_int64,2_int64,6_int64]).and.all(steps==serial_steps),'exact recursive step counts')
     do node=1,3

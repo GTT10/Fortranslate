@@ -53,8 +53,7 @@ contains
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
-    viscosity=0
-    if(reconstruction=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure

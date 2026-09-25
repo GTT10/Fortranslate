@@ -1149,3 +1149,13 @@ if(TARGET test_mpi_eb_tree_subcycle_full_3d)
   set_tests_properties(unit_mpi_eb_tree_viscosity_subcycle_full_3d_3 PROPERTIES
     TIMEOUT 300 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(PELEF_ENABLE_MPI)
+  foreach(variant hydro subcycle)
+    add_test(NAME unit_mpi_amr_tree_default_${variant}_3d_2
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_amr_patch_tree_${variant}_3d> ${MPIEXEC_POSTFLAGS} default)
+    set_tests_properties(unit_mpi_amr_tree_default_${variant}_3d_2 PROPERTIES
+      TIMEOUT 120 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()

@@ -60,8 +60,7 @@ contains
     integer :: node,nvar
     logical :: valid
     ok=.false.
-    viscosity=0
-    if(reconstruction=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     if(.not.ieee_is_finite(viscosity)) return
     if(viscosity<0) return
@@ -258,8 +257,7 @@ contains
     integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint,width,stage_count
     logical :: valid
     ok=.false.
-    viscosity=0
-    if(reconstruction=='characteristic_ppm'.and.solver=='pelec') viscosity=.1_dp
+    viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     if(.not.ieee_is_finite(viscosity)) return
     if(viscosity<0) return
