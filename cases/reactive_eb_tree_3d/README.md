@@ -346,5 +346,6 @@ and a conductive energy transfer recorded in the boundary budget. Common and
 recursive gas splits and automatic thermal timestep selection use these values.
 Checkpoint context binds all six temperatures and boundary labels; changing or
 removing thermal controls on restart rejects. Nonthermal checkpoint headers
-retain their existing format. MPI EB spray thermal forwarding remains unsupported
-and rejects at input. This is application integration, not physical validation.
+retain their existing format. MPI EB spray also forwards these temperatures to the gas split; use
+`particle_outflow=.true.` for explicit boundaries and keep domain-wall films
+and KH child generation disabled. Particles reflect specularly at thermal walls. This is application integration, not physical validation.

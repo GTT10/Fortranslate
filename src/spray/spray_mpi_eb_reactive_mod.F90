@@ -32,7 +32,7 @@ contains
       particle_steps,minimum_theta,boundary_change,wall_change,chemical_change,ok,integrator,subcycling, &
       films,film_mass,film_settings,film_steps,last_id,model_rejected,split_created,particle_outflow, &
       acceleration,source_change,inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry, &
-      boundary_faces,inflow_state)
+      boundary_faces,inflow_state,wall_temperature)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -55,7 +55,7 @@ contains
     real(dp) :: coefficient,low_coefficient,high_coefficient
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
-    real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),wall_temperature(6)
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: integrator
     logical, optional, intent(in) :: subcycling
@@ -120,10 +120,12 @@ contains
     valid=.true.
     if(present(boundary_faces)) then
       valid=all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic'.or. &
-        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
-      if(any(boundary_faces=='periodic'.or.boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) then
+        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or.boundary_faces=='isothermal_wall')
+      if(any(boundary_faces=='periodic'.or.boundary_faces=='slip_wall'.or. &
+        boundary_faces=='no_slip_wall'.or.boundary_faces=='isothermal_wall')) then
         particle_faces=boundary_faces
         where(particle_faces=='inflow') particle_faces='outflow'
+        where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
       end if
       valid=valid.and.outflow
     else
@@ -181,7 +183,8 @@ contains
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion, &
       gas,temp,boundary,wall,chemical,theta,comm,valid,integrator,subcycling, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      difmag=coefficient,extended_geometry=extended_geometry,boundary_faces=boundary_faces,inflow_state=inflow_state)
+      difmag=coefficient,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
+      inflow_state=inflow_state,wall_temperature=wall_temperature)
     if(.not.valid) return
     if(present(films)) then
       call advance_mpi_amr_film_coupling(comm,species,transport,liquids,options,film_settings,gas,temp, &

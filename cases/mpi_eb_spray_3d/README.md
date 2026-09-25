@@ -439,4 +439,21 @@ boundary routing. Particles reflect specularly at either wall label; the gas
 uses the corresponding slip/no-slip condition. Exterior particle impulse is
 included in the coupled boundary inventory. Wall labels are bound to restart.
 `wall_impacts` and `particle_options%khrt_children` must remain false with these
-explicit walls. Isothermal gas walls are not yet accepted by the tree input.
+explicit walls.
+
+`isothermal_wall` is also accepted with `wall_temperature(6)` in the tree input:
+
+```fortran
+ boundary_faces='isothermal_wall','isothermal_wall','outflow','outflow','isothermal_wall','isothermal_wall'
+ wall_temperature=6*2000
+ transport_enabled=.true.
+ automatic_timestep=.true.
+```
+
+Supply six finite positive temperatures in kelvin in x-low/high, y-low/high,
+z-low/high order. Gas molecular conduction uses the isothermal face values;
+particles reflect specularly without a direct particle-wall heat model.
+Gas heat transfer and particle domain-wall impulse enter the boundary ledger.
+The common/recursive coupled transaction includes both processes. Restart binds
+all six wall temperatures; changed values reject before continuation. The
+explicit-boundary film/KH restrictions above also apply to thermal walls.

@@ -233,9 +233,6 @@ program pelef_reactive_eb_tree_3d
   if(any(boundary_faces=='isothermal_wall')) then
     if(any(wall_temperature<=0)) error stop 'Isothermal tree walls require six positive temperatures'
     if(.not.transport_enabled) error stop 'Isothermal tree walls require transport'
-#ifdef PELEF_MPI_EB_SPRAY
-    error stop 'Isothermal MPI EB spray forwarding is not connected'
-#endif
     active_wall_temperature=wall_temperature
   else if(any(wall_temperature/=0)) then
     error stop 'Unused tree wall temperatures'
@@ -492,7 +489,7 @@ program pelef_reactive_eb_tree_3d
         acceleration=acceleration,source_change=step_force, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
@@ -504,7 +501,7 @@ program pelef_reactive_eb_tree_3d
         acceleration=acceleration,source_change=step_force, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
       end if
 #else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -665,7 +662,8 @@ contains
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     if(any(boundary_faces=='periodic').and.(wall_impacts.or.particle_options%khrt_children)) &
       error stop 'Periodic EB spray films and KH children are not connected'
-    if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall').and. &
+    if(any(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
+      boundary_faces=='isothermal_wall').and. &
       (wall_impacts.or.particle_options%khrt_children)) &
       error stop 'MPI EB spray domain-wall films and KH children are not connected'
     profile_files=''

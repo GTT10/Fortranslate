@@ -975,7 +975,8 @@ if(TARGET pelef_mpi_spray_3d)
 endif()
 
 if(TARGET test_spray_mpi_eb_reactive)
-  foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle ctu-periodic ctu-periodic-subcycle ctu-wall ctu-wall-subcycle)
+  foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle ctu-periodic ctu-periodic-subcycle ctu-wall ctu-wall-subcycle
+      ctu-isothermal ctu-isothermal-subcycle)
     add_test(NAME spray_mpi_eb_reactive_${ctu_mode}
       COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 4 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} ${ctu_mode})
@@ -991,6 +992,12 @@ if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
       --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_ctu_restart"
       --ctu --restart)
   set_tests_properties(spray_mpi_eb_ctu_restart PROPERTIES TIMEOUT 600 PROCESSORS 4 LABELS "spray;mpi;eb")
+  add_test(NAME spray_mpi_eb_isothermal_restart
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
+      --exe "$<TARGET_FILE:pelef_mpi_eb_spray_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --source "${PROJECT_SOURCE_DIR}" --work "${CMAKE_CURRENT_BINARY_DIR}/spray_mpi_eb_isothermal_restart"
+      --isothermal --restart --difmag .037)
+  set_tests_properties(spray_mpi_eb_isothermal_restart PROPERTIES TIMEOUT 600 PROCESSORS 4 LABELS "spray;mpi;eb")
 endif()
 
 if(TARGET test_spray_eb_reactive)
