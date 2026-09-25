@@ -40,9 +40,8 @@ fixture, not a nozzle validation. See the
 
 ### Artificial viscosity
 
-For `characteristic_ppm`, `difmag=-1` (default) selects `0.1` with `pelec` and
-zero with other solvers. Set `difmag=0` to disable it, or a positive value to
-choose its strength. Both fixed and selected regular gas executables print the
-resolved coefficient. PCM/PLM also accept explicit nonnegative coefficients;
-their automatic policy remains zero. See
-[input checks](../../docs/validation/nonppm-difmag-input-20260925.md).
+`difmag=-1` (default) selects the reference value `0.1` for PCM, PLM and PPM,
+independent of solver. Set `difmag=0` to disable it, or a positive value to
+choose its strength. Fixed and selected regular gas executables print the
+resolved coefficient. Older zero-policy runs/checkpoints require explicit zero.
+See [default-policy checks](../../docs/validation/regular-gas-default-difmag-20260925.md).

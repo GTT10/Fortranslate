@@ -218,8 +218,10 @@ at both SSPRK2 stages, including mean face fluxes and boundary accounting
 retain the existing policy. Serial/MPI tree common and level hydro now apply
 the coefficient before flux integration and reflux, including recursive
 subcycling ([checks](validation/pcm-plm-tree-viscosity-20260925.md)). PCM/PLM
-uniform default policy and EB
-artificial-viscosity dispatch remain open. The viscosity kernel now accepts
+application defaults now resolve to the reference 0.1 through shared regular
+gas configuration, including AMR checkpoint identity
+([checks](validation/regular-gas-default-difmag-20260925.md)). Direct-library,
+separate regular spray and EB default unification remain open. The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
 ([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and
