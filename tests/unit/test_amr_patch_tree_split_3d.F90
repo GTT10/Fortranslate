@@ -1,6 +1,7 @@
 program test_amr_patch_tree_split_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
+  use reactive_3d_mod, only: advance_reactive_sdc_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -27,6 +28,7 @@ program test_amr_patch_tree_split_3d
   real(dp) :: outlet_pressure(6)
   integer :: node,mode
   character(len=32) :: faces(6),integrator
+  character(len=16) :: argument
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
@@ -47,6 +49,12 @@ program test_amr_patch_tree_split_3d
   call initialize_amr_patch_3d(2,4,4,1,1,1,1,1,1,2,patches(3),ok)
   call initialize_amr_patch_tree_3d([2,2,2],[1,1,2],patches,tree,ok)
   call require(ok,'three-level branched tree')
+  call get_command_argument(1,argument)
+  if(trim(argument)=='sdc') then
+    call check_sdc()
+    print *, 'test_amr_patch_tree_sdc_3d: PASS'
+    stop
+  end if
   do mode=1,4
     integrator='explicit'
     if (mod(mode,2)==0) integrator='implicit'
@@ -132,6 +140,65 @@ program test_amr_patch_tree_split_3d
     call same_as_reference()
   end do
 contains
+  subroutine check_sdc()
+    type(amr_tree_state_3d) :: u,t,previous,previous_t,sync
+    real(dp) :: reference(12,2,2,2),ref_t(2,2,2),sources(12),bound(12),maximum,minimum
+    real(dp) :: before(12),after(12),e0(3),e1(3),ext(3),source_ref(12),boundary_ref(12)
+    real(dp), parameter :: h=1e-9_dp,force(3)=[20000._dp,-30000._dp,40000._dp]
+    integer :: peer,trial
+    faces='periodic'
+    call prolong_amr_patch_tree_3d(tree,root,u,ok)
+    call require(ok,'SDC tree state')
+    call prolong_amr_patch_tree_3d(tree,rt,t,ok)
+    call require(ok,'SDC tree temperature')
+    reference=root;ref_t=rt(1,:,:,:)
+    call advance_reactive_sdc_3d(species,reference,ref_t,spacing,h,0._dp,2,2,ok=ok, &
+      external_force=force,transport=transport,reactions=reactions,chemistry_relative_tolerance=2e-7_dp, &
+      chemistry_absolute_tolerance=1e-12_dp,source_change=source_ref,boundary_change=boundary_ref)
+    call require(ok,'SDC single-grid reacting reference')
+    do trial=1,2
+      if(trial==2) u%fields(4)%values(5,1,1,1)=1.001_dp*u%fields(4)%values(5,1,1,1)
+      call average_down_amr_patch_tree_3d(tree,u,ok)
+      call require(ok,'SDC input restriction')
+      call composite_integrals_amr_patch_tree_3d(tree,u,spacing,before,ok)
+      call require(ok,'SDC initial composite inventory')
+      call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,u,t,spacing,h,faces,2,.true., &
+        [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok)
+      call require(ok,'SDC coupled hierarchy step')
+      if(trial==1) then
+        do peer=1,size(tree%nodes)
+          call require(maxval(abs(u%fields(peer)%values(:,1,1,1)-reference(:,1,1,1))/ &
+            max(1._dp,abs(reference(:,1,1,1))))<1e-11_dp,'SDC hierarchy uniform reacting reduction')
+          call require(maxval(abs(t%fields(peer)%values-ref_t(1,1,1)))<1e-6_dp,'SDC hierarchy uniform temperature')
+        end do
+      end if
+      call composite_integrals_amr_patch_tree_3d(tree,u,spacing,after,ok)
+      call require(ok,'SDC final composite inventory')
+      call require(maxval(abs(after(:5)-before(:5)-bound(:5)-sources(:5))/max(1e-20_dp,abs(before(:5)))) &
+        <2e-10_dp,'SDC Euler inventory with forcing and reflux')
+      call element_integrals_from_reactive_integrals_3d(species,before,e0,ok)
+      call require(ok,'SDC initial elements')
+      call element_integrals_from_reactive_integrals_3d(species,after,e1,ok)
+      call require(ok,'SDC final elements')
+      call element_integrals_from_reactive_integrals_3d(species,bound+sources,ext,ok)
+      call require(ok.and.maxval(abs(e1-e0-ext)/max(1e-30_dp,abs(e0)))<2e-10_dp,'SDC element inventory')
+      sync=u
+      call average_down_amr_patch_tree_3d(tree,sync,ok)
+      call require(ok,'SDC final restriction check')
+      do peer=1,size(tree%nodes)
+        call require(all(sync%fields(peer)%values==u%fields(peer)%values),'SDC synchronized parents')
+      end do
+    end do
+    previous=u;previous_t=t;bound=-3;sources=-4;maximum=-5;minimum=-6
+    call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,u,t,spacing,h,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok,difmag=-1._dp)
+    call require(.not.ok.and.all(bound==-3).and.all(sources==-4).and.maximum==-5.and.minimum==-6, &
+      'SDC failed hydro stage preserves inventories')
+    do peer=1,size(tree%nodes)
+      call require(all(u%fields(peer)%values==previous%fields(peer)%values).and. &
+        all(t%fields(peer)%values==previous_t%fields(peer)%values),'SDC whole-step rollback')
+    end do
+  end subroutine check_sdc
   subroutine same_as_reference()
     integer :: peer
     do peer=1,size(tree%nodes)
