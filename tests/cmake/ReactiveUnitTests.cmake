@@ -847,3 +847,9 @@ set_tests_properties(reactive_3d_difmag_input PROPERTIES TIMEOUT 120)
 add_executable(test_reactive_pcm_plm_viscosity_3d unit/test_reactive_pcm_plm_viscosity_3d.F90)
 target_link_libraries(test_reactive_pcm_plm_viscosity_3d PRIVATE pelef_core)
 add_test(NAME unit_reactive_pcm_plm_viscosity_3d COMMAND test_reactive_pcm_plm_viscosity_3d)
+
+add_test(NAME reactive_eb_3d_difmag_input COMMAND "${Python3_EXECUTABLE}"
+  "${PROJECT_SOURCE_DIR}/tools/check_eb_difmag_input.py"
+  --executable "$<TARGET_FILE:pelef_reactive_eb_3d>"
+  --work-dir "${CMAKE_CURRENT_BINARY_DIR}/reactive_eb_3d_difmag_input")
+set_tests_properties(reactive_eb_3d_difmag_input PROPERTIES TIMEOUT 180)

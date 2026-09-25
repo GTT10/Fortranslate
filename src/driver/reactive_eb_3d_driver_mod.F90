@@ -118,7 +118,7 @@ contains
   subroutine advance_reactive_eb_strang_3d( &
       species, reactions, state, temperature, geometry, solver, redistribution, &
       dt, chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
-      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change)
+      target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -127,6 +127,7 @@ contains
     real(dp), intent(in) :: dt, rtol, atol
     logical, intent(in) :: chemistry_enabled
     real(dp), intent(out) :: new_state(:, :, :, :), new_temperature(:, :, :)
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: chemistry_integrator
@@ -153,6 +154,9 @@ contains
         any(shape(new_temperature) /= shape(temperature))) return
     new_state = state
     new_temperature = temperature
+    if(present(difmag)) then
+      if(.not.ieee_is_finite(difmag).or.difmag<0) return
+    end if
     if (present(boundary_change)) then
       if (size(boundary_change)/=nvar) return
     end if
@@ -212,11 +216,11 @@ contains
     case ("flux_redist")
       call advance_reactive_eb_redistributed_euler_3d( &
         species, candidate_state, candidate_temperature, geometry, solver, dt, &
-        hydro_state, hydro_temperature, local_ok,exchange_boundary,exchange_wall)
+        hydro_state, hydro_temperature, local_ok,exchange_boundary,exchange_wall,difmag=difmag)
     case ("state_redist")
       call advance_reactive_eb_state_redistributed_euler_3d( &
         species, candidate_state, candidate_temperature, geometry, solver, dt, &
-        hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall)
+        hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
     end select
     if (.not. local_ok) return
     call covered_cells_match_3d( &
@@ -264,7 +268,7 @@ contains
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, new_state, &
       new_temperature, minimum_transport_theta, ok, target_volume_fraction, &
-      chemistry_integrator, boundary_change, wall_change, chemistry_change)
+      chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -277,6 +281,7 @@ contains
     logical, intent(in) :: species_diffusion_enabled, barodiffusion_enabled
     real(dp), intent(out) :: new_state(:, :, :, :), new_temperature(:, :, :)
     real(dp), intent(out) :: minimum_transport_theta
+    real(dp), optional, intent(in) :: difmag
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: chemistry_integrator
@@ -306,6 +311,9 @@ contains
         any(shape(new_temperature) /= shape(temperature))) return
     new_state = state
     new_temperature = temperature
+    if(present(difmag)) then
+      if(.not.ieee_is_finite(difmag).or.difmag<0) return
+    end if
     if (present(boundary_change)) then
       if (size(boundary_change)/=nvar) return
     end if
@@ -323,7 +331,8 @@ contains
       call advance_reactive_eb_strang_3d( &
         species, reactions, state, temperature, geometry, solver, &
         redistribution, dt, chemistry_enabled, rtol, atol, new_state, &
-        new_temperature, ok, target_volume_fraction, chemistry_integrator,boundary_change,wall_change,chemistry_change)
+        new_temperature, ok, target_volume_fraction, chemistry_integrator, &
+        boundary_change,wall_change,chemistry_change,difmag=difmag)
       return
     end if
 
@@ -382,7 +391,7 @@ contains
 
     call advance_reactive_eb_state_redistributed_euler_3d( &
       species, candidate_state, candidate_temperature, geometry, solver, &
-      dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall)
+      dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
     if (.not. local_ok) return
     call covered_cells_match_3d( &
       state, temperature, hydro_state, hydro_temperature, geometry, &

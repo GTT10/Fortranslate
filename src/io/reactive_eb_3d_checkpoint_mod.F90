@@ -372,7 +372,7 @@ contains
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) reactive_eb_geometry_identity(config)
     if (status /= 0) go to 900
-    write(unit, '(a)', iostat=status) trim(config%riemann_solver)
+    write(unit, '(a)', iostat=status) trim(checkpoint_solver_identity(config))
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(config%redistribution)
     if (status /= 0) go to 900
@@ -1248,11 +1248,20 @@ contains
     end do
   end function valid_transport_array
 
+  pure function checkpoint_solver_identity(config) result(identity)
+    type(reactive_eb_3d_config), intent(in) :: config
+    character(len=128) :: identity
+    identity=trim(config%riemann_solver)
+    if(config%difmag>0) write(identity,'(a,1x,a,1x,es27.18e3)') trim(config%riemann_solver),'difmag-v1',config%difmag
+  end function checkpoint_solver_identity
+
   logical function valid_checkpoint_config(config) result(valid)
     type(reactive_eb_3d_config), intent(in) :: config
     real(dp) :: axis_lower, axis_upper, spacing, coordinate, tolerance
     real(dp) :: cut_fraction
 
+    valid=.false.
+    if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) return
     valid = min(config%nx, config%ny, config%nz) >= merge(1,2,trim(config%redistribution)=="none") .and. &
       config%maximum_steps > 0 .and. &
       all(ieee_is_finite([config%x_lower, config%x_upper, &
@@ -1542,7 +1551,7 @@ contains
       stored_ints(3) == expected_ints(3) .and. &
       all(stored_flags(1:6) == expected_flags(1:6)) .and. &
       trim(stored_axis) == reactive_eb_geometry_identity(config) .and. &
-      trim(stored_solver) == trim(config%riemann_solver) .and. &
+      trim(stored_solver) == trim(checkpoint_solver_identity(config)) .and. &
       trim(stored_redistribution) == trim(config%redistribution) .and. &
       all(checkpoint_real_matches(stored_reals(1:6), expected_reals(1:6))) .and. &
       all(checkpoint_real_matches(stored_reals(8:19), expected_reals(8:19)))

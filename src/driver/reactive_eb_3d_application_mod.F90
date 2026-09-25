@@ -197,7 +197,8 @@ contains
         config%viscosity_enabled, config%thermal_conduction_enabled, &
         config%species_diffusion_enabled, config%barodiffusion_enabled, &
         new_state, new_temperature, step_transport_theta, ok, &
-        config%state_redist_target_volume_fraction, chemistry_integrator,step_boundary,step_wall,step_chemical)
+        config%state_redist_target_volume_fraction, chemistry_integrator, &
+        step_boundary,step_wall,step_chemical,difmag=config%difmag)
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
       boundary=boundary+step_boundary
       wall=wall+step_wall

@@ -33,6 +33,7 @@ module simulation_config_reactive_eb_3d_mod
     character(len=512) :: level_set_file = ""
     character(len=8) :: plane_axis = "x"
     real(dp) :: plane_position = 0.395_dp
+    real(dp) :: difmag=0._dp
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
@@ -179,17 +180,17 @@ contains
   end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
-      path, config, ok, message, allow_selected)
+      path, config, ok, message, allow_selected, allow_difmag)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected
+    logical, intent(in), optional :: allow_selected,allow_difmag
 
     integer :: nx, ny, nz, maximum_steps, checkpoint_interval_steps
     integer :: unit, io_status
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
-    real(dp) :: final_time, cfl, plane_position
+    real(dp) :: final_time, cfl, plane_position,difmag
     real(dp) :: state_redist_target_volume_fraction
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
@@ -212,7 +213,7 @@ contains
     namelist /reactive_eb_3d/ &
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
-      final_time, cfl, plane_axis, plane_position, riemann_solver, &
+      final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, &
       geometry_type,extrusion_axis,section_file,level_set_file, &
       redistribution, thermo_model, state_redist_target_volume_fraction, &
       chemistry_enabled, chemistry_relative_tolerance, &
@@ -244,6 +245,7 @@ contains
     plane_axis = config%plane_axis
     plane_position = config%plane_position
     riemann_solver = config%riemann_solver
+    difmag=config%difmag
     redistribution = config%redistribution
     thermo_model = config%thermo_model
     state_redist_target_volume_fraction = &
@@ -307,6 +309,7 @@ contains
     config%plane_axis = trim(plane_axis)
     config%plane_position = plane_position
     config%riemann_solver = trim(riemann_solver)
+    config%difmag=difmag
     config%redistribution = trim(redistribution)
     config%thermo_model = trim(thermo_model)
     config%state_redist_target_volume_fraction = &
@@ -334,6 +337,13 @@ contains
     config%checkpoint_file = trim(checkpoint_file)
     config%restart_file = trim(restart_file)
     config%output_file = trim(output_file)
+    if(difmag>0) then
+      ok=.false.
+      if(present(allow_difmag)) ok=allow_difmag
+      if(.not.ok) then
+        message='Artificial-viscosity input is not enabled in this application';return
+      end if
+    end if
     call validate_reactive_eb_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
   end subroutine read_reactive_eb_3d_configuration
@@ -351,6 +361,9 @@ contains
 
     ok = .false.
     message = ""
+    if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) then
+      message='Invalid artificial-viscosity coefficient';return
+    end if
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
