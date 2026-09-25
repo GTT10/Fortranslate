@@ -12,8 +12,11 @@ Older milestone prose remains historical detail, not a current global status.
 Serial EB tree halos also accept paired periodic faces, wrapping donor indices
 through peers and ancestors, including halos wider than the root domain
 ([checks](validation/eb-tree-periodic-halo-20260926.md)). Periodic tree time
-updates remain rejected pending seam flux reconciliation; MPI periodic tree
-halos and application dispatch are not yet connected.
+updates remain rejected pending seam flux reconciliation. MPI periodic tree
+halo exchange now matches serial face-only, full one-layer and six-layer
+construction, including temporal ancestor donors and idle ranks
+([checks](validation/mpi-eb-periodic-halo-20260926.md)). Periodic tree application
+dispatch is not yet connected.
 
 Serial EB tree halo construction now accepts prescribed inflow states for
 one-cell and six-cell halos while retaining interior peer/ancestor donors
