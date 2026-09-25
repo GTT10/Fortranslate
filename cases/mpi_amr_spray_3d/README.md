@@ -522,9 +522,12 @@ Selected runtime and physical spray validation were not part of that check.
 ### Artificial viscosity
 
 `difmag=-1` (default) selects 0.1 with PPM/pelec and zero otherwise. Explicit
-nonnegative values require `reconstruction='characteristic_ppm'`; zero disables
+nonnegative values are accepted for PCM, PLM and PPM; zero disables
 the correction. The resolved coefficient reaches every gas hydro level and is
 stored in checkpoint context. Automatic and equivalent explicit settings can
 resume each other. Changing the effective coefficient rejects restart. Older
 PPM checkpoints that stored the unresolved -1 sentinel are incompatible; default
-PCM/PLM context is unchanged. See [input and restart evidence](../../docs/validation/difmag-amr-input-20260925.md).
+PCM/PLM context is unchanged. Shared non-PPM gas input and context checks are
+[recorded separately](../../docs/validation/nonppm-difmag-input-20260925.md);
+coupled non-PPM AMR spray restart has not been independently rerun. See
+[PPM input and restart evidence](../../docs/validation/difmag-amr-input-20260925.md).

@@ -218,7 +218,7 @@ at both SSPRK2 stages, including mean face fluxes and boundary accounting
 retain the existing policy. Serial/MPI tree common and level hydro now apply
 the coefficient before flux integration and reflux, including recursive
 subcycling ([checks](validation/pcm-plm-tree-viscosity-20260925.md)). PCM/PLM
-regular spray input/restart policy, uniform default policy and EB
+uniform default policy and EB
 artificial-viscosity dispatch remain open. Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
@@ -230,7 +230,10 @@ with eight-rank serial parity
 ([checks](validation/mpi-two-level-viscosity-20260925.md)). Shared gas configuration
 now accepts explicit PCM/PLM coefficients, and two-level/tree checkpoints bind
 them while preserving legacy zero identity
-([checks](validation/nonppm-difmag-input-20260925.md)). Regular MPI spray
+([checks](validation/nonppm-difmag-input-20260925.md)). Regular serial/MPI spray
+now accepts explicit PLM coefficients and binds restart identity, with fixed
+coupled and changed-rank checks
+([evidence](validation/spray-plm-difmag-input-20260925.md)). Regular MPI spray
 now exposes PPM through particle coupling and checkpoint context, with fixed
 changed-rank continuation [checks](validation/ppm-regular-mpi-application-20260925.md). The regular MPI spray hydro library now accepts PPM
 with four-layer exchange across two-cell slabs and serial state parity

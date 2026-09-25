@@ -424,9 +424,11 @@ but not executed in that check. See the
 [application evidence](../../docs/validation/ppm-regular-mpi-application-20260925.md).
 
 `difmag=-1` (default) selects coefficient 0.1 for PPM/pelec and zero otherwise.
-Explicit nonnegative values require PPM; zero disables artificial viscosity.
+PLM and PPM accept explicit nonnegative values; zero disables artificial viscosity.
 The resolved coefficient participates in collective agreement and checkpoint
 identity. Equivalent automatic/explicit choices can resume each other; changed
 coefficients and older PPM checkpoints lacking this context are rejected.
 Fixed and selected H2/O2 same-rank and 2-to-4-rank coefficient/restart checks
-are recorded in [the input evidence](../../docs/validation/difmag-mpi-spray-20260925.md).
+are recorded in [the PPM input evidence](../../docs/validation/difmag-mpi-spray-20260925.md).
+Fixed PLM coupled restart checks are recorded
+[separately](../../docs/validation/spray-plm-difmag-input-20260925.md).
