@@ -20,7 +20,7 @@ contains
   subroutine advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator,acceleration,source_change,difmag)
+      ok,target_volume_fraction,chemistry_integrator,acceleration,source_change,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -37,6 +37,7 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: acceleration(3)
     real(dp), optional, intent(inout) :: source_change(:)
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     real(dp), optional, intent(in) :: target_volume_fraction,difmag
     character(len=*), optional, intent(in) :: chemistry_integrator
     type(spray_parcel), allocatable :: drops(:)
@@ -47,7 +48,8 @@ contains
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator,acceleration=acceleration,source_change=source_change,difmag=difmag)
+      ok,target_volume_fraction,chemistry_integrator,acceleration=acceleration,source_change=source_change, &
+      difmag=difmag,extended_geometry=extended_geometry)
     if (.not.ok) return
     parcels=drops;component_mass=masses
   end subroutine
@@ -57,7 +59,7 @@ contains
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
       ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected, &
-      split_created,particle_outflow,acceleration,source_change,difmag)
+      split_created,particle_outflow,acceleration,source_change,difmag,extended_geometry)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -89,6 +91,7 @@ contains
     real(dp), intent(inout) :: minimum_theta,boundary_change(:),wall_change(:),chemistry_change(:)
     integer, intent(out) :: particle_steps
     logical, intent(out) :: ok
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     real(dp), optional, intent(in) :: target_volume_fraction,difmag
     character(len=*), optional, intent(in) :: chemistry_integrator
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:),masses(:,:)
@@ -162,7 +165,8 @@ contains
     next_gas=gas;next_temp=temp
     call advance_reactive_eb_full_3d(species,reactions,transport,gas,temp,g,solver,redistribution,dt, &
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,next_gas,next_temp, &
-      theta,valid,target_volume_fraction,chemistry_integrator,boundary,wall,chemical,difmag=difmag)
+      theta,valid,target_volume_fraction,chemistry_integrator,boundary,wall,chemical,difmag=difmag, &
+      extended_geometry=extended_geometry)
     if (.not.valid) return
     if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &

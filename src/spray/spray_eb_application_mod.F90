@@ -97,6 +97,7 @@ contains
       port_diameters,port_temperatures,port_fractions,port_profile_points,port_profile_times,port_profile_rates, &
       port_radii,port_discharge_coefficients,port_nozzles,port_sizes,particle_outflow,acceleration
     type(eb_geometry_3d) :: g
+    type(eb_geometry_3d), allocatable :: extended_geometry
     type(reactive_eb_3d_config) :: canonical
     type(spray_liquid), allocatable :: liquids(:)
     type(spray_liquid) :: effective
@@ -190,6 +191,11 @@ contains
     end do
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
+    if(config%hydro_method=='plm_ctu') then
+      allocate(extended_geometry)
+      call build_configured_eb_geometry_3d(config,extended_geometry,ok,halo=6)
+      if(.not.ok) error stop 'Cannot build extended EB spray geometry'
+    end if
     if(any(mixture_density_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
     if(any(mixture_cp_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
     if(any(mixture_vapor_pressure_models(nc+1:)/='clausius')) error stop 'Unused mixture property entries'
@@ -398,7 +404,8 @@ contains
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
-          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf,difmag=config%difmag)
+          walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf, &
+          difmag=config%difmag,extended_geometry=extended_geometry)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
         call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
@@ -407,7 +414,8 @@ contains
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
           last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow, &
-          acceleration=acceleration,source_change=sf,difmag=config%difmag)
+          acceleration=acceleration,source_change=sf, &
+          difmag=config%difmag,extended_geometry=extended_geometry)
         end if
         if(ok) exit
         dt=.5_dp*dt
@@ -492,6 +500,8 @@ contains
         canonical%checkpoint_file,canonical%restart_file,canonical%output_file
       if(ios==0.and.config%difmag>0) &
         write(scratch,'(a,1x,es27.18e3)',iostat=ios) 'difmag-v1',config%difmag
+      if(ios==0.and.config%hydro_method/='pcm') &
+        write(scratch,'(a,1x,a)',iostat=ios) 'hydro-v1',trim(config%hydro_method)
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)
         if(ios==0) write(scratch,*,iostat=ios) species(j)

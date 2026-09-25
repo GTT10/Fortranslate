@@ -14,6 +14,9 @@ program test_spray_eb_reactive
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   implicit none
   type(eb_geometry_3d) :: g
+  type(eb_geometry_3d), allocatable :: extended
+  real(dp) :: extended_phi(0:16,0:16,0:16)
+  character(len=16) :: mode
   type(elementary_reaction), allocatable :: reactions(:)
   character(len=16) :: solver="rusanov"
   real(dp), allocatable :: boundary(:),wall(:),chemical(:)
@@ -29,11 +32,21 @@ program test_spray_eb_reactive
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
   integer :: i,j,k,nv,nitrogen,steps
   logical :: ok
+  call get_command_argument(1,mode)
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
   end do
   call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[.004_dp,.004_dp,.004_dp],g,ok)
   call require(ok,'geometry')
+  if(mode=='ctu') then
+    allocate(extended)
+    do i=0,16
+      extended_phi(i,:,:)=real(max(0,min(4,i-6)),dp)*.001_dp-.00125_dp
+    end do
+    call build_level_set_eb_geometry_3d(extended_phi,[-.006_dp,-.006_dp,-.006_dp], &
+      [.010_dp,.010_dp,.010_dp],extended,ok)
+    call require(ok,'extended geometry')
+  end if
   call load_h2o2_full_thermo(species,ok)
   call require(ok,'thermo')
   call load_h2o2_full_mechanism(reactions,ok)
@@ -77,6 +90,7 @@ program test_spray_eb_reactive
   call require(all(drops(1)%position==saved_drop%position).and.all(boundary==42).and.all(wall==42).and. &
     all(chemical==42).and.theta==42,'particle and wall ledger rollback')
   solver="rusanov"
+  if(mode=='ctu') solver='pelec'
   call inventory(before)
   call advance()
   call require(ok.and.steps>1,'coupled substeps')
@@ -100,6 +114,7 @@ program test_spray_eb_reactive
   call require(.not.ok.and.all(force==46).and.all(state==saved),'fixed-array force rollback')
   call require(all(drops(1)%velocity==saved_drop%velocity),'fixed-array kick rollback')
   solver='rusanov'
+  if(mode=='ctu') solver='pelec'
   call inventory(before)
   call advance()
   call require(ok.and.force(1)==0.and.any(force(2:4)/=0).and.all(force(6:)==0),'fixed-array force inventory')
@@ -113,7 +128,7 @@ contains
     call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
       2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
-      acceleration=accel,source_change=force)
+      acceleration=accel,source_change=force,extended_geometry=extended)
   end subroutine
   subroutine inventory(total)
     real(dp), intent(out) :: total(:)

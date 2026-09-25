@@ -13,6 +13,7 @@ p.add_argument('--exe', type=Path, required=True)
 p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
+p.add_argument('--ctu', action='store_true')
 p.add_argument('--scheduled', action='store_true')
 p.add_argument('--restart', action='store_true')
 p.add_argument('--split', action='store_true')
@@ -26,6 +27,10 @@ a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
 for name in ('gas.nml', 'spray.nml', 'level_set.dat'):
     shutil.copy(a.source / 'cases/eb_spray_3d' / name, work / name)
+if a.ctu:
+    gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d',
+        "&reactive_eb_3d\n hydro_method='plm_ctu', riemann_solver='pelec',", 1)
+    (work / 'gas.nml').write_text(gas)
 if a.selected:
     gas = (work / 'gas.nml').read_text().replace("thermo_model='elementary'", "thermo_model='selected'")
     gas = gas.replace(" output_file=", " composition_count=1, composition_species(1)='N2', composition_mole_fractions(1)=1\n output_file=")
@@ -196,6 +201,15 @@ if a.restart:
         before = next(line for line in full_log.splitlines() if line.startswith(label))
         after = next(line for line in run.stdout.splitlines() if line.startswith(label))
         assert before == after, (label, work)
+    if a.ctu:
+        altered = resume.replace("hydro_method='plm_ctu'", "hydro_method='pcm'")
+        (work / 'changed_hydro.nml').write_text(altered)
+        rejected = subprocess.run([exe, 'changed_hydro.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
+        (work / 'changed_hydro.log').write_text(rejected.stdout + rejected.stderr)
+        assert rejected.returncode != 0
+        assert (work / 'gas.csv').read_bytes() == full_gas
+        assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
+        assert (work / 'gas.csv.films.csv').read_bytes() == full_films
     if a.difmag is not None:
         for name, value in [('changed_difmag', a.difmag + .01), ('negative_difmag', -1), ('nan_difmag', 'NaN')]:
             altered = resume.replace(f'difmag={a.difmag}', f'difmag={value}')
