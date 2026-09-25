@@ -68,6 +68,14 @@ if(PELEF_ENABLE_SPRAY)
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
     --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_khrt_application" --restart --khrt)
   set_tests_properties(spray_eb_khrt_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
+  foreach(boundary_mode periodic wall)
+    add_test(NAME spray_eb_${boundary_mode}_khrt_application COMMAND "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
+      --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_${boundary_mode}_khrt_application"
+      --restart --khrt --${boundary_mode})
+    set_tests_properties(spray_eb_${boundary_mode}_khrt_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
+  endforeach()
   add_test(NAME spray_eb_split_application COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"

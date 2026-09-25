@@ -32,7 +32,7 @@ if a.inflow or a.periodic or a.wall:
     a.ctu = True
 if a.periodic or a.wall:
     assert not (a.periodic and a.wall)
-    assert not any((a.inflow, a.scheduled, a.split, a.khrt, a.outflow, a.force))
+    assert not any((a.inflow, a.scheduled, a.split, a.outflow, a.force))
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
 for name in ('gas.nml', 'spray.nml', 'level_set.dat'):
@@ -135,12 +135,12 @@ if a.outflow and not a.impacts:
     assert all(float(row['mass']) == 0 and float(row['component_mass_1']) == 0 for row in rows)
     boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
     assert float(boundary_line.split(':', 1)[1].split()[0]) < 0
-elif a.wall and not a.impacts:
+elif a.wall and not a.impacts and not a.khrt:
     assert len(rows) == 2
     assert all(.003 < float(row['y']) < .004 and float(row['mass']) > 0 for row in rows)
     assert all(float(row['temperature']) > 350 and float(row['v']) < 0 for row in rows)
     assert all(math.isfinite(float(value)) for row in rows for value in row.values())
-elif a.periodic and not a.impacts:
+elif a.periodic and not a.impacts and not a.khrt:
     assert len(rows) == 2
     assert all(0 <= float(row['y']) < .001 and float(row['mass']) > 0 for row in rows)
     assert all(float(row['temperature']) > 350 and float(row['v']) > 0 for row in rows)
@@ -148,7 +148,12 @@ elif a.periodic and not a.impacts:
 elif a.khrt:
     assert len(rows)>2 and (len(rows)-2)%4==0
     assert [int(row['id']) for row in rows] == list(range(1,len(rows)+1))
-    assert all(float(row['u'])>0 and float(row['x'])>.002 for row in rows)
+    if a.periodic:
+        assert all(float(row['v'])>0 and 0 <= float(row['y']) < .001 for row in rows)
+    elif a.wall:
+        assert all(float(row['v'])<0 and .003 < float(row['y']) < .004 for row in rows)
+    else:
+        assert all(float(row['u'])>0 and float(row['x'])>.002 for row in rows)
     assert all(float(row['component_mass_1']) == float(row['mass']) for row in rows)
 elif a.split:
     assert len(rows) == (12 if a.scheduled else 4)

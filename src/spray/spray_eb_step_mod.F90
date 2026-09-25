@@ -58,8 +58,10 @@ contains
     real(dp), optional, intent(inout) :: outer_change(:)
     real(dp) :: exterior(reactive_nvar(size(species))),trial_exterior(reactive_nvar(size(species)))
     real(dp), allocatable :: liquid_energies(:),impact_exterior(:)
-    real(dp) :: clipped_finish(3),flight_fraction,axis_fraction
-    integer :: axis
+    real(dp) :: clipped_finish(3),preview_change(5),preview_exterior(5)
+    type(spray_parcel) :: preview(1)
+    logical :: preview_contact(1)
+    integer :: preview_hits
     type(spray_eb_wall_options), optional, intent(in) :: wall_options
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
@@ -249,17 +251,15 @@ contains
             if(trial(p)%mass<=0) cycle
             clipped_finish=trial(p)%position+dt*trial(p)%velocity
             if(present(outer_faces)) then
-              flight_fraction=1
-              do axis=1,3
-                if(clipped_finish(axis)>upper(axis)) then
-                  axis_fraction=(upper(axis)-trial(p)%position(axis))/(dt*trial(p)%velocity(axis))
-                  flight_fraction=min(flight_fraction,axis_fraction)
-                else if(clipped_finish(axis)<lower(axis)) then
-                  axis_fraction=(lower(axis)-trial(p)%position(axis))/(dt*trial(p)%velocity(axis))
-                  flight_fraction=min(flight_fraction,axis_fraction)
-                end if
-              end do
-              clipped_finish=max(lower,min(upper,trial(p)%position+flight_fraction*dt*trial(p)%velocity))
+              ! Follow wrapped/reflecting flight before deciding on KH release.
+              ! The preview remains private; actual parents and children drift later.
+              preview(1)=trial(p);preview_contact=.false.
+              preview_change=0;preview_exterior=0;preview_hits=0
+              call drift_spray_level_set(phi,lower,upper,dt,32,preview,preview_change,preview_hits, &
+                valid,outer_faces,[0._dp],preview_exterior,preview_contact)
+              if(.not.valid) exit
+              eligible(p)=.not.preview_contact(1)
+              cycle
             end if
             call intersect_spray_level_set(phi,lower,upper,trial(p)%position, &
               clipped_finish,crossing,crossing_fraction, &

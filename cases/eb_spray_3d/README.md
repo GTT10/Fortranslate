@@ -221,7 +221,10 @@ checkpoint/restart. Restore checks four-child release groups after subtracting
 injected and computational split IDs. The existing checkpoint layout already
 stores the KH fields; no new format is needed for KH mode alone.
 
-A crossing parent skips KH for that source substep and takes the wall path.
+A parent contacting an EB or reflecting domain wall skips KH for that source
+substep and takes the wall path. With explicit outer faces, the eligibility
+preview follows the full flight, including periodic wraps and subsequent EB
+contacts. A periodic crossing alone does not suppress KH release.
 Other parents and their children drift after release; the transverse child energy
 is balanced against the gas. This is source-first splitting, not a calibrated
 breakup validation. See [focused evidence](../../docs/validation/spray-eb-khrt-application-20260918.md).
