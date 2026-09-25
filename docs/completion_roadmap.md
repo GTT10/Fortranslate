@@ -222,8 +222,9 @@ application defaults now resolve to the reference 0.1 through shared regular
 gas configuration, including AMR checkpoint identity
 ([checks](validation/regular-gas-default-difmag-20260925.md)). Serial/MPI regular spray
 now also defaults to 0.1 with changed-rank restart evidence
-([checks](validation/spray-default-difmag-20260925.md)). Direct-library and EB
-default unification remain open. The viscosity kernel now accepts
+([checks](validation/spray-default-difmag-20260925.md)). EB application inputs also now default to 0.1 with zero-to-default restart
+rejection ([checks](validation/eb-default-difmag-20260925.md)). Direct-library
+default unification remains open. The viscosity kernel now accepts
 EB volume fractions and open-face masks, suppressing nodal divergence near
 cut/covered cells using the reference cutoff
 ([checks](validation/eb-viscosity-kernel-20260925.md)). The EB face-flux API and

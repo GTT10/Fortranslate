@@ -14,7 +14,7 @@ Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 ## Artificial viscosity
 
 Gas executables accept finite nonnegative `difmag` in `&eb_tree` (for example,
-`difmag=0.037`). Default zero preserves the previous flux policy; -1 is invalid.
+`difmag=0.037`). Default 0.1 matches the reference coefficient; explicit zero retains the previous policy; -1 is invalid.
 The coefficient reaches common and recursive hydro and must match on restart.
 MPI EB spray also forwards the coefficient through its gas update; see
 [MPI spray evidence](../../docs/validation/mpi-eb-spray-difmag-20260925.md). See
@@ -232,3 +232,6 @@ boundaries. It is not a convergence or physical validation case. MPI and
 large-tree scaling remain open for this EB tree application. Plain Euler
 retains the small-cell interval restriction; retries do not replace an
 accuracy/convergence study.
+
+The EB coefficient default changed to 0.1; old zero-policy checkpoints require
+explicit `difmag=0`. See [default-policy checks](../../docs/validation/eb-default-difmag-20260925.md).

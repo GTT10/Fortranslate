@@ -383,7 +383,10 @@ binds the mode to restart. See
 
 ## Artificial viscosity
 
-`&eb_tree` accepts finite nonnegative `difmag` (default zero). The gas update
+`&eb_tree` accepts finite nonnegative `difmag` (default 0.1). The gas update
 uses it between particle half steps, and restart requires the same value.
 The library requires coefficient agreement across ranks before particle work.
 See [focused checks](../../docs/validation/mpi-eb-spray-difmag-20260925.md).
+
+The EB coefficient default changed to 0.1; old zero-policy checkpoints require
+explicit `difmag=0`. See [default-policy checks](../../docs/validation/eb-default-difmag-20260925.md).

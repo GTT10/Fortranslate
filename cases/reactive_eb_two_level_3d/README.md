@@ -185,6 +185,9 @@ available. [Element/checkpoint evidence](../../docs/validation/eb-carbon-checkpo
 ## Artificial viscosity
 
 `&eb_two_level` accepts finite nonnegative `difmag` for both single-patch and
-multipatch gas stepping. Default zero preserves the previous flux policy;
+multipatch gas stepping. Default 0.1 matches the reference coefficient; explicit zero retains the previous policy;
 negative values, including -1, are invalid. Restart requires the same positive
 coefficient. See [focused input/restart checks](../../docs/validation/eb-two-level-difmag-input-20260925.md).
+
+The EB coefficient default changed to 0.1; old zero-policy checkpoints require
+explicit `difmag=0`. See [default-policy checks](../../docs/validation/eb-default-difmag-20260925.md).

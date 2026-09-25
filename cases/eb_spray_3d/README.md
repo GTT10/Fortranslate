@@ -330,8 +330,11 @@ checkpoint inventory and the setting is part of restart context. See
 
 ## Artificial viscosity
 
-The gas namelist accepts finite nonnegative `difmag` (default zero). Positive
+The gas namelist accepts finite nonnegative `difmag` (default 0.1). Positive
 values apply the EB gas flux correction between particle half steps and must
 match when restarting. Negative values, including -1, are invalid. See the
 [focused evidence](../../docs/validation/eb-spray-difmag-20260925.md) for checked
 configurations and checkpoint-format compatibility limits.
+
+The EB coefficient default changed to 0.1; old zero-policy checkpoints require
+explicit `difmag=0`. See [default-policy checks](../../docs/validation/eb-default-difmag-20260925.md).
