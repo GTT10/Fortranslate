@@ -128,7 +128,6 @@ contains
     ! either open gas face; their removed inventory enters the same ledger.
     if(present(boundary_faces)) then
       if(.not.valid_spray_boundary_faces(boundary_faces)) return
-      if(impacts.and.any(boundary_faces/='inflow'.and.boundary_faces/='outflow')) return
       if(.not.present(extended_geometry)) return
       if(present(particle_outflow)) then
         if(.not.particle_outflow) return
@@ -141,6 +140,7 @@ contains
     if(present(boundary_faces)) then
       outer_faces=boundary_faces
       where(boundary_faces=='inflow') outer_faces='outflow'
+      where(boundary_faces=='isothermal_wall') outer_faces='no_slip_wall'
     end if
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return

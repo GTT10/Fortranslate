@@ -89,7 +89,8 @@ boundary inputs retain their previous context.
 Domain-wall labels apply the selected gas condition and specular particle
 reflection. Particle tangential velocity is retained even at a gas no-slip
 wall; particle mass and thermal state are unchanged by the reflection itself.
-Use `wall_impacts=.false.` with domain-wall or periodic labels. For an
+`wall_impacts=.true.` enables EB deposition/splash and stationary films while
+outer-domain walls still reflect specularly. For an
 isothermal gas wall, enable transport and thermal conduction and set the six
 `wall_temperature` values in kelvin. Wall heat-transfer bounds limit the time
 step, and wall temperatures enter checkpoint identity. The exterior inventory
@@ -106,9 +107,11 @@ For the supplied x-normal plane, periodic y/z faces can be set with:
 Keep `particle_outflow=.true.` to enable exterior-face handling. Periodic faces
 wrap particles and their gas sampling/deposition; they do not remove particle
 inventory. The geometry must match across each periodic pair. The supplied
-plane cannot be periodic in x. Periodic boundaries currently require
-`wall_impacts=.false.`; specular reflection at the embedded surface remains
-available. Fixed/selected periodic crossing and exact CSV continuation are
+plane cannot be periodic in x. Both specular EB reflection and
+`wall_impacts=.true.` are supported. EB impact flight resumes after periodic
+crossings, wet-film thickness includes periodic images, and film heating/
+evaporation exchanges with wrapped gas donors. Film state and these boundary
+settings persist through restart. Fixed/selected periodic crossing and exact CSV continuation are
 covered by [these checks](../../docs/validation/eb-spray-periodic-application-20260925.md).
 
 See [focused application checks](../../docs/validation/eb-spray-inflow-application-20260925.md).

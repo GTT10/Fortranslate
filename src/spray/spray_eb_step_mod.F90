@@ -95,7 +95,6 @@ contains
     impacts=present(wall_options)
     if(present(outer_faces).neqv.present(outer_change)) return
     if(present(outer_faces)) then
-      if(impacts.and.any(outer_faces/="outflow")) return
       if(.not.valid_spray_boundary_faces(outer_faces)) return
       if(size(outer_change)/=reactive_nvar(size(species))) return
     end if
@@ -295,13 +294,14 @@ contains
             end do
             if (wall_options%evolve) then
               call advance_eb_film_coupling(species,transport,components,options,wall_options,g,phi, &
-                next_gas,next_temp,next_patches,next_patch_mass,dt,film_steps,film_change,valid)
+                next_gas,next_temp,next_patches,next_patch_mass,dt,film_steps,film_change,valid,periodic)
             end if
             rejected=.false.
             if (valid) call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
               min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
               101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
-              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,impact_pressures,rejected,impact_exterior)
+              next_patches,next_patch_mass,next_watermark,exchange,hits,valid,impact_pressures,rejected, &
+              impact_exterior,outer_faces)
             if (rejected) then
               if (present(model_rejected)) model_rejected=.true.
               return

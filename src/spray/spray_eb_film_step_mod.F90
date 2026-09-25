@@ -17,7 +17,7 @@ module spray_eb_film_step_mod
   public :: advance_eb_film_coupling
 contains
   subroutine advance_eb_film_coupling(species,transport,components,options,walls,g,phi,state,temperature, &
-      films,film_mass,interval,substeps,wall_change,ok)
+      films,film_mass,interval,substeps,wall_change,ok,periodic)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
@@ -30,6 +30,7 @@ contains
     real(dp), allocatable, intent(inout) :: film_mass(:,:)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
     type(spray_wall_film), allocatable :: patches(:),trial(:),kept(:)
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:),field(:,:,:,:)
     real(dp), allocatable :: masses(:,:),next_mass(:,:),kept_mass(:,:),positions(:,:),samples(:,:),change(:,:)
@@ -69,13 +70,13 @@ contains
       if (dot_product(normal,films(p)%normal)<1-1e-10_dp) return
     end do
     gas=state;temp=temperature;patches=films;masses=film_mass;change=0
-    call deposit_eb_spray_gas(species,g,phi,positions,change,gas,temp,valid)
+    call deposit_eb_spray_gas(species,g,phi,positions,change,gas,temp,valid,periodic)
     if (.not.valid) return
     elapsed=0;ledger=0;count_steps=0
     do while(walls%evolve.and.elapsed<interval)
       if (count_steps>=options%maximum_substeps) return
       field(:nvar,:,:,:)=gas;field(nvar+1,:,:,:)=temp
-      call sample_eb_spray_field(g,phi,field,positions,samples,valid)
+      call sample_eb_spray_field(g,phi,field,positions,samples,valid,periodic)
       if (.not.valid) return
       dt=interval-elapsed;rates=0;hv=0;qg=0;qw=0
       do p=1,np
@@ -104,7 +105,7 @@ contains
         end do
         if (valid) then
           next_gas=gas;next_temp=temp
-          call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid)
+          call deposit_eb_spray_gas(species,g,phi,positions,change,next_gas,next_temp,valid,periodic)
         end if
         if (valid) then
           accepted=.true.;exit

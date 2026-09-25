@@ -201,8 +201,6 @@ contains
     end do
     if(any(config%boundary_faces/='legacy')) then
       if(.not.particle_outflow) error stop 'Explicit EB spray boundaries require particle_outflow'
-      if(wall_impacts.and.any(config%boundary_faces/='inflow'.and.config%boundary_faces/='outflow')) &
-        error stop 'Periodic or domain-wall EB spray does not support impact films'
     end if
     call build_configured_eb_geometry_3d(config,g,ok,phi)
     if(.not.ok) error stop 'Cannot build EB spray geometry'
@@ -669,7 +667,7 @@ contains
       end do
       if (wall_impacts) then
         call advance_eb_film_coupling(species,transport,liquids,options,walls,g,phi,state,temperature, &
-          films,film_mass,0._dp,particle_steps,sw(:5),valid)
+          films,film_mass,0._dp,particle_steps,sw(:5),valid,config%boundary_faces(1:6:2)=='periodic')
         if(.not.valid) error stop 'Invalid restart EB films'
       end if
     end subroutine

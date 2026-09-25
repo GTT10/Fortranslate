@@ -23,6 +23,11 @@ if(PELEF_ENABLE_SPRAY)
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
     --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_splash_outflow_application" --impacts splash --outflow --restart)
   set_tests_properties(spray_eb_splash_outflow_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
+  add_test(NAME spray_eb_periodic_film_application COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
+    --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"
+    --work "${CMAKE_CURRENT_BINARY_DIR}/spray_eb_periodic_film_application" --periodic --impacts deposit --restart)
+  set_tests_properties(spray_eb_periodic_film_application PROPERTIES LABELS "spray;eb;application" TIMEOUT 60)
   add_test(NAME spray_eb_outflow_application COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"

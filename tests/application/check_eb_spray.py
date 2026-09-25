@@ -32,7 +32,7 @@ if a.inflow or a.periodic or a.wall:
     a.ctu = True
 if a.periodic or a.wall:
     assert not (a.periodic and a.wall)
-    assert not any((a.inflow, a.scheduled, a.impacts, a.split, a.khrt, a.outflow, a.force))
+    assert not any((a.inflow, a.scheduled, a.split, a.khrt, a.outflow, a.force))
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
 for name in ('gas.nml', 'spray.nml', 'level_set.dat'):
@@ -62,8 +62,12 @@ if a.periodic or a.wall:
             '&reactive_eb_3d\n wall_temperature=1200,1200,1200,1200,1200,1200,', 1)
     (work / 'gas.nml').write_text(gas)
     spray = (work / 'spray.nml').read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
-    spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
-                          'center=.003,.003999999,.002, axis=0,1,0')
+    if a.impacts:
+        spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
+                              'center=.001250001,.0039999999,.002, axis=-1,1,0')
+    else:
+        spray = spray.replace('center=.001250001,.0015,.0015, axis=-1,0,0',
+                              'center=.003,.003999999,.002, axis=0,1,0')
     (work / 'spray.nml').write_text(spray)
 if a.selected:
     gas = (work / 'gas.nml').read_text().replace("thermo_model='elementary'", "thermo_model='selected'")
@@ -131,12 +135,12 @@ if a.outflow and not a.impacts:
     assert all(float(row['mass']) == 0 and float(row['component_mass_1']) == 0 for row in rows)
     boundary_line = next(x for x in result.stdout.splitlines() if x.startswith('Boundary inventory:'))
     assert float(boundary_line.split(':', 1)[1].split()[0]) < 0
-elif a.wall:
+elif a.wall and not a.impacts:
     assert len(rows) == 2
     assert all(.003 < float(row['y']) < .004 and float(row['mass']) > 0 for row in rows)
     assert all(float(row['temperature']) > 350 and float(row['v']) < 0 for row in rows)
     assert all(math.isfinite(float(value)) for row in rows for value in row.values())
-elif a.periodic:
+elif a.periodic and not a.impacts:
     assert len(rows) == 2
     assert all(0 <= float(row['y']) < .001 and float(row['mass']) > 0 for row in rows)
     assert all(float(row['temperature']) > 350 and float(row['v']) > 0 for row in rows)
@@ -191,6 +195,10 @@ else:
     for film in films:
         assert abs(float(film['x']) - .00125) < 1e-15
         assert float(film['nx']) == 1 and float(film['height']) > 0
+        if a.periodic:
+            assert 0 <= float(film['y']) < .001
+        if a.wall:
+            assert .003 < float(film['y']) < .0039999999
     if a.scheduled:
         assert [int(row['id']) for row in rows[-2:]] == ([7, 8] if a.impacts == 'deposit' else [31, 32])
         for row in rows[-2:]:
@@ -296,11 +304,6 @@ if a.restart:
             assert (work / 'gas.csv').read_bytes() == full_gas
             assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
             assert (work / 'gas.csv.films.csv').read_bytes() == full_films
-        (work / 'periodic_impacts.nml').write_text((work / 'spray.nml').read_text().replace(
-            '&eb_spray', '&eb_spray\n wall_impacts=.true.,', 1))
-        rejected = subprocess.run([exe, 'gas.nml', 'periodic_impacts.nml'], cwd=work, capture_output=True, text=True)
-        (work / 'periodic_impacts.log').write_text(rejected.stdout + rejected.stderr)
-        assert rejected.returncode != 0 and 'does not support impact films' in rejected.stderr
     if a.wall:
         for name, altered in [
             ('changed_wall', resume.replace('1200', '1201')),

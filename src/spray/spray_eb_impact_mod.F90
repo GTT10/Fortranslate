@@ -230,7 +230,8 @@ contains
         if (.not.hit) then
           if(exits) then
             if(depth(p)>=maximum_hits) return
-            if(faces(exit_face)=='periodic'.or.faces(exit_face)=='slip_wall'.or.faces(exit_face)=='no_slip_wall') then
+            if(faces(exit_face)=='periodic'.or.faces(exit_face)=='slip_wall'.or. &
+              faces(exit_face)=='no_slip_wall'.or.faces(exit_face)=='isothermal_wall') then
               axis=(exit_face+1)/2
               if(faces(exit_face)=='periodic') then
                 queue(p)%position(axis)=merge(lower(axis),upper(axis),modulo(exit_face,2)==0)
