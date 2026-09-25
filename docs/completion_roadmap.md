@@ -152,8 +152,9 @@ and coupled reaction/transport composition now also connect time-interpolated
 ancestor halos and accumulated fine fluxes
 ([checks](validation/eb-tree-ctu-subcycle-20260925.md)). MPI common CTU steps
 now match serial under distributed and idle-rank ownership
-([checks](validation/mpi-eb-ctu-common-20260925.md)). MPI recursive CTU and coupled dispatch,
-tree application selection and other physical boundary halo preparation remain
+([checks](validation/mpi-eb-ctu-common-20260925.md)). Recursive MPI CTU and
+coupled common/recursive dispatch now also match serial
+([checks](validation/mpi-eb-ctu-recursive-20260925.md)). Tree application selection and other physical boundary halo preparation remain
 before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.

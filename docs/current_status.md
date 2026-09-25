@@ -18,9 +18,10 @@ selected H2O2 coupled continuation passed focused checks
 CTU to EB tree applications or spray paths or qualify a physical wall-flow solution.
 Serial EB tree library operators support common and recursive CTU steps with
 reaction/transport composition ([checks](validation/eb-tree-ctu-subcycle-20260925.md)).
-MPI common-interval tree hydro also supports CTU with owner-local state and
-serial agreement ([checks](validation/mpi-eb-ctu-common-20260925.md)); recursive
-MPI stepping and coupled dispatch remain unconnected.
+MPI common and recursive tree hydro and coupled reaction/transport stepping
+also support CTU with owner-local state and serial agreement
+([common hydro](validation/mpi-eb-ctu-common-20260925.md),
+[recursive/coupled checks](validation/mpi-eb-ctu-recursive-20260925.md)).
 
 The pinned nozzle Mach-inlet state kernel is now available for six faces, with
 interior composition and extrapolated or prescribed pressure
