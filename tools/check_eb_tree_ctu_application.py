@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--selected', action='store_true')
+    parser.add_argument('--uniform-density', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work.resolve()))
@@ -25,9 +26,11 @@ def main():
     template = template.replace("output_file='eb_tree.csv'", "output_file='result.csv'")
     if args.selected:
         template = template.replace("chemistry_integrator='explicit'", "chemistry_integrator='implicit'")
-        template = template.replace('&eb_tree', "&eb_tree\n cut_density=.31, composition_count=3, "
+        template = template.replace('&eb_tree', "&eb_tree\n composition_count=3, "
                                     "composition_species='H2','O2','N2', "
                                     "composition_mole_fractions=.29572,.14785,.55643,", 1)
+    if args.uniform_density:
+        template = template.replace('&eb_tree', '&eb_tree\n cut_density=.31,', 1)
     env = os.environ.copy()
     env.pop('DISPLAY', None)
     env['OMPI_MCA_rmaps_base_oversubscribe'] = '1'
@@ -55,7 +58,8 @@ def main():
     expected = (serial / 'result.csv').read_bytes()
     assert (full / 'result.csv').read_bytes() == expected
     assert (resumed / 'result.csv').read_bytes() == expected
-    assert 'nodes: 1' in (stopped / 'run.log').read_text()
+    if not args.selected or args.uniform_density:
+        assert 'nodes: 1' in (stopped / 'run.log').read_text()
     worst = 0.0
     for directory in (serial, full, resumed):
         with (directory / 'result.csv').open() as stream:
