@@ -142,8 +142,11 @@ Configured plane/extruded/nodal geometry now supports domain-face extension,
 and an outflow entry prepares state halos and flattening before the CTU update
 ([checks](validation/eb-extended-geometry-20260925.md)). Fixed/selected single-level applications now select `plm_ctu`, compose it with
 reaction/transport and bind checkpoint continuation to the hydro method
-([checks](validation/eb-ctu-application-20260925.md)). Other boundary halo
-preparation and coupled MPI/AMR dispatch remain before claiming EB Godunov parity.
+([checks](validation/eb-ctu-application-20260925.md)). Serial/MPI patch-tree
+halo APIs now accept six-layer target-resolution metrics with peer/ancestor
+exchange and temporal interpolation ([checks](validation/eb-wide-halo-20260925.md)).
+Extended patch geometry preparation, CTU tree stepping/reflux and other physical
+boundary halo preparation remain before claiming EB Godunov parity.
 
 The 3D reactive flow path still lacks complete characteristic PPM CTU tracing.
 A periodic three-axis normal PPM face-flux predictor now reuses the existing
