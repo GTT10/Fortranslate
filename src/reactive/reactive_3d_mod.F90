@@ -67,7 +67,7 @@ contains
       source_count,evaluate_sources,ok,difmag,external_force,source_change, &
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
-      inflow_state,inflow_temperature,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -85,6 +85,7 @@ contains
     real(dp), optional, intent(out) :: boundary_change(:)
     real(dp), optional, intent(in) :: outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),inflow_mach(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: wall_temperature(:),wall_velocity(:,:)
     character(len=16) :: faces(6)
     real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source_ghost(:,:,:,:)
     integer :: index(3),a
@@ -109,7 +110,6 @@ contains
       if(size(boundary_change)/=nv) return
     end if
     if(.not.valid_reactive_boundaries_3d(faces)) return
-    if(any(faces/='periodic'.and.faces/='outflow'.and.faces/='inflow')) return
     if(present(inflow_pressure).and..not.present(inflow_mach)) return
     if(present(outlet_pressure)) then
       if(.not.all(ieee_is_finite(outlet_pressure))) return
@@ -204,7 +204,9 @@ contains
         end do
         call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,ghost_t,n,spacing,dt,.false.,.true.,'pelec', &
           fx,fy,fz,theta,valid,difmag=difmag,conserved_source=source_ghost,outflow_faces=faces=='outflow', &
-          outlet_pressure=outlet_pressure,inflow_faces=faces=='inflow')
+          outlet_pressure=outlet_pressure,inflow_faces=faces=='inflow', &
+          no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall', &
+          reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
       end if
       if(.not.valid) return
       do k=1,n(3)
@@ -298,7 +300,8 @@ contains
       else
         call physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
           flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,outlet_pressure=outlet_pressure, &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach, &
+          inflow_pressure=inflow_pressure,wall_temperature=wall_temperature,wall_velocity=wall_velocity)
         if(.not.good) return
         do kk=1,n(3)
         do jj=1,n(2)

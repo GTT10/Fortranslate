@@ -768,9 +768,8 @@ contains
       message='SDC iterations must be positive';return
     end if
     if(config%time_integrator=='sdc') then
-      if(config%reconstruction/='characteristic_ppm'.or.config%riemann_solver/='pelec'.or. &
-        any(faces/='periodic'.and.faces/='outflow'.and.faces/='inflow')) then
-        message='SDC requires PPM/PeleC with periodic, outflow or inflow faces';return
+      if(config%reconstruction/='characteristic_ppm'.or.config%riemann_solver/='pelec') then
+        message='SDC requires PPM/PeleC';return
       end if
     end if
     if(.not.all(ieee_is_finite(config%external_forcing))) then
