@@ -15,12 +15,49 @@ module constant_volume_reactor_mod
 
   public :: reactor_specific_internal_energy
   public :: reactor_rhs
+  public :: forced_reactor_rhs
   public :: advance_constant_volume_adaptive
   public :: reactor_reduced_jacobian
   public :: backward_euler_trial
   public :: advance_constant_volume_implicit_adaptive
 
 contains
+
+  ! Reactor state for SDC: rhoY evolves with chemistry plus fixed external
+  ! species rates; rhoe(t)=rhoe(0)+t*external_energy. Density follows sum(rhoY).
+  subroutine forced_reactor_rhs(species,reactions,initial_energy_density,elapsed,species_density, &
+      external_species,external_energy,temperature_guess,derivative,temperature,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: initial_energy_density,elapsed,species_density(:),external_species(:),external_energy
+    real(dp), intent(in) :: temperature_guess
+    real(dp), intent(out) :: derivative(:),temperature
+    logical, intent(out) :: ok
+    real(dp) :: density,energy,candidate_temperature,y(size(species)),rates(size(species)),candidate(size(species))
+    logical :: valid
+    derivative=0;temperature=0;ok=.false.
+    if(size(species)<1.or.size(species_density)/=size(species).or. &
+      size(external_species)/=size(species).or.size(derivative)/=size(species)) return
+    if(.not.all(ieee_is_finite([initial_energy_density,elapsed,external_energy,temperature_guess]))) return
+    if(.not.all(ieee_is_finite(species_density)).or..not.all(ieee_is_finite(external_species))) return
+    if(elapsed<0.or.any(species_density<0)) return
+    density=sum(species_density)
+    if(.not.ieee_is_finite(density).or.density<=0) return
+    y=species_density/density
+    energy=(initial_energy_density+elapsed*external_energy)/density
+    if(.not.ieee_is_finite(energy)) return
+    if(size(reactions)==0) then
+      ! An empty mechanism is the inert limit of the forced reactor.
+      rates=0
+      call temperature_from_internal_energy(species,y,energy,temperature_guess,candidate_temperature,valid)
+    else
+      call reactor_rhs(species,reactions,density,energy,y,temperature_guess,rates,candidate_temperature,valid)
+    end if
+    if(.not.valid) return
+    candidate=density*rates+external_species
+    if(.not.all(ieee_is_finite(candidate))) return
+    derivative=candidate;temperature=candidate_temperature;ok=.true.
+  end subroutine forced_reactor_rhs
 
   real(dp) function reactor_specific_internal_energy( &
       species, mass_fractions, temperature, ok) result(internal_energy)
