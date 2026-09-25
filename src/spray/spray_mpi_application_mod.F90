@@ -239,10 +239,7 @@ contains
     'Invalid hydro reconstruction')
   call require(ieee_is_finite(difmag),'Invalid artificial-viscosity coefficient')
   call require(difmag>=0.or.difmag==-1._dp,'Invalid artificial-viscosity coefficient')
-  if(difmag==-1._dp) then
-    difmag=0
-    if(hydro_reconstruction=='characteristic_ppm'.and.solver=='pelec') difmag=.1_dp
-  end if
+  if(difmag==-1._dp) difmag=.1_dp
   ! Bind all physical/evolution inputs, excluding rank count, paths, stop time
   ! and the maximum-step guard, which may change when continuing a run.
   write(checkpoint_context,'(*(g0,1x))',iostat=status) 'mpi-spray-application-v2', &

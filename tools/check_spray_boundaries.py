@@ -178,7 +178,7 @@ def main():
             # Equivalent automatic and explicit default settings must share restart identity.
             run('auto_stop', f"difmag=-1, stop_after_steps=2, checkpoint_file='{kind}_auto.chk',")
             auto = run('auto_resume', f"difmag=-1, restart_file='{kind}_auto.chk',")
-            explicit = run('explicit_resume', f"difmag={0.1 if args.ppm else 0}, restart_file='{kind}_auto.chk',")
+            explicit = run('explicit_resume', f"difmag={0.1}, restart_file='{kind}_auto.chk',")
             for suffix in ('.gas.csv', '.parcels.csv', '.history.csv'):
                 assert (work / (auto + suffix)).read_bytes() == (work / (explicit + suffix)).read_bytes()
         if args.mach_inlet:

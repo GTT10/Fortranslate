@@ -224,7 +224,7 @@ def main():
             assert not (work / f'{label}.history.csv').exists()
         run_variant('auto_split', args.ranks, "difmag=-1, checkpoint_path='auto.chk'", stop='1e-8')
         run_variant('auto_resume', 6 - args.ranks, "difmag=-1, restart_path='auto.chk'")
-        run_variant('explicit_resume', 6 - args.ranks, f"difmag={.1 if args.ppm else 0}, restart_path='auto.chk'")
+        run_variant('explicit_resume', 6 - args.ranks, f"difmag={.1}, restart_path='auto.chk'")
         for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
             assert snapshots('auto_resume', suffix, keys) == snapshots('explicit_resume', suffix, keys)
         assert rows(work / 'auto_resume.history.csv') == rows(work / 'explicit_resume.history.csv')

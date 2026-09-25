@@ -372,10 +372,7 @@ contains
       call fail('Invalid hydro reconstruction')
     if (.not.ieee_is_finite(difmag)) call fail('Invalid artificial-viscosity coefficient')
     if (difmag<0.and.difmag/=-1._dp) call fail('Invalid artificial-viscosity coefficient')
-    if (difmag==-1._dp) then
-      difmag=0._dp
-      if (hydro_reconstruction=='characteristic_ppm'.and.riemann_solver=='pelec') difmag=.1_dp
-    end if
+    if(difmag==-1._dp) difmag=.1_dp
     if (trim(hydro_reconstruction)=='characteristic_plm' .and. any(cells<3)) &
       call fail('Characteristic PLM requires at least three cells per direction')
     if (trim(riemann_solver)/='hllc' .and. trim(riemann_solver)/='rusanov' .and. trim(riemann_solver)/='pelec') &
