@@ -230,7 +230,7 @@ halos must include corner states and matching volume fractions
 tree hydro now requests complete donor halos and forwards explicit coefficients
 ([checks](validation/eb-tree-viscosity-20260925.md)). Its coarse/fine volume
 fractions use PCM ancestor values; reference geometry fidelity remains open,
-as do EB tree/spray application policies and the uniform default policy. MPI common-step hydro now
+as do EB spray application wiring and the uniform default policy. MPI common-step hydro now
 fetches complete owner-local halos and applies agreed coefficients, with
 three-rank serial parity
 ([checks](validation/mpi-eb-tree-viscosity-20260925.md)). Serial recursive hydro and full
@@ -242,7 +242,10 @@ three-rank reacting/transport parity
 ([checks](validation/mpi-eb-viscosity-split-20260925.md)). Single-domain EB gas
 input now accepts finite nonnegative coefficients and binds positive values
 to checkpoint identity; omitted/zero retains legacy identity
-([checks](validation/eb-difmag-input-20260925.md)). Regular MPI spray PLM hydro now
+([checks](validation/eb-difmag-input-20260925.md)). EB tree gas input now forwards
+the coefficient through serial/MPI composition and patch checkpoint identity,
+with a focused serial recursive restart check
+([checks](validation/eb-tree-difmag-input-20260925.md)). Regular MPI spray PLM hydro now
 applies explicit coefficients with short-slab serial parity
 ([checks](validation/plm-mpi-spray-viscosity-20260925.md)); serial spray and MPI
 mixture wrappers accept those coefficients. Serial two-level AMR now applies

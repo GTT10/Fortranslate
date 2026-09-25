@@ -11,6 +11,15 @@ The supplied case has a 4-cubed root, two children, and grandchildren with
 separate parents (three levels, ratios two). A planar wall cuts z=0.31.
 Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 
+## Artificial viscosity
+
+Gas executables accept finite nonnegative `difmag` in `&eb_tree` (for example,
+`difmag=0.037`). Default zero preserves the previous flux policy; -1 is invalid.
+The coefficient reaches common and recursive hydro and must match on restart.
+MPI EB spray currently rejects positive values. See
+[input/restart evidence](../../docs/validation/eb-tree-difmag-input-20260925.md)
+for the checked configuration and remaining limitations.
+
 ## MPI execution
 
 ### Mach inlet
