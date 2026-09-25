@@ -98,7 +98,7 @@ contains
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
     if(present(eb_geometry).and.present(boundary_faces)) then
-      valid=valid.and.all(faces=='periodic'.or.faces=='outflow')
+      valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
       valid=valid.and.present(eb_outflow_change).and..not.present(wall_films).and..not.options%khrt_children
     end if
     valid=valid.and.ieee_is_finite(interval)

@@ -46,6 +46,10 @@ program test_spray_mpi_eb_step
     initial_rank=0;final_rank=nranks-1
     allocate(faces(6));faces='periodic';faces(3:4)='outflow'
   end if
+  if(mode=='wall') then
+    initial_rank=0;final_rank=0
+    allocate(faces(6));faces='outflow';faces(1:2)='no_slip_wall'
+  end if
   call initialize_amr_patch_3d(4,4,4,1,2,1,4,1,4,2,patch(1),ok)
   call require(ok,'patch')
   call initialize_amr_patch_tree_3d([4,4,4],[1],patch,tree,ok)
@@ -120,13 +124,20 @@ program test_spray_mpi_eb_step
   call advance()
   call require(ok.and.steps>1,'distributed EB interval')
   call inventory(after)
+  if(mode=='wall') ledger=ledger+exterior
   call require(all(abs(after-before-ledger)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'composite gas parcel wall conservation')
   call require(ledger(3)>0,'reflected wall impulse')
-  if(allocated(exterior)) call require(all(exterior==0),'periodic crossing has no exterior loss')
+  if(mode=='periodic') call require(all(exterior==0),'periodic crossing has no exterior loss')
+  if(mode=='wall') then
+    call require(exterior(2)<0,'outer wall impulse')
+    call require(exterior(1)==0.and.all(exterior(5:)==0),'outer wall has no mass or energy loss')
+  end if
   call require(size(drops)==merge(1,0,rank==final_rank),'final gas patch owner')
   if(rank==final_rank) then
-    if(allocated(faces)) then
+    if(mode=='wall') then
+      call require(drops(1)%position(1)<.004_dp.and.drops(1)%velocity(1)<0,'outer wall specular reflection')
+    else if(allocated(faces)) then
       call require(drops(1)%position(1)<.002_dp.and.drops(1)%position(1)>=0,'periodic crossing to refined owner')
     else
       call require(drops(1)%position(1)>.002_dp,'coarse crossing')

@@ -573,6 +573,10 @@ if(PELEF_ENABLE_SPRAY)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_impact_step> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_mpi_eb_impact_step_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
+      add_test(NAME spray_mpi_eb_wall_step_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_eb_step> ${MPIEXEC_POSTFLAGS} wall)
+      set_tests_properties(spray_mpi_eb_wall_step_${ranks} PROPERTIES TIMEOUT 120 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_eb_periodic_step_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_step> ${MPIEXEC_POSTFLAGS} periodic)

@@ -119,8 +119,9 @@ contains
     if(present(particle_outflow)) outflow=particle_outflow
     valid=.true.
     if(present(boundary_faces)) then
-      valid=all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic')
-      if(any(boundary_faces=='periodic')) then
+      valid=all(boundary_faces=='inflow'.or.boundary_faces=='outflow'.or.boundary_faces=='periodic'.or. &
+        boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
+      if(any(boundary_faces=='periodic'.or.boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')) then
         particle_faces=boundary_faces
         where(particle_faces=='inflow') particle_faces='outflow'
       end if
