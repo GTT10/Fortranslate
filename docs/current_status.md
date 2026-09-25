@@ -16,7 +16,9 @@ now matches serial with distributed and empty-rank ownership
 ([checks](validation/mpi-eb-wall-halo-20260926.md)). Serial common PCM/CTU and
 recursive PCM hydro now accept tangential adiabatic walls with composite
 conservation checks ([evidence](validation/eb-tree-wall-hydro-20260926.md));
-MPI and full coupled wall stepping remain open.
+MPI common/recursive CTU wall hydro now matches serial for a tangential planar
+fixture ([checks](validation/mpi-eb-wall-hydro-20260926.md)). Full coupled wall
+stepping remains open.
 
 Serial EB tree halos also accept paired periodic faces, wrapping donor indices
 through peers and ancestors, including halos wider than the root domain
