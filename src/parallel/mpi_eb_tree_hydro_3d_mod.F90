@@ -62,7 +62,6 @@ contains
     valid=ieee_is_finite(dt).and.ieee_is_finite(coefficient).and.coefficient>=0
     if (valid) valid=dt>0._dp
     valid=valid.and.size(boundary_change)==nv.and.size(wall_change)==nv.and.len_trim(solver)<=len(reference)
-    if(present(boundary_faces)) valid=valid.and..not.any(boundary_faces=='periodic')
     call agree(valid,ready)
     if (.not.ready) return
     call MPI_Allreduce(dt,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -194,7 +193,8 @@ contains
     end do
     call agree(valid.and.all(ieee_is_finite(local_wall)),ready)
     if (.not.ready) return
-    call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,flux,comm,ready)
+    call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,flux,comm,ready, &
+      boundary_faces=boundary_faces)
     if (.not.ready) return
     boundary=0._dp
     if (rank==owners(1)) then

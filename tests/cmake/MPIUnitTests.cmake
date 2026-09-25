@@ -1226,3 +1226,13 @@ if(TARGET test_mpi_eb_tree_subcycle_hydro_3d)
       $<TARGET_FILE:test_mpi_eb_tree_subcycle_hydro_3d> ${MPIEXEC_POSTFLAGS} ctu-inflow)
   set_tests_properties(unit_mpi_eb_tree_ctu_inflow_subcycle_hydro_3d_3 PROPERTIES PROCESSORS 3 TIMEOUT 180)
 endif()
+
+if(PELEF_ENABLE_MPI)
+  foreach(periodic_step IN ITEMS hydro subcycle_hydro)
+    add_test(NAME unit_mpi_eb_tree_periodic_${periodic_step}_3d
+      COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_tree_${periodic_step}_3d> ${MPIEXEC_POSTFLAGS} ctu-periodic)
+    set_tests_properties(unit_mpi_eb_tree_periodic_${periodic_step}_3d PROPERTIES
+      TIMEOUT 120 PROCESSORS 3 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  endforeach()
+endif()
