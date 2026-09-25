@@ -258,82 +258,54 @@ contains
     ok = .true.
   end subroutine recover_active_primitives
 
-  pure real(dp) function active_velocity_derivative( &
-      primitive, geometry, i, j, k, velocity_component, direction) &
-      result(derivative)
-    real(dp), intent(in) :: primitive(:, :, :, :)
+  pure real(dp) function active_velocity_derivative(primitive,geometry,i,j,k,velocity_component,direction, &
+      periodic) result(derivative)
+    real(dp), intent(in) :: primitive(:,:,:,:)
     type(eb_geometry_3d), intent(in) :: geometry
-    integer, intent(in) :: i, j, k, velocity_component, direction
-
-    integer :: lower_i, lower_j, lower_k, upper_i, upper_j, upper_k
-    integer :: primitive_component
-    real(dp) :: spacing
-    logical :: has_lower, has_upper
-
-    derivative = 0.0_dp
-    primitive_component = velocity_component + 1
-    lower_i = i
-    lower_j = j
-    lower_k = k
-    upper_i = i
-    upper_j = j
-    upper_k = k
-    select case (direction)
-    case (1)
-      lower_i = i - 1
-      upper_i = i + 1
-      spacing = geometry%dx
-      has_lower = i > 1 .and. &
-        geometry%x_face_fraction(i - 1, j, k) > 0.0_dp
-      has_upper = i < geometry%nx .and. &
-        geometry%x_face_fraction(i, j, k) > 0.0_dp
-    case (2)
-      lower_j = j - 1
-      upper_j = j + 1
-      spacing = geometry%dy
-      has_lower = j > 1 .and. &
-        geometry%y_face_fraction(i, j - 1, k) > 0.0_dp
-      has_upper = j < geometry%ny .and. &
-        geometry%y_face_fraction(i, j, k) > 0.0_dp
-    case (3)
-      lower_k = k - 1
-      upper_k = k + 1
-      spacing = geometry%dz
-      has_lower = k > 1 .and. &
-        geometry%z_face_fraction(i, j, k - 1) > 0.0_dp
-      has_upper = k < geometry%nz .and. &
-        geometry%z_face_fraction(i, j, k) > 0.0_dp
-    case default
-      return
+    integer, intent(in) :: i,j,k,velocity_component,direction
+    logical, optional, intent(in) :: periodic(3)
+    integer :: lower(3),upper(3),idx(3),n(3),component
+    real(dp) :: spacing(3),lower_area,upper_area
+    logical :: has_lower,has_upper,wrap
+    derivative=0
+    if(direction<1.or.direction>3) return
+    idx=[i,j,k];lower=idx;upper=idx;n=[geometry%nx,geometry%ny,geometry%nz]
+    spacing=[geometry%dx,geometry%dy,geometry%dz];component=velocity_component+1
+    lower(direction)=idx(direction)-1;upper(direction)=idx(direction)+1
+    select case(direction)
+    case(1);lower_area=geometry%x_face_fraction(i-1,j,k);upper_area=geometry%x_face_fraction(i,j,k)
+    case(2);lower_area=geometry%y_face_fraction(i,j-1,k);upper_area=geometry%y_face_fraction(i,j,k)
+    case(3);lower_area=geometry%z_face_fraction(i,j,k-1);upper_area=geometry%z_face_fraction(i,j,k)
     end select
-    if (has_lower) has_lower = geometry%cell_type( &
-      lower_i, lower_j, lower_k) /= eb_covered_cell_3d
-    if (has_upper) has_upper = geometry%cell_type( &
-      upper_i, upper_j, upper_k) /= eb_covered_cell_3d
-    if (has_lower .and. has_upper) then
-      derivative = ( &
-        primitive(primitive_component, upper_i, upper_j, upper_k) - &
-        primitive(primitive_component, lower_i, lower_j, lower_k)) / &
-        (2.0_dp * spacing)
-    else if (has_upper) then
-      derivative = ( &
-        primitive(primitive_component, upper_i, upper_j, upper_k) - &
-        primitive(primitive_component, i, j, k)) / spacing
-    else if (has_lower) then
-      derivative = ( &
-        primitive(primitive_component, i, j, k) - &
-        primitive(primitive_component, lower_i, lower_j, lower_k)) / spacing
+    wrap=.false.
+    if(present(periodic)) wrap=periodic(direction)
+    has_lower=(idx(direction)>1.or.wrap).and.lower_area>0
+    has_upper=(idx(direction)<n(direction).or.wrap).and.upper_area>0
+    if(wrap) then
+      lower(direction)=modulo(lower(direction)-1,n(direction))+1
+      upper(direction)=modulo(upper(direction)-1,n(direction))+1
+    end if
+    if(has_lower) has_lower=geometry%cell_type(lower(1),lower(2),lower(3))/=eb_covered_cell_3d
+    if(has_upper) has_upper=geometry%cell_type(upper(1),upper(2),upper(3))/=eb_covered_cell_3d
+    if(has_lower.and.has_upper) then
+      derivative=(primitive(component,upper(1),upper(2),upper(3))- &
+        primitive(component,lower(1),lower(2),lower(3)))/(2*spacing(direction))
+    else if(has_upper) then
+      derivative=(primitive(component,upper(1),upper(2),upper(3))-primitive(component,i,j,k))/spacing(direction)
+    else if(has_lower) then
+      derivative=(primitive(component,i,j,k)-primitive(component,lower(1),lower(2),lower(3)))/spacing(direction)
     end if
   end function active_velocity_derivative
 
   pure subroutine active_face_velocity_gradient( &
       primitive, geometry, left_i, left_j, left_k, right_i, right_j, &
-      right_k, normal, gradient)
+      right_k, normal, gradient,periodic)
     real(dp), intent(in) :: primitive(:, :, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
     integer, intent(in) :: left_i, left_j, left_k
     integer, intent(in) :: right_i, right_j, right_k, normal
     real(dp), intent(out) :: gradient(3, 3)
+    logical, optional, intent(in) :: periodic(3)
 
     real(dp) :: spacing(3)
     integer :: velocity_component, direction
@@ -350,10 +322,10 @@ contains
         gradient(velocity_component, direction) = 0.5_dp * ( &
           active_velocity_derivative( &
             primitive, geometry, left_i, left_j, left_k, &
-            velocity_component, direction) + &
+            velocity_component, direction,periodic) + &
           active_velocity_derivative( &
             primitive, geometry, right_i, right_j, right_k, &
-            velocity_component, direction))
+            velocity_component, direction,periodic))
       end do
     end do
   end subroutine active_face_velocity_gradient
@@ -502,7 +474,7 @@ contains
   subroutine limit_reactive_eb_transport_fluxes_3d( &
       species, state, geometry, dt, x_flux, y_flux, z_flux, &
       species_energy_x, species_energy_y, species_energy_z, &
-      minimum_theta, ok)
+      minimum_theta, ok,periodic)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), dt
     type(eb_geometry_3d), intent(in) :: geometry
@@ -514,6 +486,7 @@ contains
     real(dp), intent(in) :: species_energy_z(:, :, 0:)
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
+    logical, intent(in) :: periodic(3)
 
     real(dp), allocatable :: theta_cell(:, :, :)
     real(dp) :: outgoing, available, candidate, theta_face
@@ -580,6 +553,8 @@ contains
                 eb_covered_cell_3d) theta_face = min( &
                   theta_face, theta_cell(face_i + 1, j, k))
           end if
+          if(periodic(1).and.(face_i==0.or.face_i==geometry%nx)) &
+            theta_face=min(theta_face,theta_cell(1,j,k),theta_cell(geometry%nx,j,k))
           call limit_species_face( &
             x_flux(:, face_i, j, k), species_energy_x(face_i, j, k), &
             size(species), theta_face)
@@ -600,6 +575,8 @@ contains
                 eb_covered_cell_3d) theta_face = min( &
                   theta_face, theta_cell(i, face_j + 1, k))
           end if
+          if(periodic(2).and.(face_j==0.or.face_j==geometry%ny)) &
+            theta_face=min(theta_face,theta_cell(i,1,k),theta_cell(i,geometry%ny,k))
           call limit_species_face( &
             y_flux(:, i, face_j, k), species_energy_y(i, face_j, k), &
             size(species), theta_face)
@@ -620,6 +597,8 @@ contains
                 eb_covered_cell_3d) theta_face = min( &
                   theta_face, theta_cell(i, j, face_k + 1))
           end if
+          if(periodic(3).and.(face_k==0.or.face_k==geometry%nz)) &
+            theta_face=min(theta_face,theta_cell(i,j,1),theta_cell(i,j,geometry%nz))
           call limit_species_face( &
             z_flux(:, i, j, face_k), species_energy_z(i, j, face_k), &
             size(species), theta_face)
@@ -656,14 +635,14 @@ contains
     logical, optional, intent(in) :: boundary_faces(6)
     character(len=*), optional, intent(in) :: physical_faces(6)
     real(dp), optional, intent(in) :: wall_temperature(6)
-    logical :: enabled_faces(6)
+    logical :: enabled_faces(6),periodic(3)
     real(dp), allocatable :: donor_primitive(:)
     real(dp) :: donor_temperature,sound_speed,spacing(3),face_area,species_energy
     integer :: axis,side,start(3),finish(3),inside(3),outside(3),v,d
     real(dp), allocatable :: left(:),right(:),boundary_flux(:)
-    real(dp) :: left_t,right_t,wall_heat,wall_rate
+    real(dp) :: left_t,right_t,wall_heat,wall_rate,other_area,area_ratio
     character(len=32) :: label
-    integer :: face
+    integer :: face,opposite(3)
 
     real(dp), allocatable :: primitive(:, :, :, :)
     real(dp), allocatable :: checked_temperature(:, :, :)
@@ -709,9 +688,25 @@ contains
       if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
       if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
     end if
+    periodic=.false.
     if(present(physical_faces)) then
       if(.not.valid_reactive_boundaries_3d(physical_faces)) return
-      if(any(physical_faces=='periodic')) return
+      do axis=1,3
+        periodic(axis)=physical_faces(2*axis-1)=='periodic'
+        if(.not.periodic(axis)) cycle
+        if(.not.all(enabled_faces(2*axis-1:2*axis))) return
+        select case(axis)
+        case(1)
+          if(any(abs(geometry%x_face_fraction(0,:,:)-geometry%x_face_fraction(geometry%nx,:,:))> &
+            256*epsilon(1._dp)*max(geometry%x_face_fraction(0,:,:),geometry%x_face_fraction(geometry%nx,:,:)))) return
+        case(2)
+          if(any(abs(geometry%y_face_fraction(:,0,:)-geometry%y_face_fraction(:,geometry%ny,:))> &
+            256*epsilon(1._dp)*max(geometry%y_face_fraction(:,0,:),geometry%y_face_fraction(:,geometry%ny,:)))) return
+        case(3)
+          if(any(abs(geometry%z_face_fraction(:,:,0)-geometry%z_face_fraction(:,:,geometry%nz))> &
+            256*epsilon(1._dp)*max(geometry%z_face_fraction(:,:,0),geometry%z_face_fraction(:,:,geometry%nz)))) return
+        end select
+      end do
       if(any(physical_faces=='isothermal_wall')) then
         if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return
       end if
@@ -745,7 +740,7 @@ contains
               geometry%cell_type(i + 1, j, k) == &
                 eb_covered_cell_3d) return
           call active_face_velocity_gradient( &
-            primitive, geometry, i, j, k, i + 1, j, k, 1, gradient)
+            primitive, geometry, i, j, k, i + 1, j, k, 1, gradient,periodic)
           call reactive_transport_face_flux_3d( &
             species, transport, primitive(:, i, j, k), &
             primitive(:, i + 1, j, k), checked_temperature(i, j, k), &
@@ -765,7 +760,7 @@ contains
               geometry%cell_type(i, j + 1, k) == &
                 eb_covered_cell_3d) return
           call active_face_velocity_gradient( &
-            primitive, geometry, i, j, k, i, j + 1, k, 2, gradient)
+            primitive, geometry, i, j, k, i, j + 1, k, 2, gradient,periodic)
           call reactive_transport_face_flux_3d( &
             species, transport, primitive(:, i, j, k), &
             primitive(:, i, j + 1, k), checked_temperature(i, j, k), &
@@ -785,7 +780,7 @@ contains
               geometry%cell_type(i, j, k + 1) == &
                 eb_covered_cell_3d) return
           call active_face_velocity_gradient( &
-            primitive, geometry, i, j, k, i, j, k + 1, 3, gradient)
+            primitive, geometry, i, j, k, i, j, k + 1, 3, gradient,periodic)
           call reactive_transport_face_flux_3d( &
             species, transport, primitive(:, i, j, k), &
             primitive(:, i, j, k + 1), checked_temperature(i, j, k), &
@@ -806,6 +801,7 @@ contains
       do axis=1,3
         do side=0,1
           if (.not.enabled_faces(2*axis-1+side)) cycle
+          if(periodic(axis).and.side==1) cycle
           start=1;finish=[geometry%nx,geometry%ny,geometry%nz]
           start(axis)=side*finish(axis);finish(axis)=start(axis)
           do k=start(3),finish(3)
@@ -822,10 +818,24 @@ contains
                 end select
                 if (face_area<=0._dp) cycle
                 if (geometry%cell_type(inside(1),inside(2),inside(3))==eb_covered_cell_3d) return
-                call reactive_conserved_to_primitive(species,ghost_state(:,outside(1),outside(2),outside(3)), &
-                  ghost_temperature(outside(1),outside(2),outside(3)),donor_primitive,donor_temperature, &
-                  sound_speed,local_ok)
-                if (.not.local_ok) return
+                if(periodic(axis)) then
+                  opposite=inside
+                  select case(axis)
+                  case(1);opposite(axis)=geometry%nx;other_area=geometry%x_face_fraction(geometry%nx,j,k)
+                  case(2);opposite(axis)=geometry%ny;other_area=geometry%y_face_fraction(i,geometry%ny,k)
+                  case(3);opposite(axis)=geometry%nz;other_area=geometry%z_face_fraction(i,j,geometry%nz)
+                  end select
+                  if(other_area<=0) return
+                  if(geometry%cell_type(opposite(1),opposite(2),opposite(3))==eb_covered_cell_3d) return
+                  donor_primitive=primitive(:,opposite(1),opposite(2),opposite(3))
+                  donor_temperature=checked_temperature(opposite(1),opposite(2),opposite(3))
+                  area_ratio=face_area/other_area
+                else
+                  call reactive_conserved_to_primitive(species,ghost_state(:,outside(1),outside(2),outside(3)), &
+                    ghost_temperature(outside(1),outside(2),outside(3)),donor_primitive,donor_temperature, &
+                    sound_speed,local_ok)
+                  if (.not.local_ok) return
+                end if
                 left=primitive(:,inside(1),inside(2),inside(3));right=left
                 left_t=checked_temperature(inside(1),inside(2),inside(3));right_t=left_t
                 if (side==0) then
@@ -838,9 +848,13 @@ contains
                   gradient(v,axis)=(right(v+1)-left(v+1))/spacing(axis)
                   do d=1,3
                     if (d==axis) cycle
-                    gradient(v,d)=active_velocity_derivative(primitive,geometry,inside(1),inside(2),inside(3),v,d)
+                    gradient(v,d)=active_velocity_derivative(primitive,geometry,inside(1),inside(2),inside(3),v,d,periodic)
                   end do
                 end do
+                if(periodic(axis)) then
+                  call active_face_velocity_gradient(primitive,geometry,opposite(1),opposite(2),opposite(3), &
+                    inside(1),inside(2),inside(3),axis,gradient,periodic)
+                end if
                 label=''
                 face=2*axis-1+side
                 if(present(physical_faces)) label=physical_faces(face)
@@ -877,10 +891,22 @@ contains
                 select case(axis)
                 case(1)
                   x_flux(:,i,j,k)=boundary_flux;species_energy_x(i,j,k)=species_energy
+                  if(periodic(axis)) then
+                    x_flux(:,geometry%nx,j,k)=area_ratio*boundary_flux
+                    species_energy_x(geometry%nx,j,k)=area_ratio*species_energy
+                  end if
                 case(2)
                   y_flux(:,i,j,k)=boundary_flux;species_energy_y(i,j,k)=species_energy
+                  if(periodic(axis)) then
+                    y_flux(:,i,geometry%ny,k)=area_ratio*boundary_flux
+                    species_energy_y(i,geometry%ny,k)=area_ratio*species_energy
+                  end if
                 case(3)
                   z_flux(:,i,j,k)=boundary_flux;species_energy_z(i,j,k)=species_energy
+                  if(periodic(axis)) then
+                    z_flux(:,i,j,geometry%nz)=area_ratio*boundary_flux
+                    species_energy_z(i,j,geometry%nz)=area_ratio*species_energy
+                  end if
                 end select
               end do
             end do
@@ -891,7 +917,7 @@ contains
     call limit_reactive_eb_transport_fluxes_3d( &
       species, state, geometry, dt, x_flux, y_flux, z_flux, &
       species_energy_x, species_energy_y, species_energy_z, &
-      minimum_theta, local_ok)
+      minimum_theta, local_ok,periodic)
     if (.not. local_ok) return
 
     x_area = geometry%dy * geometry%dz
@@ -1095,7 +1121,6 @@ contains
     if(present(boundary_faces)) then
       if(present(prepare_halo)) return
       if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
-      if(any(boundary_faces=='periodic')) return
       if(any(boundary_faces=='isothermal_wall')) then
         if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return
       end if

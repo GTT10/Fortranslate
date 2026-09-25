@@ -286,9 +286,91 @@ program test_eb_transport_halo_3d
       prepare_transport_halo=prepare_stage_halo)
     call require(.not.ok.and.provider_calls==0,'unsupported physical wall transport rejects before stepping')
     call verify_wall_transport()
+    call verify_periodic_transport()
   end do
   write(*,'(a)') 'test_eb_transport_halo_3d: PASS'
 contains
+  subroutine verify_periodic_transport()
+    real(dp), allocatable :: varying(:,:,:,:),varying_t(:,:,:),rx(:,:,:,:),ry(:,:,:,:),rz(:,:,:,:)
+    real(dp) :: q(reactive_nprim(size(species))),theta_ref,reference_t,reference_c,shift_y
+    character(len=16) :: periodic_faces(6)
+    type(eb_geometry_3d) :: incompatible
+    integer :: a,b,c,component
+    allocate(varying,source=u);allocate(varying_t,source=t)
+    allocate(rx(nvar,0:4,4,4),ry(nvar,4,0:4,4),rz(nvar,4,4,0:4))
+    do c=1,4
+    do b=1,4
+    do a=1,4
+      call reactive_conserved_to_primitive(species,u(:,a,b,c),t(a,b,c),q,reference_t,reference_c,ok)
+      call require(ok,'periodic seed primitive')
+      q(1)=q(1)*(1+.05_dp*(a-2))
+      q(2:4)=[real(b*b,dp),real(c*c,dp),real(a*a,dp)]
+      q(5)=q(5)*(1+.03_dp*(b-2))
+      shift_y=.002_dp*(c-2)
+      q(reactive_mass_fraction_component(1))=q(reactive_mass_fraction_component(1))+shift_y
+      q(reactive_mass_fraction_component(size(species)))=q(reactive_mass_fraction_component(size(species)))-shift_y
+      call reactive_primitive_to_conserved(species,q,varying(:,a,b,c),varying_t(a,b,c),reference_c,ok)
+      call require(ok,'periodic varying state')
+    end do
+    end do
+    end do
+    periodic_faces='periodic'
+    if(mode==2) periodic_faces(5:6)='outflow'
+    call fill_reactive_boundary_ghosts_3d(varying,varying_t,periodic_faces,g,gt,ok,ghost_width=1)
+    call require(ok,'periodic one-cell halo')
+    faces=.true.
+    call reactive_eb_transport_fluxes_rhs_3d(species,transport,varying,varying_t,geometry,0._dp, &
+      .true.,.true.,.true.,.true.,rhs,x,y,z,theta,ok,g,gt,faces,periodic_faces)
+    call require(ok,'periodic raw flux')
+    if(mode==1) then
+      call physical_transport_fluxes_3d(species,transport,varying,varying_t,[4,4,4], &
+        [geometry%dx,geometry%dy,geometry%dz],0._dp,periodic_faces, &
+        .true.,.true.,.true.,.true.,rx,ry,rz,theta_ref,ok)
+      call require(ok,'regular periodic reference')
+      call require(maxval(abs(x-rx))<=3.e-12_dp*max(1._dp,maxval(abs(rx))).and. &
+        maxval(abs(y-ry))<=3.e-12_dp*max(1._dp,maxval(abs(ry))).and. &
+        maxval(abs(z-rz))<=3.e-12_dp*max(1._dp,maxval(abs(rz))), &
+        'periodic varying gradients match regular transport at every face')
+    end if
+    call reactive_eb_transport_fluxes_rhs_3d(species,transport,varying,varying_t,geometry,1.e8_dp, &
+      .true.,.true.,.true.,.true.,rhs,x,y,z,theta,ok,g,gt,faces,periodic_faces)
+    call require(ok.and.theta<1,'periodic species limiter active')
+    call require(all(x(:,0,:,:)==x(:,4,:,:)).and.all(y(:,:,0,:)==y(:,:,4,:)), &
+      'periodic limited faces remain identical')
+    if(mode==1) call require(all(z(:,:,:,0)==z(:,:,:,4)),'z periodic limited faces identical')
+    do component=6,nvar
+      call require(minval(varying(component,:,:,:)+1.e8_dp*rhs(component,:,:,:), &
+        mask=geometry%volume_fraction>0)>=-1.e-12_dp,'periodic limited species nonnegative')
+    end do
+    advanced=varying;advanced_t=varying_t
+    call advance_reactive_eb_transport_3d(species,transport,advanced,advanced_t,geometry,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,theta,ok,integrated_flux=integrated,boundary_faces=periodic_faces)
+    call require(ok,'periodic SSPRK2 transport')
+    call reactive_eb_integrals_3d(varying,geometry,before,ok)
+    call require(ok,'periodic initial inventory')
+    call reactive_eb_integrals_3d(advanced,geometry,after,ok)
+    call require(ok,'periodic final inventory')
+    boundary=0
+    if(mode==2) then
+      do component=1,nvar
+        boundary(component)=geometry%dx*geometry%dy*sum( &
+          geometry%z_face_fraction(:,:,0)*integrated%z(component,:,:,0)- &
+          geometry%z_face_fraction(:,:,4)*integrated%z(component,:,:,4))
+      end do
+    end if
+    call require(maxval(abs(after-before-boundary)/max(1._dp,abs(before)))<=2.e-12_dp, &
+      'periodic SSPRK2 inventory closes without seam leakage')
+    call build_axis_plane_eb_geometry_3d(4,4,4,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'x',.31_dp,incompatible,ok)
+    call require(ok.and.incompatible%is_valid(),'valid nonperiodic geometry for seam rejection')
+    twice=advanced;twice_t=advanced_t;saved_flux=integrated
+    call advance_reactive_eb_transport_3d(species,transport,advanced,advanced_t,incompatible,dt, &
+      .true.,.true.,.true.,.true.,.5_dp,theta,ok,integrated_flux=integrated,boundary_faces=periodic_faces)
+    call require(.not.ok.and.all(advanced==twice).and.all(advanced_t==twice_t), &
+      'incompatible periodic apertures reject transactionally')
+    call require(all(integrated%x==saved_flux%x).and.all(integrated%y==saved_flux%y).and. &
+      all(integrated%z==saved_flux%z),'periodic rejection preserves integrated flux')
+  end subroutine verify_periodic_transport
+
   subroutine verify_wall_transport()
     character(len=16), parameter :: kinds(3)=[character(len=16)::'slip_wall','no_slip_wall','isothermal_wall']
     character(len=16) :: wall_faces(6)
