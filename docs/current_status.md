@@ -83,7 +83,10 @@ Fixed/selected single-grid applications now accept SDC input and report
 separate forcing inventories ([checks](validation/sdc-eb-app-20260927.md)).
 Single-grid EB SDC checkpoint/restart now preserves reaction estimates and
 forcing inventories ([checks](validation/sdc-eb-restart-20260927.md)).
-EB SDC AMR/MPI integration remains open.
+The EB tree now exposes provisional SDC reaction updates across all levels or
+a selected level, preserving refined-parent estimates until synchronization
+([checks](validation/sdc-eb-tree-reaction-20260927.md)).
+Coupled EB tree SDC hydro/transport, application routing and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
