@@ -34,6 +34,7 @@ module eb_reactive_hydro_3d_mod
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
+  public :: compute_sdc_eb_hydro_3d
   public :: advance_reactive_eb_boundary_ctu_3d
   public :: advance_reactive_eb_outflow_ctu_3d
   public :: compute_reactive_eb_flattening_3d
@@ -251,9 +252,34 @@ contains
 
   ! Complete hydro update for the central cells 4:N-3 of a prepared working
   ! geometry. Physical boundary filling/flattening remain caller responsibilities.
+  ! Uses the same extended geometry/ghost layout as the CTU advance.
+  ! Returns conservative rates before redistribution and time-integrated flux densities.
+  subroutine compute_sdc_eb_hydro_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
+      conserved_source,hydro_rate,integrated_flux,boundary_change,wall_change,ok,difmag,order,boundary)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
+    real(dp), intent(in) :: dt,flattening(0:,0:,0:),conserved_source(:,:,:,:)
+    real(dp), intent(inout) :: hydro_rate(:,:,:,:),boundary_change(:),wall_change(:)
+    type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: difmag
+    integer, optional, intent(in) :: order
+    type(eb_plm_boundary_3d), optional, intent(in) :: boundary
+    real(dp), allocatable :: unused_state(:,:,:,:),unused_temperature(:,:,:)
+    integer :: n(3),nv
+    ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=reactive_nvar(size(species))
+    if(any(n<7)) return
+    allocate(unused_state(nv,n(1)-6,n(2)-6,n(3)-6),unused_temperature(n(1)-6,n(2)-6,n(3)-6))
+    call advance_reactive_eb_plm_ctu_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
+      unused_state,unused_temperature,ok,difmag=difmag,integrated_flux=integrated_flux, &
+      boundary_change=boundary_change,wall_change=wall_change,order=order,boundary=boundary, &
+      conserved_source=conserved_source,hydro_rate=hydro_rate)
+  end subroutine compute_sdc_eb_hydro_3d
+
   subroutine advance_reactive_eb_plm_ctu_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
       new_state,new_temperature,ok,redistribution,difmag,integrated_flux,boundary_change,wall_change, &
-      target_volume_fraction,order,boundary)
+      target_volume_fraction,order,boundary,conserved_source,hydro_rate)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
     type(eb_geometry_3d), intent(in) :: geometry
@@ -266,6 +292,8 @@ contains
     integer, optional, intent(in) :: order
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
+    real(dp), optional, intent(in) :: conserved_source(:,:,:,:)
+    real(dp), optional, intent(inout) :: hydro_rate(:,:,:,:)
     type(eb_plm_face_prediction_3d) :: prediction(3)
     type(eb_geometry_3d) :: margin,physical
     type(eb_integrated_flux_3d) :: flux
@@ -285,6 +313,10 @@ contains
     if(present(redistribution)) method=redistribution
     if(.not.all(ieee_is_finite([coefficient,target])).or.coefficient<0.or.target<=0.or.target>1) return
     if(method/='none'.and.method/='flux_redist'.and.method/='state_redist') return
+    if(present(hydro_rate)) then
+      if(method/='none'.or..not.present(conserved_source)) return
+      if(any(shape(hydro_rate)/=[nv,n-6])) return
+    end if
     if(present(boundary_change)) then
       if(size(boundary_change)/=nv) return
     end if
@@ -292,7 +324,7 @@ contains
       if(size(wall_change)/=nv) return
     end if
     call compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,valid,order,boundary=boundary)
+      dt,flattening,prediction,valid,order,boundary=boundary,conserved_source=conserved_source)
     if(.not.valid) return
     call extract_eb_geometry_3d(geometry,[3,3,3],n-2,margin,valid)
     if(.not.valid) return
@@ -345,6 +377,17 @@ contains
     if(.not.valid) return
     call hydro_inventory_changes(species,state,temp,physical,dt,flux,inventory_boundary,wall,valid)
     if(.not.valid) return
+    if(present(hydro_rate)) then
+      if(.not.all(ieee_is_finite(rhs))) return
+      flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
+      if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+        .not.all(ieee_is_finite(flux%z))) return
+      hydro_rate=rhs
+      if(present(integrated_flux)) integrated_flux=flux
+      if(present(boundary_change)) boundary_change=inventory_boundary
+      if(present(wall_change)) wall_change=wall
+      ok=.true.;return
+    end if
     allocate(candidate,mold=state);allocate(ct,mold=temp)
     select case(method)
     case('flux_redist')

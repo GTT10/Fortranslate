@@ -1,4 +1,5 @@
 program test_reactive_eb_hydro_3d
+  use eb_reactive_hydro_3d_mod, only: compute_sdc_eb_hydro_3d
   use precision_mod, only: dp
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use state_indices_mod, only: irho
@@ -540,6 +541,8 @@ contains
     real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11),flat(0:9,0:9,0:9)
     real(dp) :: initial(nvar,2,2,2),q(nvar,2,2,2),t(2,2,2),saved(nvar,2,2,2),saved_t(2,2,2)
     real(dp) :: boundary(nvar),wall(nvar),change,scale,vel(3),cs,position,nan_value
+    real(dp) :: rates(nvar,2,2,2),source(nvar,8,8,8),stage_boundary(nvar),stage_wall(nvar),saved_rates(nvar,2,2,2)
+    type(eb_integrated_flux_3d) :: stage_flux
     integer :: cut,mode,ii,jj,kk,c,idx(3),inside(3)
     character(len=1), parameter :: axes(3)=['x','y','z']
     character(len=12), parameter :: methods(3)=[character(len=12)::'none','flux_redist','state_redist']
@@ -586,6 +589,28 @@ contains
           call require(abs(change-boundary(c)-wall(c))<2e-12_dp*scale,'CTU boundary/wall inventory closure')
         end do
         call require(maxval(abs(sum(q(6:,:,:,:),dim=1)-q(1,:,:,:)))<2e-13_dp,'CTU species closure')
+        if(mode==1) then
+          source=0;rates=-31;stage_boundary=32;stage_wall=33
+          call compute_sdc_eb_hydro_3d(species,working,ghost,gt,vf,1e-8_dp,flat,source,rates,stage_flux, &
+            stage_boundary,stage_wall,valid)
+          call require(valid,'SDC EB hydro source stage')
+          call require(all(q==initial+1e-8_dp*rates),'zero-source SDC rates reproduce Euler update exactly')
+          call require(all(stage_flux%x==integral%x).and.all(stage_flux%y==integral%y).and. &
+            all(stage_flux%z==integral%z),'SDC integrated flux exact')
+          call require(all(stage_boundary==boundary).and.all(stage_wall==wall),'SDC boundary and wall exact')
+          do c=1,nvar
+            change=1e-8_dp*sum(rates(c,:,:,:)*physical%volume_fraction)*physical%dx*physical%dy*physical%dz
+            scale=max(1._dp,sum(abs(initial(c,:,:,:))*physical%volume_fraction)*physical%dx*physical%dy*physical%dz)
+            call require(abs(change-stage_boundary(c)-stage_wall(c))<2e-12_dp*scale,'SDC rate inventory closure')
+          end do
+          saved_rates=rates
+          call compute_sdc_eb_hydro_3d(species,working,ghost,gt,vf,1e-8_dp,flat,source,rates,stage_flux, &
+            stage_boundary,stage_wall,valid,difmag=-1._dp)
+          call require(.not.valid.and.all(rates==saved_rates).and.all(stage_boundary==boundary).and. &
+            all(stage_wall==wall),'SDC hydro failure keeps rates and inventories')
+          call require(all(stage_flux%x==integral%x).and.all(stage_flux%y==integral%y).and. &
+            all(stage_flux%z==integral%z),'SDC hydro failure keeps fluxes')
+        end if
         saved=q;saved_t=t;saved_flux=integral
         if(cut==0.and.mode==1) then
           call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,1e-8_dp,flat,q,t,valid,difmag=.1_dp)
