@@ -14,8 +14,9 @@ fluid volume. It is accumulated independently of the gas background and publishe
 with the accepted gas/particle update. Failures retain its previous value. Divide
 by the interval for a source rate; wall/outflow inventories remain separate.
 The EB SDC gas driver now accepts old/new source callbacks and reports their
-inventory separately from external forcing. Particle kick/drift scheduling and
-application dispatch remain open. See the
+inventory separately from external forcing. The common-step MPI EB particle
+wrapper now connects kick/drift stages, physical gas boundaries and final
+computational splitting; application dispatch remains open. See the
 [source-export checks](validation/spray-sdc-source-export-20260927.md) and
 [gas-stage checks](validation/sdc-eb-auxiliary-source-20260927.md).
 
@@ -3508,7 +3509,12 @@ Each new-source evaluation starts from the same saved old-stage endpoint.
 Only the final accepted kick is published, together with gas, temperature,
 reaction history, particle IDs and inventories. Internal particle exchange is
 separate from external gas forcing. This library path supports specular contacts;
-film evolution, computational multiplicity splitting, particle acceleration,
-inlet/isothermal boundary data, recursive stepping and application/restart
+specified-state/Mach inflow and isothermal-wall gas data reach the SDC operators.
+Computational multiplicity splitting runs once after the accepted final kick,
+with collective rollback on capacity failure and globally assigned child IDs.
+Film evolution, particle acceleration, recursive stepping and application/restart
 wiring remain outside its scope. See the
 [focused evidence](validation/spray-sdc-kick-drift-20260927.md).
+
+The boundary/splitting extension is recorded in the
+[focused checks](validation/spray-sdc-boundaries-split-20260927.md).
