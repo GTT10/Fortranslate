@@ -303,12 +303,20 @@ contains
   end subroutine
   ! Common-step gas/particle SDC. New kicks are reevaluated from one saved
   ! kick-drift endpoint, never cumulatively advanced across SDC iterations.
-  ! This path supports moving parcels and specular EB/domain contacts, not films.
+  ! Existing stationary films evolve thermally; particle contacts remain specular.
   subroutine advance_mpi_eb_spray_sdc(comm,tree,owners,geometry,extended_geometry,phi,species,reactions,transport, &
       liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,iterations,chemistry,transport_flags, &
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
+      films,film_mass,film_settings,film_steps)
+    type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    integer, optional, intent(out) :: film_steps
+    type(spray_wall_film), allocatable :: midpoint_films(:),final_films(:)
+    real(dp), allocatable :: midpoint_film_mass(:,:),final_film_mass(:,:)
+    integer :: film_flag,film_low,film_high,old_film_steps,new_film_steps
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -352,10 +360,18 @@ contains
     character(len=32) :: particle_faces(6)
     logical :: valid,ready
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    if(present(film_steps)) film_steps=0
+    film_flag=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.film_low/=film_high) return
+    if(film_flag/=0.and.film_flag/=7) return
     if(present(split_created)) split_created=0
     accel=0
     if(present(particle_acceleration)) accel=particle_acceleration
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    if(present(films)) valid=valid.and.allocated(films).and.allocated(film_mass)
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     valid=valid.and.all(ieee_is_finite(accel)).and.all(abs(accel)<=1e6_dp)
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
@@ -373,6 +389,7 @@ contains
     where(particle_faces=='inflow') particle_faces='outflow'
     where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
     gas=state;temp=temperature;old_steps=0;new_steps=0
+    old_film_steps=0;new_film_steps=0
     old_force=0;new_force=0
     old_wall=0;new_wall=0;old_outflow=0;new_outflow=0
     if(present(reaction_source)) then
@@ -390,7 +407,7 @@ contains
       call split_mpi_spray_parcels(comm,final,options%maximum_multiplicity,options%maximum_parcels,final_id,ready,final_mass)
       if(.not.ready) return
     end if
-    valid=old_steps<=huge(1)-new_steps
+    valid=old_steps<=huge(1)-new_steps.and.old_film_steps<=huge(1)-new_film_steps
     call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.ready) return
     boundary=boundary+old_outflow+new_outflow;wall=wall+old_wall+new_wall
@@ -400,6 +417,10 @@ contains
     if(ierr/=MPI_SUCCESS.or..not.ready) return
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(final,parcels);call move_alloc(final_mass,component_mass)
+    if(present(films)) then
+      call move_alloc(final_films,films);call move_alloc(final_film_mass,film_mass)
+    end if
+    if(present(film_steps)) film_steps=old_film_steps+new_film_steps
     last_id=final_id
     if(present(split_created)) split_created=final_id-before_split
     if(present(reaction_source)) reaction_source=ir
@@ -440,8 +461,12 @@ contains
       type(amr_tree_state_3d), intent(inout) :: rate
       type(MPI_Comm), intent(in) :: source_comm
       logical, intent(out) :: good
-      type(amr_tree_state_3d) :: work_gas,work_temperature,change
+      type(amr_tree_state_3d) :: work_gas,work_temperature,change,film_change
       type(spray_parcel), allocatable :: trial(:)
+      type(spray_wall_film), allocatable :: patches(:)
+      real(dp), allocatable :: patch_mass(:,:)
+      real(dp) :: film_wall(nv)
+      integer :: film_count
       real(dp), allocatable :: masses(:,:)
       real(dp) :: wall_delta(nv),exterior(nv),half_interval,force_delta(nv)
       integer(int64) :: watermark
@@ -458,6 +483,14 @@ contains
       else
         trial=midpoint;masses=midpoint_mass;watermark=midpoint_id;motion='kick'
       end if
+      film_count=0;film_wall=0
+      if(present(films)) then
+        if(stage==0) then
+          patches=films;patch_mass=film_mass
+        else
+          patches=midpoint_films;patch_mass=midpoint_film_mass
+        end if
+      end if
       force_delta=0
       if(stage==0) then
         call particle_force(trial,half_interval,force_delta,source_comm,accepted)
@@ -471,6 +504,25 @@ contains
       if(stage>0) then
         call particle_force(trial,half_interval,force_delta,source_comm,accepted)
         if(.not.accepted) return
+      end if
+      if(present(films)) then
+        call advance_mpi_amr_film_coupling(source_comm,species,transport,liquids,options,film_settings, &
+          work_gas,work_temperature,tree,owners,patches,patch_mass,lower,spacing,half_interval, &
+          particle_faces,film_count,film_wall,accepted,geometry,phi,film_change)
+        if(.not.accepted) return
+        accepted=.true.
+        do p=1,size(owners)
+          if(.not.allocated(change%fields(p)%values)) cycle
+          associate(a=>change%fields(p)%values,b=>film_change%fields(p)%values)
+            if(any(a>huge(1._dp)-max(b,0._dp)).or.any(a< -huge(1._dp)-min(b,0._dp))) then
+              accepted=.false.;exit
+            end if
+            a=a+b
+          end associate
+        end do
+        call MPI_Allreduce(accepted,all_ok,1,MPI_LOGICAL,MPI_LAND,source_comm,status)
+        if(status/=MPI_SUCCESS.or..not.all_ok) return
+        wall_delta=wall_delta+film_wall
       end if
       accepted=.true.
       do p=1,size(owners)
@@ -488,9 +540,17 @@ contains
       rate=change
       if(stage==0) then
         call move_alloc(trial,midpoint);call move_alloc(masses,midpoint_mass)
+        if(present(films)) then
+          call move_alloc(patches,midpoint_films);call move_alloc(patch_mass,midpoint_film_mass)
+        end if
+        old_film_steps=film_count
         midpoint_id=watermark;old_steps=steps;old_wall=wall_delta;old_outflow=exterior;old_force=force_delta
       else
         call move_alloc(trial,final);call move_alloc(masses,final_mass)
+        if(present(films)) then
+          call move_alloc(patches,final_films);call move_alloc(patch_mass,final_film_mass)
+        end if
+        new_film_steps=film_count
         final_id=watermark;new_steps=steps;new_wall=wall_delta;new_outflow=exterior;new_force=force_delta
       end if
       good=.true.
