@@ -10,13 +10,13 @@ program test_spray_mpi_amr_deposition
   implicit none
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
-  type(amr_tree_state_3d) :: full,local,expected,saved
+  type(amr_tree_state_3d) :: full,local,expected,saved,change
   real(dp), allocatable :: positions(:,:),contributions(:,:),all_positions(:,:),all_contributions(:,:)
   real(dp) :: before(2),local_integral(2),total_integral(2),volume
   integer :: r,p,count,offset,child,idx(3)
   logical :: covered
   real(dp) :: points(3,4),zero(3)=0._dp,spacing(3)=1._dp
-  integer :: rank,nranks,ierr,node,n(3),i,j,k,np,owners(3)
+  integer :: rank,nranks,ierr,node,n(3),i,j,k,np,owners(3),level
   logical :: ok,periodic(3)=[.true.,.true.,.true.]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -62,6 +62,50 @@ program test_spray_mpi_amr_deposition
     end do
     offset=offset+count
   end do
+  do level=0,1
+    call distribute()
+    call deposit_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,contributions, &
+      zero,spacing,periodic,ok,gas_change=change,maximum_level=level)
+    call require(ok,'bounded source deposition')
+    local_integral=0
+    do node=1,3
+      if(owners(node)/=rank) cycle
+      call require(all(abs(local%fields(node)%values-full%fields(node)%values-change%fields(node)%values)<1e-12_dp), &
+        'raw source increment reconstructs field')
+      if(tree%nodes(node)%level>level) then
+        call require(all(change%fields(node)%values==0).and. &
+          all(local%fields(node)%values==full%fields(node)%values),'deeper field unchanged')
+        cycle
+      end if
+      n=tree%nodes(node)%shape;volume=1._dp/8._dp**tree%nodes(node)%level
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        idx=[i,j,k];covered=.false.
+        do child=node+1,3
+          if(tree%nodes(child)%parent/=node.or.tree%nodes(child)%level>level) cycle
+          associate(box=>tree%nodes(child)%patch)
+          if(all(idx>=[box%coarse_i_lower,box%coarse_j_lower,box%coarse_k_lower]).and. &
+            all(idx<=[box%coarse_i_upper,box%coarse_j_upper,box%coarse_k_upper])) covered=.true.
+          end associate
+        end do
+        if(.not.covered) local_integral=local_integral+volume*change%fields(node)%values(:,i,j,k)
+      end do
+      end do
+      end do
+    end do
+    call MPI_Allreduce(local_integral,total_integral,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(total_integral-sum(all_contributions,dim=2))<1e-12_dp),'capped source inventory')
+  end do
+  saved=local
+  call deposit_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,contributions, &
+    zero,spacing,periodic,ok,maximum_received=0,maximum_level=0)
+  call require(.not.ok,'bounded receive capacity rejection')
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    call require(all(local%fields(node)%values==saved%fields(node)%values),'bounded source rollback')
+  end do
+  call distribute()
   call composite_integrals_amr_patch_tree_3d(tree,full,spacing,before,ok)
   call require(ok,'initial composite integral')
   expected=full

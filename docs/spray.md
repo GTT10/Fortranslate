@@ -103,8 +103,27 @@ It is a composite view capped at a level, not a fine-level halo interpolator:
 coarse regions outside that level's patches still use coarse cells. Time
 interpolation of parent endpoints, fine ghost gas reconstruction, and separate
 level source deposition/transfer remain required for recursive spray SDC.
-The physical deposition APIs continue to use their existing composite path.
+The gas/EOS deposition API continues to use its existing composite path;
+raw source deposition is described below.
 See [sampling checks](validation/spray-level-sampling-20260927.md).
+
+## Level-bounded particle source deposition
+
+`deposit_mpi_amr_tree_spray_field` accepts optional `maximum_level` for
+temporary source fields. An explicit ceiling uses the same capped cloud as
+sampling and adds volume-normalized contributions only to its exposed cells.
+It skips parent restriction so deeper fields cannot overwrite source increments
+stored in covered coarse cells. `gas_change` exports these raw increments
+independently of the background field. Fine fields above the ceiling remain
+unchanged. MPI agrees on both ceiling presence and value before deposition.
+
+The optional ceiling selects source-field semantics, even when it equals the
+finest level: covered ancestors are not refreshed. Omitting it retains physical
+composite deposition and parent restriction. The gas/EOS deposition wrapper
+does not expose the ceiling. This supplies per-level source construction;
+source transfer/synchronization and the recursive spray driver still need to
+consume the separate level fields without double-counting virtual/ghost copies.
+See [source checks](validation/spray-level-source-20260927.md).
 
 ## AMR and embedded boundaries
 

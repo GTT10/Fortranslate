@@ -1,14 +1,14 @@
 program test_spray_mpi_eb_sample
   use mpi_f08
-  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field
+  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
   use precision_mod, only: dp
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil
   implicit none
-  type(amr_tree_state_3d) :: field
-  real(dp), allocatable :: positions(:,:),samples(:,:),kept(:,:)
+  type(amr_tree_state_3d) :: field,change,initial_field
+  real(dp), allocatable :: positions(:,:),samples(:,:),kept(:,:),contribution(:,:)
   integer :: rank,nranks,ierr,owners(2),dims(3)
   type(amr_patch_3d) :: patch(1)
   type(amr_patch_tree_3d) :: tree
@@ -72,6 +72,16 @@ program test_spray_mpi_eb_sample
   call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,field,1,positions,zero,spacing, &
     periodic,samples,ok,100,g,phi,maximum_level=0)
   call require(ok.and.all(abs(samples-10._dp)<1e-13_dp),'covered coarse EB sampling')
+  initial_field=field;allocate(contribution(1,size(positions,2)));contribution=2
+  call deposit_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,field,1,positions,contribution, &
+    zero,spacing,periodic,ok,eb_geometry=g,nodal_phi=phi,gas_change=change,maximum_level=0)
+  call require(ok,'coarse EB source deposition')
+  total=0
+  if(rank==owners(1)) total=sum(change%fields(1)%values(1,:,:,:)*g(1)%volume_fraction)*g(1)%dx*g(1)%dy*g(1)%dz
+  call MPI_Allreduce(MPI_IN_PLACE,total,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(abs(total-2._dp)<1e-13_dp,'coarse EB fluid-volume source inventory')
+  if(rank==owners(2)) call require(all(field%fields(2)%values==initial_field%fields(2)%values).and. &
+    all(change%fields(2)%values==0),'fine EB field unchanged by coarse source')
   deallocate(positions);allocate(positions(3,0))
   call sample(100)
   call require(ok.and.size(samples,2)==0,'globally empty queries')

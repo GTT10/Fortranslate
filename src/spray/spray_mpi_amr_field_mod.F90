@@ -146,8 +146,10 @@ contains
   end subroutine
   ! Contributions are integrated quantities. Destination bins preserve source
   ! particle/stencil order; receives are applied in increasing source-rank order.
+  ! An explicit maximum_level deposits raw level-view increments without parent
+  ! restriction; use this for temporary source fields, not physical gas updates.
   subroutine deposit_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,contributions, &
-      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change)
+      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -155,7 +157,7 @@ contains
     real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
-    integer, optional, intent(in) :: maximum_requests,maximum_received
+    integer, optional, intent(in) :: maximum_requests,maximum_received,maximum_level
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(particle_stencil), allocatable :: stencils(:)
@@ -169,13 +171,13 @@ contains
     logical :: valid,agreed,has_particles,any_particles
     ok=.false.;capacity=1000000
     if (present(maximum_received)) capacity=maximum_received
-    export_flag=merge(1,0,present(gas_change))
+    export_flag=merge(1,0,present(gas_change))+2*merge(1,0,present(maximum_level))
     call MPI_Allreduce(export_flag,export_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.export_low/=export_high) return
     call prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi)
+      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi,maximum_level)
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -275,19 +277,23 @@ contains
     end do
     call agree()
     if (.not.agreed) return
+    if(.not.present(maximum_level)) then
     if(present(eb_geometry)) then
       call average_eb_particle_field(comm,tree,owners,eb_geometry,candidate,nvar,valid)
     else
       call average_down_mpi_amr_tree_3d(tree,owners,candidate,nvar,comm,valid)
     end if
     if (.not.valid) return
+    end if
     if(present(gas_change)) then
+      if(.not.present(maximum_level)) then
       if(present(eb_geometry)) then
         call average_eb_particle_field(comm,tree,owners,eb_geometry,change,nvar,valid)
       else
         call average_down_mpi_amr_tree_3d(tree,owners,change,nvar,comm,valid)
       end if
       if(.not.valid) return
+      end if
       call move_alloc(change%fields,gas_change%fields)
     end if
     call move_alloc(candidate%fields,state%fields);ok=.true.
