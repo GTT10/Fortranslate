@@ -22,7 +22,8 @@ module mpi_amr_patch_tree_hydro_3d_mod
 contains
   subroutine compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,state,temperature,predictor_source,root_spacing, &
       dt,faces,hydro_rate,integrated_flux,comm,ok,inflow_state,inflow_temperature,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag)
+      inflow_mach,inflow_pressure,difmag, &
+      target_depth,coarse_start,coarse_end,coarse_fractions,source_start,source_end,source_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
@@ -35,17 +36,22 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6),difmag
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end,source_start,source_end
+    real(dp), optional, intent(in) :: coarse_fractions(:),source_fractions(:)
     type(amr_tree_state_3d) :: local_state,local_temperature
     real(dp) :: budget(5+size(species)),maximum
     local_state=state;local_temperature=temperature
     call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local_state,local_temperature,root_spacing,dt,faces, &
       'characteristic_ppm','mc','pelec',budget,maximum,comm,ok,inflow_state,inflow_temperature, &
-      outlet_pressure,inflow_mach,inflow_pressure,difmag,predictor_source,hydro_rate,integrated_flux)
+      outlet_pressure,inflow_mach,inflow_pressure,difmag,predictor_source,hydro_rate,integrated_flux, &
+      target_depth,coarse_start,coarse_end,coarse_fractions,source_start,source_end,source_fractions)
   end subroutine compute_sdc_mpi_amr_tree_hydro_3d
 
   subroutine advance_mpi_amr_tree_hydro_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
       reconstruction,limiter,solver,boundary_change,maximum_correction,comm,ok,inflow_state,inflow_temperature, &
-      outlet_pressure,inflow_mach,inflow_pressure,difmag,predictor_source,hydro_rate,integrated_flux)
+      outlet_pressure,inflow_mach,inflow_pressure,difmag,predictor_source,hydro_rate,integrated_flux, &
+      target_depth,coarse_start,coarse_end,coarse_fractions,source_start,source_end,source_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -61,11 +67,14 @@ contains
     type(amr_tree_state_3d), optional, intent(in) :: predictor_source
     type(amr_tree_state_3d), optional, intent(inout) :: hydro_rate
     type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end,source_start,source_end
+    real(dp), optional, intent(in) :: coarse_fractions(:),source_fractions(:)
     real(dp) :: pressure(6),mach(6),pin(6),tin(6),viscosity
     type(amr_tree_state_3d) :: initial,candidate,temps,stage_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)),first_max,second_max
-    integer :: node,nvar,rank,status,ios,parent,width
+    integer :: node,nvar,rank,status,ios,parent,width,depth,selection(7),selection_low(7),selection_high(7)
     real(dp) :: controls(29),low(29),high(29)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(10),reference_options(10)
@@ -80,6 +89,22 @@ contains
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    depth=-1
+    if(present(target_depth)) depth=target_depth
+    selection=[depth,merge(1,0,present(coarse_start)),merge(1,0,present(coarse_end)), &
+      merge(1,0,present(coarse_fractions)),merge(1,0,present(source_start)), &
+      merge(1,0,present(source_end)),merge(1,0,present(source_fractions))]
+    call MPI_Allreduce(selection,selection_low,7,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selection,selection_high,7,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(selection_low/=selection_high)) return
+    valid=depth>=-1.and.depth<tree%level_count()
+    if(present(target_depth)) valid=valid.and.depth>=0.and.stage_only
+    valid=valid.and.all(selection(2:4)==selection(2)).and.all(selection(5:7)==selection(5))
+    if(any(selection(2:)>0)) valid=valid.and.depth>=0.and.stage_only
+    call agree(valid)
+    if(.not.valid) return
     viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     pressure=0
@@ -232,7 +257,7 @@ contains
       real(dp), intent(out) :: budget(:),largest
       real(dp) :: work_stamp
       logical, intent(out) :: success
-      type(amr_tree_state_3d) :: packed,updated,ghosts,source_ghosts
+      type(amr_tree_state_3d) :: packed,updated,ghosts,source_ghosts,predictor
       type(amr_tree_flux_3d), allocatable :: flux(:)
       real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),source_values(:,:,:,:)
       character(len=32) :: source_faces(6)
@@ -254,19 +279,35 @@ contains
       if (.not.success) return
       call copy_local(u,updated,success)
       if (.not.success) return
+      if(stage_only) then
+        do peer=1,size(tree%nodes)
+          if(owners(peer)==rank) updated%fields(peer)%values=0
+        end do
+        predictor=predictor_source
+        if(present(coarse_start)) then
+          call set_ancestors(packed,coarse_start,nvar+1,success)
+          if(.not.success) return
+        end if
+        if(present(source_start)) then
+          call set_ancestors(predictor,source_start,nvar,success)
+          if(.not.success) return
+        end if
+      end if
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
         inflow_state=inlet,coarse_limiter=donor_limiter,species_count=size(species),ghost_width=width, &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        depth=target_depth,coarse_future=coarse_end,coarse_fractions=coarse_fractions)
       if (.not.success) return
       if(stage_only) then
         source_faces=faces
         where(source_faces/='periodic') source_faces='outflow'
-        call fill_mpi_amr_tree_ghosts_3d(tree,owners,predictor_source,nvar,source_faces,source_ghosts,comm,success, &
-          coarse_limiter='mc',ghost_width=4)
+        call fill_mpi_amr_tree_ghosts_3d(tree,owners,predictor,nvar,source_faces,source_ghosts,comm,success, &
+          coarse_limiter='mc',ghost_width=4,depth=target_depth,coarse_future=source_end,coarse_fractions=source_fractions)
         if(.not.success) return
       end if
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
+        if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
         n=tree%nodes(peer)%shape;dims=n+4
         if(stage_only) source_values=source_ghosts%fields(peer)%values
         work_stamp=tree_work_start()
@@ -346,6 +387,7 @@ contains
         do peer=1,size(tree%nodes)
           if(owners(peer)/=rank) cycle
           if(.not.all(ieee_is_finite(updated%fields(peer)%values))) success=.false.
+          if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
           if(.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
             .not.all(ieee_is_finite(flux(peer)%z))) success=.false.
         end do
@@ -384,6 +426,25 @@ contains
       if (.not.success) return
       call move_alloc(updated%fields,u%fields)
     end subroutine
+    subroutine set_ancestors(field,start,ncomponents,success)
+      type(amr_tree_state_3d), intent(inout) :: field
+      type(amr_tree_state_3d), intent(in) :: start
+      integer, intent(in) :: ncomponents
+      logical, intent(out) :: success
+      integer :: ancestor
+      call validate_mpi_amr_tree_local_3d(tree,owners,start,ncomponents,comm,success,maximum_depth=depth-1)
+      if(.not.success) return
+      do ancestor=1,size(tree%nodes)
+        if(owners(ancestor)/=rank.or.tree%nodes(ancestor)%level>=depth) cycle
+        if(.not.all(ieee_is_finite(start%fields(ancestor)%values))) success=.false.
+      end do
+      call agree(success)
+      if(.not.success) return
+      do ancestor=1,size(tree%nodes)
+        if(owners(ancestor)/=rank.or.tree%nodes(ancestor)%level>=depth) cycle
+        field%fields(ancestor)%values=start%fields(ancestor)%values
+      end do
+    end subroutine set_ancestors
     subroutine agree(condition)
       logical, intent(inout) :: condition
       logical :: result

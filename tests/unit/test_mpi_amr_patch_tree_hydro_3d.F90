@@ -195,7 +195,9 @@ contains
   subroutine check_sdc()
     type(amr_tree_state_3d) :: source,owned_source,rates,serial_rates,prior,bad_state
     type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)
-    integer :: peer,boundary_case
+    type(amr_tree_state_3d) :: start,finish,owned_start,owned_end,source_end,owned_end_source
+    real(dp) :: fractions(2)
+    integer :: peer,boundary_case,n(3)
     owners=mod([0,1,0],nranks);dt=.01_dp*expected_dt
     source=global
     allocate(local%fields(3),temperature%fields(3),owned_source%fields(3))
@@ -237,6 +239,51 @@ contains
       call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'MPI SDC rate rollback')
       call require(all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
         all(flux(peer)%z==prior_flux(peer)%z),'MPI SDC flux rollback')
+    end do
+    allocate(start%fields(3),owned_start%fields(3),owned_end%fields(3),owned_end_source%fields(3))
+    do peer=1,3
+      n=tree%nodes(peer)%shape
+      allocate(start%fields(peer)%values(size(q)+1,n(1),n(2),n(3)))
+      start%fields(peer)%values(:size(q),:,:,:)=global%fields(peer)%values
+      start%fields(peer)%values(size(q)+1,:,:,:)=reference%fields(peer)%values(1,:,:,:)
+    end do
+    finish=start;source_end=source
+    do peer=1,2
+      ! Change density and energy together, retaining temperature and velocity.
+      finish%fields(peer)%values(:size(q),:,:,:)=1.02_dp*start%fields(peer)%values(:size(q),:,:,:)
+      source_end%fields(peer)%values=-2*source%fields(peer)%values
+      if(owners(peer)/=rank) cycle
+      owned_start%fields(peer)=start%fields(peer);owned_end%fields(peer)=finish%fields(peer)
+      owned_end_source%fields(peer)=source_end%fields(peer)
+    end do
+    faces='periodic';fractions=[.25_dp,.5_dp]
+    call compute_sdc_amr_patch_tree_hydro_3d(tree,species,global,reference,source,spacing,dt,faces, &
+      serial_rates,serial_flux,ok,target_depth=2,coarse_start=start,coarse_end=finish,coarse_fractions=fractions, &
+      source_start=source,source_end=source_end,source_fractions=[.75_dp,.5_dp])
+    call require(ok,'serial selected hydro with temporal donors')
+    call compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,owned_source,spacing,dt,faces, &
+      rates,flux,MPI_COMM_WORLD,ok,target_depth=2,coarse_start=owned_start,coarse_end=owned_end, &
+      coarse_fractions=fractions,source_start=owned_source,source_end=owned_end_source,source_fractions=[.75_dp,.5_dp])
+    call require(ok,'MPI selected hydro with temporal donors')
+    do peer=1,3
+      call require(allocated(flux(peer)%x).eqv.(owners(peer)==rank.and.peer==3),'selected owned flux only')
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==serial_rates%fields(peer)%values),'temporal donor rates exact')
+      if(peer/=3) cycle
+      call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
+        all(flux(peer)%z==serial_flux(peer)%z),'temporal donor flux exact')
+    end do
+    prior=rates;prior_flux=flux
+    if(rank==nranks-1) fractions(1)=.3_dp
+    call compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,owned_source,spacing,dt,faces, &
+      rates,flux,MPI_COMM_WORLD,ok,target_depth=2,coarse_start=owned_start,coarse_end=owned_end, &
+      coarse_fractions=fractions,source_start=owned_source,source_end=owned_end_source,source_fractions=[.75_dp,.5_dp])
+    call require(.not.ok,'idle-rank temporal fraction mismatch rejected')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'temporal failure rate rollback')
+      if(peer/=3) cycle
+      call require(all(flux(peer)%x==prior_flux(peer)%x),'temporal failure flux rollback')
     end do
   end subroutine check_sdc
   subroutine unchanged()
