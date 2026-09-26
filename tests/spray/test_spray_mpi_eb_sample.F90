@@ -1,7 +1,12 @@
 program test_spray_mpi_eb_sample
   use mpi_f08
-  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
+  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field, &
+    sample_mpi_eb_tree_particle_gas
   use precision_mod, only: dp
+  use nasa7_thermo_mod, only: nasa7_species
+  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
+  use mixture_thermo_mod, only: mixture_specific_gas_constant
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
@@ -85,6 +90,7 @@ program test_spray_mpi_eb_sample
   deallocate(positions);allocate(positions(3,0))
   call sample(100)
   call require(ok.and.size(samples,2)==0,'globally empty queries')
+  call check_temporal_particle_gas()
   if(any(periodic)) then
     phi(0,8,8)=phi(0,8,8)+.1_dp
     call sample(100)
@@ -93,6 +99,68 @@ program test_spray_mpi_eb_sample
   if(rank==0) print *, 'PASS: owner-local MPI EB composite particle sampling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_temporal_particle_gas()
+    type(nasa7_species), allocatable :: species(:)
+    type(amr_tree_state_3d) :: gas,temp,ending
+    real(dp), allocatable :: primitive(:),cell(:),y(:),query(:,:),values(:,:),site_t(:),saved_values(:,:),saved_t(:)
+    integer, allocatable :: query_nodes(:)
+    real(dp) :: gas_constant,t,sound,fraction(1),fractions(3)=[0._dp,.25_dp,1._dp]
+    integer :: nv,p,a,b,c,n(3),count,stage
+    character(len=16) :: faces(6)
+    call load_h2o2_full_thermo(species,ok)
+    call require(ok,'particle halo thermo')
+    nv=reactive_nvar(size(species));allocate(primitive(nv),cell(nv),y(size(species)))
+    y=0
+    do p=1,size(species)
+      if(species(p)%name=='N2') y(p)=1
+    end do
+    gas_constant=mixture_specific_gas_constant(species,y,ok)
+    call require(ok,'particle halo mixture')
+    primitive=0;primitive(1)=1;primitive(5)=gas_constant*900;primitive(6:)=y
+    call reactive_primitive_to_conserved(species,primitive,cell,t,sound,ok)
+    call require(ok,'particle halo initial state')
+    allocate(gas%fields(2),temp%fields(2))
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      n=tree%nodes(p)%shape
+      allocate(gas%fields(p)%values(nv,n(1),n(2),n(3)),temp%fields(p)%values(1,n(1),n(2),n(3)))
+      gas%fields(p)%values=0;temp%fields(p)%values=900
+      do c=1,n(3)
+      do b=1,n(2)
+      do a=1,n(1)
+        if(g(p)%volume_fraction(a,b,c)>0) gas%fields(p)%values(:,a,b,c)=cell
+      end do
+      end do
+      end do
+    end do
+    ending=gas
+    if(rank==owners(1)) ending%fields(1)%values=2*gas%fields(1)%values
+    count=merge(1,0,rank==owners(2));allocate(query_nodes(count),query(3,count));query_nodes=2
+    if(count>0) query(:,1)=[2.25_dp,2.25_dp,2.25_dp]
+    faces='outflow'
+    if(periodic(1)) faces(1:2)='periodic'
+    if(periodic(3)) faces(5:6)='periodic'
+    do stage=1,3
+      fraction=fractions(stage)
+      call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
+        values,site_t,ok,gas,ending,temp,temp,fraction,boundary_faces=faces)
+      call require(ok,'solver-generated temporal particle halo')
+      if(count>0) then
+        call require(maxval(abs(values(:,1)-(1+fraction(1))*cell)/max(abs(cell),1._dp))<1e-13_dp, &
+          'parent time endpoints reach fine ghost particle')
+        call require(abs(site_t(1)-900)<1e-8_dp,'particle-site EOS temperature')
+      end if
+    end do
+    saved_values=values;saved_t=site_t;fraction=1.1_dp
+    call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
+      values,site_t,ok,gas,ending,temp,temp,fraction,boundary_faces=faces)
+    call require(.not.ok.and.all(values==saved_values).and.all(site_t==saved_t),'temporal halo failure rollback')
+    fraction=.25_dp
+    if(count>0) query(2,1)=10
+    call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
+      values,site_t,ok,gas,ending,temp,temp,fraction,boundary_faces=faces)
+    call require(.not.ok.and.all(values==saved_values).and.all(site_t==saved_t),'late sampling rollback')
+  end subroutine check_temporal_particle_gas
   subroutine sample(limit)
     integer, intent(in) :: limit
     call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,field,1,positions,zero,spacing, &

@@ -147,6 +147,24 @@ nonfinite requested values, wrong ownership or insufficient halo support reject
 collectively and preserve the previous samples. See
 [halo sampling checks](validation/spray-halo-sampling-20260927.md).
 
+## Stage-time EB gas sampling for particles
+
+`sample_mpi_eb_tree_particle_gas` connects the existing MPI EB gas halo fill to
+particle-site sampling. It accepts ancestor state/temperature endpoints and
+fractions, fills full halos including corners, samples conserved variables and
+temperature guesses at assigned particle nodes, then recovers particle-site
+temperature from the interpolated conserved state through the EOS. Conserved
+samples and temperatures publish together only after collective success.
+Parent restriction is disabled so the supplied stage states are retained.
+
+The wrapper forwards existing boundary/inlet controls and optional target
+volume-fraction halos. Wider halos retain the gas fill's requirement for
+explicit target-resolution metrics. This connects stage-time parent donors to
+ghost-particle gas references, but centroid visibility across EB walls is still
+unimplemented in this halo sampler. General cut-cell particle coupling, source
+transfer and recursive application stepping therefore remain open. See
+[temporal halo checks](validation/spray-temporal-halo-20260927.md).
+
 ## AMR and embedded boundaries
 
 An AMR ownership library now locates parcels in the finest covering regular

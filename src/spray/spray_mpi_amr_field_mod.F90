@@ -9,6 +9,7 @@ module spray_mpi_amr_field_mod
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,fetch_mpi_amr_tree_cells_3d, &
     validate_mpi_amr_tree_metadata_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
+  use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_amr_tree_coupling_mod, only: amr_tree_spray_stencil
@@ -22,7 +23,59 @@ module spray_mpi_amr_field_mod
   end type
   public :: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
   public :: deposit_mpi_amr_tree_spray_gas,sample_mpi_amr_particle_halo
+  public :: sample_mpi_eb_tree_particle_gas
 contains
+  ! Fill complete stage-time halos, then sample U and recover particle-site T.
+  ! Ancestor endpoints are interpolated by the gas halo implementation. No
+  ! average-down is allowed to replace the caller's level-stage states.
+  subroutine sample_mpi_eb_tree_particle_gas(comm,species,tree,owners,geometry,state,temperature,width, &
+      nodes,positions,samples,sample_temperature,ok,ancestor_start,ancestor_end,temperature_start,temperature_end, &
+      ancestor_fraction,target_volume_fraction,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),width,nodes(:)
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: positions(:,:)
+    real(dp), allocatable, intent(inout) :: samples(:,:),sample_temperature(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
+    real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
+    real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d) :: halo,halo_t,volume
+    real(dp), allocatable :: candidate(:,:),guesses(:,:),recovered(:),primitive(:)
+    real(dp) :: lower(3),spacing(3),speed
+    integer :: p,status,nv
+    logical :: valid,agreed,periodic(3)
+    ok=.false.;nv=reactive_nvar(size(species));periodic=.false.
+    if(present(boundary_faces)) periodic=[boundary_faces(1)=='periodic',boundary_faces(3)=='periodic', &
+      boundary_faces(5)=='periodic']
+    call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,halo,halo_t,comm,valid, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_mach,inflow_temperature,inflow_pressure,volume,width,target_volume_fraction, &
+      boundary_faces,inflow_state,restrict_snapshot=.false.)
+    if(.not.valid) return
+    lower=[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]
+    spacing=[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz]
+    call sample_mpi_amr_particle_halo(comm,tree,owners,halo,nv,width,nodes,positions,lower,spacing, &
+      periodic,candidate,valid,volume)
+    if(.not.valid) return
+    call sample_mpi_amr_particle_halo(comm,tree,owners,halo_t,1,width,nodes,positions,lower,spacing, &
+      periodic,guesses,valid,volume)
+    if(.not.valid) return
+    allocate(recovered(size(nodes)),primitive(nv))
+    do p=1,size(nodes)
+      call reactive_conserved_to_primitive(species,candidate(:,p),guesses(1,p),primitive,recovered(p),speed,valid)
+      if(.not.valid) exit
+    end do
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    call move_alloc(candidate,samples);call move_alloc(recovered,sample_temperature);ok=.true.
+  end subroutine sample_mpi_eb_tree_particle_gas
+
   ! Interpolate caller-filled, owner-local full halos at the particle's assigned
   ! node resolution. The caller supplies corner donors at the required time.
   ! Storage may use either physical or packed spatial lower bounds.
