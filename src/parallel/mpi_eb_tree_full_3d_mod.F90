@@ -8,6 +8,7 @@ module mpi_eb_tree_full_3d_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use reactive_eb_3d_driver_mod, only: react_sdc_eb_state_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
@@ -18,7 +19,7 @@ module mpi_eb_tree_full_3d_mod
   use mpi_eb_tree_subcycle_transport_3d_mod, only: advance_mpi_eb_tree_subcycle_transport_3d
   implicit none
   private
-  public :: react_mpi_eb_tree_3d,advance_mpi_eb_tree_full_3d
+  public :: react_mpi_eb_tree_3d,advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d
 contains
   subroutine agree(condition,comm,ok)
     logical, intent(in) :: condition
@@ -28,6 +29,84 @@ contains
     call MPI_Allreduce(condition,ok,1,MPI_LOGICAL,MPI_LAND,comm,status)
     if (status/=MPI_SUCCESS) ok=.false.
   end subroutine
+
+  subroutine react_sdc_mpi_eb_tree_3d(species,reactions,tree,owners,geometry,old_state,old_temperature, &
+      nonreacting_rates,dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: old_state,old_temperature,nonreacting_rates
+    real(dp), intent(in) :: dt,rtol,atol
+    type(amr_tree_state_3d), intent(inout) :: state,temperature,reaction_source
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d) :: candidate,temps,sources
+    real(dp) :: controls(3),low(3),high(3),stamp
+    integer :: nv,depth,counts(3),min_counts(3),max_counts(3),rank,status,node,n(3)
+    logical :: valid,ready
+    ok=.false.;nv=reactive_nvar(size(species));depth=-1;controls=[dt,rtol,atol]
+    valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0.and.size(reactions)>0
+    if(present(target_depth)) then
+      depth=target_depth
+      valid=valid.and.depth>=0
+    end if
+    call agree(valid,comm,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(controls,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    counts=[size(species),size(reactions),depth]
+    call MPI_Allreduce(counts,min_counts,3,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(counts,max_counts,3,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(min_counts/=max_counts)) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,old_state,nv,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,old_temperature,1,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,nonreacting_rates,nv,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,reaction_source,nv-4,comm,ready)
+    if(.not.ready) return
+    call agree(depth<tree%level_count().and.size(geometry)==size(tree%nodes),comm,ready)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    candidate=old_state;temps=old_temperature;sources=reaction_source
+    if(depth>=0) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,nv,comm,ready)
+      if(.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,ready)
+      if(.not.ready) return
+      candidate=state;temps=temperature
+    end if
+    valid=.true.
+    do node=1,size(tree%nodes)
+      if(owners(node)/=rank) cycle
+      if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+      n=tree%nodes(node)%shape
+      if(.not.geometry(node)%is_valid()) then
+        valid=.false.;exit
+      end if
+      if(any([geometry(node)%nx,geometry(node)%ny,geometry(node)%nz]/=n)) then
+        valid=.false.;exit
+      end if
+      stamp=tree_work_start()
+      call react_sdc_eb_state_3d(species,reactions,old_state%fields(node)%values, &
+        old_temperature%fields(node)%values(1,:,:,:),geometry(node),nonreacting_rates%fields(node)%values, &
+        dt,rtol,atol,candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:), &
+        sources%fields(node)%values,valid)
+      call tree_work_stop(node,stamp)
+      if(.not.valid) exit
+    end do
+    call agree(valid,comm,ready)
+    if(.not.ready) return
+    state=candidate;temperature=temps;reaction_source=sources;ok=.true.
+  end subroutine react_sdc_mpi_eb_tree_3d
 
   subroutine react_mpi_eb_tree_3d(species,reactions,tree,owners,geometry,dt,rtol,atol,state,temperature, &
       chemical_change,comm,ok,integrator)

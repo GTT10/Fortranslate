@@ -11,10 +11,10 @@ program test_mpi_eb_tree_full_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
-    average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d
+    average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d,react_sdc_eb_tree_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
-  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -91,6 +91,7 @@ program test_mpi_eb_tree_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  call check_sdc_reaction()
   do integrator_index=1,2
   do mode=0,3
     if (integrator_index==2.and.mode/=3) cycle
@@ -121,6 +122,80 @@ program test_mpi_eb_tree_full_3d
   if (rank==0) print *, 'test_mpi_eb_tree_full_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine check_sdc_reaction()
+    type(amr_tree_state_3d) :: rates,ref_state,ref_temp,ref_ir,local,lt,lr,ir,old,ot,kept,kt,ki
+    type(eb_geometry_3d) :: geometry(count)
+    real(dp) :: tolerance
+    integer :: p,layout,owners(count)
+    logical :: good
+    allocate(rates%fields(count),ref_ir%fields(count))
+    do p=1,count
+      geometry(p)=saved%nodes(p)%geometry
+      allocate(rates%fields(p)%values(nv,4,4,4),source=0._dp)
+      allocate(ref_ir%fields(p)%values(nv-4,4,4,4),source=7._dp)
+      rates%fields(p)%values(2,:,:,:)=2.e4_dp
+      rates%fields(p)%values(5,:,:,:)=2.e4_dp*saved%nodes(p)%state(2,:,:,:)/saved%nodes(p)%state(1,:,:,:)
+    end do
+    call react_sdc_eb_tree_3d(species,reactions,saved,rates,1.e-9_dp,2.e-7_dp,1.e-12_dp, &
+      ref_state,ref_temp,ref_ir,good)
+    call require(good,'serial SDC reaction reference')
+    do layout=1,2
+      owners=[(mod(p-1,nranks),p=1,count)]
+      if(layout==2) owners=0
+      allocate(old%fields(count),ot%fields(count),lr%fields(count),ir%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        old%fields(p)%values=saved%nodes(p)%state
+        allocate(ot%fields(p)%values(1,4,4,4))
+        ot%fields(p)%values(1,:,:,:)=saved%nodes(p)%temperature
+        lr%fields(p)%values=rates%fields(p)%values
+        allocate(ir%fields(p)%values(nv-4,4,4,4),source=7._dp)
+      end do
+      call react_sdc_mpi_eb_tree_3d(species,reactions,topology,owners,geometry,old,ot,lr, &
+        1.e-9_dp,2.e-7_dp,1.e-12_dp,local,lt,ir,MPI_COMM_WORLD,good)
+      call require(good,'MPI SDC reaction')
+      do p=1,count
+        call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'SDC owner-local allocation')
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==ref_state%fields(p)%values).and. &
+          all(lt%fields(p)%values==ref_temp%fields(p)%values).and.all(ir%fields(p)%values==ref_ir%fields(p)%values), &
+          'MPI SDC exact serial state temperature and reaction')
+        local%fields(p)%values=-17;lt%fields(p)%values=-19;ir%fields(p)%values=7
+      end do
+      call react_sdc_mpi_eb_tree_3d(species,reactions,topology,owners,geometry,old,ot,lr, &
+        1.e-9_dp,2.e-7_dp,1.e-12_dp,local,lt,ir,MPI_COMM_WORLD,good,target_depth=2)
+      call require(good,'MPI selected level SDC reaction')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        if(topology%nodes(p)%level==2) then
+          call require(all(local%fields(p)%values==ref_state%fields(p)%values).and. &
+            all(ir%fields(p)%values==ref_ir%fields(p)%values),'MPI selected SDC exact reaction')
+        else
+          call require(all(local%fields(p)%values==-17).and.all(lt%fields(p)%values==-19).and. &
+            all(ir%fields(p)%values==7),'MPI SDC inactive level retained')
+        end if
+      end do
+      kept=local;kt=lt;ki=ir
+      if(owners(count)==rank) old%fields(count)%values(1,4,4,4)=-1
+      call react_sdc_mpi_eb_tree_3d(species,reactions,topology,owners,geometry,old,ot,lr, &
+        1.e-9_dp,2.e-7_dp,1.e-12_dp,local,lt,ir,MPI_COMM_WORLD,good)
+      call require(.not.good,'MPI failing owner rejects globally')
+      if(owners(count)==rank) old%fields(count)%values=saved%nodes(count)%state
+      tolerance=2.e-7_dp
+      if(rank==nranks-1) tolerance=-1
+      call react_sdc_mpi_eb_tree_3d(species,reactions,topology,owners,geometry,old,ot,lr, &
+        1.e-9_dp,tolerance,1.e-12_dp,local,lt,ir,MPI_COMM_WORLD,good)
+      call require(.not.good,'MPI invalid control including idle rank rejects')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==kept%fields(p)%values).and. &
+          all(lt%fields(p)%values==kt%fields(p)%values).and.all(ir%fields(p)%values==ki%fields(p)%values), &
+          'MPI SDC collective rollback')
+      end do
+      deallocate(old%fields,ot%fields,lr%fields,ir%fields)
+    end do
+  end subroutine check_sdc_reaction
+
   subroutine check_mpi_full()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)
