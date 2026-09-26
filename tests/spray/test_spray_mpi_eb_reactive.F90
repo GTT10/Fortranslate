@@ -10,7 +10,8 @@ program test_spray_mpi_eb_reactive
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: build_eb_tree_extended_geometry_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_subcycle_3d
-  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
+  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc, &
+    advance_mpi_eb_spray_sdc_subcycle
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use spray_parcel_mod
@@ -118,7 +119,7 @@ program test_spray_mpi_eb_reactive
   allocate(boundary(nv),chemical(nv),forcing(nv),exchange(nv))
   forcing=46;exchange=47
   if(index(test_mode,'sdc')==1) then
-    if(test_mode=='sdc'.or.test_mode=='sdc-force') then
+    if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -157,6 +158,11 @@ program test_spray_mpi_eb_reactive
   end if
   if(test_mode=='sdc-force') accel=[1000._dp,-2000._dp,3000._dp]
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
+  if(test_mode=='sdc-recursive') then
+    call check_recursive_spray()
+    call MPI_Finalize(ierr)
+    stop
+  end if
   ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
   call advance()
   call require(.not.ok.and.steps==0.and.all(ledger==42),'whole interval failure and ledger rollback')
@@ -246,6 +252,46 @@ program test_spray_mpi_eb_reactive
   if(rank==0) print *, 'PASS: MPI EB coupled reactive step and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_recursive_spray()
+    integer(int64) :: counts(2)
+    integer :: attempt
+    real(dp) :: coefficient
+    if(rank==nranks-1) drops(1)%position=[.0012_dp,.0025_dp,.0015_dp]
+    saved_drops=drops;saved_mass=masses
+    call inventory(before)
+    do attempt=1,2
+      coefficient=merge(-1._dp,.1_dp,attempt==1)
+      boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37;counts=41
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
+        species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
+        1e-8_dp,2,.true.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
+        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,difmag=coefficient,gas_particle_change=exchange,level_steps=counts)
+      if(attempt==1) then
+        call require(.not.ok.and.steps==0.and.last_id==1,'recursive hydro rejection after old particle stage')
+        call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &
+          all(exchange==37).and.theta==31.and.all(counts==41),'recursive whole-step ledger rollback')
+        call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'recursive population rollback')
+        do node=1,2
+          if(owners(node)/=rank) cycle
+          call require(all(field%fields(node)%values==saved%fields(node)%values),'recursive gas rollback')
+          call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'recursive temperature rollback')
+        end do
+      else
+        call require(ok.and.steps==6.and.all(counts==[1_int64,2_int64]),'coupled recursive gas particle intervals')
+      end if
+    end do
+    call inventory(after)
+    call require(all(abs(after-before-ledger-boundary-chemical-forcing)<= &
+      3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'recursive composite gas particle inventory')
+    call require(last_id==1.and.size(drops)==merge(1,0,rank==nranks-1),'recursive physical collection')
+    call require(any(exchange/=0),'recursive particle feedback reaches gas')
+    if(rank==nranks-1) then
+      call require(all(drops%temperature>350._dp).and.all(drops%mass<saved_drops(1)%mass), &
+        'recursive heating and evaporation')
+    end if
+    if(rank==0) print *, 'Recursive coupled residual: ', &
+      maxval(abs(after-before-ledger-boundary-chemical-forcing)/max(abs(before),abs(after),1e-30_dp))
+  end subroutine check_recursive_spray
   subroutine check_halo_context(state,temperature,interval,stage,depth,time,rate,comm,accepted, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
     type(amr_tree_state_3d), intent(in) :: state,temperature

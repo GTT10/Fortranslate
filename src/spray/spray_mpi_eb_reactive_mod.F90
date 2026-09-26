@@ -10,8 +10,13 @@ module spray_mpi_eb_reactive_mod
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_options,valid_spray_parcel
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
-  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
-  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,advance_mpi_eb_tree_sdc_3d
+  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling, &
+    advance_mpi_eb_recursive_population_stage,spray_sdc_population_stage
+  use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations, &
+    collect_mpi_amr_level_particles
+  use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_particle_predictor_halo_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,advance_mpi_eb_tree_sdc_3d, &
+    advance_mpi_eb_tree_sdc_subcycle_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
   use spray_mpi_mod, only: split_mpi_spray_parcels
@@ -20,8 +25,205 @@ module spray_mpi_eb_reactive_mod
   use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
   private
-  public :: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
+  public :: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc,advance_mpi_eb_spray_sdc_subcycle
 contains
+  ! Recursive frozen-gas drag/heat/evaporation core. Breakup, films and particle
+  ! forcing require their own recursive lifecycle and are not enabled here.
+  subroutine advance_mpi_eb_spray_sdc_subcycle(comm,tree,owners,geometry,extended_geometry,phi, &
+      species,reactions,transport,liquids,options,state,temperature,parcels,component_mass,lower,spacing, &
+      dt,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces,boundary_change,wall_change, &
+      chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
+      redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),iterations
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended_geometry(:)
+    real(dp), intent(in) :: phi(0:,0:,0:),lower(3),spacing(3),dt,force(3),rtol,atol
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: liquids(:)
+    type(spray_options), intent(in) :: options
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    logical, intent(in) :: chemistry,transport_flags(4)
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
+    integer, intent(out) :: particle_steps
+    integer(int64), intent(inout) :: last_id
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    real(dp), optional, intent(in) :: difmag,target_volume_fraction,gas_acceleration(3)
+    character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(inout) :: gas_particle_change(:)
+    integer(int64), optional, intent(inout) :: level_steps(:)
+    type(spray_level_population), allocatable :: physical(:),virtuals(:),ghosts(:)
+    type(spray_sdc_population_stage), allocatable :: work(:)
+    type(amr_tree_state_3d) :: gas,temp,metrics,centroids,particle_first,particle_last
+    type(amr_tree_state_3d), allocatable :: ir
+    type(spray_parcel), allocatable :: final(:)
+    real(dp), allocatable :: masses(:,:)
+    integer(int64), allocatable :: counts(:)
+    integer(int64) :: watermark,low_id,high_id,maximum_id,global_id,total_steps
+    real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
+    real(dp) :: external(size(source_change)),exchange(size(source_change)),particle_wall(size(source_change))
+    real(dp) :: exterior(size(source_change)),theta,h(3),origin(3)
+    integer :: nv,levels,rank,status,node,n(3),i,j,k,p,ios
+    logical :: valid,agreed
+    ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid().and.valid_spray_options(options)
+    valid=valid.and.options%breakup_model=='none'.and.all(boundary_faces=='outflow'.or. &
+      boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
+    valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
+    if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
+    call agree();if(.not.agreed) return
+    levels=tree%level_count()
+    if(present(level_steps)) valid=size(level_steps)==levels
+    call agree();if(.not.agreed) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(last_id,low_id,1,MPI_INTEGER8,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(last_id,high_id,1,MPI_INTEGER8,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low_id/=high_id) return
+    maximum_id=max(0_int64,maxval(parcels%id))
+    call MPI_Allreduce(maximum_id,global_id,1,MPI_INTEGER8,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.last_id<global_id) return
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,agreed)
+    if(.not.agreed) return
+    valid=all(lower==[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]).and. &
+      all(spacing==[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz])
+    call agree();if(.not.agreed) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,state,nv,comm,agreed)
+    if(.not.agreed) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,agreed)
+    if(.not.agreed) return
+    valid=size(extended_geometry)==size(owners)
+    call agree();if(.not.agreed) return
+    do node=1,size(owners)
+      valid=extended_geometry(node)%is_valid()
+      if(valid) valid=all([extended_geometry(node)%nx,extended_geometry(node)%ny,extended_geometry(node)%nz]== &
+        tree%nodes(node)%shape+12)
+      if(.not.valid) exit
+    end do
+    call agree();if(.not.agreed) return
+    allocate(work(levels),counts(levels),metrics%fields(size(owners)),centroids%fields(size(owners)),stat=ios)
+    valid=ios==0;call agree();if(.not.agreed) return
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape;h=[geometry(node)%dx,geometry(node)%dy,geometry(node)%dz]
+      origin=[geometry(node)%x_lower,geometry(node)%y_lower,geometry(node)%z_lower]
+      allocate(metrics%fields(node)%values(1,-2:n(1)+3,-2:n(2)+3,-2:n(3)+3), &
+        centroids%fields(node)%values(3,-2:n(1)+3,-2:n(2)+3,-2:n(3)+3),stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+      metrics%fields(node)%values(1,:,:,:)=extended_geometry(node)%volume_fraction(4:n(1)+9,4:n(2)+9,4:n(3)+9)
+      do k=-2,n(3)+3
+      do j=-2,n(2)+3
+      do i=-2,n(1)+3
+        centroids%fields(node)%values(:,i,j,k)=origin+(real([i,j,k],dp)-.5_dp+ &
+          [extended_geometry(node)%cell_centroid_x(i+6,j+6,k+6), &
+           extended_geometry(node)%cell_centroid_y(i+6,j+6,k+6), &
+           extended_geometry(node)%cell_centroid_z(i+6,j+6,k+6)])*h
+      end do
+      end do
+      end do
+    end do
+    call agree();if(.not.agreed) return
+    call initialize_mpi_amr_sdc_populations(comm,tree,owners,parcels,component_mass,lower,spacing, &
+      [.false.,.false.,.false.],2,options%maximum_parcels,physical,virtuals,ghosts,agreed,phi)
+    if(.not.agreed) return
+    gas=state;temp=temperature;particle_first=state
+    do node=1,size(owners)
+      if(owners(node)==rank) particle_first%fields(node)%values=0
+    end do
+    particle_last=particle_first;particle_wall=0;exterior=0;watermark=last_id
+    if(present(reaction_source)) then
+      allocate(ir);ir=reaction_source
+    end if
+    call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,geometry,gas,temp, &
+      dt,iterations,chemistry,transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
+      boundary,wall,chemical,external,theta,comm,agreed,ir,difmag,level_steps=counts,redistribution=redistribution, &
+      target_volume_fraction=target_volume_fraction,halo_source=particle_source,auxiliary_change=exchange, &
+      gas_acceleration=gas_acceleration,predictor_builder=particle_predictor)
+    if(.not.agreed) return
+    total_steps=0
+    do p=1,levels
+      valid=work(p)%next_stage==0.and.abs(work(p)%time+work(p)%interval-dt)<=32*epsilon(dt)*dt
+      valid=valid.and.counts(p)<=int(huge(particle_steps)/2,int64)-total_steps
+      call agree();if(.not.agreed) return
+      total_steps=total_steps+counts(p)
+    end do
+    call collect_mpi_amr_level_particles(comm,tree,owners,physical,lower,spacing,[.false.,.false.,.false.], &
+      options%maximum_parcels,final,masses,agreed,phi)
+    if(.not.agreed) return
+    valid=safe_sum(boundary,exterior).and.safe_sum(wall,particle_wall)
+    call agree();if(.not.agreed) return
+    boundary=boundary+exterior;wall=wall+particle_wall
+    call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
+    call move_alloc(final,parcels);call move_alloc(masses,component_mass)
+    if(present(reaction_source)) reaction_source=ir
+    if(present(gas_particle_change)) gas_particle_change=exchange
+    if(present(level_steps)) level_steps=counts
+    boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    minimum_theta=theta;last_id=watermark;particle_steps=int(2*total_steps);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+    logical function safe_sum(a,b)
+      real(dp), intent(in) :: a(:),b(:)
+      safe_sum=all(ieee_is_finite(a)).and.all(ieee_is_finite(b))
+      if(safe_sum) safe_sum=.not.any(a>huge(1._dp)-max(b,0._dp)).and..not.any(a< -huge(1._dp)-min(b,0._dp))
+    end function safe_sum
+    subroutine particle_source(stage_gas,stage_temp,interval,stage,depth,time,rate,source_comm,good, &
+        ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+      type(amr_tree_state_3d), intent(in) :: stage_gas,stage_temp,ancestor_start,ancestor_end,temperature_start,temperature_end
+      real(dp), intent(in) :: interval,time,fractions(:)
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(MPI_Comm), intent(in) :: source_comm
+      logical, intent(out) :: good
+      type(amr_tree_state_3d) :: remainder
+      real(dp) :: wall_delta(5),outside(nv),wall_full(nv)
+      integer :: p
+      call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
+        stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
+        boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
+        ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+      if(.not.good) return
+      do p=1,size(owners)
+        if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle
+        if(stage==0) particle_first%fields(p)%values=rate%fields(p)%values
+        particle_last%fields(p)%values=rate%fields(p)%values
+      end do
+      if(stage/=iterations) return
+      wall_full=0;wall_full(:5)=wall_delta
+      valid=safe_sum(particle_wall,wall_full).and.safe_sum(exterior,outside)
+      call agree();good=agreed
+      if(.not.good) return
+      particle_wall=particle_wall+wall_full;exterior=exterior+outside
+    end subroutine particle_source
+    subroutine particle_predictor(rate,interval,iteration,depth,time,halo,source_comm,good, &
+        source_start,source_end,fractions)
+      type(amr_tree_state_3d), intent(in) :: rate,source_start,source_end
+      real(dp), intent(in) :: interval,time,fractions(:)
+      integer, intent(in) :: iteration,depth
+      type(amr_tree_state_3d), intent(inout) :: halo
+      type(MPI_Comm), intent(in) :: source_comm
+      logical, intent(out) :: good
+      valid=work(depth+1)%time==time.and.work(depth+1)%interval==interval.and.work(depth+1)%next_stage==iteration
+      call agree();good=agreed
+      if(.not.good) return
+      call fill_sdc_mpi_eb_particle_predictor_halo_3d(tree,owners,geometry,rate,work(depth+1)%old_source, &
+        work(depth+1)%old_remainder,nv,3,halo,source_comm,good,boundary_faces,metrics, &
+        source_start,source_end,particle_first,particle_last,fractions)
+    end subroutine particle_predictor
+  end subroutine advance_mpi_eb_spray_sdc_subcycle
+
   ! S/2 - F/2 - EB reaction/transport/hydro - F/2 - S/2; atomic publication.
   ! Supplying last_id with film state enables EB impacts in both particle halves.
   ! Replicated tables/options and a consistent geometry/nodal field are caller contracts.
