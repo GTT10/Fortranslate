@@ -159,8 +159,11 @@ rank-changing continuation retains the selector
 with collective rollback ([checks](validation/spray-sdc-source-export-20260927.md));
 the serial/MPI EB SDC gas driver now consumes old/new auxiliary source callbacks
 with a separate exchange inventory
-([checks](validation/sdc-eb-auxiliary-source-20260927.md)). Particle kick/drift
-scheduling and spray application dispatch remain open. A serial
+([checks](validation/sdc-eb-auxiliary-source-20260927.md)). The MPI common-step particle wrapper now uses one old half-kick/full-drift
+and reevaluates each new half-kick from that saved endpoint, publishing particle
+state only with accepted gas SDC
+([checks](validation/spray-sdc-kick-drift-20260927.md)). Spray application dispatch,
+film integration and recursive particle scheduling remain open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons

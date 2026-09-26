@@ -3494,3 +3494,21 @@ See [computational splitting](validation/spray-split-id-order-20260918.md) and
 [KH/splash checks](validation/spray-physical-child-id-order-20260918.md).
 The level-set EB impact wrapper uses the same wall-event routine and has
 [reversed-owner ID checks](validation/spray-eb-child-id-order-20260918.md).
+
+### Experimental common-step SDC particle API
+
+`advance_mpi_amr_mixture_coupling` accepts `motion_mode='kick_drift'`
+(half-interval physical update, full-interval drift) or `'kick'`
+(half-interval physical update, fixed position). The default `'coupled'` retains
+its full-interval update. Exported `gas_change` remains an integrated source;
+divide by half the supplied interval for a kick stage's rate.
+
+`advance_mpi_eb_spray_sdc` connects these stages to common-step MPI EB gas SDC.
+Each new-source evaluation starts from the same saved old-stage endpoint.
+Only the final accepted kick is published, together with gas, temperature,
+reaction history, particle IDs and inventories. Internal particle exchange is
+separate from external gas forcing. This library path supports specular contacts;
+film evolution, computational multiplicity splitting, particle acceleration,
+inlet/isothermal boundary data, recursive stepping and application/restart
+wiring remain outside its scope. See the
+[focused evidence](validation/spray-sdc-kick-drift-20260927.md).
