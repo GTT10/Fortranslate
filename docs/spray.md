@@ -3524,3 +3524,14 @@ recursive particle stepping remain outside its scope. See the [acceleration chec
 
 The boundary/splitting extension is recorded in the
 [focused checks](validation/spray-sdc-boundaries-split-20260927.md).
+
+### Film source export for SDC
+
+`advance_mpi_amr_film_coupling` now accepts optional `gas_change`, an owner-local
+field of time-integrated conserved gas feedback per fluid volume. It accumulates
+accepted deposition contributions directly and publishes only with the complete
+film/gas interval. Rejected trials and wall heat do not enter this field; wall
+heat retains its separate ledger. Empty or disabled film evolution returns a
+zero field. Presence must agree across ranks. This prepares film sources for
+SDC; the coupled SDC film scheduler and application dispatch remain open.
+See [focused evidence](validation/film-sdc-source-export-20260927.md).
