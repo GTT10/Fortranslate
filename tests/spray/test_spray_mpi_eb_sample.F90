@@ -10,6 +10,7 @@ program test_spray_mpi_eb_sample
   use transport_database_mod, only: load_h2o2_full_transport
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field, &
     sample_mpi_eb_tree_particle_gas
+  use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
@@ -121,6 +122,7 @@ contains
     type(spray_level_population) :: root_finished
     type(amr_tree_state_3d) :: expected_source,expected_remainder
     type(amr_tree_state_3d) :: group_source,group_remainder,old_group_source,old_group_remainder
+    type(amr_tree_state_3d) :: physical_source,old_physical_source
     real(dp), allocatable :: mass(:,:),old_mass(:,:),delta(:),integral(:),ledger(:)
     real(dp) :: wall(5),reference_mass(1)
     real(dp), allocatable :: primitive(:),cell(:),y(:),query(:,:),values(:,:),site_t(:),saved_values(:,:),saved_t(:)
@@ -255,8 +257,12 @@ contains
           'stage-time EB valid plus retained halo reaction inventory')
         call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
           1,1,1,100,group,1e-8_dp,0._dp,faces,group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics, &
-          gas,ending,temp,temp,fraction)
+          gas,ending,temp,temp,fraction,physical_source=physical_source)
         call require(ok,'combined physical virtual ghost stage')
+        call integrate_mpi_eb_tree_3d(tree,owners,g,physical_source,integral,MPI_COMM_WORLD,ok)
+        call require(ok,'integrate physical-only source on composite leaves')
+        call require(all(abs(integral-delta)<1e-12_dp*max(abs(delta),1e-30_dp)), &
+          'physical-only export excludes virtual and ghost copies and retains off-level reaction')
         do population=1,3
           call require(all(group(population)%component_mass==mass),'all populations sample identical stage-time gas')
           if(count>0) call require(all(group(population)%parcels(1)%velocity==ghosts(1)%velocity).and. &
@@ -272,10 +278,11 @@ contains
       ! Reject the third population after the first two have advanced privately.
       if(count>0) group(3)%nodes=0
       before_group=group;old_group_source=group_source;old_group_remainder=group_remainder
+      old_physical_source=physical_source
       wall=17;ledger=19
       call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,group,1e-8_dp,0._dp,faces,group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics, &
-        gas,ending,temp,temp,fraction)
+        gas,ending,temp,temp,fraction,physical_source=physical_source)
       call require(.not.ok.and.all(wall==17).and.all(ledger==19),'late combined population failure')
       do population=1,3
         call require(all(group(population)%component_mass==before_group(population)%component_mass).and. &
@@ -288,6 +295,8 @@ contains
         if(owners(p)/=rank) cycle
         call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
           all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values),'combined source rollback')
+        call require(all(physical_source%fields(p)%values==old_physical_source%fields(p)%values), &
+          'physical-only export rollback after late copy failure')
       end do
       group(3)%nodes=query_nodes
       do population=1,3

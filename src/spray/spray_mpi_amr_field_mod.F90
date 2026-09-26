@@ -719,7 +719,7 @@ contains
   ! An explicit maximum_level deposits raw level-view increments without parent
   ! restriction; use this for provisional level views awaiting synchronization.
   subroutine deposit_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,contributions, &
-      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level)
+      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -733,6 +733,7 @@ contains
     type(particle_stencil), allocatable :: stencils(:)
     type(amr_tree_state_3d) :: candidate,change
     type(amr_tree_state_3d), optional, intent(inout) :: gas_change
+    logical, optional, intent(in) :: containing_cell
     integer :: export_flag,export_low,export_high
     integer, allocatable :: requests(:,:),send_cells(:,:),recv_cells(:,:)
     integer, allocatable :: counts(:),received(:),offsets(:),displacements(:),cursor(:)
@@ -747,7 +748,7 @@ contains
     call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.export_low/=export_high) return
     call prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi,maximum_level)
+      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi,maximum_level,containing_cell)
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -875,7 +876,7 @@ contains
   end subroutine
 
   subroutine prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,ok,maximum_requests,eb_geometry,nodal_phi,maximum_level)
+      stencils,requests,ok,maximum_requests,eb_geometry,nodal_phi,maximum_level,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -888,11 +889,17 @@ contains
     integer, optional, intent(in) :: maximum_requests,maximum_level
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    logical, optional, intent(in) :: containing_cell
+    logical :: cell_deposit
     integer, allocatable :: lookup(:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp) :: cell_volume
     real(dp) :: bounds(6),reference_bounds(6)
-    integer :: flags(6),reference_flags(6),ierr,limit,p,total,n,ios,top_level
+    integer :: flags(7),reference_flags(7),ierr,limit,p,total,n,ios,top_level
     logical :: valid,agreed
-    ok=.false.;limit=1000000
+    ok=.false.;limit=1000000;cell_deposit=.false.
+    if(present(containing_cell)) cell_deposit=containing_cell
     if (present(maximum_requests)) limit=maximum_requests
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
@@ -908,9 +915,9 @@ contains
     bounds=[lower,spacing];reference_bounds=bounds
     call MPI_Bcast(reference_bounds,6,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    flags=[merge(1,0,periodic),merge(1,0,present(eb_geometry)),merge(1,0,present(nodal_phi)),top_level]
+    flags=[merge(1,0,periodic),merge(1,0,present(eb_geometry)),merge(1,0,present(nodal_phi)),top_level,merge(1,0,cell_deposit)]
     reference_flags=flags
-    call MPI_Bcast(reference_flags,6,MPI_INTEGER,0,comm,ierr)
+    call MPI_Bcast(reference_flags,7,MPI_INTEGER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=all(bounds==reference_bounds).and.all(flags==reference_flags)
     call agree()
@@ -925,6 +932,10 @@ contains
     allocate(stencils(size(positions,2)),stat=ios)
     valid=ios==0;call agree()
     if (.not.agreed) return
+    if(cell_deposit) then
+      call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+      call agree();if(.not.agreed) return
+    end if
     total=0
     do p=1,size(stencils)
       if (total==limit) then
@@ -939,6 +950,16 @@ contains
           stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,maximum_cells=limit-total,maximum_level=maximum_level)
       end if
       if (.not.valid) exit
+      if(cell_deposit) then
+        n=lookup(1,p)
+        cell_volume=product(spacing*real(tree%nodes(1)%shape,dp)/real(domain(:,tree%nodes(n)%level+1),dp))
+        if(present(eb_geometry)) cell_volume=cell_volume* &
+          eb_geometry(n)%volume_fraction(lookup(2,p),lookup(3,p),lookup(4,p))
+        valid=ieee_is_finite(cell_volume).and.cell_volume>0
+        if(.not.valid) exit
+        stencils(p)%cells=lookup(:,p:p)
+        stencils(p)%weights=[1._dp];stencils(p)%volumes=[cell_volume]
+      end if
       total=total+size(stencils(p)%weights)
     end do
     valid=valid.and.total<=huge(1)/max(4,nvar)

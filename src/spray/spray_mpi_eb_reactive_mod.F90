@@ -6,7 +6,7 @@ module spray_mpi_eb_reactive_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,valid_spray_options,valid_spray_parcel
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
@@ -20,7 +20,8 @@ module spray_mpi_eb_reactive_mod
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
   use spray_mpi_mod, only: split_mpi_spray_parcels
-  use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d
+  use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d, &
+    integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
   use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
@@ -63,7 +64,7 @@ contains
     real(dp), optional, intent(in) :: wall_temperature(6)
     type(spray_level_population), allocatable :: physical(:),virtuals(:),ghosts(:)
     type(spray_sdc_population_stage), allocatable :: work(:)
-    type(amr_tree_state_3d) :: gas,temp,metrics,centroids,particle_first,particle_last
+    type(amr_tree_state_3d) :: gas,temp,metrics,centroids,particle_first,particle_last,source_correction
     type(amr_tree_state_3d), allocatable :: ir
     type(spray_parcel), allocatable :: final(:)
     real(dp), allocatable :: masses(:,:)
@@ -143,6 +144,7 @@ contains
     do node=1,size(owners)
       if(owners(node)==rank) particle_first%fields(node)%values=0
     end do
+    source_correction=particle_first
     particle_last=particle_first;particle_wall=0;exterior=0;watermark=last_id
     if(present(reaction_source)) then
       allocate(ir);ir=reaction_source
@@ -154,6 +156,8 @@ contains
       gas_acceleration=gas_acceleration,predictor_builder=particle_predictor,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
       wall_temperature=wall_temperature,post_level=particle_post_level)
+    if(.not.agreed) return
+    call synchronize_particle_sources()
     if(.not.agreed) return
     total_steps=0
     do p=1,levels
@@ -185,6 +189,66 @@ contains
       safe_sum=all(ieee_is_finite(a)).and.all(ieee_is_finite(b))
       if(safe_sum) safe_sum=.not.any(a>huge(1._dp)-max(b,0._dp)).and..not.any(a< -huge(1._dp)-min(b,0._dp))
     end function safe_sum
+    subroutine add_source_rate(destination,rate,factor,good)
+      real(dp), intent(inout) :: destination(:,:,:,:)
+      real(dp), intent(in) :: rate(:,:,:,:),factor
+      logical, intent(out) :: good
+      real(dp) :: term(size(rate,1))
+      integer :: x,y,z
+      good=ieee_is_finite(factor).and.all(ieee_is_finite(rate))
+      if(.not.good) return
+      if(abs(factor)>1) then
+        good=all(abs(rate)<=huge(1._dp)/abs(factor))
+        if(.not.good) return
+      end if
+      do z=1,size(rate,4)
+      do y=1,size(rate,3)
+      do x=1,size(rate,2)
+        term=factor*rate(:,x,y,z)
+        good=safe_sum(destination(:,x,y,z),term)
+        if(.not.good) return
+        destination(:,x,y,z)=destination(:,x,y,z)+term
+      end do
+      end do
+      end do
+    end subroutine add_source_rate
+    ! Conservative source synchronization: replace provisional copy-supported
+    ! leaf exchange by the actual physical half-kick exchange at its receiver.
+    ! This is a conservation extension to the pinned same-level source transfer.
+    subroutine synchronize_particle_sources()
+      real(dp) :: correction(nv),primitive(reactive_nprim(size(species))),recovered,sound
+      integer :: p,x,y,z,d(3)
+      call integrate_mpi_eb_tree_3d(tree,owners,geometry,source_correction,correction,comm,agreed)
+      if(.not.agreed) return
+      valid=safe_sum(exchange,correction)
+      call agree();if(.not.agreed) return
+      do p=1,size(owners)
+        if(owners(p)/=rank) cycle
+        d=tree%nodes(p)%shape
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          if(covered(tree,p,[x,y,z]).or.geometry(p)%volume_fraction(x,y,z)<=0) cycle
+          if(all(source_correction%fields(p)%values(:,x,y,z)==0)) cycle
+          valid=safe_sum(gas%fields(p)%values(:,x,y,z),source_correction%fields(p)%values(:,x,y,z))
+          if(.not.valid) exit
+          gas%fields(p)%values(:,x,y,z)=gas%fields(p)%values(:,x,y,z)+source_correction%fields(p)%values(:,x,y,z)
+          call reactive_conserved_to_primitive(species,gas%fields(p)%values(:,x,y,z),temp%fields(p)%values(1,x,y,z), &
+            primitive,recovered,sound,valid)
+          if(.not.valid) exit
+          temp%fields(p)%values(1,x,y,z)=recovered
+        end do
+        if(.not.valid) exit
+        end do
+        if(.not.valid) exit
+        end do
+        if(.not.valid) exit
+      end do
+      call agree();if(.not.agreed) return
+      call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,gas,temp,comm,agreed)
+      if(.not.agreed) return
+      exchange=exchange+correction
+    end subroutine synchronize_particle_sources
     subroutine particle_post_level(depth,time,interval,iteration,ncycle,post_comm,good)
       integer, intent(in) :: depth,iteration,ncycle
       real(dp), intent(in) :: time,interval
@@ -222,14 +286,14 @@ contains
       type(amr_tree_state_3d), intent(inout) :: rate
       type(MPI_Comm), intent(in) :: source_comm
       logical, intent(out) :: good
-      type(amr_tree_state_3d) :: remainder
+      type(amr_tree_state_3d) :: remainder,physical_rate
       real(dp) :: wall_delta(5),outside(nv),wall_full(nv)
       integer :: p
       call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
         stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
         boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
-        inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+        inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate)
       if(.not.good) return
       do p=1,size(owners)
         if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle
@@ -237,6 +301,23 @@ contains
         particle_last%fields(p)%values=rate%fields(p)%values
       end do
       if(stage/=iterations) return
+      ! All fields are rates. Count each accepted physical half kick once;
+      ! remove only this logical level's provisional valid-cell source.
+      do p=1,size(owners)
+        if(owners(p)/=rank) cycle
+        associate(delta=>source_correction%fields(p)%values,actual=>physical_rate%fields(p)%values, &
+          old_actual=>work(depth+1)%old_physical_source%fields(p)%values)
+          call add_source_rate(delta,old_actual,.5_dp*interval,valid)
+          if(valid) call add_source_rate(delta,actual,.5_dp*interval,valid)
+          if(valid.and.tree%nodes(p)%level==depth) then
+            call add_source_rate(delta,work(depth+1)%old_source%fields(p)%values,-.5_dp*interval,valid)
+            if(valid) call add_source_rate(delta,rate%fields(p)%values,-.5_dp*interval,valid)
+          end if
+        end associate
+        if(.not.valid) exit
+      end do
+      call agree();good=agreed
+      if(.not.good) return
       wall_full=0;wall_full(:5)=wall_delta
       valid=safe_sum(particle_wall,wall_full).and.safe_sum(exterior,outside)
       call agree();good=agreed

@@ -16,6 +16,7 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas, &
+    deposit_mpi_amr_tree_spray_field, &
     sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo,sum_mpi_amr_particle_source_halo
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels, &
     redistribute_mpi_amr_ghost_particles,redistribute_mpi_amr_level_particles,spray_level_population, &
@@ -35,7 +36,8 @@ module spray_mpi_amr_step_mod
     integer :: next_stage=0,iterations=0,depth=-1
     real(dp) :: time=0,interval=0
     type(spray_level_population) :: midpoint(3)
-    type(amr_tree_state_3d) :: old_source,old_remainder
+    type(amr_tree_state_3d) :: old_source,old_remainder,old_physical_source
+    logical :: exports_physical=.false.
     real(dp) :: old_wall(5)=0
     real(dp), allocatable :: old_boundary(:)
   end type spray_sdc_population_stage
@@ -47,7 +49,7 @@ contains
       time,interval,stage,iterations,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -69,6 +71,8 @@ contains
     real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
     real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
     integer, optional, intent(in) :: maximum_received
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(amr_tree_state_3d), allocatable :: physical_delta
     type(spray_sdc_population_stage) :: candidate
     type(spray_level_population) :: group(3),new_virtual,next_ghost
     type(amr_tree_state_3d) :: change,leftover
@@ -110,6 +114,7 @@ contains
     lower=[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]
     spacing=[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz]
     periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
+    if(present(physical_source)) allocate(physical_delta)
     candidate=work(level);group(1)=physical(level);group(2)=virtuals(level);group(3)=ghosts(level)
     if(stage==0) then
       call refresh_mpi_amr_level_copies(comm,tree,owners,physical,lower,spacing,periodic,target_level,grow, &
@@ -121,10 +126,11 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,group,candidate,time,interval,stage,iterations,faces, &
       change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta)
     if(.not.valid) return
     physical(level)=group(1);virtuals(level)=group(2);ghosts(level)=group(3);work(level)=candidate
     if(stage==0.and.level<levels) ghosts(level+1)=next_ghost
+    if(present(physical_source)) call move_alloc(physical_delta%fields,physical_source%fields)
     call move_alloc(change%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
     wall_change=wall;boundary_change=exterior;ok=.true.
   contains
@@ -141,7 +147,7 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,populations,work,time,interval,stage,iterations,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -163,12 +169,14 @@ contains
     real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
     real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
     integer, optional, intent(in) :: maximum_received
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(amr_tree_state_3d), allocatable :: physical_delta
     type(spray_sdc_population_stage) :: candidate
     type(spray_level_population) :: trial(3)
     type(amr_tree_state_3d) :: change,leftover
     real(dp) :: half_interval,drift,wall(5),exterior(reactive_nvar(size(species)))
     real(dp) :: times(2),low_time(2),high_time(2)
-    integer :: flags(3),low(3),high(3),status
+    integer :: flags(4),low(4),high(4),status
     logical :: valid,agreed
     ok=.false.;times=[time,interval]
     valid=all(ieee_is_finite(times)).and.time>=0.and.interval>0.and.iterations>=1
@@ -177,6 +185,7 @@ contains
       valid=valid.and.work%next_stage==0
     else
       valid=valid.and.stage==work%next_stage.and.iterations==work%iterations.and.target_level==work%depth
+      valid=valid.and.(present(physical_source).eqv.work%exports_physical)
       valid=valid.and.time==work%time.and.interval==work%interval.and.allocated(work%old_boundary)
       if(allocated(work%old_boundary)) valid=valid.and.size(work%old_boundary)==size(exterior)
     end if
@@ -185,10 +194,10 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(times,high_time,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low_time/=high_time)) return
-    flags=[stage,iterations,target_level]
-    call MPI_Allreduce(flags,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[stage,iterations,target_level,merge(1,0,present(physical_source))]
+    call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,4,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     half_interval=.5_dp*interval
     if(half_interval<=0) return
@@ -196,9 +205,11 @@ contains
       ! PeleC initializes new spray sources from old, then particleMK skips
       ! every intermediate SDC iteration. No particle or gas sampling here.
       source=work%old_source;remainder=work%old_remainder
+      if(present(physical_source)) physical_source=work%old_physical_source
       wall_change=work%old_wall;boundary_change=work%old_boundary
       work%next_stage=stage+1;ok=.true.;return
     end if
+    if(present(physical_source)) allocate(physical_delta)
     candidate=work;drift=0
     if(stage==0) then
       trial=populations;drift=interval
@@ -209,13 +220,19 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,trial,half_interval,drift,faces, &
       change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta)
     if(.not.valid) return
     call to_rate(change)
     if(.not.agreed) return
     call to_rate(leftover)
     if(.not.agreed) return
+    if(present(physical_source)) then
+      call to_rate(physical_delta)
+      if(.not.agreed) return
+    end if
     if(stage==0) then
+      candidate%exports_physical=present(physical_source)
+      if(present(physical_source)) candidate%old_physical_source=physical_delta
       candidate%midpoint=trial;candidate%old_wall=wall;candidate%old_boundary=exterior
       candidate%old_source=change;candidate%old_remainder=leftover
       candidate%time=time;candidate%interval=interval;candidate%depth=target_level;candidate%iterations=iterations
@@ -235,6 +252,7 @@ contains
       populations=trial
     end if
     work=candidate
+    if(present(physical_source)) call move_alloc(physical_delta%fields,physical_source%fields)
     call move_alloc(change%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
     wall_change=wall;boundary_change=exterior;ok=.true.
   contains
@@ -266,7 +284,7 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,populations,kick_dt,drift_dt,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -286,6 +304,9 @@ contains
     real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
     real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
     integer, optional, intent(in) :: maximum_received
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(amr_tree_state_3d), allocatable :: physical_delta
+    type(amr_tree_state_3d) :: exported
     type(spray_level_population) :: candidate(3)
     type(amr_tree_state_3d) :: halo,halo_t,volume,total,leftover,part,part_leftover
     real(dp) :: lower(3),spacing(3),wall(5),physical_wall(5)
@@ -313,6 +334,7 @@ contains
     particle_faces=faces
     where(particle_faces=='inflow') particle_faces='outflow'
     where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
+    if(present(physical_source)) allocate(physical_delta)
     candidate=populations
     do population=1,3
       ! Root has no ghosts, but use retained routing for its allocated empty set.
@@ -320,9 +342,12 @@ contains
         width,target_level,grow,maximum_parcels,candidate(population)%nodes,candidate(population)%parcels, &
         candidate(population)%component_mass,lower,spacing,periodic,kick_dt,drift_dt,particle_faces,part,part_leftover, &
         wall,exterior,valid,volume,nodal_phi,centroids,geometry,maximum_received,population<3.or.target_level==0, &
-        containing_cell=.true.)
+        containing_cell=.true.,physical_source=physical_delta)
       if(.not.valid) return
       if(population==1) then
+        if(present(physical_source)) then
+          exported=physical_delta;deallocate(physical_delta)
+        end if
         total=part;leftover=part_leftover;physical_wall=wall;physical_exterior=exterior
       else
         call add_field(total,part,valid)
@@ -331,6 +356,7 @@ contains
         if(.not.valid) return
       end if
     end do
+    if(present(physical_source)) call move_alloc(exported%fields,physical_source%fields)
     populations=candidate
     call move_alloc(total%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
     wall_change=physical_wall;boundary_change=physical_exterior;ok=.true.
@@ -470,7 +496,7 @@ contains
   subroutine advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
       width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
       source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry, &
-      maximum_received,keep_physical,containing_cell)
+      maximum_received,keep_physical,containing_cell,physical_source)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -492,6 +518,8 @@ contains
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     integer, optional, intent(in) :: maximum_received
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(amr_tree_state_3d), allocatable :: physical_delta
     logical, intent(in) :: keep_physical
     logical, optional, intent(in) :: containing_cell
     type(spray_parcel), allocatable :: candidate(:)
@@ -506,11 +534,12 @@ contains
     valid=valid.and.size(boundary_change)==size(exterior)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
     if(status/=MPI_SUCCESS.or..not.agreed) return
+    if(present(physical_source)) allocate(physical_delta)
     candidate=ghosts;masses=component_mass;locations=nodes
     call kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,locations,candidate,masses,lower,spacing,periodic,kick_dt,raw,valid, &
       fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.false., &
-      eb_geometry,maximum_received,containing_cell)
+      eb_geometry,maximum_received,containing_cell,physical_delta)
     if(.not.valid) return
     if(keep_physical) then
       call redistribute_mpi_amr_level_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &
@@ -522,6 +551,7 @@ contains
     if(.not.valid) return
     call move_alloc(candidate,ghosts);call move_alloc(masses,component_mass);call move_alloc(locations,nodes)
     call move_alloc(routed%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    if(present(physical_source)) physical_source=physical_delta
     wall_change=wall;boundary_change=exterior;ok=.true.
   end subroutine advance_mpi_amr_population_halo
 
@@ -533,7 +563,7 @@ contains
   subroutine kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,nodes,parcels,component_mass,lower,spacing,periodic,dt,source_halo,ok, &
       fluid_fraction,nodal_phi,centroids,drift_interval,boundary_faces,wall_change,boundary_change, &
-      target_level,level_source,source_remainder,route_to_coarse,eb_geometry,maximum_received,containing_cell)
+      target_level,level_source,source_remainder,route_to_coarse,eb_geometry,maximum_received,containing_cell,physical_source)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -564,6 +594,9 @@ contains
     type(amr_tree_state_3d), optional, intent(inout) :: level_source,source_remainder
     logical, optional, intent(in) :: route_to_coarse
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(amr_tree_state_3d) :: physical_delta
+    integer :: export_flag,export_low,export_high
     logical, optional, intent(in) :: containing_cell
     type(amr_tree_state_3d) :: source,routed,remainder
     integer :: transfer_flags,transfer_low,transfer_high,node,rank,n(3)
@@ -626,6 +659,11 @@ contains
     valid=transfer_flags==7.or..not.(present(route_to_coarse).or.present(eb_geometry).or.present(maximum_received))
     if(present(target_level)) valid=valid.and.(present(eb_geometry).eqv.present(fluid_fraction))
     call agree();if(.not.agreed) return
+    export_flag=merge(1,0,present(physical_source))
+    call MPI_Allreduce(export_flag,export_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.export_low/=export_high) return
     allocate(positions(3,size(parcels)),change(nv,size(parcels)))
     do p=1,size(parcels)
       positions(:,p)=parcels(p)%position
@@ -707,10 +745,24 @@ contains
       call move_alloc(routed%fields,level_source%fields)
       call move_alloc(remainder%fields,source_remainder%fields)
     end if
+    if(present(physical_source)) then
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      allocate(physical_delta%fields(size(owners)))
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        allocate(physical_delta%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      end do
+      call deposit_mpi_amr_tree_spray_field(comm,tree,owners,physical_delta,nv,positions,change,lower,spacing, &
+        periodic,valid,maximum_received=maximum_received,eb_geometry=eb_geometry,nodal_phi=nodal_phi,containing_cell=.true.)
+      if(.not.valid) return
+    end if
     if(present(drift_interval)) then
       wall_change=global_wall;boundary_change=global_exterior
     end if
     call move_alloc(candidate,parcels);call move_alloc(masses,component_mass)
+    if(present(physical_source)) call move_alloc(physical_delta%fields,physical_source%fields)
     call move_alloc(source%fields,source_halo%fields);ok=.true.
   contains
     subroutine agree()

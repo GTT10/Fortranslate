@@ -122,7 +122,7 @@ program test_spray_mpi_eb_reactive
   forcing=46;exchange=47
   if(index(test_mode,'sdc')==1) then
     if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive'.or. &
-      test_mode=='sdc-recursive-crossing') then
+      test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -310,6 +310,11 @@ contains
       if(rank==nranks-1) drops(1)%position(1)=.00199999_dp
       final_owner=0
     end if
+    if(test_mode=='sdc-recursive-entering') then
+      if(rank==nranks-1) then
+        drops(1)%position(1)=.00200001_dp;drops(1)%velocity(1)=-20._dp
+      end if
+    end if
     saved_drops=drops;saved_mass=masses
     call inventory(before)
     call inventory(gas_before,.false.)
@@ -342,7 +347,9 @@ contains
     call require(last_id==1.and.size(drops)==merge(1,0,rank==final_owner),'recursive physical collection')
     if(rank==final_owner.and.test_mode=='sdc-recursive-crossing') &
       call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
-    if(rank==0.and.test_mode=='sdc-recursive-crossing') then
+    if(rank==final_owner.and.test_mode=='sdc-recursive-entering') &
+      call require(drops(1)%position(1)<.002_dp,'entered fine patch')
+    if(rank==0.and.(test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering')) then
       print *, 'Crossing composite residual: ', &
         maxval(abs(after-before-ledger-boundary-chemical-forcing)/max(abs(before),abs(after),1e-30_dp))
       print *, 'Gas source closure: ',maxval(abs(gas_after-gas_before-ledger-boundary-chemical-forcing-exchange))
