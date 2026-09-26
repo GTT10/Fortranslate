@@ -5,11 +5,13 @@ program test_eb_tree_transport_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     reactive_eb_tree_timestep_3d, &
-    average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_transport_3d
+    average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_transport_3d, &
+    compute_sdc_eb_tree_transport_3d,synchronize_reactive_eb_tree_flux_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -95,6 +97,7 @@ program test_eb_tree_transport_3d
   print *, 'axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'transport conservation')
   call require(any(tree%nodes(count)%state/=saved%nodes(count)%state),'nontrivial deep transport update')
+  if(axis==3.and.count==5) call check_sdc_transport()
   periodic_faces='no_slip_wall'
   tree=saved
   call advance_reactive_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
@@ -174,6 +177,39 @@ program test_eb_tree_transport_3d
   call require(tightened,'wall heat restricts an accepted tree timestep')
   print *, 'test_eb_tree_transport_3d: PASS'
 contains
+  subroutine check_sdc_transport()
+    type(amr_tree_state_3d) :: rates,old_rates
+    type(eb_integrated_flux_3d), allocatable :: flux(:),old_flux(:)
+    type(eb_reactive_tree_3d) :: result,bad
+    real(dp) :: limiter
+    integer :: p
+    call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+      saved,rates,flux,limiter,ok)
+    call require(ok,'SDC provisional transport')
+    call require(limiter==theta,'SDC transport limiter matches Euler')
+    result=saved
+    do p=1,count
+      result%nodes(p)%state=result%nodes(p)%state+1.e-8_dp*rates%fields(p)%values
+    end do
+    call synchronize_reactive_eb_tree_flux_3d(species,result,flux,ok)
+    call require(ok,'SDC transport reconstructed synchronization')
+    do p=1,count
+      call require(all(abs(result%nodes(p)%state-tree%nodes(p)%state)<= &
+        2.e-12_dp*max(1._dp,abs(tree%nodes(p)%state))),'SDC transport reconstructs Euler state')
+    end do
+    old_rates=rates;old_flux=flux;bad=saved
+    bad%nodes(count)%state(1,4,4,4)=-1
+    limiter=17
+    call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+      bad,rates,flux,limiter,ok)
+    call require(.not.ok.and.limiter==17,'SDC transport invalid fluid density')
+    do p=1,count
+      call require(all(rates%fields(p)%values==old_rates%fields(p)%values).and. &
+        all(flux(p)%x==old_flux(p)%x).and.all(flux(p)%y==old_flux(p)%y).and. &
+        all(flux(p)%z==old_flux(p)%z),'SDC transport complete output rollback')
+    end do
+  end subroutine check_sdc_transport
+
   subroutine unchanged_tree()
     integer :: n
     do n=1,size(tree%nodes)

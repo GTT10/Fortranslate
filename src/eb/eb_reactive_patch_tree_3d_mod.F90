@@ -8,7 +8,7 @@ module eb_reactive_patch_tree_3d_mod
   use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
   use gas_transport_mod, only: gas_transport_species
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
-    reactive_eb_isothermal_timestep_3d, &
+    reactive_eb_isothermal_timestep_3d,compute_sdc_eb_transport_3d, &
     reactive_eb_transport_patch_timestep_3d,reactive_eb_halo_bounds_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d,advance_reactive_eb_plm_ctu_3d, &
@@ -34,7 +34,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: remap_reactive_eb_tree_3d
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d
-  public :: advance_reactive_eb_tree_transport_3d
+  public :: advance_reactive_eb_tree_transport_3d,compute_sdc_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_subcycle_transport_3d
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
   public :: advance_reactive_eb_tree_hydro_3d,compute_sdc_eb_tree_hydro_3d
@@ -661,6 +661,78 @@ contains
   end subroutine advance_reactive_eb_tree_full_3d
 
   ! Common-interval molecular transport: closed outflow edges or open Mach inlets.
+  ! Provisional transport rates and time-integrated face densities on every
+  ! level. Parent states are retained until the coupled driver synchronizes.
+  subroutine compute_sdc_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
+      diffusion,barodiffusion,tree,transport_rate,integrated_flux,minimum_theta,ok, &
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
+    real(dp), intent(in) :: dt
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(inout) :: transport_rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    real(dp), intent(inout) :: minimum_theta
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: rates
+    type(eb_integrated_flux_3d), allocatable :: flux(:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp) :: theta,stage_theta
+    logical :: faces(6)
+    character(len=16) :: patch_faces(6)
+    integer :: nv,node,n(3),depth
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if(present(wall_temperature)) then
+      if(.not.present(boundary_faces)) return
+      if(.not.all(ieee_is_finite(wall_temperature)).or.any(wall_temperature<=0)) return
+    end if
+    if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
+    if (.not.valid_tree(tree,nv)) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if (.not.valid) return
+    allocate(flux(size(tree%nodes)),rates%fields(size(tree%nodes)));theta=1._dp
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      call fill_reactive_eb_tree_halo_3d(species,tree,node,ghost,gt,valid, &
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state,restrict_snapshot=.false.)
+      if (.not.valid) return
+      depth=tree%topology%nodes(node)%level+1
+      ! Inactive physical domain faces remain closed to diffusion. Parent patch edges
+      ! inside the domain are donor interfaces, even when no peer exists.
+      faces=[origin(1,node)>0,origin(1,node)+n(1)<domain(1,depth), &
+        origin(2,node)>0,origin(2,node)+n(2)<domain(2,depth), &
+        origin(3,node)>0,origin(3,node)+n(3)<domain(3,depth)]
+      if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
+      patch_faces='outflow'
+      if(present(boundary_faces)) then
+        where(.not.faces.and.(boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
+              boundary_faces=='isothermal_wall')) &
+          patch_faces=boundary_faces
+        faces=.true.
+      end if
+      allocate(rates%fields(node)%values(nv,n(1),n(2),n(3)))
+      call compute_sdc_eb_transport_3d(species,transport,tree%nodes(node)%state,tree%nodes(node)%temperature, &
+        tree%nodes(node)%geometry,dt,[viscosity,conduction,diffusion,barodiffusion],rates%fields(node)%values, &
+        flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces,wall_temperature=wall_temperature)
+      if (.not.valid) return
+      theta=min(theta,stage_theta)
+      deallocate(ghost,gt)
+    end do
+    if(.not.ieee_is_finite(theta)) return
+    transport_rate=rates;call move_alloc(flux,integrated_flux)
+    minimum_theta=theta;ok=.true.
+  end subroutine compute_sdc_eb_tree_transport_3d
+
   subroutine advance_reactive_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,boundary_change,minimum_theta,ok, &
       inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
