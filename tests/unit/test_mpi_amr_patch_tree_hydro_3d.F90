@@ -7,8 +7,10 @@ program test_mpi_amr_patch_tree_hydro_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
-  use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d
-  use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d
+  use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d, &
+    compute_sdc_amr_patch_tree_hydro_3d
+  use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d,compute_sdc_mpi_amr_tree_hydro_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use amr_patch_tree_ghost_3d_mod, only: amr_tree_inflow_faces_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -71,6 +73,12 @@ program test_mpi_amr_patch_tree_hydro_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
+  if(trim(arg)=='sdc') then
+    call check_sdc()
+    if(rank==0) print *, 'PASS: MPI SDC hydro stage'
+    call MPI_Finalize(ierr)
+    stop
+  end if
   do mode=1,8
     if (ppm.and.(mode==2.or.mode==6)) cycle
     owners=[0,1,0]
@@ -184,6 +192,53 @@ program test_mpi_amr_patch_tree_hydro_3d
   if (rank==0) print *, 'PASS: distributed tree hydro, physical boundaries, exact serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_sdc()
+    type(amr_tree_state_3d) :: source,owned_source,rates,serial_rates,prior,bad_state
+    type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)
+    integer :: peer,boundary_case
+    owners=mod([0,1,0],nranks);dt=.01_dp*expected_dt
+    source=global
+    allocate(local%fields(3),temperature%fields(3),owned_source%fields(3))
+    do peer=1,3
+      source%fields(peer)%values=0
+      source%fields(peer)%values(2,:,:,:)=20000*peer
+      source%fields(peer)%values(3,:,:,:)=-10000*peer
+      if(owners(peer)/=rank) cycle
+      local%fields(peer)=global%fields(peer);temperature%fields(peer)=reference%fields(peer)
+      owned_source%fields(peer)=source%fields(peer)
+    end do
+    do boundary_case=1,2
+      faces='periodic'
+      if(boundary_case==2) faces='outflow'
+      call compute_sdc_amr_patch_tree_hydro_3d(tree,species,global,reference,source,spacing,dt,faces, &
+        serial_rates,serial_flux,ok)
+      call require(ok,'serial SDC source-aware hydro')
+      call compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,owned_source,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok)
+      call require(ok,'MPI SDC source-aware hydro')
+      do peer=1,3
+        call require(allocated(rates%fields(peer)%values).eqv.(owners(peer)==rank),'owned hydro rate only')
+        call require(allocated(flux(peer)%x).eqv.(owners(peer)==rank),'owned hydro flux only')
+        if(owners(peer)/=rank) cycle
+        call require(all(rates%fields(peer)%values==serial_rates%fields(peer)%values),'serial/MPI SDC rate exact')
+        call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
+          all(flux(peer)%z==serial_flux(peer)%z),'serial/MPI SDC flux exact')
+        call require(all(local%fields(peer)%values==global%fields(peer)%values),'hydro stage input state unchanged')
+        call require(all(temperature%fields(peer)%values==reference%fields(peer)%values),'hydro stage input T unchanged')
+      end do
+    end do
+    prior=rates;prior_flux=flux;bad_state=local
+    if(rank==owners(3)) bad_state%fields(3)%values(5,1,1,1)=-1e20_dp
+    call compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,bad_state,temperature,owned_source,spacing,dt,faces, &
+      rates,flux,MPI_COMM_WORLD,ok)
+    call require(.not.ok,'one-owner hydro failure rejected collectively')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'MPI SDC rate rollback')
+      call require(all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
+        all(flux(peer)%z==prior_flux(peer)%z),'MPI SDC flux rollback')
+    end do
+  end subroutine check_sdc
   subroutine unchanged()
     integer :: peer
     do peer=1,3

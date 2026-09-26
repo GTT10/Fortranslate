@@ -18,11 +18,34 @@ module mpi_amr_patch_tree_hydro_3d_mod
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
   private
-  public :: advance_mpi_amr_tree_hydro_3d
+  public :: advance_mpi_amr_tree_hydro_3d,compute_sdc_mpi_amr_tree_hydro_3d
 contains
+  subroutine compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,state,temperature,predictor_source,root_spacing, &
+      dt,faces,hydro_rate,integrated_flux,comm,ok,inflow_state,inflow_temperature,outlet_pressure, &
+      inflow_mach,inflow_pressure,difmag)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature,predictor_source
+    real(dp), intent(in) :: root_spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: hydro_rate
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
+    real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6),difmag
+    type(amr_tree_state_3d) :: local_state,local_temperature
+    real(dp) :: budget(5+size(species)),maximum
+    local_state=state;local_temperature=temperature
+    call advance_mpi_amr_tree_hydro_3d(tree,owners,species,local_state,local_temperature,root_spacing,dt,faces, &
+      'characteristic_ppm','mc','pelec',budget,maximum,comm,ok,inflow_state,inflow_temperature, &
+      outlet_pressure,inflow_mach,inflow_pressure,difmag,predictor_source,hydro_rate,integrated_flux)
+  end subroutine compute_sdc_mpi_amr_tree_hydro_3d
+
   subroutine advance_mpi_amr_tree_hydro_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
       reconstruction,limiter,solver,boundary_change,maximum_correction,comm,ok,inflow_state,inflow_temperature, &
-      outlet_pressure,inflow_mach,inflow_pressure,difmag)
+      outlet_pressure,inflow_mach,inflow_pressure,difmag,predictor_source,hydro_rate,integrated_flux)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -35,6 +58,9 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: difmag
+    type(amr_tree_state_3d), optional, intent(in) :: predictor_source
+    type(amr_tree_state_3d), optional, intent(inout) :: hydro_rate
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
     real(dp) :: pressure(6),mach(6),pin(6),tin(6),viscosity
     type(amr_tree_state_3d) :: initial,candidate,temps,stage_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
@@ -42,10 +68,11 @@ contains
     integer :: node,nvar,rank,status,ios,parent,width
     real(dp) :: controls(29),low(29),high(29)
     real(dp), allocatable :: reference_inlet(:,:)
-    character(len=64) :: options(9),reference_options(9)
+    character(len=64) :: options(10),reference_options(10)
     character(len=:), allocatable :: donor_limiter
-    logical :: valid
+    logical :: valid,stage_only
     ok=.false.
+    stage_only=present(predictor_source)
     nvar=reactive_nvar(size(species))
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
@@ -98,13 +125,30 @@ contains
     call MPI_Allreduce(controls,high,29,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
+    valid=present(predictor_source).eqv.present(hydro_rate)
+    valid=valid.and.(present(hydro_rate).eqv.present(integrated_flux))
+    if(stage_only) valid=valid.and.reconstruction=='characteristic_ppm'.and.solver=='pelec'.and.limiter=='mc'
+    call agree(valid)
+    if(.not.valid) return
     options(:6)=faces;options(7)=reconstruction;options(8)=limiter;options(9)=solver
+    options(10)='advance'
+    if(stage_only) options(10)='sdc-stage'
     reference_options=options
-    call MPI_Bcast(reference_options,64*9,MPI_CHARACTER,0,comm,status)
+    call MPI_Bcast(reference_options,64*10,MPI_CHARACTER,0,comm,status)
     if (status/=MPI_SUCCESS) return
     valid=all(options==reference_options)
     call agree(valid)
     if (.not.valid) return
+    if(stage_only) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,predictor_source,nvar,comm,valid)
+      if(.not.valid) return
+      do node=1,size(tree%nodes)
+        if(owners(node)/=rank) cycle
+        if(.not.all(ieee_is_finite(predictor_source%fields(node)%values))) valid=.false.
+      end do
+      call agree(valid)
+      if(.not.valid) return
+    end if
     if (any(faces=='inflow'.and.mach<0)) then
       valid=present(inflow_state).and.present(inflow_temperature)
       if (valid) then
@@ -139,14 +183,20 @@ contains
     if (.not.valid) return
     call copy_local(temperature,temps,valid)
     if (.not.valid) return
-    call average_down_mpi_amr_tree_3d(tree,owners,initial,nvar,comm,valid)
-    if (.not.valid) return
-    call recover_tree(initial,temps,valid)
-    if (.not.valid) return
+    if(.not.stage_only) then
+      call average_down_mpi_amr_tree_3d(tree,owners,initial,nvar,comm,valid)
+      if (.not.valid) return
+      call recover_tree(initial,temps,valid)
+      if (.not.valid) return
+    end if
     call copy_local(initial,candidate,valid)
     if (.not.valid) return
     call euler_stage(candidate,temps,first_budget,first_max,valid)
     if (.not.valid) return
+    if(stage_only) then
+      ok=.true.
+      return
+    end if
     if (reconstruction=='characteristic_ppm') then
       call move_alloc(candidate%fields,state%fields)
       call move_alloc(temps%fields,temperature%fields)
@@ -182,9 +232,10 @@ contains
       real(dp), intent(out) :: budget(:),largest
       real(dp) :: work_stamp
       logical, intent(out) :: success
-      type(amr_tree_state_3d) :: packed,updated,ghosts
+      type(amr_tree_state_3d) :: packed,updated,ghosts,source_ghosts
       type(amr_tree_flux_3d), allocatable :: flux(:)
-      real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+      real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),source_values(:,:,:,:)
+      character(len=32) :: source_faces(6)
       real(dp) :: correction(nvar),rhs(nvar),theta
       integer :: peer,n(3),dims(3),i,j,k,allocation_status
       success=.false.;budget=0;largest=0;correction=0
@@ -207,9 +258,17 @@ contains
         inflow_state=inlet,coarse_limiter=donor_limiter,species_count=size(species),ghost_width=width, &
         species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if (.not.success) return
+      if(stage_only) then
+        source_faces=faces
+        where(source_faces/='periodic') source_faces='outflow'
+        call fill_mpi_amr_tree_ghosts_3d(tree,owners,predictor_source,nvar,source_faces,source_ghosts,comm,success, &
+          coarse_limiter='mc',ghost_width=4)
+        if(.not.success) return
+      end if
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
         n=tree%nodes(peer)%shape;dims=n+4
+        if(stage_only) source_values=source_ghosts%fields(peer)%values
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
           call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,pressure,ghost,success,ghost_width=width)
@@ -229,7 +288,8 @@ contains
               n,h(:,peer),dt,.false.,.true.,solver,fx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2), &
               fy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2),fz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2),theta,success, &
               inflow_faces=inflow_mask,no_slip_faces=wall_mask,difmag=viscosity, &
-              reflecting_faces=reflecting_mask,outflow_faces=outflow_mask,outlet_pressure=outlet_pressure)
+              reflecting_faces=reflecting_mask,outflow_faces=outflow_mask,outlet_pressure=outlet_pressure, &
+              conserved_source=source_values)
             end block
           else if (reconstruction=='pcm') then
             call compute_reactive_face_fluxes_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
@@ -256,7 +316,11 @@ contains
                 rhs=-(fx(:,i+2,j+2,k+2)-fx(:,i+1,j+2,k+2))/h(1,peer) &
                   -(fy(:,i+2,j+2,k+2)-fy(:,i+2,j+1,k+2))/h(2,peer) &
                   -(fz(:,i+2,j+2,k+2)-fz(:,i+2,j+2,k+1))/h(3,peer)
-                updated%fields(peer)%values(:,i,j,k)=u%fields(peer)%values(:,i,j,k)+dt*rhs
+                if(stage_only) then
+                  updated%fields(peer)%values(:,i,j,k)=rhs
+                else
+                  updated%fields(peer)%values(:,i,j,k)=u%fields(peer)%values(:,i,j,k)+dt*rhs
+                end if
               end do
             end do
           end do
@@ -278,6 +342,19 @@ contains
       end do
       call agree(success)
       if (.not.success) return
+      if(stage_only) then
+        do peer=1,size(tree%nodes)
+          if(owners(peer)/=rank) cycle
+          if(.not.all(ieee_is_finite(updated%fields(peer)%values))) success=.false.
+          if(.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
+            .not.all(ieee_is_finite(flux(peer)%z))) success=.false.
+        end do
+        call agree(success)
+        if(.not.success) return
+        call move_alloc(updated%fields,hydro_rate%fields)
+        call move_alloc(flux,integrated_flux)
+        return
+      end if
       if (rank==owners(1)) then
         n=tree%nodes(1)%shape
         do k=1,n(3)
