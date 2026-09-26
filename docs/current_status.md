@@ -152,8 +152,11 @@ and the final reflux increment
 [stage checks](validation/sdc-eb-tree-redistribution-loop-20260927.md)).
 Serial application input and checkpoint identity now expose `flux_redist`
 for common-step SDC ([checks](validation/sdc-eb-tree-redistribution-app-20260927.md)).
-MPI/recursive redistribution, tree state redistribution and MPI EB spray SDC
-remain open.
+MPI common-step SDC and application dispatch now use owner-local composite
+flux redistribution through sparse neighbor-rate and excess exchanges;
+rank-changing continuation retains the selector
+([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). Recursive
+redistribution, tree state redistribution and MPI EB spray SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
