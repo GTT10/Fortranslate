@@ -164,7 +164,9 @@ and reevaluates each new half-kick from that saved endpoint, publishing particle
 state only with accepted gas SDC
 ([checks](validation/spray-sdc-kick-drift-20260927.md)). Physical gas boundary
 data and final computational particle splitting now reach this wrapper
-([checks](validation/spray-sdc-boundaries-split-20260927.md)). Spray application dispatch,
+([checks](validation/spray-sdc-boundaries-split-20260927.md)). Independent uniform
+particle acceleration now contributes accepted impulse/work to the external
+inventory ([checks](validation/spray-sdc-force-20260927.md)). Spray application dispatch,
 film integration and recursive particle scheduling remain open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and

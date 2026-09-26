@@ -3512,8 +3512,13 @@ separate from external gas forcing. This library path supports specular contacts
 specified-state/Mach inflow and isothermal-wall gas data reach the SDC operators.
 Computational multiplicity splitting runs once after the accepted final kick,
 with collective rollback on capacity failure and globally assigned child IDs.
-Film evolution, particle acceleration, recursive stepping and application/restart
-wiring remain outside its scope. See the
+Optional `particle_acceleration(3)` adds uniform external particle acceleration
+(default zero), independently of the required gas `force`. Particle half kicks
+bracket the coupled interval; each new kick is private to its SDC evaluation.
+The final source inventory sums gas forcing and the accepted particle impulse
+and kinetic work; `gas_particle_change` still contains internal exchange only.
+Film evolution, recursive stepping and application/restart wiring remain outside
+its scope. See the [acceleration checks](validation/spray-sdc-force-20260927.md). See the
 [focused evidence](validation/spray-sdc-kick-drift-20260927.md).
 
 The boundary/splitting extension is recorded in the
