@@ -533,7 +533,8 @@ program pelef_reactive_eb_tree_3d
         reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
         target_volume_fraction=state_redist_target_volume_fraction, &
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
-        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature)
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        particle_acceleration=acceleration,gas_acceleration=acceleration)
       else if(wall_impacts) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
@@ -811,7 +812,6 @@ contains
     if(time_integrator=='sdc'.and.subcycling) then
       if(particle_options%breakup_model/='none') error stop 'Recursive spray SDC breakup is not implemented'
       if(wall_impacts.or.walls%evolve) error stop 'Recursive spray SDC wall films are not implemented'
-      if(any(acceleration/=0)) error stop 'Recursive spray SDC particle acceleration is not implemented'
       if(any(boundary_faces=='periodic')) error stop 'Recursive spray SDC periodic migration is not implemented'
     end if
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'

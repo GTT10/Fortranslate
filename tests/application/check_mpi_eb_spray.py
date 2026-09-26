@@ -61,8 +61,7 @@ def main():
                 extra = 'subcycling=.true.,' + extra
             spray = directory / 'spray.nml'
             controls = 'particle_outflow=.true.,'
-            if not a.recursive:
-                controls += 'acceleration=1000.,-2000.,3000.,'
+            controls += 'acceleration=1000.,-2000.,3000.,'
             spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n ' + controls, 1))
         if a.scheduled:
             spray = directory / 'spray.nml'
@@ -142,7 +141,8 @@ def main():
                 spray.write_text(spray.read_text().replace('liquid_temperature=350.', 'liquid_temperature=351.'))
         if spray_extra:
             spray = directory / 'spray.nml'
-            spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n' + spray_extra, 1))
+            body, ending = spray.read_text().rsplit('/', 1)
+            spray.write_text(body + '\n' + spray_extra + '\n/' + ending)
         command = [str(a.mpiexec.resolve()), '-n', str(ranks), str(a.exe.resolve()), 'tree.nml', 'spray.nml']
         result = subprocess.run(command, cwd=directory, env=env, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=90)
@@ -210,7 +210,7 @@ def main():
                 assert abs(x-y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
     if a.recursive:
         for label, controls, message in (
-            ('recursive_force_rejected', 'acceleration=1.,0.,0.,', 'particle acceleration is not implemented'),
+            ('recursive_force_rejected', 'acceleration=1.e7,0.,0.,', 'Invalid MPI EB acceleration'),
             ('recursive_film_rejected', 'wall_impacts=.true.,', 'wall films are not implemented'),
         ):
             rejected = run(2, label, success=False, spray_extra=controls)

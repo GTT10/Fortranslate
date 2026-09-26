@@ -38,7 +38,7 @@ module spray_mpi_amr_step_mod
     type(spray_level_population) :: midpoint(3)
     type(amr_tree_state_3d) :: old_source,old_remainder,old_physical_source
     logical :: exports_physical=.false.
-    real(dp) :: old_wall(5)=0
+    real(dp) :: old_wall(5)=0,force_change(5)=0,acceleration(3)=0
     real(dp), allocatable :: old_boundary(:)
   end type spray_sdc_population_stage
 contains
@@ -49,7 +49,7 @@ contains
       time,interval,stage,iterations,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,acceleration)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -71,6 +71,7 @@ contains
     real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
     real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
     integer, optional, intent(in) :: maximum_received
+    real(dp), optional, intent(in) :: acceleration(3)
     type(amr_tree_state_3d), optional, intent(inout) :: physical_source
     type(amr_tree_state_3d), allocatable :: physical_delta
     type(spray_sdc_population_stage) :: candidate
@@ -126,7 +127,7 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,group,candidate,time,interval,stage,iterations,faces, &
       change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta,acceleration)
     if(.not.valid) return
     physical(level)=group(1);virtuals(level)=group(2);ghosts(level)=group(3);work(level)=candidate
     if(stage==0.and.level<levels) ghosts(level+1)=next_ghost
@@ -147,7 +148,7 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,populations,work,time,interval,stage,iterations,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,acceleration)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -169,30 +170,35 @@ contains
     real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
     real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
     integer, optional, intent(in) :: maximum_received
+    real(dp), optional, intent(in) :: acceleration(3)
     type(amr_tree_state_3d), optional, intent(inout) :: physical_source
     type(amr_tree_state_3d), allocatable :: physical_delta
     type(spray_sdc_population_stage) :: candidate
     type(spray_level_population) :: trial(3)
     type(amr_tree_state_3d) :: change,leftover
     real(dp) :: half_interval,drift,wall(5),exterior(reactive_nvar(size(species)))
-    real(dp) :: times(2),low_time(2),high_time(2)
+    real(dp) :: times(5),low_time(5),high_time(5),accel(3),forced(5)
     integer :: flags(4),low(4),high(4),status
     logical :: valid,agreed
-    ok=.false.;times=[time,interval]
+    ok=.false.;accel=0
+    if(present(acceleration)) accel=acceleration
+    times=[time,interval,accel]
     valid=all(ieee_is_finite(times)).and.time>=0.and.interval>0.and.iterations>=1
+    valid=valid.and.all(abs(accel)<=1e6_dp)
     valid=valid.and.stage>=0.and.stage<=iterations.and.size(boundary_change)==size(exterior)
     if(stage==0) then
       valid=valid.and.work%next_stage==0
     else
       valid=valid.and.stage==work%next_stage.and.iterations==work%iterations.and.target_level==work%depth
+      valid=valid.and.all(accel==work%acceleration)
       valid=valid.and.(present(physical_source).eqv.work%exports_physical)
       valid=valid.and.time==work%time.and.interval==work%interval.and.allocated(work%old_boundary)
       if(allocated(work%old_boundary)) valid=valid.and.size(work%old_boundary)==size(exterior)
     end if
     call agree();if(.not.agreed) return
-    call MPI_Allreduce(times,low_time,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(times,low_time,5,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(times,high_time,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(times,high_time,5,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low_time/=high_time)) return
     flags=[stage,iterations,target_level,merge(1,0,present(physical_source))]
     call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
@@ -213,6 +219,8 @@ contains
     candidate=work;drift=0
     if(stage==0) then
       trial=populations;drift=interval
+      call apply_force()
+      if(.not.agreed) return
     else
       trial=work%midpoint
     end if
@@ -222,6 +230,10 @@ contains
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta)
     if(.not.valid) return
+    if(stage==iterations) then
+      call apply_force()
+      if(.not.agreed) return
+    end if
     call to_rate(change)
     if(.not.agreed) return
     call to_rate(leftover)
@@ -231,6 +243,7 @@ contains
       if(.not.agreed) return
     end if
     if(stage==0) then
+      candidate%acceleration=accel;candidate%force_change=forced
       candidate%exports_physical=present(physical_source)
       if(present(physical_source)) candidate%old_physical_source=physical_delta
       candidate%midpoint=trial;candidate%old_wall=wall;candidate%old_boundary=exterior
@@ -244,6 +257,10 @@ contains
       valid=valid.and..not.any(exterior>huge(1._dp)-max(candidate%old_boundary,0._dp)).and. &
         .not.any(exterior< -huge(1._dp)-min(candidate%old_boundary,0._dp))
       call agree();if(.not.agreed) return
+      valid=.not.any(forced>huge(1._dp)-max(candidate%force_change,0._dp)).and. &
+        .not.any(forced< -huge(1._dp)-min(candidate%force_change,0._dp))
+      call agree();if(.not.agreed) return
+      candidate%force_change=candidate%force_change+forced
       wall=wall+candidate%old_wall;exterior=exterior+candidate%old_boundary
     end if
     candidate%next_stage=stage+1
@@ -260,6 +277,35 @@ contains
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
       if(status/=MPI_SUCCESS) agreed=.false.
     end subroutine agree
+    ! Accelerate every copy, but count external work only for real particles.
+    ! trial and candidate stay private until the entire stage succeeds.
+    subroutine apply_force()
+      real(dp) :: local(5),dv(3),velocity(3),mass
+      integer :: population,p
+      valid=interval<=1e6_dp;call agree();if(.not.agreed) return
+      dv=half_interval*accel;local=0;forced=0
+      do population=1,3
+        valid=allocated(trial(population)%parcels)
+        if(.not.valid) exit
+        do p=1,size(trial(population)%parcels)
+          associate(parcel=>trial(population)%parcels(p))
+            if(parcel%mass<=0) cycle
+            velocity=parcel%velocity;mass=parcel%mass*parcel%multiplicity
+            parcel%velocity=velocity+dv
+            valid=valid.and.valid_spray_parcel(parcel)
+            if(population==1) then
+              local(2:4)=local(2:4)+mass*dv
+              local(5)=local(5)+mass*dot_product(velocity+.5_dp*dv,dv)
+            end if
+          end associate
+        end do
+        if(.not.valid) exit
+      end do
+      valid=valid.and.all(ieee_is_finite(local))
+      call agree();if(.not.agreed) return
+      call MPI_Allreduce(local,forced,5,MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+      agreed=status==MPI_SUCCESS.and.all(ieee_is_finite(forced))
+    end subroutine apply_force
     subroutine to_rate(field)
       type(amr_tree_state_3d), intent(inout) :: field
       integer :: node

@@ -35,7 +35,7 @@ contains
       dt,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces,boundary_change,wall_change, &
       chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -61,7 +61,7 @@ contains
     real(dp), optional, intent(inout) :: gas_particle_change(:)
     integer(int64), optional, intent(inout) :: level_steps(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
-    real(dp), optional, intent(in) :: wall_temperature(6)
+    real(dp), optional, intent(in) :: wall_temperature(6),particle_acceleration(3)
     type(spray_level_population), allocatable :: physical(:),virtuals(:),ghosts(:)
     type(spray_sdc_population_stage), allocatable :: work(:)
     type(amr_tree_state_3d) :: gas,temp,metrics,centroids,particle_first,particle_last,source_correction
@@ -72,7 +72,7 @@ contains
     integer(int64) :: watermark,low_id,high_id,maximum_id,global_id,total_steps
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),exchange(size(source_change)),particle_wall(size(source_change))
-    real(dp) :: exterior(size(source_change)),theta,h(3),origin(3)
+    real(dp) :: exterior(size(source_change)),particle_force_total(size(source_change)),theta,h(3),origin(3)
     integer :: nv,levels,rank,status,node,n(3),i,j,k,p,ios
     logical :: valid,agreed
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
@@ -145,6 +145,7 @@ contains
       if(owners(node)==rank) particle_first%fields(node)%values=0
     end do
     source_correction=particle_first
+    particle_force_total=0
     particle_last=particle_first;particle_wall=0;exterior=0;watermark=last_id
     if(present(reaction_source)) then
       allocate(ir);ir=reaction_source
@@ -169,9 +170,9 @@ contains
     call collect_mpi_amr_level_particles(comm,tree,owners,physical,lower,spacing,[.false.,.false.,.false.], &
       options%maximum_parcels,final,masses,agreed,phi)
     if(.not.agreed) return
-    valid=safe_sum(boundary,exterior).and.safe_sum(wall,particle_wall)
+    valid=safe_sum(boundary,exterior).and.safe_sum(wall,particle_wall).and.safe_sum(external,particle_force_total)
     call agree();if(.not.agreed) return
-    boundary=boundary+exterior;wall=wall+particle_wall
+    boundary=boundary+exterior;wall=wall+particle_wall;external=external+particle_force_total
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(final,parcels);call move_alloc(masses,component_mass)
     if(present(reaction_source)) reaction_source=ir
@@ -287,13 +288,14 @@ contains
       type(MPI_Comm), intent(in) :: source_comm
       logical, intent(out) :: good
       type(amr_tree_state_3d) :: remainder,physical_rate
-      real(dp) :: wall_delta(5),outside(nv),wall_full(nv)
+      real(dp) :: wall_delta(5),outside(nv),wall_full(nv),force_full(nv)
       integer :: p
       call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
         stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
         boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
-        inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate)
+        inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate, &
+        acceleration=particle_acceleration)
       if(.not.good) return
       do p=1,size(owners)
         if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle
@@ -319,10 +321,13 @@ contains
       call agree();good=agreed
       if(.not.good) return
       wall_full=0;wall_full(:5)=wall_delta
-      valid=safe_sum(particle_wall,wall_full).and.safe_sum(exterior,outside)
+      force_full=0;force_full(:5)=work(depth+1)%force_change
+      valid=safe_sum(particle_wall,wall_full).and.safe_sum(exterior,outside).and. &
+        safe_sum(particle_force_total,force_full)
       call agree();good=agreed
       if(.not.good) return
       particle_wall=particle_wall+wall_full;exterior=exterior+outside
+      particle_force_total=particle_force_total+force_full
     end subroutine particle_source
     subroutine particle_predictor(rate,interval,iteration,depth,time,halo,source_comm,good, &
         source_start,source_end,fractions)

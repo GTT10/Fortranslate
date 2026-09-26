@@ -117,6 +117,7 @@ contains
     type(spray_parcel), allocatable :: ghosts(:)
     type(spray_parcel) :: reference
     type(spray_level_population) :: group(3),before_group(3),expected_group(3)
+    real(dp) :: accel(3),dv(3),expected_force(5),old_force(5),parcel_weight
     type(spray_sdc_population_stage) :: work,hierarchy_work(2)
     type(spray_level_population), allocatable :: physical(:),virtuals(:),incoming(:)
     type(spray_level_population) :: root_finished
@@ -303,10 +304,20 @@ contains
         if(count>0) group(population)%parcels(1)%velocity(1)=-20._dp
       end do
       before_group=group;fraction=.25_dp
+      accel=[1000._dp,-2000._dp,3000._dp];dv=1e-8_dp*accel
+      expected_force=0
+      if(count>0) then
+        parcel_weight=group(1)%parcels(1)%mass*group(1)%parcels(1)%multiplicity
+        expected_force(2:4)=parcel_weight*dv
+        expected_force(5)=parcel_weight*dot_product(group(1)%parcels(1)%velocity+.5_dp*dv,dv)
+      end if
+      call MPI_Allreduce(MPI_IN_PLACE,expected_force,5,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
       call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,group,work,0._dp,2e-8_dp,0,2,faces,group_source,group_remainder,wall,ledger,ok, &
-        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+        phi,centroids,metrics,gas,ending,temp,temp,fraction,acceleration=accel)
       call require(ok.and.work%next_stage==1,'old SDC kick and drift cached')
+      call require(all(work%force_change==expected_force),'old external force counts physical particles only')
+      old_force=work%force_change
       do population=1,3
         call require(all(group(population)%component_mass==before_group(population)%component_mass), &
           'old stage does not publish physical population')
@@ -320,11 +331,30 @@ contains
         1,1,1,100,expected_group,1e-8_dp,0._dp,faces,expected_source,expected_remainder,wall,ledger,ok, &
         phi,centroids,metrics,gas,ending,temp,temp,fraction)
       call require(ok,'single new half-kick reference')
+      expected_force=0
+      if(count>0) then
+        parcel_weight=expected_group(1)%parcels(1)%mass*expected_group(1)%parcels(1)%multiplicity
+        expected_force(2:4)=parcel_weight*dv
+        expected_force(5)=parcel_weight*dot_product(expected_group(1)%parcels(1)%velocity+.5_dp*dv,dv)
+        do population=1,3
+          expected_group(population)%parcels(1)%velocity=expected_group(population)%parcels(1)%velocity+dv
+        end do
+      end if
+      call MPI_Allreduce(MPI_IN_PLACE,expected_force,5,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      expected_force=expected_force+old_force
+      if(rank==0) accel(1)=2*accel(1)
+      call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,work,0._dp,2e-8_dp,1,2,faces,group_source,group_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction,acceleration=accel)
+      call require(.not.ok.and.work%next_stage==1.and.all(work%force_change==old_force), &
+        'changed rank-local acceleration retains stage and external ledger')
+      accel=[1000._dp,-2000._dp,3000._dp]
       if(count>0) work%midpoint(3)%nodes=0
       call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,group,work,0._dp,2e-8_dp,1,2,faces,group_source,group_remainder,wall,ledger,ok, &
-        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+        phi,centroids,metrics,gas,ending,temp,temp,fraction,acceleration=accel)
       call require(ok.and.work%next_stage==2,'first new SDC population iteration')
+      call require(all(work%force_change==old_force),'intermediate iteration does not repeat external force')
       do population=1,3
         call require(all(group(population)%component_mass==before_group(population)%component_mass), &
           'intermediate iteration leaves population uncommitted')
@@ -339,7 +369,7 @@ contains
       if(count>0) work%midpoint(3)%nodes=0
       call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,group,work,0._dp,2e-8_dp,2,2,faces,group_source,group_remainder,wall,ledger,ok, &
-        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+        phi,centroids,metrics,gas,ending,temp,temp,fraction,acceleration=accel)
       call require(.not.ok.and.work%next_stage==2.and.all(wall==17).and.all(ledger==19),'SDC late failure retains stage')
       do p=1,2
         if(owners(p)/=rank) cycle
@@ -349,8 +379,9 @@ contains
       work%midpoint(3)%nodes=query_nodes
       call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,group,work,0._dp,2e-8_dp,2,2,faces,group_source,group_remainder,wall,ledger,ok, &
-        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+        phi,centroids,metrics,gas,ending,temp,temp,fraction,acceleration=accel)
       call require(ok.and.work%next_stage==0,'final SDC particle iteration commits')
+      call require(all(work%force_change==expected_force),'final physical external momentum and work')
       do p=1,2
         if(owners(p)/=rank) cycle
         call require(all(group_source%fields(p)%values==expected_source%fields(p)%values/1e-8_dp).and. &
