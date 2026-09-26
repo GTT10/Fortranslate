@@ -20,6 +20,24 @@ computational splitting. The MPI EB spray application exposes common-step SDC. S
 [source-export checks](validation/spray-sdc-source-export-20260927.md) and
 [gas-stage checks](validation/sdc-eb-auxiliary-source-20260927.md).
 
+## Level-bounded particle ownership
+
+`locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
+regular/EB MPI migration APIs accept optional `maximum_level` (zero based).
+It selects the finest covering node no deeper than that level, including
+parents covered by refinement. Omission retains finest-level ownership.
+MPI ranks must agree on the effective limit; invalid limits or disagreement
+leave parcels, components and partition outputs unchanged.
+
+This permits a caller-owned particle copy to be assigned to coarse-level
+owners without coarsening the gas topology or changing parcel coordinates,
+IDs, mass or breakup history. It does not create virtual/ghost populations,
+aggregate particles, or advance their clocks. Those operations and their
+connection to recursive SDC remain required. The pinned reference's
+`Source/Particle.cpp::particleMKD` creates virtual/ghost representations before
+level updates; these ownership APIs provide a prerequisite for that lifecycle.
+See the [focused checks](validation/spray-level-ownership-20260927.md).
+
 ## AMR and embedded boundaries
 
 An AMR ownership library now locates parcels in the finest covering regular

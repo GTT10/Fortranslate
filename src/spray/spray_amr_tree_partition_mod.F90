@@ -11,17 +11,20 @@ module spray_amr_tree_partition_mod
 contains
   ! Half-open cells/patches; finest covering node wins. Periodic lookup wraps
   ! coordinates without modifying parcel positions. Outputs publish together.
-  subroutine locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,ok)
+  ! maximum_level (zero based) selects the finest covering node at or below
+  ! that level, including covered parents, for coarse particle representations.
+  subroutine locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,ok,maximum_level)
     type(amr_patch_tree_3d), intent(in) :: tree
     real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
+    integer, optional, intent(in) :: maximum_level
     integer, allocatable, intent(inout) :: locations(:,:)
     logical, intent(out) :: ok
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),candidate(:,:)
     integer(int64) :: cell(3)
     real(dp) :: length(3),fraction(3),coordinate(3)
-    integer :: p,node,level,best,axis,ios
+    integer :: p,node,level,best,axis,ios,ceiling
     logical :: valid
     ok=.false.
     if (size(positions,1)/=3) return
@@ -30,6 +33,9 @@ contains
     if (any(spacing<1.e-12_dp).or.any(spacing>1.e9_dp)) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if (.not.valid) return
+    ceiling=tree%level_count()-1
+    if(present(maximum_level)) ceiling=maximum_level
+    if(ceiling<0.or.ceiling>=tree%level_count()) return
     ! Keep integer cell boundaries representable in the floating lookup.
     if (any(domain>2_int64**52)) return
     length=spacing*real(tree%nodes(1)%shape,dp)
@@ -46,6 +52,7 @@ contains
       end do
       fraction=coordinate/length;best=-1
       do node=1,size(tree%nodes)
+        if(tree%nodes(node)%level>ceiling) cycle
         level=tree%nodes(node)%level+1
         if (level<=best) cycle
         cell=min(domain(:,level)-1,floor(fraction*real(domain(:,level),dp),kind=int64))
@@ -60,8 +67,9 @@ contains
   ! Input IDs are strictly increasing, as after MPI receive sorting. Stable
   ! rank bins preserve every parcel field and optional component association.
   subroutine partition_amr_tree_spray_parcels(tree,owners,nranks,parcels,lower,spacing,periodic, &
-      counts,offsets,locations,ok,component_mass)
+      counts,offsets,locations,ok,component_mass,maximum_level)
     type(amr_patch_tree_3d), intent(in) :: tree
+    integer, optional, intent(in) :: maximum_level
     integer, intent(in) :: owners(:),nranks
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3)
@@ -95,7 +103,7 @@ contains
       end if
       positions(:,p)=parcels(p)%position
     end do
-    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,found,valid)
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,found,valid,maximum_level)
     if (.not.valid) return
     allocate(bins(nranks),starts(nranks),next(nranks),ordered(size(parcels)), &
       ordered_locations(4,size(parcels)),stat=ios)

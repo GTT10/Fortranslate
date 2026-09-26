@@ -43,6 +43,11 @@ program test_spray_mpi_eb_tree
   drops=saved;drops(1)%position(1)=1;saved=drops
   call migrate(0)
   call require(.not.ok,'capacity rollback');call unchanged()
+  call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,phi,drops,zero,spacing,100,ok,masses,0)
+  call require(ok.and.size(drops)==merge(nranks,0,rank==0),'covered coarse EB owner')
+  do p=1,size(drops)
+    call require(drops(p)%id==p.and.all(masses(:,p)==1e-9_dp*[.25_dp,.75_dp]),'coarse EB payload')
+  end do
   call migrate(100)
   call require(ok.and.size(drops)==merge(nranks,0,rank==nranks-1),'finest fluid owner')
   do p=1,size(drops)

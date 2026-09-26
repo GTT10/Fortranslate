@@ -12,7 +12,7 @@ program test_spray_mpi_amr_tree
   type(spray_parcel), allocatable :: parcels(:),saved(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   type(spray_parcel) :: expected
-  integer :: rank,nranks,ierr,p,id,owners(4),bad_owners(4)
+  integer :: rank,nranks,ierr,p,id,owners(4),bad_owners(4),ceiling
   real(dp) :: zero(3)=0._dp,spacing(3)=1._dp,bad_lower(3)
   logical :: ok
   call MPI_Init(ierr)
@@ -34,6 +34,30 @@ program test_spray_mpi_amr_tree
     masses(:,p)=parcels(p)%mass*[.25_dp,.75_dp]
   end do
   saved=parcels;saved_mass=masses
+  ceiling=merge(0,1,rank==0)
+  call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,parcels,zero,spacing, &
+    [.true.,.false.,.false.],100,ok,masses,ceiling)
+  call require(.not.ok.and.all(parcels%id==saved%id).and.all(masses==saved_mass),'level disagreement rollback')
+  call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,parcels,zero,spacing, &
+    [.true.,.false.,.false.],100,ok,masses,3)
+  call require(.not.ok.and.all(parcels%id==saved%id).and.all(masses==saved_mass),'invalid level rollback')
+  do ceiling=0,1
+    call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,parcels,zero,spacing, &
+      [.true.,.false.,.false.],100,ok,masses,ceiling)
+    call require(ok,'bounded level migration')
+    if(ceiling==0) then
+      call require(size(parcels)==merge(2*nranks,0,rank==0),'covered root owns all copies')
+    else
+      call require(size(parcels)==merge(nranks,0,rank<=1),'level-one owner distribution')
+    end if
+    do p=1,size(parcels)
+      expected=make_parcel(int(parcels(p)%id))
+      call require(all(parcels(p)%position==expected%position),'level view retains position')
+      call require(all(masses(:,p)==expected%mass*[.25_dp,.75_dp]),'level view retains components')
+      if(ceiling==1) call require(mod(parcels(p)%id,2_int64)==int(1-rank,int64),'level-one ID ownership')
+    end do
+  end do
+  parcels=saved;masses=saved_mass
   call migrate(nranks-1)
   call require(.not.ok.and.all(parcels%id==saved%id).and.all(masses==saved_mass),'capacity rollback')
   bad_owners=owners

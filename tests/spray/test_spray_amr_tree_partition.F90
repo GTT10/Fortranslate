@@ -37,6 +37,17 @@ program test_spray_amr_tree_partition
   call require(all(locations(:,3)==[3,1,1,1]),'peer face')
   call require(all(locations(:,5)==[3,4,1,1]),'negative periodic wrap')
   previous=locations
+  call locate_amr_tree_spray_cells(tree,positions,zero,spacing,[.true.,.false.,.false.],locations,ok,1)
+  call require(ok.and.all(locations(1,:)==[2,2,3,2,3,2]),'level-one view excludes nested patch')
+  call require(all(locations(:,1)==[2,1,1,1]),'level-one local cell')
+  call locate_amr_tree_spray_cells(tree,positions,zero,spacing,[.true.,.false.,.false.],locations,ok,0)
+  call require(ok.and.all(locations(1,:)==1),'root view retains covered parent')
+  call require(all(locations(:,3)==[1,3,1,1]),'root local cell')
+  locations=previous
+  call locate_amr_tree_spray_cells(tree,positions,zero,spacing,[.true.,.false.,.false.],locations,ok,-1)
+  call require(.not.ok.and.all(locations==previous),'negative level rollback')
+  call locate_amr_tree_spray_cells(tree,positions,zero,spacing,[.true.,.false.,.false.],locations,ok,3)
+  call require(.not.ok.and.all(locations==previous),'nonexistent level rollback')
   call locate_amr_tree_spray_cells(tree,positions,zero,spacing,[.false.,.false.,.false.],locations,ok)
   call require(.not.ok.and.all(locations==previous),'nonperiodic out-of-domain rollback')
   positions(:,4)=[4._dp,.25_dp,.25_dp]

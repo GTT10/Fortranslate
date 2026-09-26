@@ -15,9 +15,11 @@ module spray_mpi_amr_tree_mod
 contains
   ! The replicated nodal field describes the root domain at the finest tree
   ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder. No periodic wrapping.
-  subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing,maximum_parcels,ok,component_mass)
+  subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing, &
+      maximum_parcels,ok,component_mass,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
+    integer, optional, intent(in) :: maximum_level
     integer, intent(in) :: owners(:),maximum_parcels
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),spacing(3)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -44,10 +46,10 @@ contains
     if(present(component_mass)) then
       masses=component_mass
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
-        [.false.,.false.,.false.],maximum_parcels,valid,masses)
+        [.false.,.false.,.false.],maximum_parcels,valid,masses,maximum_level)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
-        [.false.,.false.,.false.],maximum_parcels,valid)
+        [.false.,.false.,.false.],maximum_parcels,valid,maximum_level=maximum_level)
     end if
     if(.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
@@ -87,9 +89,10 @@ contains
     end subroutine
   end subroutine
   subroutine migrate_amr_tree_spray_parcels(comm,tree,owners,parcels,lower,spacing,periodic, &
-      maximum_parcels,ok,component_mass)
+      maximum_parcels,ok,component_mass,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
+    integer, optional, intent(in) :: maximum_level
     integer, intent(in) :: owners(:),maximum_parcels
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3)
@@ -100,7 +103,7 @@ contains
     real(dp), allocatable :: masses(:,:),positions(:,:)
     integer, allocatable :: counts(:),offsets(:),locations(:,:)
     real(dp) :: bounds(6),reference_bounds(6)
-    integer :: rank,nranks,ierr,nodes,low,high,node,p,ios,descriptor(13),reference(13),flags(4),reference_flags(4)
+    integer :: rank,nranks,ierr,nodes,low,high,node,p,ios,descriptor(13),reference(13),flags(5),reference_flags(5),ceiling
     logical :: valid,agreed
     ok=.false.
     call MPI_Comm_rank(comm,rank,ierr)
@@ -114,6 +117,11 @@ contains
     if (present(component_mass)) valid=valid.and.allocated(component_mass)
     call agree()
     if (.not.agreed) return
+    ceiling=tree%level_count()-1
+    if(present(maximum_level)) ceiling=maximum_level
+    valid=ceiling>=0.and.ceiling<tree%level_count()
+    call agree()
+    if(.not.agreed) return
     nodes=size(tree%nodes)
     call MPI_Allreduce(nodes,low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -122,8 +130,8 @@ contains
     bounds=[lower,spacing];reference_bounds=bounds
     call MPI_Bcast(reference_bounds,6,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    flags=[merge(1,0,periodic),merge(1,0,present(component_mass))];reference_flags=flags
-    call MPI_Bcast(reference_flags,4,MPI_INTEGER,0,comm,ierr)
+    flags=[merge(1,0,periodic),merge(1,0,present(component_mass)),ceiling];reference_flags=flags
+    call MPI_Bcast(reference_flags,5,MPI_INTEGER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=all(bounds==reference_bounds).and.all(flags==reference_flags)
     call agree()
@@ -145,10 +153,10 @@ contains
     if (present(component_mass)) then
       masses=component_mass
       call partition_amr_tree_spray_parcels(tree,owners,nranks,candidate,lower,spacing,periodic, &
-        counts,offsets,locations,valid,masses)
+        counts,offsets,locations,valid,masses,maximum_level)
     else
       call partition_amr_tree_spray_parcels(tree,owners,nranks,candidate,lower,spacing,periodic, &
-        counts,offsets,locations,valid)
+        counts,offsets,locations,valid,maximum_level=maximum_level)
     end if
     call agree()
     if (.not.agreed) return
@@ -164,7 +172,7 @@ contains
     do p=1,size(candidate)
       positions(:,p)=candidate(p)%position
     end do
-    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,valid)
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,valid,maximum_level)
     if (valid) then
       do p=1,size(candidate)
         if (owners(locations(1,p))/=rank) valid=.false.
