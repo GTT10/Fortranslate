@@ -361,13 +361,14 @@ physical-boundary stepping in the separate single-level application.
 ## SDC common and recursive steps
 
 `redistribution='flux_redist'` enables composite small-cell redistribution for
-serial common/recursive SDC and MPI common-step SDC. `sdc_flux_redist.nml`
-provides a reacting fixture; add `subcycling=.true.` for the serial recursive
-path. The default is `none`; MPI recursive redistribution is not yet supported.
+serial/MPI common and recursive SDC. `sdc_flux_redist.nml` provides a reacting
+fixture; add `subcycling=.true.` for recursive intervals. The default is `none`.
 Checkpoint continuation requires the same redistribution setting. See the
 [serial application/restart checks](../../docs/validation/sdc-eb-tree-redistribution-app-20260927.md)
 and [MPI checks](../../docs/validation/sdc-mpi-eb-redistribution-20260927.md).
-Serial recursive continuation is covered by [these checks](../../docs/validation/sdc-eb-redistribution-recursive-20260927.md).
+Recursive continuation is covered by the
+[serial checks](../../docs/validation/sdc-eb-redistribution-recursive-20260927.md) and
+[MPI checks](../../docs/validation/sdc-mpi-eb-redistribution-recursive-20260927.md).
 
 `sdc.nml` selects `time_integrator='sdc'`, `sdc_iterations=2` and
 `external_forcing(3)` (force per fluid volume). This path requires PeleC CTU,
