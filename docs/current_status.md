@@ -101,7 +101,10 @@ final peer/coarse-fine synchronization and separate source inventories
 The serial EB tree checkpoint envelope now preserves SDC forcing inventories
 and reaction fields, with transactional reads
 ([checks](validation/sdc-eb-tree-checkpoint-20260927.md)).
-EB tree SDC application routing, recursive stepping and MPI integration remain open.
+The serial tree application now routes static common-step SDC input and
+checkpoint/restart, with an independent forcing budget column
+([checks](validation/sdc-eb-tree-app-20260927.md)).
+EB tree SDC regridding, recursive stepping and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive

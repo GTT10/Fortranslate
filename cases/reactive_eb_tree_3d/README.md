@@ -357,3 +357,15 @@ Tree checkpoint records support PCM with explicit boundary labels as well as
 PLM/CTU. The tree serializer supplies an embedded-patch context while retaining
 boundary/solver identity and thermal/inlet validation. This does not enable PCM
 physical-boundary stepping in the separate single-level application.
+
+## SDC common steps
+
+`sdc.nml` selects `time_integrator='sdc'`, `sdc_iterations=2` and
+`external_forcing(3)` (force per fluid volume). This path requires PeleC CTU,
+explicit boundary faces and a static tree with common steps. MPI, subcycling
+and scheduled/adaptive regridding are currently rejected for SDC.
+
+Serial fixed/selected source routing preserves reaction estimates and forcing
+inventories in V3 tree checkpoint records. The SDC budget adds a `forcing`
+column. The fixed executable's continuous/restart comparison is recorded in
+[these checks](../../docs/validation/sdc-eb-tree-app-20260927.md).
