@@ -14,11 +14,14 @@ program test_reactive_eb_chemistry_3d
     build_axis_plane_eb_geometry_3d
   use eb_reactive_hydro_3d_mod, only: &
     advance_reactive_eb_state_redistributed_euler_3d
-  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
+  use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_driver_mod, only: &
     initialize_reactive_eb_density_sheet_3d, &
     advance_reactive_eb_strang_3d, reactive_eb_integrals_3d, &
     reactive_eb_element_integrals_3d,react_sdc_eb_state_3d
+  use reactive_eb_3d_driver_mod, only: advance_reactive_eb_sdc_3d
+  use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -35,9 +38,62 @@ program test_reactive_eb_chemistry_3d
   call check_mask_axis(species, reactions, "z")
   call check_eb_split(species, reactions)
   call check_sdc()
+  call check_sdc_loop()
   write(*, '(a)') "test_reactive_eb_chemistry_3d: PASS"
 
 contains
+  subroutine check_sdc_loop()
+    type(reactive_eb_3d_config) :: config
+    type(eb_geometry_3d) :: geometry,extended
+    type(gas_transport_species), allocatable :: transport(:)
+    type(eb_integrated_flux_3d) :: flux,saved_flux
+    real(dp) :: u(12,2,2,2),t(2,2,2),ir(8,2,2,2),initial(12),final(12),scale(12)
+    real(dp) :: boundary(12),wall(12),external(12),theta,saved(12,2,2,2),st(2,2,2),si(8,2,2,2)
+    integer :: mode,i,j,k
+    character(len=12), parameter :: methods(3)=[character(len=12)::'none','flux_redist','state_redist']
+    character(len=7) :: faces(6)
+    config%nx=2;config%ny=2;config%nz=2;config%plane_position=.37_dp
+    call build_configured_eb_geometry_3d(config,geometry,ok)
+    call require(ok,'coupled SDC geometry')
+    call build_configured_eb_geometry_3d(config,extended,ok,halo=6)
+    call require(ok,'coupled SDC extended geometry')
+    call load_h2o2_elementary_transport(transport,ok)
+    call require(ok,'coupled SDC transport')
+    faces='outflow'
+    do mode=1,3
+      call initialize_reactive_eb_density_sheet_3d(species,config,geometry,u,t,ok)
+      call require(ok,'coupled SDC initial state')
+      call reactive_eb_integrals_3d(u,geometry,initial,ok)
+      call require(ok,'coupled SDC initial inventory')
+      call reactive_eb_integrals_3d(abs(u),geometry,scale,ok)
+      ir=0;boundary=-1;wall=-2;external=-3;theta=-4
+      call advance_reactive_eb_sdc_3d(species,reactions,transport,u,t,geometry,extended,1e-9_dp,2,.true., &
+        [.true.,.true.,.true.,.true.],[20000._dp,-30000._dp,40000._dp],1e-6_dp,1e-12_dp,trim(methods(mode)), &
+        faces,boundary,wall,external,theta,ok,ir,flux)
+      call require(ok,'coupled reacting transporting forced EB SDC')
+      call reactive_eb_integrals_3d(u,geometry,final,ok)
+      call require(ok.and.all(abs(final(:5)-initial(:5)-boundary(:5)-wall(:5)-external(:5)) &
+        <=2e-10_dp*max(1._dp,scale(:5))),'coupled EB SDC Euler inventory closure')
+      do k=1,2
+      do j=1,2
+      do i=1,2
+        if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+        call require(abs(sum(u(6:,i,j,k))-u(1,i,j,k))<2e-12_dp,'coupled EB SDC species closure')
+      end do
+      end do
+      end do
+      saved=u;st=t;si=ir;saved_flux=flux
+      boundary=-1;wall=-2;external=-3;theta=-4
+      call advance_reactive_eb_sdc_3d(species,reactions,transport,u,t,geometry,extended,1e-9_dp,2,.true., &
+        [.true.,.true.,.true.,.true.],[20000._dp,-30000._dp,40000._dp],1e-6_dp,1e-12_dp,trim(methods(mode)), &
+        faces,boundary,wall,external,theta,ok,ir,flux,difmag=-1._dp)
+      call require(.not.ok.and.all(u==saved).and.all(t==st).and.all(ir==si),'coupled EB SDC state rollback')
+      call require(all(boundary==-1).and.all(wall==-2).and.all(external==-3).and.theta==-4,'coupled SDC ledger rollback')
+      call require(all(flux%x==saved_flux%x).and.all(flux%y==saved_flux%y).and.all(flux%z==saved_flux%z), &
+        'coupled SDC integrated flux rollback')
+    end do
+  end subroutine check_sdc_loop
+
 
   subroutine check_sdc()
     type(reactive_eb_3d_config) :: config

@@ -21,12 +21,17 @@ module reactive_eb_3d_driver_mod
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
+  use eb_reactive_hydro_3d_mod, only: compute_sdc_eb_boundary_hydro_3d
+  use eb_reactive_transport_3d_mod, only: compute_sdc_eb_transport_3d
+  use eb_reactive_redistribution_3d_mod, only: redistribute_sdc_eb_rate_3d
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
   implicit none
   private
 
   public :: initialize_reactive_eb_density_sheet_3d
   public :: advance_reactive_eb_strang_3d
   public :: advance_reactive_eb_full_3d
+  public :: advance_reactive_eb_sdc_3d
   public :: react_sdc_eb_state_3d
   public :: reactive_eb_integrals_3d
   public :: reactive_eb_element_amounts_3d
@@ -37,6 +42,179 @@ module reactive_eb_3d_driver_mod
   public :: write_reactive_eb_3d_csv
 
 contains
+  subroutine advance_reactive_eb_sdc_3d(species,reactions,transport,state,temperature,geometry,extended,dt, &
+      iterations,chemistry,transport_flags,force,rtol,atol,redistribution,boundary_faces, &
+      boundary_change,wall_change,source_change,minimum_theta,ok,reaction_source,integrated_flux, &
+      difmag,target_volume_fraction,inflow_state,inflow_temperature,wall_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: geometry,extended
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
+    real(dp), intent(in) :: dt,force(3),rtol,atol
+    integer, intent(in) :: iterations
+    logical, intent(in) :: chemistry,transport_flags(4)
+    character(len=*), intent(in) :: redistribution,boundary_faces(6)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),source_change(:),minimum_theta
+    logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: reaction_source(:,:,:,:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
+    real(dp), optional, intent(in) :: difmag,target_volume_fraction,inflow_state(:,:),inflow_temperature(:),wall_temperature(6)
+    real(dp), allocatable :: old(:,:,:,:),ot(:,:,:),u(:,:,:,:),t(:,:,:),ir(:,:,:,:),hydro(:,:,:,:),rates(:,:,:,:)
+    real(dp), allocatable :: e0(:,:,:,:),e1(:,:,:,:),d0(:,:,:,:),d1(:,:,:,:),raw(:,:,:,:)
+    type(eb_integrated_flux_3d) :: hf,f0,f1
+    real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),external(size(source_change))
+    real(dp) :: v0(size(source_change)),v1(size(source_change)),theta,stheta
+    integer :: nv,n(3),i,j,k,it
+    logical :: valid,diffusive
+    ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
+    if(.not.geometry%is_valid().or..not.valid_ctu_geometry(geometry,extended,'pelec')) return
+    if(any(shape(state)/=[nv,n]).or.any(shape(temperature)/=n)) return
+    if(size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(source_change)/=nv) return
+    if(iterations<1.or..not.all(ieee_is_finite([dt,force,rtol,atol]))) return
+    if(min(dt,rtol,atol)<=0.or..not.valid_reactive_boundaries_3d(boundary_faces)) return
+    if(transport_flags(4).and..not.transport_flags(3)) return
+    if(present(reaction_source)) then
+      if(.not.chemistry.or.any(shape(reaction_source)/=[nv-4,n])) return
+    end if
+    old=state;ot=temperature
+    allocate(ir(nv-4,n(1),n(2),n(3)),hydro(nv,n(1),n(2),n(3)),raw(nv,n(1),n(2),n(3)));ir=0
+    if(present(reaction_source)) ir=reaction_source
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%cell_type(i,j,k)/=eb_covered_cell_3d) cycle
+      old(:,i,j,k)=0;ot(i,j,k)=0;ir(:,i,j,k)=0
+    end do
+    end do
+    end do
+    if(.not.all(ieee_is_finite(ir))) return
+    call recover(old,ot,valid)
+    if(.not.valid) return
+    diffusive=any(transport_flags(:3));theta=1
+    call sources(old,ot,e0,d0,f0,valid)
+    if(.not.valid) return
+    e1=e0;d1=d0;u=old;t=ot
+    do it=1,iterations
+      rates=.5_dp*e1+.5_dp*e0+.5_dp*d1+.5_dp*d0
+      rates(6:,:,:,:)=rates(6:,:,:,:)+ir(:nv-5,:,:,:)
+      rates(5,:,:,:)=rates(5,:,:,:)+ir(nv-4,:,:,:)
+      call compute_sdc_eb_boundary_hydro_3d(species,old,ot,extended,dt,rates,raw,hf,boundary,wall,valid, &
+        boundary_faces,difmag=difmag,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+      if(.not.valid) return
+      call redistribute_sdc_eb_rate_3d(geometry,old,raw,dt,redistribution,hydro,valid,target_volume_fraction)
+      if(.not.valid) return
+      u=old+dt*(rates+hydro)
+      call recover(u,t,valid)
+      if(.not.valid) return
+      call sources(u,t,e1,d1,f1,valid)
+      if(.not.valid) return
+      rates=.5_dp*e1+.5_dp*e0+.5_dp*d1+.5_dp*d0+hydro
+      if(chemistry) then
+        call react_sdc_eb_state_3d(species,reactions,old,ot,geometry,rates,dt,rtol,atol,u,t,ir,valid)
+      else
+        u=old+dt*rates
+        call recover(u,t,valid)
+      end if
+      if(.not.valid) return
+    end do
+    if(diffusive) then
+      hf%x=hf%x+.5_dp*(f0%x+f1%x);hf%y=hf%y+.5_dp*(f0%y+f1%y);hf%z=hf%z+.5_dp*(f0%z+f1%z)
+      call transport_inventory(f0,v0)
+      call transport_inventory(f1,v1)
+      boundary=boundary+.5_dp*(v0+v1)
+    end if
+    call reactive_eb_integrals_3d(e0,geometry,v0,valid)
+    if(.not.valid) return
+    call reactive_eb_integrals_3d(e1,geometry,v1,valid)
+    if(.not.valid) return
+    external=.5_dp*dt*(v0+v1)
+    if(.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall)).or. &
+      .not.all(ieee_is_finite(external))) return
+    if(.not.all(ieee_is_finite(hf%x)).or..not.all(ieee_is_finite(hf%y)).or..not.all(ieee_is_finite(hf%z))) return
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%cell_type(i,j,k)/=eb_covered_cell_3d) cycle
+      u(:,i,j,k)=state(:,i,j,k);t(i,j,k)=temperature(i,j,k)
+      if(present(reaction_source)) ir(:,i,j,k)=reaction_source(:,i,j,k)
+    end do
+    end do
+    end do
+    state=u;temperature=t;boundary_change=boundary;wall_change=wall;source_change=external;minimum_theta=theta
+    if(present(reaction_source)) reaction_source=ir
+    if(present(integrated_flux)) integrated_flux=hf
+    ok=.true.
+  contains
+    subroutine transport_inventory(flux,result)
+      type(eb_integrated_flux_3d), intent(in) :: flux
+      real(dp), intent(out) :: result(:)
+      integer :: c
+      do c=1,nv
+        result(c)=geometry%dy*geometry%dz*sum(geometry%x_face_fraction(0,:,:)*flux%x(c,0,:,:)- &
+          geometry%x_face_fraction(n(1),:,:)*flux%x(c,n(1),:,:))+ &
+          geometry%dx*geometry%dz*sum(geometry%y_face_fraction(:,0,:)*flux%y(c,:,0,:)- &
+          geometry%y_face_fraction(:,n(2),:)*flux%y(c,:,n(2),:))+ &
+          geometry%dx*geometry%dy*sum(geometry%z_face_fraction(:,:,0)*flux%z(c,:,:,0)- &
+          geometry%z_face_fraction(:,:,n(3))*flux%z(c,:,:,n(3)))
+      end do
+    end subroutine transport_inventory
+    subroutine recover(q,temp,good)
+      real(dp), intent(in) :: q(:,:,:,:)
+      real(dp), intent(inout) :: temp(:,:,:)
+      logical, intent(out) :: good
+      real(dp) :: primitive(nv),recovered,speed
+      integer :: ii,jj,kk
+      good=.false.
+      do kk=1,n(3)
+      do jj=1,n(2)
+      do ii=1,n(1)
+        if(geometry%cell_type(ii,jj,kk)==eb_covered_cell_3d) cycle
+        call reactive_conserved_to_primitive(species,q(:,ii,jj,kk),temp(ii,jj,kk),primitive,recovered,speed,good)
+        if(.not.good) return
+        temp(ii,jj,kk)=recovered
+      end do
+      end do
+      end do
+      good=.true.
+    end subroutine recover
+    subroutine sources(q,temp,e,d,flux,good)
+      real(dp), intent(in) :: q(:,:,:,:),temp(:,:,:)
+      real(dp), allocatable, intent(out) :: e(:,:,:,:),d(:,:,:,:)
+      type(eb_integrated_flux_3d), intent(out) :: flux
+      logical, intent(out) :: good
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),unredistributed(:,:,:,:)
+      integer :: ii,jj,kk
+      allocate(e,mold=q);allocate(d,mold=q);e=0;d=0;good=.false.
+      do kk=1,n(3)
+      do jj=1,n(2)
+      do ii=1,n(1)
+        if(geometry%cell_type(ii,jj,kk)==eb_covered_cell_3d) cycle
+        if(q(1,ii,jj,kk)<=0) return
+        e(2:4,ii,jj,kk)=force
+        e(5,ii,jj,kk)=dot_product(q(2:4,ii,jj,kk)/q(1,ii,jj,kk),force)
+      end do
+      end do
+      end do
+      if(.not.all(ieee_is_finite(e))) return
+      if(diffusive) then
+        allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+        allocate(unredistributed,mold=q)
+        call fill_reactive_boundary_ghosts_3d(q,temp,boundary_faces,ghost,gt,good,viscous_wall=.true., &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=1)
+        if(.not.good) return
+        call compute_sdc_eb_transport_3d(species,transport,q,temp,geometry,dt,transport_flags, &
+          unredistributed,flux,stheta,good,ghost,gt,[.true.,.true.,.true.,.true.,.true.,.true.], &
+          boundary_faces,wall_temperature)
+        if(.not.good) return
+        theta=min(theta,stheta)
+        call redistribute_sdc_eb_rate_3d(geometry,q,unredistributed,dt,redistribution,d,good,target_volume_fraction)
+        if(.not.good) return
+      end if
+      good=.true.
+    end subroutine sources
+  end subroutine advance_reactive_eb_sdc_3d
+
 
   ! Rates and states are per fluid volume; geometry supplies the active mask.
   subroutine react_sdc_eb_state_3d(species,reactions,old_state,old_temperature,geometry,nonreacting_rates, &
