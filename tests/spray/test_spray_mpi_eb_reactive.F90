@@ -243,6 +243,40 @@ program test_spray_mpi_eb_reactive
   if(rank==0) print *, 'PASS: MPI EB coupled reactive step and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_halo_context(state,temperature,interval,stage,depth,time,rate,comm,accepted, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    type(amr_tree_state_3d), intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    type(amr_tree_state_3d), intent(inout) :: rate
+    real(dp), intent(in) :: interval,time,ancestor_fraction(:)
+    integer, intent(in) :: stage,depth
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: accepted
+    real(dp) :: expected_fraction
+    integer :: a
+    call require(size(ancestor_fraction)==1,'two-level ancestor fraction shape')
+    expected_fraction=0
+    if(depth==1) expected_fraction=(time+merge(interval,0._dp,stage>0))/1e-8_dp
+    call require(abs(ancestor_fraction(1)-expected_fraction)<1e-14_dp,'stage-start/end ancestor fraction')
+    do a=1,2
+      call require(allocated(ancestor_start%fields(a)%values).eqv.(owners(a)==rank),'ancestor snapshot ownership')
+      if(owners(a)/=rank) cycle
+      call require(all(shape(ancestor_start%fields(a)%values)==shape(state%fields(a)%values)), &
+        'ancestor conserved start shape')
+      call require(all(shape(ancestor_end%fields(a)%values)==shape(state%fields(a)%values)), &
+        'ancestor conserved end shape')
+      call require(all(shape(temperature_start%fields(a)%values)==shape(temperature%fields(a)%values)).and. &
+        all(shape(temperature_end%fields(a)%values)==shape(temperature%fields(a)%values)), &
+        'ancestor temperature shapes')
+      if(a==1.and.depth==1) call require(any(ancestor_end%fields(a)%values(2,:,:,:)/= &
+        ancestor_start%fields(a)%values(2,:,:,:)),'ancestor endpoint carries completed coarse acceleration')
+    end do
+    rate=state
+    do a=1,2
+      if(owners(a)==rank) rate%fields(a)%values=0
+    end do
+    accepted=.true.
+  end subroutine check_halo_context
   subroutine check_gas_acceleration()
     real(dp) :: acceleration(3),force_density(3),dv(3),velocity(3),expected(nv),interval,density
     integer :: density_case,advance_mode
@@ -250,7 +284,7 @@ contains
     velocity=[1._dp,0._dp,3._dp];interval=1e-8_dp
     labels='outflow'
     deallocate(drops,masses);allocate(drops(0),masses(2,0))
-    do advance_mode=1,2
+    do advance_mode=1,3
     do density_case=1,2
       density=2._dp*density_case;field=saved;temp=saved_t
       primitive=0;primitive(1)=density;primitive(2:4)=velocity;primitive(5)=density*r*1000;primitive(6:)=y
@@ -278,10 +312,15 @@ contains
         liquids,options,field,temp,drops,masses,zero,spacing,interval,2,.false., &
         [.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
         forcing,theta,steps,last_id,ok,gas_particle_change=exchange,gas_acceleration=acceleration)
-      else
+      else if(advance_mode==2) then
         call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
           interval,2,.false.,[.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,extended, &
           labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration)
+      else
+        call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
+          interval,2,.false.,[.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,extended, &
+          labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration, &
+          halo_source=check_halo_context,auxiliary_change=exchange)
       end if
       call require(ok,'non-unit density accelerated gas')
       call require(all(abs(forcing-expected)<=3e-13_dp*max(abs(expected),1e-30_dp)),'density-weighted impulse/work')

@@ -53,8 +53,19 @@ module mpi_eb_tree_full_3d_mod
       type(MPI_Comm), intent(in) :: comm
       logical, intent(out) :: ok
     end subroutine
+    subroutine mpi_eb_sdc_recursive_halo_source(state,temperature,interval,stage,depth,time,rate,comm,ok, &
+        ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+      import :: amr_tree_state_3d,dp,MPI_Comm
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      type(amr_tree_state_3d), intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+      real(dp), intent(in) :: interval,time,ancestor_fraction(:)
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+    end subroutine
   end interface
-  public :: mpi_eb_sdc_auxiliary_source,mpi_eb_sdc_recursive_source
+  public :: mpi_eb_sdc_auxiliary_source,mpi_eb_sdc_recursive_source,mpi_eb_sdc_recursive_halo_source
 contains
   subroutine agree(condition,comm,ok)
     logical, intent(in) :: condition
@@ -864,7 +875,7 @@ contains
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -887,6 +898,8 @@ contains
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
     procedure(mpi_eb_sdc_recursive_source), optional :: auxiliary_source
+    procedure(mpi_eb_sdc_recursive_halo_source), optional :: halo_source
+    logical :: has_auxiliary
     real(dp), optional, intent(inout) :: auxiliary_change(:)
     real(dp) :: auxiliary(size(source_change)),source_time
     logical, optional, intent(in) :: route_auxiliary
@@ -909,20 +922,21 @@ contains
     integer :: nv,node,n(3),levels,c,rank,status,ios
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
+    has_auxiliary=present(auxiliary_source).or.present(halo_source)
     routing=.false.
     if(present(route_auxiliary)) routing=route_auxiliary
-    valid=ieee_is_finite(dt)
+    valid=ieee_is_finite(dt).and..not.(present(auxiliary_source).and.present(halo_source))
     if(valid) valid=dt>0
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(reaction_source).and..not.chemistry) valid=.false.
-    valid=valid.and.(.not.routing.or.present(auxiliary_source))
-    valid=valid.and.(present(auxiliary_source).eqv.present(auxiliary_change))
+    valid=valid.and.(.not.routing.or.has_auxiliary)
+    valid=valid.and.(has_auxiliary.eqv.present(auxiliary_change))
     if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
     call agree(valid,comm,ready)
     if(.not.ready) return
-    call MPI_Allreduce(merge(1,0,present(auxiliary_source)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    call MPI_Allreduce(merge(1,0,has_auxiliary)+merge(2,0,present(halo_source)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(merge(1,0,present(auxiliary_source)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(merge(1,0,has_auxiliary)+merge(2,0,present(halo_source)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     call MPI_Allreduce(merge(1,0,routing),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -1042,7 +1056,16 @@ contains
       type(amr_tree_state_3d) :: off
       integer :: p,x,y,z,d(3)
       logical :: valid,agreed
-      call auxiliary_source(state,temperature,interval,stage,depth,source_time,rate,comm,ok)
+      real(dp) :: fraction(levels-1),sample_time
+      if(present(halo_source)) then
+        fraction=0;sample_time=source_time
+        if(stage>0) sample_time=sample_time+interval
+        fraction(:depth)=max(0._dp,min(1._dp,(sample_time-clock_start(:depth))/clock_dt(:depth)))
+        call halo_source(state,temperature,interval,stage,depth,source_time,rate,comm,ok, &
+          starts,ends,ts,te,fraction)
+      else
+        call auxiliary_source(state,temperature,interval,stage,depth,source_time,rate,comm,ok)
+      end if
       if(.not.routing) return
       call agree(ok,comm,agreed)
       ok=.false.
@@ -1108,9 +1131,9 @@ contains
         call agree(allocation_status==0,comm,accepted)
         if(.not.accepted) return
       end if
-      if(present(auxiliary_source)) allocate(step_aux(nv))
+      if(has_auxiliary) allocate(step_aux(nv))
       source_time=time
-      if(present(auxiliary_source)) then
+      if(has_auxiliary) then
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
@@ -1144,7 +1167,7 @@ contains
         if(.not.accepted) return
         step_aux=step_aux+off_inventory
       end if
-      if(present(auxiliary_source)) then
+      if(has_auxiliary) then
         auxiliary=auxiliary+step_aux
         call agree(all(ieee_is_finite(auxiliary)),comm,accepted)
         if(.not.accepted) return

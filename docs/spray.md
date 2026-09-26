@@ -124,6 +124,18 @@ halo-fill failure leaves all particle/source/ledger outputs untouched.
 The underlying EB redistribution still requires nonperiodic geometry.
 See [time-interpolated stage checks](validation/spray-ghost-temporal-20260927.md).
 
+The MPI recursive gas driver accepts optional `halo_source` using the
+`mpi_eb_sdc_recursive_halo_source` interface. It is an alternative to
+`auxiliary_source` and uses the same required `auxiliary_change` ledger and
+optional cross-level routing. In addition to interval start time, stage and
+depth, it supplies read-only ancestor state/temperature endpoints and the
+fractions needed by the gas halo fill. Stage zero receives interval-start
+fractions; positive stages receive interval-end fractions. Fractions for
+nonancestor levels are zero. MPI ranks must agree on the callback kind.
+The callback still owns private particle work until the outer gas step succeeds;
+this interface alone does not connect the recursive particle lifecycle.
+See [callback checks](validation/sdc-particle-halo-context-20260927.md).
+
 ## Level-bounded gas sampling
 
 Regular/EB cloud stencils, the serial regular sampler and MPI regular/EB
