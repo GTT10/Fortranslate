@@ -26,16 +26,17 @@ Reaction-source estimates persist across successful steps. The SDC budget CSV
 adds `source_change`, separate from `boundary_change`.
 
 This route uses a common timestep by default. Add
-`&amr_tree_timestepping subcycling=.true. /` in serial runs to advance finer levels with
+`&amr_tree_timestepping subcycling=.true. /` in serial or MPI runs to advance finer levels with
 refinement-ratio substeps and synchronize their accumulated fluxes. SDC checkpoint/restart preserves reaction
 estimates and external-source inventories in V3 (plain) or V4 (indexed) records.
 Scheduled and automatic regridding transfer signed reaction estimates by the
 same volume-overlap remap used for the gas. All three fields (gas, temperature,
 reaction estimates) publish together after successful remapping. Recursive SDC uses the same checkpoint fields and binds the subcycling choice
 to restart context. The MPI checkpoint library reads/writes these SDC formats,
-including changed-rank source redistribution. MPI applications support common-step
+including changed-rank source redistribution. MPI applications support common-step and recursive
 SDC with checkpoint/restart and regridding. Rebalancing packs gas and reaction
-estimates together for owner migration. MPI recursive SDC is rejected at input.
+estimates together for owner migration. Recursive MPI SDC retains owner-local state and accumulates child fluxes before
+coarse/fine synchronization.
 Split stepping retains its existing capabilities and CSV format; nonzero
 external forcing requires SDC.
 
