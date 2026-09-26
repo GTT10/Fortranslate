@@ -181,7 +181,9 @@ regridding and rank-changing restart
 ([checks](validation/spray-sdc-impact-app-20260927.md)). Serial/MPI recursive
 gas SDC now exposes timed per-level auxiliary sources and a transactional
 exchange inventory ([checks](validation/sdc-recursive-auxiliary-source-20260927.md));
-recursive particle/film scheduling remains open. A serial
+optional routing now retains off-level exchanges until coarse-interval
+synchronization ([checks](validation/sdc-cross-level-source-20260927.md)).
+Recursive particle/film scheduling remains open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons

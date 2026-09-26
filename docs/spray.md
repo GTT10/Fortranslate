@@ -3558,3 +3558,13 @@ inventories separately from external forcing. Callback-owned particle/film
 state must remain private until the outer call succeeds. This is the gas-side
 interface; recursive particle/film scheduling remains unimplemented. See
 [focused checks](validation/sdc-recursive-auxiliary-source-20260927.md).
+
+Recursive gas drivers also accept `route_auxiliary=.true.` to retain source
+feedback on levels other than the one being advanced. Only uncovered fluid
+cells on those levels contribute. Old/final-new increments wait in private
+buffers until the interval at `min(source depth,target depth)` closes; they
+are then applied after flux synchronization, followed by EOS recovery and
+restriction. The auxiliary inventory includes these increments once.
+The default keeps the previous selected-level masking. This supplies source
+routing, not the remaining per-particle recursive schedule. See
+[cross-level checks](validation/sdc-cross-level-source-20260927.md).
