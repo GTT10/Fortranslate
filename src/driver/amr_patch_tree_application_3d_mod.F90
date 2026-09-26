@@ -119,8 +119,6 @@ contains
     if (sdc) then
       if (subcycling) error stop 'SDC tree subcycling is not implemented'
       if (present(schedule_path).or.regrid_interval_steps>0) error stop 'SDC tree regridding is not implemented'
-      if (checkpoint_interval_steps>0.or.len_trim(restart_file)>0) &
-        error stop 'SDC tree reaction-source checkpoint is not implemented'
     else
       if (any(config%external_forcing/=0)) error stop 'Tree external forcing requires SDC'
     end if
@@ -509,6 +507,8 @@ contains
     subroutine save_checkpoint()
       snapshot%tree=tree;snapshot%state=state;snapshot%temperature=temperature
       snapshot%initial=initial;snapshot%boundary=budget
+      if (sdc) snapshot%source=source_budget
+      if (allocated(reaction_source)) snapshot%reaction_source=reaction_source
       snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
       snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
       snapshot%maximum_remap_error=max_remap_error
@@ -522,6 +522,11 @@ contains
       call read_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
         [config%nx,config%ny,config%nz],snapshot,ok)
       if (.not.ok) error stop 'Invalid tree restart checkpoint/context'
+      if (sdc.neqv.allocated(snapshot%source)) error stop 'Tree restart source ledger mismatch'
+      if (allocated(snapshot%reaction_source%fields).neqv.(sdc.and.config%chemistry_enabled)) &
+        error stop 'Tree restart reaction source mismatch'
+      if (sdc) source_budget=snapshot%source
+      if (allocated(reaction_source)) reaction_source=snapshot%reaction_source
       if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
         error stop 'Tree restart exceeds run limits'
       applied=count_events(snapshot%time)
@@ -557,9 +562,10 @@ contains
       restart_scale(2:4)=maxval(restart_scale(2:4))
       nconserved=size(q)
       if (config%chemistry_enabled) nconserved=5
-      if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)-snapshot%boundary(:nconserved))> &
+      if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)- &
+          snapshot%boundary(:nconserved)-source_budget(:nconserved))> &
           2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
-          abs(snapshot%boundary(:nconserved))))) error stop 'Tree restart boundary ledger mismatch'
+          abs(snapshot%boundary(:nconserved)),abs(source_budget(:nconserved))))) error stop 'Tree restart boundary ledger mismatch'
       tree=snapshot%tree;state=snapshot%state;temperature=snapshot%temperature
       initial=snapshot%initial;budget=snapshot%boundary
       time=snapshot%time;step=snapshot%steps;regrids=snapshot%regrids

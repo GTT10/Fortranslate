@@ -15,8 +15,8 @@ module amr_patch_tree_checkpoint_3d_mod
   private
   type, public :: amr_tree_checkpoint_3d
     type(amr_patch_tree_3d) :: tree
-    type(amr_tree_state_3d) :: state,temperature
-    real(dp), allocatable :: initial(:),boundary(:)
+    type(amr_tree_state_3d) :: state,temperature,reaction_source
+    real(dp), allocatable :: initial(:),boundary(:),source(:)
     integer(int64), allocatable :: record_offsets(:)
     real(dp) :: time=0,maximum_reflux=0,minimum_theta=1,maximum_remap_error=0
     integer :: steps=0,regrids=0
@@ -110,7 +110,13 @@ contains
     end if
     open(newunit=unit,file=path,status='replace',action='write',iostat=status)
     if (status/=0) return
-    if (with_index) then
+    if (allocated(snapshot%source)) then
+      if (with_index) then
+        write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V4'
+      else
+        write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V3'
+      end if
+    else if (with_index) then
       write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V2'
     else
       write(unit,'(a)',iostat=status) 'PELEF_AMR_TREE_3D_CHECKPOINT_V1'
@@ -132,6 +138,12 @@ contains
     if (status/=0) go to 900
     write(unit,'(*(es27.18e3,1x))',iostat=status) snapshot%initial,snapshot%boundary
     if (status/=0) go to 900
+    if (allocated(snapshot%source)) then
+      write(unit,'(*(es27.18e3,1x))',iostat=status) snapshot%source
+      if (status/=0) go to 900
+      write(unit,'(i0)',iostat=status) merge(1,0,allocated(snapshot%reaction_source%fields))
+      if (status/=0) go to 900
+    end if
     do node=2,size(snapshot%tree%nodes)
       associate(p=>snapshot%tree%nodes(node)%patch)
         write(unit,'(*(i0,1x))',iostat=status) snapshot%tree%nodes(node)%parent,p%coarse_i_lower,p%coarse_i_upper, &
@@ -157,6 +169,19 @@ contains
         end do
       end do
     end do
+    if (allocated(snapshot%reaction_source%fields)) then
+      do node=1,size(snapshot%tree%nodes)
+        n=snapshot%tree%nodes(node)%shape
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              write(unit,'(*(es27.18e3,1x))',iostat=status) snapshot%reaction_source%fields(node)%values(:,i,j,k)
+              if (status/=0) go to 900
+            end do
+          end do
+        end do
+      end do
+    end if
     write(unit,'(a)',iostat=status) 'END_AMR_TREE_CHECKPOINT'
 900 close(unit,iostat=node)
     ok=status==0.and.node==0
@@ -177,7 +202,7 @@ contains
     if (.not.valid_context(context)) return
     open(newunit=unit,file=path,status='old',action='read',access='stream',form='formatted',iostat=status)
     if (status/=0) return
-    call read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,candidate,valid)
+    call read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,candidate,valid,allow_sdc=.true.)
     if (.not.valid) go to 900
     count=size(candidate%tree%nodes);nvar=size(candidate%initial)
     inquire(unit=unit,pos=payload_start,iostat=status)
@@ -208,6 +233,21 @@ contains
       if (status/=0) go to 900
       if (position-payload_start/=candidate%record_offsets(count+1)) go to 900
     end if
+    if (allocated(candidate%reaction_source%fields)) then
+      do node=1,count
+        n=candidate%tree%nodes(node)%shape
+        allocate(candidate%reaction_source%fields(node)%values(nvar-4,n(1),n(2),n(3)),stat=status)
+        if (status/=0) go to 900
+        do k=1,n(3)
+          do j=1,n(2)
+            do i=1,n(1)
+              read(unit,*,iostat=status) candidate%reaction_source%fields(node)%values(:,i,j,k)
+              if (status/=0) go to 900
+            end do
+          end do
+        end do
+      end do
+    end if
     read(unit,'(a)',iostat=status) line
     if (status/=0) go to 900
     if (trim(line)/='END_AMR_TREE_CHECKPOINT') go to 900
@@ -218,8 +258,10 @@ contains
 900 close(unit)
   end subroutine
 
-  ! Read only V1/V2 metadata from an already-open formatted unit.
-  subroutine read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,snapshot,ok)
+  ! Read metadata; SDC V3/V4 requires explicit caller support.
+  ! Read V1/V2 metadata from an already-open formatted unit.
+  subroutine read_amr_tree_checkpoint_header_3d(unit,species,context,root_shape,snapshot,ok,allow_sdc)
+    logical, optional, intent(in) :: allow_sdc
     integer, intent(in) :: unit,root_shape(3)
     type(nasa7_species), intent(in) :: species(:)
     character(len=*), intent(in) :: context
@@ -229,15 +271,20 @@ contains
     type(amr_patch_3d), allocatable :: patches(:)
     integer, allocatable :: parents(:),shapes(:,:)
     character(len=65536) :: line
-    integer :: status,count,nvar,n(3),node,start,finish,context_length,lo(3),hi(3),ratio,parent
+    integer :: status,count,nvar,n(3),node,start,finish,context_length,lo(3),hi(3),ratio,parent,has_reaction
     integer(int64), allocatable :: expected_offsets(:)
-    logical :: valid,indexed
+    logical :: valid,indexed,sdc
     ok=.false.
     if (.not.valid_context(context)) return
     read(unit,'(a)',iostat=status) line
     if (status/=0) return
-    indexed=trim(line)=='PELEF_AMR_TREE_3D_CHECKPOINT_V2'
-    if (.not.indexed.and.trim(line)/='PELEF_AMR_TREE_3D_CHECKPOINT_V1') return
+    sdc=trim(line)=='PELEF_AMR_TREE_3D_CHECKPOINT_V3'.or.trim(line)=='PELEF_AMR_TREE_3D_CHECKPOINT_V4'
+    if (sdc) then
+      if (.not.present(allow_sdc)) return
+      if (.not.allow_sdc) return
+    end if
+    indexed=trim(line)=='PELEF_AMR_TREE_3D_CHECKPOINT_V2'.or.trim(line)=='PELEF_AMR_TREE_3D_CHECKPOINT_V4'
+    if (.not.sdc.and..not.indexed.and.trim(line)/='PELEF_AMR_TREE_3D_CHECKPOINT_V1') return
     read(unit,*,iostat=status) context_length
     if (status/=0) return
     if (context_length/=len(context)) return
@@ -261,6 +308,15 @@ contains
     allocate(candidate%initial(nvar),candidate%boundary(nvar))
     read(unit,*,iostat=status) candidate%initial,candidate%boundary
     if (status/=0) return
+    if (sdc) then
+      allocate(candidate%source(nvar))
+      read(unit,*,iostat=status) candidate%source
+      if (status/=0) return
+      read(unit,*,iostat=status) has_reaction
+      if (status/=0) return
+      if (has_reaction<0.or.has_reaction>1) return
+      if (has_reaction==1) allocate(candidate%reaction_source%fields(count))
+    end if
     do node=2,count
       read(unit,*,iostat=status) parent,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3),ratio
       if (status/=0) return
@@ -343,6 +399,18 @@ contains
     if (min(s%time,s%maximum_reflux,s%minimum_theta,s%maximum_remap_error)<0.or.s%minimum_theta>1) return
     if (min(s%steps,s%regrids)<0.or.s%regrids>s%steps) return
     if ((s%steps==0.and.s%time/=0).or.(s%steps>0.and.s%time<=0)) return
+    if (allocated(s%source)) then
+      if (size(s%source)/=nvar) return
+      if (.not.all(ieee_is_finite(s%source))) return
+    end if
+    if (allocated(s%reaction_source%fields)) then
+      if (.not.allocated(s%source)) return
+      if (.not.s%reaction_source%is_valid(s%tree)) return
+      do node=1,size(s%tree%nodes)
+        if (size(s%reaction_source%fields(node)%values,1)/=nvar-4) return
+        if (.not.all(ieee_is_finite(s%reaction_source%fields(node)%values))) return
+      end do
+    end if
     synchronized=s%state
     call average_down_amr_patch_tree_3d(s%tree,synchronized,consistent)
     if (.not.consistent) return

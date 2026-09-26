@@ -11,7 +11,7 @@ program test_amr_patch_tree_checkpoint_3d
   use amr_patch_tree_3d_mod, only: initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d, &
     average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
   use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d,build_amr_tree_checkpoint_context_3d, &
-    write_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d
+    write_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d
   implicit none
   type(amr_tree_checkpoint_3d) :: source,loaded,saved
   type(reactive_3d_config) :: config,changed
@@ -21,7 +21,7 @@ program test_amr_patch_tree_checkpoint_3d
   type(amr_patch_3d) :: patches(2)
   character(len=:), allocatable :: context,other
   real(dp) :: x(7),u(12,4,4,4),t(1,4,4,4),q(12),sound
-  integer :: c,unit,input,status
+  integer :: c,unit,input,status,mode
   character(len=65536) :: line
   logical :: ok
   call load_h2o2_elementary_thermo(species,ok)
@@ -107,6 +107,30 @@ program test_amr_patch_tree_checkpoint_3d
   call read_amr_tree_checkpoint_3d('truncated.chk',species,context,[4,4,4],loaded,ok)
   call require(.not.ok,'truncated read rejection')
   call same(loaded,saved)
+  source=saved
+  source%source=-.002_dp*source%initial
+  call prolong_amr_patch_tree_3d(source%tree,-u(:8,:,:,:),source%reaction_source,ok)
+  call require(ok,'signed reaction estimates')
+  do mode=0,1
+    call write_amr_tree_checkpoint_3d('sdc.chk',species,context,source,ok,indexed=mode==1)
+    call require(ok,'SDC write')
+    open(newunit=input,file='sdc.chk',status='old')
+    call read_amr_tree_checkpoint_header_3d(input,species,context,[4,4,4],loaded,ok)
+    close(input)
+    call require(.not.ok,'legacy header callers reject SDC payload')
+    call read_amr_tree_checkpoint_3d('sdc.chk',species,context,[4,4,4],loaded,ok)
+    call require(ok,'SDC read')
+    call same(loaded,source)
+    call read_amr_tree_checkpoint_3d('sdc.chk',species,other,[4,4,4],loaded,ok)
+    call require(.not.ok,'SDC context rejection')
+    call same(loaded,source)
+  end do
+  deallocate(source%reaction_source%fields)
+  call write_amr_tree_checkpoint_3d('sdc.chk',species,context,source,ok)
+  call require(ok,'nonreacting SDC write')
+  call read_amr_tree_checkpoint_3d('sdc.chk',species,context,[4,4,4],loaded,ok)
+  call require(ok,'nonreacting SDC read')
+  call same(loaded,source)
 contains
   subroutine build_context(flow,text)
     type(reactive_3d_config), intent(in) :: flow
@@ -122,10 +146,15 @@ contains
     call require(a%maximum_reflux==b%maximum_reflux.and.a%minimum_theta==b%minimum_theta,'diagnostics')
     call require(a%maximum_remap_error==b%maximum_remap_error,'remap diagnostic')
     call require(all(a%initial==b%initial).and.all(a%boundary==b%boundary),'budgets')
+    call require(allocated(a%source).eqv.allocated(b%source),'source presence')
+    if (allocated(a%source)) call require(all(a%source==b%source),'source ledger exact')
+    call require(allocated(a%reaction_source%fields).eqv.allocated(b%reaction_source%fields),'reaction presence')
     call require(size(a%tree%nodes)==size(b%tree%nodes),'node count')
     do peer=1,size(a%tree%nodes)
       call require(a%tree%nodes(peer)%parent==b%tree%nodes(peer)%parent,'parent')
       call require(all(a%tree%nodes(peer)%shape==b%tree%nodes(peer)%shape),'shape')
+      if (allocated(a%reaction_source%fields)) &
+        call require(all(a%reaction_source%fields(peer)%values==b%reaction_source%fields(peer)%values),'reaction exact')
       call require(all(a%state%fields(peer)%values==b%state%fields(peer)%values),'state exact')
       call require(all(a%temperature%fields(peer)%values==b%temperature%fields(peer)%values),'temperature exact')
     end do
