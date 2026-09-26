@@ -42,7 +42,9 @@ remain available ([fluxes](validation/sdc-flux-export-20260926.md),
 external-source inventories ([checks](validation/sdc-tree-app-20260926.md)).
 Serial SDC checkpoint/restart now preserves reaction estimates and forcing
 inventories in plain/indexed records ([checks](validation/sdc-tree-restart-20260926.md)).
-Regridding, recursive SDC subcycling and MPI/EB SDC remain open.
+Scheduled/automatic serial SDC regridding now transfers signed reaction estimates
+with the gas ([checks](validation/sdc-tree-regrid-20260926.md)).
+Recursive SDC subcycling and MPI/EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive

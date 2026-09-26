@@ -25,10 +25,12 @@ for a small two-level reacting example with transport and external forcing.
 Reaction-source estimates persist across successful steps. The SDC budget CSV
 adds `source_change`, separate from `boundary_change`.
 
-This route currently requires static geometry and a common timestep. SDC
-checkpoint/restart preserves reaction estimates and external-source inventories
-in V3 (plain) or V4 (indexed) records. Scheduled/automatic regridding and
-subcycling are rejected before stepping. MPI readers reject the SDC formats. Split stepping retains its existing capabilities and CSV format;
+This route uses a common timestep. SDC checkpoint/restart preserves reaction
+estimates and external-source inventories in V3 (plain) or V4 (indexed) records.
+Scheduled and automatic regridding transfer signed reaction estimates by the
+same volume-overlap remap used for the gas. All three fields (gas, temperature,
+reaction estimates) publish together after successful remapping. Recursive SDC
+subcycling is rejected before stepping. MPI readers reject the SDC formats. Split stepping retains its existing capabilities and CSV format;
 nonzero external forcing requires SDC. This serial route does not enable MPI SDC.
 
 ## Pressure outlets
