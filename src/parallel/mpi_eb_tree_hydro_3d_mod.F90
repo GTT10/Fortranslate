@@ -232,7 +232,7 @@ contains
       extended_geometry,dt,hydro_rate,flux,comm,ok,difmag,boundary_faces,inflow_state, &
       inflow_mach,inflow_temperature,inflow_pressure, &
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      source_start,source_end,source_fraction)
+      source_start,source_end,source_fraction,predictor_halo)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -245,7 +245,7 @@ contains
     type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
     real(dp), optional, intent(in) :: ancestor_fraction(:)
     integer :: selected_depth,min_depth,max_depth
-    type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end
+    type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end,predictor_halo
     real(dp), optional, intent(in) :: source_fraction(:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
@@ -260,7 +260,7 @@ contains
     real(dp), allocatable :: flat(:,:,:)
     real(dp) :: coefficient,controls(2),low(2),high(2),work_stamp
     real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
-    integer :: nv,rank,status,ios,node,n(3)
+    integer :: nv,rank,status,ios,node,n(3),flag,loflag,hiflag,i,j,k,offset(3)
     character(len=32) :: faces(6)
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
@@ -273,6 +273,11 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,high,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    flag=merge(1,0,present(predictor_halo))
+    call MPI_Allreduce(flag,loflag,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flag,hiflag,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.loflag/=hiflag) return
     selected_depth=-1
     if(present(target_depth)) selected_depth=target_depth
     valid=selected_depth>=-1
@@ -336,6 +341,35 @@ contains
       boundary_faces=faces,target_volume_fraction=source_metrics, &
       ancestor_start=source_start,ancestor_end=source_end,ancestor_fraction=source_fraction)
     if(.not.ready) return
+    if(present(predictor_halo)) then
+      valid=allocated(predictor_halo%fields)
+      if(valid) valid=size(predictor_halo%fields)==size(owners)
+      call agree(valid,ready);if(.not.ready) return
+      do node=1,size(owners)
+        valid=allocated(predictor_halo%fields(node)%values).eqv.(owners(node)==rank)
+        if(.not.valid) exit
+        if(owners(node)/=rank) cycle
+        valid=all(shape(predictor_halo%fields(node)%values)==shape(source%fields(node)%values))
+        if(.not.valid) exit
+        valid=all(ieee_is_finite(predictor_halo%fields(node)%values))
+        if(.not.valid) exit
+        n=tree%nodes(node)%shape
+        offset=[lbound(predictor_halo%fields(node)%values,2),lbound(predictor_halo%fields(node)%values,3), &
+          lbound(predictor_halo%fields(node)%values,4)]-1
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(geometry(node)%volume_fraction(i,j,k)<=0) cycle
+          valid=valid.and.all(predictor_halo%fields(node)%values(:,i+3+offset(1),j+3+offset(2),k+3+offset(3))== &
+            source%fields(node)%values(:,i+3,j+3,k+3))
+        end do
+        end do
+        end do
+        if(.not.valid) exit
+        source%fields(node)%values=predictor_halo%fields(node)%values
+      end do
+      call agree(valid,ready);if(.not.ready) return
+    end if
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
       if(selected_depth>=0.and.tree%nodes(node)%level/=selected_depth) cycle

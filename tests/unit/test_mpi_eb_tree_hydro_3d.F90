@@ -207,13 +207,13 @@ contains
   end subroutine check_temporal_sources
   subroutine check_sdc_hydro()
     type(eb_reactive_tree_3d) :: stage_tree,end_tree
-    type(amr_tree_state_3d) :: local,lt,predictor,local_predictor,rates,reference,prior
+    type(amr_tree_state_3d) :: local,lt,predictor,local_predictor,rates,reference,prior,provided,source_metrics
     type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:)
     type(amr_tree_state_3d) :: end_local,end_source,local_end_source,level_rates,level_reference
     type(eb_integrated_flux_3d), allocatable :: level_flux(:),level_expected(:)
     real(dp) :: dt,nan
-    integer :: owners(count),p,mode,failure,c
-    logical :: good
+    integer :: owners(count),p,mode,failure,c,halo_status
+    logical :: good,changed,global_changed
     stage_tree=saved;nan=ieee_value(0._dp,ieee_quiet_nan)
     stage_tree%nodes(1)%state=1.01_dp*stage_tree%nodes(1)%state
     allocate(predictor%fields(count))
@@ -255,6 +255,50 @@ contains
         call require(all(local%fields(p)%values==stage_tree%nodes(p)%state),'SDC preserves input U')
         call require(all(lt%fields(p)%values(1,:,:,:)==stage_tree%nodes(p)%temperature),'SDC preserves input T')
       end do
+      allocate(source_metrics%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        allocate(source_metrics%fields(p)%values(1,10,10,10))
+        source_metrics%fields(p)%values(1,:,:,:)=extended(p)%volume_fraction(4:13,4:13,4:13)
+      end do
+      call fill_sdc_mpi_eb_tree_source_halo_3d(topology,owners,physical,local_predictor,nv,3,provided, &
+        MPI_COMM_WORLD,good,boundary_faces=labels,target_volume_fraction=source_metrics)
+      call require(good,'prepare explicit predictor halo')
+      call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+        extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t,predictor_halo=provided)
+      call require(good,'explicit predictor halo accepted')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(rates%fields(p)%values==reference%fields(p)%values),'explicit halo preserves baseline rates')
+        provided%fields(p)%values(2,1:3,:,:)=provided%fields(p)%values(2,1:3,:,:)+1e5_dp
+      end do
+      call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+        extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t,predictor_halo=provided)
+      call require(good,'modified ghost predictor accepted')
+      changed=.false.
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        changed=changed.or.any(rates%fields(p)%values/=reference%fields(p)%values)
+      end do
+      call MPI_Allreduce(changed,global_changed,1,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,halo_status)
+      call require(global_changed,'ghost predictor contributes to hydro flux divergence')
+      prior=rates;old_flux=flux
+      do p=1,count
+        if(owners(p)==rank) provided%fields(p)%values(:,4:7,4:7,4:7)=provided%fields(p)%values(:,4:7,4:7,4:7)+1
+      end do
+      call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+        extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t,predictor_halo=provided)
+      call require(.not.good,'inconsistent valid predictor rejected')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(rates%fields(p)%values==prior%fields(p)%values),'explicit predictor rate rollback')
+        call require(all(flux(p)%x==old_flux(p)%x).and.all(flux(p)%y==old_flux(p)%y).and. &
+          all(flux(p)%z==old_flux(p)%z),'explicit predictor flux rollback')
+      end do
+      deallocate(source_metrics%fields)
       end_tree=stage_tree;end_local=local;end_source=predictor;local_end_source=local_predictor
       do p=1,count
         end_tree%nodes(p)%state=1.01_dp*stage_tree%nodes(p)%state

@@ -168,6 +168,17 @@ The callback still owns private particle work until the outer gas step succeeds;
 this interface alone does not connect the recursive particle lifecycle.
 See [callback checks](validation/sdc-particle-halo-context-20260927.md).
 
+`compute_sdc_mpi_eb_tree_hydro_3d` accepts optional `predictor_halo` for a
+complete, caller-assembled three-cell predictor-source halo. MPI ranks must
+agree on its presence. Owner allocation, shape, finiteness and exact agreement
+with the normal predictor on valid fluid cells are checked before use. Only
+ghost values may differ; the supplied field replaces the normal halo rather
+than being added to it. Packed or physical lower bounds are accepted.
+This lets a particle-aware caller retain directly deposited halo sources in
+CTU prediction. Assembling that complete predictor and passing it from the
+recursive particle callback still require integration.
+See [predictor halo checks](validation/sdc-predictor-halo-20260927.md).
+
 ## Level-bounded gas sampling
 
 Regular/EB cloud stencils, the serial regular sampler and MPI regular/EB
