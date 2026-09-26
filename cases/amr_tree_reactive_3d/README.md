@@ -17,7 +17,7 @@ PCM/characteristic-PLM/characteristic-PPM face reconstruction, physical boundari
 molecular transport. Existing validation requires at least four root cells in
 each direction. The application is also registered for installation.
 
-## Common-step SDC
+## SDC
 
 Serial fixed/selected frontends accept `time_integrator='sdc'` with
 `characteristic_ppm` and the `pelec` Riemann solver. Run `sdc.nml` with `sdc.dat`
@@ -25,12 +25,14 @@ for a small two-level reacting example with transport and external forcing.
 Reaction-source estimates persist across successful steps. The SDC budget CSV
 adds `source_change`, separate from `boundary_change`.
 
-This route uses a common timestep. SDC checkpoint/restart preserves reaction
+This route uses a common timestep by default. Add
+`&amr_tree_timestepping subcycling=.true. /` to advance finer levels with
+refinement-ratio substeps and synchronize their accumulated fluxes. SDC checkpoint/restart preserves reaction
 estimates and external-source inventories in V3 (plain) or V4 (indexed) records.
 Scheduled and automatic regridding transfer signed reaction estimates by the
 same volume-overlap remap used for the gas. All three fields (gas, temperature,
-reaction estimates) publish together after successful remapping. Recursive SDC
-subcycling is rejected before stepping. MPI readers reject the SDC formats. Split stepping retains its existing capabilities and CSV format;
+reaction estimates) publish together after successful remapping. Recursive SDC uses the same checkpoint fields and binds the subcycling choice
+to restart context. MPI readers reject the SDC formats. Split stepping retains its existing capabilities and CSV format;
 nonzero external forcing requires SDC. This serial route does not enable MPI SDC.
 
 ## Pressure outlets
