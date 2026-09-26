@@ -7,9 +7,83 @@ module mpi_amr_patch_tree_distribution_3d_mod
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,validate_mpi_amr_tree_metadata_3d
   implicit none
   private
-  public :: redistribute_mpi_amr_tree_3d,rebalance_mpi_amr_tree_3d
+  public :: redistribute_mpi_amr_tree_3d,rebalance_mpi_amr_tree_3d,rebalance_mpi_amr_tree_with_field_3d
   public :: scatter_mpi_amr_tree_3d,gather_mpi_amr_tree_3d,partition_amr_tree_3d
 contains
+  ! Rebalance an additional signed cell field atomically with gas and temperature.
+  ! Packing reuses the whole-patch transfer and never interpolates source estimates.
+  subroutine rebalance_mpi_amr_tree_with_field_3d(tree,owners,nvar,state,temperature,nfield,field, &
+      local_cost,minimum_gain,comm,changed,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(inout) :: owners(:)
+    integer, intent(in) :: nvar,nfield
+    type(amr_tree_state_3d), intent(inout) :: state,temperature,field
+    real(dp), intent(in) :: local_cost(:),minimum_gain
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: changed,ok
+    type(amr_tree_state_3d) :: packed,temps,gas,extra
+    integer, allocatable :: next_owners(:)
+    integer :: rank,status,node,n(3),ios
+    logical :: valid,ready,moved
+    changed=.false.;ok=.false.
+    call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,field,nfield,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,ready)
+    if(.not.ready) return
+    if(nfield>huge(1)-nvar) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    allocate(packed%fields(size(owners)),gas%fields(size(owners)),extra%fields(size(owners)),stat=ios)
+    valid=ios==0
+    call agree(valid,ready)
+    if(.not.ready) return
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      if(.not.all(ieee_is_finite(field%fields(node)%values))) then
+        valid=.false.;exit
+      end if
+      allocate(packed%fields(node)%values(nvar+nfield,n(1),n(2),n(3)),stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+      packed%fields(node)%values(:nvar,:,:,:)=state%fields(node)%values
+      packed%fields(node)%values(nvar+1:,:,:,:)=field%fields(node)%values
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    temps=temperature;next_owners=owners
+    call rebalance_mpi_amr_tree_3d(tree,next_owners,nvar+nfield,packed,temps,local_cost,minimum_gain,comm,moved,ready)
+    if(.not.ready) return
+    if(.not.moved) then
+      ok=.true.;return
+    end if
+    do node=1,size(owners)
+      if(next_owners(node)/=rank) cycle
+      allocate(gas%fields(node)%values,source=packed%fields(node)%values(:nvar,:,:,:),stat=ios)
+      if(ios==0) allocate(extra%fields(node)%values,source=packed%fields(node)%values(nvar+1:,:,:,:),stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    call move_alloc(gas%fields,state%fields)
+    call move_alloc(temps%fields,temperature%fields)
+    call move_alloc(extra%fields,field%fields)
+    owners=next_owners;changed=.true.;ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: code
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,code)
+      if(code/=MPI_SUCCESS) result=.false.
+    end subroutine
+  end subroutine rebalance_mpi_amr_tree_with_field_3d
+
   ! Owner-local costs must describe the same completed sampling interval. Only
   ! owner entries are inspected; this API neither times kernels nor schedules calls.
   subroutine rebalance_mpi_amr_tree_3d(tree,owners,nvar,state,temperature,local_cost,minimum_gain,comm,changed,ok)
@@ -79,6 +153,9 @@ contains
       new_load(destination)=new_load(destination)+work(next)
       work(next)=-1._dp
     end do
+    if(all(candidate==owners)) then
+      ok=.true.;return
+    end if
     peak=maxval(old_load)
     gain=(peak-maxval(new_load))/peak
     if (gain<=0._dp.or.gain<minimum_gain) then

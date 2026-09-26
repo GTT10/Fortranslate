@@ -6,7 +6,8 @@ program pelef_reactive_eb_tree_3d
   use mpi_eb_tree_checkpoint_3d_mod, only: write_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_csv_3d_mod, only: write_mpi_eb_tree_csv_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,rebalance_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: partition_amr_tree_3d,rebalance_mpi_amr_tree_3d, &
+    rebalance_mpi_amr_tree_with_field_3d
   use mpi_amr_tree_work_mod, only: begin_tree_work,end_tree_work
   use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
@@ -218,7 +219,6 @@ program pelef_reactive_eb_tree_3d
 #elif defined(PELEF_MPI_EB_TREE)
     if(subcycling) error stop 'MPI EB SDC recursive stepping is not implemented'
     if(regrid_count>0.or.temperature_adaptive) error stop 'MPI EB SDC regrid is not implemented'
-    if(rebalance_interval_steps>0) error stop 'MPI EB SDC source rebalancing is not implemented'
 #endif
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
@@ -607,8 +607,14 @@ program pelef_reactive_eb_tree_3d
         [.false.,.false.,.false.],measured_cost,rebalance_minimum_gain,particle_options%maximum_parcels, &
         redistributed,ok,wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,nodal_phi=nodal_phi)
 #else
+      if(allocated(sdc_ir)) then
+        call rebalance_mpi_amr_tree_with_field_3d(topology,mpi_owners,nv,mpi_state,mpi_temperature,nv-4,sdc_ir, &
+          measured_cost,rebalance_minimum_gain,MPI_COMM_WORLD,redistributed,ok)
+        if(ok) record%reaction_source=sdc_ir
+      else
       call rebalance_mpi_amr_tree_3d(topology,mpi_owners,nv,mpi_state,mpi_temperature, &
         measured_cost,rebalance_minimum_gain,MPI_COMM_WORLD,redistributed,ok)
+      end if
 #endif
       if (.not.ok) error stop 'Cannot rebalance MPI EB tree'
       if (redistributed.and.mpi_rank==0) write(*,'(a,i0)') 'Rebalanced at step: ',record%steps
