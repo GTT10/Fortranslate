@@ -32,6 +32,7 @@ program test_eb_tree_full_3d
   real(dp) :: residual,theta,speed,ref_theta,stage_theta
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,half
+  character(len=16) :: test_mode
   logical :: ok,chemistry_on,transport_on
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
   call load_h2o2_elementary_thermo(species,ok)
@@ -40,6 +41,7 @@ program test_eb_tree_full_3d
   call require(ok,'transport')
   call load_h2o2_elementary_mechanism(reactions,ok)
   call require(ok,'reactions')
+  call get_command_argument(1,test_mode)
   nv=reactive_nvar(size(species))
   allocate(before(nv),after(nv),boundary(nv),primitive(reactive_nprim(size(species))))
   allocate(wall(nv),chemical(nv),exchange(nv),ref_b(nv),ref_w(nv),ref_c(nv))
@@ -90,8 +92,12 @@ program test_eb_tree_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
-  call check_sdc_reaction()
+  if(test_mode/='redist') call check_sdc_reaction()
   call check_sdc_loop()
+  if(test_mode=='redist') then
+    deallocate(u,t)
+    cycle
+  end if
   do integrator_index=1,2
   do mode=0,3
     chemistry_on=btest(mode,0);transport_on=btest(mode,1)
@@ -151,6 +157,57 @@ program test_eb_tree_full_3d
   end do
   print *, 'test_eb_tree_full_3d: PASS'
 contains
+  subroutine check_sdc_redistribution(initial,extended)
+    type(eb_reactive_tree_3d), intent(in) :: initial
+    type(eb_geometry_3d), intent(in) :: extended(:)
+    type(eb_reactive_tree_3d) :: result,baseline,previous
+    type(amr_tree_state_3d) :: ir,saved_ir
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),v0(nv),v1(nv),limiter,error,change
+    integer :: p,step
+    logical :: good
+    character(len=16) :: faces(6),method
+    faces='outflow'
+    allocate(ir%fields(count))
+    do p=1,count
+      allocate(ir%fields(p)%values(nv-4,4,4,4),source=0._dp)
+    end do
+    saved_ir=ir
+    call integrate_reactive_eb_tree_3d(initial,v0,good)
+    call require(good,'redistribution initial inventory')
+    do step=1,2
+      result=initial;ir=saved_ir
+      method='none'
+      if(step==2) method='flux_redist'
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+        [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
+        b,w,ch,ext,limiter,good,ir,redistribution=method)
+      call require(good,'SDC redistributed coupled step')
+      call integrate_reactive_eb_tree_3d(result,v1,good)
+      call require(good,'redistributed final inventory')
+      error=maxval(abs(v1-v0-b-w-ch-ext)/max(1._dp,abs(v0)))
+      print *, 'SDC redistribution method, closure: ',method,error
+      call require(error<2.e-11_dp,'redistributed coupled closure')
+      call require(any(ch(6:)/=0).and.any(ext(2:4)/=0),'redistributed active reaction and forcing')
+      if(step==1) baseline=result
+    end do
+    change=0
+    do p=1,count
+      change=max(change,maxval(abs(result%nodes(p)%state-baseline%nodes(p)%state)))
+    end do
+    call require(change>0,'redistribution changes nonuniform stage')
+    previous=result;saved_ir=ir;b=17;w=19;ch=23;ext=29;limiter=31
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
+      b,w,ch,ext,limiter,good,ir,difmag=-1._dp,redistribution='flux_redist')
+    call require(.not.good,'redistributed failed hydro stage')
+    do p=1,count
+      call require(all(result%nodes(p)%state==previous%nodes(p)%state),'redistributed state rollback')
+      call require(all(result%nodes(p)%temperature==previous%nodes(p)%temperature),'redistributed T rollback')
+      call require(all(ir%fields(p)%values==saved_ir%fields(p)%values),'redistributed IR rollback')
+    end do
+    call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(ext==29).and.limiter==31, &
+      'redistributed diagnostic rollback')
+  end subroutine check_sdc_redistribution
   subroutine check_sdc_loop()
     type(eb_reactive_tree_3d) :: initial,result
     type(eb_geometry_3d) :: padded
@@ -193,6 +250,10 @@ contains
     call require(ok,'SDC loop padded geometry')
     call build_eb_tree_extended_geometry_3d(topology,physical,padded,extended,ok)
     call require(ok,'SDC loop extended patches')
+    if(test_mode=='redist') then
+      call check_sdc_redistribution(initial,extended)
+      return
+    end if
     result=initial
     call integrate_reactive_eb_tree_3d(initial,v0,ok)
     call require(ok,'SDC loop initial inventory')

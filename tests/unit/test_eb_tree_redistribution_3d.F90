@@ -145,6 +145,7 @@ program test_eb_tree_redistribution_3d
         call require(maxval(abs(after-before))<3.e-14_dp,'coarse/fine impulse conservation')
       end do
     end if
+    call check_periodic()
     saved=result
     raw%fields(1)%values(:,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
     call redistribute_sdc_eb_tree_flux_rate_3d(tree,raw,result,ok)
@@ -158,6 +159,91 @@ program test_eb_tree_redistribution_3d
   end do
   print *, 'test_eb_tree_redistribution_3d: PASS'
 contains
+  subroutine check_periodic()
+    character(len=16) :: faces(6)
+    type(amr_tree_state_3d) :: periodic,shifted,input
+    real(dp), allocatable :: packed(:,:,:,:),reference(:,:,:,:)
+    integer :: m,q,side
+    faces='outflow';faces(1:2)='periodic'
+    input=raw
+    if(layout==0.or.layout==2) then
+      m=4
+      if(layout==2) m=8
+      allocate(packed(2,m,m,m),reference(2,m,m,m))
+      if(layout==0) then
+        packed=input%fields(1)%values
+      else
+        packed(:,:4,:,:)=input%fields(2)%values
+        packed(:,5:,:,:)=input%fields(3)%values
+      end if
+      call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,periodic,ok,faces)
+      call require(ok,'periodic redistribution')
+      if(layout==0) then
+        reference=periodic%fields(1)%values
+      else
+        reference(:,:4,:,:)=periodic%fields(2)%values
+        reference(:,5:,:,:)=periodic%fields(3)%values
+      end if
+      packed=cshift(packed,1,dim=2);reference=cshift(reference,1,dim=2)
+      if(layout==0) then
+        input%fields(1)%values=packed
+      else
+        input%fields(2)%values=packed(:,:4,:,:)
+        input%fields(3)%values=packed(:,5:,:,:)
+      end if
+      call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,shifted,ok,faces)
+      call require(ok,'translated periodic redistribution')
+      if(layout==0) then
+        packed=shifted%fields(1)%values
+      else
+        packed(:,:4,:,:)=shifted%fields(2)%values
+        packed(:,5:,:,:)=shifted%fields(3)%values
+      end if
+      call require(maxval(abs(packed-reference))<2.e-14_dp,'periodic translation crosses patch and domain seams')
+    else
+      do side=1,2
+        do q=1,2
+          input%fields(q)%values=0
+        end do
+        if(side==1) then
+          input%fields(1)%values(:,4,2,2)=[1._dp,-2._dp]
+        else
+          input%fields(2)%values(:,1,3,3)=[1._dp,-2._dp]
+        end if
+        call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,periodic,ok,faces)
+        call require(ok,'periodic coarse/fine impulse')
+        if(side==1) then
+          call require(periodic%fields(2)%values(1,1,3,3)>0,'periodic coarse-to-fine transfer')
+        else
+          call require(periodic%fields(1)%values(1,4,2,2)>0,'periodic fine-to-coarse transfer')
+        end if
+        before=0;after=0
+        do q=1,2
+          n=tree%topology%nodes(q)%shape
+          do k=1,n(3)
+          do j=1,n(2)
+          do i=1,n(1)
+            weight=fluid_volume(q,i,j,k)
+            before=before+weight*input%fields(q)%values(:,i,j,k)
+            after=after+weight*periodic%fields(q)%values(:,i,j,k)
+          end do
+          end do
+          end do
+        end do
+        call require(maxval(abs(after-before))<3.e-14_dp,'periodic coarse/fine conservation')
+      end do
+    end if
+    shifted=periodic
+    faces(2)='outflow'
+    call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,shifted,ok,faces)
+    call require(.not.ok,'unpaired periodic faces rejected')
+    do q=1,layout+1
+      call require(all(shifted%fields(q)%values==periodic%fields(q)%values),'periodic control rollback')
+    end do
+    faces='outflow';faces(3:4)='periodic'
+    call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,shifted,ok,faces)
+    call require(.not.ok,'mismatched periodic geometry rejected')
+  end subroutine check_periodic
   function value(x,y,z) result(v)
     real(dp), intent(in) :: x,y,z
     real(dp) :: v(2)

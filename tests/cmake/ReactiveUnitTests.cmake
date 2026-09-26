@@ -889,3 +889,5 @@ add_test(NAME unit_eb_tree_ctu_periodic_common_3d COMMAND test_eb_tree_subcycle_
 add_executable(test_eb_tree_redistribution_3d unit/test_eb_tree_redistribution_3d.F90)
 target_link_libraries(test_eb_tree_redistribution_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_redistribution_3d COMMAND test_eb_tree_redistribution_3d)
+
+add_test(NAME unit_eb_tree_sdc_redistribution_3d COMMAND test_eb_tree_full_3d redist)

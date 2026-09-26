@@ -47,12 +47,15 @@ module eb_reactive_patch_tree_3d_mod
 contains
   ! Composite flux redistribution. Covered parents do not donate or receive.
   ! Each cut leaf exchanges excess with face-connected fluid leaves, including
-  ! peers and coarse/fine neighbors. Physical domain faces are closed here.
-  subroutine redistribute_sdc_eb_tree_flux_rate_3d(tree,rhs,rate,ok)
+  ! peers and coarse/fine neighbors. Paired periodic domain faces wrap; other
+  ! physical faces are closed for redistribution.
+  subroutine redistribute_sdc_eb_tree_flux_rate_3d(tree,rhs,rate,ok,boundary_faces)
     type(eb_reactive_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(in) :: rhs
     type(amr_tree_state_3d), intent(inout) :: rate
     logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    character(len=32) :: faces(6)
     type(amr_tree_state_3d) :: candidate,active,delta
     integer(int64), allocatable :: origin(:,:),domain(:,:),scale(:)
     integer, allocatable :: ratios(:)
@@ -68,6 +71,10 @@ contains
     nv=size(rhs%fields(1)%values,1)
     if(nv<1) return
     if(.not.valid_tree(tree,nv)) return
+    faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    if(.not.valid_reactive_boundaries_3d(faces)) return
+    if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
     if(size(rhs%fields)/=size(tree%nodes)) return
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if(.not.valid) return
@@ -142,6 +149,10 @@ contains
         if(.not.open_face(tree%nodes(p)%geometry,[i,j,k],axis,side)) cycle
         face=cell_lo(axis)
         if(side==1) face=cell_hi(axis)
+        if(faces(2*axis-1)=='periodic') then
+          if(side==0.and.face==0) face=domain(axis,size(ratios))
+          if(side==1.and.face==domain(axis,size(ratios))) face=0
+        end if
         do q=1,size(tree%nodes)
           s=scale(tree%topology%nodes(q)%level+1)
           ! A leaf can touch this face only on an integer cell boundary.
@@ -927,7 +938,7 @@ contains
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,fractions_start,fractions_end,source_start,source_end, &
-      integrated_flux,old_predictor,new_predictor)
+      integrated_flux,old_predictor,new_predictor,redistribution)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -945,6 +956,10 @@ contains
     type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end
     type(eb_integrated_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
     type(amr_tree_state_3d), optional, intent(inout) :: old_predictor,new_predictor
+    character(len=*), optional, intent(in) :: redistribution
+    character(len=16) :: redistribution_method
+    type(amr_tree_state_3d) :: redistributed,sync_rate
+    type(eb_reactive_tree_3d) :: before_sync
     type(amr_tree_state_3d) :: op,np
     real(dp), allocatable :: midpoint(:)
     integer :: selected_depth
@@ -973,6 +988,11 @@ contains
       if(selected_depth<0.or.selected_depth>=tree%topology%level_count()) return
       if(.not.present(integrated_flux)) return
     end if
+    redistribution_method='none'
+    if(present(redistribution)) redistribution_method=redistribution
+    if(redistribution_method/='none'.and.redistribution_method/='flux_redist') return
+    ! Composite redistribution needs all levels at the same stage time.
+    if(selected_depth>=0.and.redistribution_method/='none') return
     if(present(ancestor_start).or.present(ancestor_end).or.present(fractions_start).or.present(fractions_end)) then
       if(selected_depth<0) return
       if(.not.(present(ancestor_start).and.present(ancestor_end).and. &
@@ -1030,6 +1050,11 @@ contains
         difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         target_depth,ancestor_start,ancestor_end,fractions_start,source_start,source_end,midpoint)
       if(.not.valid) return
+      if(redistribution_method=='flux_redist') then
+        call redistribute_sdc_eb_tree_flux_rate_3d(old,hydro,redistributed,valid,boundary_faces)
+        if(.not.valid) return
+        hydro=redistributed
+      end if
       do node=1,size(tree%nodes)
         if(.not.active(node)) cycle
         candidate%nodes(node)%state=old%nodes(node)%state+dt*(rates%fields(node)%values+hydro%fields(node)%values)
@@ -1091,8 +1116,26 @@ contains
     call integrate_reactive_eb_tree_3d(ledger,wall,valid)
     if(.not.valid) return
     if(selected_depth<0) then
+      if(redistribution_method=='flux_redist') before_sync=candidate
       call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces)
       if(.not.valid) return
+      if(redistribution_method=='flux_redist') then
+        ! Redistribute the reflux increment too: applying the same linear
+        ! operator to rates and flux corrections preserves composite closure.
+        sync_rate=hydro
+        do node=1,size(tree%nodes)
+          sync_rate%fields(node)%values=(candidate%nodes(node)%state-before_sync%nodes(node)%state)/dt
+        end do
+        call redistribute_sdc_eb_tree_flux_rate_3d(old,sync_rate,redistributed,valid,boundary_faces)
+        if(.not.valid) return
+        do node=1,size(tree%nodes)
+          candidate%nodes(node)%state=before_sync%nodes(node)%state+dt*redistributed%fields(node)%values
+        end do
+        call recover(valid)
+        if(.not.valid) return
+        call average_down_reactive_eb_tree_3d(species,candidate,valid)
+        if(.not.valid) return
+      end if
     end if
     boundary=0
     if(selected_depth<=0) then
@@ -1190,6 +1233,11 @@ contains
           inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
           target_depth,ancestor_start,ancestor_end,fractions)
         if(.not.good) return
+        if(redistribution_method=='flux_redist') then
+          call redistribute_sdc_eb_tree_flux_rate_3d(state,transport_rate,redistributed,good,boundary_faces)
+          if(.not.good) return
+          transport_rate=redistributed
+        end if
         theta=min(theta,stage_theta)
       end if
       good=.true.
