@@ -34,12 +34,13 @@ module spray_mpi_amr_step_mod
     integer :: next_stage=0,iterations=0,depth=-1
     real(dp) :: time=0,interval=0
     type(spray_level_population) :: midpoint(3)
+    type(amr_tree_state_3d) :: old_source,old_remainder
     real(dp) :: old_wall(5)=0
     real(dp), allocatable :: old_boundary(:)
   end type spray_sdc_population_stage
 contains
-  ! Old half kick + full drift, then repeated private new half kicks. Only the
-  ! final iteration publishes particle populations. Sources are stage rates;
+  ! Old half kick + full drift, then a new half kick only at the final
+  ! iteration, matching pinned Particle.cpp. Sources are stage rates;
   ! stage>0 ledgers contain old plus current-new physical boundary changes.
   subroutine advance_mpi_eb_population_sdc_stage(comm,species,transport,components,options,tree,owners,geometry, &
       state,temperature,width,target_level,grow,maximum_parcels,populations,work,time,interval,stage,iterations,faces, &
@@ -96,6 +97,13 @@ contains
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     half_interval=.5_dp*interval
     if(half_interval<=0) return
+    if(stage>0.and.stage<iterations) then
+      ! PeleC initializes new spray sources from old, then particleMK skips
+      ! every intermediate SDC iteration. No particle or gas sampling here.
+      source=work%old_source;remainder=work%old_remainder
+      wall_change=work%old_wall;boundary_change=work%old_boundary
+      work%next_stage=stage+1;ok=.true.;return
+    end if
     candidate=work;drift=0
     if(stage==0) then
       trial=populations;drift=interval
@@ -114,6 +122,7 @@ contains
     if(.not.agreed) return
     if(stage==0) then
       candidate%midpoint=trial;candidate%old_wall=wall;candidate%old_boundary=exterior
+      candidate%old_source=change;candidate%old_remainder=leftover
       candidate%time=time;candidate%interval=interval;candidate%depth=target_level;candidate%iterations=iterations
     else
       valid=all(ieee_is_finite(candidate%old_wall)).and.all(ieee_is_finite(candidate%old_boundary))

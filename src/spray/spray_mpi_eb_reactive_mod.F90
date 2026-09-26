@@ -348,7 +348,7 @@ contains
     real(dp), optional, intent(in) :: wall_temperature(6)
     real(dp), optional, intent(in) :: particle_acceleration(3)
     integer(int64), optional, intent(out) :: split_created
-    type(amr_tree_state_3d) :: gas,temp
+    type(amr_tree_state_3d) :: gas,temp,old_particle_rate
     type(amr_tree_state_3d), allocatable :: ir
     type(spray_parcel), allocatable :: midpoint(:),final(:)
     real(dp), allocatable :: midpoint_mass(:,:),final_mass(:,:)
@@ -437,7 +437,7 @@ contains
     minimum_theta=theta;particle_steps=old_steps+new_steps;ok=.true.
   contains
     ! External particle half kicks bracket the coupled interval. The second
-    ! kick is reevaluated privately; only the final iteration's work is retained.
+    ! kick is evaluated only at the final iteration, as in pinned particleMK.
     subroutine particle_force(population,interval,ledger,force_comm,good)
       type(spray_parcel), intent(inout) :: population(:)
       real(dp), intent(in) :: interval
@@ -483,6 +483,9 @@ contains
       logical :: accepted,all_ok,rejected
       good=.false.
       if(depth/=-1) return
+      if(stage>0.and.stage<iterations) then
+        rate=old_particle_rate;good=.true.;return
+      end if
       half_interval=.5_dp*interval
       if(half_interval<=0) return
       work_gas=stage_gas;work_temperature=stage_temperature
@@ -556,6 +559,7 @@ contains
       end do
       rate=change
       if(stage==0) then
+        old_particle_rate=change
         call move_alloc(trial,midpoint);call move_alloc(masses,midpoint_mass)
         if(present(films)) then
           call move_alloc(patches,midpoint_films);call move_alloc(patch_mass,midpoint_film_mass)

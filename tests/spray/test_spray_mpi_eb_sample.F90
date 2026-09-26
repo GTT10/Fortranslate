@@ -303,11 +303,13 @@ contains
           group(population)%parcels(1)%position-2e-8_dp*work%midpoint(population)%parcels(1)%velocity))<1e-14_dp, &
           'old stage performs one full drift')
       end do
+      old_group_source=group_source;old_group_remainder=group_remainder
       expected_group=work%midpoint;fraction=1
       call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,expected_group,1e-8_dp,0._dp,faces,expected_source,expected_remainder,wall,ledger,ok, &
         phi,centroids,metrics,gas,ending,temp,temp,fraction)
       call require(ok,'single new half-kick reference')
+      if(count>0) work%midpoint(3)%nodes=0
       call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,group,work,0._dp,2e-8_dp,1,2,faces,group_source,group_remainder,wall,ledger,ok, &
         phi,centroids,metrics,gas,ending,temp,temp,fraction)
@@ -318,9 +320,9 @@ contains
       end do
       do p=1,2
         if(owners(p)/=rank) cycle
-        call require(all(group_source%fields(p)%values==expected_source%fields(p)%values/1e-8_dp).and. &
-          all(group_remainder%fields(p)%values==expected_remainder%fields(p)%values/1e-8_dp), &
-          'SDC sources are rates over the actual half kick')
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values), &
+          'intermediate SDC iteration retains old source rates')
       end do
       old_group_source=group_source;old_group_remainder=group_remainder;wall=17;ledger=19
       if(count>0) work%midpoint(3)%nodes=0
@@ -338,9 +340,15 @@ contains
         1,1,1,100,group,work,0._dp,2e-8_dp,2,2,faces,group_source,group_remainder,wall,ledger,ok, &
         phi,centroids,metrics,gas,ending,temp,temp,fraction)
       call require(ok.and.work%next_stage==0,'final SDC particle iteration commits')
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==expected_source%fields(p)%values/1e-8_dp).and. &
+          all(group_remainder%fields(p)%values==expected_remainder%fields(p)%values/1e-8_dp), &
+          'only final SDC iteration computes the new half-kick rate')
+      end do
       do population=1,3
         call require(all(group(population)%component_mass==expected_group(population)%component_mass), &
-          'repeated new iteration applies only one half kick')
+          'final iteration applies one new half kick')
         if(count>0) call require(all(group(population)%parcels(1)%velocity==expected_group(population)%parcels(1)%velocity) &
           .and.all(group(population)%parcels(1)%position==expected_group(population)%parcels(1)%position), &
           'final SDC particles match one drift and one new kick')
