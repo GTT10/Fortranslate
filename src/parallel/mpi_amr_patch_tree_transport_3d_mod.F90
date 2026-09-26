@@ -21,6 +21,7 @@ module mpi_amr_patch_tree_transport_3d_mod
   implicit none
   private
   public :: advance_mpi_amr_tree_transport_3d,compute_mpi_amr_tree_transport_timestep_3d
+  public :: compute_sdc_mpi_amr_tree_transport_3d
 contains
   subroutine compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature, &
       root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,comm,ok,faces,wall_temperature)
@@ -148,9 +149,37 @@ contains
       if (ierr==MPI_SUCCESS) condition=result
     end subroutine
   end subroutine
+  subroutine compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,transport,state,temperature,root_spacing,dt,faces, &
+      flags,transport_rate,integrated_flux,minimum_theta,comm,ok,inflow_state,inflow_temperature, &
+      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: root_spacing(3),dt
+    character(len=*), intent(in) :: faces(6)
+    logical, intent(in) :: flags(4)
+    type(amr_tree_state_3d), intent(inout) :: transport_rate
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
+    real(dp), intent(inout) :: minimum_theta
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    type(amr_tree_state_3d) :: local_state,local_temperature
+    real(dp) :: budget(5+size(species)),maximum
+    local_state=state;local_temperature=temperature
+    call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,local_state,local_temperature,root_spacing,dt,faces, &
+      flags(1),flags(2),flags(3),flags(4),budget,maximum,minimum_theta,comm,ok, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,'mc',outlet_pressure,inflow_mach,inflow_pressure, &
+      transport_rate,integrated_flux)
+  end subroutine compute_sdc_mpi_amr_tree_transport_3d
+
   subroutine advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,state,temperature,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,comm,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure, &
+      transport_rate,integrated_flux)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -164,6 +193,8 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    type(amr_tree_state_3d), optional, intent(inout) :: transport_rate
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
     real(dp) :: pressure(6),mach(6),pin(6),tin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,candidate,temps,initial_temperature
@@ -174,12 +205,13 @@ contains
     real(dp) :: controls(28),low(28),high(28)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(7),reference_options(7)
-    integer :: flags(7),min_flags(7),max_flags(7)
+    integer :: flags(8),min_flags(8),max_flags(8)
     real(dp) :: walls(24),reference_walls(24)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    logical :: valid
+    logical :: valid,stage_only
     ok=.false.
+    stage_only=present(transport_rate)
     nvar=reactive_nvar(size(species))
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
@@ -209,6 +241,7 @@ contains
     if(.not.valid) return
     controls=[root_spacing,dt,pressure,mach,tin,pin]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0)
+    valid=valid.and.(present(transport_rate).eqv.present(integrated_flux))
     valid=valid.and.all(pressure>=0).and.all(pressure<=1e15_dp)
     do node=1,6
       if (pressure(node)>0.and.faces(node)/='outflow') valid=.false.
@@ -235,10 +268,11 @@ contains
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
     flags=[merge(1,0,viscosity),merge(1,0,conduction),merge(1,0,diffusion),merge(1,0,barodiffusion), &
-      merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
-    call MPI_Allreduce(flags,min_flags,7,MPI_INTEGER,MPI_MIN,comm,status)
+      merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)), &
+      merge(1,0,present(coarse_limiter)),merge(1,0,stage_only)]
+    call MPI_Allreduce(flags,min_flags,8,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,max_flags,7,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,max_flags,8,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(min_flags/=max_flags)) return
     options(:6)=faces;options(7)='pcm'
@@ -291,16 +325,22 @@ contains
     if (.not.valid) return
     call copy_local(temperature,temps,valid)
     if (.not.valid) return
-    call average_down_mpi_amr_tree_3d(tree,owners,initial,nvar,comm,valid)
-    if (.not.valid) return
-    call recover_tree(initial,temps,valid)
-    if (.not.valid) return
+    if(.not.stage_only) then
+      call average_down_mpi_amr_tree_3d(tree,owners,initial,nvar,comm,valid)
+      if (.not.valid) return
+      call recover_tree(initial,temps,valid)
+      if (.not.valid) return
+    end if
     call copy_local(initial,candidate,valid)
     if (.not.valid) return
     call copy_local(temps,initial_temperature,valid)
     if (.not.valid) return
     call euler_stage(candidate,temps,first_budget,first_max,first_theta,valid)
     if (.not.valid) return
+    if(stage_only) then
+      minimum_theta=first_theta;ok=.true.
+      return
+    end if
     call euler_stage(candidate,temps,second_budget,second_max,second_theta,valid)
     if (.not.valid) return
     do node=1,size(tree%nodes)
@@ -386,7 +426,11 @@ contains
                 rhs=-(fx(:,i+1,j,k)-fx(:,i,j,k))/h(1,peer) &
                   -(fy(:,i,j+1,k)-fy(:,i,j,k))/h(2,peer) &
                   -(fz(:,i,j,k+1)-fz(:,i,j,k))/h(3,peer)
-                updated%fields(peer)%values(:,i,j,k)=u%fields(peer)%values(:,i,j,k)+dt*rhs
+                if(stage_only) then
+                  updated%fields(peer)%values(:,i,j,k)=rhs
+                else
+                  updated%fields(peer)%values(:,i,j,k)=u%fields(peer)%values(:,i,j,k)+dt*rhs
+                end if
               end do
             end do
           end do
@@ -413,6 +457,19 @@ contains
         success=.false.;return
       end if
       theta=global_theta
+      if(stage_only) then
+        do peer=1,size(tree%nodes)
+          if(owners(peer)/=rank) cycle
+          if(.not.all(ieee_is_finite(updated%fields(peer)%values))) success=.false.
+          if(.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
+            .not.all(ieee_is_finite(flux(peer)%z))) success=.false.
+        end do
+        call agree(success)
+        if(.not.success) return
+        call move_alloc(updated%fields,transport_rate%fields)
+        call move_alloc(flux,integrated_flux)
+        return
+      end if
       if (rank==owners(1)) then
         n=tree%nodes(1)%shape
         do k=1,n(3)

@@ -10,9 +10,10 @@ program test_mpi_amr_patch_tree_transport_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use amr_patch_tree_transport_3d_mod, only: advance_amr_patch_tree_transport_3d, &
-    compute_amr_patch_tree_transport_timestep_3d
+    compute_amr_patch_tree_transport_timestep_3d,compute_sdc_amr_patch_tree_transport_3d
   use mpi_amr_patch_tree_transport_3d_mod, only: advance_mpi_amr_tree_transport_3d, &
-    compute_mpi_amr_tree_transport_timestep_3d
+    compute_mpi_amr_tree_transport_timestep_3d,compute_sdc_mpi_amr_tree_transport_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:),bad(:)
@@ -22,7 +23,7 @@ program test_mpi_amr_patch_tree_transport_3d
   real(dp) :: q(12),sound,exact_t,spacing(3),dt,expected_dt,cfl
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
-  character(len=32) :: faces(6),reconstruction
+  character(len=32) :: faces(6),reconstruction,arg
   character(len=:), allocatable :: coarse_limiter
   real(dp) :: theta,serial_theta,wall_t(6),wall_v(3,6)
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
@@ -65,6 +66,13 @@ program test_mpi_amr_patch_tree_transport_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
+  call get_command_argument(1,arg)
+  if(trim(arg)=='sdc') then
+    call check_sdc()
+    if(rank==0) print *, 'PASS: MPI SDC transport stage'
+    call MPI_Finalize(ierr)
+    stop
+  end if
   do mode=1,8
     owners=[0,1,0]
     if (mode==3) owners=0
@@ -155,6 +163,52 @@ program test_mpi_amr_patch_tree_transport_3d
   if (rank==0) print *, 'PASS: owner transport RK2, PCM/PLM, moving isothermal walls, serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_sdc()
+    type(amr_tree_state_3d) :: rates,serial_rates,prior
+    type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)
+    integer :: peer,boundary_case
+    real(dp) :: retained_theta
+    owners=mod([0,1,0],nranks);dt=.01_dp*expected_dt
+    allocate(local%fields(3),temperature%fields(3))
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      local%fields(peer)=global%fields(peer);temperature%fields(peer)=reference%fields(peer)
+    end do
+    do boundary_case=1,2
+      faces='periodic';wall_t=1100;wall_v=0
+      if(boundary_case==2) then
+        faces='outflow';faces(3:4)='isothermal_wall';wall_v(1,3:4)=2
+      end if
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,global,reference,spacing,dt,faces, &
+        [.true.,.true.,.true.,.true.],serial_rates,serial_flux,serial_theta,ok, &
+        wall_temperature=wall_t,wall_velocity=wall_v)
+      call require(ok,'serial SDC transport stage')
+      call compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
+        [.true.,.true.,.true.,.true.],rates,flux,theta,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v)
+      call require(ok.and.theta==serial_theta,'MPI SDC transport stage and limiter')
+      do peer=1,3
+        call require(allocated(rates%fields(peer)%values).eqv.(owners(peer)==rank),'owned transport rate only')
+        call require(allocated(flux(peer)%x).eqv.(owners(peer)==rank),'owned transport flux only')
+        if(owners(peer)/=rank) cycle
+        call require(all(rates%fields(peer)%values==serial_rates%fields(peer)%values),'serial/MPI transport rate exact')
+        call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
+          all(flux(peer)%z==serial_flux(peer)%z),'serial/MPI transport flux exact')
+        call require(all(local%fields(peer)%values==global%fields(peer)%values),'transport input state unchanged')
+        call require(all(temperature%fields(peer)%values==reference%fields(peer)%values),'transport input T unchanged')
+      end do
+    end do
+    prior=rates;prior_flux=flux;retained_theta=theta;bad=transport
+    if(rank==owners(3)) bad(1)%diameter=-1
+    call compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,bad,local,temperature,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],rates,flux,theta,MPI_COMM_WORLD,ok,wall_temperature=wall_t,wall_velocity=wall_v)
+    call require(.not.ok.and.theta==retained_theta,'one-owner transport failure rejected collectively')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'MPI transport rate rollback')
+      call require(all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
+        all(flux(peer)%z==prior_flux(peer)%z),'MPI transport flux rollback')
+    end do
+  end subroutine check_sdc
   subroutine unchanged()
     integer :: peer
     do peer=1,3
