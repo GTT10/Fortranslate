@@ -74,8 +74,9 @@ SDC driver now uses these stages and exports interval fluxes and predictors
 and application dispatch ([checks](validation/sdc-mpi-subcycle-20260927.md)). EB now has a covered-cell-aware forced SDC reaction stage
 ([checks](validation/sdc-eb-reaction-20260927.md)); EB transport also exposes a transactional source/flux stage
 ([checks](validation/sdc-eb-transport-20260927.md)). EB CTU prediction now accepts conserved SDC source rates
-([checks](validation/sdc-eb-hydro-source-20260927.md)). EB hydro source-stage
-assembly, redistribution coupling and full SDC application integration remain open.
+([checks](validation/sdc-eb-hydro-source-20260927.md)). EB hydro now exposes conservative rates, integrated fluxes and boundary/wall
+ledgers ([checks](validation/sdc-eb-hydro-stage-20260927.md)). Redistribution
+coupling and full EB SDC application integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
