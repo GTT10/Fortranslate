@@ -21,8 +21,8 @@ program test_mpi_eb_tree_full_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d,advance_mpi_eb_tree_sdc_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
-  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_subcycle_3d
-  use eb_reactive_patch_tree_3d_mod, only: advance_reactive_eb_tree_sdc_subcycle_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_subcycle_3d,mpi_eb_sdc_recursive_source
+  use eb_reactive_patch_tree_3d_mod, only: advance_reactive_eb_tree_sdc_subcycle_3d,eb_sdc_recursive_source
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -103,7 +103,7 @@ program test_mpi_eb_tree_full_3d
   saved=tree
   call check_sdc_loop()
   if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
-     test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source") then
+     test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source".or.test_mode=="aux_recursive") then
     deallocate(u,t)
     cycle
   end if
@@ -183,7 +183,7 @@ contains
       call check_redist_level(initial,geometry,extended,faces,force)
       return
     end if
-    if(test_mode=="subcycle".or.test_mode=="redist_recursive".or.test_mode=="state_recursive") then
+    if(test_mode=="subcycle".or.test_mode=="redist_recursive".or.test_mode=="state_recursive".or.test_mode=="aux_recursive") then
       call check_sdc_recursive(initial,geometry,extended,faces,force)
       return
     end if
@@ -514,12 +514,70 @@ contains
       deallocate(local%fields,lt%fields,ir%fields)
     end do
   end subroutine check_redist_level
+  subroutine recursive_source_schedule(interval,stage,depth,time,calls)
+    real(dp), intent(in) :: interval,time
+    integer, intent(in) :: stage,depth
+    integer, intent(inout) :: calls
+    integer, parameter :: depths(7)=[0,1,2,2,1,2,2],ticks(7)=[0,0,0,1,2,2,3]
+    integer :: n
+    n=calls/3+1
+    call require(n<=7,'recursive source interval count')
+    call require(stage==mod(calls,3).and.depth==depths(n),'recursive source stage/depth order')
+    call require(abs(time-2.5e-11_dp*ticks(n))<1e-25_dp,'recursive source start time')
+    call require(abs(interval-1e-10_dp/2**depth)<1e-25_dp,'recursive source interval')
+    calls=calls+1
+  end subroutine
+  subroutine serial_recursive_aux(state,interval,stage,depth,time,rate,good)
+    type(eb_reactive_tree_3d), intent(in) :: state
+    real(dp), intent(in) :: interval,time
+    integer, intent(in) :: stage,depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    logical, intent(out) :: good
+    integer :: p,x,y,z
+    call recursive_source_schedule(interval,stage,depth,time,serial_source_calls)
+    do p=1,size(state%nodes)
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        rate%fields(p)%values(:,x,y,z)=(1+time/1e-10_dp)*source_profile(p,x,y,z,stage)
+      end do
+      end do
+      end do
+    end do
+    good=.true.
+  end subroutine
+  subroutine mpi_recursive_aux(state,temperature,interval,stage,depth,time,rate,comm,good)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: interval,time
+    integer, intent(in) :: stage,depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    integer :: p,x,y,z
+    call recursive_source_schedule(interval,stage,depth,time,mpi_source_calls)
+    do p=1,size(state%fields)
+      if(.not.allocated(state%fields(p)%values)) cycle
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        rate%fields(p)%values(:,x,y,z)=(1+time/1e-10_dp)*source_profile(p,x,y,z,stage)
+      end do
+      end do
+      end do
+    end do
+    good=.not.(source_failure==1.and.mpi_source_calls==21.and.rank==nranks-1)
+  end subroutine
   subroutine check_sdc_recursive(initial,geometry,extended,faces,force)
     type(eb_reactive_tree_3d), intent(in) :: initial
     type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(in) :: force(3)
-    type(eb_reactive_tree_3d) :: reference
+    procedure(eb_sdc_recursive_source), pointer :: serial_provider=>null()
+    procedure(mpi_eb_sdc_recursive_source), pointer :: mpi_provider=>null()
+    real(dp), allocatable :: aux(:),saux(:)
+    real(dp) :: coefficient,expected_aux(nv)
+    integer :: x,y,z
+    type(eb_reactive_tree_3d) :: reference,profile
     type(amr_tree_state_3d) :: local,lt,ir,serial_ir,old,ot,old_ir
     integer(int64) :: counts(3),serial_counts(3)
     integer :: owners(count),p,layout
@@ -530,6 +588,12 @@ contains
     method="none"
     if(test_mode=="redist_recursive") method="flux_redist"
     if(test_mode=="state_recursive") method="state_redist"
+    nullify(serial_provider,mpi_provider)
+    if(test_mode=='aux_recursive') then
+      serial_provider=>serial_recursive_aux;mpi_provider=>mpi_recursive_aux
+      allocate(aux(nv),saux(nv))
+    end if
+    serial_source_calls=0;source_failure=0
     reference=initial
     allocate(serial_ir%fields(count))
     do p=1,count
@@ -537,8 +601,28 @@ contains
     end do
     call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
-      sb,sw,sch,sext,slimiter,good,serial_ir,level_steps=serial_counts,redistribution=method)
+      sb,sw,sch,sext,slimiter,good,serial_ir,level_steps=serial_counts,redistribution=method, &
+      auxiliary_source=serial_provider,auxiliary_change=saux)
     call require(good,'serial recursive SDC')
+    if(allocated(saux)) then
+      call require(serial_source_calls==21,'serial recursive source calls')
+      profile=initial
+      do p=1,count
+        do z=1,4
+        do y=1,4
+        do x=1,4
+          profile%nodes(p)%state(:,x,y,z)=1e-10_dp*(3._dp-1._dp/2**topology%nodes(p)%level)* &
+            source_profile(p,x,y,z,0)
+          if(profile%nodes(p)%geometry%volume_fraction(x,y,z)<=0) profile%nodes(p)%state(:,x,y,z)=0
+        end do
+        end do
+        end do
+      end do
+      call integrate_reactive_eb_tree_3d(profile,expected_aux,good)
+      call require(good,'recursive expected inventory')
+      call require(maxval(abs(saux-expected_aux)/max(1e-30_dp,abs(expected_aux)))<3e-14_dp, &
+        'recursive sources integrate accepted stages and leaf time intervals')
+    end if
     call require(all(serial_counts==[1_int64,2_int64,4_int64]),'serial level counts')
     call integrate_reactive_eb_tree_3d(initial,initial_inventory,good)
     call require(good,'recursive initial inventory')
@@ -553,10 +637,16 @@ contains
         lt%fields(p)%values(1,:,:,:)=initial%nodes(p)%temperature
         ir%fields(p)%values=0
       end do
+      mpi_source_calls=0;source_failure=0
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,level_steps=counts,redistribution=method)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,level_steps=counts,redistribution=method, &
+        auxiliary_source=mpi_provider,auxiliary_change=aux)
       call require(good,'MPI recursive SDC')
+      if(allocated(aux)) then
+        call require(mpi_source_calls==21,'MPI recursive source calls')
+        call require(maxval(abs(aux-saux)/max(1e-30_dp,abs(saux)))<3e-14_dp,'recursive auxiliary serial MPI')
+      end if
       call require(all(counts==serial_counts),'MPI recursive level counts')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'recursive owner-local fields')
@@ -571,14 +661,23 @@ contains
       call require(error<2.e-12_dp,'recursive serial ledgers')
       call integrate_mpi_eb_tree_3d(topology,owners,geometry,local,final_inventory,MPI_COMM_WORLD,good)
       call require(good,'recursive final inventory')
+      if(allocated(aux)) final_inventory=final_inventory-aux
       error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext)/max(1._dp,abs(initial_inventory)))
       if(rank==0) print *, 'Recursive SDC layout, residual: ',layout,error
       call require(error<3.e-14_dp,'recursive closure')
+      coefficient=-1;mpi_source_calls=0
+      if(allocated(aux)) then
+        coefficient=.1_dp;source_failure=1;aux=41
+      end if
       old=local;ot=lt;old_ir=ir;b=17;w=19;ch=23;ext=29;limiter=31;counts=37
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=-1._dp,level_steps=counts,redistribution=method)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=coefficient,level_steps=counts,redistribution=method, &
+        auxiliary_source=mpi_provider,auxiliary_change=aux)
       call require(.not.good,'recursive rejected stage')
+      if(allocated(aux)) then
+        call require(mpi_source_calls==21.and.all(aux==41),'last descendant source failure and ledger rollback')
+      end if
       do p=1,count
         if(owners(p)/=rank) cycle
         call require(all(local%fields(p)%values==old%fields(p)%values),'recursive state rollback')

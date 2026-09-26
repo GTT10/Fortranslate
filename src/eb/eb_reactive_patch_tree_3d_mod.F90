@@ -58,8 +58,17 @@ module eb_reactive_patch_tree_3d_mod
       type(amr_tree_state_3d), intent(inout) :: rate
       logical, intent(out) :: ok
     end subroutine
+    ! Time is the level interval start relative to the outer step, for all stages.
+    subroutine eb_sdc_recursive_source(state,interval,stage,depth,time,rate,ok)
+      import :: eb_reactive_tree_3d,amr_tree_state_3d,dp
+      type(eb_reactive_tree_3d), intent(in) :: state
+      real(dp), intent(in) :: interval,time
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      logical, intent(out) :: ok
+    end subroutine
   end interface
-  public :: eb_sdc_auxiliary_source
+  public :: eb_sdc_auxiliary_source,eb_sdc_recursive_source
 contains
   ! Composite flux redistribution. Covered parents do not donate or receive.
   ! Each cut leaf exchanges excess with face-connected fluid leaves, including
@@ -1251,7 +1260,7 @@ contains
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction)
+      target_volume_fraction,auxiliary_source,auxiliary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1269,6 +1278,9 @@ contains
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
+    procedure(eb_sdc_recursive_source), optional :: auxiliary_source
+    real(dp), optional, intent(inout) :: auxiliary_change(:)
+    real(dp) :: auxiliary(size(source_change)),source_time
     real(dp) :: redist_target
     character(len=16) :: method
     type(amr_tree_state_3d), allocatable :: pending(:)
@@ -1287,6 +1299,10 @@ contains
     if(.not.valid_tree(tree,nv).or..not.ieee_is_finite(dt).or.dt<=0) return
     if(any([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]/=nv)) return
     if(present(reaction_source).and..not.chemistry) return
+    if(present(auxiliary_source).neqv.present(auxiliary_change)) return
+    if(present(auxiliary_change)) then
+      if(size(auxiliary_change)/=nv) return
+    end if
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if(.not.valid) return
     levels=size(ratios)
@@ -1329,6 +1345,7 @@ contains
         end do
       end if
     end if
+    auxiliary=0;source_time=0
     wall=0;chemical=0;external=0;theta=1
     call advance_level(0,0._dp,dt,total,valid)
     if(.not.valid) return
@@ -1346,11 +1363,20 @@ contains
     if(.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall)).or. &
       .not.all(ieee_is_finite(chemical)).or..not.all(ieee_is_finite(external))) return
     tree=candidate;boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    if(present(auxiliary_change)) auxiliary_change=auxiliary
     minimum_theta=theta
     if(present(reaction_source)) reaction_source=ir
     if(present(level_steps)) level_steps=counts
     ok=.true.
   contains
+    subroutine source_adapter(state,interval,stage,depth,rate,ok)
+      type(eb_reactive_tree_3d), intent(in) :: state
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      logical, intent(out) :: ok
+      call auxiliary_source(state,interval,stage,depth,source_time,rate,ok)
+    end subroutine source_adapter
     recursive subroutine advance_level(level,time,interval,flux,good)
       integer, intent(in) :: level
       real(dp), intent(in) :: time,interval
@@ -1358,6 +1384,7 @@ contains
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
       type(amr_tree_state_3d) :: op,np,correction,redistributed
+      real(dp), allocatable :: step_aux(:)
       type(amr_tree_state_3d), allocatable :: transfer
       type(eb_reactive_tree_3d) :: before_sync
       real(dp) :: fstart(level),fend(level),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
@@ -1372,16 +1399,29 @@ contains
         if(tree%topology%nodes(p)%level==level) starts%nodes(p)=candidate%nodes(p)
       end do
       if(method/='none') allocate(transfer)
+      if(present(auxiliary_source)) allocate(step_aux(nv))
+      source_time=time
+      if(present(auxiliary_source)) then
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
+        transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
+        difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
+        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target,source_adapter,step_aux)
+      else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
         level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target)
+      end if
       if(.not.accepted) return
       if(method/='none') then
         do p=1,size(tree%nodes)
           target=tree%topology%nodes(p)%level;bucket=min(level,target)
           pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
         end do
+      end if
+      if(present(auxiliary_source)) then
+        auxiliary=auxiliary+step_aux
+        if(.not.all(ieee_is_finite(auxiliary))) return
       end if
       counts(level+1)=counts(level+1)+1
       wall=wall+w;chemical=chemical+ch;external=external+ext;theta=min(theta,limiter)

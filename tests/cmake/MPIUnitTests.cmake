@@ -1343,3 +1343,11 @@ if(PELEF_ENABLE_MPI)
   set_tests_properties(unit_mpi_eb_tree_state_redistribution_3d_2 PROPERTIES
     TIMEOUT 120 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(TARGET test_mpi_eb_tree_full_3d)
+  add_test(NAME unit_mpi_eb_tree_sdc_aux_recursive_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_full_3d> ${MPIEXEC_POSTFLAGS} aux_recursive)
+  set_tests_properties(unit_mpi_eb_tree_sdc_aux_recursive_3d_2 PROPERTIES
+    TIMEOUT 180 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()

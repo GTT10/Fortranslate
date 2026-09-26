@@ -42,8 +42,18 @@ module mpi_eb_tree_full_3d_mod
       type(MPI_Comm), intent(in) :: comm
       logical, intent(out) :: ok
     end subroutine
+    ! Time is the level interval start relative to the outer step, for all stages.
+    subroutine mpi_eb_sdc_recursive_source(state,temperature,interval,stage,depth,time,rate,comm,ok)
+      import :: amr_tree_state_3d,dp,MPI_Comm
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      real(dp), intent(in) :: interval,time
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+    end subroutine
   end interface
-  public :: mpi_eb_sdc_auxiliary_source
+  public :: mpi_eb_sdc_auxiliary_source,mpi_eb_sdc_recursive_source
 contains
   subroutine agree(condition,comm,ok)
     logical, intent(in) :: condition
@@ -847,7 +857,7 @@ contains
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction)
+      target_volume_fraction,auxiliary_source,auxiliary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -869,6 +879,9 @@ contains
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
+    procedure(mpi_eb_sdc_recursive_source), optional :: auxiliary_source
+    real(dp), optional, intent(inout) :: auxiliary_change(:)
+    real(dp) :: auxiliary(size(source_change)),source_time
     real(dp) :: redist_target
     character(len=16) :: method
     integer :: method_code,method_low,method_high
@@ -889,8 +902,14 @@ contains
     if(valid) valid=dt>0
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(reaction_source).and..not.chemistry) valid=.false.
+    valid=valid.and.(present(auxiliary_source).eqv.present(auxiliary_change))
+    if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
     call agree(valid,comm,ready)
     if(.not.ready) return
+    call MPI_Allreduce(merge(1,0,present(auxiliary_source)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(merge(1,0,present(auxiliary_source)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     method='none'
     if(present(redistribution)) method=redistribution
     call agree(method=='none'.or.method=='flux_redist'.or.method=='state_redist',comm,ready)
@@ -959,6 +978,7 @@ contains
     end if
     call agree(valid,comm,ready)
     if(.not.ready) return
+    auxiliary=0;source_time=0
     wall=0;chemical=0;external=0;theta=1
     call advance_level(0,0._dp,dt,total,valid)
     if(.not.valid) return
@@ -982,11 +1002,21 @@ contains
     if(.not.ready) return
     call move_alloc(candidate%fields,state%fields);call move_alloc(ct%fields,temperature%fields)
     boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    if(present(auxiliary_change)) auxiliary_change=auxiliary
     minimum_theta=theta
     if(present(reaction_source)) reaction_source=ir
     if(present(level_steps)) level_steps=counts
     ok=.true.
   contains
+    subroutine source_adapter(state,temperature,interval,stage,depth,rate,comm,ok)
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+      call auxiliary_source(state,temperature,interval,stage,depth,source_time,rate,comm,ok)
+    end subroutine source_adapter
     recursive subroutine advance_level(level,time,interval,flux,good)
       integer, intent(in) :: level
       real(dp), intent(in) :: time,interval
@@ -994,6 +1024,7 @@ contains
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
       type(amr_tree_state_3d) :: op,np,correction,redistributed,before_sync,before_t
+      real(dp), allocatable :: step_aux(:)
       type(amr_tree_state_3d), allocatable :: transfer
       real(dp) :: fstart(levels-1),fend(levels-1),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
       integer :: p,d(3),step,allocation_status,target,bucket
@@ -1014,10 +1045,21 @@ contains
         call agree(allocation_status==0,comm,accepted)
         if(.not.accepted) return
       end if
+      if(present(auxiliary_source)) allocate(step_aux(nv))
+      source_time=time
+      if(present(auxiliary_source)) then
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target)
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
+        redist_target,source_adapter,step_aux)
+      else
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
+        extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
+        b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
+        redist_target)
+      end if
       if(.not.accepted) return
       if(method/='none') then
         do p=1,size(tree%nodes)
@@ -1025,6 +1067,11 @@ contains
           target=tree%nodes(p)%level;bucket=min(level,target)
           pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
         end do
+      end if
+      if(present(auxiliary_source)) then
+        auxiliary=auxiliary+step_aux
+        call agree(all(ieee_is_finite(auxiliary)),comm,accepted)
+        if(.not.accepted) return
       end if
       counts(level+1)=counts(level+1)+1
       wall=wall+w;chemical=chemical+ch;external=external+ext;theta=min(theta,limiter)
