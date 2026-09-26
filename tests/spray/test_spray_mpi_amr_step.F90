@@ -161,8 +161,24 @@ program test_spray_mpi_amr_step
   call MPI_Finalize(ierr)
 contains
   subroutine advance()
+    type(amr_tree_state_3d) :: previous,source
+    integer :: a
+    previous=local;source=local
+    do a=1,size(owners)
+      if(owners(a)==rank) source%fields(a)%values=17
+    end do
     call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,local,local_t, &
-      tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id)
+      tree,owners,drops,masses,zero,spacing,interval,steps,ok,last_id,gas_change=source)
+    do a=1,size(owners)
+      call require(allocated(source%fields(a)%values).eqv.(owners(a)==rank),'owner-local particle source')
+      if(owners(a)/=rank) cycle
+      if(ok) then
+        call require(all(abs(local%fields(a)%values-previous%fields(a)%values-source%fields(a)%values)<= &
+          3.e-13_dp*max(1._dp,abs(local%fields(a)%values))),'source reconstructs accepted particle feedback')
+      else
+        call require(all(source%fields(a)%values==17),'particle source rollback')
+      end if
+    end do
   end subroutine
   subroutine unchanged()
     integer :: a

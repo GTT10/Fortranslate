@@ -13,7 +13,7 @@ program test_spray_mpi_eb_deposit
   type(amr_patch_3d) :: patch(1)
   type(amr_patch_tree_3d) :: tree
   type(eb_geometry_3d) :: finest,g(2)
-  type(amr_tree_state_3d) :: field,temp,saved,saved_t
+  type(amr_tree_state_3d) :: field,temp,saved,saved_t,source,saved_source
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: positions(:,:),feedback(:,:),cell(:),primitive(:),y(:),total(:),parent(:),fine(:)
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=1,t,sound,r,volume
@@ -102,21 +102,46 @@ program test_spray_mpi_eb_deposit
   call MPI_Allreduce(MPI_IN_PLACE,fine,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   call require(all(abs(total-44.01_dp*cell)<1e-13_dp*max(1._dp,abs(total))),'composite inventory')
   call require(all(abs(parent-fine)<1e-13_dp*max(1._dp,abs(fine))),'fluid weighted parent restriction')
-  saved=field;saved_t=temp
+  saved=field;saved_t=temp;saved_source=source
   if(rank==0) feedback(:,1)=-1e8_dp*cell
   call deposit()
   call require(.not.ok,'nonphysical final gas rejection')
   do node=1,2
     if(owners(node)/=rank) cycle
+    call require(all(source%fields(node)%values==saved_source%fields(node)%values),'source EOS rollback')
     call require(all(field%fields(node)%values==saved%fields(node)%values),'gas rollback')
     call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'temperature rollback')
   end do
+  ! Below gas-state ulp: the source must still retain the transferred inventory.
+  if(rank==0) feedback(:,1)=1.e-25_dp*cell
+  call deposit()
+  call require(ok,'tiny conservative source deposition')
+  total=0
+  do node=1,2
+    call require(allocated(source%fields(node)%values).eqv.(owners(node)==rank),'owner-local source field')
+    if(owners(node)/=rank) cycle
+    dims=tree%nodes(node)%shape
+    do k=1,dims(3)
+    do j=1,dims(2)
+    do i=1,dims(1)
+      if(node==1.and.i<=2) cycle
+      volume=g(node)%volume_fraction(i,j,k)*g(node)%dx*g(node)%dy*g(node)%dz
+      total=total+volume*source%fields(node)%values(:,i,j,k)
+    end do
+    end do
+    end do
+    call require(all(field%fields(node)%values==saved%fields(node)%values),'tiny feedback below gas-state ulp')
+  end do
+  call MPI_Allreduce(MPI_IN_PLACE,total,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(total-1.e-25_dp*cell)<3.e-14_dp*max(abs(1.e-25_dp*cell),tiny(1._dp))), &
+    'source retains sub-ulp particle inventory')
+  if(rank==0) print *, 'tiny source relative error: ',maxval(abs(total-1.e-25_dp*cell)/max(abs(1.e-25_dp*cell),tiny(1._dp)))
   if(rank==0) print *, 'PASS: conservative MPI EB feedback, fluid restriction and EOS rollback'
   call MPI_Finalize(ierr)
 contains
   subroutine deposit()
     call deposit_mpi_amr_tree_spray_gas(MPI_COMM_WORLD,species,tree,owners,field,temp,positions,feedback, &
-      zero,spacing,periodic,ok,eb_geometry=g,nodal_phi=phi)
+      zero,spacing,periodic,ok,eb_geometry=g,nodal_phi=phi,gas_change=source)
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition

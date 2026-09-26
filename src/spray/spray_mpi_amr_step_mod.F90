@@ -28,15 +28,21 @@ module spray_mpi_amr_step_mod
 contains
   ! Regular or nodal EB AMR: common particle substeps and whole-interval rollback.
   ! Species, transport, liquids and options must be identical on every rank.
+  ! Optional gas_change sums accepted deposition increments per fluid volume;
+  ! rejected trials and wall/outflow inventories do not enter this source.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change)
+      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change,gas_change)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: options
     type(amr_tree_state_3d), intent(inout) :: state,temperature
+    type(amr_tree_state_3d), optional, intent(inout) :: gas_change
+    type(amr_tree_state_3d) :: integrated_change
+    type(amr_tree_state_3d), allocatable :: trial_change
+    integer :: export_flag,export_low,export_high
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -97,6 +103,11 @@ contains
     ok=.false.;substeps=0;faces='periodic';ledger=0;wall_ledger=0
     exterior=0
     if(present(model_rejected)) model_rejected=.false.
+    export_flag=merge(1,0,present(gas_change))
+    call MPI_Allreduce(export_flag,export_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.export_low/=export_high) return
     if(present(eb_geometry)) faces="slip_wall"
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
@@ -206,6 +217,14 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree()
     if (.not.agreed) return
+    if(present(gas_change)) then
+      integrated_change=gas
+      do node=1,size(owners)
+        if(.not.allocated(integrated_change%fields(node)%values)) cycle
+        integrated_change%fields(node)%values=0
+      end do
+      allocate(trial_change)
+    end if
     length=spacing*real(tree%nodes(1)%shape,dp)
     minimum_spacing=minval(length/real(domain(:,size(domain,2)),dp))
     elapsed=0;count_steps=0
@@ -422,7 +441,7 @@ contains
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
-            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
+            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,gas_change=trial_change)
           if (valid) then
             accepted=.true.;exit
           end if
@@ -430,6 +449,19 @@ contains
         dt=.5_dp*dt
       end do
       if (.not.accepted) return
+      if(present(gas_change)) then
+        do node=1,size(owners)
+          if(.not.allocated(integrated_change%fields(node)%values)) cycle
+          associate(a=>integrated_change%fields(node)%values,b=>trial_change%fields(node)%values)
+            if(any(a>huge(1._dp)-max(b,0._dp)).or.any(a< -huge(1._dp)-min(b,0._dp))) then
+              valid=.false.;exit
+            end if
+            a=a+b
+          end associate
+        end do
+        call agree()
+        if(.not.agreed) return
+      end if
       drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
       ledger=ledger+trial_ledger
       if(allocated(impact_exterior)) then
@@ -475,6 +507,7 @@ contains
     if (ierr/=MPI_SUCCESS) return
     global_ledger(:5)=global_ledger(:5)-wall_ledger
     if (.not.all(ieee_is_finite(global_ledger))) return
+    if(present(gas_change)) call move_alloc(integrated_change%fields,gas_change%fields)
     state=gas;temperature=temp
     call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
     if (present(wall_films)) then

@@ -24,8 +24,10 @@ module spray_mpi_amr_field_mod
 contains
   ! Borrow the identical ordered species table on every rank. U/T publish only
   ! after owner-routed deposition, parent restriction and collective EOS success.
+  ! Optional gas_change is the deposited increment per fluid volume, accumulated
+  ! independently of the gas background and published with U/T.
   subroutine deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,state,temperature,positions,contributions, &
-      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi)
+      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -38,6 +40,8 @@ contains
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(amr_tree_state_3d) :: candidate,recovered
+    type(amr_tree_state_3d), optional, intent(inout) :: gas_change
+    type(amr_tree_state_3d), allocatable :: change
     integer :: ierr,flag,low,high
     logical :: valid,has_particles,any_particles
     ok=.false.;recovered=temperature
@@ -55,13 +59,15 @@ contains
     call recover_gas(state,recovered,valid)
     if (.not.valid) return
     candidate=state
+    if(present(gas_change)) allocate(change)
     call deposit_mpi_amr_tree_spray_field(comm,tree,owners,candidate,reactive_nvar(size(species)), &
-      positions,contributions,lower,spacing,periodic,valid,maximum_requests,maximum_received,eb_geometry,nodal_phi)
+      positions,contributions,lower,spacing,periodic,valid,maximum_requests,maximum_received,eb_geometry,nodal_phi,change)
     if (.not.valid) return
     has_particles=size(positions,2)>0
     call MPI_Allreduce(has_particles,any_particles,1,MPI_LOGICAL,MPI_LOR,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (.not.any_particles) then
+      if(present(gas_change)) call move_alloc(change%fields,gas_change%fields)
       ok=.true.;return
     end if
     recovered=temperature
@@ -69,6 +75,7 @@ contains
     if (.not.valid) return
     call move_alloc(candidate%fields,state%fields)
     call move_alloc(recovered%fields,temperature%fields)
+    if(present(gas_change)) call move_alloc(change%fields,gas_change%fields)
     ok=.true.
   contains
     subroutine recover_gas(gas,temp,accepted)
@@ -140,7 +147,7 @@ contains
   ! Contributions are integrated quantities. Destination bins preserve source
   ! particle/stencil order; receives are applied in increasing source-rank order.
   subroutine deposit_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,contributions, &
-      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi)
+      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -152,7 +159,9 @@ contains
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(particle_stencil), allocatable :: stencils(:)
-    type(amr_tree_state_3d) :: candidate
+    type(amr_tree_state_3d) :: candidate,change
+    type(amr_tree_state_3d), optional, intent(inout) :: gas_change
+    integer :: export_flag,export_low,export_high
     integer, allocatable :: requests(:,:),send_cells(:,:),recv_cells(:,:)
     integer, allocatable :: counts(:),received(:),offsets(:),displacements(:),cursor(:)
     real(dp), allocatable :: send_values(:,:),recv_values(:,:),term(:)
@@ -160,6 +169,11 @@ contains
     logical :: valid,agreed,has_particles,any_particles
     ok=.false.;capacity=1000000
     if (present(maximum_received)) capacity=maximum_received
+    export_flag=merge(1,0,present(gas_change))
+    call MPI_Allreduce(export_flag,export_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.export_low/=export_high) return
     call prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
       stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi)
     if (.not.valid) return
@@ -175,10 +189,17 @@ contains
     end do
     call agree()
     if (.not.agreed) return
+    if(present(gas_change)) then
+      change=state
+      do node=1,size(owners)
+        if(owners(node)==rank) change%fields(node)%values=0
+      end do
+    end if
     has_particles=size(positions,2)>0
     call MPI_Allreduce(has_particles,any_particles,1,MPI_LOGICAL,MPI_LOR,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (.not.any_particles) then
+      if(present(gas_change)) call move_alloc(change%fields,gas_change%fields)
       ok=.true.;return
     end if
     total=size(requests,2)
@@ -236,8 +257,19 @@ contains
           if (value< -huge(1._dp)-term(c)) valid=.false.
         end if
         end associate
+        if(present(gas_change)) then
+          associate(value=>change%fields(node)%values(c,idx(1),idx(2),idx(3)))
+          if(term(c)>0) then
+            if(value>huge(1._dp)-term(c)) valid=.false.
+          else if(term(c)<0) then
+            if(value< -huge(1._dp)-term(c)) valid=.false.
+          end if
+          end associate
+        end if
       end do
       if (.not.valid) exit
+      if(present(gas_change)) change%fields(node)%values(:,idx(1),idx(2),idx(3))= &
+        change%fields(node)%values(:,idx(1),idx(2),idx(3))+term
       candidate%fields(node)%values(:,idx(1),idx(2),idx(3))= &
         candidate%fields(node)%values(:,idx(1),idx(2),idx(3))+term
     end do
@@ -249,6 +281,15 @@ contains
       call average_down_mpi_amr_tree_3d(tree,owners,candidate,nvar,comm,valid)
     end if
     if (.not.valid) return
+    if(present(gas_change)) then
+      if(present(eb_geometry)) then
+        call average_eb_particle_field(comm,tree,owners,eb_geometry,change,nvar,valid)
+      else
+        call average_down_mpi_amr_tree_3d(tree,owners,change,nvar,comm,valid)
+      end if
+      if(.not.valid) return
+      call move_alloc(change%fields,gas_change%fields)
+    end if
     call move_alloc(candidate%fields,state%fields);ok=.true.
   contains
     subroutine agree()
