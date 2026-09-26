@@ -1,5 +1,6 @@
 program test_mpi_amr_patch_tree_split_3d
   use mpi_f08
+  use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -9,8 +10,10 @@ program test_mpi_amr_patch_tree_split_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
-  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d,advance_mpi_amr_tree_sdc_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d, &
+    advance_amr_patch_tree_sdc_subcycle_3d
+  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d,advance_mpi_amr_tree_sdc_3d, &
+    advance_mpi_amr_tree_sdc_subcycle_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use amr_patch_tree_chemistry_3d_mod, only: advance_amr_patch_tree_chemistry_3d,advance_amr_patch_tree_strang_3d
@@ -160,6 +163,7 @@ contains
     real(dp) :: external(12),serial_external(12),force(3),visc
     type(amr_tree_state_3d) :: start,finish,owned_start,owned_end,src0,src1,owned_src0,owned_src1,op,np,sop,snp
     type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:)
+    integer(int64) :: counts(3),serial_counts(3)
     integer :: peer,dims(3)
     owners=mod([0,1,0],nranks);dt=1e-10_dp;faces='periodic';force=[20000._dp,-30000._dp,40000._dp]
     allocate(local%fields(3),temperature%fields(3),ir%fields(3),serial_ir%fields(3))
@@ -244,6 +248,33 @@ contains
         call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
           all(flux(peer)%z==serial_flux(peer)%z),'level flux exact')
       end if
+    end do
+    call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,serial_budget,serial_external,serial_largest,serial_theta, &
+      ok,reaction_source=serial_ir,level_steps=serial_counts)
+    call require(ok,'serial recursive SDC')
+    call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
+      2,.true.,[.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+      reaction_source=ir,level_steps=counts)
+    call require(ok.and.all(counts==serial_counts),'MPI recursive SDC and counts')
+    call compare_state()
+    call require(all(budget==serial_budget).and.all(external==serial_external),'recursive inventories exact')
+    call require(largest==serial_largest.and.theta==serial_theta,'recursive diagnostics exact')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(ir%fields(peer)%values==serial_ir%fields(peer)%values),'recursive reaction estimates exact')
+    end do
+    saved=local;saved_t=temperature;retained_ir=ir;visc=.1_dp
+    if(rank==nranks-1) visc=-1
+    call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
+      2,.true.,[.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+      reaction_source=ir,level_steps=counts,difmag=visc)
+    call require(.not.ok.and.all(counts==serial_counts),'recursive failure retains counts')
+    call unchanged()
+    call require(all(external==serial_external),'recursive source ledger rollback')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'recursive IR rollback')
     end do
   end subroutine check_sdc
   subroutine compare_state()

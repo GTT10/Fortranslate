@@ -29,7 +29,8 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
   use mpi_amr_patch_tree_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_cfl_3d
   use mpi_amr_patch_tree_transport_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_transport_timestep_3d
-  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d,advance_mpi_amr_tree_sdc_3d
+  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d,advance_mpi_amr_tree_sdc_3d, &
+    advance_mpi_amr_tree_sdc_subcycle_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
     partition_amr_tree_3d,rebalance_mpi_amr_tree_3d
@@ -156,7 +157,6 @@ contains
     end do
     close(unit)
     if (partitioning/='round_robin'.and.partitioning/='weighted') call fatal('Invalid tree partitioning')
-    if(sdc.and.subcycling) call fatal('Recursive MPI SDC is not implemented')
     if(.not.sdc.and.any(config%external_forcing/=0)) call fatal('MPI tree forcing requires SDC')
     if (rebalance_interval_steps<0) call fatal('Invalid rebalance interval')
     if (.not.ieee_is_finite(rebalance_minimum_gain)) call fatal('Invalid rebalance gain')
@@ -403,6 +403,15 @@ contains
           if (.not.ok) call fatal('Cannot allocate tree work counters')
         end if
         if(sdc) then
+          if(subcycling) then
+          call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,comm,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+          else
           call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
             config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
             config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
@@ -410,6 +419,7 @@ contains
             inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
             wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+          end if
         else
         call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
