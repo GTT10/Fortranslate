@@ -89,7 +89,10 @@ a selected level, preserving refined-parent estimates until synchronization
 Signed EB tree SDC source halos now support peer/ancestor donors, ancestor
 time interpolation and scalar physical extrapolation
 ([checks](validation/sdc-eb-tree-source-halo-20260927.md)).
-Coupled EB tree SDC hydro/transport, application routing and MPI integration remain open.
+The common-step EB tree now exposes source-aware provisional hydro rates and
+time-integrated fluxes without averaging, redistribution or reflux
+([checks](validation/sdc-eb-tree-hydro-20260927.md)).
+Coupled EB tree SDC transport/iteration, application routing and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
