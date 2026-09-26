@@ -159,8 +159,10 @@ rank-changing continuation retains the selector
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons
-([checks](validation/eb-tree-state-redistribution-20260927.md)); SDC and MPI
-state-redistribution routing remain unconnected. Serial/MPI
+([checks](validation/eb-tree-state-redistribution-20260927.md)); serial common-step SDC and application input now expose `state_redist` with
+checkpoint-bound target fraction
+([checks](validation/sdc-eb-tree-state-redistribution-20260927.md)). MPI and
+recursive StateRedist remain unconnected. Serial/MPI
 source-level redistribution now separates immediate rates from time-integrated
 cross-level transfers with a checked composite reconstruction
 ([checks](validation/sdc-eb-redistribution-level-transfer-20260927.md)); the
