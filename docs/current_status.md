@@ -119,6 +119,9 @@ levels and routes through the serial application with checkpoint/restart
 MPI EB trees now expose an owner-local SDC reaction stage, including selected
 levels and collective failure handling
 ([checks](validation/sdc-mpi-eb-reaction-20260927.md)).
+MPI EB transport now returns owner-local SDC rates and integrated fluxes while
+preserving provisional parent states, with collective rollback
+([checks](validation/sdc-mpi-eb-transport-20260927.md)).
 Coupled EB tree SDC MPI integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
