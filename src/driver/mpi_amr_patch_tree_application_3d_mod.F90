@@ -1,6 +1,6 @@
 module mpi_amr_patch_tree_application_3d_mod
   use amr_patch_tree_checkpoint_3d_mod, only: amr_tree_checkpoint_3d,build_amr_tree_checkpoint_context_3d
-  use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d
+  use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d,remap_mpi_amr_tree_3d
   use amr_patch_tree_remap_3d_mod, only: cell_covered=>covered
   use mpi_amr_patch_tree_tagging_3d_mod, only: tag_mpi_amr_tree_temperature_3d
   use mpi_f08
@@ -29,7 +29,7 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_transport_3d_mod, only: compute_mpi_amr_tree_transport_timestep_3d
   use mpi_amr_patch_tree_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_cfl_3d
   use mpi_amr_patch_tree_transport_subcycle_3d_mod, only: compute_mpi_amr_tree_subcycle_transport_timestep_3d
-  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
+  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d,advance_mpi_amr_tree_sdc_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_distribution_3d_mod, only: &
     partition_amr_tree_3d,rebalance_mpi_amr_tree_3d
@@ -63,11 +63,12 @@ contains
     type(reactive_3d_config) :: local
     type(amr_patch_tree_3d) :: tree,tagged_tree
     type(amr_patch_tree_3d), allocatable :: events(:)
-    real(dp), allocatable :: event_times(:)
+    real(dp), allocatable :: event_times(:),source_budget(:),source_change(:)
     real(dp) :: max_remap_error
     integer :: event,nevents,slash,regrids,last_checkpoint_step
     character(len=1024) :: event_path
     type(amr_tree_state_3d) :: state,temperature
+    type(amr_tree_state_3d), allocatable :: reaction_source
     integer, allocatable :: ratios(:),owners(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     real(dp), allocatable :: x(:),y(:),z(:),root_h(:),h(:,:),mass_fractions(:),inlet_x(:)
@@ -91,12 +92,13 @@ contains
     integer :: checkpoint_interval_steps
     logical :: stop_after_checkpoint,use_implicit,subcycling
     logical :: ok,viscosity,conduction,diffusion,barodiffusion
-    logical :: checkpoint_indexed
+    logical :: checkpoint_indexed,sdc
     namelist /amr_tree_checkpoint/ checkpoint_file,restart_file,checkpoint_interval_steps,stop_after_checkpoint,checkpoint_indexed
     namelist /amr_tree_adaptation/ regrid_interval_steps,refinement_levels,refinement_ratios, &
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
     namelist /amr_tree_distribution/ partitioning,rebalance_interval_steps,rebalance_minimum_gain
     namelist /amr_tree_timestepping/ subcycling
+    sdc=trim(config%time_integrator)=='sdc'
     partitioning='round_robin'
     rebalance_interval_steps=0;rebalance_minimum_gain=0.1_dp
     subcycling=.false.
@@ -154,6 +156,8 @@ contains
     end do
     close(unit)
     if (partitioning/='round_robin'.and.partitioning/='weighted') call fatal('Invalid tree partitioning')
+    if(sdc.and.subcycling) call fatal('Recursive MPI SDC is not implemented')
+    if(.not.sdc.and.any(config%external_forcing/=0)) call fatal('MPI tree forcing requires SDC')
     if (rebalance_interval_steps<0) call fatal('Invalid rebalance interval')
     if (.not.ieee_is_finite(rebalance_minimum_gain)) call fatal('Invalid rebalance gain')
     if (rebalance_minimum_gain<0.or.rebalance_minimum_gain>=1) call fatal('Invalid rebalance gain')
@@ -240,6 +244,17 @@ contains
     allocate(h(3,count+1),state%fields(count+1),temperature%fields(count+1))
     allocate(mass_fractions(size(species)),inlet_x(size(species)),q(reactive_nvar(size(species))))
     allocate(initial(size(q)),final(size(q)),budget(size(q)),change(size(q)),inlet(size(q),6),inlet_cube(size(q),2,2,2))
+    allocate(source_budget(size(q)),source_change(size(q)));source_budget=0;source_change=0
+    if(sdc.and.config%chemistry_enabled) then
+      allocate(reaction_source)
+      allocate(reaction_source%fields(count+1))
+      do node=1,count+1
+        if(owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        allocate(reaction_source%fields(node)%values(size(q)-4,n(1),n(2),n(3)))
+        reaction_source%fields(node)%values=0
+      end do
+    end if
     do node=1,count+1
       h(:,node)=root_h*real(domain(:,1),dp)/real(domain(:,tree%nodes(node)%level+1),dp)
       if (owners(node)/=rank) cycle
@@ -387,6 +402,15 @@ contains
           call begin_tree_work(size(tree%nodes),ok)
           if (.not.ok) call fatal('Cannot allocate tree work counters')
         end if
+        if(sdc) then
+          call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,comm,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+        else
         call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
           config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &
           viscosity,conduction,diffusion,barodiffusion,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
@@ -394,6 +418,7 @@ contains
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,subcycling=subcycling, &
           outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
           difmag=resolved_reactive_difmag_3d(config))
+        end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
         dt=.5_dp*dt
@@ -404,10 +429,9 @@ contains
       else
         time=time+dt
       end if
-      step=step+1;budget=budget+change
+      step=step+1;budget=budget+change;source_budget=source_budget+source_change
       if (sample_work) then
-        call rebalance_mpi_amr_tree_3d(tree,owners,reactive_nvar(size(species)),state,temperature, &
-          measured_cost,rebalance_minimum_gain,comm,redistributed,ok)
+        call rebalance_fields()
         if (.not.ok) call fatal('Cannot rebalance MPI tree')
         if (rank==0) write(*,'(a,i0,a,l1)') 'Rebalance step: ',step,' migrated: ',redistributed
       end if
@@ -420,10 +444,18 @@ contains
     if (rank==0) then
     open(newunit=unit,file=trim(config%output_file)//'.budget.csv',status='replace',action='write',iostat=status)
     if (status/=0) call fatal('Cannot open tree budget CSV')
-    write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change'
+    if(sdc) then
+      write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change,source_change'
+    else
+      write(unit,'(a)',iostat=status) 'component,initial,final,boundary_change'
+    end if
     if (status/=0) call fatal('Cannot write tree budget header')
     do c=1,size(q)
-      write(unit,'(i0,3(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c)
+      if(sdc) then
+        write(unit,'(i0,4(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c),source_budget(c)
+      else
+        write(unit,'(i0,3(",",es25.16e3))',iostat=status) c,initial(c),final(c),budget(c)
+      end if
       if (status/=0) call fatal('Cannot write tree budget row')
     end do
     close(unit,iostat=status)
@@ -517,9 +549,43 @@ contains
         key=key//trim(line)//new_line('a')
       end do
     end function
+    subroutine rebalance_fields()
+      type(amr_tree_state_3d) :: packed,temps,moved_state,moved_source
+      integer, allocatable :: assigned(:)
+      integer :: peer,nv,dims(3)
+      if(.not.allocated(reaction_source)) then
+        call rebalance_mpi_amr_tree_3d(tree,owners,size(q),state,temperature, &
+          measured_cost,rebalance_minimum_gain,comm,redistributed,ok)
+        return
+      end if
+      nv=size(q);assigned=owners;temps=temperature
+      allocate(packed%fields(size(tree%nodes)))
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        dims=tree%nodes(peer)%shape
+        allocate(packed%fields(peer)%values(2*nv-4,dims(1),dims(2),dims(3)))
+        packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
+        packed%fields(peer)%values(nv+1:,:,:,:)=reaction_source%fields(peer)%values
+      end do
+      call rebalance_mpi_amr_tree_3d(tree,assigned,2*nv-4,packed,temps, &
+        measured_cost,rebalance_minimum_gain,comm,redistributed,ok)
+      if(.not.ok.or..not.redistributed) return
+      allocate(moved_state%fields(size(tree%nodes)),moved_source%fields(size(tree%nodes)))
+      do peer=1,size(tree%nodes)
+        if(assigned(peer)/=rank) cycle
+        moved_state%fields(peer)%values=packed%fields(peer)%values(:nv,:,:,:)
+        moved_source%fields(peer)%values=packed%fields(peer)%values(nv+1:,:,:,:)
+      end do
+      owners=assigned
+      call move_alloc(moved_state%fields,state%fields)
+      call move_alloc(moved_source%fields,reaction_source%fields)
+      call move_alloc(temps%fields,temperature%fields)
+    end subroutine rebalance_fields
     subroutine save_checkpoint()
       type(amr_tree_checkpoint_3d) :: snapshot
       snapshot%tree=tree;snapshot%initial=initial;snapshot%boundary=budget
+      if(sdc) snapshot%source=source_budget
+      if(allocated(reaction_source)) snapshot%reaction_source=reaction_source
       snapshot%time=time;snapshot%steps=step;snapshot%regrids=regrids
       snapshot%maximum_remap_error=max_remap_error
       snapshot%maximum_reflux=max_correction;snapshot%minimum_theta=min_theta
@@ -542,6 +608,10 @@ contains
       call read_mpi_amr_tree_checkpoint_3d(trim(restart_file),species,context, &
         [config%nx,config%ny,config%nz],partitioning,exponent,snapshot,restored_owners,comm,ok)
       if (.not.ok) call fatal('Invalid MPI tree restart checkpoint/context')
+      if(sdc.neqv.allocated(snapshot%source)) call fatal('MPI tree source ledger presence mismatch')
+      if(allocated(snapshot%reaction_source%fields).neqv.(sdc.and.config%chemistry_enabled)) &
+        call fatal('MPI tree reaction estimate presence mismatch')
+      if(sdc) source_budget=snapshot%source
       if (snapshot%time>config%final_time.or.snapshot%steps>config%maximum_steps) &
         call fatal('MPI tree restart exceeds run limits')
       applied=count_events(snapshot%time)
@@ -565,9 +635,10 @@ contains
       restart_scale(2:4)=maxval(restart_scale(2:4))
       nconserved=size(q)
       if (config%chemistry_enabled) nconserved=5
-      if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)-snapshot%boundary(:nconserved))> &
+      if (any(abs(inventory(:nconserved)-snapshot%initial(:nconserved)- &
+          snapshot%boundary(:nconserved)-source_budget(:nconserved))> &
           2e-10_dp*max(tiny(1.0_dp),original_scale(:nconserved),restart_scale(:nconserved), &
-          abs(snapshot%boundary(:nconserved))))) call fatal('Tree restart boundary ledger mismatch')
+          abs(snapshot%boundary(:nconserved)),abs(source_budget(:nconserved))))) call fatal('Tree restart boundary ledger mismatch')
       initial=snapshot%initial;budget=snapshot%boundary;step=snapshot%steps
       time=snapshot%time;max_correction=snapshot%maximum_reflux
       min_theta=snapshot%minimum_theta;max_remap_error=snapshot%maximum_remap_error
@@ -579,6 +650,7 @@ contains
       ! All context, EOS, average and ledger checks completed before publication.
       call move_alloc(snapshot%state%fields,state%fields)
       call move_alloc(snapshot%temperature%fields,temperature%fields)
+      if(allocated(reaction_source)) call move_alloc(snapshot%reaction_source%fields,reaction_source%fields)
     end subroutine
     subroutine check_paths(path)
       character(len=*), intent(in) :: path
@@ -744,13 +816,17 @@ contains
     end subroutine
     subroutine apply_event(next_tree)
       type(amr_patch_tree_3d), intent(in) :: next_tree
-      type(amr_tree_state_3d) :: candidate,temps
+      type(amr_tree_state_3d) :: candidate,temps,remapped_reaction
       integer, allocatable :: assigned(:)
       real(dp) :: before(size(q)),after(size(q)),scale(size(q)),error
       call assign_owners(next_tree,assigned)
       call remap_mpi_amr_tree_reactive_3d(tree,owners,state,temperature,next_tree,assigned, &
         species,candidate,temps,comm,ok)
       if (.not.ok) call fatal('Scheduled MPI tree remap failed')
+      if(allocated(reaction_source)) then
+        call remap_mpi_amr_tree_3d(tree,owners,reaction_source,next_tree,assigned,size(q)-4,remapped_reaction,comm,ok)
+        if(.not.ok) call fatal('MPI SDC reaction-source remap failed')
+      end if
       call distributed_inventory(tree,owners,state,before,.false.)
       call distributed_inventory(next_tree,assigned,candidate,after,.false.)
       call distributed_inventory(tree,owners,state,scale,.true.)
@@ -759,6 +835,7 @@ contains
       tree=next_tree
       call move_alloc(candidate%fields,state%fields)
       call move_alloc(temps%fields,temperature%fields)
+      if(allocated(reaction_source)) call move_alloc(remapped_reaction%fields,reaction_source%fields)
       call reset_layout()
       max_remap_error=max(max_remap_error,error)
       if (rank==0) write(*,'(a,es24.16,a,i0,a,i0)') &
