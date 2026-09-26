@@ -86,6 +86,9 @@ forcing inventories ([checks](validation/sdc-eb-restart-20260927.md)).
 The EB tree now exposes provisional SDC reaction updates across all levels or
 a selected level, preserving refined-parent estimates until synchronization
 ([checks](validation/sdc-eb-tree-reaction-20260927.md)).
+Signed EB tree SDC source halos now support peer/ancestor donors, ancestor
+time interpolation and scalar physical extrapolation
+([checks](validation/sdc-eb-tree-source-halo-20260927.md)).
 Coupled EB tree SDC hydro/transport, application routing and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
