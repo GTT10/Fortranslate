@@ -62,8 +62,9 @@ owner-local SDC rates/fluxes with collective limiter reduction
 couples hydro, transport, forcing, reactions and reflux while retaining owner-local
 state ([checks](validation/sdc-mpi-loop-20260926.md)). The MPI checkpoint library
 now reads/writes SDC V3/V4 records with owner-local source payloads and changed-rank
-interchange ([checks](validation/sdc-mpi-checkpoint-20260926.md)). MPI application
-routing, recursive MPI SDC and EB SDC remain open.
+interchange ([checks](validation/sdc-mpi-checkpoint-20260926.md)). MPI fixed/selected applications now expose common-step SDC, source-preserving
+regridding/rebalancing and changed-rank restart
+([checks](validation/sdc-mpi-app-20260926.md)). Recursive MPI SDC and EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
