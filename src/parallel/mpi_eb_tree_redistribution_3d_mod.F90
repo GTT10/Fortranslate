@@ -10,7 +10,7 @@ module mpi_eb_tree_redistribution_3d_mod
   use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d
   implicit none
   private
-  public :: redistribute_sdc_mpi_eb_tree_flux_rate_3d
+  public :: redistribute_sdc_mpi_eb_tree_flux_rate_3d,redistribute_sdc_mpi_eb_tree_level_rate_3d
 contains
   ! Two sparse exchanges: neighbor rates for each owned cut leaf, followed by
   ! donor excess for each owned recipient. No gas/rate tree is gathered.
@@ -235,4 +235,75 @@ contains
       end select
     end function open_face
   end subroutine redistribute_sdc_mpi_eb_tree_flux_rate_3d
+  subroutine redistribute_sdc_mpi_eb_tree_level_rate_3d(tree,owners,geometry,rhs,nvar,depth,dt, &
+      rate,transfer,comm,ok,boundary_faces)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,depth
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: rhs
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: rate,transfer
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d) :: selected,result,exchange
+    integer :: p,rank,status,lower,upper
+    real(dp) :: dt_low,dt_high
+    logical :: valid,ready
+    ok=.false.
+    valid=ieee_is_finite(dt)
+    if(valid) valid=dt>0
+    call agree(valid,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(depth,lower,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(depth,upper,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.lower/=upper) return
+    call MPI_Allreduce(dt,dt_low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(dt,dt_high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.dt_low/=dt_high) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,rhs,nvar,comm,ready)
+    if(.not.ready) return
+    call agree(depth>=0.and.depth<tree%level_count(),ready)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    selected=rhs
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank) cycle
+      if(tree%nodes(p)%level/=depth) selected%fields(p)%values=0
+    end do
+    call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree,owners,geometry,selected,nvar,result,comm,ready,boundary_faces)
+    if(.not.ready) return
+    exchange=result;valid=.true.
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank) cycle
+      if(tree%nodes(p)%level==depth) then
+        exchange%fields(p)%values=0
+      else
+        if(dt>1) then
+          if(any(abs(exchange%fields(p)%values)>huge(1._dp)/dt)) valid=.false.
+        end if
+      end if
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank.or.tree%nodes(p)%level==depth) cycle
+      exchange%fields(p)%values=dt*exchange%fields(p)%values
+      result%fields(p)%values=0
+    end do
+    call move_alloc(result%fields,rate%fields)
+    call move_alloc(exchange%fields,transfer%fields)
+    ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine agree
+  end subroutine redistribute_sdc_mpi_eb_tree_level_rate_3d
 end module mpi_eb_tree_redistribution_3d_mod

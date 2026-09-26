@@ -5,11 +5,13 @@ program test_eb_tree_redistribution_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,redistribute_sdc_eb_tree_flux_rate_3d
+  use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,redistribute_sdc_eb_tree_flux_rate_3d, &
+    redistribute_sdc_eb_tree_level_rate_3d
   use eb_reactive_redistribution_3d_mod, only: reactive_eb_flux_redistribute_3d
 #ifdef PELEF_TEST_MPI_REDIST
   use mpi_f08
-  use mpi_eb_tree_redistribution_3d_mod, only: redistribute_sdc_mpi_eb_tree_flux_rate_3d
+  use mpi_eb_tree_redistribution_3d_mod, only: redistribute_sdc_mpi_eb_tree_flux_rate_3d, &
+    redistribute_sdc_mpi_eb_tree_level_rate_3d
 #endif
   implicit none
   type(eb_reactive_tree_3d) :: tree
@@ -83,6 +85,7 @@ program test_eb_tree_redistribution_3d
     end do
     call redistribute_sdc_eb_tree_flux_rate_3d(tree,raw,result,ok)
     call require(ok,'composite redistribution')
+    call check_levels(raw,result)
 #ifdef PELEF_TEST_MPI_REDIST
     call check_mpi(raw,result)
 #endif
@@ -177,6 +180,113 @@ program test_eb_tree_redistribution_3d
   call MPI_Finalize(status)
 #endif
 contains
+  subroutine check_levels(input,reference,labels)
+    type(amr_tree_state_3d), intent(in) :: input,reference
+    character(len=*), optional, intent(in) :: labels(6)
+    type(amr_tree_state_3d) :: rate,transfer,reconstructed,masked,previous_rate,previous_transfer
+    real(dp) :: dt,weight,original(2),changed(2)
+    integer :: depth,q,d(3),x,y,z
+    logical :: good
+    reconstructed=reference
+    do q=1,size(tree%nodes)
+      reconstructed%fields(q)%values=0
+    end do
+    do depth=0,tree%topology%level_count()-1
+      dt=.25_dp/real(2**depth,dp)
+      masked=input
+      do q=1,size(tree%nodes)
+        if(tree%topology%nodes(q)%level/=depth) &
+          masked%fields(q)%values=ieee_value(0._dp,ieee_quiet_nan)
+      end do
+      call redistribute_sdc_eb_tree_level_rate_3d(tree,masked,depth,dt,rate,transfer,good,labels)
+      call require(good,'source-level redistribution ignores other-level rates')
+      original=0;changed=0
+      do q=1,size(tree%nodes)
+        reconstructed%fields(q)%values=reconstructed%fields(q)%values+ &
+          rate%fields(q)%values+transfer%fields(q)%values/dt
+        if(tree%topology%nodes(q)%level==depth) then
+          call require(all(transfer%fields(q)%values==0),'no same-level deferred transfer')
+        else
+          call require(all(rate%fields(q)%values==0),'no other-level immediate rate')
+        end if
+        d=tree%topology%nodes(q)%shape
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          weight=fluid_volume(q,x,y,z)
+          if(weight<=0) cycle
+          if(tree%topology%nodes(q)%level==depth) original=original+weight*dt*input%fields(q)%values(:,x,y,z)
+          changed=changed+weight*(dt*rate%fields(q)%values(:,x,y,z)+transfer%fields(q)%values(:,x,y,z))
+        end do
+        end do
+        end do
+      end do
+      call require(maxval(abs(changed-original))<3.e-14_dp,'each source-level transfer balances')
+#ifdef PELEF_TEST_MPI_REDIST
+      call check_level_mpi(masked,depth,dt,rate,transfer,labels)
+#endif
+      previous_rate=rate;previous_transfer=transfer
+      call redistribute_sdc_eb_tree_level_rate_3d(tree,masked,depth,-dt,rate,transfer,good,labels)
+      call require(.not.good,'negative transfer interval rejected')
+      do q=1,size(tree%nodes)
+        call require(all(rate%fields(q)%values==previous_rate%fields(q)%values),'level rate rollback')
+        call require(all(transfer%fields(q)%values==previous_transfer%fields(q)%values),'level transfer rollback')
+      end do
+    end do
+    do q=1,size(tree%nodes)
+      call require(maxval(abs(reconstructed%fields(q)%values-reference%fields(q)%values))<2.e-14_dp, &
+        'sum of source-level contributions recovers composite operator')
+    end do
+  end subroutine check_levels
+#ifdef PELEF_TEST_MPI_REDIST
+  subroutine check_level_mpi(input,depth,dt,reference_rate,reference_transfer,labels)
+    type(amr_tree_state_3d), intent(in) :: input,reference_rate,reference_transfer
+    integer, intent(in) :: depth
+    real(dp), intent(in) :: dt
+    character(len=*), optional, intent(in) :: labels(6)
+    type(amr_tree_state_3d) :: local,rate,transfer
+    type(eb_geometry_3d) :: geometry(size(tree%nodes))
+    integer :: owners(size(tree%nodes)),distribution,q,bad_depth
+    real(dp) :: bad_dt
+    logical :: good
+    do q=1,size(tree%nodes)
+      geometry(q)=tree%nodes(q)%geometry
+    end do
+    do distribution=1,2
+      owners=[(mod(q-1,nranks),q=1,size(tree%nodes))]
+      if(distribution==2) owners=0
+      allocate(local%fields(size(tree%nodes)))
+      do q=1,size(tree%nodes)
+        if(owners(q)==rank) local%fields(q)%values=input%fields(q)%values
+      end do
+      call redistribute_sdc_mpi_eb_tree_level_rate_3d(tree%topology,owners,geometry,local,2,depth,dt, &
+        rate,transfer,MPI_COMM_WORLD,good,labels)
+      call require(good,'MPI source-level redistribution')
+      do q=1,size(tree%nodes)
+        call require(allocated(rate%fields(q)%values).eqv.(owners(q)==rank),'owner-local level rate')
+        call require(allocated(transfer%fields(q)%values).eqv.(owners(q)==rank),'owner-local transfer')
+        if(owners(q)/=rank) cycle
+        call require(all(rate%fields(q)%values==reference_rate%fields(q)%values),'exact serial/MPI level rate')
+        call require(all(transfer%fields(q)%values==reference_transfer%fields(q)%values),'exact serial/MPI transfer')
+      end do
+      bad_depth=depth;bad_dt=dt
+      if(rank==nranks-1) bad_depth=depth+1
+      call redistribute_sdc_mpi_eb_tree_level_rate_3d(tree%topology,owners,geometry,local,2,bad_depth,dt, &
+        rate,transfer,MPI_COMM_WORLD,good,labels)
+      call require(.not.good,'rank-dependent source depth rejected')
+      if(rank==nranks-1) bad_dt=2*dt
+      call redistribute_sdc_mpi_eb_tree_level_rate_3d(tree%topology,owners,geometry,local,2,depth,bad_dt, &
+        rate,transfer,MPI_COMM_WORLD,good,labels)
+      call require(.not.good,'rank-dependent transfer interval rejected')
+      do q=1,size(tree%nodes)
+        if(owners(q)/=rank) cycle
+        call require(all(rate%fields(q)%values==reference_rate%fields(q)%values),'MPI level rate rollback')
+        call require(all(transfer%fields(q)%values==reference_transfer%fields(q)%values),'MPI transfer rollback')
+      end do
+      deallocate(local%fields)
+    end do
+  end subroutine check_level_mpi
+#endif
 #ifdef PELEF_TEST_MPI_REDIST
   subroutine check_mpi(input,reference,labels)
     type(amr_tree_state_3d), intent(in) :: input,reference
@@ -246,6 +356,7 @@ contains
       end if
       call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,periodic,ok,faces)
       call require(ok,'periodic redistribution')
+      call check_levels(input,periodic,faces)
 #ifdef PELEF_TEST_MPI_REDIST
       call check_mpi(input,periodic,faces)
 #endif
@@ -283,6 +394,7 @@ contains
         end if
         call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,periodic,ok,faces)
         call require(ok,'periodic coarse/fine impulse')
+        call check_levels(input,periodic,faces)
 #ifdef PELEF_TEST_MPI_REDIST
         call check_mpi(input,periodic,faces)
 #endif

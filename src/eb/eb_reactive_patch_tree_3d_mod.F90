@@ -32,7 +32,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: build_eb_tree_extended_geometry_3d
   public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
-  public :: redistribute_sdc_eb_tree_flux_rate_3d
+  public :: redistribute_sdc_eb_tree_flux_rate_3d,redistribute_sdc_eb_tree_level_rate_3d
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d,advance_reactive_eb_tree_sdc_3d
   public :: advance_reactive_eb_tree_sdc_subcycle_3d
@@ -210,6 +210,53 @@ contains
       end select
     end function open_face
   end subroutine redistribute_sdc_eb_tree_flux_rate_3d
+
+  ! Decompose the linear composite operator by source level. The selected
+  ! level receives a rate; all other levels receive a time-integrated transfer
+  ! for a caller-owned interval register. No gas state is updated here.
+  subroutine redistribute_sdc_eb_tree_level_rate_3d(tree,rhs,depth,dt,rate,transfer,ok,boundary_faces)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: rhs
+    integer, intent(in) :: depth
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: rate,transfer
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d) :: selected,result,exchange
+    integer :: p,nv
+    logical :: good
+    ok=.false.
+    if(.not.tree%topology%is_valid()) return
+    if(depth<0.or.depth>=tree%topology%level_count()) return
+    if(.not.ieee_is_finite(dt)) return
+    if(dt<=0.or..not.allocated(rhs%fields)) return
+    if(size(rhs%fields)/=size(tree%topology%nodes)) return
+    if(.not.allocated(rhs%fields(1)%values)) return
+    nv=size(rhs%fields(1)%values,1)
+    selected=rhs
+    do p=1,size(tree%topology%nodes)
+      if(.not.allocated(rhs%fields(p)%values)) return
+      if(any(shape(rhs%fields(p)%values)/=[nv,tree%topology%nodes(p)%shape])) return
+      if(tree%topology%nodes(p)%level/=depth) selected%fields(p)%values=0
+    end do
+    call redistribute_sdc_eb_tree_flux_rate_3d(tree,selected,result,good,boundary_faces)
+    if(.not.good) return
+    exchange=result
+    do p=1,size(tree%topology%nodes)
+      if(tree%topology%nodes(p)%level==depth) then
+        exchange%fields(p)%values=0
+      else
+        if(dt>1) then
+          if(any(abs(exchange%fields(p)%values)>huge(1._dp)/dt)) return
+        end if
+        exchange%fields(p)%values=dt*exchange%fields(p)%values
+        result%fields(p)%values=0
+      end if
+    end do
+    call move_alloc(result%fields,rate%fields)
+    call move_alloc(exchange%fields,transfer%fields)
+    ok=.true.
+  end subroutine redistribute_sdc_eb_tree_level_rate_3d
 
   subroutine bounds(tree,node,lo,hi)
     type(amr_patch_tree_3d), intent(in) :: tree
