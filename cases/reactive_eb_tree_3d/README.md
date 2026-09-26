@@ -362,8 +362,10 @@ physical-boundary stepping in the separate single-level application.
 
 `sdc.nml` selects `time_integrator='sdc'`, `sdc_iterations=2` and
 `external_forcing(3)` (force per fluid volume). This path requires PeleC CTU,
-explicit boundary faces and a static tree with common steps. MPI, subcycling
-and scheduled/adaptive regridding are currently rejected for SDC.
+explicit boundary faces and common steps. Scheduled/adaptive regridding also
+transfers signed reaction estimates by fluid-volume restriction and PCM
+prolongation. MPI and subcycling remain rejected for SDC.
+See the [regrid/restart checks](../../docs/validation/sdc-eb-tree-regrid-20260927.md).
 
 Serial fixed/selected source routing preserves reaction estimates and forcing
 inventories in V3 tree checkpoint records. The SDC budget adds a `forcing`

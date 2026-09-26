@@ -104,7 +104,10 @@ and reaction fields, with transactional reads
 The serial tree application now routes static common-step SDC input and
 checkpoint/restart, with an independent forcing budget column
 ([checks](validation/sdc-eb-tree-app-20260927.md)).
-EB tree SDC regridding, recursive stepping and MPI integration remain open.
+EB tree SDC regridding now transfers signed reaction estimates together with
+gas state; scheduled coarsen/refine restart is checked
+([checks](validation/sdc-eb-tree-regrid-20260927.md)).
+EB tree SDC recursive stepping and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
