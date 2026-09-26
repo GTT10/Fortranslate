@@ -864,7 +864,7 @@ contains
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -882,7 +882,7 @@ contains
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
-    real(dp), optional, intent(in) :: wall_temperature(6)
+    real(dp), optional, intent(in) :: wall_temperature(6),gas_acceleration(3)
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
@@ -1115,13 +1115,13 @@ contains
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,source_adapter,step_aux)
+        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target)
+        redist_target,gas_acceleration=gas_acceleration)
       end if
       if(.not.accepted) return
       if(method/='none') then

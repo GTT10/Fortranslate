@@ -3740,6 +3740,9 @@ Optional `particle_acceleration(3)` adds uniform external particle acceleration
 (default zero), independently of the required gas force density `force` (N/m³).
 Optional `gas_acceleration(3)` separately supplies gas acceleration (m/s²),
 with momentum source `force + density*gas_acceleration` and local velocity work.
+The recursive MPI EB gas driver also forwards this acceleration to every level
+interval ([checks](validation/sdc-recursive-acceleration-20260927.md)); recursive
+particle and film scheduling still requires integration.
 The MPI EB spray application passes spray `acceleration` to both optional
 acceleration arguments
 ([density-dependent forcing checks](validation/sdc-gas-acceleration-20260927.md)). Particle half kicks

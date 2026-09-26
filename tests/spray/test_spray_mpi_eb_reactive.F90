@@ -9,6 +9,7 @@ program test_spray_mpi_eb_reactive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: build_eb_tree_extended_geometry_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_subcycle_3d
   use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
@@ -244,11 +245,12 @@ program test_spray_mpi_eb_reactive
 contains
   subroutine check_gas_acceleration()
     real(dp) :: acceleration(3),force_density(3),dv(3),velocity(3),expected(nv),interval,density
-    integer :: density_case
+    integer :: density_case,advance_mode
     acceleration=[1000._dp,0._dp,3000._dp];force_density=[20._dp,0._dp,40._dp]
     velocity=[1._dp,0._dp,3._dp];interval=1e-8_dp
     labels='outflow'
     deallocate(drops,masses);allocate(drops(0),masses(2,0))
+    do advance_mode=1,2
     do density_case=1,2
       density=2._dp*density_case;field=saved;temp=saved_t
       primitive=0;primitive(1)=density;primitive(2:4)=velocity;primitive(5)=density*r*1000;primitive(6:)=y
@@ -271,10 +273,16 @@ contains
       dv=interval*(acceleration+force_density/density)
       expected=0;expected(2:4)=before(1)*dv
       expected(5)=before(1)*dot_product(velocity+.5_dp*dv,dv)
+      if(advance_mode==1) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
         liquids,options,field,temp,drops,masses,zero,spacing,interval,2,.false., &
         [.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
         forcing,theta,steps,last_id,ok,gas_particle_change=exchange,gas_acceleration=acceleration)
+      else
+        call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
+          interval,2,.false.,[.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,extended, &
+          labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration)
+      end if
       call require(ok,'non-unit density accelerated gas')
       call require(all(abs(forcing-expected)<=3e-13_dp*max(abs(expected),1e-30_dp)),'density-weighted impulse/work')
       call require(all(exchange==0),'acceleration stays outside particle exchange')
@@ -292,6 +300,7 @@ contains
         end do
         end do
       end do
+    end do
     end do
   end subroutine check_gas_acceleration
   subroutine check_ballistic_force()
