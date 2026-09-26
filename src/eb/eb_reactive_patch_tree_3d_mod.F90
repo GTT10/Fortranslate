@@ -34,6 +34,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: remap_reactive_eb_tree_3d
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d,advance_reactive_eb_tree_sdc_3d
+  public :: advance_reactive_eb_tree_sdc_subcycle_3d
   public :: advance_reactive_eb_tree_transport_3d,compute_sdc_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_subcycle_transport_3d
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
@@ -503,7 +504,7 @@ contains
   ! before restriction. Global donor maxima cover peer and ancestor halos.
   subroutine reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl, &
       transport_enabled,viscosity,conduction,diffusion,dt,ok,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature,coupled_subcycling)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
@@ -518,14 +519,14 @@ contains
     integer :: direction
     logical :: thermal_wall
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: subcycling
+    logical, optional, intent(in) :: subcycling,coupled_subcycling
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     type(eb_reactive_tree_3d) :: snapshot
     real(dp) :: speeds(4),donors(4),diffusivity,maximum_diffusivity,interval,candidate,factor
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
     integer :: node,level,n(3)
-    logical :: valid,active,recursive
+    logical :: valid,active,recursive,coupled
     ok=.false.
     if (.not.all(ieee_is_finite([hydro_cfl,transport_cfl]))) return
     if (hydro_cfl<=0._dp.or.hydro_cfl>1._dp.or.transport_cfl<=0._dp.or.transport_cfl>.5_dp) return
@@ -539,6 +540,8 @@ contains
     if(thermal_wall) then
       if(.not.present(wall_temperature).or..not.transport_enabled.or..not.conduction) return
     end if
+    coupled=.false.
+    if(present(coupled_subcycling)) coupled=coupled_subcycling
     recursive=.false.
     if (present(subcycling)) recursive=subcycling
     if (recursive.or.thermal_wall) then
@@ -596,7 +599,7 @@ contains
           viscosity,conduction,diffusion,interval,diffusivity,valid,maximum_diffusivity)
         if (.not.valid) return
         ! Conservatively use a full-interval diffusion bound for split halves.
-        factor=factor*factor
+        if(.not.coupled) factor=factor*factor
         if (interval<candidate/factor) candidate=interval*factor
         if(thermal_wall) then
           level=tree%topology%nodes(node)%level+1;n=tree%topology%nodes(node)%shape
@@ -619,6 +622,150 @@ contains
 
   ! R/2 T/2 H T/2 R/2 composition. Each successful stage remains private
   ! until the complete step and its exchange vectors can be committed.
+  subroutine advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,iterations,chemistry, &
+      transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
+      boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: dt,force(3),rtol,atol
+    integer, intent(in) :: iterations
+    logical, intent(in) :: chemistry,transport_flags(4)
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    type(eb_geometry_3d), intent(in) :: extended_geometry(:)
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    integer(int64), optional, intent(inout) :: level_steps(:)
+    type(eb_reactive_tree_3d) :: candidate,starts,ends
+    type(amr_tree_state_3d), allocatable :: ir
+    type(amr_tree_state_3d) :: source0,source1
+    type(eb_integrated_flux_3d), allocatable :: total(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: clock_start(:),clock_dt(:)
+    real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
+    real(dp) :: external(size(source_change)),theta
+    integer :: nv,node,n(3),levels,c
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if(.not.valid_tree(tree,nv).or..not.ieee_is_finite(dt).or.dt<=0) return
+    if(any([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]/=nv)) return
+    if(present(reaction_source).and..not.chemistry) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if(.not.valid) return
+    levels=size(ratios)
+    if(present(level_steps)) then
+      if(size(level_steps)/=levels) return
+    end if
+    candidate=tree
+    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    if(.not.valid) return
+    starts=candidate;ends=candidate
+    allocate(clock_start(levels),clock_dt(levels),counts(levels),source0%fields(size(tree%nodes)))
+    counts=0;clock_start=0;clock_dt=dt
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      allocate(source0%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+    end do
+    source1=source0
+    if(chemistry) then
+      allocate(ir)
+      if(present(reaction_source)) then
+        ir=reaction_source
+      else
+        allocate(ir%fields(size(tree%nodes)))
+        do node=1,size(tree%nodes)
+          n=tree%topology%nodes(node)%shape
+          allocate(ir%fields(node)%values(nv-4,n(1),n(2),n(3)),source=0._dp)
+        end do
+      end if
+    end if
+    wall=0;chemical=0;external=0;theta=1
+    call advance_level(0,0._dp,dt,total,valid)
+    if(.not.valid) return
+    n=tree%topology%nodes(1)%shape
+    associate(g=>tree%nodes(1)%geometry,f=>total(1))
+    do c=1,nv
+      boundary(c)=g%dy*g%dz*sum(g%x_face_fraction(0,:,:)*f%x(c,0,:,:)- &
+        g%x_face_fraction(n(1),:,:)*f%x(c,n(1),:,:))+ &
+        g%dx*g%dz*sum(g%y_face_fraction(:,0,:)*f%y(c,:,0,:)- &
+        g%y_face_fraction(:,n(2),:)*f%y(c,:,n(2),:))+ &
+        g%dx*g%dy*sum(g%z_face_fraction(:,:,0)*f%z(c,:,:,0)- &
+        g%z_face_fraction(:,:,n(3))*f%z(c,:,:,n(3)))
+    end do
+    end associate
+    if(.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(wall)).or. &
+      .not.all(ieee_is_finite(chemical)).or..not.all(ieee_is_finite(external))) return
+    tree=candidate;boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    minimum_theta=theta
+    if(present(reaction_source)) reaction_source=ir
+    if(present(level_steps)) level_steps=counts
+    ok=.true.
+  contains
+    recursive subroutine advance_level(level,time,interval,flux,good)
+      integer, intent(in) :: level
+      real(dp), intent(in) :: time,interval
+      type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
+      logical, intent(out) :: good
+      type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
+      type(amr_tree_state_3d) :: op,np
+      real(dp) :: fstart(level),fend(level),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
+      integer :: p,d(3),step
+      logical :: accepted
+      good=.false.
+      if(counts(level+1)==huge(1_int64)) return
+      clock_start(level+1)=time;clock_dt(level+1)=interval
+      fstart=max(0._dp,min(1._dp,(time-clock_start(:level))/clock_dt(:level)))
+      fend=max(fstart,min(1._dp,(time+interval-clock_start(:level))/clock_dt(:level)))
+      do p=1,size(tree%nodes)
+        if(tree%topology%nodes(p)%level==level) starts%nodes(p)=candidate%nodes(p)
+      end do
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
+        transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
+        difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
+        level,starts,ends,fstart,fend,source0,source1,flux,op,np)
+      if(.not.accepted) return
+      counts(level+1)=counts(level+1)+1
+      wall=wall+w;chemical=chemical+ch;external=external+ext;theta=min(theta,limiter)
+      do p=1,size(tree%nodes)
+        if(tree%topology%nodes(p)%level==level) then
+          ends%nodes(p)=candidate%nodes(p)
+          source0%fields(p)%values=op%fields(p)%values;source1%fields(p)%values=np%fields(p)%values
+        else
+          d=tree%topology%nodes(p)%shape
+          allocate(flux(p)%x(nv,0:d(1),d(2),d(3)),flux(p)%y(nv,d(1),0:d(2),d(3)), &
+            flux(p)%z(nv,d(1),d(2),0:d(3)))
+          flux(p)%x=0;flux(p)%y=0;flux(p)%z=0
+        end if
+      end do
+      if(level+1<levels) then
+        elapsed=0
+        do step=1,ratios(level+2)
+          sub_dt=interval/real(ratios(level+2),dp)
+          if(step==ratios(level+2)) sub_dt=interval-elapsed
+          if(sub_dt<=0.or.time+elapsed+sub_dt<=time+elapsed) return
+          call advance_level(level+1,time+elapsed,sub_dt,fine_flux,accepted)
+          if(.not.accepted) return
+          do p=1,size(tree%nodes)
+            if(tree%topology%nodes(p)%level/=level+1) cycle
+            flux(p)%x=flux(p)%x+fine_flux(p)%x
+            flux(p)%y=flux(p)%y+fine_flux(p)%y
+            flux(p)%z=flux(p)%z+fine_flux(p)%z
+          end do
+          elapsed=elapsed+sub_dt
+        end do
+      end if
+      call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,accepted,level,min(level+1,levels-1),boundary_faces)
+      if(.not.accepted) return
+      good=.true.
+    end subroutine advance_level
+  end subroutine advance_reactive_eb_tree_sdc_subcycle_3d
+
   subroutine advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,chemistry, &
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &

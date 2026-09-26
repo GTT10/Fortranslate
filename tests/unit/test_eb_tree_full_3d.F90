@@ -1,5 +1,6 @@
 program test_eb_tree_full_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -13,7 +14,7 @@ program test_eb_tree_full_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d, &
     advance_reactive_eb_tree_transport_3d,advance_reactive_eb_tree_hydro_3d,react_reactive_eb_tree_3d,react_sdc_eb_tree_3d, &
-    build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d
+    build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d,advance_reactive_eb_tree_sdc_subcycle_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,react_sdc_eb_state_3d
@@ -160,6 +161,7 @@ contains
     type(amr_tree_state_3d) :: op,np,ref_op,ref_np,ref_ir
     type(eb_integrated_flux_3d), allocatable :: flux(:),ref_flux(:)
     real(dp) :: ref_diag(nv,4),ref_limit
+    integer(int64) :: counts(3)
     integer :: p,x,y,z
     initial=saved
     do p=1,count
@@ -205,6 +207,31 @@ contains
     call require(all(abs(v1-v0-b-w-chem-forcing)<=2.e-11_dp*max(1._dp,abs(v0))),'SDC composite ledger closure')
     call require(any(chem(6:)/=0).and.any(forcing(2:4)/=0),'SDC active chemistry and forcing')
     call require(limit>=0.and.limit<=1,'SDC loop limiter')
+    result=initial;ir=previous_ir;counts=-1
+    call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      b,w,chem,forcing,limit,ok,ir,level_steps=counts)
+    call require(ok,'recursive EB tree SDC')
+    call require(all(counts==[1_int64,2_int64,4_int64]),'recursive SDC level counts')
+    call integrate_reactive_eb_tree_3d(result,v1,ok)
+    call require(ok,'recursive SDC inventory')
+    print *, 'Recursive SDC inventory residual:',maxval(abs(v1-v0-b-w-chem-forcing)/max(1._dp,abs(v0)))
+    call require(all(abs(v1-v0-b-w-chem-forcing)<=2.e-11_dp*max(1._dp,abs(v0))), &
+      'recursive SDC composite conservation')
+    result=initial;ir=previous_ir;counts=17;b=19;w=23;chem=29;forcing=31;limit=37
+    call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      b,w,chem,forcing,limit,ok,ir,difmag=-1._dp,level_steps=counts)
+    call require(.not.ok,'recursive SDC failed stage')
+    do p=1,count
+      call require(all(result%nodes(p)%state==initial%nodes(p)%state).and. &
+        all(result%nodes(p)%temperature==initial%nodes(p)%temperature).and. &
+        all(ir%fields(p)%values==previous_ir%fields(p)%values),'recursive SDC state rollback')
+    end do
+    call require(all(counts==17).and.all(b==19).and.all(w==23).and.all(chem==29).and. &
+      all(forcing==31).and.limit==37,'recursive SDC counts and ledgers rollback')
     endpoint=initial;interpolated=initial
     do p=1,count
       if(initial%topology%nodes(p)%level>=2) cycle

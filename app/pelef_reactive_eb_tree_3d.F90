@@ -61,7 +61,7 @@ program pelef_reactive_eb_tree_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d, &
-    build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d, &
+    build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d,advance_reactive_eb_tree_sdc_subcycle_3d, &
     remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length, &
@@ -216,7 +216,6 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
     error stop 'EB tree SDC MPI integration is not implemented'
 #endif
-    if(subcycling) error stop 'EB tree SDC requires common steps'
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
   else
@@ -489,7 +488,8 @@ program pelef_reactive_eb_tree_3d
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
         .true.,.true.,.true.,estimated_dt,ok,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature, &
+        coupled_subcycling=time_integrator=="sdc")
 #endif
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
@@ -544,10 +544,17 @@ program pelef_reactive_eb_tree_3d
       if (sample_work) call end_tree_work(measured_cost)
 #else
       if(time_integrator=='sdc') then
+        if(subcycling) then
+        call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature)
+        else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
           [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature)
+        end if
       else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &

@@ -24,7 +24,7 @@ program test_eb_tree_transport_3d
   type(reactive_eb_3d_config) :: config
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:)
   real(dp), allocatable :: before(:),after(:),boundary(:),primitive(:)
-  real(dp) :: residual,theta,speed
+  real(dp) :: residual,theta,speed,sdc_dt,split_dt,common_dt
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k
   character(len=16) :: periodic_faces(6)
@@ -85,6 +85,16 @@ program test_eb_tree_transport_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  call reactive_eb_tree_timestep_3d(species,transport,tree,.5_dp,.35_dp,.true.,.true.,.true.,.true., &
+    common_dt,ok,subcycling=.false.)
+  call require(ok,'common timestep bound')
+  call reactive_eb_tree_timestep_3d(species,transport,tree,.5_dp,.35_dp,.true.,.true.,.true.,.true., &
+    split_dt,ok,subcycling=.true.)
+  call require(ok,'split recursive timestep bound')
+  call reactive_eb_tree_timestep_3d(species,transport,tree,.5_dp,.35_dp,.true.,.true.,.true.,.true., &
+    sdc_dt,ok,subcycling=.true.,coupled_subcycling=.true.)
+  call require(ok.and.sdc_dt>=common_dt.and.sdc_dt<=split_dt,'SDC uses coupled transport substep scaling')
+
   boundary=17._dp;theta=19._dp
   call advance_reactive_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
     tree,boundary,theta,ok)
