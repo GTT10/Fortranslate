@@ -319,7 +319,8 @@ contains
       call advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners,halo,halo_t, &
         width,target_level,grow,maximum_parcels,candidate(population)%nodes,candidate(population)%parcels, &
         candidate(population)%component_mass,lower,spacing,periodic,kick_dt,drift_dt,particle_faces,part,part_leftover, &
-        wall,exterior,valid,volume,nodal_phi,centroids,geometry,maximum_received,population<3.or.target_level==0)
+        wall,exterior,valid,volume,nodal_phi,centroids,geometry,maximum_received,population<3.or.target_level==0, &
+        containing_cell=.true.)
       if(.not.valid) return
       if(population==1) then
         total=part;leftover=part_leftover;physical_wall=wall;physical_exterior=exterior
@@ -468,7 +469,8 @@ contains
 
   subroutine advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
       width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
-      source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry,maximum_received,keep_physical)
+      source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry, &
+      maximum_received,keep_physical,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -491,6 +493,7 @@ contains
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     integer, optional, intent(in) :: maximum_received
     logical, intent(in) :: keep_physical
+    logical, optional, intent(in) :: containing_cell
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: masses(:,:)
     integer, allocatable :: locations(:)
@@ -507,7 +510,7 @@ contains
     call kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,locations,candidate,masses,lower,spacing,periodic,kick_dt,raw,valid, &
       fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.false., &
-      eb_geometry,maximum_received)
+      eb_geometry,maximum_received,containing_cell)
     if(.not.valid) return
     if(keep_physical) then
       call redistribute_mpi_amr_level_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &
@@ -530,7 +533,7 @@ contains
   subroutine kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,nodes,parcels,component_mass,lower,spacing,periodic,dt,source_halo,ok, &
       fluid_fraction,nodal_phi,centroids,drift_interval,boundary_faces,wall_change,boundary_change, &
-      target_level,level_source,source_remainder,route_to_coarse,eb_geometry,maximum_received)
+      target_level,level_source,source_remainder,route_to_coarse,eb_geometry,maximum_received,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -561,6 +564,7 @@ contains
     type(amr_tree_state_3d), optional, intent(inout) :: level_source,source_remainder
     logical, optional, intent(in) :: route_to_coarse
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    logical, optional, intent(in) :: containing_cell
     type(amr_tree_state_3d) :: source,routed,remainder
     integer :: transfer_flags,transfer_low,transfer_high,node,rank,n(3)
     real(dp), allocatable :: masses(:,:),positions(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
@@ -686,7 +690,7 @@ contains
       if(.not.all(ieee_is_finite(global_wall)).or..not.all(ieee_is_finite(global_exterior))) return
     end if
     call deposit_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,positions,change, &
-      lower,spacing,periodic,source,valid,fluid_fraction,nodal_phi,centroids)
+      lower,spacing,periodic,source,valid,fluid_fraction,nodal_phi,centroids,containing_cell)
     if(.not.valid) return
     if(present(target_level)) then
       call MPI_Comm_rank(comm,rank,status)

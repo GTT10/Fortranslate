@@ -122,7 +122,7 @@ program test_spray_mpi_amr_sampling
   call MPI_Finalize(ierr)
 contains
   subroutine check_particle_halo()
-    type(amr_tree_state_3d) :: halo,vf,packed,centroids,deposited,retained_source
+    type(amr_tree_state_3d) :: halo,vf,packed,centroids,deposited,retained_source,cell_source
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),query_nodes(:)
     real(dp), allocatable :: query(:,:),values(:,:),retained(:,:),feedback(:,:)
@@ -185,6 +185,26 @@ contains
     call MPI_Allreduce(MPI_IN_PLACE,expected_pair,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(maxval(abs(inventory-[4._dp,-6._dp]))<1e-13_dp,'halo source extensive inventory')
     call require(maxval(abs(paired-expected_pair))<1e-13_dp,'sampling and deposition use matching weights')
+    call deposit_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,feedback, &
+      zero,spacing,periodic,cell_source,ok,vf,containing_cell=.true.)
+    call require(ok,'containing-cell deposition')
+    if(size(query_nodes)>0) then
+      call require(all(cell_source%fields(2)%values(:,5,3,3)==[32._dp,-48._dp]), &
+        'off-center contribution goes entirely into containing fine ghost cell')
+      call require(all(cell_source%fields(2)%values(:,0,3,3)==[32._dp,-48._dp]), &
+        'periodic image contribution uses containing ghost cell')
+      call require(sum(abs(cell_source%fields(2)%values))==160._dp,'no source on other donors')
+      vf%fields(2)%values(1,5,3,3)=0
+    end if
+    retained_source=cell_source
+    call deposit_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,feedback, &
+      zero,spacing,periodic,cell_source,ok,vf,containing_cell=.true.)
+    call require(.not.ok,'solid containing cell rejects despite neighboring fluid donors')
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      call require(all(cell_source%fields(p)%values==retained_source%fields(p)%values),'cell deposition rollback')
+    end do
+    if(size(query_nodes)>0) vf%fields(2)%values(1,5,3,3)=.5_dp
     retained_source=deposited
     call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,packed,2,2,query_nodes,query,zero,spacing, &
       periodic,values,ok)

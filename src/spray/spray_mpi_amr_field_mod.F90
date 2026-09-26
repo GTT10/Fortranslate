@@ -299,7 +299,7 @@ contains
   ! node resolution. The caller supplies corner donors at the required time.
   ! Storage may use either physical or packed spatial lower bounds.
   subroutine sample_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,lower,spacing, &
-      periodic,samples,ok,fluid_fraction,nodal_phi,centroids,contributions,source_halo)
+      periodic,samples,ok,fluid_fraction,nodal_phi,centroids,contributions,source_halo,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,width,nodes(:)
@@ -308,6 +308,8 @@ contains
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     real(dp), optional, intent(in) :: contributions(:,:)
     type(amr_tree_state_3d), optional, intent(inout) :: source_halo
+    logical, optional, intent(in) :: containing_cell
+    logical :: cell_deposit
     type(amr_tree_state_3d) :: change
     real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
@@ -317,21 +319,22 @@ contains
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: candidate(:,:),term(:),phi_reference(:,:,:)
     real(dp) :: bounds(6),reference(6),length(3),fraction(3),coordinate(3),part(3),weights(8),volumes(8),total,vf,w,cell_volume
-    integer :: flags(9),low(9),high(9),phi_dims(3),dims_low(3),dims_high(3)
+    integer :: flags(10),low(10),high(10),phi_dims(3),dims_low(3),dims_high(3)
     integer :: rank,status,node,p,level,q,a,b,c,base(3),idx(3),cells(3,8),storage(3),n(3)
     real(dp) :: start(3),target(3)
     logical :: valid,agreed,blocked,visible_ok
-    ok=.false.
+    ok=.false.;cell_deposit=.false.
+    if(present(containing_cell)) cell_deposit=containing_cell
     call validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,valid)
     if(.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
     flags=[width,merge(1,0,periodic),merge(1,0,present(fluid_fraction)), &
       merge(1,0,present(nodal_phi)),merge(1,0,present(centroids)), &
-      merge(1,0,present(contributions)),merge(1,0,present(source_halo))]
-    call MPI_Allreduce(flags,low,9,MPI_INTEGER,MPI_MIN,comm,status)
+      merge(1,0,present(contributions)),merge(1,0,present(source_halo)),merge(1,0,cell_deposit)]
+    call MPI_Allreduce(flags,low,10,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,9,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,10,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     valid=(present(contributions).eqv.present(source_halo))
     if(present(contributions)) then
@@ -495,7 +498,7 @@ contains
           valid=.false.;exit
         end if
         candidate(:,p)=candidate(:,p)+term
-        if(present(source_halo)) then
+        if(present(source_halo).and..not.cell_deposit) then
           if(volumes(q)<=0) then
             valid=.false.;exit
           end if
@@ -514,6 +517,40 @@ contains
 
       end do
       if(.not.valid) exit
+      if(present(source_halo).and.cell_deposit) then
+        ! Pinned PelePhysics deposits into ijkc=floor((x-plo)/dx), while
+        ! gas sampling above continues to use its surrounding donor cells.
+        idx=floor(coordinate-.5_dp)+1
+        if(any(idx<1-width).or.any(idx>n+width)) then
+          valid=.false.;exit
+        end if
+        vf=1
+        if(present(fluid_fraction)) then
+          storage=[lbound(fluid_fraction%fields(node)%values,2),lbound(fluid_fraction%fields(node)%values,3), &
+            lbound(fluid_fraction%fields(node)%values,4)]+idx+width-1
+          vf=fluid_fraction%fields(node)%values(1,storage(1),storage(2),storage(3))
+        end if
+        if(.not.ieee_is_finite(vf)) then
+          valid=.false.;exit
+        end if
+        if(vf<=0.or.vf>1) then
+          valid=.false.;exit
+        end if
+        vf=vf*cell_volume
+        term=contributions(:,p)
+        if(any(abs(term)>huge(1._dp)*min(1._dp,vf))) then
+          valid=.false.;exit
+        end if
+        term=term/vf
+        storage=[lbound(change%fields(node)%values,2),lbound(change%fields(node)%values,3), &
+          lbound(change%fields(node)%values,4)]+idx+width-1
+        associate(value=>change%fields(node)%values(:,storage(1),storage(2),storage(3)))
+          if(any(value>huge(1._dp)-max(term,0._dp)).or.any(value<-huge(1._dp)-min(term,0._dp))) then
+            valid=.false.;exit
+          end if
+          value=value+term
+        end associate
+      end if
     end do
     call agree()
     if(.not.agreed) return
@@ -526,11 +563,12 @@ contains
     end subroutine
   end subroutine sample_mpi_amr_particle_halo
 
-  ! Deposit extensive particle contributions with the exact sampling weights.
+  ! Deposit extensive contributions using sampling weights by default.
+  ! containing_cell selects the pinned PelePhysics single-cell source rule.
   ! halo supplies the donor gas/layout; source_halo is a fresh per-fluid-volume
   ! field, ready for same-level/coarse source transfer. Both input arrays stay read-only.
   subroutine deposit_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,contributions, &
-      lower,spacing,periodic,source_halo,ok,fluid_fraction,nodal_phi,centroids)
+      lower,spacing,periodic,source_halo,ok,fluid_fraction,nodal_phi,centroids,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,width,nodes(:)
@@ -541,9 +579,10 @@ contains
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    logical, optional, intent(in) :: containing_cell
     real(dp), allocatable :: sampled(:,:)
     call sample_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,lower,spacing, &
-      periodic,sampled,ok,fluid_fraction,nodal_phi,centroids,contributions,source_halo)
+      periodic,sampled,ok,fluid_fraction,nodal_phi,centroids,contributions,source_halo,containing_cell)
   end subroutine deposit_mpi_amr_particle_halo
 
   ! Borrow the identical ordered species table on every rank. U/T publish only

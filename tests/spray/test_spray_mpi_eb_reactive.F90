@@ -121,7 +121,8 @@ program test_spray_mpi_eb_reactive
   allocate(boundary(nv),chemical(nv),forcing(nv),exchange(nv))
   forcing=46;exchange=47
   if(index(test_mode,'sdc')==1) then
-    if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive') then
+    if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive'.or. &
+      test_mode=='sdc-recursive-crossing') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -301,11 +302,17 @@ contains
   end subroutine check_post_context
   subroutine check_recursive_spray()
     integer(int64) :: counts(2)
-    integer :: attempt
-    real(dp) :: coefficient
+    integer :: attempt,final_owner
+    real(dp) :: coefficient,gas_before(nv),gas_after(nv),particle_change(nv)
     if(rank==nranks-1) drops(1)%position=[.0012_dp,.0025_dp,.0015_dp]
+    final_owner=nranks-1
+    if(test_mode=='sdc-recursive-crossing') then
+      if(rank==nranks-1) drops(1)%position(1)=.00199999_dp
+      final_owner=0
+    end if
     saved_drops=drops;saved_mass=masses
     call inventory(before)
+    call inventory(gas_before,.false.)
     do attempt=1,2
       coefficient=merge(-1._dp,.1_dp,attempt==1)
       boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37;counts=41
@@ -330,12 +337,24 @@ contains
       end if
     end do
     call inventory(after)
+    call inventory(gas_after,.false.)
+    particle_change=(after-gas_after)-(before-gas_before)
+    call require(last_id==1.and.size(drops)==merge(1,0,rank==final_owner),'recursive physical collection')
+    if(rank==final_owner.and.test_mode=='sdc-recursive-crossing') &
+      call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
+    if(rank==0.and.test_mode=='sdc-recursive-crossing') then
+      print *, 'Crossing composite residual: ', &
+        maxval(abs(after-before-ledger-boundary-chemical-forcing)/max(abs(before),abs(after),1e-30_dp))
+      print *, 'Gas source closure: ',maxval(abs(gas_after-gas_before-ledger-boundary-chemical-forcing-exchange))
+      print *, 'Particle plus deposited exchange: ',particle_change+exchange
+    end if
     call require(all(abs(after-before-ledger-boundary-chemical-forcing)<= &
       3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'recursive composite gas particle inventory')
-    call require(last_id==1.and.size(drops)==merge(1,0,rank==nranks-1),'recursive physical collection')
+    call require(last_id==1.and.size(drops)==merge(1,0,rank==final_owner),'recursive physical collection')
     call require(any(exchange/=0),'recursive particle feedback reaches gas')
-    if(rank==nranks-1) then
-      call require(all(drops%temperature>350._dp).and.all(drops%mass<saved_drops(1)%mass), &
+    if(rank==final_owner) then
+      if(test_mode=='sdc-recursive-crossing') call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
+      call require(all(drops%temperature>350._dp).and.all(drops%mass<1e-12_dp), &
         'recursive heating and evaporation')
     end if
     if(rank==0) print *, 'Recursive coupled residual: ', &
@@ -544,8 +563,12 @@ contains
       subcycling=recursive_steps,extended_geometry=extended,particle_outflow=open_boundary, &
       boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature)
   end subroutine
-  subroutine inventory(result)
+  subroutine inventory(result,with_particles)
     real(dp), intent(out) :: result(:)
+    logical, optional, intent(in) :: with_particles
+    logical :: include_particles
+    include_particles=.true.
+    if(present(with_particles)) include_particles=with_particles
     result=0
     do node=1,2
       if(owners(node)/=rank) cycle
@@ -560,6 +583,7 @@ contains
       end do
       end do
     end do
+    if(include_particles) then
     do p=1,size(drops)
       call liquid_mixture_properties(liquids,masses(:,p)/drops(p)%mass,drops(p)%temperature,rho,cp,e,ok)
       call require(ok,'liquid properties')
@@ -570,6 +594,7 @@ contains
         result(5+liquids(i)%vapor_index)=result(5+liquids(i)%vapor_index)+masses(i,p)*drops(p)%multiplicity
       end do
     end do
+    end if
     call MPI_Allreduce(MPI_IN_PLACE,result,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   end subroutine
   subroutine require(condition,label)
