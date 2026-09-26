@@ -100,7 +100,7 @@ program test_mpi_eb_tree_full_3d
   call require(ok,'initial inventory')
   saved=tree
   call check_sdc_loop()
-  if(test_mode=="subcycle") then
+  if(test_mode=="subcycle".or.test_mode=="redist_level") then
     deallocate(u,t)
     cycle
   end if
@@ -170,6 +170,10 @@ contains
     call require(good,'SDC extended finest')
     call build_eb_tree_extended_geometry_3d(topology,geometry,extended_finest,extended,good)
     call require(good,'SDC extended geometry')
+    if(test_mode=="redist_level") then
+      call check_redist_level(initial,geometry,extended,faces,force)
+      return
+    end if
     if(test_mode=="subcycle") then
       call check_sdc_recursive(initial,geometry,extended,faces,force)
       return
@@ -240,6 +244,110 @@ contains
       deallocate(local%fields,lt%fields,ir%fields)
     end do
   end subroutine check_sdc_loop
+  subroutine check_redist_level(initial,geometry,extended,faces,force)
+    type(eb_reactive_tree_3d), intent(in) :: initial
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(in) :: force(3)
+    type(eb_reactive_tree_3d) :: reference,ledger
+    type(amr_tree_state_3d) :: local,lt,ir,serial_ir,transfer,serial_transfer,old,ot,old_ir,old_transfer
+    type(eb_integrated_flux_3d), allocatable :: flux(:),serial_flux(:)
+    integer :: owners(count),p,layout,x,y,z,c
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter
+    real(dp) :: flux_inventory(nv),change(nv),error
+    logical :: good
+    reference=initial
+    allocate(serial_ir%fields(count))
+    do p=1,count
+      allocate(serial_ir%fields(p)%values(nv-4,4,4,4),source=0._dp)
+    end do
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
+      sb,sw,sch,sext,slimiter,good,serial_ir,target_depth=1,integrated_flux=serial_flux, &
+      redistribution='flux_redist',redistribution_transfer=serial_transfer)
+    call require(good,'serial redistributed selected SDC')
+    ledger=initial
+    do p=1,count
+      ledger%nodes(p)%state=0
+      if(topology%nodes(p)%level/=1) cycle
+      associate(g=>geometry(p),f=>serial_flux(p))
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        if(g%volume_fraction(x,y,z)<=0) cycle
+        do c=1,nv
+          ledger%nodes(p)%state(c,x,y,z)=( &
+            g%dy*g%dz*(g%x_face_fraction(x-1,y,z)*f%x(c,x-1,y,z)-g%x_face_fraction(x,y,z)*f%x(c,x,y,z))+ &
+            g%dx*g%dz*(g%y_face_fraction(x,y-1,z)*f%y(c,x,y-1,z)-g%y_face_fraction(x,y,z)*f%y(c,x,y,z))+ &
+            g%dx*g%dy*(g%z_face_fraction(x,y,z-1)*f%z(c,x,y,z-1)-g%z_face_fraction(x,y,z)*f%z(c,x,y,z)))/ &
+            (g%volume_fraction(x,y,z)*g%dx*g%dy*g%dz)
+        end do
+      end do
+      end do
+      end do
+      end associate
+    end do
+    call integrate_reactive_eb_tree_3d(ledger,flux_inventory,good)
+    call require(good,'selected exported flux divergence')
+    do p=1,count
+      ledger%nodes(p)%state=reference%nodes(p)%state-initial%nodes(p)%state+serial_transfer%fields(p)%values
+      if(topology%nodes(p)%level==1) then
+        call require(all(serial_transfer%fields(p)%values==0),'selected level has no deferred transfer')
+      else
+        call require(all(reference%nodes(p)%state==initial%nodes(p)%state),'other gas waits for transfer')
+      end if
+    end do
+    call integrate_reactive_eb_tree_3d(ledger,change,good)
+    call require(good,'selected state plus transfer inventory')
+    error=maxval(abs(change-flux_inventory-sw-sch-sext)/max(1._dp,abs(flux_inventory)))
+    print *, 'Selected redistribution flux/ledger residual: ',error
+    call require(error<2.e-9_dp,'selected state plus transfer closes exported fluxes')
+    call require(any(serial_transfer%fields(1)%values/=0),'coarse transfer is active')
+    do layout=1,2
+      owners=[(mod(p-1,nranks),p=1,count)]
+      if(layout==2) owners=0
+      allocate(local%fields(count),lt%fields(count),ir%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        local%fields(p)%values=initial%nodes(p)%state
+        allocate(lt%fields(p)%values(1,4,4,4),ir%fields(p)%values(nv-4,4,4,4))
+        lt%fields(p)%values(1,:,:,:)=initial%nodes(p)%temperature
+        ir%fields(p)%values=0
+      end do
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+        1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,target_depth=1,integrated_flux=flux, &
+        redistribution='flux_redist',redistribution_transfer=transfer)
+      call require(good,'MPI redistributed selected SDC')
+      do p=1,count
+        call require(allocated(transfer%fields(p)%values).eqv.(owners(p)==rank),'owner-local stage transfer')
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==reference%nodes(p)%state),'exact selected redistributed gas')
+        call require(all(lt%fields(p)%values(1,:,:,:)==reference%nodes(p)%temperature),'exact selected redistributed T')
+        call require(all(ir%fields(p)%values==serial_ir%fields(p)%values),'exact selected redistributed IR')
+        call require(all(transfer%fields(p)%values==serial_transfer%fields(p)%values),'exact stage transfer')
+      end do
+      error=max(maxval(abs(b-sb)/max(1._dp,abs(sb))),maxval(abs(w-sw)/max(1._dp,abs(sw))), &
+        maxval(abs(ch-sch)/max(1._dp,abs(sch))),maxval(abs(ext-sext)/max(1._dp,abs(sext))))
+      call require(error<2.e-12_dp.and.limiter==slimiter,'selected redistributed diagnostics')
+      old=local;ot=lt;old_ir=ir;old_transfer=transfer;b=17;w=19;ch=23;ext=29;limiter=31
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+        1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=-1._dp,target_depth=1,integrated_flux=flux, &
+        redistribution='flux_redist',redistribution_transfer=transfer)
+      call require(.not.good,'selected redistribution failed stage')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==old%fields(p)%values),'selected redistributed gas rollback')
+        call require(all(lt%fields(p)%values==ot%fields(p)%values),'selected redistributed T rollback')
+        call require(all(ir%fields(p)%values==old_ir%fields(p)%values),'selected redistributed IR rollback')
+        call require(all(transfer%fields(p)%values==old_transfer%fields(p)%values),'stage transfer rollback')
+      end do
+      call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(ext==29).and.limiter==31, &
+        'selected redistributed diagnostics rollback')
+      deallocate(local%fields,lt%fields,ir%fields)
+    end do
+  end subroutine check_redist_level
   subroutine check_sdc_recursive(initial,geometry,extended,faces,force)
     type(eb_reactive_tree_3d), intent(in) :: initial
     type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)

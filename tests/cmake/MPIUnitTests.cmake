@@ -965,6 +965,11 @@ endif()
 if(PELEF_ENABLE_MPI)
   add_executable(test_mpi_eb_tree_full_3d unit/test_mpi_eb_tree_full_3d.F90)
   target_link_libraries(test_mpi_eb_tree_full_3d PRIVATE pelef_mpi_support)
+  add_test(NAME unit_mpi_eb_tree_sdc_redist_level_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_full_3d> ${MPIEXEC_POSTFLAGS} redist_level)
+  set_tests_properties(unit_mpi_eb_tree_sdc_redist_level_3d_2 PROPERTIES
+    TIMEOUT 180 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   add_test(NAME unit_mpi_eb_tree_sdc_subcycle_3d_2
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_mpi_eb_tree_full_3d> ${MPIEXEC_POSTFLAGS} subcycle)
