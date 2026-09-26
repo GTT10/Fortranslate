@@ -365,7 +365,10 @@ physical-boundary stepping in the separate single-level application.
 explicit boundary faces. Set `subcycling=.true.` for recursive SDC intervals
 with one refinement-ratio worth of substeps per finer level. Scheduled/adaptive regridding also
 transfers signed reaction estimates by fluid-volume restriction and PCM
-prolongation. MPI remains rejected for SDC.
+prolongation in the serial application. MPI accepts fixed-topology common-step
+SDC and preserves owner-local reaction estimates and forcing inventories in V4
+checkpoints. MPI SDC currently rejects subcycling, regridding/adaptation and
+load rebalancing. MPI EB spray SDC remains unavailable.
 See the [recursive restart checks](../../docs/validation/sdc-eb-tree-subcycle-20260927.md).
 See the [regrid/restart checks](../../docs/validation/sdc-eb-tree-regrid-20260927.md).
 
@@ -373,3 +376,7 @@ Serial fixed/selected source routing preserves reaction estimates and forcing
 inventories in V3 tree checkpoint records. The SDC budget adds a `forcing`
 column. The fixed executable's continuous/restart comparison is recorded in
 [these checks](../../docs/validation/sdc-eb-tree-app-20260927.md).
+
+The same `sdc.nml` fixture runs with `pelef_mpi_reactive_eb_tree_3d`.
+A two-rank run and one-rank checkpoint continuation are recorded in the
+[MPI application checks](../../docs/validation/sdc-mpi-eb-app-20260927.md).
