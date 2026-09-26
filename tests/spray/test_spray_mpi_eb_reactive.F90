@@ -22,7 +22,7 @@ program test_spray_mpi_eb_reactive
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: boundary(:),chemical(:)
   real(dp), allocatable :: forcing(:),exchange(:)
-  integer(int64) :: last_id=1_int64
+  integer(int64) :: last_id=1_int64,created=0_int64
   real(dp) :: theta
   character(len=32) :: solver,test_mode
   character(len=16), allocatable :: labels(:)
@@ -67,7 +67,7 @@ program test_spray_mpi_eb_reactive
   call require(ok,'root geometry')
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
-  if(index(test_mode,'ctu')==1.or.test_mode=='sdc') then
+  if(index(test_mode,'ctu')==1.or.index(test_mode,'sdc')==1) then
     do j=0,32
       extended_phi(:,j,:)=real(max(0,min(8,j-12)),dp)*.0005_dp-.00125_dp
     end do
@@ -112,8 +112,10 @@ program test_spray_mpi_eb_reactive
   call require(ok,'mechanism')
   allocate(boundary(nv),chemical(nv),forcing(nv),exchange(nv))
   forcing=46;exchange=47
-  if(test_mode=='sdc') then
-    allocate(labels(6));labels='outflow'
+  if(index(test_mode,'sdc')==1) then
+    if(test_mode=='sdc') then
+      allocate(labels(6));labels='outflow'
+    end if
   end if
   call initialize_spray_liquid(species,'H2O',1000._dp,4184._dp,373.15_dp,101325._dp,2.257e6_dp,liquids(1),ok)
   call require(ok,'water')
@@ -165,7 +167,7 @@ program test_spray_mpi_eb_reactive
     call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'temperature rollback')
   end do
   call require(all(boundary==43).and.all(chemical==44).and.theta==45,'gas diagnostics rollback')
-  if(test_mode=='sdc') call require(last_id==1.and.all(forcing==46).and.all(exchange==47), &
+  if(index(test_mode,'sdc')==1) call require(last_id==1.and.all(forcing==46).and.all(exchange==47), &
     'SDC ID and exchange rollback')
   solver='hllc'
   if(index(test_mode,'ctu')==1) solver='pelec'
@@ -180,6 +182,27 @@ program test_spray_mpi_eb_reactive
     end do
     inlet(1,1)=cell(1)
   end if
+  if(index(test_mode,'sdc')==1) then
+    options%breakup_model='etab';options%surface_tension=1e3_dp;options%liquid_viscosity=.001_dp
+    options%maximum_multiplicity=50;options%maximum_parcels=1
+    call advance()
+    call require(.not.ok.and.steps==0.and.created==0.and.last_id==1,'late split capacity rollback')
+    call require(all(masses==saved_mass).and.size(drops)==size(saved_drops),'split population rollback')
+    call require(all(boundary==43).and.all(ledger==42).and.all(chemical==44).and.theta==45, &
+      'split budget rollback')
+    call require(all(forcing==46).and.all(exchange==47),'split source rollback')
+    do node=1,2
+      if(owners(node)/=rank) cycle
+      call require(all(field%fields(node)%values==saved%fields(node)%values),'split gas rollback')
+      call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'split temperature rollback')
+    end do
+    options%maximum_parcels=3
+    if(rank==0) options%maximum_multiplicity=0
+    call advance()
+    call require(.not.ok.and.steps==0.and.created==0.and.last_id==1,'split controls agree across ranks')
+    call require(all(masses==saved_mass).and.all(forcing==46),'split disagreement rollback')
+    options%maximum_multiplicity=50
+  end if
   call inventory(before)
   call advance()
   call require(ok.and.steps>1,'distributed EB interval')
@@ -187,14 +210,19 @@ program test_spray_mpi_eb_reactive
   call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'composite gas parcel wall conservation')
   call require(any(chemical(6:)/=0),'chemical species exchange')
-  call require(size(drops)==merge(1,0,rank==nranks-1),'final fine owner')
+  if(index(test_mode,'sdc')==1) then
+    call require(size(drops)==merge(2,0,rank==nranks-1),'split final fine owner')
+    call require(created==1.and.last_id==2,'accepted split ID')
+  else
+    call require(size(drops)==merge(1,0,rank==nranks-1),'final fine owner')
+  end if
   if(rank==nranks-1) then
     call require(drops(1)%position(1)<.002_dp.and.drops(1)%position(2)>.00125_dp,'fine cell and fluid position')
     if(index(test_mode,'wall')>0.or.index(test_mode,'isothermal')>0) call require(drops(1)%velocity(1)>0,'outer wall reflection')
     call require(drops(1)%temperature>350.and.drops(1)%mass<1e-12_dp,'heating and evaporation')
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if
-  if(test_mode=='sdc') then
+  if(index(test_mode,'sdc')==1) then
     call require(all(forcing==0).and.any(exchange/=0),'particle exchange distinct from external forcing')
     if(rank==0) print *, 'SDC combined residual: ', &
       maxval(abs(after-before-ledger-boundary-chemical)/max(abs(before),abs(after),1e-30_dp))
@@ -204,13 +232,14 @@ program test_spray_mpi_eb_reactive
 contains
   subroutine advance()
     real(dp) :: coefficient
-    if(test_mode=='sdc') then
+    if(index(test_mode,'sdc')==1) then
       coefficient=.1_dp
       if(solver=='invalid') coefficient=-1
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
         liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,2,.true., &
         [.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
-        forcing,theta,steps,last_id,ok,difmag=coefficient,gas_particle_change=exchange)
+        forcing,theta,steps,last_id,ok,difmag=coefficient,gas_particle_change=exchange, &
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature,split_created=created)
       return
     end if
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &

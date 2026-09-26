@@ -307,7 +307,8 @@ contains
   subroutine advance_mpi_eb_spray_sdc(comm,tree,owners,geometry,extended_geometry,phi,species,reactions,transport, &
       liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,iterations,chemistry,transport_flags, &
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
-      particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change)
+      particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -331,11 +332,15 @@ contains
     real(dp), optional, intent(in) :: difmag,target_volume_fraction
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(inout) :: gas_particle_change(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    integer(int64), optional, intent(out) :: split_created
     type(amr_tree_state_3d) :: gas,temp
     type(amr_tree_state_3d), allocatable :: ir
     type(spray_parcel), allocatable :: midpoint(:),final(:)
     real(dp), allocatable :: midpoint_mass(:,:),final_mass(:,:)
-    integer(int64) :: midpoint_id,final_id
+    integer(int64) :: midpoint_id,final_id,before_split
+    real(dp) :: low_multiplicity,high_multiplicity
     integer :: nv,ierr,old_steps,new_steps
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),exchange(size(source_change)),theta
@@ -344,11 +349,16 @@ contains
     character(len=32) :: particle_faces(6)
     logical :: valid,ready
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
-    valid=allocated(parcels).and.allocated(component_mass)
+    if(present(split_created)) split_created=0
+    valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
     call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.ready) return
+    call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(options%maximum_multiplicity,high_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.low_multiplicity/=high_multiplicity) return
     particle_faces=boundary_faces
     where(particle_faces=='inflow') particle_faces='outflow'
     where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
@@ -360,8 +370,15 @@ contains
     call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,gas,temp,extended_geometry, &
       dt,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces,boundary,wall,chemical,external,theta, &
       comm,ready,ir,difmag,redistribution=redistribution,target_volume_fraction=target_volume_fraction, &
-      auxiliary_source=particle_source,auxiliary_change=exchange)
+      auxiliary_source=particle_source,auxiliary_change=exchange,inflow_state=inflow_state, &
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      wall_temperature=wall_temperature)
     if(.not.ready) return
+    before_split=final_id
+    if(options%maximum_multiplicity>0) then
+      call split_mpi_spray_parcels(comm,final,options%maximum_multiplicity,options%maximum_parcels,final_id,ready,final_mass)
+      if(.not.ready) return
+    end if
     valid=old_steps<=huge(1)-new_steps
     call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.ready) return
@@ -372,6 +389,7 @@ contains
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(final,parcels);call move_alloc(final_mass,component_mass)
     last_id=final_id
+    if(present(split_created)) split_created=final_id-before_split
     if(present(reaction_source)) reaction_source=ir
     boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
     if(present(gas_particle_change)) gas_particle_change=exchange
