@@ -3513,7 +3513,12 @@ specified-state/Mach inflow and isothermal-wall gas data reach the SDC operators
 Computational multiplicity splitting runs once after the accepted final kick,
 with collective rollback on capacity failure and globally assigned child IDs.
 Optional `particle_acceleration(3)` adds uniform external particle acceleration
-(default zero), independently of the required gas `force`. Particle half kicks
+(default zero), independently of the required gas force density `force` (N/m³).
+Optional `gas_acceleration(3)` separately supplies gas acceleration (m/s²),
+with momentum source `force + density*gas_acceleration` and local velocity work.
+The MPI EB spray application passes spray `acceleration` to both optional
+acceleration arguments
+([density-dependent forcing checks](validation/sdc-gas-acceleration-20260927.md)). Particle half kicks
 bracket the coupled interval; each new kick is private to its SDC evaluation.
 The final source inventory sums gas forcing and the accepted particle impulse
 and kinetic work; `gas_particle_change` still contains internal exchange only.

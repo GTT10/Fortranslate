@@ -479,8 +479,10 @@ Set `time_integrator='sdc',sdc_iterations=2,hydro_method='plm_ctu',
 riemann_solver='pelec'` in `&eb_tree`, with explicit `boundary_faces`.
 Set `particle_outflow=.true.` in `&eb_spray`. This connects gas SDC,
 particle half kicks/full drift, internal source exchange and final computational
-splitting. `external_forcing` accelerates gas only; spray `acceleration`
-accelerates both phases. Their gas contributions add.
+splitting. `external_forcing` is gas-only force per volume (N/m³); spray
+`acceleration` is acceleration (m/s²) applied to both phases. The gas momentum
+source is `external_forcing + density*acceleration`; its work uses the local
+gas velocity.
 
 Coupled checkpoints preserve reaction history and total external impulse/work
 alongside parcel state, IDs and injection progress. Common-step SDC currently

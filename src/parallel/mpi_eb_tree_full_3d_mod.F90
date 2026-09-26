@@ -347,7 +347,7 @@ contains
       reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
-      target_volume_fraction,auxiliary_source,auxiliary_change)
+      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -374,6 +374,8 @@ contains
     real(dp), optional, intent(inout) :: auxiliary_change(:)
     type(amr_tree_state_3d) :: a0,a1
     real(dp) :: auxiliary(size(source_change))
+    real(dp), optional, intent(in) :: gas_acceleration(3)
+    real(dp) :: accel(3)
     real(dp) :: redist_target
     character(len=16) :: redistribution_method
     type(amr_tree_state_3d) :: redistributed,before_sync,sync_rate
@@ -388,11 +390,13 @@ contains
     type(eb_integrated_flux_3d), allocatable :: f0(:),f1(:),hf(:)
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
-    real(dp) :: controls(8),low(8),high(8),recovered,speed
+    real(dp) :: controls(11),low(11),high(11),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
     integer :: counts(8),mincounts(8),maxcounts(8),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive
     ok=.false.;nv=reactive_nvar(size(species));theta=1
+    accel=0
+    if(present(gas_acceleration)) accel=gas_acceleration
     redistribution_method='none'
     if(present(redistribution)) redistribution_method=redistribution
     redist_target=.5_dp
@@ -401,9 +405,9 @@ contains
       redistribution_method=='state_redist',comm,ready)
     if(.not.ready) return
     controls=[dt,force,rtol,atol,merge(1._dp,0._dp,redistribution_method=='flux_redist')+ &
-      merge(2._dp,0._dp,redistribution_method=='state_redist'),redist_target]
+      merge(2._dp,0._dp,redistribution_method=='state_redist'),redist_target,accel]
     valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0.and.iterations>=1
-    valid=valid.and.redist_target>0.and.redist_target<=1
+    valid=valid.and.redist_target>0.and.redist_target<=1.and.all(abs(accel)<=1e6_dp)
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     valid=valid.and..not.(transport_flags(4).and..not.transport_flags(3))
     valid=valid.and..not.(present(reaction_source).and..not.chemistry)
@@ -411,9 +415,9 @@ contains
     if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
     call agree(valid,comm,ready)
     if(.not.ready) return
-    call MPI_Allreduce(controls,low,8,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,11,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,8,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
       merge(1,0,present(auxiliary_source))]
@@ -756,8 +760,10 @@ contains
           if(gas%fields(p)%values(1,x,y,z)<=0) then
             local_ok=.false.;cycle
           end if
-          external_rate%fields(p)%values(2:4,x,y,z)=force
-          external_rate%fields(p)%values(5,x,y,z)=dot_product(force,gas%fields(p)%values(2:4,x,y,z))/ &
+          ! force is force per volume; accel is acceleration evaluated at this stage.
+          external_rate%fields(p)%values(2:4,x,y,z)=force+gas%fields(p)%values(1,x,y,z)*accel
+          external_rate%fields(p)%values(5,x,y,z)=dot_product( &
+            external_rate%fields(p)%values(2:4,x,y,z),gas%fields(p)%values(2:4,x,y,z))/ &
             gas%fields(p)%values(1,x,y,z)
         end do
         end do

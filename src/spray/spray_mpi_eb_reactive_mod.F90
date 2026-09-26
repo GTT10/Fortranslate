@@ -309,7 +309,7 @@ contains
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
-      films,film_mass,film_settings,film_steps,film_impacts,model_rejected)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration)
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
     type(spray_wall_options), optional, intent(in) :: film_settings
@@ -320,6 +320,7 @@ contains
     type(spray_wall_film), allocatable :: midpoint_films(:),final_films(:)
     real(dp), allocatable :: midpoint_film_mass(:,:),final_film_mass(:,:)
     integer :: film_flag,film_low,film_high,old_film_steps,new_film_steps
+    real(dp), optional, intent(in) :: gas_acceleration(3)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -407,7 +408,7 @@ contains
       comm,ready,ir,difmag,redistribution=redistribution,target_volume_fraction=target_volume_fraction, &
       auxiliary_source=particle_source,auxiliary_change=exchange,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature)
+      wall_temperature=wall_temperature,gas_acceleration=gas_acceleration)
     if(.not.ready) return
     before_split=final_id
     if(options%maximum_multiplicity>0) then

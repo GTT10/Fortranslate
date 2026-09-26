@@ -235,10 +235,65 @@ program test_spray_mpi_eb_reactive
     if(rank==0) print *, 'SDC combined residual: ', &
       maxval(abs(after-before-ledger-boundary-chemical)/max(abs(before),abs(after),1e-30_dp))
   end if
-  if(test_mode=='sdc-force') call check_ballistic_force()
+  if(test_mode=='sdc-force') then
+    call check_ballistic_force()
+    call check_gas_acceleration()
+  end if
   if(rank==0) print *, 'PASS: MPI EB coupled reactive step and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_gas_acceleration()
+    real(dp) :: acceleration(3),force_density(3),dv(3),velocity(3),expected(nv),interval,density
+    integer :: density_case
+    acceleration=[1000._dp,0._dp,3000._dp];force_density=[20._dp,0._dp,40._dp]
+    velocity=[1._dp,0._dp,3._dp];interval=1e-8_dp
+    labels='outflow'
+    deallocate(drops,masses);allocate(drops(0),masses(2,0))
+    do density_case=1,2
+      density=2._dp*density_case;field=saved;temp=saved_t
+      primitive=0;primitive(1)=density;primitive(2:4)=velocity;primitive(5)=density*r*1000;primitive(6:)=y
+      call reactive_primitive_to_conserved(species,primitive,cell,t,sound,ok)
+      call require(ok,'non-unit density gas fixture')
+      do node=1,2
+        if(owners(node)/=rank) cycle
+        dims=tree%nodes(node)%shape
+        do k=1,dims(3)
+        do j=1,dims(2)
+        do i=1,dims(1)
+          if(g(node)%volume_fraction(i,j,k)<=0) cycle
+          field%fields(node)%values(:,i,j,k)=cell
+          temp%fields(node)%values(1,i,j,k)=t
+        end do
+        end do
+        end do
+      end do
+      call inventory(before)
+      dv=interval*(acceleration+force_density/density)
+      expected=0;expected(2:4)=before(1)*dv
+      expected(5)=before(1)*dot_product(velocity+.5_dp*dv,dv)
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
+        liquids,options,field,temp,drops,masses,zero,spacing,interval,2,.false., &
+        [.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
+        forcing,theta,steps,last_id,ok,gas_particle_change=exchange,gas_acceleration=acceleration)
+      call require(ok,'non-unit density accelerated gas')
+      call require(all(abs(forcing-expected)<=3e-13_dp*max(abs(expected),1e-30_dp)),'density-weighted impulse/work')
+      call require(all(exchange==0),'acceleration stays outside particle exchange')
+      do node=1,2
+        if(owners(node)/=rank) cycle
+        dims=tree%nodes(node)%shape
+        do k=1,dims(3)
+        do j=1,dims(2)
+        do i=1,dims(1)
+          if(g(node)%volume_fraction(i,j,k)<=0) cycle
+          call require(maxval(abs(field%fields(node)%values(2:4,i,j,k)/density-velocity-dv))<1e-12_dp, &
+            'force density and acceleration yield analytic velocity')
+          call require(abs(temp%fields(node)%values(1,i,j,k)-1000)<1e-8_dp,'external work retains temperature')
+        end do
+        end do
+        end do
+      end do
+    end do
+  end subroutine check_gas_acceleration
   subroutine check_ballistic_force()
     real(dp) :: dv(3),expected(nv),initial_velocity(3),initial_position(3),interval
     integer :: iteration_count
