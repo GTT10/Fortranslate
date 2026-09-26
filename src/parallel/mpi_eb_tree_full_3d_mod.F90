@@ -45,6 +45,17 @@ module mpi_eb_tree_full_3d_mod
       type(MPI_Comm), intent(in) :: comm
       logical, intent(out) :: ok
     end subroutine
+    ! Recursive predictor donors use the midpoint of the level interval.
+    subroutine mpi_eb_sdc_recursive_predictor_builder(rate,interval,iteration,depth,time,halo,comm,ok, &
+        source_start,source_end,source_fraction)
+      import :: amr_tree_state_3d,dp,MPI_Comm
+      type(amr_tree_state_3d), intent(in) :: rate,source_start,source_end
+      real(dp), intent(in) :: interval,time,source_fraction(:)
+      integer, intent(in) :: iteration,depth
+      type(amr_tree_state_3d), intent(inout) :: halo
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+    end subroutine
     subroutine mpi_eb_sdc_auxiliary_source(state,temperature,interval,stage,depth,rate,comm,ok)
       import :: amr_tree_state_3d,dp,MPI_Comm
       type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -76,7 +87,7 @@ module mpi_eb_tree_full_3d_mod
       logical, intent(out) :: ok
     end subroutine
   end interface
-  public :: mpi_eb_sdc_predictor_builder
+  public :: mpi_eb_sdc_predictor_builder,mpi_eb_sdc_recursive_predictor_builder
   public :: mpi_eb_sdc_auxiliary_source,mpi_eb_sdc_recursive_source,mpi_eb_sdc_recursive_halo_source
 contains
   subroutine agree(condition,comm,ok)
@@ -898,7 +909,7 @@ contains
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source,predictor_builder)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -922,6 +933,7 @@ contains
     real(dp), optional, intent(in) :: target_volume_fraction
     procedure(mpi_eb_sdc_recursive_source), optional :: auxiliary_source
     procedure(mpi_eb_sdc_recursive_halo_source), optional :: halo_source
+    procedure(mpi_eb_sdc_recursive_predictor_builder), optional :: predictor_builder
     logical :: has_auxiliary
     real(dp), optional, intent(inout) :: auxiliary_change(:)
     real(dp) :: auxiliary(size(source_change)),source_time
@@ -960,6 +972,10 @@ contains
     call MPI_Allreduce(merge(1,0,has_auxiliary)+merge(2,0,present(halo_source)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(merge(1,0,has_auxiliary)+merge(2,0,present(halo_source)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.method_low/=method_high) return
+    call MPI_Allreduce(merge(1,0,present(predictor_builder)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(merge(1,0,present(predictor_builder)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     call MPI_Allreduce(merge(1,0,routing),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -1069,6 +1085,20 @@ contains
     if(present(level_steps)) level_steps=counts
     ok=.true.
   contains
+    subroutine predictor_adapter(rate,interval,iteration,depth,halo,comm,ok)
+      type(amr_tree_state_3d), intent(in) :: rate
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: iteration,depth
+      type(amr_tree_state_3d), intent(inout) :: halo
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+      real(dp) :: first(levels-1),last(levels-1)
+      first=0;last=0
+      first(:depth)=max(0._dp,min(1._dp,(source_time-clock_start(:depth))/clock_dt(:depth)))
+      last(:depth)=max(first(:depth),min(1._dp,(source_time+interval-clock_start(:depth))/clock_dt(:depth)))
+      call predictor_builder(rate,interval,iteration,depth,source_time,halo,comm,ok, &
+        source0,source1,.5_dp*(first+last))
+    end subroutine predictor_adapter
     subroutine source_adapter(state,temperature,interval,stage,depth,rate,comm,ok)
       type(amr_tree_state_3d), intent(in) :: state,temperature
       real(dp), intent(in) :: interval
@@ -1156,6 +1186,21 @@ contains
       end if
       if(has_auxiliary) allocate(step_aux(nv))
       source_time=time
+      if(present(predictor_builder)) then
+      if(has_auxiliary) then
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
+        extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
+        b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
+        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter)
+      else
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
+        extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
+        b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
+        redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter)
+      end if
+      else
       if(has_auxiliary) then
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
@@ -1168,6 +1213,7 @@ contains
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,gas_acceleration=gas_acceleration)
+      end if
       end if
       if(.not.accepted) return
       if(method/='none') then

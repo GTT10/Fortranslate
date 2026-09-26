@@ -18,6 +18,7 @@ program test_spray_mpi_eb_reactive
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
   use, intrinsic :: iso_fortran_env, only: int64
+  use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
   implicit none
   type(gas_transport_species), allocatable :: transport(:)
   type(elementary_reaction), allocatable :: reactions(:)
@@ -30,6 +31,8 @@ program test_spray_mpi_eb_reactive
   character(len=16), allocatable :: labels(:)
   real(dp), allocatable :: inlet(:,:),inlet_t(:)
   logical, allocatable :: open_boundary
+  integer :: predictor_calls=0
+  logical :: fail_predictor=.false.
   logical :: recursive_steps
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -277,9 +280,43 @@ contains
     end do
     accepted=.true.
   end subroutine check_halo_context
+  subroutine recursive_predictor(rate,interval,iteration,depth,time,halo,comm,accepted, &
+      source_start,source_end,source_fraction)
+    type(amr_tree_state_3d), intent(in) :: rate,source_start,source_end
+    real(dp), intent(in) :: interval,time,source_fraction(:)
+    integer, intent(in) :: iteration,depth
+    type(amr_tree_state_3d), intent(inout) :: halo
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: accepted
+    type(amr_tree_state_3d) :: metrics
+    integer :: a,n(3)
+    predictor_calls=predictor_calls+1
+    call require(iteration==modulo(predictor_calls-1,2)+1,'recursive predictor iteration')
+    call require(size(source_fraction)==1,'predictor ancestor fraction shape')
+    if(depth==0) then
+      call require(time==0.and.interval==1e-8_dp.and.all(source_fraction==0),'root predictor clock')
+    else
+      call require(depth==1.and.interval==5e-9_dp,'fine predictor interval')
+      call require(abs(source_fraction(1)-(time+.5_dp*interval)/1e-8_dp)<1e-14_dp, &
+        'predictor parent midpoint fraction')
+    end if
+    allocate(metrics%fields(2))
+    do a=1,2
+      call require(allocated(source_start%fields(a)%values).eqv.(owners(a)==rank),'predictor donor ownership')
+      if(owners(a)/=rank) cycle
+      n=tree%nodes(a)%shape
+      allocate(metrics%fields(a)%values(1,n(1)+6,n(2)+6,n(3)+6))
+      metrics%fields(a)%values(1,:,:,:)=extended(a)%volume_fraction(4:n(1)+9,4:n(2)+9,4:n(3)+9)
+    end do
+    call fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,g,rate,nv,3,halo,comm,accepted, &
+      boundary_faces=labels,target_volume_fraction=metrics,ancestor_start=source_start, &
+      ancestor_end=source_end,ancestor_fraction=source_fraction)
+    if(fail_predictor.and.predictor_calls==6.and.rank==nranks-1) accepted=.false.
+  end subroutine recursive_predictor
   subroutine check_gas_acceleration()
     real(dp) :: acceleration(3),force_density(3),dv(3),velocity(3),expected(nv),interval,density
     integer :: density_case,advance_mode
+    type(amr_tree_state_3d) :: old,old_t
     acceleration=[1000._dp,0._dp,3000._dp];force_density=[20._dp,0._dp,40._dp]
     velocity=[1._dp,0._dp,3._dp];interval=1e-8_dp
     labels='outflow'
@@ -307,6 +344,7 @@ contains
       dv=interval*(acceleration+force_density/density)
       expected=0;expected(2:4)=before(1)*dv
       expected(5)=before(1)*dot_product(velocity+.5_dp*dv,dv)
+      predictor_calls=0
       if(advance_mode==1) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
         liquids,options,field,temp,drops,masses,zero,spacing,interval,2,.false., &
@@ -315,14 +353,16 @@ contains
       else if(advance_mode==2) then
         call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
           interval,2,.false.,[.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,extended, &
-          labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration)
+          labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration, &
+          predictor_builder=recursive_predictor)
       else
         call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
           interval,2,.false.,[.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,extended, &
           labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration, &
-          halo_source=check_halo_context,auxiliary_change=exchange)
+          halo_source=check_halo_context,auxiliary_change=exchange,predictor_builder=recursive_predictor)
       end if
       call require(ok,'non-unit density accelerated gas')
+      if(advance_mode>1) call require(predictor_calls==6,'recursive predictor covers all intervals')
       call require(all(abs(forcing-expected)<=3e-13_dp*max(abs(expected),1e-30_dp)),'density-weighted impulse/work')
       call require(all(exchange==0),'acceleration stays outside particle exchange')
       do node=1,2
@@ -339,6 +379,23 @@ contains
         end do
         end do
       end do
+      if(advance_mode==3.and.density_case==2) then
+        old=field;old_t=temp;predictor_calls=0;fail_predictor=.true.
+        boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37
+        call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
+          interval,2,.false.,[.false.,.false.,.false.,.false.],force_density,2e-7_dp,1e-12_dp,extended, &
+          labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,gas_acceleration=acceleration, &
+          halo_source=check_halo_context,auxiliary_change=exchange,predictor_builder=recursive_predictor)
+        call require(.not.ok.and.predictor_calls==6,'last descendant predictor failure')
+        do node=1,2
+          if(owners(node)/=rank) cycle
+          call require(all(field%fields(node)%values==old%fields(node)%values),'recursive predictor gas rollback')
+          call require(all(temp%fields(node)%values==old_t%fields(node)%values),'recursive predictor T rollback')
+        end do
+        call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &
+          theta==31.and.all(exchange==37),'recursive predictor inventory rollback')
+        fail_predictor=.false.
+      end if
     end do
     end do
   end subroutine check_gas_acceleration
