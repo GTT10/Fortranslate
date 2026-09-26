@@ -6,7 +6,7 @@ program test_spray_mpi_amr_tree
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
-    create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
+    create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -36,6 +36,7 @@ program test_spray_mpi_amr_tree
     masses(:,p)=parcels(p)%mass*[.25_dp,.75_dp]
   end do
   saved=parcels;saved_mass=masses
+  call check_physical_levels()
   do p=1,size(parcels)
     parcels(p)%position=[merge(1.125_dp,3.875_dp,mod(parcels(p)%id,2_int64)==1),.25_dp,.25_dp]
   end do
@@ -175,6 +176,37 @@ program test_spray_mpi_amr_tree
   if (rank==0) print *, 'PASS: AMR spray MPI migration'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_physical_levels()
+    type(spray_parcel), allocatable :: selected(:),before(:)
+    real(dp), allocatable :: selected_mass(:,:),before_mass(:,:)
+    integer, allocatable :: nodes(:),before_nodes(:)
+    integer :: seen(2*nranks),level,a
+    seen=0
+    do level=0,2
+      call create_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,saved,saved_mass,zero,spacing, &
+        [.true.,.false.,.false.],level,100,selected,selected_mass,nodes,ok)
+      call require(ok,'physical level selection')
+      if(level==0) call require(size(selected)==0,'covered root contains no physical population')
+      do a=1,size(selected)
+        seen(int(selected(a)%id))=seen(int(selected(a)%id))+1
+        call require(tree%nodes(nodes(a))%level==level.and.owners(nodes(a))==rank,'exact physical level and owner')
+        expected=make_parcel(int(selected(a)%id))
+        call require(all(selected(a)%position==expected%position).and. &
+          all(selected(a)%velocity==expected%velocity).and.selected(a)%temperature==expected%temperature, &
+          'level selection preserves physical state')
+        call require(all(selected_mass(:,a)==expected%mass*[.25_dp,.75_dp]),'physical level component inventory')
+      end do
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,seen,size(seen),MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(seen==1),'every physical ID occurs in exactly one level population')
+    before=selected;before_mass=selected_mass;before_nodes=nodes
+    call create_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,saved,saved_mass,zero,spacing, &
+      [.true.,.false.,.false.],1,0,selected,selected_mass,nodes,ok)
+    call require(.not.ok.and.size(selected)==size(before),'physical level capacity failure')
+    call require(all(selected%id==before%id).and.all(selected_mass==before_mass).and.all(nodes==before_nodes), &
+      'physical level outputs roll back together')
+    call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'physical source population unchanged')
+  end subroutine check_physical_levels
   subroutine check_ghost_redistribution()
     type(spray_parcel), allocatable :: moved(:),before_move(:)
     real(dp), allocatable :: moved_mass(:,:),before_mass(:,:)

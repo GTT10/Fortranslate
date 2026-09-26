@@ -15,6 +15,7 @@ module spray_mpi_amr_tree_mod
   private
   public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   public :: create_mpi_amr_virtual_particles,create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
+  public :: create_mpi_amr_level_particles
 contains
   ! Copies immediate-coarse physical parcels into the grown next-level boxes.
   ! Each source has one deterministic destination, even when grown boxes overlap.
@@ -189,11 +190,66 @@ contains
     real(dp), allocatable, intent(inout) :: virtual_mass(:,:)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    call select_mpi_amr_level_copies(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      target_level,maximum_parcels,virtuals,virtual_mass,ok,.true.,nodal_phi)
+  end subroutine create_mpi_amr_virtual_particles
+
+  ! Select physical parcels whose finest containing node is exactly this level.
+  ! Source data remain read-only; the caller must not merge these copies with it.
+  subroutine create_mpi_amr_level_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      target_level,maximum_parcels,level_parcels,level_mass,level_nodes,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,maximum_parcels
+    type(spray_parcel), allocatable, intent(in) :: parcels(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_parcel), allocatable, intent(inout) :: level_parcels(:)
+    real(dp), allocatable, intent(inout) :: level_mass(:,:)
+    integer, allocatable, intent(inout) :: level_nodes(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp), allocatable :: mass(:,:),positions(:,:)
+    integer, allocatable :: found(:,:),nodes(:)
+    integer :: p,status
+    logical :: valid,agreed
+    ok=.false.
+    call select_mpi_amr_level_copies(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      target_level,maximum_parcels,candidate,mass,valid,.false.,nodal_phi)
+    if(.not.valid) return
+    allocate(positions(3,size(candidate)))
+    do p=1,size(candidate)
+      positions(:,p)=candidate(p)%position
+    end do
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,found,valid)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    nodes=found(1,:)
+    call move_alloc(candidate,level_parcels);call move_alloc(mass,level_mass);call move_alloc(nodes,level_nodes)
+    ok=.true.
+  end subroutine create_mpi_amr_level_particles
+
+  subroutine select_mpi_amr_level_copies(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      target_level,maximum_parcels,virtuals,virtual_mass,ok,finer_copies,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,maximum_parcels
+    type(spray_parcel), allocatable, intent(in) :: parcels(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_parcel), allocatable, intent(inout) :: virtuals(:)
+    real(dp), allocatable, intent(inout) :: virtual_mass(:,:)
+    logical, intent(in) :: finer_copies
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(spray_parcel), allocatable :: copies(:)
     real(dp), allocatable :: masses(:,:),positions(:,:)
     integer, allocatable :: locations(:,:)
     logical, allocatable :: selected(:)
-    integer :: p,q,nc,status,flags(2),low(2),high(2)
+    integer :: p,q,nc,status,flags(3),low(3),high(3)
     logical :: valid,agreed
     ok=.false.
     valid=tree%is_valid().and.allocated(parcels).and.allocated(component_mass)
@@ -203,10 +259,10 @@ contains
     if(present(nodal_phi)) valid=valid.and..not.any(periodic)
     call agree()
     if(.not.agreed) return
-    flags=[target_level,merge(1,0,present(nodal_phi))]
-    call MPI_Allreduce(flags,low,2,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[target_level,merge(1,0,present(nodal_phi)),merge(1,0,finer_copies)]
+    call MPI_Allreduce(flags,low,3,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,2,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,3,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     nc=size(component_mass,1)
     allocate(positions(3,size(parcels)),selected(size(parcels)))
@@ -221,7 +277,11 @@ contains
     call agree()
     if(.not.agreed) return
     do p=1,size(parcels)
-      selected(p)=tree%nodes(locations(1,p))%level>target_level
+      if(finer_copies) then
+        selected(p)=tree%nodes(locations(1,p))%level>target_level
+      else
+        selected(p)=tree%nodes(locations(1,p))%level==target_level
+      end if
     end do
     copies=pack(parcels,selected);allocate(masses(nc,count(selected)));q=0
     do p=1,size(parcels)
@@ -243,7 +303,7 @@ contains
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
       if(status/=MPI_SUCCESS) agreed=.false.
     end subroutine
-  end subroutine create_mpi_amr_virtual_particles
+  end subroutine select_mpi_amr_level_copies
   ! The replicated nodal field describes the root domain at the finest tree
   ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder. No periodic wrapping.
   subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing, &

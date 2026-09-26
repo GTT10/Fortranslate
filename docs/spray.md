@@ -40,6 +40,16 @@ See the [focused checks](validation/spray-level-ownership-20260927.md).
 
 ## Coarse virtual particle populations
 
+`create_mpi_amr_level_particles` extracts the physical population whose finest
+containing node is exactly `target_level`. Unlike coarse virtual copies, these
+level populations partition the input IDs across levels. It returns owner-local
+parcels, components and matching node indices, with all outputs replaced only
+on success. The original population stays read-only; these snapshots must not
+be added back as extra physical particles. Optional EB validation uses the
+existing migration path. This supplies level-specific physical inputs for the
+recursive driver; their clocks and final merging are still to be connected.
+See [physical-level checks](validation/spray-physical-level-20260927.md).
+
 `create_mpi_amr_virtual_particles` constructs a separate, nonaggregated
 population for a requested `target_level`. It selects physical parcels whose
 finest covering node is deeper than the target and migrates copies to the
