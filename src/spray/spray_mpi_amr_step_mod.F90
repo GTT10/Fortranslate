@@ -18,7 +18,8 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas, &
     sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo,sum_mpi_amr_particle_source_halo
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels, &
-    redistribute_mpi_amr_ghost_particles,redistribute_mpi_amr_level_particles,spray_level_population
+    redistribute_mpi_amr_ghost_particles,redistribute_mpi_amr_level_particles,spray_level_population, &
+    refresh_mpi_amr_level_copies
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
@@ -29,7 +30,7 @@ module spray_mpi_amr_step_mod
   private
   public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo,advance_mpi_amr_ghost_halo
   public :: advance_mpi_eb_ghost_stage,advance_mpi_amr_level_halo,advance_mpi_eb_population_stage
-  public :: advance_mpi_eb_population_sdc_stage
+  public :: advance_mpi_eb_population_sdc_stage,advance_mpi_eb_recursive_population_stage
   type, public :: spray_sdc_population_stage
     integer :: next_stage=0,iterations=0,depth=-1
     real(dp) :: time=0,interval=0
@@ -39,6 +40,100 @@ module spray_mpi_amr_step_mod
     real(dp), allocatable :: old_boundary(:)
   end type spray_sdc_population_stage
 contains
+  ! Advance a caller-owned hierarchy one recursive SDC callback at a time.
+  ! The complete hierarchy must stay private until its outer gas step succeeds.
+  subroutine advance_mpi_eb_recursive_population_stage(comm,species,transport,components,options,tree,owners,geometry, &
+      state,temperature,width,target_level,grow,maximum_parcels,physical,virtuals,ghosts,work, &
+      time,interval,stage,iterations,faces, &
+      source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_parcels
+    type(spray_level_population), intent(inout) :: physical(:),virtuals(:),ghosts(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature,centroids,target_volume_fraction
+    real(dp), intent(in) :: time,interval,nodal_phi(0:,0:,0:)
+    integer, intent(in) :: stage,iterations
+    type(spray_sdc_population_stage), intent(inout) :: work(:)
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5),boundary_change(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
+    real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
+    integer, optional, intent(in) :: maximum_received
+    type(spray_sdc_population_stage) :: candidate
+    type(spray_level_population) :: group(3),new_virtual,next_ghost
+    type(amr_tree_state_3d) :: change,leftover
+    real(dp) :: wall(5),exterior(reactive_nvar(size(species))),lower(3),spacing(3),tolerance,finish
+    integer :: levels,level,p,status,flags(4),low(4),high(4)
+    real(dp) :: times(2),low_time(2),high_time(2)
+    logical :: valid,agreed,periodic(3)
+    ok=.false.;valid=tree%is_valid()
+    call agree();if(.not.agreed) return
+    levels=tree%level_count();level=target_level+1
+    valid=all([size(physical),size(virtuals),size(ghosts),size(work)]==levels)
+    valid=valid.and.level>=1.and.level<=levels.and.all(ieee_is_finite([time,interval]))
+    valid=valid.and.time>=0.and.interval>0.and.size(boundary_change)==size(exterior)
+    call agree();if(.not.agreed) return
+    flags=[levels,target_level,stage,iterations];times=[time,interval]
+    call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    call MPI_Allreduce(times,low_time,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(times,high_time,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low_time/=high_time)) return
+    tolerance=32*epsilon(1._dp)*max(abs(time),interval,tiny(1._dp))
+    if(stage==0) then
+      ! Current level and descendants must start together; parents have already
+      ! completed their provisional interval before recursive descent.
+      do p=level,levels
+        finish=work(p)%time+work(p)%interval
+        valid=valid.and.work(p)%next_stage==0.and.abs(finish-time)<=tolerance
+      end do
+      if(level>1) then
+        valid=valid.and.work(level-1)%iterations>0.and.work(level-1)%next_stage==0
+        valid=valid.and.time>=work(level-1)%time-tolerance
+        valid=valid.and.interval<=work(level-1)%time+work(level-1)%interval-time+tolerance
+      end if
+    end if
+    call agree();if(.not.agreed) return
+    lower=[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]
+    spacing=[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz]
+    periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
+    candidate=work(level);group(1)=physical(level);group(2)=virtuals(level);group(3)=ghosts(level)
+    if(stage==0) then
+      call refresh_mpi_amr_level_copies(comm,tree,owners,physical,lower,spacing,periodic,target_level,grow, &
+        maximum_parcels,new_virtual,next_ghost,valid,nodal_phi)
+      if(.not.valid) return
+      group(2)=new_virtual
+    end if
+    call advance_mpi_eb_population_sdc_stage(comm,species,transport,components,options,tree,owners,geometry, &
+      state,temperature,width,target_level,grow,maximum_parcels,group,candidate,time,interval,stage,iterations,faces, &
+      change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+    if(.not.valid) return
+    physical(level)=group(1);virtuals(level)=group(2);ghosts(level)=group(3);work(level)=candidate
+    if(stage==0.and.level<levels) ghosts(level+1)=next_ghost
+    call move_alloc(change%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    wall_change=wall;boundary_change=exterior;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine advance_mpi_eb_recursive_population_stage
+
   ! Old half kick + full drift, then a new half kick only at the final
   ! iteration, matching pinned Particle.cpp. Sources are stage rates;
   ! stage>0 ledgers contain old plus current-new physical boundary changes.

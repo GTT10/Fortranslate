@@ -2,8 +2,8 @@ program test_spray_mpi_eb_sample
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
-    advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage
-  use spray_mpi_amr_tree_mod, only: spray_level_population
+    advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage,advance_mpi_eb_recursive_population_stage
+  use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,initialize_spray_liquid
   use spray_mixture_mod, only: advance_mixture_frozen_gas
   use gas_transport_mod, only: gas_transport_species
@@ -116,7 +116,9 @@ contains
     type(spray_parcel), allocatable :: ghosts(:)
     type(spray_parcel) :: reference
     type(spray_level_population) :: group(3),before_group(3),expected_group(3)
-    type(spray_sdc_population_stage) :: work
+    type(spray_sdc_population_stage) :: work,hierarchy_work(2)
+    type(spray_level_population), allocatable :: physical(:),virtuals(:),incoming(:)
+    type(spray_level_population) :: root_finished
     type(amr_tree_state_3d) :: expected_source,expected_remainder
     type(amr_tree_state_3d) :: group_source,group_remainder,old_group_source,old_group_remainder
     real(dp), allocatable :: mass(:,:),old_mass(:,:),delta(:),integral(:),ledger(:)
@@ -125,7 +127,7 @@ contains
     integer, allocatable :: query_nodes(:)
     real(dp) :: h(3),cell_lower(3),vf
     real(dp) :: gas_constant,t,sound,fraction(1),fractions(3)=[0._dp,.25_dp,1._dp]
-    integer :: nv,p,a,b,c,n(3),count,stage,population
+    integer :: nv,p,a,b,c,n(3),count,stage,population,substep
     character(len=16) :: faces(6)
     call load_h2o2_full_thermo(species,ok)
     call require(ok,'particle halo thermo')
@@ -353,6 +355,47 @@ contains
           .and.all(group(population)%parcels(1)%position==expected_group(population)%parcels(1)%position), &
           'final SDC particles match one drift and one new kick')
       end do
+      call initialize_mpi_amr_sdc_populations(MPI_COMM_WORLD,tree,owners,group(1)%parcels, &
+        group(1)%component_mass,zero,spacing,periodic,1,100,physical,virtuals,incoming,ok,phi)
+      call require(ok,'recursive population initialization')
+      fraction=0
+      call advance_mpi_eb_recursive_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,0,1,100,physical,virtuals,incoming,hierarchy_work,0._dp,2e-8_dp,0,2,faces, &
+        group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(ok,'recursive root old stage creates child ghosts')
+      wall=17;ledger=19
+      call advance_mpi_eb_recursive_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,physical,virtuals,incoming,hierarchy_work,0._dp,1e-8_dp,0,2,faces, &
+        group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(.not.ok.and.hierarchy_work(2)%next_stage==0.and.all(wall==17).and.all(ledger==19), &
+        'child rejects before parent interval completes')
+      do stage=1,2
+        call advance_mpi_eb_recursive_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+          1,0,1,100,physical,virtuals,incoming,hierarchy_work,0._dp,2e-8_dp,stage,2,faces, &
+          group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction)
+        call require(ok,'recursive root new stage')
+      end do
+      root_finished=physical(1)
+      do substep=0,1
+        do stage=0,2
+          fraction=.5_dp*substep
+          if(stage>0) fraction=fraction+.5_dp
+          call advance_mpi_eb_recursive_population_stage(MPI_COMM_WORLD,species,transport,liquid,options, &
+            tree,owners,g,gas,temp,1,1,1,100,physical,virtuals,incoming,hierarchy_work,substep*1e-8_dp,1e-8_dp,stage,2,faces, &
+            group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction)
+          call require(ok,'recursive child interval and stage')
+        end do
+        call require(hierarchy_work(2)%time+hierarchy_work(2)%interval==(substep+1)*1e-8_dp, &
+          'child population clock advances once per interval')
+        call require(size(incoming(2)%parcels)==count,'incoming ghosts retained across child substeps')
+      end do
+      call require(all(physical(1)%component_mass==root_finished%component_mass), &
+        'child ghost feedback does not advance parent physical population again')
+      wall=17;ledger=19;fraction=1
+      call advance_mpi_eb_recursive_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,physical,virtuals,incoming,hierarchy_work,2e-8_dp,1e-8_dp,0,2,faces, &
+        group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(.not.ok.and.all(wall==17).and.all(ledger==19),'child cannot advance beyond parent interval')
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,query_nodes,ghosts,mass,1e-8_dp,0._dp,faces,source,remainder,wall,ledger,ok,phi,centroids,metrics, &
