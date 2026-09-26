@@ -44,7 +44,10 @@ Serial SDC checkpoint/restart now preserves reaction estimates and forcing
 inventories in plain/indexed records ([checks](validation/sdc-tree-restart-20260926.md)).
 Scheduled/automatic serial SDC regridding now transfers signed reaction estimates
 with the gas ([checks](validation/sdc-tree-regrid-20260926.md)).
-Recursive SDC subcycling and MPI/EB SDC remain open.
+SDC hydro stages now support level selection and separate coarse temporal
+donors for state and predictor sources ([checks](validation/sdc-level-hydro-20260926.md)).
+The recursive SDC driver, level-local transport/reaction coupling and MPI/EB SDC
+remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
