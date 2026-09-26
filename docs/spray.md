@@ -23,8 +23,10 @@ computational splitting. The MPI EB spray application exposes common-step SDC. T
 The library additionally provides `advance_mpi_eb_spray_sdc_subcycle`, connecting
 recursive gas stages, physical/virtual/ghost particles, predictor halos and final
 physical collection for a nonperiodic drag/heating/evaporation core. The application
-still exposes common-step SDC. Recursive breakup, films, particle acceleration,
-complete subtree lifecycle integration remain open. Inflow metadata and isothermal
+still exposes common-step SDC. Recursive breakup, films and particle acceleration
+remain open. End-of-level virtual cleanup, final-subcycle ghost cleanup and
+synchronized physical subtree redistribution now run after gas synchronization
+([lifecycle checks](validation/spray-recursive-lifecycle-20260927.md)). Inflow metadata and isothermal
 wall temperatures now reach recursive gas stages; particle faces map inflow to
 outflow and isothermal walls to no-slip reflection, as in the common-step wrapper.
 See the [coupled core checks](validation/spray-recursive-core-20260927.md) and
