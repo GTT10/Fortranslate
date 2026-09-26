@@ -160,6 +160,21 @@ See [film checks](validation/spray-level-film-20260927.md).
 
 ## Particle sampling from complete gas halos
 
+`kick_mpi_amr_mixture_halo` connects halo sampling to the existing mixed-liquid
+drag, heating and evaporation kernel for one caller-selected kick interval.
+It accepts assigned node indices, conserved and temperature halos, and optional
+fluid-fraction/EB visibility data. Gas remains read-only; the output is a fresh
+source halo per fluid volume using the same weights as sampling. Particle,
+component and source outputs publish together after collective success.
+
+Positions, IDs and population ownership remain fixed. The caller supplies
+stage-time halos, chooses the kick duration (including any half-step factor),
+and separately handles drift, breakup/children, dead-particle removal and source
+transfer. This is a kick building block for physical, virtual or ghost
+populations, not a complete recursive step. Source application/EOS validation
+and retries belong to the enclosing gas/particle transaction.
+See [halo kick checks](validation/spray-halo-kick-20260927.md).
+
 `sample_mpi_amr_particle_halo` reads a caller-filled owner-local halo at the
 particle's assigned node resolution. Each query supplies its target node;
 that node must belong to the querying rank. Trilinear weights use the fine

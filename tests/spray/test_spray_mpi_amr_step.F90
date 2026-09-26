@@ -1,9 +1,9 @@
 program test_spray_mpi_amr_step
   use mpi_f08
-  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
+  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_parcel_mod
-  use spray_mixture_mod, only: liquid_mixture_properties
+  use spray_mixture_mod, only: liquid_mixture_properties,advance_mixture_frozen_gas
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
   use, intrinsic :: iso_fortran_env, only: int64
@@ -11,7 +11,7 @@ program test_spray_mpi_amr_step
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use mixture_thermo_mod, only: mixture_specific_gas_constant
-  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_conserved_to_primitive
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
@@ -134,6 +134,7 @@ program test_spray_mpi_amr_step
   call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
   call require(q==3,'global parcel count')
   call check_level_view()
+  call check_halo_kick()
   ! Exercise collective child IDs and the transverse-energy gas debit.
   local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
   do p=1,size(drops)
@@ -161,6 +162,84 @@ program test_spray_mpi_amr_step
   if (rank==0) print *, 'PASS: periodic MPI AMR mixed-particle coupling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_halo_kick()
+    type(amr_tree_state_3d) :: halo,ht,source,kept_source
+    type(spray_parcel), allocatable :: hd(:),reference(:)
+    real(dp), allocatable :: hm(:,:),rm(:,:)
+    real(dp) :: delta(nv),expected_delta(nv),integral(nv),hp(nv),guess,cs,dt
+    integer, allocatable :: nodes(:)
+    integer :: a,b,c,d,sz(3),count
+    count=merge(1,0,rank==owners(2))
+    allocate(hd(count),hm(2,count),nodes(count),halo%fields(3),ht%fields(3))
+    nodes=2;dt=1e-8_dp
+    do a=1,count
+      ! This point lies just beyond the fine patch's valid x extent.
+      hd(a)=spray_parcel(1_int64,spacing*[2.1_dp,1.5_dp,1.5_dp], &
+        [20._dp,10._dp,5._dp],1e-12_dp,350._dp,100._dp)
+      hm(:,a)=hd(a)%mass*[.25_dp,.75_dp]
+    end do
+    do a=1,3
+      if(owners(a)/=rank) cycle
+      sz=tree%nodes(a)%shape
+      allocate(halo%fields(a)%values(nv,0:sz(1)+1,0:sz(2)+1,0:sz(3)+1))
+      allocate(ht%fields(a)%values(1,0:sz(1)+1,0:sz(2)+1,0:sz(3)+1))
+      do d=0,sz(3)+1
+      do c=0,sz(2)+1
+      do b=0,sz(1)+1
+        halo%fields(a)%values(:,b,c,d)=cell
+      end do
+      end do
+      end do
+      ht%fields(a)%values=1000._dp
+    end do
+    reference=hd;rm=hm;expected_delta=0
+    do a=1,count
+      call reactive_conserved_to_primitive(species,cell,1000._dp,hp,guess,cs,ok)
+      call require(ok,'halo kick EOS reference')
+      call advance_mixture_frozen_gas(species,transport,hp,guess,reference(a),liquids,rm(:,a),options,dt,delta,ok)
+      call require(ok,'halo kick reference physics')
+      reference(a)%position=hd(a)%position
+      expected_delta=expected_delta+delta
+    end do
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,source,ok)
+    call require(ok,'halo kick accepts fine ghost particle')
+    call require(all(hm==rm),'halo kick components')
+    do a=1,count
+      call require(all(hd(a)%position==reference(a)%position).and. &
+        maxval(abs(hd(a)%velocity-reference(a)%velocity))<1e-13_dp.and. &
+        abs(hd(a)%temperature-reference(a)%temperature)<1e-10_dp.and. &
+        hd(a)%mass==reference(a)%mass,'halo kick physics and fixed position')
+    end do
+    integral=0
+    do a=1,3
+      if(owners(a)/=rank) cycle
+      do d=lbound(source%fields(a)%values,4),ubound(source%fields(a)%values,4)
+      do c=lbound(source%fields(a)%values,3),ubound(source%fields(a)%values,3)
+      do b=lbound(source%fields(a)%values,2),ubound(source%fields(a)%values,2)
+        integral=integral+source%fields(a)%values(:,b,c,d)*product(spacing/real(2**tree%nodes(a)%level,dp))
+      end do
+      end do
+      end do
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,integral,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,expected_delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(integral-expected_delta)<=1e-12_dp*max(abs(expected_delta),1e-30_dp)), &
+      'halo kick conserves extensive reaction')
+    kept_source=source;reference=hd;rm=hm
+    ! A failed query happens before publication of either population or source.
+    if(count>0) nodes=0
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,source,ok)
+    call require(.not.ok.and.all(hm==rm),'halo rejection preserves components')
+    do a=1,count
+      call require(all(hd(a)%velocity==reference(a)%velocity).and.hd(a)%mass==reference(a)%mass, &
+        'halo rejection preserves parcels')
+    end do
+    do a=1,3
+      if(owners(a)==rank) call require(all(source%fields(a)%values==kept_source%fields(a)%values),'halo source rollback')
+    end do
+  end subroutine check_halo_kick
   subroutine check_level_view()
     type(amr_patch_tree_3d) :: coarse
     type(amr_patch_3d) :: no_patches(0)

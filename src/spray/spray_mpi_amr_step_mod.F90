@@ -15,7 +15,8 @@ module spray_mpi_amr_step_mod
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
+  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas, &
+    sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
@@ -24,8 +25,88 @@ module spray_mpi_amr_step_mod
   use spray_mpi_eb_impact_mod, only: advance_mpi_level_set_impacts
   implicit none
   private
-  public :: advance_mpi_amr_mixture_coupling
+  public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo
 contains
+  ! A single drag/thermal/evaporation kick on a caller-owned level population.
+  ! Gas halos are frozen at the supplied stage time. Position, IDs and population
+  ! ownership stay fixed; the caller schedules drift, breakup and source transfer.
+  ! Species/model tables and options are identical across ranks by caller contract.
+  ! Gas source and particle/component updates publish together after MPI success.
+  subroutine kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
+      gas_halo,temperature_halo,width,nodes,parcels,component_mass,lower,spacing,periodic,dt,source_halo,ok, &
+      fluid_fraction,nodal_phi,centroids)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),width,nodes(:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(amr_tree_state_3d), intent(inout) :: source_halo
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),dt
+    logical, intent(in) :: periodic(3)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_parcel), allocatable :: candidate(:)
+    type(amr_tree_state_3d) :: source
+    real(dp), allocatable :: masses(:,:),positions(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
+    real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,low_dt,high_dt
+    integer :: p,nv,nc,status
+    logical :: valid,agreed
+    ok=.false.;nv=reactive_nvar(size(species));nc=size(components)
+    valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and.nc>=1.and.nc<=16.and.size(transport)==size(species)
+    valid=valid.and.ieee_is_finite(dt)
+    if(valid) valid=dt>=0.and.dt<=1e6_dp
+    call agree();if(.not.agreed) return
+    valid=size(nodes)==size(parcels).and.all(shape(component_mass)==[nc,size(parcels)])
+    call agree();if(.not.agreed) return
+    do p=1,size(parcels)
+      valid=valid_component_inventory(parcels(p),component_mass(:,p))
+      if(.not.valid) exit
+    end do
+    call agree();if(.not.agreed) return
+    call MPI_Allreduce(dt,low_dt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(dt,high_dt,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low_dt/=high_dt) return
+    allocate(positions(3,size(parcels)),change(nv,size(parcels)))
+    do p=1,size(parcels)
+      positions(:,p)=parcels(p)%position
+    end do
+    call sample_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,positions,lower,spacing, &
+      periodic,sampled,valid,fluid_fraction,nodal_phi,centroids)
+    if(.not.valid) return
+    call sample_mpi_amr_particle_halo(comm,tree,owners,temperature_halo,1,width,nodes,positions,lower,spacing, &
+      periodic,sampled_t,valid,fluid_fraction,nodal_phi,centroids)
+    if(.not.valid) return
+    candidate=parcels;masses=component_mass;change=0
+    do p=1,size(parcels)
+      if(parcels(p)%mass<=0) cycle
+      call reactive_conserved_to_primitive(species,sampled(:,p),sampled_t(1,p),primitive,tg,sound,valid)
+      if(.not.valid) exit
+      call advance_mixture_frozen_gas(species,transport,primitive,tg,candidate(p),components,masses(:,p), &
+        options,dt,change(:,p),valid)
+      if(.not.valid) exit
+      candidate(p)%position=parcels(p)%position
+    end do
+    call agree();if(.not.agreed) return
+    call deposit_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,positions,change, &
+      lower,spacing,periodic,source,valid,fluid_fraction,nodal_phi,centroids)
+    if(.not.valid) return
+    call move_alloc(candidate,parcels);call move_alloc(masses,component_mass)
+    call move_alloc(source%fields,source_halo%fields);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine kick_mpi_amr_mixture_halo
+
   ! Regular or nodal EB AMR: common particle substeps and whole-interval rollback.
   ! Species, transport, liquids and options must be identical on every rank.
   ! Optional gas_change sums accepted deposition increments per fluid volume;
