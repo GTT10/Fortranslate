@@ -77,8 +77,9 @@ and application dispatch ([checks](validation/sdc-mpi-subcycle-20260927.md)). EB
 ([checks](validation/sdc-eb-hydro-source-20260927.md)). EB hydro now exposes conservative rates, integrated fluxes and boundary/wall
 ledgers ([checks](validation/sdc-eb-hydro-stage-20260927.md)). Physical boundary filling now feeds the EB SDC hydro stage
 ([checks](validation/sdc-eb-boundary-stage-20260927.md)). Small-cell redistribution now has a transactional source-rate interface
-([checks](validation/sdc-eb-redist-20260927.md)). The coupled EB SDC loop and
-application integration remain open.
+([checks](validation/sdc-eb-redist-20260927.md)). The serial single-grid EB SDC loop now couples hydro, transport, forcing,
+reactions and redistribution ([checks](validation/sdc-eb-loop-20260927.md)).
+EB SDC application/restart and AMR/MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
