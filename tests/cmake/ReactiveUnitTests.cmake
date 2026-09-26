@@ -891,3 +891,6 @@ target_link_libraries(test_eb_tree_redistribution_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_redistribution_3d COMMAND test_eb_tree_redistribution_3d)
 
 add_test(NAME unit_eb_tree_sdc_redistribution_3d COMMAND test_eb_tree_full_3d redist)
+
+add_test(NAME unit_eb_tree_sdc_redist_recursive_3d COMMAND test_eb_tree_full_3d redist_recursive)
+set_tests_properties(unit_eb_tree_sdc_redist_recursive_3d PROPERTIES TIMEOUT 180)

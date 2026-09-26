@@ -834,12 +834,12 @@ contains
     dt=candidate;ok=.true.
   end subroutine reactive_eb_tree_timestep_3d
 
-  ! R/2 T/2 H T/2 R/2 composition. Each successful stage remains private
-  ! until the complete step and its exchange vectors can be committed.
+  ! Recursive SDC with interval-owned redistribution registers. Each register
+  ! closes when the coarser source/recipient level finishes its interval.
   subroutine advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,iterations,chemistry, &
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
-      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps)
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -855,6 +855,9 @@ contains
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
+    character(len=*), optional, intent(in) :: redistribution
+    character(len=16) :: method
+    type(amr_tree_state_3d), allocatable :: pending(:)
     type(eb_reactive_tree_3d) :: candidate,starts,ends
     type(amr_tree_state_3d), allocatable :: ir
     type(amr_tree_state_3d) :: source0,source1
@@ -876,6 +879,9 @@ contains
     if(present(level_steps)) then
       if(size(level_steps)/=levels) return
     end if
+    method='none'
+    if(present(redistribution)) method=redistribution
+    if(method/='none'.and.method/='flux_redist') return
     candidate=tree
     call average_down_reactive_eb_tree_3d(species,candidate,valid)
     if(.not.valid) return
@@ -887,6 +893,12 @@ contains
       allocate(source0%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
     end do
     source1=source0
+    if(method=='flux_redist') then
+      allocate(pending(0:levels-1))
+      do c=0,levels-1
+        pending(c)=source0
+      end do
+    end if
     if(chemistry) then
       allocate(ir)
       if(present(reaction_source)) then
@@ -927,9 +939,11 @@ contains
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
-      type(amr_tree_state_3d) :: op,np
+      type(amr_tree_state_3d) :: op,np,correction,redistributed
+      type(amr_tree_state_3d), allocatable :: transfer
+      type(eb_reactive_tree_3d) :: before_sync
       real(dp) :: fstart(level),fend(level),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
-      integer :: p,d(3),step
+      integer :: p,d(3),step,target,bucket
       logical :: accepted
       good=.false.
       if(counts(level+1)==huge(1_int64)) return
@@ -939,11 +953,18 @@ contains
       do p=1,size(tree%nodes)
         if(tree%topology%nodes(p)%level==level) starts%nodes(p)=candidate%nodes(p)
       end do
+      if(method=='flux_redist') allocate(transfer)
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
-        level,starts,ends,fstart,fend,source0,source1,flux,op,np)
+        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer)
       if(.not.accepted) return
+      if(method=='flux_redist') then
+        do p=1,size(tree%nodes)
+          target=tree%topology%nodes(p)%level;bucket=min(level,target)
+          pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
+        end do
+      end if
       counts(level+1)=counts(level+1)+1
       wall=wall+w;chemical=chemical+ch;external=external+ext;theta=min(theta,limiter)
       do p=1,size(tree%nodes)
@@ -974,10 +995,61 @@ contains
           elapsed=elapsed+sub_dt
         end do
       end if
+      if(method=='flux_redist') before_sync=candidate
       call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,accepted,level,min(level+1,levels-1),boundary_faces)
       if(.not.accepted) return
+      if(method=='flux_redist') then
+        correction=source0
+        do p=1,size(tree%nodes)
+          correction%fields(p)%values=0
+          target=tree%topology%nodes(p)%level
+          if(target<level.or.target>level+1) cycle
+          correction%fields(p)%values=candidate%nodes(p)%state-before_sync%nodes(p)%state
+        end do
+        ! This operator is linear in its argument, so an integrated reflux
+        ! increment can be redistributed directly without division by dt.
+        call redistribute_sdc_eb_tree_flux_rate_3d(candidate,correction,redistributed,accepted,boundary_faces)
+        if(.not.accepted) return
+        candidate=before_sync
+        do p=1,size(tree%nodes)
+          target=tree%topology%nodes(p)%level
+          if(target<level) then
+            pending(target)%fields(p)%values=pending(target)%fields(p)%values+redistributed%fields(p)%values
+          else
+            candidate%nodes(p)%state=candidate%nodes(p)%state+redistributed%fields(p)%values+ &
+              pending(level)%fields(p)%values
+          end if
+          pending(level)%fields(p)%values=0
+        end do
+        call recover_transfer(accepted)
+        if(.not.accepted) return
+        call average_down_reactive_eb_tree_3d(species,candidate,accepted)
+        if(.not.accepted) return
+      end if
       good=.true.
     end subroutine advance_level
+    subroutine recover_transfer(good)
+      logical, intent(out) :: good
+      real(dp) :: primitive(reactive_nprim(size(species))),temperature,speed
+      integer :: p,x,y,z,d(3)
+      logical :: accepted
+      good=.false.
+      do p=1,size(tree%nodes)
+        d=tree%topology%nodes(p)%shape
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          if(candidate%nodes(p)%geometry%volume_fraction(x,y,z)<=0) cycle
+          call reactive_conserved_to_primitive(species,candidate%nodes(p)%state(:,x,y,z), &
+            candidate%nodes(p)%temperature(x,y,z),primitive,temperature,speed,accepted)
+          if(.not.accepted) return
+          candidate%nodes(p)%temperature(x,y,z)=temperature
+        end do
+        end do
+        end do
+      end do
+      good=.true.
+    end subroutine recover_transfer
   end subroutine advance_reactive_eb_tree_sdc_subcycle_3d
 
   subroutine advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,chemistry, &

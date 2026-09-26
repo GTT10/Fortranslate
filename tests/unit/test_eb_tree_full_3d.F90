@@ -92,9 +92,9 @@ program test_eb_tree_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
-  if(test_mode/='redist') call check_sdc_reaction()
+  if(test_mode/='redist'.and.test_mode/='redist_recursive') call check_sdc_reaction()
   call check_sdc_loop()
-  if(test_mode=='redist') then
+  if(test_mode=='redist'.or.test_mode=='redist_recursive') then
     deallocate(u,t)
     cycle
   end if
@@ -163,6 +163,7 @@ contains
     type(eb_reactive_tree_3d) :: result,baseline,previous
     type(amr_tree_state_3d) :: ir,saved_ir
     real(dp) :: b(nv),w(nv),ch(nv),ext(nv),v0(nv),v1(nv),limiter,error,change
+    integer(int64) :: counts(3)
     integer :: p,step
     logical :: good
     character(len=16) :: faces(6),method
@@ -178,9 +179,16 @@ contains
       result=initial;ir=saved_ir
       method='none'
       if(step==2) method='flux_redist'
+      if(test_mode=='redist_recursive') then
+        call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+          [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
+          b,w,ch,ext,limiter,good,ir,level_steps=counts,redistribution=method)
+        call require(all(counts==[1_int64,2_int64,4_int64]),'redistributed recursive counts')
+      else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
         [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
         b,w,ch,ext,limiter,good,ir,redistribution=method)
+      end if
       call require(good,'SDC redistributed coupled step')
       call integrate_reactive_eb_tree_3d(result,v1,good)
       call require(good,'redistributed final inventory')
@@ -196,9 +204,17 @@ contains
     end do
     call require(change>0,'redistribution changes nonuniform stage')
     previous=result;saved_ir=ir;b=17;w=19;ch=23;ext=29;limiter=31
+    if(test_mode=='redist_recursive') then
+      counts=37
+      call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+        [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
+        b,w,ch,ext,limiter,good,ir,difmag=-1._dp,level_steps=counts,redistribution='flux_redist')
+      call require(all(counts==37),'redistributed recursive counts rollback')
+    else
     call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
       b,w,ch,ext,limiter,good,ir,difmag=-1._dp,redistribution='flux_redist')
+    end if
     call require(.not.good,'redistributed failed hydro stage')
     do p=1,count
       call require(all(result%nodes(p)%state==previous%nodes(p)%state),'redistributed state rollback')
@@ -250,7 +266,7 @@ contains
     call require(ok,'SDC loop padded geometry')
     call build_eb_tree_extended_geometry_3d(topology,physical,padded,extended,ok)
     call require(ok,'SDC loop extended patches')
-    if(test_mode=='redist') then
+    if(test_mode=='redist'.or.test_mode=='redist_recursive') then
       call check_sdc_redistribution(initial,extended)
       return
     end if
