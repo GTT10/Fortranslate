@@ -365,9 +365,10 @@ physical-boundary stepping in the separate single-level application.
 explicit boundary faces. Set `subcycling=.true.` for recursive SDC intervals
 with one refinement-ratio worth of substeps per finer level. Scheduled/adaptive regridding also
 transfers signed reaction estimates by fluid-volume restriction and PCM
-prolongation in the serial application. MPI accepts fixed-topology common-step
+prolongation in the serial application. MPI accepts common-step
 SDC and preserves owner-local reaction estimates and forcing inventories in V4
-checkpoints. MPI SDC currently rejects subcycling and regridding/adaptation. Load rebalancing
+checkpoints. MPI SDC currently rejects subcycling. Scheduled/adaptive regridding transfers signed
+reaction estimates by fluid-volume restriction and PCM prolongation. Load rebalancing
 transfers reaction estimates with gas and updates the checkpoint source layout. MPI EB spray SDC remains unavailable.
 See the [recursive restart checks](../../docs/validation/sdc-eb-tree-subcycle-20260927.md).
 See the [regrid/restart checks](../../docs/validation/sdc-eb-tree-regrid-20260927.md).
