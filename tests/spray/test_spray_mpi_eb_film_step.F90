@@ -25,6 +25,7 @@ program test_spray_mpi_eb_film_step
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
   type(amr_tree_state_3d) :: gas,temp,saved,saved_t,expected,expected_t,local,local_t
+  type(amr_tree_state_3d) :: exported
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -132,6 +133,10 @@ program test_spray_mpi_eb_film_step
   walls%liquid_conductivity=.6_dp;walls%minimum_height=1e-10_dp
   allocate(boundary(nv));boundary=123
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses
+  exported=local
+  do node=1,3
+    if(allocated(exported%fields(node)%values)) exported%fields(node)%values=123
+  end do
   interval=1e-8_dp
   if(rank==0) then
     call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,local,local_t, &
@@ -152,6 +157,12 @@ program test_spray_mpi_eb_film_step
   call totals(before)
   call advance()
   call require(ok.and.steps>0.and.boundary(5)>0,'AMR film heating and wall energy')
+  do node=1,3
+    call require(allocated(exported%fields(node)%values).eqv.(owners(node)==rank),'source ownership')
+    if(owners(node)/=rank) cycle
+    call require(all(abs(local%fields(node)%values-saved%fields(node)%values-exported%fields(node)%values)<= &
+      3e-13_dp*max(1._dp,abs(local%fields(node)%values))),'integrated film source reconstruction')
+  end do
   call totals(after)
   scale=max(1e-12_dp,abs(before))
   call require(all(abs(after-before-boundary)<=2e-12_dp*scale),'gas film wall inventory')
@@ -179,12 +190,16 @@ program test_spray_mpi_eb_film_step
   deallocate(drops,masses);allocate(drops(0),masses(2,0))
   call advance()
   call require(ok.and.all(boundary==0),'globally empty films')
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    call require(all(exported%fields(node)%values==0),'empty film source replaces previous field')
+  end do
   if (rank==0) print *, 'PASS: MPI EB film evaporation and gas/wall energy coupling'
   call MPI_Finalize(ierr)
 contains
   subroutine advance()
     call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,local,local_t, &
-      tree,owners,drops,masses,zero,spacing,interval,faces,steps,boundary,ok,g,phi)
+      tree,owners,drops,masses,zero,spacing,interval,faces,steps,boundary,ok,g,phi,gas_change=exported)
   end subroutine
   subroutine unchanged()
     integer :: a
@@ -198,6 +213,7 @@ contains
     end do
     do a=1,3
       if (owners(a)/=rank) cycle
+      call require(all(exported%fields(a)%values==123),'source rollback')
       call require(all(local%fields(a)%values==saved%fields(a)%values),'gas rollback')
       call require(all(local_t%fields(a)%values==saved_t%fields(a)%values),'temperature rollback')
     end do

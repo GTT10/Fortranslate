@@ -23,7 +23,11 @@ contains
   ! Common film substeps, owner-local gas feedback and whole-interval publication.
   ! All model tables/options are identical across ranks by caller contract.
   subroutine advance_mpi_amr_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &
-      tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,eb_geometry,nodal_phi)
+      tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,eb_geometry,nodal_phi,gas_change)
+    type(amr_tree_state_3d), optional, intent(inout) :: gas_change
+    type(amr_tree_state_3d) :: integrated_change
+    type(amr_tree_state_3d), allocatable :: trial_change
+    integer :: export_flag,export_low,export_high
     type(MPI_Comm), intent(in) :: comm
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
@@ -58,6 +62,11 @@ contains
     integer :: flag,lowflag,highflag
     real(dp) :: probe_offset,wall_temperature
     ok=.false.;substeps=0
+    export_flag=merge(1,0,present(gas_change))
+    call MPI_Allreduce(export_flag,export_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.export_low/=export_high) return
     flag=merge(1,0,present(eb_geometry))+2*merge(1,0,present(nodal_phi))
     call MPI_Allreduce(flag,lowflag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -138,6 +147,13 @@ contains
     call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,gas,temp,positions,change, &
       lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
     if (.not.valid) return
+    if(present(gas_change)) then
+      integrated_change=gas
+      do node=1,size(owners)
+        if(allocated(integrated_change%fields(node)%values)) integrated_change%fields(node)%values=0
+      end do
+      allocate(trial_change)
+    end if
     elapsed=0;ledger=0;count_steps=0
     do while(wall_options%evolve.and.elapsed<interval)
       valid=count_steps<options%maximum_substeps
@@ -200,7 +216,7 @@ contains
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
-            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
+            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,gas_change=trial_change)
           if (valid) then
             accepted=.true.;exit
           end if
@@ -208,6 +224,19 @@ contains
         dt=.5_dp*dt
       end do
       if (.not.accepted) return
+      if(present(gas_change)) then
+        do node=1,size(owners)
+          if(.not.allocated(integrated_change%fields(node)%values)) cycle
+          associate(a=>integrated_change%fields(node)%values,b=>trial_change%fields(node)%values)
+            if(any(a>huge(1._dp)-max(b,0._dp)).or.any(a< -huge(1._dp)-min(b,0._dp))) then
+              valid=.false.;exit
+            end if
+            a=a+b
+          end associate
+        end do
+        call agree()
+        if(.not.agreed) return
+      end if
       gas=next_gas;temp=next_temp;patches=trial;masses=next_mass;ledger=ledger+trial_ledger
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
@@ -223,6 +252,7 @@ contains
     if (.not.ieee_is_finite(global_ledger)) return
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(kept,films);call move_alloc(kept_mass,film_mass)
+    if(present(gas_change)) call move_alloc(integrated_change%fields,gas_change%fields)
     boundary_change=0;boundary_change(5)=global_ledger;substeps=count_steps;ok=.true.
   contains
     subroutine agree()
