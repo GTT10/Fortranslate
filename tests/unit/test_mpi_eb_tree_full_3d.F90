@@ -100,7 +100,8 @@ program test_mpi_eb_tree_full_3d
   call require(ok,'initial inventory')
   saved=tree
   call check_sdc_loop()
-  if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive") then
+  if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
+     test_mode=="state_redist") then
     deallocate(u,t)
     cycle
   end if
@@ -143,8 +144,10 @@ contains
     real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter
     real(dp) :: initial_inventory(nv),final_inventory(nv),error,force(3),viscosity_coefficient,recovered,sound
     integer :: owners(count),p,x,y,z,layout,failure
-    character(len=16) :: faces(6)
+    character(len=16) :: faces(6),method
     logical :: good
+    method='none'
+    if(test_mode=='state_redist') method='state_redist'
     initial=saved;faces='outflow';force=[2.e4_dp,-3.e4_dp,4.e4_dp]
     do p=1,count
       geometry(p)=initial%nodes(p)%geometry
@@ -185,7 +188,7 @@ contains
     reference=initial
     call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
-      sb,sw,sch,sext,slimiter,good,serial_ir)
+      sb,sw,sch,sext,slimiter,good,serial_ir,redistribution=method)
     call require(good,'serial coupled SDC')
     call integrate_reactive_eb_tree_3d(initial,initial_inventory,good)
     call require(good,'SDC initial inventory')
@@ -203,7 +206,7 @@ contains
       old=local;ot=lt;old_ir=ir
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,redistribution=method)
       call require(good,'MPI coupled SDC')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'coupled SDC owner-local state')
@@ -221,7 +224,7 @@ contains
       error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext)/max(1._dp,abs(initial_inventory)))
       if(rank==0) print *, 'MPI SDC layout, composite residual: ',layout,error
       call require(error<3.e-14_dp,'SDC composite closure')
-      call check_sdc_level(initial,geometry,extended,owners,old,ot)
+      if(test_mode/='state_redist') call check_sdc_level(initial,geometry,extended,owners,old,ot)
       do failure=1,2
         local=old;lt=ot;ir=old_ir;b=17;w=19;ch=23;ext=29;limiter=31
         viscosity_coefficient=.1_dp
@@ -229,7 +232,7 @@ contains
         if(failure==2.and.rank==nranks-1) force(1)=force(1)+1
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
           1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
-          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=viscosity_coefficient)
+          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=viscosity_coefficient,redistribution=method)
         force=[2.e4_dp,-3.e4_dp,4.e4_dp]
         call require(.not.good,'collective coupled SDC rejection')
         do p=1,count
