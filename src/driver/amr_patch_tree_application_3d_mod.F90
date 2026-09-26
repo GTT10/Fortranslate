@@ -27,7 +27,8 @@ module amr_patch_tree_application_3d_mod
     amr_tree_integer_layout_3d,average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d
   use amr_patch_tree_transport_3d_mod, only: compute_amr_patch_tree_transport_timestep_3d
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d, &
+    advance_amr_patch_tree_sdc_subcycle_3d
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
   implicit none
@@ -116,11 +117,7 @@ contains
       end do
       close(unit)
     end if
-    if (sdc) then
-      if (subcycling) error stop 'SDC tree subcycling is not implemented'
-    else
-      if (any(config%external_forcing/=0)) error stop 'Tree external forcing requires SDC'
-    end if
+    if (.not.sdc.and.any(config%external_forcing/=0)) error stop 'Tree external forcing requires SDC'
     if (regrid_interval_steps<0) error stop 'Negative automatic tree regrid interval'
     if (regrid_interval_steps>0) then
       if (present(schedule_path)) error stop 'Automatic tree adaptation cannot use a prescribed schedule'
@@ -352,6 +349,15 @@ contains
       do attempt=1,20
         if (time+dt<=time) error stop 'Tree timestep cannot advance time'
         if (sdc) then
+          if (subcycling) then
+          call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+          else
           call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
             config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
             config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
@@ -359,6 +365,7 @@ contains
             inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
             wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+          end if
         else
           call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
             config%reconstruction,config%limiter,config%riemann_solver,config%chemistry_enabled, &

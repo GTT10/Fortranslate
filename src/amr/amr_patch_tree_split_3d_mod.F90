@@ -1,5 +1,6 @@
 module amr_patch_tree_split_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use amr_patch_tree_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_hydro_3d
   use amr_patch_tree_transport_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_transport_3d
@@ -7,7 +8,7 @@ module amr_patch_tree_split_3d_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
-    average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
+    average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_chemistry_3d_mod, only: advance_amr_patch_tree_chemistry_3d,react_sdc_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d,compute_sdc_amr_patch_tree_hydro_3d
   use amr_patch_tree_transport_3d_mod, only: advance_amr_patch_tree_transport_3d, &
@@ -17,8 +18,187 @@ module amr_patch_tree_split_3d_mod
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   implicit none
   private
-  public :: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
+  public :: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d,advance_amr_patch_tree_sdc_subcycle_3d
 contains
+  subroutine advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
+      iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
+      ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+      inflow_mach,inflow_pressure,difmag,level_steps)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    real(dp), intent(in) :: spacing(3),dt,force(3),rtol,atol
+    character(len=*), intent(in) :: faces(6)
+    integer, intent(in) :: iterations
+    logical, intent(in) :: chemistry,transport_flags(4)
+    real(dp), intent(inout) :: boundary_change(:),source_change(:),maximum_correction,minimum_theta
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6),difmag
+    integer(int64), optional, intent(inout) :: level_steps(:)
+    type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint,source0,source1
+    type(amr_tree_state_3d), allocatable :: ir
+    type(amr_tree_flux_3d), allocatable :: integrated(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:),executed(:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: starts(:),finishes(:)
+    real(dp) :: budget(size(boundary_change)),volume(size(source_change)),largest,theta
+    integer :: nv,node,n(3),level
+    logical :: valid
+    ok=.false.;nv=5+size(species)
+    if(.not.state%is_valid(tree).or..not.temperature%is_valid(tree)) return
+    if(size(state%fields(1)%values,1)/=nv.or.size(temperature%fields(1)%values,1)/=1) return
+    if(size(boundary_change)/=nv.or.size(source_change)/=nv) return
+    if(.not.all(ieee_is_finite([spacing,dt])).or.minval(spacing)<=0.or.dt<=0) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(.not.valid) return
+    allocate(counts(size(ratios)),executed(size(ratios)),starts(size(ratios)),finishes(size(ratios)))
+    counts(1)=1
+    do level=2,size(ratios)
+      if(counts(level-1)>huge(1_int64)/int(ratios(level),int64)) return
+      counts(level)=counts(level-1)*int(ratios(level),int64)
+    end do
+    if(present(level_steps)) then
+      if(size(level_steps)/=size(counts)) return
+    end if
+    if(present(reaction_source)) then
+      if(.not.chemistry.or..not.reaction_source%is_valid(tree)) return
+      if(size(reaction_source%fields(1)%values,1)/=nv-4) return
+    end if
+    candidate=state;temps=temperature
+    call average_down_amr_patch_tree_3d(tree,candidate,valid)
+    if(.not.valid) return
+    call recover_from(0,valid)
+    if(.not.valid) return
+    allocate(old_endpoint%fields(size(tree%nodes)),new_endpoint%fields(size(tree%nodes)))
+    source0=state;source1=state
+    if(chemistry) allocate(ir)
+    if(chemistry) allocate(ir%fields(size(tree%nodes)))
+    do node=1,size(tree%nodes)
+      n=tree%nodes(node)%shape
+      allocate(old_endpoint%fields(node)%values(nv+1,n(1),n(2),n(3)))
+      old_endpoint%fields(node)%values=0
+      new_endpoint%fields(node)%values=old_endpoint%fields(node)%values
+      source0%fields(node)%values=0;source1%fields(node)%values=0
+      if(chemistry) then
+        allocate(ir%fields(node)%values(nv-4,n(1),n(2),n(3)));ir%fields(node)%values=0
+      end if
+    end do
+    if(present(reaction_source)) ir=reaction_source
+    starts=0;finishes=1;executed=0;budget=0;volume=0;largest=0;theta=1
+    call interval(0,0._dp,1._dp,integrated,valid)
+    if(.not.valid.or.any(executed/=counts)) return
+    if(.not.all(ieee_is_finite(budget)).or..not.all(ieee_is_finite(volume))) return
+    state=candidate;temperature=temps;boundary_change=budget;source_change=volume
+    maximum_correction=largest;minimum_theta=theta
+    if(present(reaction_source)) reaction_source=ir
+    if(present(level_steps)) level_steps=executed
+    ok=.true.
+  contains
+    recursive subroutine interval(depth,begin_time,end_time,effective,success)
+      integer, intent(in) :: depth
+      real(dp), intent(in) :: begin_time,end_time
+      type(amr_tree_flux_3d), allocatable, intent(out) :: effective(:)
+      logical, intent(out) :: success
+      type(amr_tree_flux_3d), allocatable :: total(:),child_flux(:)
+      type(amr_tree_state_3d) :: op,np
+      real(dp) :: fraction0(depth),fraction1(depth),change(nv),external(nv),correction(nv)
+      real(dp) :: max_change,local_theta,sub_begin,sub_end,local_dt
+      integer :: peer,ancestor,substep,ratio
+      logical :: good
+      success=.false.;local_dt=dt*(end_time-begin_time)
+      if(end_time<=begin_time.or.local_dt<=0) return
+      starts(depth+1)=begin_time;finishes(depth+1)=end_time
+      do ancestor=1,depth
+        fraction0(ancestor)=max(0._dp,min(1._dp,(begin_time-starts(ancestor))/(finishes(ancestor)-starts(ancestor))))
+        fraction1(ancestor)=max(0._dp,min(1._dp,(end_time-starts(ancestor))/(finishes(ancestor)-starts(ancestor))))
+      end do
+      call pack_depth(depth,old_endpoint)
+      if(depth==0) then
+        call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
+          iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
+          ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np)
+      else
+        call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
+          iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
+          ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+          difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
+          fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
+          integrated_flux=total,old_predictor=op,new_predictor=np)
+      end if
+      if(.not.good) return
+      executed(depth+1)=executed(depth+1)+1
+      theta=min(theta,local_theta);volume=volume+external
+      if(depth==0) budget=budget+change
+      call pack_depth(depth,new_endpoint)
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level/=depth) cycle
+        source0%fields(peer)%values=op%fields(peer)%values
+        source1%fields(peer)%values=np%fields(peer)%values
+      end do
+      if(depth+1<size(counts)) then
+        ratio=ratios(depth+2);sub_begin=begin_time
+        do substep=1,ratio
+          sub_end=begin_time+(end_time-begin_time)*real(substep,dp)/real(ratio,dp)
+          if(substep==ratio) sub_end=end_time
+          call interval(depth+1,sub_begin,sub_end,child_flux,good)
+          if(.not.good) return
+          do peer=1,size(tree%nodes)
+            if(tree%nodes(peer)%level<=depth) cycle
+            if(.not.allocated(total(peer)%x)) then
+              total(peer)=child_flux(peer)
+            else
+              total(peer)%x=total(peer)%x+child_flux(peer)%x
+              total(peer)%y=total(peer)%y+child_flux(peer)%y
+              total(peer)%z=total(peer)%z+child_flux(peer)%z
+            end if
+          end do
+          sub_begin=sub_end
+        end do
+      end if
+      call reflux_amr_patch_tree_3d(tree,candidate,total,spacing,faces,correction,max_change,good, &
+        minimum_depth=depth,synchronized_flux=effective)
+      if(.not.good) return
+      largest=max(largest,max_change)
+      if(depth==0) budget=budget+correction
+      call recover_from(depth,good)
+      if(.not.good) return
+      success=.true.
+    end subroutine interval
+    subroutine pack_depth(depth,packed)
+      integer, intent(in) :: depth
+      type(amr_tree_state_3d), intent(inout) :: packed
+      integer :: peer
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level/=depth) cycle
+        packed%fields(peer)%values(:nv,:,:,:)=candidate%fields(peer)%values
+        packed%fields(peer)%values(nv+1,:,:,:)=temps%fields(peer)%values(1,:,:,:)
+      end do
+    end subroutine pack_depth
+    subroutine recover_from(depth,success)
+      integer, intent(in) :: depth
+      logical, intent(out) :: success
+      real(dp), allocatable :: recovered(:,:,:)
+      integer :: peer,dims(3)
+      success=.false.
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level<depth) cycle
+        dims=tree%nodes(peer)%shape
+        allocate(recovered(dims(1),dims(2),dims(3)))
+        call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
+          dims(1),dims(2),dims(3),recovered,success)
+        if(.not.success) return
+        temps%fields(peer)%values(1,:,:,:)=recovered
+        deallocate(recovered)
+      end do
+      success=.true.
+    end subroutine recover_from
+  end subroutine advance_amr_patch_tree_sdc_subcycle_3d
+
   ! Whole-tree or level-local SDC. Level mode exports fluxes without reflux;
   ! a recursive caller owns child intervals and final synchronization.
   subroutine advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &

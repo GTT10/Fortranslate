@@ -1,6 +1,8 @@
 program test_amr_patch_tree_split_3d
+  use, intrinsic :: iso_fortran_env, only: int64
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d, &
+    advance_amr_patch_tree_sdc_subcycle_3d
   use reactive_3d_mod, only: advance_reactive_sdc_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
@@ -148,6 +150,7 @@ contains
     real(dp) :: before(12),after(12),e0(3),e1(3),ext(3),source_ref(12),boundary_ref(12)
     real(dp), parameter :: h=1e-9_dp,force(3)=[20000._dp,-30000._dp,40000._dp]
     integer :: peer,trial,dims(3)
+    integer(int64) :: steps(3)
     faces='periodic'
     call prolong_amr_patch_tree_3d(tree,root,u,ok)
     call require(ok,'SDC tree state')
@@ -195,14 +198,20 @@ contains
     end do
     call prolong_amr_patch_tree_3d(tree,root,u,ok)
     call prolong_amr_patch_tree_3d(tree,rt,t,ok)
-    do trial=1,2
+    do trial=1,3
       if(trial==2) u%fields(4)%values(5,1,1,1)=1.001_dp*u%fields(4)%values(5,1,1,1)
       call average_down_amr_patch_tree_3d(tree,u,ok)
       call require(ok,'SDC input restriction')
       call composite_integrals_amr_patch_tree_3d(tree,u,spacing,before,ok)
       call require(ok,'SDC initial composite inventory')
+      if(trial==3) then
+        call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,u,t,spacing,h,faces,2,.true., &
+          [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok,level_steps=steps)
+        call require(ok.and.all(steps==[1_int64,2_int64,4_int64]),'recursive SDC level counts')
+      else
       call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,u,t,spacing,h,faces,2,.true., &
         [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok)
+      end if
       call require(ok,'SDC coupled hierarchy step')
       if(trial==1) then
         do peer=1,size(tree%nodes)
@@ -233,6 +242,12 @@ contains
       [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok,difmag=-1._dp)
     call require(.not.ok.and.all(bound==-3).and.all(sources==-4).and.maximum==-5.and.minimum==-6, &
       'SDC failed hydro stage preserves inventories')
+    steps=-7
+    call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,u,t,spacing,h,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok, &
+      difmag=-1._dp,level_steps=steps)
+    call require(.not.ok.and.all(bound==-3).and.all(sources==-4).and.maximum==-5.and.minimum==-6.and.all(steps==-7), &
+      'recursive SDC failure preserves diagnostics and counts')
     do peer=1,size(tree%nodes)
       call require(all(u%fields(peer)%values==previous%fields(peer)%values).and. &
         all(t%fields(peer)%values==previous_t%fields(peer)%values),'SDC whole-step rollback')
