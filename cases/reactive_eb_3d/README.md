@@ -86,6 +86,9 @@ Use `hydro_method='plm_ctu'`, `riemann_solver='pelec'` and explicit
 `boundary_faces`; legacy boundary labels are rejected for SDC. `sdc.nml` is a
 small reacting/transporting/forced plane-cut example with state redistribution.
 The final inventory report adds a separate forcing column. Reaction estimates
-persist across successful timesteps. SDC checkpoint/restart is currently
-rejected because the stored format has not yet been extended for those fields.
+persist across successful timesteps and checkpoint/restart. SDC checkpoints
+also retain cumulative forcing inventories and require matching iteration counts
+and external forcing. Schemas 10/11/12 extend the fixed/selected/element-aware
+exchange formats; legacy split checkpoints retain schemas 1 through 6.
+See the [restart checks](../../docs/validation/sdc-eb-restart-20260927.md).
 Other frontends retain their existing input gates.

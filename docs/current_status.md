@@ -81,7 +81,9 @@ ledgers ([checks](validation/sdc-eb-hydro-stage-20260927.md)). Physical boundary
 reactions and redistribution ([checks](validation/sdc-eb-loop-20260927.md)).
 Fixed/selected single-grid applications now accept SDC input and report
 separate forcing inventories ([checks](validation/sdc-eb-app-20260927.md)).
-EB SDC checkpoint/restart and AMR/MPI integration remain open.
+Single-grid EB SDC checkpoint/restart now preserves reaction estimates and
+forcing inventories ([checks](validation/sdc-eb-restart-20260927.md)).
+EB SDC AMR/MPI integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
