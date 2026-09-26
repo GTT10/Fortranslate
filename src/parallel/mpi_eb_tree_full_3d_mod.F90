@@ -34,6 +34,17 @@ module mpi_eb_tree_full_3d_mod
   ! states at stages 1..iterations. Rates are per fluid volume per time.
   ! Callback-owned physical state must remain private until the driver succeeds.
   abstract interface
+    ! Build the complete three-cell predictor halo for iteration 1..iterations.
+    ! Valid fluid cells must equal rate; callback state remains caller-owned.
+    subroutine mpi_eb_sdc_predictor_builder(rate,interval,iteration,depth,halo,comm,ok)
+      import :: amr_tree_state_3d,dp,MPI_Comm
+      type(amr_tree_state_3d), intent(in) :: rate
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: iteration,depth
+      type(amr_tree_state_3d), intent(inout) :: halo
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+    end subroutine
     subroutine mpi_eb_sdc_auxiliary_source(state,temperature,interval,stage,depth,rate,comm,ok)
       import :: amr_tree_state_3d,dp,MPI_Comm
       type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -65,6 +76,7 @@ module mpi_eb_tree_full_3d_mod
       logical, intent(out) :: ok
     end subroutine
   end interface
+  public :: mpi_eb_sdc_predictor_builder
   public :: mpi_eb_sdc_auxiliary_source,mpi_eb_sdc_recursive_source,mpi_eb_sdc_recursive_halo_source
 contains
   subroutine agree(condition,comm,ok)
@@ -358,7 +370,7 @@ contains
       reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration)
+      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -383,6 +395,8 @@ contains
     real(dp), optional, intent(in) :: target_volume_fraction
     procedure(mpi_eb_sdc_auxiliary_source), optional :: auxiliary_source
     real(dp), optional, intent(inout) :: auxiliary_change(:)
+    procedure(mpi_eb_sdc_predictor_builder), optional :: predictor_builder
+    type(amr_tree_state_3d), allocatable :: predictor_halo
     type(amr_tree_state_3d) :: a0,a1
     real(dp) :: auxiliary(size(source_change))
     real(dp), optional, intent(in) :: gas_acceleration(3)
@@ -403,7 +417,7 @@ contains
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
     real(dp) :: controls(11),low(11),high(11),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
-    integer :: counts(8),mincounts(8),maxcounts(8),nv,rank,status,node,n(3),it,i,j,k,c,ios
+    integer :: counts(9),mincounts(9),maxcounts(9),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive
     ok=.false.;nv=reactive_nvar(size(species));theta=1
     accel=0
@@ -431,10 +445,10 @@ contains
     call MPI_Allreduce(controls,high,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
-      merge(1,0,present(auxiliary_source))]
-    call MPI_Allreduce(counts,mincounts,8,MPI_INTEGER,MPI_MIN,comm,status)
+      merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder))]
+    call MPI_Allreduce(counts,mincounts,9,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,maxcounts,8,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,maxcounts,9,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(mincounts/=maxcounts)) return
     selected_depth=-1
     if(present(target_depth)) selected_depth=target_depth
@@ -528,10 +542,19 @@ contains
     if(.not.ready) return
     do it=1,iterations
       call combined_rates(.true.)
+      if(present(predictor_builder)) then
+        if(allocated(predictor_halo)) deallocate(predictor_halo)
+        allocate(predictor_halo,stat=ios)
+        call agree(ios==0,comm,ready)
+        if(.not.ready) return
+        call predictor_builder(rates,dt,it,selected_depth,predictor_halo,comm,valid)
+        call agree(valid,comm,ready)
+        if(.not.ready) return
+      end if
       call compute_sdc_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,old,ot,rates,extended_geometry, &
         dt,hydro,hf,comm,ready,difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start, &
-        source_start,source_end,midpoint)
+        source_start,source_end,midpoint,predictor_halo)
       if(.not.ready) return
       if(redistribution_method=='state_redist') then
         if(selected_depth>=0) then

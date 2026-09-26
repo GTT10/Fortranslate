@@ -23,6 +23,7 @@ program test_mpi_eb_tree_full_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_subcycle_3d,mpi_eb_sdc_recursive_source
   use eb_reactive_patch_tree_3d_mod, only: advance_reactive_eb_tree_sdc_subcycle_3d,eb_sdc_recursive_source
+  use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -38,6 +39,10 @@ program test_mpi_eb_tree_full_3d
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,rank,nranks,status
   integer :: serial_source_calls=0,mpi_source_calls=0,source_failure=0
+  integer :: predictor_calls=0
+  integer, allocatable :: predictor_owners(:)
+  type(eb_geometry_3d), allocatable :: predictor_geometry(:)
+  type(amr_tree_state_3d) :: predictor_metrics
   character(len=16) :: test_mode
   logical :: ok,chemistry_on,transport_on
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
@@ -306,12 +311,22 @@ contains
         lt%fields(p)%values(1,:,:,:)=initial%nodes(p)%temperature
         ir%fields(p)%values=0
       end do
+      predictor_owners=owners;predictor_geometry=geometry;predictor_metrics=lt
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        deallocate(predictor_metrics%fields(p)%values)
+        allocate(predictor_metrics%fields(p)%values(1,10,10,10))
+        predictor_metrics%fields(p)%values(1,:,:,:)=extended(p)%volume_fraction(4:13,4:13,4:13)
+      end do
+      predictor_calls=0
       old=local;ot=lt;old_ir=ir;mpi_source_calls=0;source_failure=0
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,auxiliary_source=mpi_auxiliary,auxiliary_change=aux)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,auxiliary_source=mpi_auxiliary,auxiliary_change=aux, &
+          predictor_builder=build_predictor_halo)
       call require(good,'MPI coupled SDC')
       call require(mpi_source_calls==3,'one old and two new MPI source calls')
+      call require(predictor_calls==2,'one predictor build per SDC iteration')
       call require(maxval(abs(aux-saux)/max(1.e-30_dp,abs(saux)))<3.e-14_dp,'separate serial MPI source ledger')
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'coupled SDC owner-local state')
@@ -329,14 +344,16 @@ contains
       error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext-aux)/max(1._dp,abs(initial_inventory)))
       if(rank==0) print *, 'MPI SDC layout, composite residual: ',layout,error
       call require(error<3.e-14_dp,'SDC composite closure')
-      do failure=1,3
+      do failure=1,4
         local=old;lt=ot;ir=old_ir;b=17;w=19;ch=23;ext=29;limiter=31
-        source_failure=failure;mpi_source_calls=0;aux=37
+        source_failure=failure;mpi_source_calls=0;predictor_calls=0;aux=37
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
           1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
-          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,auxiliary_source=mpi_auxiliary,auxiliary_change=aux)
+          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,auxiliary_source=mpi_auxiliary,auxiliary_change=aux, &
+          predictor_builder=build_predictor_halo)
         call require(.not.good,'collective late auxiliary source rejection')
-        call require(mpi_source_calls==3,'failure follows two successful source stages')
+        call require(mpi_source_calls==merge(2,3,failure==4),'source calls before late failure')
+        call require(predictor_calls==2,'late predictor build reached')
         call require(all(aux==37),'auxiliary ledger rollback')
         do p=1,count
           if(owners(p)/=rank) cycle
@@ -350,6 +367,20 @@ contains
       deallocate(local%fields,lt%fields,ir%fields)
     end do
   end subroutine check_auxiliary_sources
+  subroutine build_predictor_halo(rate,interval,iteration,depth,halo,comm,good)
+    type(amr_tree_state_3d), intent(in) :: rate
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: iteration,depth
+    type(amr_tree_state_3d), intent(inout) :: halo
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    call require(interval==1.e-10_dp.and.depth==-1,'predictor interval/depth')
+    predictor_calls=predictor_calls+1
+    call require(iteration==predictor_calls,'predictor iteration sequence')
+    call fill_sdc_mpi_eb_tree_source_halo_3d(topology,predictor_owners,predictor_geometry,rate,nv,3,halo, &
+      comm,good,target_volume_fraction=predictor_metrics)
+    if(iteration==2.and.source_failure==4.and.rank==nranks-1) good=.false.
+  end subroutine
   subroutine serial_auxiliary(state,interval,stage,depth,rate,good)
     type(eb_reactive_tree_3d), intent(in) :: state
     real(dp), intent(in) :: interval
