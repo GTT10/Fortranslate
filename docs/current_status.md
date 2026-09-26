@@ -155,7 +155,9 @@ for common-step SDC ([checks](validation/sdc-eb-tree-redistribution-app-20260927
 MPI common-step SDC and application dispatch now use owner-local composite
 flux redistribution through sparse neighbor-rate and excess exchanges;
 rank-changing continuation retains the selector
-([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). MPI EB spray SDC remains open. A serial
+([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). MPI particle intervals now export independent owner-local integrated gas sources
+with collective rollback ([checks](validation/spray-sdc-source-export-20260927.md));
+old/new spray-source coupling into SDC remains open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons

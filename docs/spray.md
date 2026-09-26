@@ -6,6 +6,18 @@ single-component point parcels, molecular transport, a deviatoric Smagorinsky
 closure and native or CVODE cell chemistry. It does not replace the existing
 AMR/EB/MPI applications or claim those features are connected to particles.
 
+## Particle source export for SDC integration
+
+MPI AMR/EB deposition and `advance_mpi_amr_mixture_coupling` accept optional
+`gas_change`: an owner-local field of accepted, time-integrated gas feedback per
+fluid volume. It is accumulated independently of the gas background and published
+with the accepted gas/particle update. Failures retain its previous value. Divide
+by the interval for a source rate; wall/outflow inventories remain separate.
+The old/new SDC particle-stage connection is still open. See the
+[source-export checks](validation/spray-sdc-source-export-20260927.md).
+
+## AMR and embedded boundaries
+
 An AMR ownership library now locates parcels in the finest covering regular
 3D patch-tree cell and constructs stable rank-grouped send buffers using a
 caller-supplied owner map. It handles periodic lookup and reassignment after
