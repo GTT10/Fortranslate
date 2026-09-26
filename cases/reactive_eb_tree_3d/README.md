@@ -358,19 +358,20 @@ PLM/CTU. The tree serializer supplies an embedded-patch context while retaining
 boundary/solver identity and thermal/inlet validation. This does not enable PCM
 physical-boundary stepping in the separate single-level application.
 
-## SDC common steps
+## SDC common and recursive steps
 
 `sdc.nml` selects `time_integrator='sdc'`, `sdc_iterations=2` and
 `external_forcing(3)` (force per fluid volume). This path requires PeleC CTU,
 explicit boundary faces. Set `subcycling=.true.` for recursive SDC intervals
 with one refinement-ratio worth of substeps per finer level. Scheduled/adaptive regridding also
 transfers signed reaction estimates by fluid-volume restriction and PCM
-prolongation in the serial application. MPI accepts common-step
+prolongation in the serial application. MPI accepts common and recursive
 SDC and preserves owner-local reaction estimates and forcing inventories in V4
-checkpoints. MPI SDC currently rejects subcycling. Scheduled/adaptive regridding transfers signed
+checkpoints. Scheduled/adaptive regridding transfers signed
 reaction estimates by fluid-volume restriction and PCM prolongation. Load rebalancing
 transfers reaction estimates with gas and updates the checkpoint source layout. MPI EB spray SDC remains unavailable.
-See the [recursive restart checks](../../docs/validation/sdc-eb-tree-subcycle-20260927.md).
+See the [MPI recursive/restart checks](../../docs/validation/sdc-mpi-eb-subcycle-20260927.md).
+See the [serial recursive restart checks](../../docs/validation/sdc-eb-tree-subcycle-20260927.md).
 See the [regrid/restart checks](../../docs/validation/sdc-eb-tree-regrid-20260927.md).
 
 Serial fixed/selected source routing preserves reaction estimates and forcing

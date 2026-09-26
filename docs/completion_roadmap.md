@@ -333,9 +333,11 @@ wall dispatch now reaches SDC hydro and transport
 ([checks](validation/sdc-walls-20260926.md)). Full-face hydro/transport fluxes,
 coarse/fine halo interpolation and separate reaction/transport stages now feed
 a common-step serial AMR SDC loop with final reflux/restriction
-([checks](validation/sdc-tree-loop-20260926.md)). Remaining SDC work includes
-AMR application routing, persistent reaction-source restart, recursive
-subcycling, MPI/EB integration and broader qualification. Physical
+([checks](validation/sdc-tree-loop-20260926.md)). Regular and EB tree application routing, persistent reaction-source restart
+and serial/MPI recursive gas SDC are now connected; see the
+[current scope](current_status.md) and [MPI EB recursive checks](validation/sdc-mpi-eb-subcycle-20260927.md).
+Remaining work includes tree small-cell redistribution, spray SDC integration
+and broader qualification. Physical
 wall/outflow Riemann-state correction now reaches regular serial/MPI AMR and
 MPI spray dispatch ([checks](validation/ppm-physical-riemann-20260926.md)).
 The full periodic zero-source twelve-solve assembly now agrees in six bounded

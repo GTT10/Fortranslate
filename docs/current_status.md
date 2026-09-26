@@ -141,8 +141,11 @@ control agreement and rollback
 endpoints; hydro additionally accepts separate source endpoints and fractions
 ([checks](validation/sdc-mpi-eb-level-stages-20260927.md)). The MPI EB SDC loop now advances one selected level, forwards distinct gas/source
 times and exports fluxes plus old/new predictor fields
-([checks](validation/sdc-mpi-eb-level-loop-20260927.md)). MPI EB SDC recursive
-integration remains open.
+([checks](validation/sdc-mpi-eb-level-loop-20260927.md)). MPI EB SDC now recursively advances child levels, accumulates their fluxes and
+synchronizes each parent interval. MPI application subcycling, coupled transport
+timestep bounds and rank-changing continuation are connected
+([checks](validation/sdc-mpi-eb-subcycle-20260927.md)). Tree SDC small-cell
+redistribution and MPI EB spray SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
