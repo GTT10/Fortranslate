@@ -311,12 +311,14 @@ contains
   ! deeper of old/new trees; ratios on shared levels and root cells must match.
   ! Averaged old cells supply coarsening, exact same-level overlap or ancestor
   ! PCM supplies new refinement. Geometry is immutable wherever old nodes exist.
-  subroutine remap_reactive_eb_tree_3d(species,topology,finest,tree,ok)
+  subroutine remap_reactive_eb_tree_3d(species,topology,finest,tree,ok,reaction_source)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: topology
     type(eb_geometry_3d), intent(in) :: finest
     type(eb_reactive_tree_3d), intent(inout) :: tree
     logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    type(amr_tree_state_3d) :: old_source,new_source
     type(eb_reactive_tree_3d) :: snapshot,candidate,expected
     type(eb_geometry_3d), allocatable :: levels(:)
     integer(int64), allocatable :: old_origin(:,:),old_domain(:,:),new_origin(:,:),new_domain(:,:)
@@ -327,6 +329,13 @@ contains
     logical :: valid,found
     ok=.false.;nv=reactive_nvar(size(species))
     if (.not.valid_tree(tree,nv).or..not.finest%is_valid()) return
+    if(present(reaction_source)) then
+      if(.not.reaction_source%is_valid(tree%topology)) return
+      if(size(reaction_source%fields(1)%values,1)/=nv-4) return
+      old_source=reaction_source
+      call restrict_source(tree,old_source,valid)
+      if(.not.valid) return
+    end if
     call amr_tree_integer_layout_3d(tree%topology,old_origin,old_domain,old_ratios,valid)
     if (.not.valid) return
     call amr_tree_integer_layout_3d(topology,new_origin,new_domain,new_ratios,valid)
@@ -359,7 +368,12 @@ contains
     call initialize_reactive_eb_tree_3d(species,topology,levels(new_levels),snapshot%nodes(1)%state, &
       snapshot%nodes(1)%temperature,candidate,valid)
     if (.not.valid) return
+    if(present(reaction_source)) allocate(new_source%fields(size(candidate%nodes)))
     do node=1,size(candidate%nodes)
+      if(present(reaction_source)) then
+        d=topology%nodes(node)%shape
+        allocate(new_source%fields(node)%values(nv-4,d(1),d(2),d(3)),source=0._dp)
+      end if
       level=topology%nodes(node)%level+1;d=topology%nodes(node)%shape
       do k=1,d(3)
       do j=1,d(2)
@@ -380,6 +394,10 @@ contains
             end if
             candidate%nodes(node)%state(:,i,j,k)=snapshot%nodes(donor)%state(:,index(1),index(2),index(3))
             candidate%nodes(node)%temperature(i,j,k)=snapshot%nodes(donor)%temperature(index(1),index(2),index(3))
+            if(present(reaction_source)) then
+              if(candidate%nodes(node)%geometry%volume_fraction(i,j,k)>0) &
+                new_source%fields(node)%values(:,i,j,k)=old_source%fields(donor)%values(:,index(1),index(2),index(3))
+            end if
             found=.true.;exit
           end do
           if (found) exit
@@ -391,7 +409,45 @@ contains
     end do
     call average_down_reactive_eb_tree_3d(species,candidate,valid)
     if (.not.valid) return
+    if(present(reaction_source)) then
+      call restrict_source(candidate,new_source,valid)
+      if(.not.valid) return
+      reaction_source=new_source
+    end if
     tree=candidate;ok=.true.
+  contains
+    subroutine restrict_source(layout,field,good)
+      type(eb_reactive_tree_3d), intent(in) :: layout
+      type(amr_tree_state_3d), intent(inout) :: field
+      logical, intent(out) :: good
+      integer :: child,parent,r,lo(3),hi(3),x,y,z,first(3),last(3),component
+      real(dp) :: volume,value(nv-4)
+      good=.false.
+      do child=size(layout%nodes),2,-1
+        parent=layout%topology%nodes(child)%parent
+        r=layout%topology%nodes(child)%patch%refinement_ratio
+        call bounds(layout%topology,child,lo,hi)
+        do z=lo(3),hi(3)
+        do y=lo(2),hi(2)
+        do x=lo(1),hi(1)
+          first=([x,y,z]-lo)*r+1;last=first+r-1
+          associate(v=>layout%nodes(child)%geometry%volume_fraction(first(1):last(1),first(2):last(2),first(3):last(3)))
+          volume=sum(v);value=0
+          if(volume>0) then
+            do component=1,nv-4
+              value(component)=sum(v*field%fields(child)%values(component, &
+                first(1):last(1),first(2):last(2),first(3):last(3)))/volume
+            end do
+          end if
+          end associate
+          if(.not.all(ieee_is_finite(value))) return
+          field%fields(parent)%values(:,x,y,z)=value
+        end do
+        end do
+        end do
+      end do
+      good=.true.
+    end subroutine restrict_source
   end subroutine remap_reactive_eb_tree_3d
 
   logical function valid_tree(tree,nv) result(valid)

@@ -216,7 +216,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
     error stop 'EB tree SDC MPI integration is not implemented'
 #endif
-    if(subcycling.or.regrid_count>0.or.temperature_adaptive) error stop 'EB tree SDC requires static common steps'
+    if(subcycling) error stop 'EB tree SDC requires common steps'
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
   else
@@ -1312,7 +1312,8 @@ contains
 #endif
     if (remapping) then
       level=max(topology%level_count(),layouts(stage)%level_count())
-      call remap_reactive_eb_tree_3d(species,layouts(stage),geometry_levels(level),tree,valid)
+      call remap_reactive_eb_tree_3d(species,layouts(stage),geometry_levels(level),tree,valid,sdc_ir)
+      if(valid.and.allocated(sdc_ir)) record%reaction_source=sdc_ir
     else
       level=layouts(stage)%level_count()
       call initialize_reactive_eb_tree_3d(species,layouts(stage),geometry_levels(level),u,t,tree,valid)

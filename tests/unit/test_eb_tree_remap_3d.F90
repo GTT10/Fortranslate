@@ -4,7 +4,7 @@ program test_eb_tree_remap_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,remap_reactive_eb_tree_3d
@@ -87,6 +87,7 @@ program test_eb_tree_remap_3d
   call remap_reactive_eb_tree_3d(species,topology,finest,tree,ok)
   call require(ok,'refine root-only state to three levels')
   call check_inventory()
+  call check_source_remap()
   ! Source EOS and immutable geometry failures preserve the original tree.
   tree=saved
   tree%nodes(count)%state(1,4,4,4)=-1._dp
@@ -106,6 +107,53 @@ program test_eb_tree_remap_3d
   end do
   print *, 'test_eb_tree_remap_3d: PASS'
 contains
+  subroutine check_source_remap()
+    type(amr_tree_state_3d) :: source,previous
+    type(eb_reactive_tree_3d) :: candidate,old
+    real(dp) :: first(nv),last(nv)
+    integer :: p,c
+    candidate=saved
+    allocate(source%fields(count))
+    do p=1,count
+      allocate(source%fields(p)%values(nv-4,4,4,4))
+      do c=1,nv-4
+        source%fields(p)%values(c,:,:,:)=real((-1)**c*c*p,dp)
+      end do
+    end do
+    call source_inventory(candidate,source,first)
+    call remap_reactive_eb_tree_3d(species,moved,finest,candidate,ok,source)
+    call require(ok,'signed source moved refinement')
+    call source_inventory(candidate,source,last)
+    call require(all(abs(last-first)<=3.e-14_dp*max(1._dp,abs(first))),'signed source movement conservation')
+    call remap_reactive_eb_tree_3d(species,root_only,finest,candidate,ok,source)
+    call require(ok,'signed source complete coarsening')
+    call remap_reactive_eb_tree_3d(species,topology,finest,candidate,ok,source)
+    call require(ok,'signed source refinement')
+    call source_inventory(candidate,source,last)
+    call require(all(abs(last-first)<=3.e-14_dp*max(1._dp,abs(first))),'signed source coarsen/refine conservation')
+    candidate%nodes(count)%state(1,4,4,4)=-1;old=candidate;previous=source
+    call remap_reactive_eb_tree_3d(species,moved,finest,candidate,ok,source)
+    call require(.not.ok,'source remap bad gas rejects')
+    do p=1,count
+      call require(all(candidate%nodes(p)%state==old%nodes(p)%state).and. &
+        all(source%fields(p)%values==previous%fields(p)%values),'gas and signed source rollback')
+    end do
+  end subroutine check_source_remap
+  subroutine source_inventory(layout,source,inventory)
+    type(eb_reactive_tree_3d), intent(in) :: layout
+    type(amr_tree_state_3d), intent(in) :: source
+    real(dp), intent(inout) :: inventory(:)
+    type(eb_reactive_tree_3d) :: temp
+    integer :: p
+    temp=layout
+    do p=1,size(layout%nodes)
+      temp%nodes(p)%state=0
+      temp%nodes(p)%state(:nv-4,:,:,:)=source%fields(p)%values
+    end do
+    call integrate_reactive_eb_tree_3d(temp,inventory,ok)
+    call require(ok,'signed source composite inventory')
+  end subroutine source_inventory
+
   subroutine check_inventory()
     call integrate_reactive_eb_tree_3d(tree,after,ok)
     call require(ok,'remapped inventory')
