@@ -18,7 +18,8 @@ module amr_patch_tree_hydro_3d_mod
   public :: compute_sdc_amr_patch_tree_hydro_3d
 contains
   subroutine compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,predictor_source,root_spacing, &
-      dt,faces,hydro_rate,integrated_flux,ok,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag)
+      dt,faces,hydro_rate,integrated_flux,ok,inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag, &
+      target_depth,coarse_start,coarse_end,coarse_fractions,source_start,source_end,source_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature,predictor_source
@@ -29,17 +30,30 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),outlet_pressure(6)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_pressure(6),difmag
-    type(amr_tree_state_3d) :: packed,rates
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end,source_start,source_end
+    real(dp), optional, intent(in) :: coarse_fractions(:),source_fractions(:)
+    type(amr_tree_state_3d) :: packed,rates,predictor
     type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: h(:,:),ghost(:,:,:,:),source_ghost(:,:,:,:),inlet(:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: theta,viscosity
     logical :: valid,inlet_mask(6),wall_mask(6),reflecting(6),outflow(6)
     character(len=32) :: source_faces(6)
-    integer :: peer,n(3),nv,i,j,k
+    integer :: peer,n(3),nv,i,j,k,depth
     ok=.false.;nv=reactive_nvar(size(species));viscosity=.1_dp
     if(present(difmag)) viscosity=difmag
     if(.not.all(ieee_is_finite([dt,viscosity])).or.dt<=0.or.viscosity<0) return
     if(.not.valid_reactive_boundaries_3d(faces)) return
+    depth=-1
+    if(present(target_depth)) then
+      depth=target_depth
+      if(depth<0.or.depth>=tree%level_count()) return
+    end if
+    if(present(coarse_start).neqv.present(coarse_end)) return
+    if(present(coarse_end).neqv.present(coarse_fractions)) return
+    if(present(source_start).neqv.present(source_end)) return
+    if(present(source_end).neqv.present(source_fractions)) return
+    if((present(coarse_start).or.present(source_start)).and.depth<0) return
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if(.not.valid) return
     if(.not.predictor_source%is_valid(tree)) return
@@ -52,25 +66,36 @@ contains
     source_faces=faces
     where(source_faces/='periodic') source_faces='outflow'
     allocate(packed%fields(size(tree%nodes)),flux(size(tree%nodes)))
-    rates=state
+    rates=state;predictor=predictor_source
     do peer=1,size(tree%nodes)
+      rates%fields(peer)%values=0
       n=tree%nodes(peer)%shape
       allocate(packed%fields(peer)%values(nv+1,n(1),n(2),n(3)))
       packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
       packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
     end do
+    if(present(coarse_start)) then
+      call set_ancestors(packed,coarse_start,coarse_end,coarse_fractions,nv+1,valid)
+      if(.not.valid) return
+    end if
+    if(present(source_start)) then
+      call set_ancestors(predictor,source_start,source_end,source_fractions,nv,valid)
+      if(.not.valid) return
+    end if
     do peer=1,size(tree%nodes)
+      if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,inflow_state=inlet, &
         coarse_limiter='mc',species_count=size(species),ghost_width=4,species=species,inflow_mach=inflow_mach, &
-        inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        coarse_future=coarse_end,coarse_fractions=coarse_fractions)
       if(.not.valid) return
       call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=4)
       if(.not.valid) return
       ! Rates are signed fields: use scalar coarse interpolation without the
       ! state composition limiter or physical momentum reflection.
-      call fill_amr_patch_tree_ghosts_3d(tree,predictor_source,peer,source_faces,source_ghost,valid, &
-        coarse_limiter='mc',ghost_width=4)
+      call fill_amr_patch_tree_ghosts_3d(tree,predictor,peer,source_faces,source_ghost,valid, &
+        coarse_limiter='mc',ghost_width=4,coarse_future=source_end,coarse_fractions=source_fractions)
       if(.not.valid) return
       call amr_tree_inflow_faces_3d(tree,peer,faces,inlet_mask,valid,wall_mask,reflecting,outflow)
       if(.not.valid) return
@@ -95,6 +120,30 @@ contains
     end do
     if(.not.rates%is_valid(tree)) return
     hydro_rate=rates;integrated_flux=flux;ok=.true.
+  contains
+    subroutine set_ancestors(field,start,finish,fractions,ncomponents,success)
+      type(amr_tree_state_3d), intent(inout) :: field
+      type(amr_tree_state_3d), intent(in) :: start,finish
+      real(dp), intent(in) :: fractions(:)
+      integer, intent(in) :: ncomponents
+      logical, intent(out) :: success
+      integer :: ancestor
+      success=.false.
+      if(size(fractions)/=depth.or..not.all(ieee_is_finite(fractions))) return
+      if(any(fractions<0).or.any(fractions>1)) return
+      if(.not.allocated(start%fields).or..not.allocated(finish%fields)) return
+      if(size(start%fields)/=size(tree%nodes).or.size(finish%fields)/=size(tree%nodes)) return
+      do ancestor=1,size(tree%nodes)
+        if(tree%nodes(ancestor)%level>=depth) cycle
+        if(.not.allocated(start%fields(ancestor)%values).or..not.allocated(finish%fields(ancestor)%values)) return
+        if(any(shape(start%fields(ancestor)%values)/=[ncomponents,tree%nodes(ancestor)%shape])) return
+        if(any(shape(finish%fields(ancestor)%values)/=[ncomponents,tree%nodes(ancestor)%shape])) return
+        if(.not.all(ieee_is_finite(start%fields(ancestor)%values))) return
+        if(.not.all(ieee_is_finite(finish%fields(ancestor)%values))) return
+        field%fields(ancestor)%values=start%fields(ancestor)%values
+      end do
+      success=.true.
+    end subroutine set_ancestors
   end subroutine compute_sdc_amr_patch_tree_hydro_3d
 
   subroutine compute_amr_patch_tree_cfl_3d(tree,species,state,temperature,root_spacing,cfl,dt,ok)

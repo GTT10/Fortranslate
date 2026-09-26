@@ -124,10 +124,11 @@ program test_amr_patch_tree_hydro_3d
   end do
 contains
   subroutine check_sdc_hydro_stage()
-    type(amr_tree_state_3d) :: source,rates,candidate,expected,et,forced
-    type(amr_tree_flux_3d), allocatable :: flux(:),forced_flux(:)
+    type(amr_tree_state_3d) :: source,rates,candidate,expected,et,forced,level_rates,packed,future,source_future,retained
+    type(amr_tree_flux_3d), allocatable :: flux(:),forced_flux(:),level_flux(:)
     real(dp) :: boundary(12),correction(12),maximum,change
-    integer :: peer
+    integer :: peer,depth,nv,dims(3)
+    real(dp), allocatable :: fractions(:)
     source=state
     do peer=1,size(tree%nodes)
       source%fields(peer)%values=0
@@ -158,6 +159,63 @@ contains
       change=max(change,maxval(abs(forced%fields(peer)%values-rates%fields(peer)%values)))
     end do
     call require(change>1e-10_dp,'SDC predictor source changes CTU rate')
+    do depth=0,tree%level_count()-1
+      call compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,source,spacing,dt,faces, &
+        level_rates,level_flux,ok,target_depth=depth)
+      call require(ok,'level-selective SDC hydro')
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level==depth) then
+          call require(all(level_rates%fields(peer)%values==forced%fields(peer)%values),'selected level rates exact')
+          call require(all(level_flux(peer)%x==forced_flux(peer)%x),'selected level flux exact')
+        else
+          call require(all(level_rates%fields(peer)%values==0),'inactive rate zero')
+          call require(.not.allocated(level_flux(peer)%x),'inactive flux absent')
+        end if
+      end do
+    end do
+    depth=tree%level_count()-1
+    if(depth==0) return
+    allocate(packed%fields(size(tree%nodes)),fractions(depth))
+    nv=size(state%fields(1)%values,1)
+    do peer=1,size(tree%nodes)
+      dims=tree%nodes(peer)%shape
+      allocate(packed%fields(peer)%values(nv+1,dims(1),dims(2),dims(3)))
+      packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
+      packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+    end do
+    future=packed;source_future=source
+    do peer=1,size(tree%nodes)
+      if(tree%nodes(peer)%level>=depth) cycle
+      future%fields(peer)%values(5,:,:,:)=1.0001_dp*packed%fields(peer)%values(5,:,:,:)
+      source_future%fields(peer)%values=2*source%fields(peer)%values
+    end do
+    fractions=0
+    call compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,source,spacing,dt,faces, &
+      level_rates,level_flux,ok,target_depth=depth,coarse_start=packed,coarse_end=future,coarse_fractions=fractions, &
+      source_start=source,source_end=source_future,source_fractions=fractions)
+    call require(ok,'coarse old endpoint sampling')
+    do peer=1,size(tree%nodes)
+      if(tree%nodes(peer)%level/=depth) cycle
+      call require(all(level_rates%fields(peer)%values==forced%fields(peer)%values),'old endpoint exact')
+    end do
+    fractions=.5_dp
+    retained=level_rates
+    call compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,source,spacing,dt,faces, &
+      level_rates,level_flux,ok,target_depth=depth,coarse_start=packed,coarse_end=future,coarse_fractions=fractions, &
+      source_start=source,source_end=source_future,source_fractions=fractions)
+    call require(ok,'coarse intermediate state and signed source sampling')
+    change=0
+    do peer=1,size(tree%nodes)
+      change=max(change,maxval(abs(level_rates%fields(peer)%values-retained%fields(peer)%values)))
+    end do
+    call require(change>1e-10_dp,'coarse temporal donors change fine rate')
+    retained=level_rates;fractions=1.1_dp
+    call compute_sdc_amr_patch_tree_hydro_3d(tree,species,state,temperature,source,spacing,dt,faces, &
+      level_rates,level_flux,ok,target_depth=depth,coarse_start=packed,coarse_end=future,coarse_fractions=fractions)
+    call require(.not.ok,'invalid coarse time rejected')
+    do peer=1,size(tree%nodes)
+      call require(all(level_rates%fields(peer)%values==retained%fields(peer)%values),'invalid coarse time rollback')
+    end do
   end subroutine check_sdc_hydro_stage
   subroutine require(condition,label)
     logical, intent(in) :: condition
