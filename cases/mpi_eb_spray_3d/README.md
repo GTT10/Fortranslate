@@ -472,3 +472,18 @@ Gas heat transfer and particle domain-wall impulse enter the boundary ledger.
 The common/recursive coupled transaction includes both processes. Restart binds
 all six wall temperatures; changed values reject before continuation. The
 domain-wall film restriction above also applies to thermal walls.
+
+## Common-step SDC
+
+Set `time_integrator='sdc',sdc_iterations=2,hydro_method='plm_ctu',
+riemann_solver='pelec'` in `&eb_tree`, with explicit `boundary_faces`.
+Set `particle_outflow=.true.` in `&eb_spray`. This connects gas SDC,
+particle half kicks/full drift, internal source exchange and final computational
+splitting. `external_forcing` accelerates gas only; spray `acceleration`
+accelerates both phases. Their gas contributions add.
+
+Coupled checkpoints preserve reaction history and total external impulse/work
+alongside parcel state, IDs and injection progress. Common-step SDC currently
+requires `wall_impacts=.false.` and `subcycling=.false.`; film and recursive
+particle scheduling remain unimplemented. The normal split integrator remains
+the default. This experimental path is not physical spray validation.

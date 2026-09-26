@@ -16,7 +16,7 @@ by the interval for a source rate; wall/outflow inventories remain separate.
 The EB SDC gas driver now accepts old/new source callbacks and reports their
 inventory separately from external forcing. The common-step MPI EB particle
 wrapper now connects kick/drift stages, physical gas boundaries and final
-computational splitting; application dispatch remains open. See the
+computational splitting. The MPI EB spray application exposes common-step SDC. See the
 [source-export checks](validation/spray-sdc-source-export-20260927.md) and
 [gas-stage checks](validation/sdc-eb-auxiliary-source-20260927.md).
 
@@ -3517,8 +3517,9 @@ Optional `particle_acceleration(3)` adds uniform external particle acceleration
 bracket the coupled interval; each new kick is private to its SDC evaluation.
 The final source inventory sums gas forcing and the accepted particle impulse
 and kinetic work; `gas_particle_change` still contains internal exchange only.
-Film evolution, recursive stepping and application/restart wiring remain outside
-its scope. See the [acceleration checks](validation/spray-sdc-force-20260927.md). See the
+The MPI EB spray application exposes common-step SDC and coupled restart
+([application checks](validation/spray-sdc-app-20260927.md)). Film evolution and
+recursive particle stepping remain outside its scope. See the [acceleration checks](validation/spray-sdc-force-20260927.md). See the
 [focused evidence](validation/spray-sdc-kick-drift-20260927.md).
 
 The boundary/splitting extension is recorded in the

@@ -166,8 +166,11 @@ state only with accepted gas SDC
 data and final computational particle splitting now reach this wrapper
 ([checks](validation/spray-sdc-boundaries-split-20260927.md)). Independent uniform
 particle acceleration now contributes accepted impulse/work to the external
-inventory ([checks](validation/spray-sdc-force-20260927.md)). Spray application dispatch,
-film integration and recursive particle scheduling remain open. A serial
+inventory ([checks](validation/spray-sdc-force-20260927.md)). The MPI spray
+application now dispatches common-step SDC and preserves reaction history and
+external inventories through rank-changing coupled restart
+([checks](validation/spray-sdc-app-20260927.md)). Film integration and recursive
+particle scheduling remain open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons
