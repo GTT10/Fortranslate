@@ -32,6 +32,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: build_eb_tree_extended_geometry_3d
   public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
+  public :: redistribute_sdc_eb_tree_flux_rate_3d
   public :: reactive_eb_tree_timestep_3d
   public :: advance_reactive_eb_tree_full_3d,advance_reactive_eb_tree_sdc_3d
   public :: advance_reactive_eb_tree_sdc_subcycle_3d
@@ -44,6 +45,161 @@ module eb_reactive_patch_tree_3d_mod
   public :: react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
   public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
 contains
+  ! Composite flux redistribution. Covered parents do not donate or receive.
+  ! Each cut leaf exchanges excess with face-connected fluid leaves, including
+  ! peers and coarse/fine neighbors. Physical domain faces are closed here.
+  subroutine redistribute_sdc_eb_tree_flux_rate_3d(tree,rhs,rate,ok)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: rhs
+    type(amr_tree_state_3d), intent(inout) :: rate
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: candidate,active,delta
+    integer(int64), allocatable :: origin(:,:),domain(:,:),scale(:)
+    integer, allocatable :: ratios(:)
+    integer(int64) :: cell_lo(3),cell_hi(3)
+    integer :: nv,p,child,n(3),lo(3),hi(3),i,j,k,pass
+    real(dp) :: kappa,volume,neighbors,total
+    real(dp), allocatable :: average(:),excess(:)
+    logical :: valid
+    ok=.false.
+    if(.not.allocated(rhs%fields)) return
+    if(size(rhs%fields)<1) return
+    if(.not.allocated(rhs%fields(1)%values)) return
+    nv=size(rhs%fields(1)%values,1)
+    if(nv<1) return
+    if(.not.valid_tree(tree,nv)) return
+    if(size(rhs%fields)/=size(tree%nodes)) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if(.not.valid) return
+    allocate(average(nv),excess(nv))
+    candidate=rhs
+    allocate(active%fields(size(tree%nodes)),delta%fields(size(tree%nodes)),scale(size(ratios)))
+    scale=domain(1,size(ratios))/domain(1,:)
+    do p=1,size(tree%nodes)
+      n=tree%topology%nodes(p)%shape
+      if(.not.allocated(rhs%fields(p)%values)) return
+      if(any(shape(rhs%fields(p)%values)/=[nv,n])) return
+      allocate(active%fields(p)%values(1,n(1),n(2),n(3)),source=1._dp)
+      allocate(delta%fields(p)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      do child=p+1,size(tree%nodes)
+        if(tree%topology%nodes(child)%parent/=p) cycle
+        call bounds(tree%topology,child,lo,hi)
+        active%fields(p)%values(1,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=0
+      end do
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(tree%nodes(p)%geometry%volume_fraction(i,j,k)<=0) then
+          candidate%fields(p)%values(:,i,j,k)=0
+          active%fields(p)%values(1,i,j,k)=0
+        else
+          if(.not.all(ieee_is_finite(rhs%fields(p)%values(:,i,j,k)))) return
+        end if
+      end do
+      end do
+      end do
+    end do
+    do p=1,size(tree%nodes)
+      n=tree%topology%nodes(p)%shape
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(active%fields(p)%values(1,i,j,k)==0) cycle
+        kappa=tree%nodes(p)%geometry%volume_fraction(i,j,k)
+        if(kappa>=1) cycle
+        cell_lo=(origin(:,p)+[i-1,j-1,k-1])*scale(tree%topology%nodes(p)%level+1)
+        cell_hi=cell_lo+scale(tree%topology%nodes(p)%level+1)
+        volume=kappa*tree%nodes(p)%geometry%dx*tree%nodes(p)%geometry%dy*tree%nodes(p)%geometry%dz
+        if(.not.ieee_is_finite(volume).or.volume<=0) return
+        average=volume*rhs%fields(p)%values(:,i,j,k);neighbors=0
+        do pass=1,2
+          call visit_neighbors()
+          if(pass==1) then
+            total=volume+neighbors
+            if(neighbors<=0.or..not.ieee_is_finite(total)) return
+            average=average/total
+            candidate%fields(p)%values(:,i,j,k)=kappa*rhs%fields(p)%values(:,i,j,k)+(1-kappa)*average
+            excess=volume*(1-kappa)*(rhs%fields(p)%values(:,i,j,k)-average)/neighbors
+          end if
+        end do
+      end do
+      end do
+      end do
+    end do
+    do p=1,size(tree%nodes)
+      candidate%fields(p)%values=candidate%fields(p)%values+delta%fields(p)%values
+      if(.not.all(ieee_is_finite(candidate%fields(p)%values))) return
+    end do
+    call move_alloc(candidate%fields,rate%fields)
+    ok=.true.
+  contains
+    subroutine visit_neighbors()
+      integer :: axis,side,q,direction,lower(3),upper(3),xyz(3),a,b,c,face_cell
+      integer(int64) :: face,s,qlo(3),qhi(3),first(3),last(3)
+      real(dp) :: neighbor_volume
+      do axis=1,3
+      do side=0,1
+        if(.not.open_face(tree%nodes(p)%geometry,[i,j,k],axis,side)) cycle
+        face=cell_lo(axis)
+        if(side==1) face=cell_hi(axis)
+        do q=1,size(tree%nodes)
+          s=scale(tree%topology%nodes(q)%level+1)
+          ! A leaf can touch this face only on an integer cell boundary.
+          if(modulo(face,s)/=0) cycle
+          qlo=origin(:,q)*s;qhi=(origin(:,q)+tree%topology%nodes(q)%shape)*s
+          if(side==0.and.(face<=qlo(axis).or.face>qhi(axis))) cycle
+          if(side==1.and.(face<qlo(axis).or.face>=qhi(axis))) cycle
+          first=0;last=0
+          do direction=1,3
+            if(direction==axis) cycle
+            first(direction)=max(cell_lo(direction),qlo(direction))
+            last(direction)=min(cell_hi(direction),qhi(direction))
+          end do
+          if(any([(last(direction)<=first(direction).and.direction/=axis,direction=1,3)])) cycle
+          do direction=1,3
+            if(direction==axis) cycle
+            lower(direction)=int(first(direction)/s-origin(direction,q))+1
+            upper(direction)=int((last(direction)-1)/s-origin(direction,q))+1
+          end do
+          face_cell=int(face/s-origin(axis,q))+side
+          lower(axis)=face_cell;upper(axis)=face_cell
+          do c=lower(3),upper(3)
+          do b=lower(2),upper(2)
+          do a=lower(1),upper(1)
+            xyz=[a,b,c]
+            if(active%fields(q)%values(1,a,b,c)==0) cycle
+            if(.not.open_face(tree%nodes(q)%geometry,xyz,axis,1-side)) cycle
+            neighbor_volume=tree%nodes(q)%geometry%volume_fraction(a,b,c)* &
+              tree%nodes(q)%geometry%dx*tree%nodes(q)%geometry%dy*tree%nodes(q)%geometry%dz
+            if(pass==1) then
+              average=average+neighbor_volume*rhs%fields(q)%values(:,a,b,c)
+              neighbors=neighbors+neighbor_volume
+            else
+              delta%fields(q)%values(:,a,b,c)=delta%fields(q)%values(:,a,b,c)+excess
+            end if
+          end do
+          end do
+          end do
+        end do
+      end do
+      end do
+    end subroutine visit_neighbors
+    logical function open_face(g,cell,axis,side) result(opened)
+      type(eb_geometry_3d), intent(in) :: g
+      integer, intent(in) :: cell(3),axis,side
+      integer :: f(3)
+      f=cell;f(axis)=f(axis)-1+side
+      select case(axis)
+      case(1)
+        opened=g%x_face_fraction(f(1),f(2),f(3))>0
+      case(2)
+        opened=g%y_face_fraction(f(1),f(2),f(3))>0
+      case(3)
+        opened=g%z_face_fraction(f(1),f(2),f(3))>0
+      end select
+    end function open_face
+  end subroutine redistribute_sdc_eb_tree_flux_rate_3d
+
   subroutine bounds(tree,node,lo,hi)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: node
