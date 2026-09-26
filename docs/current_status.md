@@ -155,7 +155,12 @@ for common-step SDC ([checks](validation/sdc-eb-tree-redistribution-app-20260927
 MPI common-step SDC and application dispatch now use owner-local composite
 flux redistribution through sparse neighbor-rate and excess exchanges;
 rank-changing continuation retains the selector
-([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). Tree state redistribution and MPI EB spray SDC remain open. Serial/MPI
+([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). Tree state-redistribution integration and MPI EB spray SDC remain open. A serial
+composite weighted-state operator now supports outward receivers and connected
+neighborhood fallback across coarse/fine leaf faces, with conservation and
+single-grid comparisons
+([checks](validation/eb-tree-state-redistribution-20260927.md)); SDC and MPI
+state-redistribution routing remain unconnected. Serial/MPI
 source-level redistribution now separates immediate rates from time-integrated
 cross-level transfers with a checked composite reconstruction
 ([checks](validation/sdc-eb-redistribution-level-transfer-20260927.md)); the
