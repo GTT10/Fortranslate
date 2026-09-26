@@ -28,13 +28,13 @@ module spray_mpi_amr_step_mod
   public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo
 contains
   ! A single drag/thermal/evaporation kick on a caller-owned level population.
-  ! Gas halos are frozen at the supplied stage time. Position, IDs and population
-  ! ownership stay fixed; the caller schedules drift, breakup and source transfer.
+  ! Gas halos are frozen at the supplied stage time. Optional drift follows the
+  ! kick; IDs and assigned nodes stay fixed. Caller schedules breakup/transfer.
   ! Species/model tables and options are identical across ranks by caller contract.
   ! Gas source and particle/component updates publish together after MPI success.
   subroutine kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,nodes,parcels,component_mass,lower,spacing,periodic,dt,source_halo,ok, &
-      fluid_fraction,nodal_phi,centroids)
+      fluid_fraction,nodal_phi,centroids,drift_interval,boundary_faces,wall_change,boundary_change)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -50,7 +50,16 @@ contains
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
-    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:),drift_interval
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(inout) :: wall_change(5),boundary_change(:)
+    real(dp) :: drift_dt,drift_low,drift_high,wall(5),global_wall(5)
+    real(dp) :: exterior(reactive_nvar(size(species))),global_exterior(reactive_nvar(size(species)))
+    real(dp) :: exterior5(5),upper(3),empty_phi(0:1,0:1,0:1),rho,cp,energy
+    real(dp), allocatable :: energies(:)
+    integer :: flags,low_flags,high_flags,hits,c
+    character(len=32) :: faces(6),reference_faces(6)
+
     type(spray_parcel), allocatable :: candidate(:)
     type(amr_tree_state_3d) :: source
     real(dp), allocatable :: masses(:,:),positions(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
@@ -63,7 +72,11 @@ contains
     valid=valid.and.ieee_is_finite(dt)
     if(valid) valid=dt>=0.and.dt<=1e6_dp
     call agree();if(.not.agreed) return
-    valid=size(nodes)==size(parcels).and.all(shape(component_mass)==[nc,size(parcels)])
+    do c=1,nc
+      valid=valid.and.valid_spray_liquid(components(c))
+      valid=valid.and.components(c)%vapor_index>=1.and.components(c)%vapor_index<=size(species)
+    end do
+    valid=valid.and.size(nodes)==size(parcels).and.all(shape(component_mass)==[nc,size(parcels)])
     call agree();if(.not.agreed) return
     do p=1,size(parcels)
       valid=valid_component_inventory(parcels(p),component_mass(:,p))
@@ -74,6 +87,30 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(dt,high_dt,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.low_dt/=high_dt) return
+    flags=merge(1,0,present(drift_interval))+2*merge(1,0,present(boundary_faces))+ &
+      4*merge(1,0,present(wall_change))+8*merge(1,0,present(boundary_change))
+    call MPI_Allreduce(flags,low_flags,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high_flags,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low_flags/=high_flags) return
+    if(flags/=0.and.flags/=15) return
+    if(present(drift_interval)) then
+      drift_dt=drift_interval;faces=boundary_faces
+      valid=ieee_is_finite(drift_dt).and.size(boundary_change)==nv
+      if(valid) valid=drift_dt>=0.and.drift_dt<=1e6_dp
+      valid=valid.and.valid_spray_boundary_faces(faces)
+      valid=valid.and.all(([faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']).eqv.periodic)
+      call agree();if(.not.agreed) return
+      call MPI_Allreduce(drift_dt,drift_low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(drift_dt,drift_high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.drift_low/=drift_high) return
+      reference_faces=faces
+      call MPI_Bcast(reference_faces,32*6,MPI_CHARACTER,0,comm,status)
+      if(status/=MPI_SUCCESS) return
+      valid=all(faces==reference_faces)
+      call agree();if(.not.agreed) return
+    end if
     allocate(positions(3,size(parcels)),change(nv,size(parcels)))
     do p=1,size(parcels)
       positions(:,p)=parcels(p)%position
@@ -95,9 +132,47 @@ contains
       candidate(p)%position=parcels(p)%position
     end do
     call agree();if(.not.agreed) return
+    if(present(drift_interval)) then
+      allocate(energies(size(candidate)));energies=0
+      do p=1,size(candidate)
+        if(candidate(p)%mass<=0) cycle
+        call liquid_mixture_properties(components,masses(:,p)/candidate(p)%mass, &
+          candidate(p)%temperature,rho,cp,energy,valid)
+        if(.not.valid) exit
+        energies(p)=energy
+      end do
+      call agree();if(.not.agreed) return
+      upper=lower+spacing*real(tree%nodes(1)%shape,dp)
+      wall=0;exterior=0;exterior5=0;hits=0;empty_phi=1
+      if(present(nodal_phi)) then
+        call drift_spray_level_set(nodal_phi,lower,upper,drift_dt,32,candidate,wall,hits,valid, &
+          faces,energies,exterior5)
+      else
+        call drift_spray_level_set(empty_phi,lower,upper,drift_dt,32,candidate,wall,hits,valid, &
+          faces,energies,exterior5)
+      end if
+      call agree();if(.not.agreed) return
+      exterior(:5)=exterior5
+      do p=1,size(candidate)
+        if(candidate(p)%mass>0) cycle
+        do c=1,nc
+          exterior(5+components(c)%vapor_index)=exterior(5+components(c)%vapor_index)- &
+            masses(c,p)*candidate(p)%multiplicity
+        end do
+        masses(:,p)=0
+      end do
+      call MPI_Allreduce(wall,global_wall,5,MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(exterior,global_exterior,nv,MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+      if(status/=MPI_SUCCESS) return
+      if(.not.all(ieee_is_finite(global_wall)).or..not.all(ieee_is_finite(global_exterior))) return
+    end if
     call deposit_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,positions,change, &
       lower,spacing,periodic,source,valid,fluid_fraction,nodal_phi,centroids)
     if(.not.valid) return
+    if(present(drift_interval)) then
+      wall_change=global_wall;boundary_change=global_exterior
+    end if
     call move_alloc(candidate,parcels);call move_alloc(masses,component_mass)
     call move_alloc(source%fields,source_halo%fields);ok=.true.
   contains

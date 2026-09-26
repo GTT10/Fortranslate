@@ -168,6 +168,8 @@ contains
     real(dp), allocatable :: hm(:,:),rm(:,:)
     real(dp) :: delta(nv),expected_delta(nv),integral(nv),hp(nv),guess,cs,dt
     integer, allocatable :: nodes(:)
+    real(dp) :: wall(5),exterior(nv),position_before(3),drift_dt
+    character(len=16) :: faces(6)
     integer :: a,b,c,d,sz(3),count
     count=merge(1,0,rank==owners(2))
     allocate(hd(count),hm(2,count),nodes(count),halo%fields(3),ht%fields(3))
@@ -226,6 +228,46 @@ contains
     call MPI_Allreduce(MPI_IN_PLACE,expected_delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(all(abs(integral-expected_delta)<=1e-12_dp*max(abs(expected_delta),1e-30_dp)), &
       'halo kick conserves extensive reaction')
+    ! The drift is independently timed; zero kick isolates periodic motion.
+    drift_dt=2e-4_dp;faces='periodic';reference=hd;rm=hm
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],0._dp,source,ok, &
+      drift_interval=drift_dt,boundary_faces=faces,wall_change=wall,boundary_change=exterior)
+    call require(ok.and.all(wall==0).and.all(exterior==0),'halo periodic drift has no external exchange')
+    do a=1,count
+      position_before=modulo(reference(a)%position+drift_dt*reference(a)%velocity,4*spacing)
+      call require(maxval(abs(hd(a)%position-position_before))<1e-15_dp,'halo kick-drift periodic position')
+      call require(all(hd(a)%velocity==reference(a)%velocity).and.all(hm==rm),'pure drift preserves inventory')
+    end do
+    kept_source=source;reference=hd;rm=hm;wall=17;exterior=19
+    ! More than 32 crossings rejects after the private kick has been computed.
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,source,ok, &
+      drift_interval=1._dp,boundary_faces=faces,wall_change=wall,boundary_change=exterior)
+    call require(.not.ok.and.all(wall==17).and.all(exterior==19),'late drift rejection preserves ledgers')
+    call require(all(hm==rm),'late drift rejection preserves components')
+    do a=1,count
+      call require(all(hd(a)%position==reference(a)%position).and.all(hd(a)%velocity==reference(a)%velocity), &
+        'late drift rejection preserves particle position and velocity')
+    end do
+    do a=1,3
+      if(owners(a)==rank) call require(all(source%fields(a)%values==kept_source%fields(a)%values),'late source rollback')
+    end do
+    expected_delta=0
+    do a=1,count
+      expected_delta(1)=expected_delta(1)-hd(a)%mass*hd(a)%multiplicity
+      do b=1,2
+        expected_delta(5+liquids(b)%vapor_index)=expected_delta(5+liquids(b)%vapor_index)-hm(b,a)*hd(a)%multiplicity
+      end do
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,expected_delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    faces='outflow'
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,nodes,hd,hm,zero,spacing,[.false.,.false.,.false.],0._dp,source,ok, &
+      drift_interval=drift_dt,boundary_faces=faces,wall_change=wall,boundary_change=exterior)
+    call require(ok.and.all(hm==0).and.all(hd%mass==0),'halo drift retires outflow components')
+    call require(exterior(1)==expected_delta(1).and.all(exterior(6:)==expected_delta(6:)), &
+      'halo drift exports mass and each vapor species')
     kept_source=source;reference=hd;rm=hm
     ! A failed query happens before publication of either population or source.
     if(count>0) nodes=0

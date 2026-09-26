@@ -167,13 +167,27 @@ fluid-fraction/EB visibility data. Gas remains read-only; the output is a fresh
 source halo per fluid volume using the same weights as sampling. Particle,
 component and source outputs publish together after collective success.
 
-Positions, IDs and population ownership remain fixed. The caller supplies
-stage-time halos, chooses the kick duration (including any half-step factor),
-and separately handles drift, breakup/children, dead-particle removal and source
+Without optional drift, positions remain fixed. IDs and assigned nodes are
+retained in both modes. The caller supplies stage-time halos, chooses the kick
+duration (including any half-step factor), and handles breakup/children, dead-particle removal and source
 transfer. This is a kick building block for physical, virtual or ghost
 populations, not a complete recursive step. Source application/EOS validation
 and retries belong to the enclosing gas/particle transaction.
 See [halo kick checks](validation/spray-halo-kick-20260927.md).
+
+Supplying `drift_interval`, `boundary_faces`, `wall_change` and `boundary_change`
+together adds a subsequent drift with the kicked velocity. The kick and drift
+durations are independent (for example, half an interval and one interval).
+The existing level-set drift handles EB specular contacts and physical
+periodic, reflecting and open boundaries; regular geometry uses an all-fluid
+level set. EB and outer-boundary inventories are returned separately, including
+the vapor-species inventory removed by outflow. Dead entries remain with zero
+component mass. Reaction deposition uses the original sampling positions.
+Drift failure rolls back the preceding kick, all source fields and both ledgers.
+MPI ranks must agree on the enabled arguments, duration and boundary labels.
+This does not migrate particles to new owners or regenerate ghost populations;
+the caller must keep assigned nodes and halo support valid for subsequent kicks.
+See [drift checks](validation/spray-halo-drift-20260927.md).
 
 `sample_mpi_amr_particle_halo` reads a caller-filled owner-local halo at the
 particle's assigned node resolution. Each query supplies its target node;
