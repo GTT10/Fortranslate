@@ -15,8 +15,99 @@ module spray_mpi_amr_tree_mod
   private
   public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   public :: create_mpi_amr_virtual_particles,create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
-  public :: create_mpi_amr_level_particles
+  public :: create_mpi_amr_level_particles,collect_mpi_amr_level_particles
+  type, public :: spray_level_population
+    type(spray_parcel), allocatable :: parcels(:)
+    real(dp), allocatable :: component_mass(:,:)
+    integer, allocatable :: nodes(:)
+  end type spray_level_population
 contains
+  ! Merge physical level snapshots after their clocks synchronize. Ghost and
+  ! virtual copies must not be supplied. ID-bin exchange detects duplicates
+  ! globally before the private result migrates to current geometric owners.
+  subroutine collect_mpi_amr_level_particles(comm,tree,owners,levels,lower,spacing,periodic,maximum_parcels, &
+      parcels,component_mass,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),maximum_parcels
+    type(spray_level_population), intent(in) :: levels(:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp), allocatable :: mass(:,:)
+    integer, allocatable :: counts(:),offsets(:),cursor(:)
+    integer :: status,nranks,nc,level,p,r,q,flag,low,high
+    integer(int64) :: total
+    logical :: valid,agreed
+    ok=.false.;nc=0;total=0
+    call MPI_Comm_size(comm,nranks,status)
+    if(status/=MPI_SUCCESS) return
+    valid=tree%is_valid()
+    if(valid) valid=size(levels)==tree%level_count()
+    call agree();if(.not.agreed) return
+    do level=1,size(levels)
+      valid=allocated(levels(level)%parcels).and.allocated(levels(level)%component_mass)
+      if(.not.valid) exit
+      if(level==1) nc=size(levels(level)%component_mass,1)
+      valid=nc>=1.and.nc<=16
+      valid=valid.and.all(shape(levels(level)%component_mass)==[nc,size(levels(level)%parcels)])
+      if(.not.valid) exit
+      do p=1,size(levels(level)%parcels)
+        valid=valid_component_inventory(levels(level)%parcels(p),levels(level)%component_mass(:,p))
+        if(.not.valid) exit
+      end do
+      if(.not.valid) exit
+      total=total+count(levels(level)%parcels%mass>0,kind=int64)
+    end do
+    valid=valid.and.total<=1000000
+    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
+    call agree();if(.not.agreed) return
+    flag=merge(1,0,present(nodal_phi))
+    call MPI_Allreduce(flag,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flag,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low/=high) return
+    allocate(counts(nranks),offsets(nranks),cursor(nranks));counts=0
+    do level=1,size(levels)
+      do p=1,size(levels(level)%parcels)
+        if(levels(level)%parcels(p)%mass<=0) cycle
+        r=int(modulo(levels(level)%parcels(p)%id,int(nranks,int64)))+1
+        counts(r)=counts(r)+1
+      end do
+    end do
+    offsets(1)=0
+    do r=2,nranks
+      offsets(r)=offsets(r-1)+counts(r-1)
+    end do
+    cursor=offsets;allocate(candidate(int(total)),mass(nc,int(total)))
+    do level=1,size(levels)
+      do p=1,size(levels(level)%parcels)
+        if(levels(level)%parcels(p)%mass<=0) cycle
+        r=int(modulo(levels(level)%parcels(p)%id,int(nranks,int64)))+1
+        cursor(r)=cursor(r)+1;q=cursor(r)
+        candidate(q)=levels(level)%parcels(p);mass(:,q)=levels(level)%component_mass(:,p)
+      end do
+    end do
+    call exchange_spray_parcel_bins(comm,candidate,counts,offsets,1000000,valid,mass)
+    if(.not.valid) return
+    if(present(nodal_phi)) then
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,candidate,lower,spacing,maximum_parcels,valid,mass)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,periodic,maximum_parcels,valid,mass)
+    end if
+    if(.not.valid) return
+    call move_alloc(candidate,parcels);call move_alloc(mass,component_mass);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine collect_mpi_amr_level_particles
+
   ! Copies immediate-coarse physical parcels into the grown next-level boxes.
   ! Each source has one deterministic destination, even when grown boxes overlap.
   subroutine create_mpi_amr_ghost_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &

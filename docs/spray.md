@@ -50,6 +50,18 @@ existing migration path. This supplies level-specific physical inputs for the
 recursive driver; their clocks and final merging are still to be connected.
 See [physical-level checks](validation/spray-physical-level-20260927.md).
 
+`spray_level_population` groups a level's particle/component arrays and node
+indices. `collect_mpi_amr_level_particles` combines synchronized physical
+level snapshots, removes dead entries and migrates live particles according
+to their updated positions. Stale node indices are ignored. Before geometric
+migration, an ID-based exchange detects duplicate live IDs globally, even at
+different positions. Any failure preserves the caller's full population and
+components; inputs remain read-only. Each local input and temporary ID-owner
+bin has the existing one-million-particle bound. Ghost/virtual copies must
+not be supplied. Synchronization timing and invoking collection from the
+recursive driver remain caller responsibilities.
+See [collection checks](validation/spray-level-collection-20260927.md).
+
 `create_mpi_amr_virtual_particles` constructs a separate, nonaggregated
 population for a requested `target_level`. It selects physical parcels whose
 finest covering node is deeper than the target and migrates copies to the

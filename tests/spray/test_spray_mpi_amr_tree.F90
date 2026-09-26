@@ -6,7 +6,8 @@ program test_spray_mpi_amr_tree
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
-    create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles
+    create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles, &
+    spray_level_population,collect_mpi_amr_level_particles
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -178,6 +179,7 @@ program test_spray_mpi_amr_tree
 contains
   subroutine check_physical_levels()
     type(spray_parcel), allocatable :: selected(:),before(:)
+    type(spray_level_population) :: populations(3)
     real(dp), allocatable :: selected_mass(:,:),before_mass(:,:)
     integer, allocatable :: nodes(:),before_nodes(:)
     integer :: seen(2*nranks),level,a
@@ -186,6 +188,8 @@ contains
       call create_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,saved,saved_mass,zero,spacing, &
         [.true.,.false.,.false.],level,100,selected,selected_mass,nodes,ok)
       call require(ok,'physical level selection')
+      populations(level+1)%parcels=selected;populations(level+1)%component_mass=selected_mass
+      populations(level+1)%nodes=nodes
       if(level==0) call require(size(selected)==0,'covered root contains no physical population')
       do a=1,size(selected)
         seen(int(selected(a)%id))=seen(int(selected(a)%id))+1
@@ -206,6 +210,43 @@ contains
     call require(all(selected%id==before%id).and.all(selected_mass==before_mass).and.all(nodes==before_nodes), &
       'physical level outputs roll back together')
     call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'physical source population unchanged')
+    ! Move live populations across levels before synchronized collection.
+    do level=1,3
+      do a=1,size(populations(level)%parcels)
+        populations(level)%parcels(a)%position(1)=merge(3.5_dp,.25_dp,level==3)
+      end do
+    end do
+    call collect_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,populations,zero,spacing, &
+      [.true.,.false.,.false.],0,selected,selected_mass,ok)
+    call require(.not.ok.and.all(selected%id==before%id).and.all(selected_mass==before_mass),'collection capacity rollback')
+    call collect_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,populations,zero,spacing, &
+      [.true.,.false.,.false.],100,selected,selected_mass,ok)
+    call require(ok,'collect synchronized physical level populations')
+    seen=0
+    do a=1,size(selected)
+      seen(int(selected(a)%id))=seen(int(selected(a)%id))+1
+      expected=make_parcel(int(selected(a)%id))
+      call require(all(selected_mass(:,a)==expected%mass*[.25_dp,.75_dp]),'collection component conservation')
+      if(mod(selected(a)%id,2_int64)==1) then
+        call require(rank==owners(3).and.selected(a)%position(1)==3.5_dp,'collected fine-to-coarse crossing')
+      else
+        call require(rank==owners(4).and.selected(a)%position(1)==.25_dp,'collected coarse-to-fine crossing')
+      end if
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,seen,size(seen),MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(seen==1),'collection retains every physical ID once')
+    before=selected;before_mass=selected_mass
+    if(rank==0) then
+      deallocate(populations(1)%parcels,populations(1)%component_mass)
+      allocate(populations(1)%parcels(1),populations(1)%component_mass(2,1))
+      populations(1)%parcels(1)=make_parcel(1)
+      populations(1)%component_mass(:,1)=populations(1)%parcels(1)%mass*[.25_dp,.75_dp]
+    end if
+    call collect_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,populations,zero,spacing, &
+      [.true.,.false.,.false.],100,selected,selected_mass,ok)
+    call require(.not.ok.and.all(selected%id==before%id).and.all(selected_mass==before_mass), &
+      'duplicate physical ID at different destinations rejects atomically')
+
   end subroutine check_physical_levels
   subroutine check_ghost_redistribution()
     type(spray_parcel), allocatable :: moved(:),before_move(:)
