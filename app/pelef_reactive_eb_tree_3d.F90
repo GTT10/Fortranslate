@@ -661,7 +661,9 @@ program pelef_reactive_eb_tree_3d
       call rebalance_mpi_amr_spray(MPI_COMM_WORLD,topology,mpi_owners,nv,mpi_state,mpi_temperature, &
         drops,component_mass,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
         [.false.,.false.,.false.],measured_cost,rebalance_minimum_gain,particle_options%maximum_parcels, &
-        redistributed,ok,wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,nodal_phi=nodal_phi)
+        redistributed,ok,wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,nodal_phi=nodal_phi, &
+        reaction_source=sdc_ir)
+      if(ok.and.allocated(sdc_ir)) record%reaction_source=sdc_ir
 #else
       if(allocated(sdc_ir)) then
         call rebalance_mpi_amr_tree_with_field_3d(topology,mpi_owners,nv,mpi_state,mpi_temperature,nv-4,sdc_ir, &

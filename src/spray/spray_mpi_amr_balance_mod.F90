@@ -2,7 +2,8 @@ module spray_mpi_amr_balance_mod
   use mpi_f08
   use precision_mod, only: dp
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
-  use mpi_amr_patch_tree_distribution_3d_mod, only: rebalance_mpi_amr_tree_3d
+  use mpi_amr_patch_tree_distribution_3d_mod, only: rebalance_mpi_amr_tree_3d, &
+    rebalance_mpi_amr_tree_with_field_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
@@ -13,7 +14,8 @@ module spray_mpi_amr_balance_mod
   public :: rebalance_mpi_amr_spray
 contains
   subroutine rebalance_mpi_amr_spray(comm,tree,owners,nvar,state,temperature,parcels,component_mass, &
-      lower,spacing,periodic,local_cost,minimum_gain,maximum_parcels,changed,ok,wall_films,film_mass,maximum_films,nodal_phi)
+      lower,spacing,periodic,local_cost,minimum_gain,maximum_parcels,changed,ok,wall_films,film_mass, &
+      maximum_films,nodal_phi,reaction_source)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -31,7 +33,8 @@ contains
     type(spray_wall_film), allocatable :: patches(:)
     real(dp), allocatable :: patch_mass(:,:)
     integer :: film_flag,low_flag,high_flag
-    type(amr_tree_state_3d) :: gas,temp
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    type(amr_tree_state_3d) :: gas,temp,history
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:)
     integer, allocatable :: assigned(:)
@@ -45,7 +48,7 @@ contains
     if (present(film_mass)) valid=valid.and.allocated(film_mass)
     if(present(nodal_phi)) valid=valid.and..not.any(periodic)
     call agree();if (.not.agreed) return
-    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(nodal_phi))
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(nodal_phi))+4*merge(1,0,present(reaction_source))
     call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
@@ -66,7 +69,13 @@ contains
     end do
     call agree();if (.not.agreed) return
     gas=state;temp=temperature;assigned=owners
+    if(present(reaction_source)) then
+      history=reaction_source
+      call rebalance_mpi_amr_tree_with_field_3d(tree,assigned,nvar,gas,temp,nvar-4,history, &
+        local_cost,minimum_gain,comm,moved,valid)
+    else
     call rebalance_mpi_amr_tree_3d(tree,assigned,nvar,gas,temp,local_cost,minimum_gain,comm,moved,valid)
+    end if
     if (.not.valid) return
     if (.not.moved.and..not.present(nodal_phi)) then
       ok=.true.;return
@@ -86,6 +95,7 @@ contains
     if(.not.moved) then
       ok=.true.;return
     end if
+    if(present(reaction_source)) call move_alloc(history%fields,reaction_source%fields)
     owners=assigned
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
