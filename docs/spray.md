@@ -16,7 +16,7 @@ by the interval for a source rate; wall/outflow inventories remain separate.
 The EB SDC gas driver now accepts old/new source callbacks and reports their
 inventory separately from external forcing. The common-step MPI EB particle
 wrapper now connects kick/drift stages, physical gas boundaries and final
-computational splitting. The MPI EB spray application exposes common-step SDC. See the
+computational splitting. The MPI EB spray application exposes common-step SDC. The new-time particle half kick runs only at the final SDC iteration; intermediate iterations retain the old particle source ([reference-order correction](validation/spray-sdc-reference-order-20260927.md)). See the
 [source-export checks](validation/spray-sdc-source-export-20260927.md) and
 [gas-stage checks](validation/sdc-eb-auxiliary-source-20260927.md).
 
