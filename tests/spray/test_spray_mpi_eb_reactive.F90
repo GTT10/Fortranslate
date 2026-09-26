@@ -23,6 +23,7 @@ program test_spray_mpi_eb_reactive
   real(dp), allocatable :: boundary(:),chemical(:)
   real(dp), allocatable :: forcing(:),exchange(:)
   integer(int64) :: last_id=1_int64,created=0_int64
+  real(dp) :: accel(3)=0
   real(dp) :: theta
   character(len=32) :: solver,test_mode
   character(len=16), allocatable :: labels(:)
@@ -113,7 +114,7 @@ program test_spray_mpi_eb_reactive
   allocate(boundary(nv),chemical(nv),forcing(nv),exchange(nv))
   forcing=46;exchange=47
   if(index(test_mode,'sdc')==1) then
-    if(test_mode=='sdc') then
+    if(test_mode=='sdc'.or.test_mode=='sdc-force') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -150,6 +151,7 @@ program test_spray_mpi_eb_reactive
   if(index(test_mode,'isothermal')>0) then
     labels(1:2)='isothermal_wall';allocate(wall_temperature(6));wall_temperature=2000
   end if
+  if(test_mode=='sdc-force') accel=[1000._dp,-2000._dp,3000._dp]
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   ledger=42;boundary=43;chemical=44;theta=45;solver='invalid'
   call advance()
@@ -207,6 +209,7 @@ program test_spray_mpi_eb_reactive
   call advance()
   call require(ok.and.steps>1,'distributed EB interval')
   call inventory(after)
+  if(index(test_mode,'sdc')==1) after=after-forcing
   call require(all(abs(after-before-ledger-boundary-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
     'composite gas parcel wall conservation')
   call require(any(chemical(6:)/=0),'chemical species exchange')
@@ -223,13 +226,50 @@ program test_spray_mpi_eb_reactive
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if
   if(index(test_mode,'sdc')==1) then
-    call require(all(forcing==0).and.any(exchange/=0),'particle exchange distinct from external forcing')
+    if(test_mode=='sdc-force') then
+      call require(any(forcing(2:5)/=0).and.forcing(1)==0.and.all(forcing(6:)==0),'external impulse and work')
+    else
+      call require(all(forcing==0),'zero external forcing')
+    end if
+    call require(any(exchange/=0),'internal particle exchange')
     if(rank==0) print *, 'SDC combined residual: ', &
       maxval(abs(after-before-ledger-boundary-chemical)/max(abs(before),abs(after),1e-30_dp))
   end if
+  if(test_mode=='sdc-force') call check_ballistic_force()
   if(rank==0) print *, 'PASS: MPI EB coupled reactive step and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_ballistic_force()
+    real(dp) :: dv(3),expected(nv),initial_velocity(3),initial_position(3),interval
+    integer :: iteration_count
+    interval=1e-8_dp;initial_velocity=[20._dp,-20._dp,5._dp]
+    initial_position=[.0015_dp,.002_dp,.0015_dp];dv=interval*accel
+    options=spray_options();options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    do iteration_count=1,3,2
+      field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass;last_id=1
+      if(rank==nranks-1) drops(1)%position=initial_position
+      expected=0;expected(2:4)=1e-10_dp*dv
+      expected(5)=1e-10_dp*dot_product(initial_velocity+.5_dp*dv,dv)
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
+        liquids,options,field,temp,drops,masses,zero,spacing,interval,iteration_count,.false., &
+        [.false.,.false.,.false.,.false.],zero,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
+        forcing,theta,steps,last_id,ok,gas_particle_change=exchange,particle_acceleration=accel)
+      call require(ok,'ballistic particle forcing')
+      call require(all(abs(forcing-expected)<=1e-13_dp*max(abs(expected),1e-30_dp)), &
+        'analytic particle external impulse and work')
+      call require(all(exchange==0),'particle external force is not gas exchange')
+      if(rank==nranks-1) then
+        call require(maxval(abs(drops(1)%velocity-initial_velocity-dv))<1e-14_dp,'analytic velocity')
+        call require(maxval(abs(drops(1)%position-initial_position- &
+          interval*(initial_velocity+.5_dp*dv)))<1e-18_dp,'analytic position without repeated drift')
+      end if
+    end do
+    if(rank==0) accel(1)=0
+    forcing=46;exchange=47
+    call advance()
+    call require(.not.ok.and.steps==0.and.all(forcing==46).and.all(exchange==47),'particle force agreement rollback')
+    accel=[1000._dp,-2000._dp,3000._dp]
+  end subroutine check_ballistic_force
   subroutine advance()
     real(dp) :: coefficient
     if(index(test_mode,'sdc')==1) then
@@ -237,9 +277,10 @@ contains
       if(solver=='invalid') coefficient=-1
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
         liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,2,.true., &
-        [.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
+        [.true.,.true.,.true.,.true.],accel,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
         forcing,theta,steps,last_id,ok,difmag=coefficient,gas_particle_change=exchange, &
-        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature,split_created=created)
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature,split_created=created, &
+        particle_acceleration=accel)
       return
     end if
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &

@@ -1070,3 +1070,10 @@ if(TARGET test_spray_mpi_eb_reactive)
     set_tests_properties(spray_mpi_eb_sdc_${mode}_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 60 PROCESSORS 2)
   endforeach()
 endif()
+
+if(TARGET test_spray_mpi_eb_reactive)
+  add_test(NAME spray_mpi_eb_sdc_force_2
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc-force)
+  set_tests_properties(spray_mpi_eb_sdc_force_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 60 PROCESSORS 2)
+endif()

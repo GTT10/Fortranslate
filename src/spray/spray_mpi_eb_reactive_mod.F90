@@ -308,7 +308,7 @@ contains
       liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,iterations,chemistry,transport_flags, &
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -334,12 +334,15 @@ contains
     real(dp), optional, intent(inout) :: gas_particle_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6)
+    real(dp), optional, intent(in) :: particle_acceleration(3)
     integer(int64), optional, intent(out) :: split_created
     type(amr_tree_state_3d) :: gas,temp
     type(amr_tree_state_3d), allocatable :: ir
     type(spray_parcel), allocatable :: midpoint(:),final(:)
     real(dp), allocatable :: midpoint_mass(:,:),final_mass(:,:)
     integer(int64) :: midpoint_id,final_id,before_split
+    real(dp) :: accel(3),low_accel(3),high_accel(3)
+    real(dp) :: old_force(size(source_change)),new_force(size(source_change))
     real(dp) :: low_multiplicity,high_multiplicity
     integer :: nv,ierr,old_steps,new_steps
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
@@ -350,8 +353,11 @@ contains
     logical :: valid,ready
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     if(present(split_created)) split_created=0
+    accel=0
+    if(present(particle_acceleration)) accel=particle_acceleration
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
+    valid=valid.and.all(ieee_is_finite(accel)).and.all(abs(accel)<=1e6_dp)
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
     call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.ready) return
@@ -359,10 +365,15 @@ contains
     if(ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(options%maximum_multiplicity,high_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.low_multiplicity/=high_multiplicity) return
+    call MPI_Allreduce(accel,low_accel,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(accel,high_accel,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(low_accel/=high_accel)) return
     particle_faces=boundary_faces
     where(particle_faces=='inflow') particle_faces='outflow'
     where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
     gas=state;temp=temperature;old_steps=0;new_steps=0
+    old_force=0;new_force=0
     old_wall=0;new_wall=0;old_outflow=0;new_outflow=0
     if(present(reaction_source)) then
       allocate(ir);ir=reaction_source
@@ -383,7 +394,8 @@ contains
     call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.ready) return
     boundary=boundary+old_outflow+new_outflow;wall=wall+old_wall+new_wall
-    valid=all(ieee_is_finite(boundary)).and.all(ieee_is_finite(wall))
+    external=external+old_force+new_force
+    valid=all(ieee_is_finite(boundary)).and.all(ieee_is_finite(wall)).and.all(ieee_is_finite(external))
     call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.ready) return
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
@@ -395,6 +407,32 @@ contains
     if(present(gas_particle_change)) gas_particle_change=exchange
     minimum_theta=theta;particle_steps=old_steps+new_steps;ok=.true.
   contains
+    ! External particle half kicks bracket the coupled interval. The second
+    ! kick is reevaluated privately; only the final iteration's work is retained.
+    subroutine particle_force(population,interval,ledger,force_comm,good)
+      type(spray_parcel), intent(inout) :: population(:)
+      real(dp), intent(in) :: interval
+      real(dp), intent(out) :: ledger(:)
+      type(MPI_Comm), intent(in) :: force_comm
+      logical, intent(out) :: good
+      real(dp) :: local(size(ledger)),dv(3),velocity(3),mass
+      integer :: p,status
+      logical :: valid,agreed
+      local=0;ledger=0;good=.false.;valid=.true.;dv=interval*accel
+      do p=1,size(population)
+        if(population(p)%mass<=0) cycle
+        velocity=population(p)%velocity;mass=population(p)%mass*population(p)%multiplicity
+        population(p)%velocity=velocity+dv
+        valid=valid.and.valid_spray_parcel(population(p))
+        local(2:4)=local(2:4)+mass*dv
+        local(5)=local(5)+mass*dot_product(velocity+.5_dp*dv,dv)
+      end do
+      valid=valid.and.all(ieee_is_finite(local))
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,force_comm,status)
+      if(status/=MPI_SUCCESS.or..not.agreed) return
+      call MPI_Allreduce(local,ledger,size(ledger),MPI_DOUBLE_PRECISION,MPI_SUM,force_comm,status)
+      good=status==MPI_SUCCESS.and.all(ieee_is_finite(ledger))
+    end subroutine particle_force
     subroutine particle_source(stage_gas,stage_temperature,interval,stage,depth,rate,source_comm,good)
       type(amr_tree_state_3d), intent(in) :: stage_gas,stage_temperature
       real(dp), intent(in) :: interval
@@ -405,7 +443,7 @@ contains
       type(amr_tree_state_3d) :: work_gas,work_temperature,change
       type(spray_parcel), allocatable :: trial(:)
       real(dp), allocatable :: masses(:,:)
-      real(dp) :: wall_delta(nv),exterior(nv),half_interval
+      real(dp) :: wall_delta(nv),exterior(nv),half_interval,force_delta(nv)
       integer(int64) :: watermark
       integer :: steps,p,status
       character(len=16) :: motion
@@ -420,11 +458,20 @@ contains
       else
         trial=midpoint;masses=midpoint_mass;watermark=midpoint_id;motion='kick'
       end if
+      force_delta=0
+      if(stage==0) then
+        call particle_force(trial,half_interval,force_delta,source_comm,accepted)
+        if(.not.accepted) return
+      end if
       call advance_mpi_amr_mixture_coupling(source_comm,species,transport,liquids,options,work_gas,work_temperature, &
         tree,owners,trial,masses,lower,spacing,interval,steps,accepted,last_id=watermark, &
         boundary_change=wall_delta,eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=exterior, &
         boundary_faces=particle_faces,gas_change=change,motion_mode=motion)
       if(.not.accepted) return
+      if(stage>0) then
+        call particle_force(trial,half_interval,force_delta,source_comm,accepted)
+        if(.not.accepted) return
+      end if
       accepted=.true.
       do p=1,size(owners)
         if(.not.allocated(change%fields(p)%values)) cycle
@@ -441,10 +488,10 @@ contains
       rate=change
       if(stage==0) then
         call move_alloc(trial,midpoint);call move_alloc(masses,midpoint_mass)
-        midpoint_id=watermark;old_steps=steps;old_wall=wall_delta;old_outflow=exterior
+        midpoint_id=watermark;old_steps=steps;old_wall=wall_delta;old_outflow=exterior;old_force=force_delta
       else
         call move_alloc(trial,final);call move_alloc(masses,final_mass)
-        final_id=watermark;new_steps=steps;new_wall=wall_delta;new_outflow=exterior
+        final_id=watermark;new_steps=steps;new_wall=wall_delta;new_outflow=exterior;new_force=force_delta
       end if
       good=.true.
     end subroutine particle_source
