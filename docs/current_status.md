@@ -156,7 +156,11 @@ MPI common-step SDC and application dispatch now use owner-local composite
 flux redistribution through sparse neighbor-rate and excess exchanges;
 rank-changing continuation retains the selector
 ([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). Recursive
-redistribution, tree state redistribution and MPI EB spray SDC remain open.
+redistribution, tree state redistribution and MPI EB spray SDC remain open. Serial/MPI
+source-level redistribution now separates immediate rates from time-integrated
+cross-level transfers with a checked composite reconstruction
+([checks](validation/sdc-eb-redistribution-level-transfer-20260927.md)); the
+recursive driver does not yet consume these transfers.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
