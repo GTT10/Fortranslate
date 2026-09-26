@@ -122,7 +122,8 @@ program test_spray_mpi_eb_reactive
   forcing=46;exchange=47
   if(index(test_mode,'sdc')==1) then
     if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive'.or. &
-      test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering') then
+      test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering'.or. &
+      test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -302,7 +303,8 @@ contains
   end subroutine check_post_context
   subroutine check_recursive_spray()
     integer(int64) :: counts(2)
-    integer :: attempt,final_owner
+    integer :: attempt,final_owner,attempts,final_count
+    logical :: breakup_test
     real(dp) :: coefficient,gas_before(nv),gas_after(nv),particle_change(nv)
     if(rank==nranks-1) drops(1)%position=[.0012_dp,.0025_dp,.0015_dp]
     final_owner=nranks-1
@@ -315,10 +317,19 @@ contains
         drops(1)%position(1)=.00200001_dp;drops(1)%velocity(1)=-20._dp
       end if
     end if
+    breakup_test=test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt'
+    attempts=2
+    if(breakup_test) then
+      attempts=3;options%breakup_model='etab';options%surface_tension=.072_dp
+      options%liquid_viscosity=.001_dp;options%maximum_multiplicity=50
+      if(test_mode=='sdc-recursive-khrt') options%breakup_model='khrt'
+      if(rank==final_owner) drops(1)%deformation=1.1_dp
+    end if
     saved_drops=drops;saved_mass=masses
     call inventory(before)
     call inventory(gas_before,.false.)
-    do attempt=1,2
+    do attempt=1,attempts
+      if(breakup_test) options%maximum_parcels=merge(1,10000,attempt==2)
       coefficient=merge(-1._dp,.1_dp,attempt==1)
       boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37;counts=41
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
@@ -326,11 +337,11 @@ contains
         1e-8_dp,2,.true.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
         boundary,ledger,chemical,forcing,theta,steps,last_id,ok,difmag=coefficient, &
         gas_particle_change=exchange,level_steps=counts, &
-        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature)
-      if(attempt==1) then
-        call require(.not.ok.and.steps==0.and.last_id==1,'recursive hydro rejection after old particle stage')
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature,split_created=created)
+      if(attempt<attempts) then
+        call require(.not.ok.and.steps==0.and.last_id==1,'recursive early or late rejection retains ID')
         call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &
-          all(exchange==37).and.theta==31.and.all(counts==41),'recursive whole-step ledger rollback')
+          all(exchange==37).and.created==0.and.theta==31.and.all(counts==41),'recursive whole-step ledger rollback')
         call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'recursive population rollback')
         do node=1,2
           if(owners(node)/=rank) cycle
@@ -341,10 +352,21 @@ contains
         call require(ok.and.steps==6.and.all(counts==[1_int64,2_int64]),'coupled recursive gas particle intervals')
       end if
     end do
+    final_count=1
+    if(breakup_test) then
+      final_count=int(last_id)
+      call require(created==last_id-1.and.created>=1,'recursive computational split IDs')
+      if(rank==final_owner) then
+        call require(all(drops%multiplicity<=50._dp),'recursive split multiplicity bound')
+        if(test_mode=='sdc-recursive-breakup') call require(all(drops%mass<.9_dp*saved_drops(1)%mass), &
+          'ETAB changes droplet mass beyond evaporation')
+      end if
+    end if
     call inventory(after)
     call inventory(gas_after,.false.)
     particle_change=(after-gas_after)-(before-gas_before)
-    call require(last_id==1.and.size(drops)==merge(1,0,rank==final_owner),'recursive physical collection')
+    call require(last_id==int(final_count,int64).and.size(drops)==merge(final_count,0,rank==final_owner), &
+      'recursive physical collection')
     if(rank==final_owner.and.test_mode=='sdc-recursive-crossing') &
       call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
     if(rank==final_owner.and.test_mode=='sdc-recursive-entering') &
@@ -357,7 +379,8 @@ contains
     end if
     call require(all(abs(after-before-ledger-boundary-chemical-forcing)<= &
       3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'recursive composite gas particle inventory')
-    call require(last_id==1.and.size(drops)==merge(1,0,rank==final_owner),'recursive physical collection')
+    call require(last_id==int(final_count,int64).and.size(drops)==merge(final_count,0,rank==final_owner), &
+      'recursive physical collection')
     call require(any(exchange/=0),'recursive particle feedback reaches gas')
     if(rank==final_owner) then
       if(test_mode=='sdc-recursive-crossing') call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')

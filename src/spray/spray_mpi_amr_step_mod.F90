@@ -648,10 +648,14 @@ contains
     integer :: transfer_flags,transfer_low,transfer_high,node,rank,n(3)
     real(dp), allocatable :: masses(:,:),positions(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
     real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,low_dt,high_dt
+    type(spray_liquid) :: effective
+    type(spray_film) :: film
+    real(dp) :: old_mass,fractions(size(components)),rates(size(components)),hv(size(components))
     integer :: p,nv,nc,status
     logical :: valid,agreed
     ok=.false.;nv=reactive_nvar(size(species));nc=size(components)
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and..not.options%khrt_children
     valid=valid.and.nc>=1.and.nc<=16.and.size(transport)==size(species)
     valid=valid.and.ieee_is_finite(dt)
     if(valid) valid=dt>=0.and.dt<=1e6_dp
@@ -735,6 +739,24 @@ contains
       call advance_mixture_frozen_gas(species,transport,primitive,tg,candidate(p),components,masses(:,p), &
         options,dt,change(:,p),valid)
       if(.not.valid) exit
+      if(candidate(p)%mass>0.and.options%breakup_model/='none') then
+        old_mass=candidate(p)%mass;fractions=masses(:,p)/old_mass
+        call liquid_mixture_properties(components,fractions,candidate(p)%temperature,rho,cp,energy,valid)
+        if(.not.valid) exit
+        effective=components(1);effective%density=rho;effective%density_model='constant'
+        effective%density_coefficients=0;effective%density_temperature_range=0
+        effective%heat_capacity=cp;effective%heat_capacity_model='constant'
+        effective%heat_capacity_coefficients=0;effective%heat_capacity_temperature_range=0
+        effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=energy
+        effective%boiling_model='reject';effective%critical_temperature=0;effective%normal_boiling_temperature=0
+        call build_mixture_film(species,transport,primitive,tg,candidate(p),components,fractions,options, &
+          film,rates,hv,valid)
+        if(.not.valid) exit
+        call advance_spray_breakup(candidate(p),effective,options,primitive(1),primitive(2:4), &
+          film%density,film%viscosity,dt,valid)
+        if(.not.valid) exit
+        masses(:,p)=masses(:,p)*(candidate(p)%mass/old_mass)
+      end if
       candidate(p)%position=parcels(p)%position
     end do
     call agree();if(.not.agreed) return

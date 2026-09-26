@@ -35,7 +35,7 @@ contains
       dt,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces,boundary_change,wall_change, &
       chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration,split_created)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -60,6 +60,7 @@ contains
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(inout) :: gas_particle_change(:)
     integer(int64), optional, intent(inout) :: level_steps(:)
+    integer(int64), optional, intent(out) :: split_created
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6),particle_acceleration(3)
     type(spray_level_population), allocatable :: physical(:),virtuals(:),ghosts(:)
@@ -72,17 +73,23 @@ contains
     integer(int64) :: watermark,low_id,high_id,maximum_id,global_id,total_steps
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),exchange(size(source_change)),particle_wall(size(source_change))
+    real(dp) :: low_multiplicity,high_multiplicity
     real(dp) :: exterior(size(source_change)),particle_force_total(size(source_change)),theta,h(3),origin(3)
     integer :: nv,levels,rank,status,node,n(3),i,j,k,p,ios
     logical :: valid,agreed
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    if(present(split_created)) split_created=0
     valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid().and.valid_spray_options(options)
-    valid=valid.and.options%breakup_model=='none'.and.all(boundary_faces=='outflow'.or. &
+    valid=valid.and..not.options%khrt_children.and.all(boundary_faces=='outflow'.or. &
       boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
       boundary_faces=='inflow'.or.boundary_faces=='isothermal_wall')
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
     call agree();if(.not.agreed) return
+    call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(options%maximum_multiplicity,high_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low_multiplicity/=high_multiplicity) return
     levels=tree%level_count()
     if(present(level_steps)) valid=size(level_steps)==levels
     call agree();if(.not.agreed) return
@@ -170,6 +177,10 @@ contains
     call collect_mpi_amr_level_particles(comm,tree,owners,physical,lower,spacing,[.false.,.false.,.false.], &
       options%maximum_parcels,final,masses,agreed,phi)
     if(.not.agreed) return
+    if(options%maximum_multiplicity>0) then
+      call split_mpi_spray_parcels(comm,final,options%maximum_multiplicity,options%maximum_parcels,watermark,agreed,masses)
+      if(.not.agreed) return
+    end if
     valid=safe_sum(boundary,exterior).and.safe_sum(wall,particle_wall).and.safe_sum(external,particle_force_total)
     call agree();if(.not.agreed) return
     boundary=boundary+exterior;wall=wall+particle_wall;external=external+particle_force_total
@@ -179,6 +190,7 @@ contains
     if(present(gas_particle_change)) gas_particle_change=exchange
     if(present(level_steps)) level_steps=counts
     boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    if(present(split_created)) split_created=watermark-last_id
     minimum_theta=theta;last_id=watermark;particle_steps=int(2*total_steps);ok=.true.
   contains
     subroutine agree()
