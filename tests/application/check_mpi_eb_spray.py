@@ -17,6 +17,7 @@ def main():
     p.add_argument('--work', type=Path, required=True)
     p.add_argument('--selected', action='store_true')
     p.add_argument('--ctu', action='store_true')
+    p.add_argument('--sdc', action='store_true')
     p.add_argument('--scheduled', action='store_true')
     p.add_argument('--restart', action='store_true')
     p.add_argument('--rebalance', action='store_true')
@@ -35,6 +36,8 @@ def main():
         assert not a.mach
         assert sum((a.inflow,a.periodic,a.wall,a.isothermal))<=1
         a.ctu = True
+    if a.sdc:
+        a.ctu = True
     a.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='eb_spray_', dir=a.work.resolve()))
     template = a.source / 'cases/mpi_eb_spray_3d'
@@ -48,6 +51,12 @@ def main():
             text = text.replace("riemann_solver='hllc'", "riemann_solver='pelec'")
             text = text.replace('final_time=2.e-8', 'final_time=3.e-8')
             extra = "hydro_method='plm_ctu'," + extra
+        if a.sdc:
+            extra = ("time_integrator='sdc',sdc_iterations=2,boundary_faces=6*'outflow',"
+                     "external_forcing=100.,-200.,300.," + extra)
+            spray = directory / 'spray.nml'
+            spray.write_text(spray.read_text().replace('&eb_spray',
+                '&eb_spray\n particle_outflow=.true.,acceleration=1000.,-2000.,3000.,', 1))
         if a.scheduled:
             spray = directory / 'spray.nml'
             times = '5.e-9,5.e-9,5.e-9,1.e-8,2.e-8,3.e-8'
@@ -208,14 +217,14 @@ def main():
                           key=lambda r: int(r['id']))
         assert restored == particles[1]
         for first, second in zip(rows(continued / 'result.csv.budget.csv'), rows(results[1] / 'result.csv.budget.csv')):
-            for key in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected'):
+            for key in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected') + (('force',) if a.sdc else ()):
                 x, y = float(first[key]), float(second[key])
                 assert abs(x-y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
         mismatch = run(2, 'context_mismatch', f"restart_file='{archive}',", success=False, altered=True)
         assert 'EB spray context mismatch' in (mismatch / 'run.log').read_text()
         if a.ctu:
             mismatch = run(2, 'hydro_mismatch', f"restart_file='{archive}',hydro_method='pcm',", success=False)
-            assert 'Gas snapshot restore failed' in (mismatch / 'run.log').read_text()
+            assert ('EB tree SDC requires PeleC CTU' if a.sdc else 'Gas snapshot restore failed') in (mismatch / 'run.log').read_text()
             assert not (mismatch / 'result.csv').exists()
         if a.difmag is not None:
             for label, value in [('coefficient_mismatch', a.difmag + .01), ('negative', -1), ('nonfinite', 'NaN')]:

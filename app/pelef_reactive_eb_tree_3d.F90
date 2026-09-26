@@ -26,7 +26,7 @@ program pelef_reactive_eb_tree_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
   use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
-  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
+  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
 #endif
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end,iostat_eor
@@ -225,7 +225,7 @@ program pelef_reactive_eb_tree_3d
   end if
   if(time_integrator=='sdc') then
 #ifdef PELEF_MPI_EB_SPRAY
-    error stop 'EB spray SDC integration is not implemented'
+    if(subcycling) error stop 'Recursive EB spray SDC is not implemented'
 #endif
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
@@ -524,7 +524,18 @@ program pelef_reactive_eb_tree_3d
         if (mpi_ierr/=MPI_SUCCESS.or..not.work_ready) error stop 'Cannot allocate tree work counters'
       end if
 #ifdef PELEF_MPI_EB_SPRAY
-      if(wall_impacts) then
+      if(time_integrator=='sdc') then
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing+acceleration, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        split_created=step_split_created,particle_acceleration=acceleration)
+      else if(wall_impacts) then
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
@@ -748,6 +759,7 @@ contains
     if(code/=0) error stop 'Cannot read MPI EB spray input'
     read(stream,nml=eb_spray,iostat=code)
     if(code/=0) error stop 'Invalid MPI EB spray input'
+    if(time_integrator=='sdc'.and.wall_impacts) error stop 'SDC film coupling is not implemented'
     if(allocated(active_faces).and..not.particle_outflow) &
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     profile_files=''
@@ -1083,7 +1095,7 @@ contains
       end if
       if(code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) &
         record%initial,record%scale,record%boundary,record%wall,record%chemical,injected
-      if(any(acceleration/=0).and.code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) force_total
+      if((any(acceleration/=0).or.time_integrator=='sdc').and.code==0) write(stream,'(*(es27.18e3,1x))',iostat=code) force_total
       if(code/=0) error stop 'Cannot write coupled checkpoint prefix'
       ! The gas archive is a snapshot with its own zero-exchange reference.
       ! The complete coupled history is retained separately in the prefix above.
@@ -1091,6 +1103,7 @@ contains
       if(.not.valid) error stop 'Cannot integrate gas snapshot'
       gas_record%initial=inventory;gas_record%scale=abs(inventory)
       gas_record%boundary=0;gas_record%wall=0;gas_record%chemical=0
+      if(time_integrator=='sdc') gas_record%forcing=0._dp*inventory
       call write_mpi_eb_tree_checkpoint_3d(path//'.gas',stream,species,reactions,transport,config,topology, &
         mpi_owners,mpi_geometry,candidate,ct,gas_record,MPI_COMM_WORLD,valid, &
         bundle_identity,checkpoint_integrator,base_mole_fractions,element_names,element_atoms)
@@ -1136,7 +1149,7 @@ contains
       if(.not.all(ieee_is_finite([coupled%initial,coupled%scale,coupled%boundary,coupled%wall, &
         coupled%chemical,expected_source])).or.any(coupled%scale<0)) error stop 'Invalid coupled history'
       saved_force=0
-      if(any(acceleration/=0)) then
+      if(any(acceleration/=0).or.time_integrator=='sdc') then
         read(stream,*,iostat=code) saved_force
         if(code/=0) error stop 'Missing external force history'
         if(.not.all(ieee_is_finite(saved_force))) error stop 'Invalid external force history'
@@ -1201,6 +1214,12 @@ contains
         5e-10_dp*max(1._dp,coupled%scale,abs(inventory), &
         abs(coupled%boundary)+abs(coupled%wall)+abs(coupled%chemical)+abs(source)+abs(saved_force)))) &
         error stop 'Restored budget failed'
+      if(time_integrator=='sdc') then
+        coupled%forcing=saved_force
+        if(allocated(sdc_ir)) then
+          sdc_ir=gas_record%reaction_source;coupled%reaction_source=sdc_ir
+        end if
+      end if
       mpi_state=candidate;mpi_temperature=ct;record=coupled
       topology=checkpoint_tree;mpi_owners=checkpoint_owners;mpi_geometry=checkpoint_geometry
       regrid_stage=restart_layout_stage;tree%topology=topology
