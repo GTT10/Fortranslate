@@ -144,11 +144,14 @@ times and exports fluxes plus old/new predictor fields
 ([checks](validation/sdc-mpi-eb-level-loop-20260927.md)). MPI EB SDC now recursively advances child levels, accumulates their fluxes and
 synchronizes each parent interval. MPI application subcycling, coupled transport
 timestep bounds and rank-changing continuation are connected
-([checks](validation/sdc-mpi-eb-subcycle-20260927.md)). Tree SDC small-cell
-redistribution and MPI EB spray SDC remain open. A serial composite flux-redistribution
-operator now transfers signed rates across peer and coarse/fine leaf faces
-([checks](validation/sdc-eb-tree-redistribution-20260927.md)); SDC stage dispatch,
-periodic wrapping and MPI/recursive redistribution remain unconnected.
+([checks](validation/sdc-mpi-eb-subcycle-20260927.md)). A serial composite flux-redistribution
+operator transfers signed rates across peer, coarse/fine and paired periodic
+leaf faces. Common-step serial SDC now applies it to hydro, molecular transport
+and the final reflux increment
+([operator](validation/sdc-eb-tree-redistribution-20260927.md),
+[stage checks](validation/sdc-eb-tree-redistribution-loop-20260927.md)).
+Application input, MPI/recursive redistribution, tree state redistribution and
+MPI EB spray SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
