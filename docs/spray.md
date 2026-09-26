@@ -32,6 +32,14 @@ outflow and isothermal walls to no-slip reflection, as in the common-step wrappe
 See the [coupled core checks](validation/spray-recursive-core-20260927.md) and
 [boundary checks](validation/spray-recursive-boundary-20260927.md).
 
+The recursive population source now uses the pinned PelePhysics containing-cell
+rule; gas sampling still uses surrounding donors. **Coarse/fine crossing
+conservation is currently failing**: the registered
+`spray_mpi_eb_sdc_recursive_crossing_2` regression has not passed. Physical
+ownership transfer succeeds, but physical exchange and composite deposited
+exchange disagree. See the [source audit and failure record](validation/spray-recursive-crossing-20260927.md).
+This must be resolved before qualifying recursive application stepping.
+
 ## Level-bounded particle ownership
 
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
