@@ -484,6 +484,8 @@ accelerates both phases. Their gas contributions add.
 
 Coupled checkpoints preserve reaction history and total external impulse/work
 alongside parcel state, IDs and injection progress. Common-step SDC currently
-requires `wall_impacts=.false.` and `subcycling=.false.`; film and recursive
-particle scheduling remain unimplemented. The normal split integrator remains
+requires `subcycling=.false.`. `wall_impacts=.true.` now connects EB
+deposition/splash and film evolution using the existing `walls` controls; film
+state and splash IDs are retained across restart. Recursive particle scheduling
+remains unimplemented. The normal split integrator remains
 the default. This experimental path is not physical spray validation.

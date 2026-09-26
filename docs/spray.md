@@ -3542,6 +3542,7 @@ Only the final film state and old/final wall heat publish. Optional
 the old kick/drift stage and requires all film arguments. Its value must agree
 across ranks. New stages do not move particles and cannot repeat the impact.
 `model_rejected` reports empirical-model rejection; state and IDs still roll back.
-The default retains specular particle contacts. Application film selection remains
-open. See [impact checks](validation/spray-sdc-impact-20260927.md). See [SDC film checks](validation/spray-sdc-film-20260927.md).
+The default retains specular particle contacts. The MPI EB spray application
+now connects `wall_impacts=.true.` in common-step SDC, including film checkpoint
+continuation ([application checks](validation/spray-sdc-impact-app-20260927.md)). See [impact checks](validation/spray-sdc-impact-20260927.md). See [SDC film checks](validation/spray-sdc-film-20260927.md).
 See [focused evidence](validation/film-sdc-source-export-20260927.md).
