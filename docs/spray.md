@@ -47,6 +47,9 @@ strong-coupling admissibility and the remaining recursive particle models remain
 open. A two-level application case now verifies scheduled regridding followed
 by 2-to-4-rank restart, reaction-source history and a pending injection event
 ([continuation checks](validation/spray-recursive-restart-regrid-20260927.md)).
+The MPI spray application's load-balancing path also transfers SDC reaction
+history with gas and particle ownership, including rollback after particle or
+film migration failure ([focused checks](validation/spray-sdc-rebalance-history-20260927.md)).
 
 ## Level-bounded particle ownership
 
