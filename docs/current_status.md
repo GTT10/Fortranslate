@@ -107,6 +107,9 @@ checkpoint/restart, with an independent forcing budget column
 EB tree SDC regridding now transfers signed reaction estimates together with
 gas state; scheduled coarsen/refine restart is checked
 ([checks](validation/sdc-eb-tree-regrid-20260927.md)).
+EB SDC hydro and transport stages now support a selected level with ancestor
+time interpolation; hydro separately interpolates source predictors
+([checks](validation/sdc-eb-tree-level-stages-20260927.md)).
 EB tree SDC recursive stepping and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
