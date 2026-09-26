@@ -55,13 +55,13 @@ program pelef_reactive_eb_tree_3d
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d,amr_tree_integer_layout_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d,amr_tree_integer_layout_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d, &
-    build_eb_tree_extended_geometry_3d, &
+    build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d, &
     remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length, &
@@ -126,6 +126,10 @@ program pelef_reactive_eb_tree_3d
   integer :: maximum_steps=100,maximum_step_retries=12,checkpoint_interval_steps=0
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp
   logical :: automatic_timestep=.false.,subcycling=.false.
+  character(len=16) :: time_integrator="split"
+  integer :: sdc_iterations=2
+  real(dp) :: external_forcing(3)=0
+  type(amr_tree_state_3d), allocatable :: sdc_ir
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:),inlet_state(:,:),inlet_primitive(:)
   real(dp) :: wall_temperature(6)=0
@@ -154,6 +158,7 @@ program pelef_reactive_eb_tree_3d
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure,wall_temperature, &
+    time_integrator,sdc_iterations,external_forcing, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -205,6 +210,18 @@ program pelef_reactive_eb_tree_3d
   read(unit,nml=eb_tree,iostat=ios)
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
+  if(time_integrator/='split'.and.time_integrator/='sdc') error stop 'Invalid time integrator'
+  if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
+  if(time_integrator=='sdc') then
+#ifdef PELEF_MPI_EB_TREE
+    error stop 'EB tree SDC MPI integration is not implemented'
+#endif
+    if(subcycling.or.regrid_count>0.or.temperature_adaptive) error stop 'EB tree SDC requires static common steps'
+    if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
+    if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
+  else
+    if(any(external_forcing/=0)) error stop 'External forcing requires SDC'
+  end if
   if(.not.all(ieee_is_finite([regular_density,cut_density,initial_pressure]))) error stop 'Invalid initial state'
   if(min(regular_density,cut_density,initial_pressure)<=0) error stop 'Nonpositive initial state'
   if(hydro_method/='pcm'.and.hydro_method/='plm_ctu') error stop 'Invalid hydro method'
@@ -326,6 +343,7 @@ program pelef_reactive_eb_tree_3d
   config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
   config%redistribution='none';config%riemann_solver=riemann_solver;config%difmag=difmag
   config%hydro_method=hydro_method
+  config%time_integrator=time_integrator;config%sdc_iterations=sdc_iterations;config%external_forcing=external_forcing
   if(allocated(active_faces)) config%boundary_faces=active_faces
   config%regular_density=regular_density;config%cut_density=cut_density;config%initial_pressure=initial_pressure
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
@@ -434,6 +452,18 @@ program pelef_reactive_eb_tree_3d
 #endif
   record%initial=current;record%scale=abs(current);record%boundary=0._dp*current
   record%wall=0._dp*current;record%chemical=0._dp*current
+  if(time_integrator=='sdc') then
+    record%forcing=force_total
+    if(chemistry_enabled) then
+      allocate(sdc_ir)
+      allocate(sdc_ir%fields(size(tree%nodes)))
+      do node=1,size(tree%nodes)
+        n=tree%topology%nodes(node)%shape
+        allocate(sdc_ir%fields(node)%values(nv-4,n(1),n(2),n(3)),source=0._dp)
+      end do
+      record%reaction_source=sdc_ir
+    end if
+  end if
 #ifdef PELEF_MPI_EB_SPRAY
   if(len_trim(restart_file)>0) call spray_checkpoint(.false.)
 #else
@@ -513,12 +543,19 @@ program pelef_reactive_eb_tree_3d
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
+      if(time_integrator=='sdc') then
+        call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature)
+      else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
         rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
         chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
         boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+      end if
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
@@ -528,6 +565,10 @@ program pelef_reactive_eb_tree_3d
     split_created_total=split_created_total+step_split_created
 #endif
     force_total=force_total+step_force
+    if(time_integrator=='sdc') then
+      record%forcing=force_total
+      if(allocated(sdc_ir)) record%reaction_source=sdc_ir
+    end if
     record%boundary=record%boundary+boundary;record%wall=record%wall+wall;record%chemical=record%chemical+chemical
     next_time=record%time+dt
     if (regrid_stage<regrid_count) then
@@ -1731,6 +1772,10 @@ contains
 #endif
     close(unit,iostat=ios)
     if (ios/=0) error stop 'Restart close failed'
+    if(time_integrator=='sdc') then
+      force_total=record%forcing
+      if(allocated(sdc_ir)) sdc_ir=record%reaction_source
+    end if
     if (record%time>final_time.or.record%steps>maximum_steps) error stop 'Restart beyond requested limits'
     call balance()
   end subroutine
@@ -1823,11 +1868,20 @@ contains
     end do
     write(*,'(a,i0)') 'Processed injection events: ',next_injection-1
 #else
+    if(time_integrator=='sdc') then
+      write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,forcing,residual'
+      do c=1,nv
+        write(unit,'(i0,7(",",es26.17e3))') c,record%initial(c),current(c),record%boundary(c), &
+          record%wall(c),record%chemical(c),force_total(c), &
+          current(c)-record%initial(c)-record%boundary(c)-record%wall(c)-record%chemical(c)-force_total(c)
+      end do
+    else
     write(unit,'(a)') 'component,initial,final,boundary,wall,chemistry,residual'
     do c=1,nv
       write(unit,'(i0,6(",",es26.17e3))') c,record%initial(c),current(c),record%boundary(c), &
         record%wall(c),record%chemical(c),current(c)-record%initial(c)-record%boundary(c)-record%wall(c)-record%chemical(c)
     end do
+    end if
 #endif
     close(unit,iostat=ios)
     if (ios/=0) error stop 'Budget close failed'
