@@ -3,6 +3,7 @@ program test_amr_patch_tree_split_3d
   use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
   use reactive_3d_mod, only: advance_reactive_sdc_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -141,11 +142,12 @@ program test_amr_patch_tree_split_3d
   end do
 contains
   subroutine check_sdc()
-    type(amr_tree_state_3d) :: u,t,previous,previous_t,sync
+    type(amr_tree_state_3d) :: u,t,previous,previous_t,sync,coarse0,coarse1,op,np,ir
+    type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp) :: reference(12,2,2,2),ref_t(2,2,2),sources(12),bound(12),maximum,minimum
     real(dp) :: before(12),after(12),e0(3),e1(3),ext(3),source_ref(12),boundary_ref(12)
     real(dp), parameter :: h=1e-9_dp,force(3)=[20000._dp,-30000._dp,40000._dp]
-    integer :: peer,trial
+    integer :: peer,trial,dims(3)
     faces='periodic'
     call prolong_amr_patch_tree_3d(tree,root,u,ok)
     call require(ok,'SDC tree state')
@@ -156,6 +158,43 @@ contains
       external_force=force,transport=transport,reactions=reactions,chemistry_relative_tolerance=2e-7_dp, &
       chemistry_absolute_tolerance=1e-12_dp,source_change=source_ref,boundary_change=boundary_ref)
     call require(ok,'SDC single-grid reacting reference')
+    previous=u;previous_t=t
+    allocate(coarse0%fields(size(tree%nodes)),ir%fields(size(tree%nodes)))
+    do peer=1,size(tree%nodes)
+      dims=tree%nodes(peer)%shape
+      allocate(coarse0%fields(peer)%values(13,dims(1),dims(2),dims(3)))
+      coarse0%fields(peer)%values(:12,:,:,:)=u%fields(peer)%values
+      coarse0%fields(peer)%values(13,:,:,:)=t%fields(peer)%values(1,:,:,:)
+      allocate(ir%fields(peer)%values(8,dims(1),dims(2),dims(3)));ir%fields(peer)%values=0
+    end do
+    call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,u,t,spacing,h,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok, &
+      reaction_source=ir,target_depth=0,integrated_flux=flux,old_predictor=op,new_predictor=np)
+    call require(ok,'root level coupled SDC iteration')
+    call require(maxval(abs(u%fields(1)%values(:,1,1,1)-reference(:,1,1,1))/ &
+      max(1._dp,abs(reference(:,1,1,1))))<1e-11_dp,'root level SDC uniform reference')
+    do peer=2,size(tree%nodes)
+      call require(all(u%fields(peer)%values==previous%fields(peer)%values),'root step retains finer state')
+      call require(all(t%fields(peer)%values==previous_t%fields(peer)%values),'root step retains finer temperature')
+      call require(.not.allocated(flux(peer)%x),'root step exports no fine flux')
+    end do
+    coarse1=coarse0
+    coarse1%fields(1)%values(:12,:,:,:)=u%fields(1)%values
+    coarse1%fields(1)%values(13,:,:,:)=t%fields(1)%values(1,:,:,:)
+    previous=u;previous_t=t
+    call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,u,t,spacing,.5_dp*h,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2e-7_dp,1e-12_dp,bound,sources,maximum,minimum,ok, &
+      reaction_source=ir,target_depth=1,coarse_start=coarse0,coarse_end=coarse1, &
+      fractions_start=[0._dp],fractions_end=[.5_dp],source_start=op,source_end=np,integrated_flux=flux)
+    call require(ok,'fine coupled SDC interval with parent temporal state and sources')
+    call require(all(bound==0).and.maximum==0,'fine interval defers physical budget and reflux')
+    do peer=1,size(tree%nodes)
+      if(tree%nodes(peer)%level==1) cycle
+      call require(all(u%fields(peer)%values==previous%fields(peer)%values),'fine interval retains other levels')
+      call require(all(t%fields(peer)%values==previous_t%fields(peer)%values),'fine interval retains other temperatures')
+    end do
+    call prolong_amr_patch_tree_3d(tree,root,u,ok)
+    call prolong_amr_patch_tree_3d(tree,rt,t,ok)
     do trial=1,2
       if(trial==2) u%fields(4)%values(5,1,1,1)=1.001_dp*u%fields(4)%values(5,1,1,1)
       call average_down_amr_patch_tree_3d(tree,u,ok)
