@@ -54,7 +54,10 @@ Physical particle exchange is synchronized conservatively after each outer step.
 This is a PeleF extension to the pinned source-transfer algorithm. See the
 [application checks](../../docs/validation/spray-recursive-app-20260927.md) for the
 bounded test scope. Recursive checkpoints carry a separate integration-mode tag;
-changed-rank continuation and recursive regridding still require their own checks.
+a focused two-level case now checks regridding followed by 2-to-4-rank
+continuation with a pending injection event
+([evidence](../../docs/validation/spray-recursive-restart-regrid-20260927.md)).
+Three-level evolution and broader restart/model combinations remain open.
 
 Output:
 
@@ -511,6 +514,6 @@ Coupled checkpoints preserve reaction history and total external impulse/work
 alongside parcel state, IDs and injection progress. Common-step SDC currently
 requires `subcycling=.false.`. `wall_impacts=.true.` now connects EB
 deposition/splash and film evolution using the existing `walls` controls; film
-state and splash IDs are retained across restart. Recursive particle scheduling
-remains unimplemented. The normal split integrator remains
+state and splash IDs are retained across restart. Recursive film/splash scheduling
+remains unimplemented; recursive drag/heating/evaporation uses the controls above. The normal split integrator remains
 the default. This experimental path is not physical spray validation.

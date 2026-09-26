@@ -43,8 +43,10 @@ coarse/fine crossing now pass the unchanged inventory criterion; see the
 [source synchronization checks](validation/spray-recursive-source-sync-20260927.md).
 The preceding [source audit and failure record](validation/spray-recursive-crossing-20260927.md)
 remains historical evidence. Three-level coupled evolution, temporal accuracy,
-strong-coupling admissibility, recursive restart/regrid qualification and the
-remaining recursive particle models remain open.
+strong-coupling admissibility and the remaining recursive particle models remain
+open. A two-level application case now verifies scheduled regridding followed
+by 2-to-4-rank restart, reaction-source history and a pending injection event
+([continuation checks](validation/spray-recursive-restart-regrid-20260927.md)).
 
 ## Level-bounded particle ownership
 
