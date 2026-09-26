@@ -15,6 +15,7 @@ program test_mpi_amr_patch_tree_split_3d
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use amr_patch_tree_chemistry_3d_mod, only: advance_amr_patch_tree_chemistry_3d,advance_amr_patch_tree_strang_3d
   use mpi_amr_patch_tree_chemistry_3d_mod, only: advance_mpi_amr_tree_chemistry_3d,advance_mpi_amr_tree_strang_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -157,6 +158,8 @@ contains
   subroutine check_sdc()
     type(amr_tree_state_3d) :: ir,serial_ir,retained_ir
     real(dp) :: external(12),serial_external(12),force(3),visc
+    type(amr_tree_state_3d) :: start,finish,owned_start,owned_end,src0,src1,owned_src0,owned_src1,op,np,sop,snp
+    type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:)
     integer :: peer,dims(3)
     owners=mod([0,1,0],nranks);dt=1e-10_dp;faces='periodic';force=[20000._dp,-30000._dp,40000._dp]
     allocate(local%fields(3),temperature%fields(3),ir%fields(3),serial_ir%fields(3))
@@ -195,6 +198,52 @@ contains
     do peer=1,3
       if(owners(peer)/=rank) cycle
       call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'reaction estimate rollback')
+    end do
+    allocate(start%fields(3),owned_start%fields(3),owned_end%fields(3),owned_src0%fields(3),owned_src1%fields(3))
+    src0=global;src1=global
+    do peer=1,3
+      dims=tree%nodes(peer)%shape
+      allocate(start%fields(peer)%values(13,dims(1),dims(2),dims(3)))
+      start%fields(peer)%values(:12,:,:,:)=oracle%fields(peer)%values
+      start%fields(peer)%values(13,:,:,:)=oracle_t%fields(peer)%values(1,:,:,:)
+      src0%fields(peer)%values=0;src1%fields(peer)%values=0
+      src1%fields(peer)%values(2,:,:,:)=10000
+    end do
+    finish=start
+    do peer=1,2
+      finish%fields(peer)%values(:12,:,:,:)=1.001_dp*start%fields(peer)%values(:12,:,:,:)
+      if(owners(peer)/=rank) cycle
+      owned_start%fields(peer)=start%fields(peer);owned_end%fields(peer)=finish%fields(peer)
+      owned_src0%fields(peer)=src0%fields(peer);owned_src1%fields(peer)=src1%fields(peer)
+    end do
+    call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,serial_budget,serial_external,serial_largest,serial_theta, &
+      ok,reaction_source=serial_ir,target_depth=2,coarse_start=start,coarse_end=finish, &
+      fractions_start=[.25_dp,.5_dp],fractions_end=[.5_dp,1._dp],source_start=src0,source_end=src1, &
+      integrated_flux=serial_flux,old_predictor=sop,new_predictor=snp)
+    call require(ok,'serial coupled level SDC')
+    call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+      reaction_source=ir,target_depth=2,coarse_start=owned_start,coarse_end=owned_end, &
+      fractions_start=[.25_dp,.5_dp],fractions_end=[.5_dp,1._dp],source_start=owned_src0,source_end=owned_src1, &
+      integrated_flux=flux,old_predictor=op,new_predictor=np)
+    call require(ok,'MPI coupled level SDC')
+    call compare_state()
+    call require(all(budget==serial_budget).and.all(external==serial_external),'level boundary/source exact')
+    call require(largest==serial_largest.and.theta==serial_theta,'level diagnostics exact')
+    do peer=1,3
+      call require(allocated(flux(peer)%x).eqv.(peer==3.and.owners(peer)==rank),'level flux ownership')
+      if(owners(peer)/=rank) cycle
+      call require(all(ir%fields(peer)%values==serial_ir%fields(peer)%values),'level IR exact')
+      call require(all(op%fields(peer)%values==sop%fields(peer)%values),'old predictor exact')
+      call require(all(np%fields(peer)%values==snp%fields(peer)%values),'new predictor exact')
+      if(peer<3) then
+        call require(all(local%fields(peer)%values==saved%fields(peer)%values),'inactive state unchanged')
+        call require(all(temperature%fields(peer)%values==saved_t%fields(peer)%values),'inactive T unchanged')
+      else
+        call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
+          all(flux(peer)%z==serial_flux(peer)%z),'level flux exact')
+      end if
     end do
   end subroutine check_sdc
   subroutine compare_state()

@@ -30,7 +30,8 @@ contains
   subroutine advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag)
+      inflow_mach,inflow_pressure,difmag,target_depth,coarse_start,coarse_end,fractions_start,fractions_end, &
+      source_start,source_end,integrated_flux,old_predictor,new_predictor)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -47,6 +48,14 @@ contains
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6),difmag
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end,source_start,source_end
+    real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:)
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
+    type(amr_tree_state_3d), optional, intent(inout) :: old_predictor,new_predictor
+    real(dp), allocatable :: midpoint(:)
+    integer :: depth,selection(10),selection_low(10),selection_high(10)
+    type(amr_tree_state_3d) :: op,np
     type(amr_tree_state_3d) :: old,ot,candidate,ct,old_ext,new_ext,old_tr,new_tr,hydro,rates,ir
     type(amr_tree_flux_3d), allocatable :: flux(:),old_flux(:),new_flux(:)
     real(dp) :: budget(size(boundary_change)),volume(size(source_change)),correction(size(boundary_change))
@@ -76,11 +85,44 @@ contains
     call MPI_Allreduce(controls,high_controls,9,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(low_controls/=high_controls)) return
+    depth=-1
+    if(present(target_depth)) depth=target_depth
+    selection=[depth,merge(1,0,present(coarse_start)),merge(1,0,present(coarse_end)), &
+      merge(1,0,present(fractions_start)),merge(1,0,present(fractions_end)), &
+      merge(1,0,present(source_start)),merge(1,0,present(source_end)), &
+      merge(1,0,present(integrated_flux)),merge(1,0,present(old_predictor)),merge(1,0,present(new_predictor))]
+    call MPI_Allreduce(selection,selection_low,10,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selection,selection_high,10,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(selection_low/=selection_high)) return
+    valid=depth>=-1
+    if(present(target_depth)) valid=depth>=0.and.present(integrated_flux)
+    if(depth>0) valid=valid.and.present(coarse_start)
+    valid=valid.and.all(selection(2:7)==selection(2))
+    call agree(valid)
+    if(.not.valid) return
+    if(present(coarse_start)) then
+      valid=valid.and.depth>=0
+      valid=valid.and.size(fractions_start)==depth.and.size(fractions_end)==depth
+    end if
+    call agree(valid)
+    if(.not.valid) return
+    if(present(coarse_start)) then
+      valid=all(ieee_is_finite(fractions_start)).and.all(ieee_is_finite(fractions_end))
+      valid=valid.and.all(fractions_start>=0).and.all(fractions_end<=1).and.all(fractions_end>=fractions_start)
+      call agree(valid)
+      if(.not.valid) return
+      midpoint=.5_dp*(fractions_start+fractions_end)
+    end if
     do_transport=any(transport_flags(:3));theta=1
     call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),state,temperature,old,ot,comm,rank,valid)
     if(.not.valid) return
-    call average_down_mpi_amr_tree_3d(tree,owners,old,nv,comm,valid)
-    if(.not.valid) return
+    if(depth>=tree%level_count()) return
+    if(depth<0) then
+      call average_down_mpi_amr_tree_3d(tree,owners,old,nv,comm,valid)
+      if(.not.valid) return
+    end if
     call recover(old,ot,valid)
     if(.not.valid) return
     allocate(ir%fields(size(tree%nodes)),stat=ios)
@@ -106,38 +148,46 @@ contains
       if(.not.valid) return
       ir=reaction_source
     end if
-    call sources(old,ot,old_ext,old_tr,old_flux,valid)
+    call sources(old,ot,old_ext,old_tr,old_flux,valid,fractions_start)
+    if(.not.valid) return
+    call predictor(old_ext,old_tr,op,valid)
     if(.not.valid) return
     new_ext=old_ext;new_tr=old_tr;candidate=old;ct=ot
     do iteration=1,iterations
       call average_rates()
       do node=1,size(tree%nodes)
         if(owners(node)/=rank) cycle
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         rates%fields(node)%values(6:,:,:,:)=rates%fields(node)%values(6:,:,:,:)+ir%fields(node)%values(:nv-5,:,:,:)
         rates%fields(node)%values(5,:,:,:)=rates%fields(node)%values(5,:,:,:)+ir%fields(node)%values(nv-4,:,:,:)
       end do
       call compute_sdc_mpi_amr_tree_hydro_3d(tree,owners,species,old,ot,rates,spacing,dt,faces,hydro,flux,comm,valid, &
-        inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag)
+        inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag, &
+        target_depth,coarse_start,coarse_end,fractions_start,source_start,source_end,midpoint)
       if(.not.valid) return
       do node=1,size(tree%nodes)
         if(owners(node)/=rank) cycle
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         candidate%fields(node)%values=old%fields(node)%values+dt*(rates%fields(node)%values+hydro%fields(node)%values)
       end do
       call recover(candidate,ct,valid)
       if(.not.valid) return
-      call sources(candidate,ct,new_ext,new_tr,new_flux,valid)
+      call sources(candidate,ct,new_ext,new_tr,new_flux,valid,fractions_end)
       if(.not.valid) return
       call average_rates()
       do node=1,size(tree%nodes)
         if(owners(node)/=rank) cycle
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         rates%fields(node)%values=rates%fields(node)%values+hydro%fields(node)%values
       end do
       if(chemistry) then
-        call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,ot,rates,dt,rtol,atol,candidate,ct,ir,comm,valid)
+        call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,ot,rates,dt,rtol,atol,candidate,ct,ir,comm,valid, &
+          target_depth)
         if(.not.valid) return
       else
         do node=1,size(tree%nodes)
         if(owners(node)/=rank) cycle
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
           candidate%fields(node)%values=old%fields(node)%values+dt*rates%fields(node)%values
         end do
         call recover(candidate,ct,valid)
@@ -147,13 +197,14 @@ contains
     if(do_transport) then
       do node=1,size(tree%nodes)
         if(owners(node)/=rank) cycle
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         flux(node)%x=flux(node)%x+.5_dp*(old_flux(node)%x+new_flux(node)%x)
         flux(node)%y=flux(node)%y+.5_dp*(old_flux(node)%y+new_flux(node)%y)
         flux(node)%z=flux(node)%z+.5_dp*(old_flux(node)%z+new_flux(node)%z)
       end do
     end if
-    budget=0
-    if(rank==owners(1)) then
+    budget=0;largest=0
+    if(rank==owners(1).and.depth<=0) then
     n=tree%nodes(1)%shape
     do c=1,nv
       budget(c)=(sum(flux(1)%x(c,1,:,:))-sum(flux(1)%x(c,n(1)+1,:,:)))*spacing(2)*spacing(3)+ &
@@ -163,22 +214,47 @@ contains
     end if
     call MPI_Bcast(budget,nv,MPI_DOUBLE_PRECISION,owners(1),comm,status)
     if(status/=MPI_SUCCESS) return
+    if(depth<0) then
     call reflux_mpi_amr_tree_3d(tree,owners,candidate,nv,flux,spacing,faces,correction,largest,comm,valid)
     if(.not.valid) return
     budget=budget+correction
     call recover(candidate,ct,valid)
     if(.not.valid) return
+    end if
     call inventory(old_ext,first,valid)
     if(.not.valid) return
     call inventory(new_ext,last,valid)
     if(.not.valid) return
     volume=.5_dp*dt*(first+last)
     if(.not.all(ieee_is_finite(budget)).or..not.all(ieee_is_finite(volume))) return
+    if(present(new_predictor)) then
+      call predictor(new_ext,new_tr,np,valid)
+      if(.not.valid) return
+    end if
     state=candidate;temperature=ct;boundary_change=budget;source_change=volume
     maximum_correction=largest;minimum_theta=theta
     if(present(reaction_source)) reaction_source=ir
+    if(present(integrated_flux)) integrated_flux=flux
+    if(present(old_predictor)) old_predictor=op
+    if(present(new_predictor)) new_predictor=np
     ok=.true.
   contains
+    subroutine predictor(external,diffusive,result,good)
+      type(amr_tree_state_3d), intent(in) :: external,diffusive
+      type(amr_tree_state_3d), intent(out) :: result
+      logical, intent(out) :: good
+      integer :: peer
+      result=external;good=.true.
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
+        result%fields(peer)%values=result%fields(peer)%values+diffusive%fields(peer)%values
+        result%fields(peer)%values(6:,:,:,:)=result%fields(peer)%values(6:,:,:,:)+ir%fields(peer)%values(:nv-5,:,:,:)
+        result%fields(peer)%values(5,:,:,:)=result%fields(peer)%values(5,:,:,:)+ir%fields(peer)%values(nv-4,:,:,:)
+        if(.not.all(ieee_is_finite(result%fields(peer)%values))) good=.false.
+      end do
+      call agree(good)
+    end subroutine predictor
     subroutine average_rates()
       integer :: peer
       rates=old_ext
@@ -193,17 +269,20 @@ contains
       type(amr_tree_state_3d), intent(in) :: u
       type(amr_tree_state_3d), intent(inout) :: t
       logical, intent(out) :: good
-      call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,u,t,comm,good)
+      call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,u,t,comm,good,target_depth)
     end subroutine
-    subroutine sources(u,t,external,diffusive,face_flux,good)
+    subroutine sources(u,t,external,diffusive,face_flux,good,fractions)
       type(amr_tree_state_3d), intent(in) :: u,t
       type(amr_tree_state_3d), intent(inout) :: external,diffusive
       type(amr_tree_flux_3d), allocatable, intent(inout) :: face_flux(:)
       logical, intent(out) :: good
+      real(dp), optional, intent(in) :: fractions(:)
       integer :: peer
       external=u;diffusive=u;good=.true.
       do peer=1,size(tree%nodes)
         if(owners(peer)/=rank) cycle
+        external%fields(peer)%values=0;diffusive%fields(peer)%values=0
+        if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
         call compute_reactive_external_source_3d(u%fields(peer)%values,force,external%fields(peer)%values,good)
         if(.not.good) exit
         diffusive%fields(peer)%values=0
@@ -214,7 +293,7 @@ contains
         stage_theta=1
         call compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,transport,u,t,spacing,dt,faces,transport_flags, &
           diffusive,face_flux,stage_theta,comm,good,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-          outlet_pressure,inflow_mach,inflow_pressure)
+          outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,fractions)
         if(.not.good) return
         theta=min(theta,stage_theta)
       end if
