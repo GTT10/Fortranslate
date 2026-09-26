@@ -361,12 +361,13 @@ physical-boundary stepping in the separate single-level application.
 ## SDC common and recursive steps
 
 `redistribution='state_redist'` selects weighted state redistribution for serial/MPI
-common-step SDC. Its target is `state_redist_target_volume_fraction` (default
+common and recursive SDC. Its target is `state_redist_target_volume_fraction` (default
 0.5, allowed range greater than zero through one). `sdc_state_redist.nml`
 provides a reacting fixture. Both settings must match on restart, including
-rank-changing continuation. Recursive StateRedist remains unavailable. See the
+rank-changing continuation. Add `subcycling=.true.` for recursive intervals. See the
 [serial coupling/restart checks](../../docs/validation/sdc-eb-tree-state-redistribution-20260927.md)
-and [MPI checks](../../docs/validation/sdc-mpi-eb-state-redistribution-20260927.md).
+[MPI common-step checks](../../docs/validation/sdc-mpi-eb-state-redistribution-20260927.md),
+and [recursive checks](../../docs/validation/sdc-state-redistribution-recursive-20260927.md).
 
 `redistribution='flux_redist'` enables composite small-cell redistribution for
 serial/MPI common and recursive SDC. `sdc_flux_redist.nml` provides a reacting
