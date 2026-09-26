@@ -93,7 +93,7 @@ contains
   ! Each rank supplies its own particle positions, possibly empty. Only requested
   ! exposed-cell values are exchanged; the owner-local field is never gathered.
   subroutine sample_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      samples,ok,maximum_requests,eb_geometry,nodal_phi)
+      samples,ok,maximum_requests,eb_geometry,nodal_phi,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -102,7 +102,7 @@ contains
     logical, intent(in) :: periodic(3)
     real(dp), allocatable, intent(inout) :: samples(:,:)
     logical, intent(out) :: ok
-    integer, optional, intent(in) :: maximum_requests
+    integer, optional, intent(in) :: maximum_requests,maximum_level
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(particle_stencil), allocatable :: stencils(:)
@@ -112,7 +112,7 @@ contains
     logical :: valid,agreed
     ok=.false.
     call prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi)
+      stencils,requests,valid,maximum_requests,eb_geometry,nodal_phi,maximum_level)
     if (.not.valid) return
     allocate(candidate(nvar,size(positions,2)),term(nvar),stat=ios)
     valid=ios==0;call agree()
@@ -299,7 +299,7 @@ contains
   end subroutine
 
   subroutine prepare_requests(comm,tree,owners,state,nvar,positions,lower,spacing,periodic, &
-      stencils,requests,ok,maximum_requests,eb_geometry,nodal_phi)
+      stencils,requests,ok,maximum_requests,eb_geometry,nodal_phi,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar
@@ -309,18 +309,21 @@ contains
     type(particle_stencil), allocatable, intent(out) :: stencils(:)
     integer, allocatable, intent(out) :: requests(:,:)
     logical, intent(out) :: ok
-    integer, optional, intent(in) :: maximum_requests
+    integer, optional, intent(in) :: maximum_requests,maximum_level
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     integer, allocatable :: lookup(:,:)
     real(dp) :: bounds(6),reference_bounds(6)
-    integer :: flags(5),reference_flags(5),ierr,limit,p,total,n,ios
+    integer :: flags(6),reference_flags(6),ierr,limit,p,total,n,ios,top_level
     logical :: valid,agreed
     ok=.false.;limit=1000000
     if (present(maximum_requests)) limit=maximum_requests
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
-    valid=size(positions,1)==3.and.limit>=0.and.limit<=1000000
+    top_level=tree%level_count()-1
+    if(present(maximum_level)) top_level=maximum_level
+    valid=top_level>=0.and.top_level<tree%level_count()
+    valid=valid.and.size(positions,1)==3.and.limit>=0.and.limit<=1000000
     valid=valid.and.all(ieee_is_finite([lower,spacing]))
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
     if (valid) valid=size(positions,2)<=limit
@@ -329,8 +332,9 @@ contains
     bounds=[lower,spacing];reference_bounds=bounds
     call MPI_Bcast(reference_bounds,6,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    flags=[merge(1,0,periodic),merge(1,0,present(eb_geometry)),merge(1,0,present(nodal_phi))];reference_flags=flags
-    call MPI_Bcast(reference_flags,5,MPI_INTEGER,0,comm,ierr)
+    flags=[merge(1,0,periodic),merge(1,0,present(eb_geometry)),merge(1,0,present(nodal_phi)),top_level]
+    reference_flags=flags
+    call MPI_Bcast(reference_flags,6,MPI_INTEGER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=all(bounds==reference_bounds).and.all(flags==reference_flags)
     call agree()
@@ -339,7 +343,7 @@ contains
       call validate_eb_sampling_geometry(comm,tree,eb_geometry,nodal_phi,valid,periodic)
       if(.not.valid) return
     end if
-    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,lookup,valid)
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,lookup,valid,maximum_level)
     call agree()
     if (.not.agreed) return
     allocate(stencils(size(positions,2)),stat=ios)
@@ -352,11 +356,11 @@ contains
       end if
       if(present(eb_geometry)) then
         call eb_tree_spray_stencil(tree,eb_geometry,nodal_phi,positions(:,p),lower,spacing, &
-          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,periodic=periodic)
+          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,periodic=periodic,maximum_level=maximum_level)
         if(valid) valid=size(stencils(p)%weights)<=limit-total
       else
         call amr_tree_spray_stencil(tree,positions(:,p),lower,spacing,periodic, &
-          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,maximum_cells=limit-total)
+          stencils(p)%cells,stencils(p)%weights,stencils(p)%volumes,valid,maximum_cells=limit-total,maximum_level=maximum_level)
       end if
       if (.not.valid) exit
       total=total+size(stencils(p)%weights)

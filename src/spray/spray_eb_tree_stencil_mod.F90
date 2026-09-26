@@ -22,13 +22,14 @@ contains
   end function
   ! Composite cloud weights, fluid-volume weighted, with visibility to fluid
   ! centroids. Geometry/phi must originate from the same finest nodal field.
-  subroutine eb_tree_spray_stencil(tree,geometry,phi,position,lower,spacing,cells,weights,volumes,ok,periodic)
+  subroutine eb_tree_spray_stencil(tree,geometry,phi,position,lower,spacing,cells,weights,volumes,ok,periodic,maximum_level)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(eb_geometry_3d), intent(in) :: geometry(:)
     real(dp), intent(in) :: phi(0:,0:,0:),position(3),lower(3),spacing(3)
     integer, allocatable, intent(inout) :: cells(:,:)
     real(dp), allocatable, intent(inout) :: weights(:),volumes(:)
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_level
     logical, optional, intent(in) :: periodic(3)
     logical :: wrap(3)
     character(len=16) :: faces(6)
@@ -47,7 +48,7 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(.not.valid) return
     if(.not.compatible_eb_nodal_lattice(shape(phi)-1,domain(:,size(domain,2)))) return
-    call amr_tree_spray_stencil(tree,position,lower,spacing,wrap,candidate,w,v,valid)
+    call amr_tree_spray_stencil(tree,position,lower,spacing,wrap,candidate,w,v,valid,maximum_level=maximum_level)
     if(.not.valid) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp)
     extent=upper-lower;start=position

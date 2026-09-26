@@ -69,6 +69,9 @@ program test_spray_mpi_eb_sample
   call require(ok,'owner-routed EB sampling')
   if(rank==0) call require(abs(samples(1,1)-expected)<1e-13_dp,'weighted remote values')
   if(rank/=0) call require(size(samples,2)==0,'empty query ranks')
+  call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,field,1,positions,zero,spacing, &
+    periodic,samples,ok,100,g,phi,maximum_level=0)
+  call require(ok.and.all(abs(samples-10._dp)<1e-13_dp),'covered coarse EB sampling')
   deallocate(positions);allocate(positions(3,0))
   call sample(100)
   call require(ok.and.size(samples,2)==0,'globally empty queries')

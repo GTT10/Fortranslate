@@ -9,10 +9,10 @@ program test_spray_mpi_amr_sampling
   implicit none
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
-  type(amr_tree_state_3d) :: full,local
+  type(amr_tree_state_3d) :: full,local,snapshot
   real(dp), allocatable :: positions(:,:),samples(:,:),reference(:,:),saved(:,:),good_positions(:,:)
   real(dp) :: points(3,4),zero(3)=0._dp,spacing(3)=1._dp,bounds(3)
-  integer :: rank,nranks,ierr,node,n(3),i,j,k,np,owners(3),wrong(3)
+  integer :: rank,nranks,ierr,node,n(3),i,j,k,np,owners(3),wrong(3),level
   logical :: ok,periodic(3)=[.true.,.true.,.true.]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -45,6 +45,30 @@ program test_spray_mpi_amr_sampling
   if (rank==0) np=0
   if (rank==1) np=4
   positions=points(:,:np)
+  snapshot=full;positions=.5_dp
+  do node=1,3
+    full%fields(node)%values=real(10*node,dp)
+  end do
+  call distribute()
+  do level=0,1
+    call sample_amr_tree_spray_field(tree,full,positions,zero,spacing,periodic,reference,ok,level)
+    call require(ok.and.all(abs(reference-real(10*(level+1),dp))<1e-13_dp),'analytic serial level view')
+    call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic, &
+      samples,ok,maximum_level=level)
+    call require(ok.and.all(samples==reference),'exact MPI level view')
+  end do
+  saved=samples
+  call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic, &
+    samples,ok,maximum_level=merge(0,1,rank==0))
+  call require(.not.ok.and.all(samples==saved),'level disagreement rollback')
+  call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic, &
+    samples,ok,maximum_level=3)
+  call require(.not.ok.and.all(samples==saved),'invalid level rollback')
+  if(rank==owners(3)) local%fields(3)%values=ieee_value(0._dp,ieee_quiet_nan)
+  call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic, &
+    samples,ok,maximum_level=0)
+  call require(ok.and.all(abs(samples-10._dp)<1e-13_dp),'unrequested deeper payload ignored')
+  full=snapshot;positions=points(:,:np);call distribute()
   call sample_amr_tree_spray_field(tree,full,positions,zero,spacing,periodic,reference,ok)
   call require(ok,'serial reference')
   call sample()
@@ -86,6 +110,10 @@ program test_spray_mpi_amr_sampling
   call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic, &
     samples,ok,maximum_requests=0)
   call require(ok.and.size(samples,1)==2.and.size(samples,2)==0,'globally empty query')
+  call sample_amr_tree_spray_field(tree,full,positions,zero,spacing,periodic,reference,ok,0)
+  call require(ok.and.size(reference,2)==0,'empty serial bounded query')
+  call sample_amr_tree_spray_field(tree,full,positions,zero,spacing,periodic,reference,ok,3)
+  call require(.not.ok.and.size(reference,2)==0,'empty serial invalid level rollback')
   if (rank==0) print *, 'PASS: owner-local AMR spray field sampling'
   call MPI_Finalize(ierr)
 contains

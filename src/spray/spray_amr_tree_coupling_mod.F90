@@ -56,28 +56,30 @@ contains
 
   ! A rectangular cloud one containing-cell wide overlaps only exposed cells.
   ! On a uniform mesh this is the usual trilinear cloud-in-cell stencil.
-  subroutine amr_tree_spray_stencil(tree,position,lower,spacing,periodic,cells,weights,volumes,ok,maximum_cells)
+  subroutine amr_tree_spray_stencil(tree,position,lower,spacing,periodic,cells,weights,volumes,ok,maximum_cells,maximum_level)
     type(amr_patch_tree_3d), intent(in) :: tree
     real(dp), intent(in) :: position(3),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
     integer, allocatable, intent(inout) :: cells(:,:)
     real(dp), allocatable, intent(inout) :: weights(:),volumes(:)
     logical, intent(out) :: ok
-    integer, optional, intent(in) :: maximum_cells
+    integer, optional, intent(in) :: maximum_cells,maximum_level
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),location(:,:),candidate(:,:)
     real(dp), allocatable :: w(:),v(:)
     real(dp) :: length(3),center(3),width(3),clo(3),chi(3),lo(3),hi(3),d(3), &
       cell_lo(3),cell_hi(3),overlap(3),weight,total,expected,volume
-    integer :: shifts(3),sx,sy,sz,pass,node,level,child,first(3),last(3),i,j,k,n,capacity,limit,ios,idx(3)
+    integer :: shifts(3),sx,sy,sz,pass,node,level,child,first(3),last(3),i,j,k,n,capacity,limit,ios,idx(3),top_level
     logical :: valid,covered
     ok=.false.;limit=1000000
     if (present(maximum_cells)) limit=maximum_cells
     if (limit<1.or.limit>1000000) return
-    call locate_amr_tree_spray_cells(tree,reshape(position,[3,1]),lower,spacing,periodic,location,valid)
+    call locate_amr_tree_spray_cells(tree,reshape(position,[3,1]),lower,spacing,periodic,location,valid,maximum_level)
     if (.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if (.not.valid) return
+    top_level=tree%level_count()-1
+    if(present(maximum_level)) top_level=maximum_level
     length=spacing*real(tree%nodes(1)%shape,dp);center=(position-lower)/length
     where(periodic) center=modulo(position-lower,length)/length
     level=tree%nodes(location(1,1))%level+1;width=1._dp/real(domain(:,level),dp)
@@ -92,6 +94,7 @@ contains
         chi=min(1._dp,center+real([sx,sy,sz],dp)+.5_dp*width)
         if (any(chi<=clo)) cycle
         do node=1,size(tree%nodes)
+          if(tree%nodes(node)%level>top_level) cycle
           level=tree%nodes(node)%level+1;d=real(domain(:,level),dp)
           lo=max(clo,real(origin(:,node),dp)/d)
           hi=min(chi,real(origin(:,node)+int(tree%nodes(node)%shape,int64),dp)/d)
@@ -104,7 +107,7 @@ contains
           do i=first(1),last(1)
             idx=[i,j,k];covered=.false.
             do child=node+1,size(tree%nodes)
-              if (tree%nodes(child)%parent/=node) cycle
+              if (tree%nodes(child)%parent/=node.or.tree%nodes(child)%level>top_level) cycle
               associate(p=>tree%nodes(child)%patch)
               if (all(idx>=[p%coarse_i_lower,p%coarse_j_lower,p%coarse_k_lower]).and. &
                   all(idx<=[p%coarse_i_upper,p%coarse_j_upper,p%coarse_k_upper])) covered=.true.
@@ -145,12 +148,13 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine sample_amr_tree_spray_field(tree,state,positions,lower,spacing,periodic,samples,ok)
+  subroutine sample_amr_tree_spray_field(tree,state,positions,lower,spacing,periodic,samples,ok,maximum_level)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(in) :: state
     real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
     real(dp), allocatable, intent(inout) :: samples(:,:)
+    integer, optional, intent(in) :: maximum_level
     logical, intent(out) :: ok
     integer, allocatable :: cells(:,:),lookup(:,:)
     real(dp), allocatable :: weights(:),volumes(:),candidate(:,:),term(:)
@@ -158,14 +162,15 @@ contains
     logical :: valid
     ok=.false.
     if (.not.state%is_valid(tree).or.size(positions,1)/=3) return
-    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,lookup,valid)
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,lookup,valid,maximum_level)
     if (.not.valid) return
     nv=size(state%fields(1)%values,1)
     allocate(candidate(nv,size(positions,2)),term(nv),stat=ios)
     if (ios/=0) return
     candidate=0._dp
     do p=1,size(positions,2)
-      call amr_tree_spray_stencil(tree,positions(:,p),lower,spacing,periodic,cells,weights,volumes,valid)
+      call amr_tree_spray_stencil(tree,positions(:,p),lower,spacing,periodic, &
+        cells,weights,volumes,valid,maximum_level=maximum_level)
       if (.not.valid) return
       do q=1,size(weights)
         node=cells(1,q);i=cells(2,q);j=cells(3,q);k=cells(4,q)

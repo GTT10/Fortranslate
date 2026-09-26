@@ -88,6 +88,24 @@ contract and has not been compared to AMReX locator ordering. Per-subcycle
 refresh/removal, ghost evolution, source transfer and recursive application
 routing remain open. See [creation checks](validation/spray-ghost-particles-20260927.md).
 
+## Level-bounded gas sampling
+
+Regular/EB cloud stencils, the serial regular sampler and MPI regular/EB
+sampler accept optional `maximum_level`. The cloud width uses the containing
+cell at that level ceiling; deeper nodes are excluded and their covered
+parents become available. MPI exchanges only the resulting requested cells
+and requires all ranks to agree on the effective ceiling. Omission retains
+the composite finest-grid interpolation. Invalid ceilings and failed queries
+retain the previous sample output, including empty-query cases.
+
+This allows coarse virtual populations to read the corresponding gas view.
+It is a composite view capped at a level, not a fine-level halo interpolator:
+coarse regions outside that level's patches still use coarse cells. Time
+interpolation of parent endpoints, fine ghost gas reconstruction, and separate
+level source deposition/transfer remain required for recursive spray SDC.
+The physical deposition APIs continue to use their existing composite path.
+See [sampling checks](validation/spray-level-sampling-20260927.md).
+
 ## AMR and embedded boundaries
 
 An AMR ownership library now locates parcels in the finest covering regular
