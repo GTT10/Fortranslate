@@ -17,7 +17,8 @@ module spray_mpi_amr_step_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas, &
     sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo,sum_mpi_amr_particle_source_halo
-  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
+  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels, &
+    redistribute_mpi_amr_ghost_particles
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
   use spray_eb_intersection_mod, only: intersect_spray_level_set
@@ -25,8 +26,60 @@ module spray_mpi_amr_step_mod
   use spray_mpi_eb_impact_mod, only: advance_mpi_level_set_impacts
   implicit none
   private
-  public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo
+  public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo,advance_mpi_amr_ghost_halo
 contains
+  ! One ghost-population stage: kick, drift, reaction transfer, then reassign.
+  ! All outputs remain private until the final population exchange succeeds.
+  subroutine advance_mpi_amr_ghost_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
+      width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
+      source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_ghosts
+    integer, allocatable, intent(inout) :: nodes(:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(spray_parcel), allocatable, intent(inout) :: ghosts(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),kick_dt,drift_dt
+    logical, intent(in) :: periodic(3)
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5),boundary_change(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    integer, optional, intent(in) :: maximum_received
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp), allocatable :: masses(:,:)
+    integer, allocatable :: locations(:)
+    type(amr_tree_state_3d) :: raw,routed,leftover
+    real(dp) :: wall(5),exterior(reactive_nvar(size(species)))
+    integer :: status
+    logical :: valid,agreed
+    ok=.false.
+    valid=allocated(ghosts).and.allocated(component_mass).and.allocated(nodes)
+    valid=valid.and.size(boundary_change)==size(exterior)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    candidate=ghosts;masses=component_mass;locations=nodes
+    call kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
+      gas_halo,temperature_halo,width,locations,candidate,masses,lower,spacing,periodic,kick_dt,raw,valid, &
+      fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.true., &
+      eb_geometry,maximum_received)
+    if(.not.valid) return
+    call redistribute_mpi_amr_ghost_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &
+      periodic,target_level,grow,maximum_ghosts,valid,nodal_phi)
+    if(.not.valid) return
+    call move_alloc(candidate,ghosts);call move_alloc(masses,component_mass);call move_alloc(locations,nodes)
+    call move_alloc(routed%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    wall_change=wall;boundary_change=exterior;ok=.true.
+  end subroutine advance_mpi_amr_ghost_halo
+
   ! A single drag/thermal/evaporation kick on a caller-owned level population.
   ! Gas halos are frozen at the supplied stage time. Optional drift follows the
   ! kick; IDs and assigned nodes stay fixed. Caller schedules breakup/transfer.

@@ -102,6 +102,18 @@ particles. It does not create additional copies from the physical population
 or choose the recursive lifecycle at which regeneration should occur.
 See [redistribution checks](validation/spray-ghost-redistribution-20260927.md).
 
+`advance_mpi_amr_ghost_halo` connects one ghost-population stage: halo-based
+kick, drift, conservative reaction transfer to valid/coarse cells, then ghost
+redistribution. Kick and drift durations are explicit. The caller supplies
+stage-time gas halos, target level, grown-box width and ghost capacity. Updated
+particles, components, node indices, source/remainder fields and boundary
+ledgers publish together only after final redistribution succeeds.
+
+This stages an existing ghost population; recursive clocks, creation/removal
+at lifecycle boundaries, breakup/children and integration of ghost feedback
+without duplicate physical/virtual contributions remain to be connected.
+See [stage checks](validation/spray-ghost-stage-20260927.md).
+
 ## Level-bounded gas sampling
 
 Regular/EB cloud stencils, the serial regular sampler and MPI regular/EB

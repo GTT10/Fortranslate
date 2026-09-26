@@ -1,6 +1,7 @@
 program test_spray_mpi_amr_step
   use mpi_f08
-  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo
+  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo, &
+    advance_mpi_amr_ghost_halo
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties,advance_mixture_frozen_gas
@@ -301,6 +302,38 @@ contains
     call require(ok.and.all(hm==0).and.all(hd%mass==0),'halo drift retires outflow components')
     call require(exterior(1)==expected_delta(1).and.all(exterior(6:)==expected_delta(6:)), &
       'halo drift exports mass and each vapor species')
+    ! Complete stage must retain a ghost which moves into the fine valid box.
+    faces='periodic';nodes=2;drift_dt=1e-5_dp
+    do a=1,count
+      hd(a)=spray_parcel(1_int64,spacing*[2.1_dp,1.5_dp,1.5_dp], &
+        [-20._dp,0._dp,0._dp],1e-12_dp,350._dp,100._dp)
+      hm(:,a)=hd(a)%mass*[.25_dp,.75_dp]
+    end do
+    reference=hd;rm=hm;kept_routed=routed;kept_surplus=surplus;wall=17;exterior=19
+    call advance_mpi_amr_ghost_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,1,1,0,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,drift_dt,faces,routed,surplus,wall,exterior,ok)
+    call require(.not.ok.and.all(wall==17).and.all(exterior==19),'ghost stage final capacity failure preserves ledgers')
+    call require(size(hd)==count.and.all(hm==rm).and.all(nodes==2),'ghost stage capacity rollback')
+    do a=1,count
+      call require(all(hd(a)%position==reference(a)%position).and.all(hd(a)%velocity==reference(a)%velocity), &
+        'ghost stage rolls back kick and drift')
+    end do
+    do a=1,3
+      if(owners(a)/=rank) cycle
+      call require(all(routed%fields(a)%values==kept_routed%fields(a)%values),'ghost stage rolls back reaction transfer')
+      call require(all(surplus%fields(a)%values==kept_surplus%fields(a)%values),'ghost stage rolls back remainder')
+    end do
+    call advance_mpi_amr_ghost_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,1,1,100,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,drift_dt,faces,routed,surplus,wall,exterior,ok)
+    call require(ok.and.size(hd)==count.and.all(nodes==2),'ghost stage keeps a copy entering valid fine cells')
+    call require(all(wall==0).and.all(exterior==0),'interior ghost stage has no boundary exchange')
+    do a=1,count
+      call require(hd(a)%position(1)<2*spacing(1),'ghost enters fine valid region')
+      call require(maxval(abs(hd(a)%position-reference(a)%position-drift_dt*hd(a)%velocity))<1e-15_dp, &
+        'ghost stage uses kicked velocity for full drift')
+      call require(hd(a)%mass<reference(a)%mass.and.hd(a)%temperature>reference(a)%temperature, &
+        'ghost stage retains evaporation and heating')
+    end do
     kept_source=source;reference=hd;rm=hm
     ! A failed query happens before publication of either population or source.
     if(count>0) nodes=0
