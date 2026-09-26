@@ -3546,3 +3546,15 @@ The default retains specular particle contacts. The MPI EB spray application
 now connects `wall_impacts=.true.` in common-step SDC, including film checkpoint
 continuation ([application checks](validation/spray-sdc-impact-app-20260927.md)). See [impact checks](validation/spray-sdc-impact-20260927.md). See [SDC film checks](validation/spray-sdc-film-20260927.md).
 See [focused evidence](validation/film-sdc-source-export-20260927.md).
+
+### Recursive gas source interface
+
+Serial and MPI EB recursive SDC drivers now accept paired `auxiliary_source`
+and `auxiliary_change` arguments. The callback receives each level interval's
+start time relative to the outer step, in addition to interval length, stage
+and depth. The selected-level gas driver masks inactive levels and integrates
+only physical leaves; the recursive driver accumulates accepted interval
+inventories separately from external forcing. Callback-owned particle/film
+state must remain private until the outer call succeeds. This is the gas-side
+interface; recursive particle/film scheduling remains unimplemented. See
+[focused checks](validation/sdc-recursive-auxiliary-source-20260927.md).

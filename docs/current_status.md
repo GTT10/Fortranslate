@@ -178,7 +178,10 @@ now evolves existing stationary films from saved midpoint states
 transaction ([checks](validation/spray-sdc-impact-20260927.md)). The MPI spray
 application now dispatches this film/impact path and preserves it through
 regridding and rank-changing restart
-([checks](validation/spray-sdc-impact-app-20260927.md)). A serial
+([checks](validation/spray-sdc-impact-app-20260927.md)). Serial/MPI recursive
+gas SDC now exposes timed per-level auxiliary sources and a transactional
+exchange inventory ([checks](validation/sdc-recursive-auxiliary-source-20260927.md));
+recursive particle/film scheduling remains open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons
