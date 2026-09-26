@@ -1,5 +1,6 @@
 program test_mpi_amr_patch_tree_checkpoint_3d
   use mpi_f08
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -7,7 +8,7 @@ program test_mpi_amr_patch_tree_checkpoint_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_checkpoint_3d_mod, only: &
-    amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d
+    amr_tree_checkpoint_3d,read_amr_tree_checkpoint_3d,read_amr_tree_checkpoint_header_3d,write_amr_tree_checkpoint_3d
   use mpi_amr_patch_tree_checkpoint_3d_mod, only: &
     write_mpi_amr_tree_checkpoint_3d,read_mpi_amr_tree_checkpoint_3d
   implicit none
@@ -123,8 +124,107 @@ program test_mpi_amr_patch_tree_checkpoint_3d
     call require(all(restored%temperature%fields(node)%values==saved%temperature%fields(node)%values),'read T rollback')
   end do
   if (rank==0) print *, 'PASS: distributed checkpoint read, changed ownership and late validation rollback'
+  call check_sdc()
   call MPI_Finalize(ierr)
 contains
+  subroutine check_sdc()
+    type(MPI_Comm) :: smaller
+    integer :: c,variant,color,small_rank
+    real(dp) :: corrupt_source(8)
+    character(len=28*8-1) :: source_record
+    allocate(metadata%source(12),metadata%reaction_source%fields(2))
+    metadata%source=[(real(-c,dp)*.01_dp,c=1,12)]
+    do node=1,2
+      if(owners(node)/=rank) cycle
+      allocate(metadata%reaction_source%fields(node)%values(8,2,2,2))
+      do c=1,8
+        metadata%reaction_source%fields(node)%values(c,:,:,:)=real((-1)**c*c*node,dp)
+      end do
+    end do
+    do variant=1,3
+      if(variant==3) deallocate(metadata%reaction_source%fields)
+      call write_mpi_amr_tree_checkpoint_3d(trim(path),species,context,metadata,owners,state,temp,MPI_COMM_WORLD,ok, &
+        indexed=variant==2)
+      call require(ok,'MPI SDC checkpoint write')
+      if(rank==0) then
+        call read_amr_tree_checkpoint_3d(trim(path),species,context,[2,2,2],restored,ok)
+        call require(ok,'serial accepts MPI SDC payload')
+        call require(all(restored%source==metadata%source),'serial source ledger exact')
+        call require(allocated(restored%reaction_source%fields).eqv.(variant/=3),'serial source presence')
+        if(variant/=3) then
+          do node=1,2
+          do c=1,8
+            call require(all(restored%reaction_source%fields(node)%values(c,:,:,:)==real((-1)**c*c*node,dp)), &
+              'serial signed reaction source exact')
+          end do
+          end do
+        end if
+        call write_amr_tree_checkpoint_3d(trim(path)//'.serial',species,context,restored,ok,indexed=variant==2)
+        call require(ok,'serial SDC interchange write')
+      end if
+      call MPI_Barrier(MPI_COMM_WORLD,ierr)
+      ! File was written by the full communicator; read with two ranks.
+      color=MPI_UNDEFINED
+      if(rank<2) color=0
+      call MPI_Comm_split(MPI_COMM_WORLD,color,rank,smaller,ierr)
+      if(rank<2) then
+        call MPI_Comm_rank(smaller,small_rank,ierr)
+        call read_mpi_amr_tree_checkpoint_3d(trim(path),species,context,[2,2,2],'weighted',2, &
+          restored,read_owners,smaller,ok)
+        call require(ok,'MPI SDC changed-rank read')
+        call verify_sdc(variant,small_rank)
+        call read_mpi_amr_tree_checkpoint_3d(trim(path)//'.serial',species,context,[2,2,2],'round_robin',0, &
+          restored,read_owners,smaller,ok)
+        call require(ok,'MPI reads serial SDC checkpoint')
+        call verify_sdc(variant,small_rank)
+        call MPI_Comm_free(smaller,ierr)
+      end if
+      call MPI_Barrier(MPI_COMM_WORLD,ierr)
+      if(variant==2) then
+        saved=restored;saved_owners=read_owners
+        if(rank==0) then
+          inquire(file=trim(path),size=before_size)
+          cell_position=before_size-len('END_AMR_TREE_CHECKPOINT')-1-28*8+1
+          corrupt_source=0;corrupt_source(1)=ieee_value(0._dp,ieee_quiet_nan)
+          write(source_record,'(*(es27.18e3,1x))') corrupt_source
+          open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted',action='write')
+          write(unit,pos=cell_position) source_record//achar(10)
+          close(unit)
+        end if
+        call MPI_Barrier(MPI_COMM_WORLD,ierr)
+        call read_mpi_amr_tree_checkpoint_3d(trim(path),species,context,[2,2,2],'weighted',2, &
+          restored,read_owners,MPI_COMM_WORLD,ok)
+        call require(.not.ok,'nonfinite late SDC payload rejected')
+        call require(all(read_owners==saved_owners),'SDC read owner rollback')
+        call require(allocated(restored%reaction_source%fields).eqv.allocated(saved%reaction_source%fields), &
+          'SDC source allocation rollback')
+        if(allocated(saved%reaction_source%fields)) then
+          do node=1,2
+            if(.not.allocated(saved%reaction_source%fields(node)%values)) cycle
+            call require(all(restored%reaction_source%fields(node)%values==saved%reaction_source%fields(node)%values), &
+              'SDC source payload rollback')
+          end do
+        end if
+      end if
+    end do
+    if(rank==0) print *, 'PASS: SDC V3/V4, signed sources, serial interchange and changed-rank read'
+  end subroutine
+  subroutine verify_sdc(variant,reader_rank)
+    integer, intent(in) :: variant,reader_rank
+    integer :: peer,c
+    call require(all(restored%source==metadata%source),'MPI source ledger exact')
+    call require(allocated(restored%reaction_source%fields).eqv.(variant/=3),'MPI source presence')
+    if(variant==3) return
+    do peer=1,2
+      call require(allocated(restored%reaction_source%fields(peer)%values).eqv.(read_owners(peer)==reader_rank), &
+        'owner-only SDC checkpoint payload')
+      if(read_owners(peer)/=reader_rank) cycle
+      do c=1,8
+        call require(all(restored%reaction_source%fields(peer)%values(c,:,:,:)==real((-1)**c*c*peer,dp)), &
+          'MPI signed reaction source exact')
+      end do
+    end do
+  end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label
