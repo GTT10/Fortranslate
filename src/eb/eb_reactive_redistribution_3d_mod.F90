@@ -10,12 +10,68 @@ module eb_reactive_redistribution_3d_mod
   implicit none
   private
 
+  public :: redistribute_sdc_eb_rate_3d
   public :: reactive_eb_flux_redistribute_3d
   public :: advance_reactive_eb_redistributed_3d
   public :: reactive_eb_weighted_state_redistribute_3d
   public :: advance_reactive_eb_state_redistributed_3d
 
 contains
+  ! Re-express redistribution as a source rate for SDC stage assembly.
+  ! State redistribution acts on U + dt*R, then returns (redistributed - U)/dt.
+  subroutine redistribute_sdc_eb_rate_3d(geometry,state,conservative_rhs,dt,method,rate,ok,target_volume_fraction)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: state(:,:,:,:),conservative_rhs(:,:,:,:),dt
+    character(len=*), intent(in) :: method
+    real(dp), intent(inout) :: rate(:,:,:,:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: target_volume_fraction
+    real(dp), allocatable :: old(:,:,:,:),rhs(:,:,:,:),provisional(:,:,:,:),candidate(:,:,:,:)
+    integer :: n(3),nc,i,j,k
+    logical :: valid
+    ok=.false.
+    if(.not.geometry%is_valid().or..not.ieee_is_finite(dt)) return
+    if(dt<=0) return
+    n=[geometry%nx,geometry%ny,geometry%nz];nc=size(state,1)
+    if(nc<1.or.any(shape(state)/=[nc,n])) return
+    if(any(shape(conservative_rhs)/=shape(state)).or.any(shape(rate)/=shape(state))) return
+    old=state;rhs=conservative_rhs
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%cell_type(i,j,k)/=eb_covered_cell_3d) cycle
+      old(:,i,j,k)=0;rhs(:,i,j,k)=0
+    end do
+    end do
+    end do
+    if(.not.all(ieee_is_finite(old)).or..not.all(ieee_is_finite(rhs))) return
+    allocate(candidate,mold=state)
+    select case(method)
+    case('none')
+      candidate=rhs
+    case('flux_redist')
+      call reactive_eb_flux_redistribute_3d(geometry,rhs,candidate,valid)
+      if(.not.valid) return
+    case('state_redist')
+      provisional=old+dt*rhs
+      if(.not.all(ieee_is_finite(provisional))) return
+      call reactive_eb_weighted_state_redistribute_3d(geometry,provisional,candidate,valid,target_volume_fraction)
+      if(.not.valid) return
+      candidate=(candidate-old)/dt
+    case default
+      return
+    end select
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) candidate(:,i,j,k)=0
+    end do
+    end do
+    end do
+    if(.not.all(ieee_is_finite(candidate))) return
+    rate=candidate;ok=.true.
+  end subroutine redistribute_sdc_eb_rate_3d
+
 
   subroutine reactive_eb_flux_redistribute_3d( &
       geometry, conservative_rhs, redistributed_rhs, ok)

@@ -14,12 +14,13 @@ program test_eb_reactive_redistribution_3d
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
     build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
   use eb_reactive_redistribution_3d_mod, only: &
-    reactive_eb_flux_redistribute_3d, &
+    reactive_eb_flux_redistribute_3d,redistribute_sdc_eb_rate_3d, &
     advance_reactive_eb_redistributed_3d, &
     reactive_eb_weighted_state_redistribute_3d, &
     advance_reactive_eb_state_redistributed_3d
   implicit none
 
+  call check_sdc_rates()
   call check_regular_and_covered()
   call check_axis("x", 8, 1, 1, [3, 1, 1], [4, 1, 1])
   call check_axis("y", 1, 8, 1, [1, 3, 1], [1, 4, 1])
@@ -35,6 +36,51 @@ program test_eb_reactive_redistribution_3d
   write(*, '(a)') "test_eb_reactive_redistribution_3d: PASS"
 
 contains
+  subroutine check_sdc_rates()
+    type(eb_geometry_3d) :: geometry
+    real(dp) :: state(2,8,1,1),rhs(2,8,1,1),rate(2,8,1,1),expected(2,8,1,1),provisional(2,8,1,1)
+    real(dp) :: clean(2,8,1,1),saved(2,8,1,1),before,after,dt,nan_value
+    character(len=12), parameter :: methods(3)=[character(len=12)::'none','flux_redist','state_redist']
+    integer :: i,c,mode
+    logical :: ok
+    call build_axis_plane_eb_geometry_3d(8,1,1,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'x',.37_dp,geometry,ok)
+    call require(ok,'SDC redistribution geometry')
+    dt=.125_dp;nan_value=ieee_value(0._dp,ieee_quiet_nan)
+    do i=1,8
+      state(:,i,1,1)=[real(i,dp),real(9-i,dp)]
+      rhs(:,i,1,1)=[(-1._dp)**i,2*(-1._dp)**(i+1)]
+      if(geometry%cell_type(i,1,1)==eb_covered_cell_3d) then
+        state(:,i,1,1)=nan_value;rhs(:,i,1,1)=nan_value
+      end if
+    end do
+    do mode=1,3
+      clean=state;provisional=rhs
+      do i=1,8
+        if(geometry%cell_type(i,1,1)/=eb_covered_cell_3d) cycle
+        clean(:,i,1,1)=0;provisional(:,i,1,1)=0
+      end do
+      call redistribute_sdc_eb_rate_3d(geometry,state,rhs,dt,trim(methods(mode)),rate,ok)
+      call require(ok,'SDC redistribution source stage')
+      do c=1,2
+        before=sum(provisional(c,:,:,:)*geometry%volume_fraction)
+        after=sum(rate(c,:,:,:)*geometry%volume_fraction)
+        call assert_close(after,before,2e-12_dp*max(1._dp,abs(before)),'SDC signed rate conservation')
+      end do
+      if(mode==3) then
+        provisional=clean+dt*provisional
+        call reactive_eb_weighted_state_redistribute_3d(geometry,provisional,expected,ok)
+        call require(ok.and.maxval(abs(clean+dt*rate-expected))<1e-13_dp,'SDC rate reconstructs redistributed state')
+      end if
+      do i=1,8
+        if(geometry%cell_type(i,1,1)==eb_covered_cell_3d) &
+          call require(all(rate(:,i,1,1)==0),'covered SDC rates zero')
+      end do
+    end do
+    saved=rate;rhs(1,8,1,1)=nan_value
+    call redistribute_sdc_eb_rate_3d(geometry,state,rhs,dt,'state_redist',rate,ok)
+    call require(.not.ok.and.all(rate==saved),'invalid active SDC rate rollback')
+  end subroutine check_sdc_rates
+
 
   subroutine check_connected_clusters()
     type(eb_geometry_3d) :: geometry
