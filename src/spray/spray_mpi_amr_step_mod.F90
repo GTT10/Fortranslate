@@ -32,7 +32,8 @@ contains
   ! rejected trials and wall/outflow inventories do not enter this source.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change,gas_change,motion_mode)
+      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change,gas_change, &
+      motion_mode,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -43,6 +44,7 @@ contains
     type(amr_tree_state_3d) :: integrated_change
     type(amr_tree_state_3d), allocatable :: trial_change
     integer :: export_flag,export_low,export_high
+    integer, optional, intent(in) :: maximum_level
     character(len=*), optional, intent(in) :: motion_mode
     character(len=16) :: motion
     integer :: motion_code,motion_low,motion_high
@@ -132,6 +134,7 @@ contains
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
+    valid=valid.and..not.(present(maximum_level).and.present(wall_films))
     if(present(eb_geometry).and.present(boundary_faces)) then
       valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
       valid=valid.and.present(eb_outflow_change)
@@ -232,7 +235,7 @@ contains
     change=0
     ! This collective also validates geometry and the original gas on every rank.
     call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,gas,temp,positions,change, &
-      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
+      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,maximum_level=maximum_level)
     if (.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree()
@@ -246,7 +249,9 @@ contains
       allocate(trial_change)
     end if
     length=spacing*real(tree%nodes(1)%shape,dp)
-    minimum_spacing=minval(length/real(domain(:,size(domain,2)),dp))
+    node=size(domain,2)
+    if(present(maximum_level)) node=maximum_level+1
+    minimum_spacing=minval(length/real(domain(:,node),dp))
     elapsed=0;count_steps=0
     do while(elapsed<interval)
       valid=count_steps<options%maximum_substeps
@@ -271,7 +276,7 @@ contains
         positions(:,p)=drops(p)%position
       end do
       call sample_mpi_amr_tree_spray_field(comm,tree,owners,field,nvar+1,positions, &
-        lower,spacing,periodic,samples,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
+        lower,spacing,periodic,samples,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,maximum_level=maximum_level)
       if (.not.valid) return
       local_dt=interval-elapsed
       do p=1,np
@@ -469,7 +474,8 @@ contains
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
-            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,gas_change=trial_change)
+            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi, &
+            gas_change=trial_change,maximum_level=maximum_level)
           if (valid) then
             accepted=.true.;exit
           end if
@@ -520,10 +526,10 @@ contains
     end do
     if(present(eb_geometry)) then
       call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,survivors,lower,spacing, &
-        options%maximum_parcels,valid,kept_mass)
+        options%maximum_parcels,valid,kept_mass,maximum_level=maximum_level)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,survivors,lower,spacing,periodic, &
-        options%maximum_parcels,valid,kept_mass)
+        options%maximum_parcels,valid,kept_mass,maximum_level=maximum_level)
     end if
     if (.not.valid) return
     if (present(wall_films)) then

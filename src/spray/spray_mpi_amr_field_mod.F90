@@ -551,7 +551,7 @@ contains
   ! Optional gas_change is the deposited increment per fluid volume, accumulated
   ! independently of the gas background and published with U/T.
   subroutine deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,state,temperature,positions,contributions, &
-      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change)
+      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -560,13 +560,13 @@ contains
     real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
-    integer, optional, intent(in) :: maximum_requests,maximum_received
+    integer, optional, intent(in) :: maximum_requests,maximum_received,maximum_level
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(amr_tree_state_3d) :: candidate,recovered
     type(amr_tree_state_3d), optional, intent(inout) :: gas_change
     type(amr_tree_state_3d), allocatable :: change
-    integer :: ierr,flag,low,high
+    integer :: ierr,flag,low,high,node
     logical :: valid,has_particles,any_particles
     ok=.false.;recovered=temperature
     flag=merge(1,0,present(eb_geometry))+2*merge(1,0,present(nodal_phi))
@@ -585,7 +585,8 @@ contains
     candidate=state
     if(present(gas_change)) allocate(change)
     call deposit_mpi_amr_tree_spray_field(comm,tree,owners,candidate,reactive_nvar(size(species)), &
-      positions,contributions,lower,spacing,periodic,valid,maximum_requests,maximum_received,eb_geometry,nodal_phi,change)
+      positions,contributions,lower,spacing,periodic,valid,maximum_requests,maximum_received,eb_geometry,nodal_phi, &
+      change,maximum_level)
     if (.not.valid) return
     has_particles=size(positions,2)>0
     call MPI_Allreduce(has_particles,any_particles,1,MPI_LOGICAL,MPI_LOR,comm,ierr)
@@ -597,6 +598,12 @@ contains
     recovered=temperature
     call recover_gas(candidate,recovered,valid)
     if (.not.valid) return
+    if(present(maximum_level)) then
+      do node=1,size(tree%nodes)
+        if(tree%nodes(node)%level<=maximum_level) cycle
+        if(allocated(recovered%fields(node)%values)) recovered%fields(node)%values=temperature%fields(node)%values
+      end do
+    end if
     call move_alloc(candidate%fields,state%fields)
     call move_alloc(recovered%fields,temperature%fields)
     if(present(gas_change)) call move_alloc(change%fields,gas_change%fields)
@@ -671,7 +678,7 @@ contains
   ! Contributions are integrated quantities. Destination bins preserve source
   ! particle/stencil order; receives are applied in increasing source-rank order.
   ! An explicit maximum_level deposits raw level-view increments without parent
-  ! restriction; use this for temporary source fields, not physical gas updates.
+  ! restriction; use this for provisional level views awaiting synchronization.
   subroutine deposit_mpi_amr_tree_spray_field(comm,tree,owners,state,nvar,positions,contributions, &
       lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level)
     type(MPI_Comm), intent(in) :: comm

@@ -103,8 +103,8 @@ It is a composite view capped at a level, not a fine-level halo interpolator:
 coarse regions outside that level's patches still use coarse cells. Time
 interpolation of parent endpoints, fine ghost gas reconstruction, and separate
 level source deposition/transfer remain required for recursive spray SDC.
-The gas/EOS deposition API continues to use its existing composite path;
-raw source deposition is described below.
+The gas/EOS deposition API and particle evolution now expose the same ceiling
+for provisional level views, as described below.
 See [sampling checks](validation/spray-level-sampling-20260927.md).
 
 ## Level-bounded particle source deposition
@@ -119,11 +119,28 @@ unchanged. MPI agrees on both ceiling presence and value before deposition.
 
 The optional ceiling selects source-field semantics, even when it equals the
 finest level: covered ancestors are not refreshed. Omitting it retains physical
-composite deposition and parent restriction. The gas/EOS deposition wrapper
-does not expose the ceiling. This supplies per-level source construction;
+composite deposition and parent restriction. This supplies per-level source construction;
 source transfer/synchronization and the recursive spray driver still need to
 consume the separate level fields without double-counting virtual/ghost copies.
 See [source checks](validation/spray-level-source-20260927.md).
+
+## Evolution in a capped gas view
+
+`advance_mpi_amr_mixture_coupling` accepts optional `maximum_level`. Sampling,
+gas/EOS deposition, the spatial substep limit and final parcel migration use
+the same ceiling. `deposit_mpi_amr_tree_spray_gas` also exposes this option;
+it checks the gas EOS transactionally and preserves finer temperatures exactly.
+The returned gas is a provisional capped view: no parent restriction is done,
+even for an explicit finest-level ceiling. `gas_change` exports its accepted
+increments. Omission retains the original composite coupling.
+
+This permits evolution of separate coarse virtual populations. The caller
+must provide the intended population and synchronize sources at the appropriate
+time; the routine does not select or deduplicate physical/virtual particles.
+It still uses capped composite interpolation, so fine ghost populations require
+the separate halo operators to be connected. Capped calls with wall-film
+populations reject until level-aware film ownership is connected.
+See [evolution checks](validation/spray-level-evolution-20260927.md).
 
 ## Particle sampling from complete gas halos
 

@@ -133,6 +133,7 @@ program test_spray_mpi_amr_step
   q=size(drops)
   call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
   call require(q==3,'global parcel count')
+  call check_level_view()
   ! Exercise collective child IDs and the transverse-energy gas debit.
   local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
   do p=1,size(drops)
@@ -160,6 +161,64 @@ program test_spray_mpi_amr_step
   if (rank==0) print *, 'PASS: periodic MPI AMR mixed-particle coupling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_level_view()
+    type(amr_patch_tree_3d) :: coarse
+    type(amr_patch_3d) :: no_patches(0)
+    type(amr_tree_state_3d) :: capped,ct,flat,ft,cs,fs
+    type(spray_parcel), allocatable :: cd(:),fd(:)
+    real(dp), allocatable :: cm(:,:),fm(:,:)
+    integer :: a,ns,flat_steps
+    integer(int64) :: cid,fid
+    call initialize_amr_patch_tree_3d([4,4,4],[integer::],no_patches,coarse,ok)
+    call require(ok,'single-level reference tree')
+    capped=saved;ct=saved_t;cd=saved_drops;cm=saved_mass
+    fd=cd;fm=cm;cid=3;fid=3
+    allocate(flat%fields(1),ft%fields(1))
+    if(rank==owners(1)) then
+      flat%fields(1)%values=saved%fields(1)%values
+      ft%fields(1)%values=saved_t%fields(1)%values
+    end if
+    ! Fine velocities differ from the coarse state: any accidental fine donor
+    ! changes particle drag and invalidates the single-level comparison.
+    do a=2,3
+      if(owners(a)/=rank) cycle
+      capped%fields(a)%values(2,:,:,:)=5._dp
+      capped%fields(a)%values(5,:,:,:)=capped%fields(a)%values(5,:,:,:)+12.5_dp
+    end do
+    cs=capped
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,capped,ct, &
+      tree,owners,cd,cm,zero,spacing,interval,ns,ok,cid,gas_change=fs,maximum_level=0)
+    call require(ok,'coarse-view particle evolution')
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,flat,ft, &
+      coarse,owners(:1),fd,fm,zero,spacing,interval,flat_steps,ok,fid)
+    call require(ok.and.ns==flat_steps,'coarse-view substeps match single-level evolution')
+    call require(size(cd)==size(fd).and.cid==fid,'coarse ownership and IDs')
+    call require(all(cm==fm),'coarse component evolution')
+    do a=1,size(cd)
+      call require(all(cd(a)%position==fd(a)%position).and.all(cd(a)%velocity==fd(a)%velocity).and. &
+        cd(a)%temperature==fd(a)%temperature.and.cd(a)%mass==fd(a)%mass,'coarse particle evolution')
+    end do
+    if(rank==owners(1)) then
+      call require(all(capped%fields(1)%values==flat%fields(1)%values),'coarse gas matches single-level update')
+      call require(all(ct%fields(1)%values==ft%fields(1)%values),'coarse temperature')
+    end if
+    do a=1,3
+      if(owners(a)/=rank) cycle
+      call require(all(abs(capped%fields(a)%values-cs%fields(a)%values-fs%fields(a)%values)<= &
+        3.e-13_dp*max(1._dp,abs(capped%fields(a)%values))),'capped source reconstruction')
+      if(a==1) cycle
+      call require(all(capped%fields(a)%values==cs%fields(a)%values),'finer gas untouched')
+      call require(all(ct%fields(a)%values==saved_t%fields(a)%values),'finer temperature untouched')
+      call require(all(fs%fields(a)%values==0),'finer source zero')
+    end do
+    cs=capped
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,capped,ct, &
+      tree,owners,cd,cm,zero,spacing,interval,ns,ok,cid,maximum_level=merge(0,1,rank==0))
+    call require(.not.ok,'rank-disagreeing level rejected')
+    do a=1,3
+      if(owners(a)==rank) call require(all(capped%fields(a)%values==cs%fields(a)%values),'level rejection rollback')
+    end do
+  end subroutine check_level_view
   subroutine advance()
     type(amr_tree_state_3d) :: previous,source
     integer :: a
