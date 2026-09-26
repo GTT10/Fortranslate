@@ -127,8 +127,11 @@ CTU rates and integrated fluxes, retaining provisional parent states
 ([checks](validation/sdc-mpi-eb-hydro-20260927.md)).
 Common-step MPI EB SDC now couples reactions, old/new transport and external
 sources, CTU hydro, final reflux and composite inventories
-([checks](validation/sdc-mpi-eb-loop-20260927.md)). MPI EB SDC application,
-checkpoint/regrid and recursive integration remain open.
+([checks](validation/sdc-mpi-eb-loop-20260927.md)). MPI EB SDC checkpoint V4 now stores owner-local reaction estimates and forcing
+inventories with direct patch offsets, reads serial V3 records and supports
+serial readers and changed-rank reads
+([checks](validation/sdc-mpi-eb-checkpoint-20260927.md)). MPI EB SDC application,
+regrid and recursive integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
