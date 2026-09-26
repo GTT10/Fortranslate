@@ -40,7 +40,9 @@ one stage before the next begins. Face-flux export and caller-owned halo APIs
 remain available ([fluxes](validation/sdc-flux-export-20260926.md),
 [halos](validation/sdc-halo-callbacks-20260926.md)). Static serial fixed/selected AMR applications now expose this path with separate
 external-source inventories ([checks](validation/sdc-tree-app-20260926.md)).
-Reaction-source restart, regridding, recursive SDC subcycling and MPI/EB SDC remain open.
+Serial SDC checkpoint/restart now preserves reaction estimates and forcing
+inventories in plain/indexed records ([checks](validation/sdc-tree-restart-20260926.md)).
+Regridding, recursive SDC subcycling and MPI/EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive

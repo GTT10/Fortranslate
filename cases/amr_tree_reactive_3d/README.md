@@ -26,8 +26,9 @@ Reaction-source estimates persist across successful steps. The SDC budget CSV
 adds `source_change`, separate from `boundary_change`.
 
 This route currently requires static geometry and a common timestep. SDC
-checkpoint/restart, scheduled/automatic regridding and subcycling are rejected
-before stepping. Split stepping retains its existing capabilities and CSV format;
+checkpoint/restart preserves reaction estimates and external-source inventories
+in V3 (plain) or V4 (indexed) records. Scheduled/automatic regridding and
+subcycling are rejected before stepping. MPI readers reject the SDC formats. Split stepping retains its existing capabilities and CSV format;
 nonzero external forcing requires SDC. This serial route does not enable MPI SDC.
 
 ## Pressure outlets
