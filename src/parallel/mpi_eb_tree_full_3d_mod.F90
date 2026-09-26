@@ -12,7 +12,8 @@ module mpi_eb_tree_full_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
-  use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d
+  use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d, &
+    validate_mpi_eb_tree_geometry_3d
   use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
   use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d,compute_sdc_mpi_eb_tree_transport_3d
   use mpi_eb_tree_subcycle_hydro_3d_mod, only: advance_mpi_eb_tree_subcycle_hydro_3d
@@ -308,12 +309,14 @@ contains
       if (good) chemical=chemical+exchange
     end subroutine
   end subroutine
-  ! Common-step SDC. Every stage completes collectively before the next starts;
-  ! state, reaction estimates and inventories publish only after final reflux.
+  ! Common-step or selected-level SDC; stages and publication are collective.
+  ! Selected levels export fluxes without initial restriction or final reflux.
   subroutine advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry, &
       state,temperature,extended_geometry,dt,iterations,chemistry,transport_flags,force,rtol,atol, &
       boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok, &
-      reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature)
+      reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
+      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
+      source_start,source_end,integrated_flux,old_predictor,new_predictor)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -326,6 +329,15 @@ contains
     logical, intent(in) :: chemistry,transport_flags(4)
     character(len=*), intent(in) :: boundary_faces(6)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:)
+    type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end
+    type(eb_integrated_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
+    type(amr_tree_state_3d), optional, intent(inout) :: old_predictor,new_predictor
+    type(amr_tree_state_3d) :: op,np
+    real(dp), allocatable :: midpoint(:),fraction_low(:),fraction_high(:)
+    integer :: selected_depth,selection(5),minselection(5),maxselection(5),levels
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
@@ -355,9 +367,53 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(counts,maxcounts,7,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(mincounts/=maxcounts)) return
-    old=state;ot=temperature
-    call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,old,ot,comm,ready)
+    selected_depth=-1
+    if(present(target_depth)) selected_depth=target_depth
+    selection=[selected_depth,sum(merge(1,0,[present(ancestor_start),present(ancestor_end), &
+      present(temperature_start),present(temperature_end),present(fractions_start),present(fractions_end)])), &
+      sum(merge(1,0,[present(source_start),present(source_end)])),merge(1,0,present(integrated_flux)), &
+      2*merge(1,0,present(old_predictor))+merge(1,0,present(new_predictor))]
+    valid=selected_depth>=-1
+    if(present(target_depth)) valid=selected_depth>=0.and.present(integrated_flux)
+    valid=valid.and.(selection(2)==0.or.selection(2)==6).and.(selection(3)==0.or.selection(3)==2)
+    if(selection(2)>0) valid=valid.and.selected_depth>=0
+    if(selection(3)>0) valid=valid.and.selection(2)==6
+    call agree(valid,comm,ready)
     if(.not.ready) return
+    call MPI_Allreduce(selection,minselection,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selection,maxselection,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(minselection/=maxselection)) return
+    old=state;ot=temperature
+    if(selected_depth<0) then
+      call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,old,ot,comm,ready)
+      if(.not.ready) return
+    else
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
+      if(.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,old,nv,comm,ready)
+      if(.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,ot,1,comm,ready)
+      if(.not.ready) return
+      if(selected_depth>=tree%level_count()) return
+    end if
+    if(selection(2)==6) then
+      levels=tree%level_count()-1
+      call agree(size(fractions_start)==levels.and.size(fractions_end)==levels,comm,ready)
+      if(.not.ready) return
+      call agree(all(ieee_is_finite(fractions_start)).and.all(ieee_is_finite(fractions_end)),comm,ready)
+      if(.not.ready) return
+      call agree(all(fractions_start>=0).and.all(fractions_end<=1).and.all(fractions_end>=fractions_start),comm,ready)
+      if(.not.ready) return
+      allocate(fraction_low(2*levels),fraction_high(2*levels),stat=ios)
+      call agree(ios==0,comm,ready)
+      if(.not.ready) return
+      call MPI_Allreduce([fractions_start,fractions_end],fraction_low,2*levels,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce([fractions_start,fractions_end],fraction_high,2*levels,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.any(fraction_low/=fraction_high)) return
+      if(selection(3)==2) midpoint=.5_dp*(fractions_start+fractions_end)
+    end if
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
     allocate(ir%fields(size(owners)),primitive(reactive_nprim(size(species))),stat=ios)
@@ -380,7 +436,7 @@ contains
       if(.not.ready) return
     end if
     do node=1,size(owners)
-      if(owners(node)/=rank) cycle
+      if(owners(node)/=rank.or..not.active(node)) cycle
       do c=1,nv-4
         where(geometry(node)%volume_fraction<=0) ir%fields(node)%values(c,:,:,:)=0
       end do
@@ -389,21 +445,25 @@ contains
     call agree(valid,comm,ready)
     if(.not.ready) return
     candidate=old;ct=ot;diffusive=any(transport_flags(:3))
-    call sources(old,ot,e0,d0,f0,ready)
+    call sources(old,ot,e0,d0,f0,ready,fractions_start)
     if(.not.ready) return
     e1=e0;d1=d0
+    call predictor_field(e0,d0,op,ready)
+    if(.not.ready) return
     do it=1,iterations
       call combined_rates(.true.)
       call compute_sdc_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,old,ot,rates,extended_geometry, &
-        dt,hydro,hf,comm,ready,difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+        dt,hydro,hf,comm,ready,difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+        target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start, &
+        source_start,source_end,midpoint)
       if(.not.ready) return
       do node=1,size(owners)
-        if(owners(node)/=rank) cycle
+        if(owners(node)/=rank.or..not.active(node)) cycle
         candidate%fields(node)%values=old%fields(node)%values+dt*(rates%fields(node)%values+hydro%fields(node)%values)
       end do
       call recover(ready)
       if(.not.ready) return
-      call sources(candidate,ct,e1,d1,f1,ready)
+      call sources(candidate,ct,e1,d1,f1,ready,fractions_end)
       if(.not.ready) return
       call combined_rates(.false.)
       do node=1,size(owners)
@@ -412,11 +472,11 @@ contains
       end do
       if(chemistry) then
         call react_sdc_mpi_eb_tree_3d(species,reactions,tree,owners,geometry,old,ot,rates,dt,rtol,atol, &
-          candidate,ct,ir,comm,ready)
+          candidate,ct,ir,comm,ready,target_depth)
         if(.not.ready) return
       else
         do node=1,size(owners)
-          if(owners(node)/=rank) cycle
+          if(owners(node)/=rank.or..not.active(node)) cycle
           candidate%fields(node)%values=old%fields(node)%values+dt*rates%fields(node)%values
         end do
         call recover(ready)
@@ -426,6 +486,8 @@ contains
     ledger=old
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
+      ledger%fields(node)%values=0
+      if(.not.active(node)) cycle
       ledger%fields(node)%values=candidate%fields(node)%values-(old%fields(node)%values+dt*rates%fields(node)%values)
     end do
     call integrate_mpi_eb_tree_3d(tree,owners,geometry,ledger,chemical,comm,ready)
@@ -437,6 +499,7 @@ contains
     external=.5_dp*dt*(v0+v1)
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
+      if(.not.active(node)) cycle
       n=tree%nodes(node)%shape
       allocate(wall_rate(nv,n(1),n(2),n(3)),stat=ios)
       if(ios/=0) then
@@ -457,11 +520,13 @@ contains
     if(.not.ready) return
     call integrate_mpi_eb_tree_3d(tree,owners,geometry,ledger,wall,comm,ready)
     if(.not.ready) return
-    call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,hf,comm,ready, &
-      boundary_faces=boundary_faces)
-    if(.not.ready) return
+    if(selected_depth<0) then
+      call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,hf,comm,ready, &
+        boundary_faces=boundary_faces)
+      if(.not.ready) return
+    end if
     boundary=0
-    if(rank==owners(1)) then
+    if(rank==owners(1).and.selected_depth<=0) then
       n=tree%nodes(1)%shape
       associate(g=>geometry(1),f=>hf(1))
       do c=1,nv
@@ -477,6 +542,8 @@ contains
     call MPI_Bcast(boundary,nv,MPI_DOUBLE_PRECISION,owners(1),comm,status)
     call agree(status==MPI_SUCCESS.and.all(ieee_is_finite(boundary)).and.all(ieee_is_finite(external)),comm,ready)
     if(.not.ready) return
+    call predictor_field(e1,d1,np,ready)
+    if(.not.ready) return
     if(present(reaction_source)) then
       do node=1,size(owners)
         if(owners(node)/=rank) cycle
@@ -487,27 +554,51 @@ contains
       end do
       reaction_source=ir
     end if
+    if(present(integrated_flux)) integrated_flux=hf
+    if(present(old_predictor)) old_predictor=op
+    if(present(new_predictor)) new_predictor=np
     call move_alloc(candidate%fields,state%fields);call move_alloc(ct%fields,temperature%fields)
     boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
     minimum_theta=theta;ok=.true.
   contains
+    logical function active(p)
+      integer, intent(in) :: p
+      active=selected_depth<0.or.tree%nodes(p)%level==selected_depth
+    end function
+    subroutine predictor_field(ext,diff,output,good)
+      type(amr_tree_state_3d), intent(in) :: ext,diff
+      type(amr_tree_state_3d), intent(out) :: output
+      logical, intent(out) :: good
+      logical :: finite
+      integer :: p
+      output=ext;finite=.true.
+      do p=1,size(owners)
+        if(owners(p)/=rank.or..not.active(p)) cycle
+        output%fields(p)%values=ext%fields(p)%values+diff%fields(p)%values
+        output%fields(p)%values(6:,:,:,:)=output%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
+        output%fields(p)%values(5,:,:,:)=output%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
+        if(.not.all(ieee_is_finite(output%fields(p)%values))) finite=.false.
+      end do
+      call agree(finite,comm,good)
+    end subroutine
     subroutine combined_rates(with_reaction)
       logical, intent(in) :: with_reaction
       integer :: p
       rates=e0
       do p=1,size(owners)
-        if(owners(p)/=rank) cycle
+        if(owners(p)/=rank.or..not.active(p)) cycle
         rates%fields(p)%values=.5_dp*(e0%fields(p)%values+e1%fields(p)%values+d0%fields(p)%values+d1%fields(p)%values)
         if(.not.with_reaction) cycle
         rates%fields(p)%values(6:,:,:,:)=rates%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
         rates%fields(p)%values(5,:,:,:)=rates%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
       end do
     end subroutine
-    subroutine sources(gas,temp,external_rate,transport_rate,flux,good)
+    subroutine sources(gas,temp,external_rate,transport_rate,flux,good,fractions)
       type(amr_tree_state_3d), intent(in) :: gas,temp
       type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
+      real(dp), optional, intent(in) :: fractions(:)
       integer :: p,d(3),x,y,z,alloc_status
       logical :: local_ok,all_ok
       local_ok=.true.;good=.false.
@@ -521,6 +612,7 @@ contains
         if(alloc_status/=0) then
           local_ok=.false.;exit
         end if
+        if(.not.active(p)) cycle
         do z=1,d(3)
         do y=1,d(2)
         do x=1,d(1)
@@ -549,7 +641,8 @@ contains
         call compute_sdc_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt, &
           transport_flags(1),transport_flags(2),transport_flags(3),transport_flags(4),gas,temp, &
           transport_rate,flux,stage_theta,comm,all_ok,inflow_mach,inflow_temperature,inflow_pressure, &
-          boundary_faces,inflow_state,wall_temperature)
+          boundary_faces,inflow_state,wall_temperature, &
+          target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
         if(.not.all_ok) return
         theta=min(theta,stage_theta)
       end if
@@ -560,7 +653,7 @@ contains
       logical :: local_ok,cell_ok
       local_ok=.true.
       do node=1,size(owners)
-        if(owners(node)/=rank) cycle
+        if(owners(node)/=rank.or..not.active(node)) cycle
         n=tree%nodes(node)%shape
         do k=1,n(3)
         do j=1,n(2)

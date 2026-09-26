@@ -18,6 +18,7 @@ program test_mpi_eb_tree_full_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d,advance_mpi_eb_tree_sdc_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -203,6 +204,7 @@ contains
       error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext)/max(1._dp,abs(initial_inventory)))
       if(rank==0) print *, 'MPI SDC layout, composite residual: ',layout,error
       call require(error<3.e-14_dp,'SDC composite closure')
+      call check_sdc_level(initial,geometry,extended,owners,old,ot)
       do failure=1,2
         local=old;lt=ot;ir=old_ir;b=17;w=19;ch=23;ext=29;limiter=31
         viscosity_coefficient=.1_dp
@@ -225,6 +227,77 @@ contains
       deallocate(local%fields,lt%fields,ir%fields)
     end do
   end subroutine check_sdc_loop
+  subroutine check_sdc_level(initial,geometry,extended,owners,old,ot)
+    type(eb_reactive_tree_3d), intent(in) :: initial
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)
+    integer, intent(in) :: owners(:)
+    type(amr_tree_state_3d), intent(in) :: old,ot
+    type(eb_reactive_tree_3d) :: reference,ending
+    type(amr_tree_state_3d) :: state,temp,ir,serial_ir,finish,source0,source1,local0,local1,op,np,sop,snp
+    type(eb_integrated_flux_3d), allocatable :: flux(:),serial_flux(:)
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),theta,stheta,error
+    real(dp) :: force(3)
+    integer :: p,attempt
+    character(len=16) :: faces(6)
+    logical :: good
+    reference=initial;ending=initial;state=old;temp=ot;finish=old
+    faces='outflow';force=[2.e4_dp,-3.e4_dp,4.e4_dp]
+    allocate(serial_ir%fields(count),ir%fields(count),source0%fields(count),source1%fields(count), &
+      local0%fields(count),local1%fields(count))
+    do p=1,count
+      ending%nodes(p)%state=1.01_dp*initial%nodes(p)%state
+      allocate(serial_ir%fields(p)%values(nv-4,4,4,4),source=0._dp)
+      if(topology%nodes(p)%level/=2) serial_ir%fields(p)%values=7
+      allocate(source0%fields(p)%values(nv,4,4,4),source=0._dp)
+      allocate(source1%fields(p)%values(nv,4,4,4),source=0._dp)
+      source0%fields(p)%values(2,:,:,:)=1.e4_dp;source1%fields(p)%values(2,:,:,:)=2.e4_dp
+      if(owners(p)/=rank) cycle
+      finish%fields(p)%values=ending%nodes(p)%state
+      ir%fields(p)%values=serial_ir%fields(p)%values
+      local0%fields(p)%values=source0%fields(p)%values
+      local1%fields(p)%values=source1%fields(p)%values
+    end do
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
+      sb,sw,sch,sext,stheta,good,serial_ir,target_depth=2,ancestor_start=initial,ancestor_end=ending, &
+      fractions_start=[.25_dp,.25_dp],fractions_end=[.75_dp,.75_dp],source_start=source0,source_end=source1, &
+      integrated_flux=serial_flux,old_predictor=sop,new_predictor=snp)
+    call require(good,'serial selected coupled SDC')
+    do attempt=1,2
+      if(attempt==1) then
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,state,temp,extended, &
+          1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+          b,w,ch,ext,theta,MPI_COMM_WORLD,good,ir,target_depth=2,ancestor_start=old,ancestor_end=finish, &
+          temperature_start=ot,temperature_end=ot,fractions_start=[.25_dp,.25_dp],fractions_end=[.75_dp,.75_dp], &
+          source_start=local0,source_end=local1,integrated_flux=flux,old_predictor=op,new_predictor=np)
+        call require(good,'MPI selected coupled SDC')
+      else
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,state,temp,extended, &
+          1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+          b,w,ch,ext,theta,MPI_COMM_WORLD,good,ir,difmag=-1._dp,target_depth=2, &
+          integrated_flux=flux,old_predictor=op,new_predictor=np)
+        call require(.not.good,'selected loop rejects after old transport')
+      end if
+      call require(theta==stheta,'selected loop limiter retained')
+      error=max(maxval(abs(b-sb)/max(1._dp,abs(sb))),maxval(abs(w-sw)/max(1._dp,abs(sw))), &
+        maxval(abs(ch-sch)/max(1._dp,abs(sch))),maxval(abs(ext-sext)/max(1._dp,abs(sext))))
+      call require(error<2.e-12_dp,'selected loop inventories match or roll back')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(state%fields(p)%values==reference%nodes(p)%state),'selected loop exact state')
+        call require(all(temp%fields(p)%values(1,:,:,:)==reference%nodes(p)%temperature),'selected loop exact T')
+        call require(all(ir%fields(p)%values==serial_ir%fields(p)%values),'selected loop exact IR and inactive retention')
+        call require(all(op%fields(p)%values==sop%fields(p)%values),'selected loop exact old predictor')
+        call require(all(np%fields(p)%values==snp%fields(p)%values),'selected loop exact new predictor')
+        if(topology%nodes(p)%level/=2) then
+          call require(.not.allocated(flux(p)%x),'selected loop inactive flux absent')
+          cycle
+        end if
+        call require(all(flux(p)%x==serial_flux(p)%x).and.all(flux(p)%y==serial_flux(p)%y).and. &
+          all(flux(p)%z==serial_flux(p)%z),'selected loop exact flux')
+      end do
+    end do
+  end subroutine check_sdc_level
   subroutine check_sdc_reaction()
     type(amr_tree_state_3d) :: rates,ref_state,ref_temp,ref_ir,local,lt,lr,ir,old,ot,kept,kt,ki
     type(eb_geometry_3d) :: geometry(count)
