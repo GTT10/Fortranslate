@@ -24,7 +24,11 @@ The library additionally provides `advance_mpi_eb_spray_sdc_subcycle`, connectin
 recursive gas stages, physical/virtual/ghost particles, predictor halos and final
 physical collection for a nonperiodic drag/heating/evaporation core. The MPI spray
 application selects this path with `time_integrator='sdc'` and `subcycling=.true.`
-([application checks](validation/spray-recursive-app-20260927.md)). Recursive breakup and films remain open. Uniform particle acceleration now
+([application checks](validation/spray-recursive-app-20260927.md)). Recursive ETAB and KHRT diameter evolution now uses the existing mixture
+breakup kernels on all particle populations. Computational splitting runs after
+outer synchronization, with collective ID allocation and rollback
+([breakup checks](validation/spray-recursive-breakup-20260927.md)). KHRT
+shedding children and films remain open. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and

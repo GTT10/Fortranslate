@@ -49,8 +49,10 @@ and molecular transport. Gas force density uses `external_forcing`;
 half kicks bracket each level interval, with physical-particle momentum and work
 reported in the `force` budget column
 ([checks](../../docs/validation/spray-recursive-acceleration-20260927.md)). Keep
-`particle_options%breakup_model='none'`, `wall_impacts=.false.`,
-`walls%evolve=.false.` in `/eb_spray/`; recursive breakup and films reject at input. Periodic migration also rejects.
+`wall_impacts=.false.` and `walls%evolve=.false.` in `/eb_spray/`; films reject
+at input. ETAB and KHRT diameter evolution and `maximum_multiplicity` splitting
+are supported; `khrt_children=.true.` still rejects
+([breakup checks](../../docs/validation/spray-recursive-breakup-20260927.md)). Periodic migration also rejects.
 Reflecting particle/EB walls are distinct from the unsupported film-impact model.
 
 Physical particle exchange is synchronized conservatively after each outer step.
