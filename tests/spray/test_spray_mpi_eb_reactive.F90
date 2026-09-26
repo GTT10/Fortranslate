@@ -32,6 +32,8 @@ program test_spray_mpi_eb_reactive
   character(len=16), allocatable :: labels(:)
   real(dp), allocatable :: inlet(:,:),inlet_t(:)
   logical, allocatable :: open_boundary
+  integer :: post_calls=0
+  logical :: fail_post=.false.
   integer :: predictor_calls=0
   logical :: fail_predictor=.false.
   logical :: recursive_steps
@@ -160,6 +162,7 @@ program test_spray_mpi_eb_reactive
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   if(index(test_mode,'sdc-recursive')==1) then
     call check_recursive_spray()
+    if(test_mode=='sdc-recursive') call check_post_level_callback()
     call MPI_Finalize(ierr)
     stop
   end if
@@ -252,6 +255,50 @@ program test_spray_mpi_eb_reactive
   if(rank==0) print *, 'PASS: MPI EB coupled reactive step and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_post_level_callback()
+    type(amr_tree_state_3d) :: old,old_t
+    integer :: attempt
+    old=field;old_t=temp
+    do attempt=1,2
+      post_calls=0;fail_post=attempt==1
+      boundary=17;ledger=19;chemical=23;forcing=29;theta=31
+      call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,g,field,temp, &
+        1e-8_dp,2,.false.,[.false.,.false.,.false.,.false.],zero,2e-7_dp,1e-12_dp,extended, &
+        labels,boundary,ledger,chemical,forcing,theta,MPI_COMM_WORLD,ok,post_level=check_post_context)
+      call require(post_calls==3,'post-level callback follows both child steps and root synchronization')
+      if(attempt==1) then
+        call require(.not.ok,'one-rank final post-level failure rejects entire gas step')
+        call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &
+          theta==31,'post-level failure retains gas ledgers')
+        do node=1,2
+          if(owners(node)/=rank) cycle
+          call require(all(field%fields(node)%values==old%fields(node)%values),'post-level gas rollback')
+          call require(all(temp%fields(node)%values==old_t%fields(node)%values),'post-level temperature rollback')
+        end do
+      else
+        call require(ok,'post-level accepted retry')
+      end if
+    end do
+  end subroutine check_post_level_callback
+  subroutine check_post_context(depth,time,interval,iteration,ncycle,comm,accepted)
+    integer, intent(in) :: depth,iteration,ncycle
+    real(dp), intent(in) :: time,interval
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: accepted
+    integer :: callback_rank,status
+    call MPI_Comm_rank(comm,callback_rank,status)
+    call require(status==MPI_SUCCESS,'post-level communicator')
+    post_calls=post_calls+1
+    if(post_calls<=2) then
+      call require(depth==1.and.iteration==post_calls.and.ncycle==2,'child post-level iteration context')
+      call require(abs(time-real(post_calls-1,dp)*5e-9_dp)<1e-22_dp.and. &
+        abs(interval-5e-9_dp)<1e-22_dp,'child post-level clock')
+    else
+      call require(post_calls==3.and.depth==0.and.iteration==1.and.ncycle==1,'root post-level context')
+      call require(time==0.and.interval==1e-8_dp,'root post-level clock')
+    end if
+    accepted=.not.(fail_post.and.depth==0.and.callback_rank==0)
+  end subroutine check_post_context
   subroutine check_recursive_spray()
     integer(int64) :: counts(2)
     integer :: attempt

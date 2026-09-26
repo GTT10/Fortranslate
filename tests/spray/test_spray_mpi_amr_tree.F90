@@ -8,7 +8,7 @@ program test_spray_mpi_amr_tree
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
     create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles, &
     spray_level_population,collect_mpi_amr_level_particles,initialize_mpi_amr_sdc_populations, &
-    redistribute_mpi_amr_level_particles,refresh_mpi_amr_level_copies
+    redistribute_mpi_amr_level_particles,refresh_mpi_amr_level_copies,redistribute_mpi_amr_subtree_particles
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -299,6 +299,40 @@ contains
       2,1,100,refreshed_virtual,refreshed_ghost,ok)
     call require(ok.and.size(refreshed_virtual%parcels)==0.and.size(refreshed_ghost%parcels)==0, &
       'finest level creates no descendant or next-level copies')
+    call redistribute_mpi_amr_subtree_particles(MPI_COMM_WORLD,tree,owners,active,zero,spacing, &
+      [.true.,.false.,.false.],1,1,0,ok)
+    call require(.not.ok,'subtree capacity failure')
+    do level=1,3
+      call compare_population(active(level),old_active(level))
+    end do
+    ! Fine particles have crossed into parent valid cells. With a fine-only
+    ! synchronization they must remain on the grown fine boxes, not demote.
+    call redistribute_mpi_amr_subtree_particles(MPI_COMM_WORLD,tree,owners,active,zero,spacing, &
+      [.true.,.false.,.false.],2,1,100,ok)
+    call require(ok,'subtree minimum-level grow fallback')
+    call compare_population(active(1),old_active(1))
+    call compare_population(active(2),old_active(2))
+    call require(all(active(3)%nodes==4),'grown fallback retains finest node')
+    call require(size(active(3)%parcels)==merge(nranks,0,rank==nranks-1),'fallback retains every fine parcel')
+    call redistribute_mpi_amr_subtree_particles(MPI_COMM_WORLD,tree,owners,active,zero,spacing, &
+      [.true.,.false.,.false.],1,1,100,ok)
+    call require(ok,'synchronized subtree promotes and demotes crossing parcels')
+    call compare_population(active(1),old_active(1))
+    call require(size(active(2)%parcels)==merge(nranks,0,rank==0),'demoted physical owner')
+    call require(size(active(3)%parcels)==merge(nranks,0,rank==nranks-1),'promoted physical owner')
+    call require(all(modulo(active(2)%parcels%id,2_int64)==1),'fine IDs demoted')
+    call require(all(modulo(active(3)%parcels%id,2_int64)==0),'coarse IDs promoted')
+    seen=0
+    do level=1,3
+      do a=1,size(active(level)%parcels)
+        seen(int(active(level)%parcels(a)%id))=seen(int(active(level)%parcels(a)%id))+1
+        expected=make_parcel(int(active(level)%parcels(a)%id))
+        call require(all(active(level)%component_mass(:,a)==expected%mass*[.25_dp,.75_dp]), &
+          'subtree redistribution retains component inventory')
+      end do
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,seen,size(seen),MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(seen==1),'subtree physical IDs remain unique and complete')
   end subroutine check_sdc_populations
   subroutine check_population(population,level)
     type(spray_level_population), intent(in) :: population

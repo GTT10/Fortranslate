@@ -34,6 +34,15 @@ module mpi_eb_tree_full_3d_mod
   ! states at stages 1..iterations. Rates are per fluid volume per time.
   ! Callback-owned physical state must remain private until the driver succeeds.
   abstract interface
+    ! Called after descendants and gas synchronization, before publication.
+    ! Callback state must remain private until the entire outer step succeeds.
+    subroutine mpi_eb_sdc_post_level(depth,time,interval,iteration,ncycle,comm,ok)
+      import :: dp,MPI_Comm
+      integer, intent(in) :: depth,iteration,ncycle
+      real(dp), intent(in) :: time,interval
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+    end subroutine
     ! Build the complete three-cell predictor halo for iteration 1..iterations.
     ! Valid fluid cells must equal rate; callback state remains caller-owned.
     subroutine mpi_eb_sdc_predictor_builder(rate,interval,iteration,depth,halo,comm,ok)
@@ -87,6 +96,7 @@ module mpi_eb_tree_full_3d_mod
       logical, intent(out) :: ok
     end subroutine
   end interface
+  public :: mpi_eb_sdc_post_level
   public :: mpi_eb_sdc_predictor_builder,mpi_eb_sdc_recursive_predictor_builder
   public :: mpi_eb_sdc_auxiliary_source,mpi_eb_sdc_recursive_source,mpi_eb_sdc_recursive_halo_source
 contains
@@ -909,7 +919,8 @@ contains
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source,predictor_builder)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source, &
+      predictor_builder,post_level)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -934,6 +945,7 @@ contains
     procedure(mpi_eb_sdc_recursive_source), optional :: auxiliary_source
     procedure(mpi_eb_sdc_recursive_halo_source), optional :: halo_source
     procedure(mpi_eb_sdc_recursive_predictor_builder), optional :: predictor_builder
+    procedure(mpi_eb_sdc_post_level), optional :: post_level
     logical :: has_auxiliary
     real(dp), optional, intent(inout) :: auxiliary_change(:)
     real(dp) :: auxiliary(size(source_change)),source_time
@@ -976,6 +988,10 @@ contains
     call MPI_Allreduce(merge(1,0,present(predictor_builder)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(merge(1,0,present(predictor_builder)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.method_low/=method_high) return
+    call MPI_Allreduce(merge(1,0,present(post_level)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(merge(1,0,present(post_level)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     call MPI_Allreduce(merge(1,0,routing),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -1057,7 +1073,7 @@ contains
     if(.not.ready) return
     auxiliary=0;source_time=0
     wall=0;chemical=0;external=0;theta=1
-    call advance_level(0,0._dp,dt,total,valid)
+    call advance_level(0,0._dp,dt,1,1,total,valid)
     if(.not.valid) return
     boundary=0
     if(rank==owners(1)) then
@@ -1154,8 +1170,8 @@ contains
       ok=.true.
 
     end subroutine source_adapter
-    recursive subroutine advance_level(level,time,interval,flux,good)
-      integer, intent(in) :: level
+    recursive subroutine advance_level(level,time,interval,iteration,ncycle,flux,good)
+      integer, intent(in) :: level,iteration,ncycle
       real(dp), intent(in) :: time,interval
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
@@ -1268,7 +1284,7 @@ contains
           sub_dt=interval/real(ratios(level+2),dp)
           if(step==ratios(level+2)) sub_dt=interval-elapsed
           if(sub_dt<=0.or.time+elapsed+sub_dt<=time+elapsed) return
-          call advance_level(level+1,time+elapsed,sub_dt,fine_flux,accepted)
+          call advance_level(level+1,time+elapsed,sub_dt,step,ratios(level+2),fine_flux,accepted)
           if(.not.accepted) return
           do p=1,size(tree%nodes)
             if(owners(p)/=rank.or.tree%nodes(p)%level/=level+1) cycle
@@ -1328,6 +1344,11 @@ contains
         call recover_transfer(accepted)
         if(.not.accepted) return
         call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,accepted)
+        if(.not.accepted) return
+      end if
+      if(present(post_level)) then
+        call post_level(level,time,interval,iteration,ncycle,comm,local_ok)
+        call agree(local_ok,comm,accepted)
         if(.not.accepted) return
       end if
       good=.true.

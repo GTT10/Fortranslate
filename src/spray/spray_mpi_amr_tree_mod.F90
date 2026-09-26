@@ -17,13 +17,88 @@ module spray_mpi_amr_tree_mod
   public :: create_mpi_amr_virtual_particles,create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
   public :: create_mpi_amr_level_particles,collect_mpi_amr_level_particles
   public :: initialize_mpi_amr_sdc_populations,redistribute_mpi_amr_level_particles
-  public :: refresh_mpi_amr_level_copies
+  public :: refresh_mpi_amr_level_copies,redistribute_mpi_amr_subtree_particles
   type, public :: spray_level_population
     type(spray_parcel), allocatable :: parcels(:)
     real(dp), allocatable :: component_mass(:,:)
     integer, allocatable :: nodes(:)
   end type spray_level_population
 contains
+  ! Redistribute only synchronized physical levels >= minimum_level. A live
+  ! parcel outside those valid boxes stays in the grown minimum-level boxes;
+  ! lower logical levels are neither inspected nor changed.
+  subroutine redistribute_mpi_amr_subtree_particles(comm,tree,owners,physical,lower,spacing,periodic, &
+      minimum_level,grow,maximum_parcels,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),minimum_level,grow,maximum_parcels
+    type(spray_level_population), intent(inout) :: physical(:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_level_population), allocatable :: selected(:),candidate(:)
+    type(spray_parcel), allocatable :: merged(:)
+    real(dp), allocatable :: mass(:,:),positions(:,:)
+    integer, allocatable :: locations(:,:),destination(:)
+    integer :: levels,level,nc,p,q,status,flags(4),low(4),high(4)
+    logical :: valid,agreed
+    ok=.false.;valid=tree%is_valid()
+    call agree();if(.not.agreed) return
+    levels=tree%level_count()
+    valid=size(physical)==levels.and.minimum_level>=0.and.minimum_level<levels.and. &
+      grow>=0.and.grow<=1000000.and.maximum_parcels>=0
+    call agree();if(.not.agreed) return
+    flags=[minimum_level,grow,maximum_parcels,merge(1,0,present(nodal_phi))]
+    call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    valid=allocated(physical(minimum_level+1)%component_mass)
+    call agree();if(.not.agreed) return
+    nc=size(physical(minimum_level+1)%component_mass,1)
+    allocate(selected(levels));candidate=physical
+    do level=1,levels
+      if(level>minimum_level) then
+        selected(level)=physical(level)
+      else
+        allocate(selected(level)%parcels(0),selected(level)%component_mass(nc,0))
+      end if
+    end do
+    ! Global ID validation and temporary geometric migration are private.
+    call collect_mpi_amr_level_particles(comm,tree,owners,selected,lower,spacing,periodic,1000000, &
+      merged,mass,valid,nodal_phi)
+    if(.not.valid) return
+    allocate(positions(3,size(merged)),destination(size(merged)))
+    do p=1,size(merged)
+      positions(:,p)=merged(p)%position
+    end do
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,valid)
+    call agree();if(.not.agreed) return
+    do p=1,size(merged)
+      destination(p)=max(minimum_level,tree%nodes(locations(1,p))%level)
+    end do
+    do level=minimum_level,levels-1
+      candidate(level+1)%parcels=pack(merged,destination==level)
+      if(allocated(candidate(level+1)%component_mass)) deallocate(candidate(level+1)%component_mass)
+      allocate(candidate(level+1)%component_mass(nc,count(destination==level)));q=0
+      do p=1,size(merged)
+        if(destination(p)/=level) cycle
+        q=q+1;candidate(level+1)%component_mass(:,q)=mass(:,p)
+      end do
+      call redistribute_mpi_amr_level_particles(comm,tree,owners,candidate(level+1)%parcels, &
+        candidate(level+1)%component_mass,candidate(level+1)%nodes,lower,spacing,periodic,level, &
+        merge(grow,0,level==minimum_level),maximum_parcels,valid,nodal_phi)
+      if(.not.valid) return
+    end do
+    physical=candidate;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine redistribute_mpi_amr_subtree_particles
+
   ! Refresh copies before this level moves. Physical arrays carry logical
   ! level ownership until synchronization, even across valid-box boundaries.
   ! Descendants must be at this interval's start; next-level ghosts are made

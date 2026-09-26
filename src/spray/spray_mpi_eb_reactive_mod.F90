@@ -13,7 +13,7 @@ module spray_mpi_eb_reactive_mod
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling, &
     advance_mpi_eb_recursive_population_stage,spray_sdc_population_stage
   use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations, &
-    collect_mpi_amr_level_particles
+    collect_mpi_amr_level_particles,redistribute_mpi_amr_subtree_particles
   use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_particle_predictor_halo_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,advance_mpi_eb_tree_sdc_3d, &
     advance_mpi_eb_tree_sdc_subcycle_3d
@@ -153,7 +153,7 @@ contains
       target_volume_fraction=target_volume_fraction,halo_source=particle_source,auxiliary_change=exchange, &
       gas_acceleration=gas_acceleration,predictor_builder=particle_predictor,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature)
+      wall_temperature=wall_temperature,post_level=particle_post_level)
     if(.not.agreed) return
     total_steps=0
     do p=1,levels
@@ -185,6 +185,35 @@ contains
       safe_sum=all(ieee_is_finite(a)).and.all(ieee_is_finite(b))
       if(safe_sum) safe_sum=.not.any(a>huge(1._dp)-max(b,0._dp)).and..not.any(a< -huge(1._dp)-min(b,0._dp))
     end function safe_sum
+    subroutine particle_post_level(depth,time,interval,iteration,ncycle,post_comm,good)
+      integer, intent(in) :: depth,iteration,ncycle
+      real(dp), intent(in) :: time,interval
+      type(MPI_Comm), intent(in) :: post_comm
+      logical, intent(out) :: good
+      logical :: synchronized
+      integer :: p,status
+      synchronized=.true.
+      do p=depth+1,levels
+        synchronized=synchronized.and.work(p)%next_stage==0.and. &
+          abs(work(p)%time+work(p)%interval-time-interval)<=32*epsilon(dt)*max(dt,abs(time+interval))
+      end do
+      call MPI_Allreduce(synchronized,good,1,MPI_LOGICAL,MPI_LAND,post_comm,status)
+      if(status/=MPI_SUCCESS) good=.false.
+      if(.not.good) return
+      if(depth==0.or.(iteration<ncycle.and.depth<levels-1)) then
+        call redistribute_mpi_amr_subtree_particles(post_comm,tree,owners,physical,lower,spacing, &
+          [.false.,.false.,.false.],depth,iteration,options%maximum_parcels,good,phi)
+        if(.not.good) return
+      end if
+      virtuals(depth+1)%parcels=virtuals(depth+1)%parcels(:0)
+      virtuals(depth+1)%component_mass=virtuals(depth+1)%component_mass(:,:0)
+      virtuals(depth+1)%nodes=virtuals(depth+1)%nodes(:0)
+      if(iteration==ncycle) then
+        ghosts(depth+1)%parcels=ghosts(depth+1)%parcels(:0)
+        ghosts(depth+1)%component_mass=ghosts(depth+1)%component_mass(:,:0)
+        ghosts(depth+1)%nodes=ghosts(depth+1)%nodes(:0)
+      end if
+    end subroutine particle_post_level
     subroutine particle_source(stage_gas,stage_temp,interval,stage,depth,time,rate,source_comm,good, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
       type(amr_tree_state_3d), intent(in) :: stage_gas,stage_temp,ancestor_start,ancestor_end,temperature_start,temperature_end
