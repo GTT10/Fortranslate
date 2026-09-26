@@ -52,7 +52,10 @@ stages update one level while retaining other levels' state and source estimates
 one interval using parent state/source endpoints and exports integrated fluxes
 ([checks](validation/sdc-level-loop-20260926.md)). Serial recursive SDC now connects refinement-ratio substeps, parent temporal
 donors, integrated-flux synchronization and application restart
-([checks](validation/sdc-subcycle-20260926.md)). MPI/EB SDC remain open.
+([checks](validation/sdc-subcycle-20260926.md)). MPI now has an owner-local SDC
+reaction stage with collective rollback and optional level selection
+([checks](validation/sdc-mpi-reaction-20260926.md)). MPI hydro/transport SDC
+coupling and EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
