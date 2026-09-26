@@ -166,7 +166,9 @@ contains
   subroutine check_sdc()
     type(amr_tree_state_3d) :: rates,serial_rates,prior
     type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)
-    integer :: peer,boundary_case
+    type(amr_tree_state_3d) :: start,finish,owned_start,owned_end
+    real(dp) :: fractions(2)
+    integer :: peer,boundary_case,n(3)
     real(dp) :: retained_theta
     owners=mod([0,1,0],nranks);dt=.01_dp*expected_dt
     allocate(local%fields(3),temperature%fields(3))
@@ -207,6 +209,48 @@ contains
       call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'MPI transport rate rollback')
       call require(all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
         all(flux(peer)%z==prior_flux(peer)%z),'MPI transport flux rollback')
+    end do
+    allocate(start%fields(3),owned_start%fields(3),owned_end%fields(3))
+    do peer=1,3
+      n=tree%nodes(peer)%shape
+      allocate(start%fields(peer)%values(size(q)+1,n(1),n(2),n(3)))
+      start%fields(peer)%values(:size(q),:,:,:)=global%fields(peer)%values
+      start%fields(peer)%values(size(q)+1,:,:,:)=reference%fields(peer)%values(1,:,:,:)
+    end do
+    finish=start
+    do peer=1,2
+      finish%fields(peer)%values(size(q)+1,:,:,:)=1.02_dp*start%fields(peer)%values(size(q)+1,:,:,:)
+      if(owners(peer)/=rank) cycle
+      owned_start%fields(peer)=start%fields(peer);owned_end%fields(peer)=finish%fields(peer)
+    end do
+    faces='periodic';fractions=[.25_dp,.5_dp]
+    call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,global,reference,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],serial_rates,serial_flux,serial_theta,ok,target_depth=2, &
+      coarse_start=start,coarse_end=finish,coarse_fractions=fractions)
+    call require(ok,'serial level transport temporal donors')
+    call compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],rates,flux,theta,MPI_COMM_WORLD,ok,target_depth=2, &
+      coarse_start=owned_start,coarse_end=owned_end,coarse_fractions=fractions)
+    call require(ok.and.theta==serial_theta,'MPI level transport temporal donors and limiter')
+    do peer=1,3
+      call require(allocated(flux(peer)%x).eqv.(owners(peer)==rank.and.peer==3),'selected owned transport flux only')
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==serial_rates%fields(peer)%values),'temporal transport rates exact')
+      if(peer/=3) cycle
+      call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
+        all(flux(peer)%z==serial_flux(peer)%z),'temporal transport flux exact')
+    end do
+    prior=rates;prior_flux=flux;retained_theta=theta
+    if(rank==nranks-1) fractions(1)=.3_dp
+    call compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,transport,local,temperature,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],rates,flux,theta,MPI_COMM_WORLD,ok,target_depth=2, &
+      coarse_start=owned_start,coarse_end=owned_end,coarse_fractions=fractions)
+    call require(.not.ok.and.theta==retained_theta,'idle-rank transport fraction mismatch rejected')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'temporal transport rate rollback')
+      if(peer/=3) cycle
+      call require(all(flux(peer)%x==prior_flux(peer)%x),'temporal transport flux rollback')
     end do
   end subroutine check_sdc
   subroutine unchanged()

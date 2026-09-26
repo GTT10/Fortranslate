@@ -151,7 +151,8 @@ contains
   end subroutine
   subroutine compute_sdc_mpi_amr_tree_transport_3d(tree,owners,species,transport,state,temperature,root_spacing,dt,faces, &
       flags,transport_rate,integrated_flux,minimum_theta,comm,ok,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      target_depth,coarse_start,coarse_end,coarse_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
@@ -167,19 +168,22 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+    real(dp), optional, intent(in) :: coarse_fractions(:)
     type(amr_tree_state_3d) :: local_state,local_temperature
     real(dp) :: budget(5+size(species)),maximum
     local_state=state;local_temperature=temperature
     call advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,local_state,local_temperature,root_spacing,dt,faces, &
       flags(1),flags(2),flags(3),flags(4),budget,maximum,minimum_theta,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,'mc',outlet_pressure,inflow_mach,inflow_pressure, &
-      transport_rate,integrated_flux)
+      transport_rate,integrated_flux,target_depth,coarse_start,coarse_end,coarse_fractions)
   end subroutine compute_sdc_mpi_amr_tree_transport_3d
 
   subroutine advance_mpi_amr_tree_transport_3d(tree,owners,species,transport,state,temperature,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure, &
-      transport_rate,integrated_flux)
+      transport_rate,integrated_flux,target_depth,coarse_start,coarse_end,coarse_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -195,13 +199,16 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     type(amr_tree_state_3d), optional, intent(inout) :: transport_rate
     type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+    real(dp), optional, intent(in) :: coarse_fractions(:)
     real(dp) :: pressure(6),mach(6),pin(6),tin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
     type(amr_tree_state_3d) :: initial,candidate,temps,initial_temperature
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
       first_max,second_max,first_theta,second_theta
-    integer :: node,nvar,rank,status,ios,parent
+    integer :: node,nvar,rank,status,ios,parent,depth,selection(4),selection_low(4),selection_high(4)
     real(dp) :: controls(28),low(28),high(28)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(7),reference_options(7)
@@ -219,6 +226,21 @@ contains
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    depth=-1
+    if(present(target_depth)) depth=target_depth
+    selection=[depth,merge(1,0,present(coarse_start)),merge(1,0,present(coarse_end)), &
+      merge(1,0,present(coarse_fractions))]
+    call MPI_Allreduce(selection,selection_low,4,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selection,selection_high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(selection_low/=selection_high)) return
+    valid=depth>=-1.and.depth<tree%level_count()
+    if(present(target_depth)) valid=valid.and.depth>=0.and.stage_only
+    valid=valid.and.all(selection(2:4)==selection(2))
+    if(any(selection(2:)>0)) valid=valid.and.depth>=0.and.stage_only
+    call agree(valid)
+    if(.not.valid) return
     pressure=0
     if (present(outlet_pressure)) pressure=outlet_pressure
     mach=-1;pin=0;tin=0
@@ -393,13 +415,31 @@ contains
       if (.not.success) return
       call copy_local(u,updated,success)
       if (.not.success) return
+      if(stage_only) then
+        do peer=1,size(tree%nodes)
+          if(owners(peer)==rank) updated%fields(peer)%values=0
+        end do
+        if(present(coarse_start)) then
+          call validate_mpi_amr_tree_local_3d(tree,owners,coarse_start,nvar+1,comm,success,maximum_depth=depth-1)
+          if(.not.success) return
+          do peer=1,size(tree%nodes)
+            if(owners(peer)/=rank.or.tree%nodes(peer)%level>=depth) cycle
+            if(.not.all(ieee_is_finite(coarse_start%fields(peer)%values))) success=.false.
+            packed%fields(peer)%values=coarse_start%fields(peer)%values
+          end do
+          call agree(success)
+          if(.not.success) return
+        end if
+      end if
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,success, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
         coarse_limiter=coarse_limiter,species_count=size(species), &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        depth=target_depth,coarse_future=coarse_end,coarse_fractions=coarse_fractions)
       if (.not.success) return
       do peer=1,size(tree%nodes)
         if (owners(peer)/=rank) cycle
+        if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
         n=tree%nodes(peer)%shape;dims=n+4
         work_stamp=tree_work_start()
         associate(ghost=>ghosts%fields(peer)%values)
@@ -461,6 +501,7 @@ contains
         do peer=1,size(tree%nodes)
           if(owners(peer)/=rank) cycle
           if(.not.all(ieee_is_finite(updated%fields(peer)%values))) success=.false.
+          if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
           if(.not.all(ieee_is_finite(flux(peer)%x)).or..not.all(ieee_is_finite(flux(peer)%y)).or. &
             .not.all(ieee_is_finite(flux(peer)%z))) success=.false.
         end do
