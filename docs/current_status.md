@@ -69,7 +69,8 @@ and samples separate parent state/source temporal endpoints
 ([checks](validation/sdc-mpi-level-hydro-20260926.md)). MPI transport now also
 selects levels and interpolates parent endpoints
 ([checks](validation/sdc-mpi-level-transport-20260926.md)). The coupled MPI level
-and recursive SDC drivers and EB SDC remain open.
+SDC driver now uses these stages and exports interval fluxes and predictors
+([checks](validation/sdc-mpi-level-loop-20260926.md)). Recursive MPI SDC and EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
