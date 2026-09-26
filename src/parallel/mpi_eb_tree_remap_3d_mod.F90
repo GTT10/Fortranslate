@@ -8,37 +8,51 @@ module mpi_eb_tree_remap_3d_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: matching_eb_metrics_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_metadata_3d,fetch_mpi_amr_tree_cells_3d
-  use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d,average_down_mpi_eb_tree_3d
+  use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d,average_down_mpi_eb_tree_3d, &
+    average_down_mpi_eb_tree_field_3d
   implicit none
   private
   public :: remap_mpi_eb_tree_3d
 contains
   ! Shared root/refinement lattice and immutable geometry, matching serial PCM.
   ! Geometry and owner-local U/T commit together; caller commits topology/owners.
-  subroutine remap_mpi_eb_tree_3d(species,old_tree,new_tree,old_owners,new_owners,finest,geometry,state,temperature,comm,ok)
+  subroutine remap_mpi_eb_tree_3d(species,old_tree,new_tree,old_owners,new_owners,finest,geometry,state,temperature,comm,ok, &
+      reaction_source)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: old_tree,new_tree
     integer, intent(in) :: old_owners(:),new_owners(:)
     type(eb_geometry_3d), intent(in) :: finest
     type(eb_geometry_3d), allocatable, intent(inout) :: geometry(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: snapshot,st,candidate,ct
+    type(amr_tree_state_3d) :: snapshot,st,candidate,ct,old_source,new_source
     type(eb_geometry_3d), allocatable :: new_geometry(:)
     integer(int64), allocatable :: old_origin(:,:),old_domain(:,:),new_origin(:,:),new_domain(:,:)
     integer, allocatable :: old_ratios(:),new_ratios(:),requests(:,:),destination(:,:)
-    real(dp), allocatable :: values(:,:),guesses(:,:)
+    real(dp), allocatable :: values(:,:),guesses(:,:),source_values(:,:)
     real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed
     integer(int64) :: cells,total,global(3),mapped(3),local(3)
     integer :: nv,rank,status,node,donor,level,depth,n(3),i,j,k,source(3),q,ios,axis,old_levels,new_levels
+    integer :: supplied,minimum_supplied,maximum_supplied
     logical :: valid,ready,found
     ok=.false.;nv=reactive_nvar(size(species))
+    supplied=merge(1,0,present(reaction_source))
+    call MPI_Allreduce(supplied,minimum_supplied,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(supplied,maximum_supplied,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.minimum_supplied/=maximum_supplied) return
     call agree(allocated(geometry),ready)
     if (.not.ready) return
     snapshot=state;st=temperature
     call average_down_mpi_eb_tree_3d(species,old_tree,old_owners,geometry,snapshot,st,comm,ready)
     if (.not.ready) return
+    if(present(reaction_source)) then
+      old_source=reaction_source
+      call average_down_mpi_eb_tree_field_3d(old_tree,old_owners,geometry,old_source,nv-4,comm,ready)
+      if(.not.ready) return
+    end if
     call validate_mpi_amr_tree_metadata_3d(new_tree,new_owners,nv,comm,ready)
     if (.not.ready) return
     call amr_tree_integer_layout_3d(old_tree,old_origin,old_domain,old_ratios,valid)
@@ -89,6 +103,22 @@ contains
     end if
     call agree(valid,ready)
     if (.not.ready) return
+    if(present(reaction_source)) then
+      allocate(new_source%fields(size(new_owners)),stat=ios)
+      valid=ios==0
+      if(valid) then
+        do node=1,size(new_owners)
+          if(new_owners(node)/=rank) cycle
+          n=new_tree%nodes(node)%shape
+          allocate(new_source%fields(node)%values(nv-4,n(1),n(2),n(3)),source=0._dp,stat=ios)
+          if(ios/=0) then
+            valid=.false.;exit
+          end if
+        end do
+      end if
+      call agree(valid,ready)
+      if(.not.ready) return
+    end if
     q=0
     do node=1,size(new_owners)
       if (new_owners(node)/=rank) cycle
@@ -124,9 +154,14 @@ contains
     if (.not.ready) return
     call fetch_mpi_amr_tree_cells_3d(old_tree,old_owners,st,1,requests,guesses,comm,ready)
     if (.not.ready) return
+    if(present(reaction_source)) then
+      call fetch_mpi_amr_tree_cells_3d(old_tree,old_owners,old_source,nv-4,requests,source_values,comm,ready)
+      if(.not.ready) return
+    end if
     do q=1,int(total)
       node=destination(1,q);i=destination(2,q);j=destination(3,q);k=destination(4,q)
       if (new_geometry(node)%volume_fraction(i,j,k)>0._dp) then
+        if(present(reaction_source)) new_source%fields(node)%values(:,i,j,k)=source_values(:,q)
         call reactive_conserved_to_primitive(species,values(:,q),guesses(1,q),primitive,recovered,speed,ready)
         if (.not.ready) then
           valid=.false.;cycle
@@ -139,6 +174,11 @@ contains
     if (.not.ready) return
     call average_down_mpi_eb_tree_3d(species,new_tree,new_owners,new_geometry,candidate,ct,comm,ready)
     if (.not.ready) return
+    if(present(reaction_source)) then
+      call average_down_mpi_eb_tree_field_3d(new_tree,new_owners,new_geometry,new_source,nv-4,comm,ready)
+      if(.not.ready) return
+      call move_alloc(new_source%fields,reaction_source%fields)
+    end if
     call move_alloc(candidate%fields,state%fields)
     call move_alloc(ct%fields,temperature%fields)
     call move_alloc(new_geometry,geometry)

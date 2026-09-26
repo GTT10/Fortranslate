@@ -13,6 +13,7 @@ module mpi_eb_tree_transfer_3d_mod
   implicit none
   private
   public :: validate_mpi_eb_tree_geometry_3d,average_down_mpi_eb_tree_3d,integrate_mpi_eb_tree_3d
+  public :: average_down_mpi_eb_tree_field_3d
 contains
   subroutine agree(condition,comm,ok)
     logical, intent(in) :: condition
@@ -314,5 +315,108 @@ contains
     call agree(status==MPI_SUCCESS.and.all(ieee_is_finite(candidate)),comm,ready)
     if (.not.ready) return
     values=candidate;ok=.true.
+  end subroutine
+  ! Signed arbitrary fields: fluid-volume restriction, zero for solid parents.
+  subroutine average_down_mpi_eb_tree_field_3d(tree,owners,geometry,state,nv,comm,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nv
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(inout) :: state
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d) :: candidate
+    real(dp), allocatable :: buffer(:,:,:,:)
+    integer :: node,parent,rank,status,ios,n(3),lo(3),hi(3),i,j,k,axis,r,first(3),last(3),c
+    integer(int64) :: elements
+    real(dp) :: volume
+    logical :: valid,ready
+    ok=.false.
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
+    if (.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,state,nv,comm,ready)
+    if (.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) return
+    allocate(candidate%fields(size(owners)),stat=ios)
+    valid=ios==0
+    if (valid) then
+      do node=1,size(owners)
+        if (owners(node)/=rank) cycle
+        allocate(candidate%fields(node)%values,source=state%fields(node)%values,stat=ios)
+        if (ios/=0) then
+          valid=.false.;exit
+        end if
+        if(.not.all(ieee_is_finite(candidate%fields(node)%values))) then
+          valid=.false.;exit
+        end if
+      end do
+    end if
+    call agree(valid,comm,ready)
+    if (.not.ready) return
+    do node=size(owners),2,-1
+      parent=tree%nodes(node)%parent
+      call bounds(tree,node,lo,hi)
+      n=hi-lo+1;elements=int(nv,int64)
+      valid=.true.
+      do axis=1,3
+        if (elements>int(huge(1),int64)/int(n(axis),int64)) then
+          valid=.false.;exit
+        end if
+        elements=elements*int(n(axis),int64)
+      end do
+      call agree(valid,comm,ready)
+      if (.not.ready) return
+      if (rank==owners(node).or.rank==owners(parent)) then
+        allocate(buffer(nv,n(1),n(2),n(3)),stat=ios)
+        valid=ios==0
+      end if
+      call agree(valid,comm,ready)
+      if (.not.ready) return
+      if (rank==owners(node)) then
+        buffer=0._dp
+        r=tree%nodes(node)%patch%refinement_ratio
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          first=([i,j,k]-1)*r+1;last=first+r-1
+          associate(v=>geometry(node)%volume_fraction(first(1):last(1),first(2):last(2),first(3):last(3)))
+          volume=sum(v)
+          if(volume>0) then
+            do c=1,nv
+              buffer(c,i,j,k)=sum(v*candidate%fields(node)%values(c, &
+                first(1):last(1),first(2):last(2),first(3):last(3)))/volume
+            end do
+          end if
+          end associate
+        end do
+        end do
+        end do
+        valid=all(ieee_is_finite(buffer))
+      end if
+      call agree(valid,comm,ready)
+      if (.not.ready) return
+      status=MPI_SUCCESS
+      if (owners(node)/=owners(parent)) then
+        if (rank==owners(node)) then
+          call MPI_Send(buffer,int(elements),MPI_DOUBLE_PRECISION,owners(parent),28501,comm,status)
+        else if (rank==owners(parent)) then
+          call MPI_Recv(buffer,int(elements),MPI_DOUBLE_PRECISION,owners(node),28501,comm,MPI_STATUS_IGNORE,status)
+        end if
+      end if
+      call agree(status==MPI_SUCCESS,comm,ready)
+      if (.not.ready) return
+      if (rank==owners(parent)) then
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          candidate%fields(parent)%values(:,lo(1)+i-1,lo(2)+j-1,lo(3)+k-1)=buffer(:nv,i,j,k)
+        end do
+        end do
+        end do
+      end if
+      if (allocated(buffer)) deallocate(buffer)
+    end do
+    call move_alloc(candidate%fields,state%fields)
+    ok=.true.
   end subroutine
 end module mpi_eb_tree_transfer_3d_mod

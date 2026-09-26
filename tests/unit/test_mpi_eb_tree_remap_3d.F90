@@ -21,11 +21,11 @@ program test_mpi_eb_tree_remap_3d
   type(eb_geometry_3d) :: finest,middle,coarse
   type(eb_reactive_tree_3d) :: tree,saved
   type(reactive_eb_3d_config) :: config
-  type(amr_tree_state_3d) :: local,lt,original,original_t
+  type(amr_tree_state_3d) :: local,lt,original,original_t,source,serial_source,original_source
   type(eb_geometry_3d), allocatable :: geometry(:),original_geometry(:)
   integer, allocatable :: owners(:),next_owners(:)
   real(dp), allocatable :: u(:,:,:,:),t(:,:,:)
-  real(dp), allocatable :: before(:),after(:)
+  real(dp), allocatable :: before(:),after(:),source_before(:),source_after(:)
   real(dp) :: residual
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,rank,nranks,status,stage
@@ -85,11 +85,21 @@ program test_mpi_eb_tree_remap_3d
     allocate(lt%fields(node)%values(1,4,4,4))
     lt%fields(node)%values(1,:,:,:)=tree%nodes(node)%temperature
   end do
+  allocate(source%fields(count),serial_source%fields(count),source_before(nv-4),source_after(nv-4))
+  do node=1,count
+    allocate(serial_source%fields(node)%values(nv-4,4,4,4),source=-real(node,dp))
+    do i=1,4
+      serial_source%fields(node)%values(:,i,:,:)=serial_source%fields(node)%values(:,i,:,:)+.1_dp*i
+    end do
+    if(owners(node)==rank) source%fields(node)%values=serial_source%fields(node)%values
+  end do
+  call integrate_mpi_eb_tree_3d(current_tree,owners,geometry,source,source_before,MPI_COMM_WORLD,ok)
+  call require(ok,'initial source inventory')
   call initialize_amr_patch_3d(4,4,4,2,3,3,4,2,3,2,boxes(3),ok)
   call require(ok,'shifted grandchild')
   call initialize_amr_patch_tree_3d([4,4,4],[1,1,2],boxes(:3),moved,ok)
   call require(ok,'new topology')
-  call remap_reactive_eb_tree_3d(species,moved,finest,tree,ok)
+  call remap_reactive_eb_tree_3d(species,moved,finest,tree,ok,serial_source)
   call require(ok,'move grandchild and remove other refinement')
   call check_inventory()
   call check_mpi_remap(tree%topology)
@@ -101,19 +111,19 @@ program test_mpi_eb_tree_remap_3d
   ! still describes the deeper of the source and target trees.
   call initialize_amr_patch_tree_3d([4,4,4],[integer::],boxes(:0),root_only,ok)
   call require(ok,'root-only topology')
-  call remap_reactive_eb_tree_3d(species,root_only,finest,tree,ok)
+  call remap_reactive_eb_tree_3d(species,root_only,finest,tree,ok,serial_source)
   call require(ok.and.size(tree%nodes)==1,'complete coarsening')
   call check_inventory()
   call check_mpi_remap(tree%topology)
-  call remap_reactive_eb_tree_3d(species,topology,finest,tree,ok)
+  call remap_reactive_eb_tree_3d(species,topology,finest,tree,ok,serial_source)
   call require(ok,'refine root-only state to three levels')
   call check_inventory()
   call check_mpi_remap(tree%topology)
-  original=local;original_t=lt;original_geometry=geometry
+  original=local;original_t=lt;original_geometry=geometry;original_source=source
   if (owners(count)==rank) local%fields(count)%values(1,4,4,4)=-1._dp
   original=local
   next_owners=[(mod(node,nranks),node=1,size(moved%nodes))]
-  call remap_mpi_eb_tree_3d(species,current_tree,moved,owners,next_owners,finest,geometry,local,lt,MPI_COMM_WORLD,ok)
+  call remap_mpi_eb_tree_3d(species,current_tree,moved,owners,next_owners,finest,geometry,local,lt,MPI_COMM_WORLD,ok,source)
   call require(.not.ok,'MPI bad source rejected')
   call unchanged_mpi()
   if (owners(count)==rank) local%fields(count)%values(1,4,4,4)=tree%nodes(count)%state(1,4,4,4)
@@ -121,10 +131,10 @@ program test_mpi_eb_tree_remap_3d
   call build_axis_plane_eb_geometry_3d(16,16,16,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
     axes(axis),.32_dp,finest,ok)
   call require(ok,'changed geometry fixture')
-  call remap_mpi_eb_tree_3d(species,current_tree,moved,owners,next_owners,finest,geometry,local,lt,MPI_COMM_WORLD,ok)
+  call remap_mpi_eb_tree_3d(species,current_tree,moved,owners,next_owners,finest,geometry,local,lt,MPI_COMM_WORLD,ok,source)
   call require(.not.ok,'MPI geometry change rejected')
   call unchanged_mpi()
-  deallocate(geometry,owners,local%fields,lt%fields)
+  deallocate(geometry,owners,local%fields,lt%fields,source%fields,serial_source%fields,source_before,source_after)
   deallocate(u,t)
   end do
   end do
@@ -144,18 +154,24 @@ contains
     integer :: p
     stage=stage+1
     next_owners=[(mod(p+stage,nranks),p=1,size(target%nodes))]
-    call remap_mpi_eb_tree_3d(species,current_tree,target,owners,next_owners,finest,geometry,local,lt,MPI_COMM_WORLD,ok)
+    call remap_mpi_eb_tree_3d(species,current_tree,target,owners,next_owners,finest,geometry,local,lt,MPI_COMM_WORLD,ok,source)
     call require(ok,'MPI remap')
     current_tree=target;owners=next_owners
     do p=1,size(target%nodes)
       call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'new owner-local allocation')
+      call require(allocated(source%fields(p)%values).eqv.(owners(p)==rank),'owner-local remapped source')
       call require(matching_eb_metrics_3d(geometry(p),tree%nodes(p)%geometry),'serial target geometry')
       if (owners(p)/=rank) cycle
+      call require(all(source%fields(p)%values==serial_source%fields(p)%values),'exact serial remapped IR')
       call require(all(local%fields(p)%values==tree%nodes(p)%state),'exact serial remapped U')
       call require(all(lt%fields(p)%values(1,:,:,:)==tree%nodes(p)%temperature),'exact serial remapped T')
     end do
     call integrate_mpi_eb_tree_3d(target,owners,geometry,local,inventory,MPI_COMM_WORLD,ok)
     call require(ok,'MPI inventory')
+    call integrate_mpi_eb_tree_3d(target,owners,geometry,source,source_after,MPI_COMM_WORLD,ok)
+    call require(ok,'remapped source inventory')
+    call require(maxval(abs(source_after-source_before)/max(1._dp,abs(source_before)))<3.e-14_dp, &
+      'signed source conservation')
     error=maxval(abs(inventory-before)/max(1._dp,abs(before)))
     call require(error<3.e-14_dp,'MPI remap conservation')
     if (rank==0) print *, 'MPI axis, nodes, stage, residual: ',axes(axis),count,stage,error
@@ -165,6 +181,7 @@ contains
     do p=1,size(owners)
       call require(matching_eb_metrics_3d(geometry(p),original_geometry(p)),'geometry rollback')
       if (owners(p)/=rank) cycle
+      call require(all(source%fields(p)%values==original_source%fields(p)%values),'IR rollback')
       call require(all(local%fields(p)%values==original%fields(p)%values),'U rollback')
       call require(all(lt%fields(p)%values==original_t%fields(p)%values),'T rollback')
     end do

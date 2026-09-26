@@ -218,7 +218,6 @@ program pelef_reactive_eb_tree_3d
     error stop 'EB spray SDC integration is not implemented'
 #elif defined(PELEF_MPI_EB_TREE)
     if(subcycling) error stop 'MPI EB SDC recursive stepping is not implemented'
-    if(regrid_count>0.or.temperature_adaptive) error stop 'MPI EB SDC regrid is not implemented'
 #endif
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
@@ -1325,7 +1324,8 @@ contains
         (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid,films,film_mass,walls%maximum_films)
 #else
       call remap_mpi_eb_tree_3d(species,topology,layouts(stage),mpi_owners,next_owners,geometry_levels(level), &
-        mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid)
+        mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid,sdc_ir)
+      if(valid.and.allocated(sdc_ir)) record%reaction_source=sdc_ir
 #endif
       if (.not.valid) error stop 'MPI conservative regrid failed'
       mpi_owners=next_owners;topology=layouts(stage);regrid_stage=stage
