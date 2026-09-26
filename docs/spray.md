@@ -31,12 +31,35 @@ leave parcels, components and partition outputs unchanged.
 
 This permits a caller-owned particle copy to be assigned to coarse-level
 owners without coarsening the gas topology or changing parcel coordinates,
-IDs, mass or breakup history. It does not create virtual/ghost populations,
-aggregate particles, or advance their clocks. Those operations and their
-connection to recursive SDC remain required. The pinned reference's
+IDs, mass or breakup history. Virtual population creation is described below;
+ghost populations, aggregation and their connection to recursive SDC remain
+required. The pinned reference's
 `Source/Particle.cpp::particleMKD` creates virtual/ghost representations before
 level updates; these ownership APIs provide a prerequisite for that lifecycle.
 See the [focused checks](validation/spray-level-ownership-20260927.md).
+
+## Coarse virtual particle populations
+
+`create_mpi_amr_virtual_particles` constructs a separate, nonaggregated
+population for a requested `target_level`. It selects physical parcels whose
+finest covering node is deeper than the target and migrates copies to the
+coarse owners. Coordinates, component inventories and physical/breakup state
+are copied, while the source population remains unchanged. Supplying
+`nodal_phi` uses the EB migration and solid-point validation path.
+
+Outputs replace the previous virtual population only after collective success.
+The finest level produces an empty population; target disagreement, invalid
+inputs, capacity exhaustion and EB rejection retain existing outputs.
+The input must contain each active physical parcel once, with sorted local IDs.
+Source IDs are retained for correspondence; virtuals must stay separate from
+physical inventories, injection and checkpoints. Callers must regenerate/clear
+these temporary populations at the level lifecycle boundaries.
+
+This implements the unaggregated coarse representation needed by the pinned
+PeleC virtual-particle lifecycle. It does not implement AMReX cell aggregation,
+reserved virtual IDs, ghost particles, level-specific interpolation/deposition
+or recursive time integration. Those connections remain open.
+See [creation checks](validation/spray-virtual-particles-20260927.md).
 
 ## AMR and embedded boundaries
 

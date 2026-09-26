@@ -5,12 +5,12 @@ program test_spray_mpi_amr_tree
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
-  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
+  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
-  type(spray_parcel), allocatable :: parcels(:),saved(:)
-  real(dp), allocatable :: masses(:,:),saved_mass(:,:)
+  type(spray_parcel), allocatable :: parcels(:),saved(:),virtuals(:),saved_virtuals(:)
+  real(dp), allocatable :: masses(:,:),saved_mass(:,:),virtual_mass(:,:),saved_virtual_mass(:,:)
   type(spray_parcel) :: expected
   integer :: rank,nranks,ierr,p,id,owners(4),bad_owners(4),ceiling
   real(dp) :: zero(3)=0._dp,spacing(3)=1._dp,bad_lower(3)
@@ -34,6 +34,31 @@ program test_spray_mpi_amr_tree
     masses(:,p)=parcels(p)%mass*[.25_dp,.75_dp]
   end do
   saved=parcels;saved_mass=masses
+  call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],1,100,virtuals,virtual_mass,ok)
+  call require(ok.and.size(virtuals)==merge(nranks,0,rank==0),'virtuals select only deeper levels')
+  do p=1,size(virtuals)
+    call require(virtuals(p)%id==2*p-1,'virtual source identity')
+    expected=make_parcel(int(virtuals(p)%id))
+    call require(all(virtuals(p)%position==expected%position).and. &
+      all(virtual_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'virtual unaggregated payload')
+  end do
+  saved_virtuals=virtuals;saved_virtual_mass=virtual_mass
+  call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],0,0,virtuals,virtual_mass,ok)
+  call require(.not.ok.and.all(virtuals%id==saved_virtuals%id).and. &
+    all(virtual_mass==saved_virtual_mass),'virtual capacity rollback')
+  call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],merge(0,1,rank==0),100,virtuals,virtual_mass,ok)
+  call require(.not.ok.and.all(virtuals%id==saved_virtuals%id).and. &
+    all(virtual_mass==saved_virtual_mass),'virtual level disagreement rollback')
+  call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],0,100,virtuals,virtual_mass,ok)
+  call require(ok.and.size(virtuals)==merge(2*nranks,0,rank==0),'all descendants represented at root')
+  call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],2,100,virtuals,virtual_mass,ok)
+  call require(ok.and.size(virtuals)==0.and.size(virtual_mass,2)==0,'finest virtual population empty')
+  call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'physical population unchanged')
   ceiling=merge(0,1,rank==0)
   call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,parcels,zero,spacing, &
     [.true.,.false.,.false.],100,ok,masses,ceiling)

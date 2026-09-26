@@ -7,12 +7,85 @@ module spray_mpi_amr_tree_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use spray_parcel_mod, only: spray_parcel
+  use spray_mixture_mod, only: valid_component_inventory
   use spray_amr_tree_partition_mod, only: partition_amr_tree_spray_parcels,locate_amr_tree_spray_cells
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
   implicit none
   private
   public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
+  public :: create_mpi_amr_virtual_particles
 contains
+  ! Build nonaggregated coarse representations of all finer active parcels.
+  ! The separate output retains source IDs; never merge it into physical parcels.
+  ! Caller publishes/clears this level-local population with its stage lifecycle.
+  subroutine create_mpi_amr_virtual_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      target_level,maximum_parcels,virtuals,virtual_mass,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,maximum_parcels
+    type(spray_parcel), allocatable, intent(in) :: parcels(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_parcel), allocatable, intent(inout) :: virtuals(:)
+    real(dp), allocatable, intent(inout) :: virtual_mass(:,:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_parcel), allocatable :: copies(:)
+    real(dp), allocatable :: masses(:,:),positions(:,:)
+    integer, allocatable :: locations(:,:)
+    logical, allocatable :: selected(:)
+    integer :: p,q,nc,status,flags(2),low(2),high(2)
+    logical :: valid,agreed
+    ok=.false.
+    valid=tree%is_valid().and.allocated(parcels).and.allocated(component_mass)
+    if(valid) valid=target_level>=0.and.target_level<tree%level_count()
+    if(valid) valid=size(component_mass,2)==size(parcels)
+    if(valid) valid=size(component_mass,1)>=1.and.size(component_mass,1)<=16
+    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
+    call agree()
+    if(.not.agreed) return
+    flags=[target_level,merge(1,0,present(nodal_phi))]
+    call MPI_Allreduce(flags,low,2,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,2,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    nc=size(component_mass,1)
+    allocate(positions(3,size(parcels)),selected(size(parcels)))
+    do p=1,size(parcels)
+      valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p))
+      if(p>1) valid=valid.and.parcels(p)%id>parcels(p-1)%id
+      positions(:,p)=parcels(p)%position
+    end do
+    call agree()
+    if(.not.agreed) return
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,valid)
+    call agree()
+    if(.not.agreed) return
+    do p=1,size(parcels)
+      selected(p)=tree%nodes(locations(1,p))%level>target_level
+    end do
+    copies=pack(parcels,selected);allocate(masses(nc,count(selected)));q=0
+    do p=1,size(parcels)
+      if(.not.selected(p)) cycle
+      q=q+1;masses(:,q)=component_mass(:,p)
+    end do
+    if(present(nodal_phi)) then
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,copies,lower,spacing, &
+        maximum_parcels,valid,masses,target_level)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,copies,lower,spacing,periodic, &
+        maximum_parcels,valid,masses,target_level)
+    end if
+    if(.not.valid) return
+    call move_alloc(copies,virtuals);call move_alloc(masses,virtual_mass)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine create_mpi_amr_virtual_particles
   ! The replicated nodal field describes the root domain at the finest tree
   ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder. No periodic wrapping.
   subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing, &
