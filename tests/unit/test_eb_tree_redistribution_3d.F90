@@ -7,6 +7,10 @@ program test_eb_tree_redistribution_3d
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,redistribute_sdc_eb_tree_flux_rate_3d
   use eb_reactive_redistribution_3d_mod, only: reactive_eb_flux_redistribute_3d
+#ifdef PELEF_TEST_MPI_REDIST
+  use mpi_f08
+  use mpi_eb_tree_redistribution_3d_mod, only: redistribute_sdc_mpi_eb_tree_flux_rate_3d
+#endif
   implicit none
   type(eb_reactive_tree_3d) :: tree
   type(eb_geometry_3d) :: finest,coarse
@@ -15,7 +19,15 @@ program test_eb_tree_redistribution_3d
   real(dp), allocatable :: flat(:,:,:,:),expected(:,:,:,:)
   real(dp) :: before(2),after(2),error,x,y,z,weight
   integer :: layout,p,n(3),i,j,k,offset,direction
+#ifdef PELEF_TEST_MPI_REDIST
+  integer :: rank,nranks,status
+#endif
   logical :: ok
+#ifdef PELEF_TEST_MPI_REDIST
+  call MPI_Init(status)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
+  call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
+#endif
   call build_axis_plane_eb_geometry_3d(8,8,8,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp, &
     'y',.31_dp,finest,ok)
   call require(ok,'fine geometry')
@@ -71,6 +83,9 @@ program test_eb_tree_redistribution_3d
     end do
     call redistribute_sdc_eb_tree_flux_rate_3d(tree,raw,result,ok)
     call require(ok,'composite redistribution')
+#ifdef PELEF_TEST_MPI_REDIST
+    call check_mpi(raw,result)
+#endif
     after=0
     do p=1,layout+1
       n=tree%topology%nodes(p)%shape
@@ -158,7 +173,60 @@ program test_eb_tree_redistribution_3d
     deallocate(tree%nodes,raw%fields)
   end do
   print *, 'test_eb_tree_redistribution_3d: PASS'
+#ifdef PELEF_TEST_MPI_REDIST
+  call MPI_Finalize(status)
+#endif
 contains
+#ifdef PELEF_TEST_MPI_REDIST
+  subroutine check_mpi(input,reference,labels)
+    type(amr_tree_state_3d), intent(in) :: input,reference
+    character(len=*), optional, intent(in) :: labels(6)
+    type(amr_tree_state_3d) :: local,output,previous
+    type(eb_geometry_3d) :: geometry(size(tree%nodes))
+    integer :: owners(size(tree%nodes)),q,distribution
+    character(len=16) :: faces(6),bad_faces(6)
+    logical :: good
+    faces='outflow'
+    if(present(labels)) faces=labels
+    do q=1,size(tree%nodes)
+      geometry(q)=tree%nodes(q)%geometry
+    end do
+    do distribution=1,2
+      owners=[(mod(q-1,nranks),q=1,size(tree%nodes))]
+      if(distribution==2) owners=0
+      allocate(local%fields(size(tree%nodes)))
+      do q=1,size(tree%nodes)
+        if(owners(q)==rank) local%fields(q)%values=input%fields(q)%values
+      end do
+      call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree%topology,owners,geometry,local,2,output, &
+        MPI_COMM_WORLD,good,faces)
+      call require(good,'MPI composite redistribution')
+      do q=1,size(tree%nodes)
+        call require(allocated(output%fields(q)%values).eqv.(owners(q)==rank),'MPI owner-local result')
+        if(owners(q)/=rank) cycle
+        call require(all(output%fields(q)%values==reference%fields(q)%values),'exact serial/MPI redistribution')
+      end do
+      previous=output;bad_faces=faces
+      if(rank==nranks-1) bad_faces(1:2)='slip_wall'
+      call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree%topology,owners,geometry,local,2,output, &
+        MPI_COMM_WORLD,good,bad_faces)
+      call require(.not.good,'rank-dependent redistribution boundaries rejected')
+      do q=1,size(tree%nodes)
+        if(owners(q)/=rank) cycle
+        call require(all(output%fields(q)%values==previous%fields(q)%values),'MPI boundary rollback')
+      end do
+      if(owners(1)==rank) local%fields(1)%values(:,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
+      call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree%topology,owners,geometry,local,2,output, &
+        MPI_COMM_WORLD,good,faces)
+      call require(.not.good,'one-owner nonfinite rate rejected')
+      do q=1,size(tree%nodes)
+        if(owners(q)/=rank) cycle
+        call require(all(output%fields(q)%values==previous%fields(q)%values),'MPI source rollback')
+      end do
+      deallocate(local%fields)
+    end do
+  end subroutine check_mpi
+#endif
   subroutine check_periodic()
     character(len=16) :: faces(6)
     type(amr_tree_state_3d) :: periodic,shifted,input
@@ -178,6 +246,9 @@ contains
       end if
       call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,periodic,ok,faces)
       call require(ok,'periodic redistribution')
+#ifdef PELEF_TEST_MPI_REDIST
+      call check_mpi(input,periodic,faces)
+#endif
       if(layout==0) then
         reference=periodic%fields(1)%values
       else
@@ -212,6 +283,9 @@ contains
         end if
         call redistribute_sdc_eb_tree_flux_rate_3d(tree,input,periodic,ok,faces)
         call require(ok,'periodic coarse/fine impulse')
+#ifdef PELEF_TEST_MPI_REDIST
+        call check_mpi(input,periodic,faces)
+#endif
         if(side==1) then
           call require(periodic%fields(2)%values(1,1,3,3)>0,'periodic coarse-to-fine transfer')
         else

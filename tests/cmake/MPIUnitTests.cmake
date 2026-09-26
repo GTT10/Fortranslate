@@ -1295,3 +1295,14 @@ if(PELEF_ENABLE_MPI)
   set_tests_properties(unit_mpi_eb_tree_sdc_checkpoint_3d_2 PROPERTIES TIMEOUT 60 PROCESSORS 2
     ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
 endif()
+
+if(PELEF_ENABLE_MPI)
+  add_executable(test_mpi_eb_tree_redistribution_3d unit/test_eb_tree_redistribution_3d.F90)
+  target_compile_definitions(test_mpi_eb_tree_redistribution_3d PRIVATE PELEF_TEST_MPI_REDIST)
+  target_link_libraries(test_mpi_eb_tree_redistribution_3d PRIVATE pelef_mpi_support)
+  add_test(NAME unit_mpi_eb_tree_redistribution_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_redistribution_3d> ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_eb_tree_redistribution_3d_2 PROPERTIES
+    TIMEOUT 120 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+endif()

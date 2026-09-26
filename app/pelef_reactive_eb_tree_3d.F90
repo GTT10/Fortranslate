@@ -217,9 +217,6 @@ program pelef_reactive_eb_tree_3d
   if(redistribution/='none'.and.redistribution/='flux_redist') error stop 'Invalid tree redistribution'
   if(redistribution/='none') then
     if(time_integrator/='sdc'.or.subcycling) error stop 'Tree redistribution requires common-step SDC'
-#ifdef PELEF_MPI_EB_TREE
-    error stop 'MPI tree redistribution is not implemented'
-#endif
   end if
   if(time_integrator=='sdc') then
 #ifdef PELEF_MPI_EB_SPRAY
@@ -559,7 +556,8 @@ program pelef_reactive_eb_tree_3d
           mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
           [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
           active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
-          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature)
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
+          redistribution=redistribution)
         end if
       else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
