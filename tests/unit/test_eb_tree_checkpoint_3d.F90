@@ -1,4 +1,5 @@
 program test_eb_tree_checkpoint_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -161,11 +162,74 @@ program test_eb_tree_checkpoint_3d
   call unchanged_tree()
   call require(restored%time==17._dp,'topology metadata rollback')
   close(stream)
+  call check_sdc_record()
   deallocate(u,t)
   end do
   end do
   print *, 'test_eb_tree_checkpoint_3d: PASS'
 contains
+  subroutine check_sdc_record()
+    type(eb_tree_checkpoint_3d) :: source_record,target_record
+    type(reactive_eb_3d_config) :: cfg
+    real(dp) :: current(nv),bad_ir(nv-4)
+    integer :: unit,p,mode
+    cfg=config;cfg%time_integrator='sdc';cfg%external_forcing=[1._dp,2._dp,3._dp]
+    call integrate_reactive_eb_tree_3d(tree,current,ok)
+    call require(ok,'SDC checkpoint current inventory')
+    source_record%initial=current;source_record%scale=abs(current)
+    source_record%boundary=0*current;source_record%wall=0*current;source_record%chemical=0*current
+    source_record%forcing=1.e-8_dp+0*current
+    source_record%initial=current-source_record%forcing
+    source_record%time=1.e-8_dp;source_record%minimum_dt=1.e-8_dp;source_record%steps=1
+    do mode=1,2
+      cfg%chemistry_enabled=mode==1
+      if(mode==1) then
+        allocate(source_record%reaction_source%fields(count))
+        do p=1,count
+          allocate(source_record%reaction_source%fields(p)%values(nv-4,4,4,4),source=-real(p,dp))
+        end do
+      else
+        deallocate(source_record%reaction_source%fields)
+      end if
+      open(newunit=unit,status='scratch',form='formatted',action='readwrite')
+      call reactive_eb_tree_checkpoint_record_3d(unit,.false.,species,reactions,transport,cfg, &
+        tree,source_record,ok,message)
+      call require(ok,'write SDC tree: '//trim(message))
+      rewind(unit)
+      call reactive_eb_tree_checkpoint_record_3d(unit,.true.,species,reactions,transport,cfg, &
+        tree,target_record,ok,message)
+      call require(ok,'read SDC tree: '//trim(message))
+      call require(all(target_record%forcing==source_record%forcing),'SDC forcing exact round trip')
+      if(mode==1) then
+        do p=1,count
+          call require(all(target_record%reaction_source%fields(p)%values== &
+            source_record%reaction_source%fields(p)%values),'SDC reaction exact round trip')
+        end do
+        backspace(unit);backspace(unit)
+        bad_ir=0;bad_ir(1)=ieee_value(0._dp,ieee_quiet_nan)
+        write(unit,'(*(es27.18e3,1x))') bad_ir
+        write(unit,'(a)') 'END_EB_TREE_CHECKPOINT'
+        endfile(unit);rewind(unit)
+        target_record%forcing=17;target_record%reaction_source%fields(1)%values=19
+        saved=tree
+        call reactive_eb_tree_checkpoint_record_3d(unit,.true.,species,reactions,transport,cfg, &
+          tree,target_record,ok,message)
+        call require(.not.ok,'late SDC source NaN rejects')
+        call unchanged_tree()
+        call require(all(target_record%forcing==17).and.all(target_record%reaction_source%fields(1)%values==19), &
+          'SDC source metadata rollback')
+      else
+        call require(.not.allocated(target_record%reaction_source%fields),'nonreacting SDC has no source array')
+      end if
+      rewind(unit);cfg%external_forcing(1)=4
+      call reactive_eb_tree_checkpoint_record_3d(unit,.true.,species,reactions,transport,cfg, &
+        tree,target_record,ok,message)
+      call require(.not.ok,'SDC forcing configuration mismatch')
+      cfg%external_forcing(1)=1
+      close(unit)
+    end do
+  end subroutine check_sdc_record
+
   subroutine unchanged_tree()
     integer :: n
     do n=1,size(tree%nodes)
