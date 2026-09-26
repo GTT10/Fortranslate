@@ -1,4 +1,5 @@
 program test_eb_tree_full_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -7,13 +8,13 @@ program test_eb_tree_full_3d
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d, &
-    advance_reactive_eb_tree_transport_3d,advance_reactive_eb_tree_hydro_3d,react_reactive_eb_tree_3d
+    advance_reactive_eb_tree_transport_3d,advance_reactive_eb_tree_hydro_3d,react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
-  use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
+  use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,react_sdc_eb_state_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -86,6 +87,7 @@ program test_eb_tree_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  call check_sdc_reaction()
   do integrator_index=1,2
   do mode=0,3
     chemistry_on=btest(mode,0);transport_on=btest(mode,1)
@@ -145,6 +147,66 @@ program test_eb_tree_full_3d
   end do
   print *, 'test_eb_tree_full_3d: PASS'
 contains
+  subroutine check_sdc_reaction()
+    type(amr_tree_state_3d) :: rates,states,temps,ir,rs,rt,ri
+    type(eb_reactive_tree_3d) :: bad
+    real(dp), allocatable :: expected_ir(:,:,:,:),eu(:,:,:,:),et(:,:,:)
+    integer :: p,c,depth
+    allocate(rates%fields(count),ir%fields(count))
+    do p=1,count
+      allocate(rates%fields(p)%values(nv,4,4,4),ir%fields(p)%values(nv-4,4,4,4))
+      rates%fields(p)%values=0;ir%fields(p)%values=7
+      rates%fields(p)%values(2,:,:,:)=2.e4_dp
+      rates%fields(p)%values(5,:,:,:)=2.e4_dp*saved%nodes(p)%state(2,:,:,:)/saved%nodes(p)%state(1,:,:,:)
+      ! Rates in solid cells are deliberately invalid and must not participate.
+      do c=1,nv
+        where(saved%nodes(p)%geometry%volume_fraction<=0) &
+          rates%fields(p)%values(c,:,:,:)=ieee_value(0._dp,ieee_quiet_nan)
+      end do
+    end do
+    call react_sdc_eb_tree_3d(species,reactions,saved,rates,1.e-9_dp,2.e-7_dp,1.e-12_dp,states,temps,ir,ok)
+    call require(ok,'SDC tree reaction')
+    do p=1,count
+      eu=saved%nodes(p)%state;et=saved%nodes(p)%temperature
+      allocate(expected_ir(nv-4,4,4,4),source=7._dp)
+      call react_sdc_eb_state_3d(species,reactions,saved%nodes(p)%state,saved%nodes(p)%temperature, &
+        saved%nodes(p)%geometry,rates%fields(p)%values,1.e-9_dp,2.e-7_dp,1.e-12_dp,eu,et,expected_ir,ok)
+      call require(ok,'SDC patch reference')
+      call require(all(states%fields(p)%values==eu).and.all(temps%fields(p)%values(1,:,:,:)==et).and. &
+        all(ir%fields(p)%values==expected_ir),'SDC tree exact patch reference including refined parents')
+      deallocate(expected_ir)
+    end do
+    rs=states;rt=temps;ri=ir
+    do depth=0,2
+      do p=1,count
+        states%fields(p)%values=-17;temps%fields(p)%values=-19;ir%fields(p)%values=7
+      end do
+      call react_sdc_eb_tree_3d(species,reactions,saved,rates,1.e-9_dp,2.e-7_dp,1.e-12_dp, &
+        states,temps,ir,ok,target_depth=depth)
+      call require(ok,'SDC selected level reaction')
+      do p=1,count
+        if(saved%topology%nodes(p)%level==depth) then
+          call require(all(states%fields(p)%values==rs%fields(p)%values).and. &
+            all(temps%fields(p)%values==rt%fields(p)%values).and. &
+            all(ir%fields(p)%values==ri%fields(p)%values),'SDC selected exact state and sources')
+        else
+          call require(all(states%fields(p)%values==-17).and.all(temps%fields(p)%values==-19).and. &
+            all(ir%fields(p)%values==7),'SDC inactive level retained')
+        end if
+      end do
+    end do
+    states=rs;temps=rt;ir=ri;bad=saved
+    bad%nodes(count)%state(1,4,4,4)=-1
+    call require(bad%nodes(count)%geometry%volume_fraction(4,4,4)>0,'late failing cell is fluid')
+    call react_sdc_eb_tree_3d(species,reactions,bad,rates,1.e-9_dp,2.e-7_dp,1.e-12_dp,states,temps,ir,ok)
+    call require(.not.ok,'SDC late node failure')
+    do p=1,count
+      call require(all(states%fields(p)%values==rs%fields(p)%values).and. &
+        all(temps%fields(p)%values==rt%fields(p)%values).and. &
+        all(ir%fields(p)%values==ri%fields(p)%values),'SDC complete tree rollback')
+    end do
+  end subroutine check_sdc_reaction
+
   subroutine reaction()
     call react_reactive_eb_tree_3d(species,reactions,0.5e-8_dp,2.e-7_dp,1.e-12_dp, &
       reference,exchange,ok,'explicit')

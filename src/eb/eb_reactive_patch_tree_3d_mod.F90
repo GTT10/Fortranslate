@@ -5,7 +5,7 @@ module eb_reactive_patch_tree_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
-  use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
   use gas_transport_mod, only: gas_transport_species
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
     reactive_eb_isothermal_timestep_3d, &
@@ -15,7 +15,7 @@ module eb_reactive_patch_tree_3d_mod
     compute_reactive_eb_flattening_3d,eb_plm_boundary_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_tagging_3d_mod, only: hot_cell,build_tagged_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d,periodic_eb_faces_match
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
@@ -40,7 +40,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: advance_reactive_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
   public :: fill_reactive_eb_tree_halo_3d
-  public :: react_reactive_eb_tree_3d
+  public :: react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
   public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
 contains
   subroutine bounds(tree,node,lo,hi)
@@ -1705,6 +1705,75 @@ contains
       matches=.true.
     end function matching_snapshot
   end subroutine fill_reactive_eb_tree_halo_3d
+
+  ! Provisional SDC chemistry evolves all fluid cells at each selected level,
+  ! including refined parents. Reflux and restriction belong to the time driver.
+  subroutine react_sdc_eb_tree_3d(species,reactions,old_tree,nonreacting_rates,dt,rtol,atol, &
+      state,temperature,reaction_source,ok,target_depth)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(eb_reactive_tree_3d), intent(in) :: old_tree
+    type(amr_tree_state_3d), intent(in) :: nonreacting_rates
+    real(dp), intent(in) :: dt,rtol,atol
+    type(amr_tree_state_3d), intent(inout) :: state,temperature,reaction_source
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d) :: candidate,temps,sources
+    integer :: nv,node,n(3),depth,i,j,k
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species));depth=-1
+    if(.not.valid_tree(old_tree,nv).or.size(reactions)<1) return
+    if(.not.field_shape(nonreacting_rates,nv).or..not.field_shape(reaction_source,nv-4)) return
+    if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
+    if(present(target_depth)) then
+      depth=target_depth
+      if(depth<0.or.depth>=old_tree%topology%level_count()) return
+      if(.not.field_shape(state,nv).or..not.field_shape(temperature,1)) return
+      candidate=state;temps=temperature
+    else
+      allocate(candidate%fields(size(old_tree%nodes)),temps%fields(size(old_tree%nodes)))
+      do node=1,size(old_tree%nodes)
+        n=old_tree%topology%nodes(node)%shape
+        candidate%fields(node)%values=old_tree%nodes(node)%state
+        allocate(temps%fields(node)%values(1,n(1),n(2),n(3)))
+        temps%fields(node)%values(1,:,:,:)=old_tree%nodes(node)%temperature
+      end do
+    end if
+    sources=reaction_source
+    do node=1,size(old_tree%nodes)
+      if(depth>=0.and.old_tree%topology%nodes(node)%level/=depth) cycle
+      n=old_tree%topology%nodes(node)%shape
+      candidate%fields(node)%values=old_tree%nodes(node)%state
+      temps%fields(node)%values(1,:,:,:)=old_tree%nodes(node)%temperature
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(old_tree%nodes(node)%geometry%volume_fraction(i,j,k)<=0) cycle
+        call react_sdc_state_3d(species,reactions,old_tree%nodes(node)%state(:,i:i,j:j,k:k), &
+          old_tree%nodes(node)%temperature(i:i,j:j,k:k),nonreacting_rates%fields(node)%values(:,i:i,j:j,k:k), &
+          dt,rtol,atol,candidate%fields(node)%values(:,i:i,j:j,k:k),temps%fields(node)%values(1,i:i,j:j,k:k), &
+          sources%fields(node)%values(:,i:i,j:j,k:k),valid)
+        if(.not.valid) return
+      end do
+      end do
+      end do
+    end do
+    state=candidate;temperature=temps;reaction_source=sources;ok=.true.
+  contains
+    logical function field_shape(field,components) result(good)
+      type(amr_tree_state_3d), intent(in) :: field
+      integer, intent(in) :: components
+      integer :: p
+      good=.false.
+      if(.not.allocated(field%fields)) return
+      if(size(field%fields)/=size(old_tree%nodes)) return
+      do p=1,size(field%fields)
+        if(.not.allocated(field%fields(p)%values)) return
+        if(any(shape(field%fields(p)%values)/=[components,old_tree%topology%nodes(p)%shape])) return
+      end do
+      good=.true.
+    end function field_shape
+  end subroutine react_sdc_eb_tree_3d
 
   subroutine react_reactive_eb_tree_3d(species,reactions,dt,rtol,atol,tree,chemical_change,ok,integrator)
     type(nasa7_species), intent(in) :: species(:)
