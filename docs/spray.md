@@ -225,6 +225,25 @@ real/virtual/ghost populations contribute to each subcycle. The recursive
 caller still must coordinate population clocks, source accounting and gas
 synchronization. See [coarse transfer checks](validation/spray-coarse-source-20260927.md).
 
+## Matched particle halo sampling and deposition
+
+`deposit_mpi_amr_particle_halo` uses the halo sampler's exact normalized
+weights to deposit extensive particle contributions into a fresh source halo.
+Each contribution is divided by the receiving cell's fluid volume. Assigned
+nodes, periodic images, fluid fractions and optional EB centroid visibility
+follow the same rules as sampling; blocked donors receive no source. It uses
+the donor gas halo as read-only input and publishes the source halo only after
+collective success. Previously populated outputs survive a rejected trial.
+
+The sampling API also accepts paired `contributions` and `source_halo` options
+for joint sampling/deposition; both outputs publish together. The deposition
+wrapper calls this shared operation. Resulting source halos can be passed to
+`sum_mpi_amr_particle_source_halo`, using the same volume metrics, for MPI and
+coarse routing. This does not evolve a parcel or choose whether a physical,
+virtual or ghost contribution is included in a level's inventory. Those
+population and subcycle decisions remain the recursive driver's responsibility.
+See [matched-weight checks](validation/spray-halo-deposition-20260927.md).
+
 ## AMR and embedded boundaries
 
 An AMR ownership library now locates parcels in the finest covering regular

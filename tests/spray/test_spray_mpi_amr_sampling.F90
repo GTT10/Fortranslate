@@ -7,7 +7,8 @@ program test_spray_mpi_amr_sampling
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     amr_tree_integer_layout_3d
   use spray_amr_tree_coupling_mod, only: sample_amr_tree_spray_field
-  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,sample_mpi_amr_particle_halo
+  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,sample_mpi_amr_particle_halo, &
+    deposit_mpi_amr_particle_halo
   implicit none
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
@@ -121,10 +122,11 @@ program test_spray_mpi_amr_sampling
   call MPI_Finalize(ierr)
 contains
   subroutine check_particle_halo()
-    type(amr_tree_state_3d) :: halo,vf,packed,centroids
+    type(amr_tree_state_3d) :: halo,vf,packed,centroids,deposited,retained_source
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),query_nodes(:)
-    real(dp), allocatable :: query(:,:),values(:,:),retained(:,:)
+    real(dp), allocatable :: query(:,:),values(:,:),retained(:,:),feedback(:,:)
+    real(dp) :: inventory(2),paired(2),expected_pair(2),cell_volume
     real(dp) :: x(3),h(3),f,phi(0:16,0:16,0:16)
     integer :: p,a,b,c,n(3),count,q
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
@@ -164,6 +166,26 @@ contains
       call require(maxval(abs(values(:,q)-[f,-2*f]))<1e-13_dp,'affine ghost and periodic-image interpolation')
     end do
     retained=values
+    allocate(feedback(2,count))
+    do q=1,count
+      feedback(:,q)=[2._dp,-3._dp]
+    end do
+    call deposit_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,feedback, &
+      zero,spacing,periodic,deposited,ok,vf)
+    call require(ok,'halo particle source deposition')
+    inventory=0;paired=0;expected_pair=sum(feedback*values,dim=2)
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      cell_volume=product(4._dp/real(domain(:,tree%nodes(p)%level+1),dp))*.5_dp
+      inventory=inventory+cell_volume*sum(sum(sum(deposited%fields(p)%values,dim=4),dim=3),dim=2)
+      paired=paired+cell_volume*sum(sum(sum(deposited%fields(p)%values*halo%fields(p)%values,dim=4),dim=3),dim=2)
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,inventory,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,paired,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,expected_pair,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(maxval(abs(inventory-[4._dp,-6._dp]))<1e-13_dp,'halo source extensive inventory')
+    call require(maxval(abs(paired-expected_pair))<1e-13_dp,'sampling and deposition use matching weights')
+    retained_source=deposited
     call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,packed,2,2,query_nodes,query,zero,spacing, &
       periodic,values,ok)
     call require(ok.and.all(values==retained),'packed and physical halo bounds agree')
@@ -171,6 +193,14 @@ contains
     call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
       periodic,values,ok,vf)
     call require(.not.ok.and.all(values==retained),'zero-fluid support rollback')
+    call deposit_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,feedback, &
+      zero,spacing,periodic,deposited,ok,vf)
+    call require(.not.ok,'zero-fluid deposition rejection')
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      call require(all(deposited%fields(p)%values==retained_source%fields(p)%values),'source halo rollback')
+    end do
+
     call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,merge(1,2,rank==0), &
       query_nodes,query,zero,spacing,periodic,values,ok)
     call require(.not.ok.and.all(values==retained),'halo width disagreement rollback')
@@ -200,6 +230,27 @@ contains
     call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
       [.false.,.false.,.false.],values,ok,vf,phi,centroids)
     call require(ok,'occluded halo sampling')
+    call deposit_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,feedback, &
+      zero,spacing,[.false.,.false.,.false.],deposited,ok,vf,phi,centroids)
+    call require(ok,'occluded halo deposition')
+    inventory=0
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      cell_volume=product(4._dp/real(domain(:,tree%nodes(p)%level+1),dp))
+      inventory=inventory+cell_volume*sum(sum(sum(deposited%fields(p)%values,dim=4),dim=3),dim=2)
+      n=tree%nodes(p)%shape
+      do c=-1,n(3)+2
+      do b=-1,n(2)+2
+      do a=-1,n(1)+2
+        if(centroids%fields(p)%values(1,a,b,c)>.5_dp) &
+          call require(all(deposited%fields(p)%values(:,a,b,c)==0),'blocked donors receive no source')
+      end do
+      end do
+      end do
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,inventory,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(maxval(abs(inventory-[4._dp,-6._dp]))<1e-13_dp,'visible source inventory retained')
+
     if(count>0) call require(all(abs(values(1,:)-10)<1e-13_dp).and.all(abs(values(2,:)+20)<1e-13_dp), &
       'wall blocks otherwise fluid donor')
     retained=values

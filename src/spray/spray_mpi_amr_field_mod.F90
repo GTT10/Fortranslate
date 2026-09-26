@@ -26,6 +26,7 @@ module spray_mpi_amr_field_mod
   public :: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
   public :: deposit_mpi_amr_tree_spray_gas,sample_mpi_amr_particle_halo
   public :: sample_mpi_eb_tree_particle_gas,sum_mpi_amr_particle_source_halo
+  public :: deposit_mpi_amr_particle_halo
 contains
   ! Sum additive level sources from valid/halo cells into same-level valid cells.
   ! Unmatched coarse/fine or physical-boundary contributions remain in remainder.
@@ -298,13 +299,16 @@ contains
   ! node resolution. The caller supplies corner donors at the required time.
   ! Storage may use either physical or packed spatial lower bounds.
   subroutine sample_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,lower,spacing, &
-      periodic,samples,ok,fluid_fraction,nodal_phi,centroids)
+      periodic,samples,ok,fluid_fraction,nodal_phi,centroids,contributions,source_halo)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,width,nodes(:)
     type(amr_tree_state_3d), intent(in) :: halo
     type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), optional, intent(in) :: contributions(:,:)
+    type(amr_tree_state_3d), optional, intent(inout) :: source_halo
+    type(amr_tree_state_3d) :: change
     real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
     real(dp), allocatable, intent(inout) :: samples(:,:)
@@ -312,8 +316,8 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: candidate(:,:),term(:),phi_reference(:,:,:)
-    real(dp) :: bounds(6),reference(6),length(3),fraction(3),coordinate(3),part(3),weights(8),total,vf,w
-    integer :: flags(7),low(7),high(7),phi_dims(3),dims_low(3),dims_high(3)
+    real(dp) :: bounds(6),reference(6),length(3),fraction(3),coordinate(3),part(3),weights(8),volumes(8),total,vf,w,cell_volume
+    integer :: flags(9),low(9),high(9),phi_dims(3),dims_low(3),dims_high(3)
     integer :: rank,status,node,p,level,q,a,b,c,base(3),idx(3),cells(3,8),storage(3),n(3)
     real(dp) :: start(3),target(3)
     logical :: valid,agreed,blocked,visible_ok
@@ -323,12 +327,18 @@ contains
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
     flags=[width,merge(1,0,periodic),merge(1,0,present(fluid_fraction)), &
-      merge(1,0,present(nodal_phi)),merge(1,0,present(centroids))]
-    call MPI_Allreduce(flags,low,7,MPI_INTEGER,MPI_MIN,comm,status)
+      merge(1,0,present(nodal_phi)),merge(1,0,present(centroids)), &
+      merge(1,0,present(contributions)),merge(1,0,present(source_halo))]
+    call MPI_Allreduce(flags,low,9,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,7,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,9,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
-    valid=(present(nodal_phi).eqv.present(centroids))
+    valid=(present(contributions).eqv.present(source_halo))
+    if(present(contributions)) then
+      valid=valid.and.all(shape(contributions)==[nvar,size(nodes)])
+      valid=valid.and.all(ieee_is_finite(contributions))
+    end if
+    valid=valid.and.(present(nodal_phi).eqv.present(centroids))
     if(present(nodal_phi)) valid=valid.and.present(fluid_fraction)
     valid=valid.and.width>=1.and.width<=1000000.and.all(shape(positions)==[3,size(nodes)])
     valid=valid.and.all(ieee_is_finite([lower,spacing])).and.all(ieee_is_finite(positions))
@@ -402,6 +412,12 @@ contains
     end if
     length=spacing*real(tree%nodes(1)%shape,dp)
     allocate(candidate(nvar,size(nodes)),term(nvar));candidate=0
+    if(present(source_halo)) then
+      change=halo
+      do node=1,size(owners)
+        if(allocated(change%fields(node)%values)) change%fields(node)%values=0
+      end do
+    end if
     do p=1,size(nodes)
       node=nodes(p);level=tree%nodes(node)%level+1;n=tree%nodes(node)%shape
       fraction=(positions(:,p)-lower)/length
@@ -424,7 +440,8 @@ contains
       if(any(coordinate<real(1-width,dp)).or.any(coordinate>real(n+width,dp))) then
         valid=.false.;exit
       end if
-      base=floor(coordinate);part=coordinate-real(base,dp);q=0
+      cell_volume=product(length/real(domain(:,level),dp))
+      base=floor(coordinate);part=coordinate-real(base,dp);q=0;volumes=0
       do c=0,1
       do b=0,1
       do a=0,1
@@ -456,7 +473,7 @@ contains
           end if
           if(blocked) vf=0
         end if
-        weights(q)=w*vf
+        weights(q)=w*vf;volumes(q)=cell_volume*vf
       end do
       end do
       end do
@@ -478,11 +495,29 @@ contains
           valid=.false.;exit
         end if
         candidate(:,p)=candidate(:,p)+term
+        if(present(source_halo)) then
+          if(volumes(q)<=0) then
+            valid=.false.;exit
+          end if
+          term=(weights(q)/total)*contributions(:,p)
+          if(any(abs(term)>huge(1._dp)*min(1._dp,volumes(q)))) then
+            valid=.false.;exit
+          end if
+          term=term/volumes(q)
+          associate(value=>change%fields(node)%values(:,storage(1),storage(2),storage(3)))
+          if(any(value>huge(1._dp)-max(term,0._dp)).or.any(value<-huge(1._dp)-min(term,0._dp))) then
+            valid=.false.;exit
+          end if
+          value=value+term
+          end associate
+        end if
+
       end do
       if(.not.valid) exit
     end do
     call agree()
     if(.not.agreed) return
+    if(present(source_halo)) call move_alloc(change%fields,source_halo%fields)
     call move_alloc(candidate,samples);ok=.true.
   contains
     subroutine agree()
@@ -490,6 +525,26 @@ contains
       if(status/=MPI_SUCCESS) agreed=.false.
     end subroutine
   end subroutine sample_mpi_amr_particle_halo
+
+  ! Deposit extensive particle contributions with the exact sampling weights.
+  ! halo supplies the donor gas/layout; source_halo is a fresh per-fluid-volume
+  ! field, ready for same-level/coarse source transfer. Both input arrays stay read-only.
+  subroutine deposit_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,contributions, &
+      lower,spacing,periodic,source_halo,ok,fluid_fraction,nodal_phi,centroids)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,width,nodes(:)
+    type(amr_tree_state_3d), intent(in) :: halo
+    type(amr_tree_state_3d), intent(inout) :: source_halo
+    real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), allocatable :: sampled(:,:)
+    call sample_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,lower,spacing, &
+      periodic,sampled,ok,fluid_fraction,nodal_phi,centroids,contributions,source_halo)
+  end subroutine deposit_mpi_amr_particle_halo
 
   ! Borrow the identical ordered species table on every rank. U/T publish only
   ! after owner-routed deposition, parent restriction and collective EOS success.
