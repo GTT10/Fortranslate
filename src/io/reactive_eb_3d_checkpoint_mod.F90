@@ -1459,7 +1459,10 @@ contains
     real(dp) :: axis_lower, axis_upper, spacing, coordinate, tolerance
     real(dp) :: cut_fraction
     logical, optional, intent(in) :: tree_patch
+    logical :: embedded
 
+    embedded=.false.
+    if(present(tree_patch)) embedded=tree_patch
     valid=.false.
     if(.not.valid_reactive_eb_boundaries(config,tree_patch)) return
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) return
@@ -1489,7 +1492,8 @@ contains
       config%initial_pressure > 0.0_dp .and. config%checkpoint_interval_steps >= 0
     if (.not. valid) return
     if (config%transport_enabled .and. &
-        trim(config%redistribution) /= "state_redist" .and. trim(config%redistribution) /= "none") then
+        trim(config%redistribution) /= "state_redist" .and. trim(config%redistribution) /= "none" .and. &
+        .not.(embedded.and.config%redistribution=="flux_redist")) then
       valid = .false.
       return
     end if
@@ -1550,7 +1554,7 @@ contains
     ! Plain Euler patches may contain a grid-aligned plane or lie entirely on
     ! one side of it. Their stored metrics remain independently validated.
     ! The single-level application parser still requires redistribution.
-    if (trim(config%redistribution) == "none") return
+    if (trim(config%redistribution) == "none".or.(embedded.and.config%redistribution=="flux_redist")) return
     if (config%plane_position <= axis_lower .or. &
         config%plane_position >= axis_upper - spacing) then
       valid = .false.
