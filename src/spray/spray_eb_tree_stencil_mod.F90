@@ -1,5 +1,6 @@
 module spray_eb_tree_stencil_mod
   use precision_mod, only: dp
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
@@ -7,7 +8,7 @@ module spray_eb_tree_stencil_mod
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   implicit none
   private
-  public :: eb_tree_spray_stencil,compatible_eb_nodal_lattice
+  public :: eb_tree_spray_stencil,compatible_eb_nodal_lattice,eb_particle_centroid_blocked
 contains
   pure logical function compatible_eb_nodal_lattice(dims,finest) result(ok)
     integer, intent(in) :: dims(3)
@@ -112,8 +113,21 @@ contains
     subroutine visible_centroid(target,blocked,accepted)
       real(dp), intent(in) :: target(3)
       logical, intent(out) :: blocked,accepted
+      call eb_particle_centroid_blocked(phi,lower,upper,start,target,wrap,blocked,accepted)
+    end subroutine visible_centroid
+  end subroutine
+  subroutine eb_particle_centroid_blocked(phi,lower,upper,start,target,wrap,blocked,accepted)
+    real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),start(3),target(3)
+    logical, intent(in) :: wrap(3)
+    logical, intent(out) :: blocked,accepted
+    real(dp) :: extent(3),fraction,point(3),normal(3)
+    integer :: cell(3)
       real(dp) :: a(3),b(3),delta(3),finish(3),alpha,crossing(3),limit
       integer :: segment,direction
+      accepted=.false.;blocked=.false.
+      if(.not.all(ieee_is_finite([lower,upper,start,target]))) return
+      extent=upper-lower
+      if(any(extent<=0)) return
       a=start;b=target
       do direction=1,3
         if(wrap(direction)) b(direction)=b(direction)- &
@@ -143,6 +157,5 @@ contains
         end do
       end do
       accepted=.false.
-    end subroutine visible_centroid
-  end subroutine
+  end subroutine eb_particle_centroid_blocked
 end module

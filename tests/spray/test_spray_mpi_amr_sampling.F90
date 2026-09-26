@@ -121,24 +121,26 @@ program test_spray_mpi_amr_sampling
   call MPI_Finalize(ierr)
 contains
   subroutine check_particle_halo()
-    type(amr_tree_state_3d) :: halo,vf,packed
+    type(amr_tree_state_3d) :: halo,vf,packed,centroids
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),query_nodes(:)
     real(dp), allocatable :: query(:,:),values(:,:),retained(:,:)
-    real(dp) :: x(3),h(3),f
+    real(dp) :: x(3),h(3),f,phi(0:16,0:16,0:16)
     integer :: p,a,b,c,n(3),count,q
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     call require(ok,'halo layout')
-    allocate(halo%fields(3),vf%fields(3),packed%fields(3))
+    allocate(halo%fields(3),vf%fields(3),packed%fields(3),centroids%fields(3))
     do p=1,3
       if(owners(p)/=rank) cycle
       n=tree%nodes(p)%shape;h=4._dp/real(domain(:,tree%nodes(p)%level+1),dp)
       allocate(halo%fields(p)%values(2,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2))
+      allocate(centroids%fields(p)%values(3,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2))
       allocate(vf%fields(p)%values(1,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2));vf%fields(p)%values=.5_dp
       do c=-1,n(3)+2
       do b=-1,n(2)+2
       do a=-1,n(1)+2
         x=(real(origin(:,p),dp)+real([a,b,c],dp)-.5_dp)*h
+        centroids%fields(p)%values(:,a,b,c)=x
         f=2*x(1)+3*x(2)-x(3)+7*.25_dp
         halo%fields(p)%values(:,a,b,c)=[f,-2*f]
       end do
@@ -176,6 +178,40 @@ contains
     call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
       [.true.,.false.,.true.],values,ok)
     call require(.not.ok.and.all(values==retained),'insufficient halo rollback')
+    do a=0,16
+      phi(a,:,:)=abs(.25_dp*a-.5_dp)-.1_dp
+    end do
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      vf%fields(p)%values=1;n=tree%nodes(p)%shape
+      do c=-1,n(3)+2
+      do b=-1,n(2)+2
+      do a=-1,n(1)+2
+        f=merge(10._dp,100._dp,centroids%fields(p)%values(1,a,b,c)<.5_dp)
+        halo%fields(p)%values(:,a,b,c)=[f,-2*f]
+      end do
+      end do
+      end do
+    end do
+    if(count>0) then
+      query(:,1)=[.375_dp,1.125_dp,1.125_dp]
+      query(:,2)=query(:,1)
+    end if
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
+      [.false.,.false.,.false.],values,ok,vf,phi,centroids)
+    call require(ok,'occluded halo sampling')
+    if(count>0) call require(all(abs(values(1,:)-10)<1e-13_dp).and.all(abs(values(2,:)+20)<1e-13_dp), &
+      'wall blocks otherwise fluid donor')
+    retained=values
+    if(count>0) query(1,1)=.5_dp
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
+      [.false.,.false.,.false.],values,ok,vf,phi,centroids)
+    call require(.not.ok.and.all(values==retained),'solid particle rollback')
+    if(count>0) query(1,1)=.375_dp
+    if(rank==0) phi(16,16,16)=phi(16,16,16)+.01_dp
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
+      [.false.,.false.,.false.],values,ok,vf,phi,centroids)
+    call require(.not.ok.and.all(values==retained),'nodal geometry disagreement rollback')
   end subroutine check_particle_halo
   subroutine sample()
     call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic,samples,ok)

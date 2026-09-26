@@ -140,9 +140,8 @@ The caller must fill all required corner donors at the stage time. The existing
 `fill_mpi_eb_tree_halo_3d` produces compatible layouts and accepts ancestor time
 endpoints; requesting its volume-fraction output fills corners as well as faces.
 Wider EB halos require its target-resolution volume metrics. This sampler does
-not fill those arrays or perform time interpolation itself. It also does not
-check EB line-of-sight to cell centroids; this remains necessary before using
-it for arbitrary cut-cell particle coupling. Width/geometry disagreement,
+not fill those arrays or perform time interpolation itself. Optional nodal
+geometry and centroid halos enable the visibility path described below. Width/geometry disagreement,
 nonfinite requested values, wrong ownership or insufficient halo support reject
 collectively and preserve the previous samples. See
 [halo sampling checks](validation/spray-halo-sampling-20260927.md).
@@ -160,10 +159,30 @@ Parent restriction is disabled so the supplied stage states are retained.
 The wrapper forwards existing boundary/inlet controls and optional target
 volume-fraction halos. Wider halos retain the gas fill's requirement for
 explicit target-resolution metrics. This connects stage-time parent donors to
-ghost-particle gas references, but centroid visibility across EB walls is still
-unimplemented in this halo sampler. General cut-cell particle coupling, source
-transfer and recursive application stepping therefore remain open. See
+ghost-particle gas references. Optional centroid visibility is described below;
+particle evolution, source transfer and recursive application stepping remain open. See
 [temporal halo checks](validation/spray-temporal-halo-20260927.md).
+
+## EB visibility for particle halo sampling
+
+The halo sampler accepts paired `nodal_phi` and `centroids` arguments alongside
+its fluid-fraction halo. Centroids are absolute physical coordinates in an
+owner-local three-component halo with the same spatial shape as the gas halo.
+The nodal field must agree across ranks, match the tree's finest lattice and
+satisfy periodic endpoint equality. Only donors with nonzero fluid support
+and an unobstructed segment from the particle to the centroid contribute;
+weights are renormalized after blocked donors are removed. Solid queries or
+loss of all support reject collectively. Periodic segments reuse the existing
+composite stencil's boundary-splitting intersection routine.
+
+The stage-time wrapper forwards these arguments and requires explicit
+`target_volume_fraction` when visibility is enabled. The caller must supply
+centroids and fractions from the target-resolution extended geometry; the gas
+halo fill retains exact interior-volume consistency checks. The sampler checks
+shape and requested centroid finiteness, but cannot prove that caller-supplied
+centroids came from that geometry. Without the optional pair it retains the
+fraction-only interpolation path. See
+[visibility checks](validation/spray-halo-visibility-20260927.md).
 
 ## AMR and embedded boundaries
 

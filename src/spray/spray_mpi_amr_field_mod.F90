@@ -14,7 +14,8 @@ module spray_mpi_amr_field_mod
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_amr_tree_coupling_mod, only: amr_tree_spray_stencil
   use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
-  use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil,compatible_eb_nodal_lattice
+  use spray_eb_tree_stencil_mod, only: eb_tree_spray_stencil,compatible_eb_nodal_lattice, &
+    eb_particle_centroid_blocked
   implicit none
   private
   type :: particle_stencil
@@ -30,7 +31,8 @@ contains
   ! average-down is allowed to replace the caller's level-stage states.
   subroutine sample_mpi_eb_tree_particle_gas(comm,species,tree,owners,geometry,state,temperature,width, &
       nodes,positions,samples,sample_temperature,ok,ancestor_start,ancestor_end,temperature_start,temperature_end, &
-      ancestor_fraction,target_volume_fraction,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+      ancestor_fraction,target_volume_fraction,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+      nodal_phi,centroids)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -41,7 +43,8 @@ contains
     real(dp), allocatable, intent(inout) :: samples(:,:),sample_temperature(:)
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
-    type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
+    type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
     real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -53,6 +56,10 @@ contains
     ok=.false.;nv=reactive_nvar(size(species));periodic=.false.
     if(present(boundary_faces)) periodic=[boundary_faces(1)=='periodic',boundary_faces(3)=='periodic', &
       boundary_faces(5)=='periodic']
+    valid=(present(nodal_phi).eqv.present(centroids))
+    if(present(nodal_phi)) valid=valid.and.present(target_volume_fraction)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
     call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,halo,halo_t,comm,valid, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
       inflow_mach,inflow_temperature,inflow_pressure,volume,width,target_volume_fraction, &
@@ -61,10 +68,10 @@ contains
     lower=[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]
     spacing=[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz]
     call sample_mpi_amr_particle_halo(comm,tree,owners,halo,nv,width,nodes,positions,lower,spacing, &
-      periodic,candidate,valid,volume)
+      periodic,candidate,valid,volume,nodal_phi,centroids)
     if(.not.valid) return
     call sample_mpi_amr_particle_halo(comm,tree,owners,halo_t,1,width,nodes,positions,lower,spacing, &
-      periodic,guesses,valid,volume)
+      periodic,guesses,valid,volume,nodal_phi,centroids)
     if(.not.valid) return
     allocate(recovered(size(nodes)),primitive(nv))
     do p=1,size(nodes)
@@ -80,37 +87,44 @@ contains
   ! node resolution. The caller supplies corner donors at the required time.
   ! Storage may use either physical or packed spatial lower bounds.
   subroutine sample_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,lower,spacing, &
-      periodic,samples,ok,fluid_fraction)
+      periodic,samples,ok,fluid_fraction,nodal_phi,centroids)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,width,nodes(:)
     type(amr_tree_state_3d), intent(in) :: halo
-    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
     logical, intent(in) :: periodic(3)
     real(dp), allocatable, intent(inout) :: samples(:,:)
     logical, intent(out) :: ok
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    real(dp), allocatable :: candidate(:,:),term(:)
+    real(dp), allocatable :: candidate(:,:),term(:),phi_reference(:,:,:)
     real(dp) :: bounds(6),reference(6),length(3),fraction(3),coordinate(3),part(3),weights(8),total,vf,w
-    integer :: flags(5),low(5),high(5),rank,status,node,p,level,q,a,b,c,base(3),idx(3),cells(3,8),storage(3),n(3)
-    logical :: valid,agreed
+    integer :: flags(7),low(7),high(7),phi_dims(3),dims_low(3),dims_high(3)
+    integer :: rank,status,node,p,level,q,a,b,c,base(3),idx(3),cells(3,8),storage(3),n(3)
+    real(dp) :: start(3),target(3)
+    logical :: valid,agreed,blocked,visible_ok
     ok=.false.
     call validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,valid)
     if(.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
-    flags=[width,merge(1,0,periodic),merge(1,0,present(fluid_fraction))]
-    call MPI_Allreduce(flags,low,5,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[width,merge(1,0,periodic),merge(1,0,present(fluid_fraction)), &
+      merge(1,0,present(nodal_phi)),merge(1,0,present(centroids))]
+    call MPI_Allreduce(flags,low,7,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,5,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,7,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
-    valid=width>=1.and.width<=1000000.and.all(shape(positions)==[3,size(nodes)])
+    valid=(present(nodal_phi).eqv.present(centroids))
+    if(present(nodal_phi)) valid=valid.and.present(fluid_fraction)
+    valid=valid.and.width>=1.and.width<=1000000.and.all(shape(positions)==[3,size(nodes)])
     valid=valid.and.all(ieee_is_finite([lower,spacing])).and.all(ieee_is_finite(positions))
     valid=valid.and.all(abs(lower)<=1e9_dp).and.all(abs(positions)<=1e9_dp)
     valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.allocated(halo%fields)
     if(present(fluid_fraction)) valid=valid.and.allocated(fluid_fraction%fields)
+    if(present(centroids)) valid=valid.and.allocated(centroids%fields)
     call agree()
     if(.not.agreed) return
     bounds=[lower,spacing];reference=bounds
@@ -118,6 +132,7 @@ contains
     if(status/=MPI_SUCCESS) return
     valid=all(bounds==reference).and.size(halo%fields)==size(owners)
     if(present(fluid_fraction)) valid=valid.and.size(fluid_fraction%fields)==size(owners)
+    if(present(centroids)) valid=valid.and.size(centroids%fields)==size(owners)
     call agree()
     if(.not.agreed) return
     do node=1,size(owners)
@@ -127,6 +142,12 @@ contains
       end if
       n=tree%nodes(node)%shape+2*width
       if(any(shape(halo%fields(node)%values)/=[nvar,n])) valid=.false.
+      if(present(centroids)) then
+        if(.not.allocated(centroids%fields(node)%values)) then
+          valid=.false.;exit
+        end if
+        if(any(shape(centroids%fields(node)%values)/=[3,n])) valid=.false.
+      end if
       if(present(fluid_fraction)) then
         if(.not.allocated(fluid_fraction%fields(node)%values)) then
           valid=.false.;exit
@@ -147,6 +168,27 @@ contains
     if(valid) valid=all(domain<=2_int64**52)
     call agree()
     if(.not.agreed) return
+    if(present(nodal_phi)) then
+      phi_dims=shape(nodal_phi)-1
+      valid=compatible_eb_nodal_lattice(phi_dims,domain(:,size(domain,2)))
+      valid=valid.and.all(ieee_is_finite(nodal_phi))
+      if(valid) valid=maxval(abs(nodal_phi))<=1e100_dp
+      call agree()
+      if(.not.agreed) return
+      call MPI_Allreduce(phi_dims,dims_low,3,MPI_INTEGER,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(phi_dims,dims_high,3,MPI_INTEGER,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.any(dims_low/=dims_high)) return
+      phi_reference=nodal_phi
+      call MPI_Bcast(phi_reference,size(phi_reference),MPI_DOUBLE_PRECISION,0,comm,status)
+      if(status/=MPI_SUCCESS) return
+      valid=all(phi_reference==nodal_phi)
+      if(periodic(1)) valid=valid.and.all(nodal_phi(0,:,:)==nodal_phi(phi_dims(1),:,:))
+      if(periodic(2)) valid=valid.and.all(nodal_phi(:,0,:)==nodal_phi(:,phi_dims(2),:))
+      if(periodic(3)) valid=valid.and.all(nodal_phi(:,:,0)==nodal_phi(:,:,phi_dims(3)))
+      call agree()
+      if(.not.agreed) return
+    end if
     length=spacing*real(tree%nodes(1)%shape,dp)
     allocate(candidate(nvar,size(nodes)),term(nvar));candidate=0
     do p=1,size(nodes)
@@ -157,6 +199,16 @@ contains
         fraction(a)=modulo(positions(a,p)-lower(a),length(a))/length(a)
         fraction(a)=fraction(a)-anint(fraction(a)-(real(origin(a,node),dp)+.5_dp*n(a))/real(domain(a,level),dp))
       end do
+      start=positions(:,p)
+      do a=1,3
+        if(periodic(a)) start(a)=lower(a)+modulo(start(a)-lower(a),length(a))
+      end do
+      if(present(nodal_phi)) then
+        call eb_particle_centroid_blocked(nodal_phi,lower,lower+length,start,start,periodic,blocked,visible_ok)
+        if(.not.visible_ok.or.blocked) then
+          valid=.false.;exit
+        end if
+      end if
       coordinate=fraction*real(domain(:,level),dp)-real(origin(:,node),dp)+.5_dp
       if(any(coordinate<real(1-width,dp)).or.any(coordinate>real(n+width,dp))) then
         valid=.false.;exit
@@ -182,6 +234,16 @@ contains
           if(vf<0.or.vf>1) then
             valid=.false.;cycle
           end if
+        end if
+        if(present(centroids).and.vf>0) then
+          storage=[lbound(centroids%fields(node)%values,2),lbound(centroids%fields(node)%values,3), &
+            lbound(centroids%fields(node)%values,4)]+idx+width-1
+          target=centroids%fields(node)%values(:,storage(1),storage(2),storage(3))
+          call eb_particle_centroid_blocked(nodal_phi,lower,lower+length,start,target,periodic,blocked,visible_ok)
+          if(.not.visible_ok) then
+            valid=.false.;cycle
+          end if
+          if(blocked) vf=0
         end if
         weights(q)=w*vf
       end do

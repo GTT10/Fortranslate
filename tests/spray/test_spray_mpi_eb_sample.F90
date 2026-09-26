@@ -101,9 +101,10 @@ program test_spray_mpi_eb_sample
 contains
   subroutine check_temporal_particle_gas()
     type(nasa7_species), allocatable :: species(:)
-    type(amr_tree_state_3d) :: gas,temp,ending
+    type(amr_tree_state_3d) :: gas,temp,ending,metrics,centroids
     real(dp), allocatable :: primitive(:),cell(:),y(:),query(:,:),values(:,:),site_t(:),saved_values(:,:),saved_t(:)
     integer, allocatable :: query_nodes(:)
+    real(dp) :: h(3),cell_lower(3),vf
     real(dp) :: gas_constant,t,sound,fraction(1),fractions(3)=[0._dp,.25_dp,1._dp]
     integer :: nv,p,a,b,c,n(3),count,stage
     character(len=16) :: faces(6)
@@ -119,7 +120,7 @@ contains
     primitive=0;primitive(1)=1;primitive(5)=gas_constant*900;primitive(6:)=y
     call reactive_primitive_to_conserved(species,primitive,cell,t,sound,ok)
     call require(ok,'particle halo initial state')
-    allocate(gas%fields(2),temp%fields(2))
+    allocate(gas%fields(2),temp%fields(2),metrics%fields(2),centroids%fields(2))
     do p=1,2
       if(owners(p)/=rank) cycle
       n=tree%nodes(p)%shape
@@ -133,6 +134,24 @@ contains
       end do
       end do
     end do
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      n=tree%nodes(p)%shape;h=[g(p)%dx,g(p)%dy,g(p)%dz]
+      allocate(metrics%fields(p)%values(1,0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      allocate(centroids%fields(p)%values(3,0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      do c=0,n(3)+1
+      do b=0,n(2)+1
+      do a=0,n(1)+1
+        cell_lower=[g(p)%x_lower,g(p)%y_lower,g(p)%z_lower]+real([a,b,c]-1,dp)*h
+        vf=max(0._dp,min(1._dp,(cell_lower(2)+h(2)-1.25_dp)/h(2)))
+        metrics%fields(p)%values(1,a,b,c)=vf
+        centroids%fields(p)%values(:,a,b,c)=cell_lower+.5_dp*h
+        if(vf>0) centroids%fields(p)%values(2,a,b,c)=cell_lower(2)+h(2)-.5_dp*vf*h(2)
+      end do
+      end do
+      end do
+      metrics%fields(p)%values(1,1:n(1),1:n(2),1:n(3))=g(p)%volume_fraction
+    end do
     ending=gas
     if(rank==owners(1)) ending%fields(1)%values=2*gas%fields(1)%values
     count=merge(1,0,rank==owners(2));allocate(query_nodes(count),query(3,count));query_nodes=2
@@ -143,7 +162,8 @@ contains
     do stage=1,3
       fraction=fractions(stage)
       call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
-        values,site_t,ok,gas,ending,temp,temp,fraction,boundary_faces=faces)
+        values,site_t,ok,gas,ending,temp,temp,fraction,target_volume_fraction=metrics,boundary_faces=faces, &
+        nodal_phi=phi,centroids=centroids)
       call require(ok,'solver-generated temporal particle halo')
       if(count>0) then
         call require(maxval(abs(values(:,1)-(1+fraction(1))*cell)/max(abs(cell),1._dp))<1e-13_dp, &
@@ -153,12 +173,14 @@ contains
     end do
     saved_values=values;saved_t=site_t;fraction=1.1_dp
     call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
-      values,site_t,ok,gas,ending,temp,temp,fraction,boundary_faces=faces)
+      values,site_t,ok,gas,ending,temp,temp,fraction,target_volume_fraction=metrics,boundary_faces=faces, &
+        nodal_phi=phi,centroids=centroids)
     call require(.not.ok.and.all(values==saved_values).and.all(site_t==saved_t),'temporal halo failure rollback')
     fraction=.25_dp
     if(count>0) query(2,1)=10
     call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
-      values,site_t,ok,gas,ending,temp,temp,fraction,boundary_faces=faces)
+      values,site_t,ok,gas,ending,temp,temp,fraction,target_volume_fraction=metrics,boundary_faces=faces, &
+        nodal_phi=phi,centroids=centroids)
     call require(.not.ok.and.all(values==saved_values).and.all(site_t==saved_t),'late sampling rollback')
   end subroutine check_temporal_particle_gas
   subroutine sample(limit)
