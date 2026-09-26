@@ -150,8 +150,10 @@ leaf faces. Common-step serial SDC now applies it to hydro, molecular transport
 and the final reflux increment
 ([operator](validation/sdc-eb-tree-redistribution-20260927.md),
 [stage checks](validation/sdc-eb-tree-redistribution-loop-20260927.md)).
-Application input, MPI/recursive redistribution, tree state redistribution and
-MPI EB spray SDC remain open.
+Serial application input and checkpoint identity now expose `flux_redist`
+for common-step SDC ([checks](validation/sdc-eb-tree-redistribution-app-20260927.md)).
+MPI/recursive redistribution, tree state redistribution and MPI EB spray SDC
+remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
