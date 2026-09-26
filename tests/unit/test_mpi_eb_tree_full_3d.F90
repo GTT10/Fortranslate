@@ -100,7 +100,7 @@ program test_mpi_eb_tree_full_3d
   call require(ok,'initial inventory')
   saved=tree
   call check_sdc_loop()
-  if(test_mode=="subcycle".or.test_mode=="redist_level") then
+  if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive") then
     deallocate(u,t)
     cycle
   end if
@@ -174,7 +174,7 @@ contains
       call check_redist_level(initial,geometry,extended,faces,force)
       return
     end if
-    if(test_mode=="subcycle") then
+    if(test_mode=="subcycle".or.test_mode=="redist_recursive") then
       call check_sdc_recursive(initial,geometry,extended,faces,force)
       return
     end if
@@ -359,7 +359,10 @@ contains
     integer :: owners(count),p,layout
     real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter,error
     real(dp) :: initial_inventory(nv),final_inventory(nv)
+    character(len=16) :: method
     logical :: good
+    method="none"
+    if(test_mode=="redist_recursive") method="flux_redist"
     reference=initial
     allocate(serial_ir%fields(count))
     do p=1,count
@@ -367,7 +370,7 @@ contains
     end do
     call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
-      sb,sw,sch,sext,slimiter,good,serial_ir,level_steps=serial_counts)
+      sb,sw,sch,sext,slimiter,good,serial_ir,level_steps=serial_counts,redistribution=method)
     call require(good,'serial recursive SDC')
     call require(all(serial_counts==[1_int64,2_int64,4_int64]),'serial level counts')
     call integrate_reactive_eb_tree_3d(initial,initial_inventory,good)
@@ -385,7 +388,7 @@ contains
       end do
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,level_steps=counts)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,level_steps=counts,redistribution=method)
       call require(good,'MPI recursive SDC')
       call require(all(counts==serial_counts),'MPI recursive level counts')
       do p=1,count
@@ -407,7 +410,7 @@ contains
       old=local;ot=lt;old_ir=ir;b=17;w=19;ch=23;ext=29;limiter=31;counts=37
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=-1._dp,level_steps=counts)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=-1._dp,level_steps=counts,redistribution=method)
       call require(.not.good,'recursive rejected stage')
       do p=1,count
         if(owners(p)/=rank) cycle

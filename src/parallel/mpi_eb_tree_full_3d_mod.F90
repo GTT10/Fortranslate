@@ -749,7 +749,7 @@ contains
       dt,iterations,chemistry, &
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
-      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps)
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -769,6 +769,10 @@ contains
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
+    character(len=*), optional, intent(in) :: redistribution
+    character(len=16) :: method
+    integer :: method_code,method_low,method_high
+    type(amr_tree_state_3d), allocatable :: pending(:)
     type(amr_tree_state_3d) :: candidate,ct,starts,ends,ts,te
     type(amr_tree_state_3d), allocatable :: ir
     type(amr_tree_state_3d) :: source0,source1
@@ -787,6 +791,15 @@ contains
     if(present(reaction_source).and..not.chemistry) valid=.false.
     call agree(valid,comm,ready)
     if(.not.ready) return
+    method='none'
+    if(present(redistribution)) method=redistribution
+    call agree(method=='none'.or.method=='flux_redist',comm,ready)
+    if(.not.ready) return
+    method_code=merge(1,0,method=='flux_redist')
+    call MPI_Allreduce(method_code,method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(method_code,method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     candidate=state;ct=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,ready)
     if(.not.ready) return
@@ -818,6 +831,14 @@ contains
     call agree(valid,comm,ready)
     if(.not.ready) return
     source1=source0
+    if(method=='flux_redist') then
+      allocate(pending(0:levels-1),stat=ios)
+      call agree(ios==0,comm,ready)
+      if(.not.ready) return
+      do c=0,levels-1
+        pending(c)=source0
+      end do
+    end if
     if(chemistry) then
       allocate(ir)
       if(present(reaction_source)) then
@@ -870,9 +891,10 @@ contains
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
-      type(amr_tree_state_3d) :: op,np
+      type(amr_tree_state_3d) :: op,np,correction,redistributed,before_sync,before_t
+      type(amr_tree_state_3d), allocatable :: transfer
       real(dp) :: fstart(levels-1),fend(levels-1),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
-      integer :: p,d(3),step,allocation_status
+      integer :: p,d(3),step,allocation_status,target,bucket
       logical :: accepted,local_ok
       good=.false.
       if(counts(level+1)==huge(1_int64)) return
@@ -885,11 +907,23 @@ contains
         starts%fields(p)%values=candidate%fields(p)%values
         ts%fields(p)%values=ct%fields(p)%values
       end do
+      if(method=='flux_redist') then
+        allocate(transfer,stat=allocation_status)
+        call agree(allocation_status==0,comm,accepted)
+        if(.not.accepted) return
+      end if
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np)
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer)
       if(.not.accepted) return
+      if(method=='flux_redist') then
+        do p=1,size(tree%nodes)
+          if(owners(p)/=rank) cycle
+          target=tree%nodes(p)%level;bucket=min(level,target)
+          pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
+        end do
+      end if
       counts(level+1)=counts(level+1)+1
       wall=wall+w;chemical=chemical+ch;external=external+ext;theta=min(theta,limiter)
       local_ok=.true.
@@ -928,10 +962,67 @@ contains
           elapsed=elapsed+sub_dt
         end do
       end if
+      if(method=='flux_redist') then
+        before_sync=candidate;before_t=ct
+      end if
       call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,flux,comm,accepted, &
         minimum_level=level,maximum_level=min(level+1,levels-1),boundary_faces=boundary_faces)
       if(.not.accepted) return
+      if(method=='flux_redist') then
+        correction=source0
+        do p=1,size(tree%nodes)
+          if(owners(p)/=rank) cycle
+          correction%fields(p)%values=0
+          target=tree%nodes(p)%level
+          if(target<level.or.target>level+1) cycle
+          correction%fields(p)%values=candidate%fields(p)%values-before_sync%fields(p)%values
+        end do
+        call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree,owners,geometry,correction,nv,redistributed, &
+          comm,accepted,boundary_faces)
+        if(.not.accepted) return
+        candidate=before_sync;ct=before_t
+        do p=1,size(tree%nodes)
+          if(owners(p)/=rank) cycle
+          target=tree%nodes(p)%level
+          if(target<level) then
+            pending(target)%fields(p)%values=pending(target)%fields(p)%values+redistributed%fields(p)%values
+          else
+            candidate%fields(p)%values=candidate%fields(p)%values+redistributed%fields(p)%values+ &
+              pending(level)%fields(p)%values
+          end if
+          pending(level)%fields(p)%values=0
+        end do
+        call recover_transfer(accepted)
+        if(.not.accepted) return
+        call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,accepted)
+        if(.not.accepted) return
+      end if
       good=.true.
     end subroutine advance_level
+    subroutine recover_transfer(good)
+      logical, intent(out) :: good
+      real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed
+      integer :: p,x,y,z,d(3)
+      logical :: accepted,local_ok
+      local_ok=.true.
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank) cycle
+        d=tree%nodes(p)%shape
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          if(geometry(p)%volume_fraction(x,y,z)<=0) cycle
+          call reactive_conserved_to_primitive(species,candidate%fields(p)%values(:,x,y,z), &
+            ct%fields(p)%values(1,x,y,z),primitive,recovered,speed,accepted)
+          if(.not.accepted) then
+            local_ok=.false.;cycle
+          end if
+          ct%fields(p)%values(1,x,y,z)=recovered
+        end do
+        end do
+        end do
+      end do
+      call agree(local_ok,comm,good)
+    end subroutine recover_transfer
   end subroutine advance_mpi_eb_tree_sdc_subcycle_3d
 end module mpi_eb_tree_full_3d_mod

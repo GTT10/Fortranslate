@@ -970,6 +970,11 @@ if(PELEF_ENABLE_MPI)
       $<TARGET_FILE:test_mpi_eb_tree_full_3d> ${MPIEXEC_POSTFLAGS} redist_level)
   set_tests_properties(unit_mpi_eb_tree_sdc_redist_level_3d_2 PROPERTIES
     TIMEOUT 180 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
+  add_test(NAME unit_mpi_eb_tree_sdc_redist_recursive_3d_2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_full_3d> ${MPIEXEC_POSTFLAGS} redist_recursive)
+  set_tests_properties(unit_mpi_eb_tree_sdc_redist_recursive_3d_2 PROPERTIES
+    TIMEOUT 180 PROCESSORS 2 ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1")
   add_test(NAME unit_mpi_eb_tree_sdc_subcycle_3d_2
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_mpi_eb_tree_full_3d> ${MPIEXEC_POSTFLAGS} subcycle)
