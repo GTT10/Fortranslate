@@ -75,7 +75,8 @@ contains
       source,remainder,wall_change,boundary_change,ok,volume,nodal_phi,centroids,geometry,maximum_received)
   end subroutine advance_mpi_eb_ghost_stage
 
-  ! One ghost-population stage: kick, drift, reaction transfer, then reassign.
+  ! One ghost-population stage: kick, drift, same-level reaction sum, then reassign.
+  ! Ghost halo remainders must not be added to coarse physical-particle sources.
   ! All outputs remain private until the final population exchange succeeds.
   subroutine advance_mpi_amr_ghost_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
       width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
@@ -116,7 +117,7 @@ contains
     candidate=ghosts;masses=component_mass;locations=nodes
     call kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,locations,candidate,masses,lower,spacing,periodic,kick_dt,raw,valid, &
-      fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.true., &
+      fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.false., &
       eb_geometry,maximum_received)
     if(.not.valid) return
     call redistribute_mpi_amr_ghost_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &

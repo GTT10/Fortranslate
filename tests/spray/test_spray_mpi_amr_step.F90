@@ -327,6 +327,11 @@ contains
       1,1,1,100,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,drift_dt,faces,routed,surplus,wall,exterior,ok)
     call require(ok.and.size(hd)==count.and.all(nodes==2),'ghost stage keeps a copy entering valid fine cells')
     call require(all(wall==0).and.all(exterior==0),'interior ghost stage has no boundary exchange')
+    if(rank==owners(1)) call require(all(routed%fields(1)%values==0),'ghost stage excludes coarse reaction')
+    if(rank==owners(2)) then
+      call require(any(routed%fields(2)%values/=0),'ghost stage keeps valid fine reaction')
+      call require(any(surplus%fields(2)%values/=0),'ghost stage retains outside reaction separately')
+    end if
     do a=1,count
       call require(hd(a)%position(1)<2*spacing(1),'ghost enters fine valid region')
       call require(maxval(abs(hd(a)%position-reference(a)%position-drift_dt*hd(a)%velocity))<1e-15_dp, &

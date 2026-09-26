@@ -103,11 +103,21 @@ or choose the recursive lifecycle at which regeneration should occur.
 See [redistribution checks](validation/spray-ghost-redistribution-20260927.md).
 
 `advance_mpi_amr_ghost_halo` connects one ghost-population stage: halo-based
-kick, drift, conservative reaction transfer to valid/coarse cells, then ghost
+kick, drift, same-level reaction summation into valid cells, then ghost
 redistribution. Kick and drift durations are explicit. The caller supplies
 stage-time gas halos, target level, grown-box width and ghost capacity. Updated
 particles, components, node indices, source/remainder fields and boundary
 ledgers publish together only after final redistribution succeeds.
+
+The ghost stage disables direct coarse routing. Contributions without a
+same-level destination remain in `remainder`, available for level-local halo
+source use. They must not be added as a second coarse physical-particle source.
+This follows the pinned PeleC/PelePhysics transfer path, which sums same-level
+boundaries and copies into the current level's source, including requested
+ghost cells. The generic halo kick's explicit coarse-routing option remains
+available for callers with separately established accounting. This corrects
+the earlier integrated-stage coarse-routing behavior; see
+[source-scope correction](validation/spray-ghost-source-scope-20260927.md).
 
 This stages an existing ghost population; recursive clocks, creation/removal
 at lifecycle boundaries, breakup/children and integration of ghost feedback

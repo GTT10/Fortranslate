@@ -222,9 +222,25 @@ contains
           end do
           end do
         end do
+        ! This query lies at the first fine ghost-cell center. Its reaction
+        ! stays in the halo remainder rather than entering the coarse gas.
+        do p=1,2
+          if(owners(p)/=rank) cycle
+          call require(all(source%fields(p)%values==0),'ghost-only reaction never feeds coarse valid cells')
+          n=tree%nodes(p)%shape
+          do c=0,n(3)+1
+          do b=0,n(2)+1
+          do a=0,n(1)+1
+            integral=integral+remainder%fields(p)%values(:,a,b,c)*metrics%fields(p)%values(1,a,b,c)* &
+              g(p)%dx*g(p)%dy*g(p)%dz
+          end do
+          end do
+          end do
+        end do
         call MPI_Allreduce(MPI_IN_PLACE,integral,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
         call MPI_Allreduce(MPI_IN_PLACE,delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
-        call require(all(abs(integral-delta)<1e-12_dp*max(abs(delta),1e-30_dp)),'stage-time EB reaction inventory')
+        call require(all(abs(integral-delta)<1e-12_dp*max(abs(delta),1e-30_dp)), &
+          'stage-time EB valid plus retained halo reaction inventory')
       end do
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
