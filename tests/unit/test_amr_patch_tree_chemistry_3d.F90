@@ -111,7 +111,7 @@ program test_amr_patch_tree_chemistry_3d
   end do
 contains
   subroutine check_sdc_stage()
-    type(amr_tree_state_3d) :: old,ot,rates,result,temps,ir,bad_old,saved_ir
+    type(amr_tree_state_3d) :: old,ot,rates,result,temps,ir,bad_old,saved_ir,prior,prior_t,prior_ir
     real(dp) :: expected(12,2,2,2),expected_t(2,2,2),expected_ir(8,2,2,2)
     integer :: peer
     call prolong_amr_patch_tree_3d(tree,root,old,ok)
@@ -132,6 +132,27 @@ contains
       call require(maxval(abs(temps%fields(peer)%values-expected_t(1,1,1)))<1e-7_dp,'SDC hierarchy temperatures')
       call require(maxval(abs(ir%fields(peer)%values(:,1,1,1)-expected_ir(:,1,1,1)))<1e-8_dp, &
         'SDC hierarchy reaction source estimates')
+    end do
+    prior=result;prior_t=temps;prior_ir=ir
+    do peer=1,size(tree%nodes)
+      result%fields(peer)%values(2,:,:,:)=result%fields(peer)%values(2,:,:,:)+1
+      temps%fields(peer)%values=temps%fields(peer)%values+1
+      ir%fields(peer)%values=ir%fields(peer)%values+1
+    end do
+    saved=result;saved_t=temps;saved_ir=ir
+    call react_sdc_amr_patch_tree_3d(tree,species,reactions,old,ot,rates,dt,2e-7_dp,1e-12_dp, &
+      result,temps,ir,ok,target_depth=tree%level_count()-1)
+    call require(ok,'level-selective reaction stage')
+    do peer=1,size(tree%nodes)
+      if(tree%nodes(peer)%level==tree%level_count()-1) then
+        call require(all(result%fields(peer)%values==prior%fields(peer)%values),'selected reaction state exact')
+        call require(all(temps%fields(peer)%values==prior_t%fields(peer)%values),'selected reaction temperature exact')
+        call require(all(ir%fields(peer)%values==prior_ir%fields(peer)%values),'selected reaction source exact')
+      else
+        call require(all(result%fields(peer)%values==saved%fields(peer)%values),'inactive reaction state retained')
+        call require(all(temps%fields(peer)%values==saved_t%fields(peer)%values),'inactive reaction temperature retained')
+        call require(all(ir%fields(peer)%values==saved_ir%fields(peer)%values),'inactive reaction source retained')
+      end if
     end do
     bad_old=old;bad_old%fields(size(tree%nodes))%values(1,1,1,1)=-1
     saved=result;saved_t=temps;saved_ir=ir

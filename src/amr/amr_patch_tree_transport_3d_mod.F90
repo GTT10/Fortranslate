@@ -21,7 +21,7 @@ module amr_patch_tree_transport_3d_mod
 contains
   subroutine compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,root_spacing,dt,faces, &
       flags,transport_rate,integrated_flux,minimum_theta,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      outlet_pressure,inflow_mach,inflow_pressure)
+      outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,coarse_fractions)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -35,6 +35,9 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+    real(dp), optional, intent(in) :: coarse_fractions(:)
     type(amr_tree_state_3d) :: packed,rates
     type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
@@ -42,13 +45,35 @@ contains
     integer, allocatable :: ratios(:)
     real(dp) :: rhs(reactive_nvar(size(species))),local_theta,candidate_theta
     character(len=32) :: local_faces(6)
-    integer :: peer,n(3),i,j,k,axis,level,nvar
+    integer :: peer,n(3),i,j,k,axis,level,nvar,depth
     logical :: valid
     ok=.false.;nvar=reactive_nvar(size(species));candidate_theta=1
     if(.not.ieee_is_finite(dt).or.dt<=0) return
     if(size(transport)/=size(species).or..not.valid_reactive_boundaries_3d(faces)) return
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if(.not.valid) return
+    depth=-1
+    if(present(target_depth)) then
+      depth=target_depth
+      if(depth<0.or.depth>=tree%level_count()) return
+    end if
+    if(present(coarse_start).neqv.present(coarse_end)) return
+    if(present(coarse_end).neqv.present(coarse_fractions)) return
+    if(present(coarse_start)) then
+      if(depth<0) return
+      if(size(coarse_fractions)/=depth.or..not.all(ieee_is_finite(coarse_fractions))) return
+      if(any(coarse_fractions<0).or.any(coarse_fractions>1)) return
+      if(.not.allocated(coarse_start%fields).or..not.allocated(coarse_end%fields)) return
+      if(size(coarse_start%fields)/=size(tree%nodes).or.size(coarse_end%fields)/=size(tree%nodes)) return
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level>=depth) cycle
+        if(.not.allocated(coarse_start%fields(peer)%values).or..not.allocated(coarse_end%fields(peer)%values)) return
+        if(any(shape(coarse_start%fields(peer)%values)/=[nvar+1,tree%nodes(peer)%shape])) return
+        if(any(shape(coarse_end%fields(peer)%values)/=[nvar+1,tree%nodes(peer)%shape])) return
+        if(.not.all(ieee_is_finite(coarse_start%fields(peer)%values))) return
+        if(.not.all(ieee_is_finite(coarse_end%fields(peer)%values))) return
+      end do
+    end if
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(.not.valid) return
     if(present(inflow_state)) then
@@ -63,13 +88,22 @@ contains
       packed%fields(peer)%values(:nvar,:,:,:)=state%fields(peer)%values
       packed%fields(peer)%values(nvar+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
     end do
+    if(present(coarse_start)) then
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level>=depth) cycle
+        packed%fields(peer)%values=coarse_start%fields(peer)%values
+      end do
+    end if
     rates=state
     do peer=1,size(tree%nodes)
+      rates%fields(peer)%values=0
+      if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
         coarse_limiter='mc',species_count=size(species), &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        coarse_future=coarse_end,coarse_fractions=coarse_fractions)
       if (.not.valid) return
       call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
       if (.not.valid) return

@@ -172,10 +172,11 @@ program test_amr_patch_tree_transport_3d
   end do
 contains
   subroutine check_sdc_transport_stage()
-    type(amr_tree_state_3d) :: rates,candidate,prior
-    type(amr_tree_flux_3d), allocatable :: flux(:),prior_flux(:)
+    type(amr_tree_state_3d) :: rates,candidate,prior,selected,packed,future,retained
+    type(amr_tree_flux_3d), allocatable :: flux(:),prior_flux(:),selected_flux(:)
     real(dp) :: before(12),after(12),correction(12),largest,minimum,expected(12,4,4,4),et(4,4,4),unused
-    integer :: peer
+    integer :: peer,depth,dims(3)
+    real(dp), allocatable :: fractions(:)
     minimum=-1
     call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
       [.true.,.true.,.true.,.true.],rates,flux,minimum,ok)
@@ -207,6 +208,53 @@ contains
         all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
         all(flux(peer)%z==prior_flux(peer)%z),'SDC transport stage output rollback')
     end do
+    do depth=0,tree%level_count()-1
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
+        [.true.,.true.,.true.,.true.],selected,selected_flux,minimum,ok,target_depth=depth)
+      call require(ok,'level-selective transport')
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level==depth) then
+          call require(all(selected%fields(peer)%values==rates%fields(peer)%values),'selected transport rate exact')
+          call require(all(selected_flux(peer)%x==flux(peer)%x),'selected transport flux exact')
+        else
+          call require(all(selected%fields(peer)%values==0),'inactive transport rate zero')
+          call require(.not.allocated(selected_flux(peer)%x),'inactive transport flux absent')
+        end if
+      end do
+    end do
+    depth=tree%level_count()-1
+    if(depth==0) return
+    allocate(packed%fields(size(tree%nodes)),fractions(depth))
+    do peer=1,size(tree%nodes)
+      dims=tree%nodes(peer)%shape
+      allocate(packed%fields(peer)%values(13,dims(1),dims(2),dims(3)))
+      packed%fields(peer)%values(:12,:,:,:)=state%fields(peer)%values
+      packed%fields(peer)%values(13,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+    end do
+    future=packed
+    do peer=1,size(tree%nodes)
+      if(tree%nodes(peer)%level>=depth) cycle
+      future%fields(peer)%values(13,:,:,:)=future%fields(peer)%values(13,:,:,:)+1
+    end do
+    fractions=0
+    call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],selected,selected_flux,minimum,ok,target_depth=depth, &
+      coarse_start=packed,coarse_end=future,coarse_fractions=fractions)
+    call require(ok,'transport old coarse endpoint')
+    do peer=1,size(tree%nodes)
+      if(tree%nodes(peer)%level/=depth) cycle
+      call require(all(selected%fields(peer)%values==rates%fields(peer)%values),'transport old endpoint exact')
+    end do
+    retained=selected;fractions=.5_dp
+    call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
+      [.true.,.true.,.true.,.true.],selected,selected_flux,minimum,ok,target_depth=depth, &
+      coarse_start=packed,coarse_end=future,coarse_fractions=fractions)
+    call require(ok,'transport intermediate coarse endpoint')
+    unused=0
+    do peer=1,size(tree%nodes)
+      unused=max(unused,maxval(abs(selected%fields(peer)%values-retained%fields(peer)%values)))
+    end do
+    call require(unused>1e-10_dp,'parent temperature time changes transport')
   end subroutine check_sdc_transport_stage
   subroutine require(condition,label)
     logical, intent(in) :: condition
