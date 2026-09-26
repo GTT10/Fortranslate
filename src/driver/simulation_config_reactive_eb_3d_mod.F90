@@ -39,6 +39,9 @@ module simulation_config_reactive_eb_3d_mod
     character(len=16) :: boundary_faces(6) = 'legacy'
     real(dp) :: inflow_density(6)=.31_dp,inflow_pressure(6)=135000._dp,inflow_velocity(3,6)=0._dp
     real(dp) :: wall_temperature(6)=1000._dp
+    character(len=32) :: time_integrator="split"
+    integer :: sdc_iterations=2
+    real(dp) :: external_forcing(3)=0
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
@@ -320,14 +323,17 @@ contains
   end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition)
+      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition,allow_sdc)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition
+    logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition,allow_sdc
 
     integer :: nx, ny, nz, maximum_steps, checkpoint_interval_steps
+    integer :: sdc_iterations
+    real(dp) :: external_forcing(3)
+    character(len=32) :: time_integrator
     integer :: unit, io_status
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
     real(dp) :: final_time, cfl, plane_position,difmag
@@ -357,7 +363,7 @@ contains
     logical :: barodiffusion_enabled, stop_after_checkpoint
     logical :: selected_allowed
 
-    namelist /reactive_eb_3d/ &
+    namelist /reactive_eb_3d/ time_integrator,sdc_iterations,external_forcing, &
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, hydro_method, &
@@ -397,6 +403,7 @@ contains
     boundary_faces=config%boundary_faces;inflow_density=config%inflow_density
     inflow_pressure=config%inflow_pressure;inflow_velocity=config%inflow_velocity
     hydro_method = config%hydro_method
+    time_integrator=config%time_integrator;sdc_iterations=config%sdc_iterations;external_forcing=config%external_forcing
     riemann_solver = config%riemann_solver
     difmag=config%difmag
     redistribution = config%redistribution
@@ -468,6 +475,7 @@ contains
     config%boundary_faces=boundary_faces;config%inflow_density=inflow_density
     config%inflow_pressure=inflow_pressure;config%inflow_velocity=inflow_velocity
     config%hydro_method = trim(hydro_method)
+    config%time_integrator=trim(time_integrator);config%sdc_iterations=sdc_iterations;config%external_forcing=external_forcing
     config%riemann_solver = trim(riemann_solver)
     config%difmag=difmag
     config%redistribution = trim(redistribution)
@@ -528,6 +536,13 @@ contains
         message='Artificial-viscosity input is not enabled in this application';return
       end if
     end if
+    if(config%time_integrator/='split'.or.any(config%external_forcing/=0)) then
+      ok=.false.
+      if(present(allow_sdc)) ok=allow_sdc
+      if(.not.ok) then
+        message='SDC input is not enabled in this application';return
+      end if
+    end if
     call validate_reactive_eb_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
   end subroutine read_reactive_eb_3d_configuration
@@ -545,6 +560,25 @@ contains
 
     ok = .false.
     message = ""
+    if(config%time_integrator/='split'.and.config%time_integrator/='sdc') then
+      message='Unsupported EB time integrator';return
+    end if
+    if(config%sdc_iterations<1.or..not.all(ieee_is_finite(config%external_forcing))) then
+      message='Invalid EB SDC iteration count or forcing';return
+    end if
+    if(config%time_integrator=='sdc') then
+      if(any(config%boundary_faces=='legacy')) then
+        message='EB SDC requires explicit boundary_faces';return
+      end if
+      if(config%hydro_method/='plm_ctu'.or.config%riemann_solver/='pelec') then
+        message='EB SDC requires plm_ctu and pelec';return
+      end if
+      if(config%checkpoint_interval_steps>0.or.len_trim(config%restart_file)>0) then
+        message='EB SDC checkpoint/restart is not implemented';return
+      end if
+    else if(any(config%external_forcing/=0)) then
+      message='EB external forcing requires SDC';return
+    end if
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) then
       message='Invalid artificial-viscosity coefficient';return
     end if

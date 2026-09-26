@@ -45,7 +45,7 @@ contains
   subroutine advance_reactive_eb_sdc_3d(species,reactions,transport,state,temperature,geometry,extended,dt, &
       iterations,chemistry,transport_flags,force,rtol,atol,redistribution,boundary_faces, &
       boundary_change,wall_change,source_change,minimum_theta,ok,reaction_source,integrated_flux, &
-      difmag,target_volume_fraction,inflow_state,inflow_temperature,wall_temperature)
+      difmag,target_volume_fraction,inflow_state,inflow_temperature,wall_temperature,chemistry_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -57,6 +57,7 @@ contains
     character(len=*), intent(in) :: redistribution,boundary_faces(6)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),source_change(:),minimum_theta
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: chemistry_change(:)
     real(dp), optional, intent(inout) :: reaction_source(:,:,:,:)
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
     real(dp), optional, intent(in) :: difmag,target_volume_fraction,inflow_state(:,:),inflow_temperature(:),wall_temperature(6)
@@ -74,6 +75,9 @@ contains
     if(iterations<1.or..not.all(ieee_is_finite([dt,force,rtol,atol]))) return
     if(min(dt,rtol,atol)<=0.or..not.valid_reactive_boundaries_3d(boundary_faces)) return
     if(transport_flags(4).and..not.transport_flags(3)) return
+    if(present(chemistry_change)) then
+      if(size(chemistry_change)/=nv) return
+    end if
     if(present(reaction_source)) then
       if(.not.chemistry.or.any(shape(reaction_source)/=[nv-4,n])) return
     end if
@@ -141,8 +145,22 @@ contains
     end do
     end do
     end do
+    if(present(chemistry_change)) then
+      raw=0
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+        if(chemistry) raw(:,i,j,k)=u(:,i,j,k)-(old(:,i,j,k)+dt*rates(:,i,j,k))
+      end do
+      end do
+      end do
+      call reactive_eb_integrals_3d(raw,geometry,v0,valid)
+      if(.not.valid) return
+    end if
     state=u;temperature=t;boundary_change=boundary;wall_change=wall;source_change=external;minimum_theta=theta
     if(present(reaction_source)) reaction_source=ir
+    if(present(chemistry_change)) chemistry_change=v0
     if(present(integrated_flux)) integrated_flux=hf
     ok=.true.
   contains

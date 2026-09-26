@@ -22,7 +22,7 @@ module reactive_eb_3d_application_mod
     write_reactive_eb_3d_checkpoint, read_reactive_eb_3d_checkpoint
   use reactive_eb_3d_driver_mod, only: &
     initialize_reactive_eb_density_sheet_3d, &
-    advance_reactive_eb_full_3d, &
+    advance_reactive_eb_full_3d,advance_reactive_eb_sdc_3d, &
     reactive_eb_integrals_3d, reactive_eb_extrema_3d, &
     reactive_eb_element_integrals_3d, reactive_eb_composition_integrals_3d, &
     reactive_eb_element_species_supported_3d, reactive_eb_element_amounts_3d, &
@@ -62,6 +62,7 @@ contains
     real(dp), allocatable :: initial_l1_integrals(:), final_l1_integrals(:)
     real(dp), allocatable :: initial_element_integrals(:),final_element_integrals(:),element_roundoff(:)
     real(dp), allocatable :: boundary(:),wall(:),chemical(:),step_boundary(:),step_wall(:),step_chemical(:)
+    real(dp), allocatable :: forcing(:),step_forcing(:),ir(:,:,:,:)
     real(dp), allocatable :: external_elements(:)
     real(dp) :: element_residual,component_roundoff
     real(dp) :: time, dt, hydro_dt, transport_dt, minimum_dt
@@ -127,6 +128,10 @@ contains
     allocate(boundary(nvar),wall(nvar),chemical(nvar),step_boundary(nvar),step_wall(nvar),step_chemical(nvar))
     allocate(external_elements(element_count))
     boundary=0._dp;wall=0._dp;chemical=0._dp
+    allocate(forcing(nvar),step_forcing(nvar));forcing=0;step_forcing=0
+    if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
+      allocate(ir(nvar-4,config%nx,config%ny,config%nz));ir=0
+    end if
     allocate(initial_l1_integrals(nvar), final_l1_integrals(nvar))
     call initialize_reactive_eb_density_sheet_3d( &
       species, config, geometry, state, temperature, ok, base_mole_fractions)
@@ -259,6 +264,17 @@ contains
         dt=min(dt,wall_dt)
       end if
       dt = min(dt, config%final_time - time)
+      if(config%time_integrator=='sdc') then
+        new_state=state;new_temperature=temperature
+        call advance_reactive_eb_sdc_3d(species,reactions,transport,new_state,new_temperature,geometry, &
+          extended_geometry,dt,config%sdc_iterations,config%chemistry_enabled, &
+          config%transport_enabled.and.[config%viscosity_enabled,config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled,config%barodiffusion_enabled],config%external_forcing, &
+          config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,config%redistribution, &
+          boundary_faces,step_boundary,step_wall,step_forcing,step_transport_theta,ok,reaction_source=ir, &
+          difmag=config%difmag,target_volume_fraction=config%state_redist_target_volume_fraction, &
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t,chemistry_change=step_chemical)
+      else
       call advance_reactive_eb_full_3d( &
         species, reactions, transport, state, temperature, geometry, &
         config%riemann_solver, config%redistribution, dt, &
@@ -270,10 +286,11 @@ contains
         config%state_redist_target_volume_fraction, chemistry_integrator, &
         step_boundary,step_wall,step_chemical,difmag=config%difmag,extended_geometry=extended_geometry, &
         boundary_faces=boundary_faces,inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
+      end if
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
       boundary=boundary+step_boundary
       wall=wall+step_wall
-      chemical=chemical+step_chemical
+      chemical=chemical+step_chemical;forcing=forcing+step_forcing
       minimum_transport_theta = min( &
         minimum_transport_theta, step_transport_theta)
       state = new_state
@@ -321,6 +338,13 @@ contains
 
     call check_inventory()
     do component=1,nvar
+      if(config%time_integrator=='sdc') then
+        write(*,'(a,i0,7(1x,es24.16))') 'EB inventory initial/final/boundary/wall/chemical/forcing/residual: ',component, &
+          initial_integrals(component),final_integrals(component),boundary(component),wall(component),chemical(component), &
+          forcing(component),final_integrals(component)-initial_integrals(component)-boundary(component)- &
+          wall(component)-chemical(component)-forcing(component)
+        cycle
+      end if
       write(*,'(a,i0,6(1x,es24.16))') "EB inventory initial/final/boundary/wall/chemical/residual: ",component, &
         initial_integrals(component),final_integrals(component),boundary(component),wall(component),chemical(component), &
         final_integrals(component)-initial_integrals(component)-boundary(component)-wall(component)-chemical(component)
@@ -356,6 +380,7 @@ contains
     write(*, '(a,1x,a)') "Plane axis:", trim(config%plane_axis)
     write(*, '(a,es24.16)') "Plane position: ", config%plane_position
     end if
+    write(*, '(a,1x,a)') "Time integrator:",trim(config%time_integrator)
     write(*, '(a,1x,a)') "Hydro method:", trim(config%hydro_method)
     write(*, '(a,1x,a)') "Riemann solver:", trim(config%riemann_solver)
     write(*, '(a,1x,a)') "Redistribution:", trim(config%redistribution)
@@ -467,11 +492,12 @@ contains
         if (component>ncons) component_roundoff=64._dp*epsilon(1._dp)*real(max(1,step),dp)* &
           sum(abs(initial_integrals(6:)))
         component_error = max(0._dp,abs( &
-          final_integrals(component)-initial_integrals(component)-boundary(component)-wall(component)-chemical(component)) &
+          final_integrals(component)-initial_integrals(component)-boundary(component)-wall(component)- &
+          chemical(component)-forcing(component)) &
           -component_roundoff) / &
           max(tiny(1.0_dp), abs(initial_integrals(component)), &
             initial_l1_integrals(component), final_l1_integrals(component), &
-            abs(boundary(component)),abs(wall(component)),abs(chemical(component)))
+            abs(boundary(component)),abs(wall(component)),abs(chemical(component)),abs(forcing(component)))
         if (component_error>5.e-11_dp) write(*,'(a,i0,3(1x,es24.16))') &
           'Invariant component initial/final/error: ',component, &
           initial_integrals(component),final_integrals(component),component_error

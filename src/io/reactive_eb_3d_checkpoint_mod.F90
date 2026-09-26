@@ -101,6 +101,9 @@ contains
 
     ok = .false.
     message = ""
+    if(config%time_integrator/='split'.or.any(config%external_forcing/=0)) then
+      message='EB SDC checkpoint fields are not implemented';return
+    end if
     unit = -1
     nvar = reactive_nvar(size(species))
     selected_context = present(bundle_sha256) .or. &
@@ -616,6 +619,9 @@ contains
 
     ok = .false.
     message = ""
+    if(config%time_integrator/='split'.or.any(config%external_forcing/=0)) then
+      message='EB SDC checkpoint fields are not implemented';return
+    end if
     unit = -1
     nvar = reactive_nvar(size(species))
     selected_context = present(bundle_sha256) .or. &
