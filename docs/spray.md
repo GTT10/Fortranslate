@@ -138,9 +138,25 @@ This permits evolution of separate coarse virtual populations. The caller
 must provide the intended population and synchronize sources at the appropriate
 time; the routine does not select or deduplicate physical/virtual particles.
 It still uses capped composite interpolation, so fine ghost populations require
-the separate halo operators to be connected. Capped calls with wall-film
-populations reject until level-aware film ownership is connected.
+the separate halo operators to be connected. Wall-film populations now use
+the same ownership ceiling, as described below.
 See [evolution checks](validation/spray-level-evolution-20260927.md).
+
+## Liquid films in a capped gas view
+
+`migrate_mpi_amr_wall_films` accepts optional `maximum_level`, selecting the
+finest containing cell at or below that ceiling. Exact wall coordinates,
+normals, material and component data are preserved. EB wall intersection
+validation still uses the original nodal geometry. Ranks must agree on the
+effective ceiling; invalid ceilings or failed exchange retain both outputs.
+
+`advance_mpi_amr_film_coupling` forwards the ceiling to migration, gas sampling
+and deposition, and uses the capped spacing for planar wall gas probes.
+`advance_mpi_amr_mixture_coupling` also forwards it when migrating impact films.
+The gas result is a provisional capped view awaiting synchronization, with
+separate `gas_change` and wall-energy inventories. Recursive film scheduling
+and physical/virtual population accounting remain caller responsibilities.
+See [film checks](validation/spray-level-film-20260927.md).
 
 ## Particle sampling from complete gas halos
 

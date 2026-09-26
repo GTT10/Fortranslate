@@ -134,6 +134,7 @@ program test_spray_mpi_amr_film_step
     call require(drops(p)%temperature>330,'film heats')
     call require(drops(p)%position(1)==0.or.drops(p)%position(1)==.004_dp,'exact wall positions retained')
   end do
+  call check_capped_films()
   ! Empty populations still validate gas and return a zero exchange.
   deallocate(drops,masses);allocate(drops(0),masses(2,0))
   call advance()
@@ -145,6 +146,55 @@ program test_spray_mpi_amr_film_step
   if (rank==0) print *, 'PASS: MPI AMR film evaporation and gas/wall energy coupling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_capped_films()
+    type(amr_patch_tree_3d) :: coarse
+    type(amr_patch_3d) :: no_patches(0)
+    type(amr_tree_state_3d) :: capped,ct,flat,ft,source,previous
+    type(spray_wall_film), allocatable :: cd(:),fd(:)
+    real(dp), allocatable :: cm(:,:),fm(:,:)
+    real(dp) :: cb(nv),fb(nv)
+    integer :: a,ns,fs
+    call initialize_amr_patch_tree_3d([4,4,4],[integer::],no_patches,coarse,ok)
+    call require(ok,'single-level film reference')
+    capped=saved;ct=saved_t;cd=saved_drops;cm=saved_mass;fd=cd;fm=cm
+    allocate(flat%fields(1),ft%fields(1))
+    if(rank==owners(1)) then
+      flat%fields(1)%values=saved%fields(1)%values
+      ft%fields(1)%values=saved_t%fields(1)%values
+    end if
+    call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,capped,ct, &
+      tree,owners,cd,cm,zero,spacing,interval,faces,ns,cb,ok,gas_change=source,maximum_level=0)
+    call require(ok,'capped film heating and evaporation')
+    call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,flat,ft, &
+      coarse,owners(:1),fd,fm,zero,spacing,interval,faces,fs,fb,ok)
+    call require(ok.and.ns==fs,'capped film substep count')
+    call require(size(cd)==size(fd).and.all(cm==fm),'capped film owner and components')
+    call require(all(cb==fb),'capped film wall inventory')
+    do a=1,size(cd)
+      call require(all(cd(a)%position==fd(a)%position).and.all(cd(a)%normal==fd(a)%normal).and. &
+        cd(a)%mass==fd(a)%mass.and.cd(a)%temperature==fd(a)%temperature.and. &
+        cd(a)%diameter==fd(a)%diameter.and.cd(a)%height==fd(a)%height.and. &
+        cd(a)%material_id==fd(a)%material_id,'capped film payload matches root reference')
+    end do
+    if(rank==owners(1)) then
+      call require(all(capped%fields(1)%values==flat%fields(1)%values),'capped film gas equals root reference')
+      call require(all(ct%fields(1)%values==ft%fields(1)%values),'capped film gas temperature')
+    end if
+    do a=2,3
+      if(owners(a)/=rank) cycle
+      call require(all(capped%fields(a)%values==saved%fields(a)%values),'film leaves finer gas untouched')
+      call require(all(ct%fields(a)%values==saved_t%fields(a)%values),'film leaves finer temperature untouched')
+      call require(all(source%fields(a)%values==0),'film leaves finer feedback zero')
+    end do
+    previous=capped;cb=17
+    call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,capped,ct, &
+      tree,owners,cd,cm,zero,spacing,interval,faces,ns,cb,ok,maximum_level=merge(0,1,rank==0))
+    call require(.not.ok.and.all(cb==17),'film ceiling disagreement and ledger rollback')
+    call require(size(cd)==size(fd).and.all(cm==fm),'film ceiling rejection preserves components')
+    do a=1,3
+      if(owners(a)==rank) call require(all(capped%fields(a)%values==previous%fields(a)%values),'film gas rollback')
+    end do
+  end subroutine check_capped_films
   subroutine advance()
     call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,local,local_t, &
       tree,owners,drops,masses,zero,spacing,interval,faces,steps,boundary,ok,gas_change=exported)

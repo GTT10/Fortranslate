@@ -134,7 +134,6 @@ contains
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(present(eb_geometry).eqv.present(nodal_phi))
-    valid=valid.and..not.(present(maximum_level).and.present(wall_films))
     if(present(eb_geometry).and.present(boundary_faces)) then
       valid=valid.and.all(faces=='periodic'.or.faces=='outflow'.or.faces=='slip_wall'.or.faces=='no_slip_wall')
       valid=valid.and.present(eb_outflow_change)
@@ -222,7 +221,7 @@ contains
     if (present(wall_films)) then
       patches=wall_films;patch_mass=film_mass
       call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
-        film_settings%maximum_films,valid,nodal_phi)
+        film_settings%maximum_films,valid,nodal_phi,maximum_level)
       if (.not.valid) return
       do n=1,nc
         mw(n)=species(components(n)%vapor_index)%molecular_weight
@@ -534,7 +533,7 @@ contains
     if (.not.valid) return
     if (present(wall_films)) then
       call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
-        film_settings%maximum_films,valid,nodal_phi)
+        film_settings%maximum_films,valid,nodal_phi,maximum_level)
       if (.not.valid) return
     end if
     call MPI_Allreduce(ledger,global_ledger,size(ledger),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)

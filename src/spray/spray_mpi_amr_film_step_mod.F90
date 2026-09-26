@@ -23,7 +23,9 @@ contains
   ! Common film substeps, owner-local gas feedback and whole-interval publication.
   ! All model tables/options are identical across ranks by caller contract.
   subroutine advance_mpi_amr_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &
-      tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,eb_geometry,nodal_phi,gas_change)
+      tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,eb_geometry,nodal_phi, &
+      gas_change,maximum_level)
+    integer, optional, intent(in) :: maximum_level
     type(amr_tree_state_3d), optional, intent(inout) :: gas_change
     type(amr_tree_state_3d) :: integrated_change
     type(amr_tree_state_3d), allocatable :: trial_change
@@ -109,7 +111,8 @@ contains
     periodic=faces([1,3,5])=='periodic'
     gas=state;temp=temperature;patches=films;masses=film_mass
     ! Validate the tree and closed film positions before any stencil lookup.
-    call migrate_mpi_amr_wall_films(comm,tree,owners,patches,masses,lower,spacing,wall_options%maximum_films,valid,nodal_phi)
+    call migrate_mpi_amr_wall_films(comm,tree,owners,patches,masses,lower,spacing,wall_options%maximum_films,valid, &
+      nodal_phi,maximum_level)
     if (.not.valid) return
     np=size(patches)
     valid=np<=125000
@@ -117,7 +120,9 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree();if (.not.agreed) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp)
-    minimum_h=spacing*real(domain(:,1),dp)/real(domain(:,size(ratios)),dp)
+    node=size(ratios)
+    if(present(maximum_level)) node=maximum_level+1
+    minimum_h=spacing*real(domain(:,1),dp)/real(domain(:,node),dp)
 
     allocate(positions(3,np),change(nvar,np),rates(nc,np),hv(nc,np),qg(np),qw(np))
     if (eb) then
@@ -145,7 +150,7 @@ contains
     call agree();if (.not.agreed) return
     change=0
     call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,gas,temp,positions,change, &
-      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
+      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,maximum_level=maximum_level)
     if (.not.valid) return
     if(present(gas_change)) then
       integrated_change=gas
@@ -169,7 +174,7 @@ contains
         field%fields(node)%values(nvar+1,:,:,:)=temp%fields(node)%values(1,:,:,:)
       end do
       call sample_mpi_amr_tree_spray_field(comm,tree,owners,field,nvar+1,positions, &
-        lower,spacing,periodic,samples,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi)
+        lower,spacing,periodic,samples,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,maximum_level=maximum_level)
       if (.not.valid) return
       local_dt=interval-elapsed;rates=0;hv=0;qg=0;qw=0
       do p=1,np
@@ -216,7 +221,8 @@ contains
         if (agreed) then
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
-            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,gas_change=trial_change)
+            lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi, &
+            gas_change=trial_change,maximum_level=maximum_level)
           if (valid) then
             accepted=.true.;exit
           end if
@@ -245,7 +251,8 @@ contains
     do c=1,nc
       kept_mass(c,:)=pack(masses(c,:),patches%mass>0)
     end do
-    call migrate_mpi_amr_wall_films(comm,tree,owners,kept,kept_mass,lower,spacing,wall_options%maximum_films,valid,nodal_phi)
+    call migrate_mpi_amr_wall_films(comm,tree,owners,kept,kept_mass,lower,spacing,wall_options%maximum_films,valid, &
+      nodal_phi,maximum_level)
     if (.not.valid) return
     call MPI_Allreduce(ledger,global_ledger,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return

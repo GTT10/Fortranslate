@@ -12,9 +12,11 @@ module spray_mpi_amr_film_mod
   public :: migrate_mpi_amr_wall_films
 contains
   ! Stationary films use the finest containing cell, with closed physical bounds.
+  ! Optional maximum_level caps ownership without changing the wall geometry.
   ! Preserve exact wall coordinates and every film/component field. Films have
   ! no global ID; receive order is source rank followed by original local order.
-  subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok,nodal_phi)
+  subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok, &
+      nodal_phi,maximum_level)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(spray_wall_film), allocatable, intent(inout) :: films(:)
@@ -22,6 +24,7 @@ contains
     real(dp), intent(in) :: lower(3),spacing(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: node_owners(:),maximum_films
+    integer, optional, intent(in) :: maximum_level
     logical, intent(out) :: ok
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
@@ -30,7 +33,7 @@ contains
     real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
     integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
     real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
-    integer :: config(3),lowconfig(3),highconfig(3),nranks,ierr,nc,np,p,r,q,nreceived,width
+    integer :: config(4),lowconfig(4),highconfig(4),top_level,nranks,ierr,nc,np,p,r,q,nreceived,width
     logical :: valid,agreed
     integer :: dims(3),reference_dims(3)
     real(dp), allocatable :: reference_phi(:,:,:)
@@ -52,10 +55,14 @@ contains
     if (valid) valid=all(abs(lower)<=1.e9_dp).and.all(spacing>=1.e-12_dp).and.all(spacing<=1.e9_dp)
     call agree()
     if (.not.agreed) return
-    config=[nc,maximum_films,merge(1,0,present(nodal_phi))];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lowconfig,3,MPI_INTEGER,MPI_MIN,comm,ierr)
+    top_level=maxval(tree%nodes%level)
+    if(present(maximum_level)) top_level=maximum_level
+    valid=top_level>=0.and.top_level<=maxval(tree%nodes%level)
+    call agree();if(.not.agreed) return
+    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lowconfig,4,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,highconfig,3,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,highconfig,4,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -189,7 +196,7 @@ contains
       fraction=(position-lower)/(spacing*real(tree%nodes(1)%shape,dp));best=-1
       do peer=1,size(tree%nodes)
         level=tree%nodes(peer)%level+1
-        if (level<=best) cycle
+        if (level<=best.or.level>top_level+1) cycle
         ! Closed physical bounds: an exact upper wall belongs to the last cell.
         cell=min(domain(:,level)-1,floor(fraction*real(domain(:,level),dp),kind=int64))
         if (any(cell<origin(:,peer)).or.any(cell-origin(:,peer)>=int(tree%nodes(peer)%shape,int64))) cycle
