@@ -1,5 +1,6 @@
 module mpi_eb_tree_full_3d_mod
   use mpi_f08
+  use, intrinsic :: iso_fortran_env, only: int64
   use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
@@ -9,7 +10,7 @@ module mpi_eb_tree_full_3d_mod
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use reactive_eb_3d_driver_mod, only: react_sdc_eb_state_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d, &
@@ -24,7 +25,7 @@ module mpi_eb_tree_full_3d_mod
   implicit none
   private
   public :: react_mpi_eb_tree_3d,advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d
-  public :: advance_mpi_eb_tree_sdc_3d
+  public :: advance_mpi_eb_tree_sdc_3d,advance_mpi_eb_tree_sdc_subcycle_3d
 contains
   subroutine agree(condition,comm,ok)
     logical, intent(in) :: condition
@@ -672,4 +673,193 @@ contains
       call agree(local_ok,comm,good)
     end subroutine
   end subroutine advance_mpi_eb_tree_sdc_3d
+  subroutine advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,geometry,state,temperature, &
+      dt,iterations,chemistry, &
+      transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
+      boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: dt,force(3),rtol,atol
+    integer, intent(in) :: iterations
+    logical, intent(in) :: chemistry,transport_flags(4)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    type(MPI_Comm), intent(in) :: comm
+    type(eb_geometry_3d), intent(in) :: extended_geometry(:)
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    integer(int64), optional, intent(inout) :: level_steps(:)
+    type(amr_tree_state_3d) :: candidate,ct,starts,ends,ts,te
+    type(amr_tree_state_3d), allocatable :: ir
+    type(amr_tree_state_3d) :: source0,source1
+    type(eb_integrated_flux_3d), allocatable :: total(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: clock_start(:),clock_dt(:)
+    real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
+    real(dp) :: external(size(source_change)),theta
+    integer :: nv,node,n(3),levels,c,rank,status,ios
+    logical :: valid,ready
+    ok=.false.;nv=reactive_nvar(size(species))
+    valid=ieee_is_finite(dt)
+    if(valid) valid=dt>0
+    valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
+    if(present(reaction_source).and..not.chemistry) valid=.false.
+    call agree(valid,comm,ready)
+    if(.not.ready) return
+    candidate=state;ct=temperature
+    call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,ready)
+    if(.not.ready) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    call agree(valid,comm,ready)
+    if(.not.ready) return
+    levels=size(ratios)
+    if(present(level_steps)) then
+      call agree(size(level_steps)==levels,comm,ready)
+    else
+      call agree(.true.,comm,ready)
+    end if
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    starts=candidate;ends=candidate;ts=ct;te=ct
+    allocate(clock_start(levels),clock_dt(levels),counts(levels),source0%fields(size(tree%nodes)),stat=ios)
+    call agree(ios==0,comm,ready)
+    if(.not.ready) return
+    counts=0;clock_start=0;clock_dt=dt
+    do node=1,size(tree%nodes)
+      if(owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      allocate(source0%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp,stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+    end do
+    call agree(valid,comm,ready)
+    if(.not.ready) return
+    source1=source0
+    if(chemistry) then
+      allocate(ir)
+      if(present(reaction_source)) then
+        ir=reaction_source
+      else
+        allocate(ir%fields(size(tree%nodes)))
+        do node=1,size(tree%nodes)
+          if(owners(node)/=rank) cycle
+          n=tree%nodes(node)%shape
+          allocate(ir%fields(node)%values(nv-4,n(1),n(2),n(3)),source=0._dp,stat=ios)
+          if(ios/=0) then
+            valid=.false.;exit
+          end if
+        end do
+      end if
+    end if
+    call agree(valid,comm,ready)
+    if(.not.ready) return
+    wall=0;chemical=0;external=0;theta=1
+    call advance_level(0,0._dp,dt,total,valid)
+    if(.not.valid) return
+    boundary=0
+    if(rank==owners(1)) then
+    n=tree%nodes(1)%shape
+    associate(g=>geometry(1),f=>total(1))
+    do c=1,nv
+      boundary(c)=g%dy*g%dz*sum(g%x_face_fraction(0,:,:)*f%x(c,0,:,:)- &
+        g%x_face_fraction(n(1),:,:)*f%x(c,n(1),:,:))+ &
+        g%dx*g%dz*sum(g%y_face_fraction(:,0,:)*f%y(c,:,0,:)- &
+        g%y_face_fraction(:,n(2),:)*f%y(c,:,n(2),:))+ &
+        g%dx*g%dy*sum(g%z_face_fraction(:,:,0)*f%z(c,:,:,0)- &
+        g%z_face_fraction(:,:,n(3))*f%z(c,:,:,n(3)))
+    end do
+    end associate
+    end if
+    call MPI_Bcast(boundary,nv,MPI_DOUBLE_PRECISION,owners(1),comm,status)
+    call agree(status==MPI_SUCCESS.and.all(ieee_is_finite(boundary)).and.all(ieee_is_finite(wall)).and. &
+      all(ieee_is_finite(chemical)).and.all(ieee_is_finite(external)),comm,ready)
+    if(.not.ready) return
+    call move_alloc(candidate%fields,state%fields);call move_alloc(ct%fields,temperature%fields)
+    boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    minimum_theta=theta
+    if(present(reaction_source)) reaction_source=ir
+    if(present(level_steps)) level_steps=counts
+    ok=.true.
+  contains
+    recursive subroutine advance_level(level,time,interval,flux,good)
+      integer, intent(in) :: level
+      real(dp), intent(in) :: time,interval
+      type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
+      logical, intent(out) :: good
+      type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
+      type(amr_tree_state_3d) :: op,np
+      real(dp) :: fstart(levels-1),fend(levels-1),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
+      integer :: p,d(3),step,allocation_status
+      logical :: accepted,local_ok
+      good=.false.
+      if(counts(level+1)==huge(1_int64)) return
+      clock_start(level+1)=time;clock_dt(level+1)=interval
+      fstart=0;fend=0
+      fstart(:level)=max(0._dp,min(1._dp,(time-clock_start(:level))/clock_dt(:level)))
+      fend(:level)=max(fstart(:level),min(1._dp,(time+interval-clock_start(:level))/clock_dt(:level)))
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank.or.tree%nodes(p)%level/=level) cycle
+        starts%fields(p)%values=candidate%fields(p)%values
+        ts%fields(p)%values=ct%fields(p)%values
+      end do
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
+        extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
+        b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np)
+      if(.not.accepted) return
+      counts(level+1)=counts(level+1)+1
+      wall=wall+w;chemical=chemical+ch;external=external+ext;theta=min(theta,limiter)
+      local_ok=.true.
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank) cycle
+        if(tree%nodes(p)%level==level) then
+          ends%fields(p)%values=candidate%fields(p)%values
+          te%fields(p)%values=ct%fields(p)%values
+          source0%fields(p)%values=op%fields(p)%values;source1%fields(p)%values=np%fields(p)%values
+        else
+          d=tree%nodes(p)%shape
+          allocate(flux(p)%x(nv,0:d(1),d(2),d(3)),flux(p)%y(nv,d(1),0:d(2),d(3)), &
+            flux(p)%z(nv,d(1),d(2),0:d(3)),stat=allocation_status)
+          if(allocation_status/=0) then
+            local_ok=.false.;exit
+          end if
+          flux(p)%x=0;flux(p)%y=0;flux(p)%z=0
+        end if
+      end do
+      call agree(local_ok,comm,accepted)
+      if(.not.accepted) return
+      if(level+1<levels) then
+        elapsed=0
+        do step=1,ratios(level+2)
+          sub_dt=interval/real(ratios(level+2),dp)
+          if(step==ratios(level+2)) sub_dt=interval-elapsed
+          if(sub_dt<=0.or.time+elapsed+sub_dt<=time+elapsed) return
+          call advance_level(level+1,time+elapsed,sub_dt,fine_flux,accepted)
+          if(.not.accepted) return
+          do p=1,size(tree%nodes)
+            if(owners(p)/=rank.or.tree%nodes(p)%level/=level+1) cycle
+            flux(p)%x=flux(p)%x+fine_flux(p)%x
+            flux(p)%y=flux(p)%y+fine_flux(p)%y
+            flux(p)%z=flux(p)%z+fine_flux(p)%z
+          end do
+          elapsed=elapsed+sub_dt
+        end do
+      end if
+      call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,flux,comm,accepted, &
+        minimum_level=level,maximum_level=min(level+1,levels-1),boundary_faces=boundary_faces)
+      if(.not.accepted) return
+      good=.true.
+    end subroutine advance_level
+  end subroutine advance_mpi_eb_tree_sdc_subcycle_3d
 end module mpi_eb_tree_full_3d_mod

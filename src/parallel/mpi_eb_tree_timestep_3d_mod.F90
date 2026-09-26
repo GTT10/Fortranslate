@@ -20,7 +20,7 @@ contains
   ! Only owner-local fields are scanned; geometry remains replicated.
   subroutine mpi_eb_tree_timestep_3d(species,transport,tree,owners,geometry,state,temperature, &
       hydro_cfl,transport_cfl,transport_enabled,viscosity,conduction,diffusion,dt,comm,ok,subcycling, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature,coupled_subcycling)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -40,13 +40,13 @@ contains
     integer :: direction,n(3)
     logical :: thermal_wall
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: subcycling
-    logical :: recursive_steps
+    logical, optional, intent(in) :: subcycling,coupled_subcycling
+    logical :: recursive_steps,coupled
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     type(amr_tree_state_3d) :: snapshot,st,ghost,gt
     real(dp) :: parameters(2),low(2),high(2),speeds(4),maxima(5),donors(5),interval,diffusivity,candidate,result,factor
-    integer :: flags(5),minflags(5),maxflags(5),rank,status,node,level,supplied,any_supplied
+    integer :: flags(6),minflags(6),maxflags(6),rank,status,node,level,supplied,any_supplied
     logical :: valid,ready,active,any_active
     ok=.false.;parameters=[hydro_cfl,transport_cfl]
     valid=all(ieee_is_finite(parameters))
@@ -72,10 +72,12 @@ contains
     if (status/=MPI_SUCCESS.or.any(low/=high)) return
     recursive_steps=.false.
     if (present(subcycling)) recursive_steps=subcycling
-    flags=merge(1,0,[transport_enabled,viscosity,conduction,diffusion,recursive_steps])
-    call MPI_Allreduce(flags,minflags,5,MPI_INTEGER,MPI_MIN,comm,status)
+    coupled=.false.
+    if(present(coupled_subcycling)) coupled=coupled_subcycling
+    flags=merge(1,0,[transport_enabled,viscosity,conduction,diffusion,recursive_steps,coupled])
+    call MPI_Allreduce(flags,minflags,6,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,maxflags,5,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,maxflags,6,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS.or.any(minflags/=maxflags)) return
     snapshot=state;st=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
@@ -145,7 +147,7 @@ contains
           interval,diffusivity,valid,donors(5))
         if (.not.valid) exit
         ! Retain the serial conservative full-interval bound for split halves.
-        factor=factor*factor
+        if(.not.coupled) factor=factor*factor
         if (interval<candidate/factor) candidate=interval*factor
         if(thermal_wall) then
           level=tree%nodes(node)%level+1;n=tree%nodes(node)%shape
