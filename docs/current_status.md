@@ -46,8 +46,10 @@ Scheduled/automatic serial SDC regridding now transfers signed reaction estimate
 with the gas ([checks](validation/sdc-tree-regrid-20260926.md)).
 SDC hydro stages now support level selection and separate coarse temporal
 donors for state and predictor sources ([checks](validation/sdc-level-hydro-20260926.md)).
-The recursive SDC driver, level-local transport/reaction coupling and MPI/EB SDC
-remain open.
+Transport stages now select levels and interpolate parent endpoints; reaction
+stages update one level while retaining other levels' state and source estimates
+([checks](validation/sdc-level-sources-20260926.md)). The recursive SDC driver
+and MPI/EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
