@@ -8,13 +8,111 @@ module spray_mpi_amr_tree_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_mixture_mod, only: valid_component_inventory
-  use spray_amr_tree_partition_mod, only: partition_amr_tree_spray_parcels,locate_amr_tree_spray_cells
+  use spray_amr_tree_partition_mod, only: partition_amr_tree_spray_parcels,locate_amr_tree_spray_cells, &
+    locate_amr_tree_ghost_cells
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
   implicit none
   private
   public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
-  public :: create_mpi_amr_virtual_particles
+  public :: create_mpi_amr_virtual_particles,create_mpi_amr_ghost_particles
 contains
+  ! Copies immediate-coarse physical parcels into the grown next-level boxes.
+  ! Each source has one deterministic destination, even when grown boxes overlap.
+  subroutine create_mpi_amr_ghost_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      target_level,grow,maximum_parcels,ghosts,ghost_mass,ghost_nodes,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,grow,maximum_parcels
+    type(spray_parcel), allocatable, intent(in) :: parcels(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_parcel), allocatable, intent(inout) :: ghosts(:)
+    real(dp), allocatable, intent(inout) :: ghost_mass(:,:)
+    integer, allocatable, intent(inout) :: ghost_nodes(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_parcel), allocatable :: physical(:),copies(:)
+    real(dp), allocatable :: mass(:,:),masses(:,:),positions(:,:)
+    integer, allocatable :: found(:,:),active(:,:),counts(:),offsets(:),next(:),nodes(:)
+    integer :: p,r,q,status,rank,nranks,flags(3),low(3),high(3)
+    logical :: valid,agreed
+    ok=.false.
+    valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid()
+    if(valid) valid=target_level>=1.and.target_level<tree%level_count().and.grow>=0.and.grow<=1000000
+    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
+    call agree()
+    if(.not.agreed) return
+    flags=[target_level,grow,merge(1,0,present(nodal_phi))]
+    call MPI_Allreduce(flags,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    ! Private physical migration validates replicated topology, bounds, payload
+    ! and EB geometry before any selection or output publication.
+    physical=parcels;mass=component_mass
+    if(present(nodal_phi)) then
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,physical,lower,spacing,1000000,valid,mass)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,physical,lower,spacing,periodic,1000000,valid,mass)
+    end if
+    if(.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,status)
+    if(status/=MPI_SUCCESS) return
+    allocate(positions(3,size(physical)),counts(nranks),offsets(nranks),next(nranks));counts=0
+    do p=1,size(physical)
+      positions(:,p)=physical(p)%position
+    end do
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,active,valid)
+    call agree()
+    if(.not.agreed) return
+    call locate_amr_tree_ghost_cells(tree,positions,lower,spacing,periodic,target_level,grow,found,valid)
+    call agree()
+    if(.not.agreed) return
+    do p=1,size(physical)
+      if(tree%nodes(active(1,p))%level/=target_level-1) found(1,p)=0
+      if(found(1,p)==0) cycle
+      r=owners(found(1,p))+1;counts(r)=counts(r)+1
+    end do
+    offsets(1)=0
+    do r=2,nranks
+      offsets(r)=offsets(r-1)+counts(r-1)
+    end do
+    next=offsets+1;allocate(copies(sum(counts)),masses(size(mass,1),sum(counts)))
+    do p=1,size(physical)
+      if(found(1,p)==0) cycle
+      r=owners(found(1,p))+1;q=next(r);next(r)=q+1
+      copies(q)=physical(p);masses(:,q)=mass(:,p)
+    end do
+    call exchange_spray_parcel_bins(comm,copies,counts,offsets,maximum_parcels,valid,masses)
+    if(.not.valid) return
+    deallocate(positions);allocate(positions(3,size(copies)))
+    do p=1,size(copies)
+      positions(:,p)=copies(p)%position
+    end do
+    call locate_amr_tree_ghost_cells(tree,positions,lower,spacing,periodic,target_level,grow,found,valid)
+    if(valid) then
+      do p=1,size(copies)
+        if(found(1,p)==0) then
+          valid=.false.;exit
+        end if
+        if(owners(found(1,p))/=rank) valid=.false.
+      end do
+    end if
+    call agree()
+    if(.not.agreed) return
+    nodes=found(1,:)
+    call move_alloc(copies,ghosts);call move_alloc(masses,ghost_mass);call move_alloc(nodes,ghost_nodes)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine create_mpi_amr_ghost_particles
+
   ! Build nonaggregated coarse representations of all finer active parcels.
   ! The separate output retains source IDs; never merge it into physical parcels.
   ! Caller publishes/clears this level-local population with its stage lifecycle.

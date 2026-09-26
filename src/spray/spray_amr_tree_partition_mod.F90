@@ -8,6 +8,7 @@ module spray_amr_tree_partition_mod
   implicit none
   private
   public :: locate_amr_tree_spray_cells,partition_amr_tree_spray_parcels
+  public :: locate_amr_tree_ghost_cells
 contains
   ! Half-open cells/patches; finest covering node wins. Periodic lookup wraps
   ! coordinates without modifying parcel positions. Outputs publish together.
@@ -63,6 +64,57 @@ contains
     end do
     call move_alloc(candidate,locations);ok=.true.
   end subroutine
+
+  ! Fine-level boxes grown in fine cells. Node zero means no matching box.
+  ! Valid cells take precedence over grown boxes; ties use tree order.
+  ! Local cell indices may lie outside the valid patch. Coordinates are unchanged.
+  subroutine locate_amr_tree_ghost_cells(tree,positions,lower,spacing,periodic,target_level,grow,locations,ok)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    integer, intent(in) :: target_level,grow
+    integer, allocatable, intent(inout) :: locations(:,:)
+    logical, intent(out) :: ok
+    integer, allocatable :: candidate(:,:),physical(:,:),ratios(:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer(int64) :: cell(3),shifted(3),lo(3),hi(3),width
+    real(dp) :: fraction(3),length(3)
+    integer :: p,node,axis,pass
+    logical :: valid
+    ok=.false.
+    if(target_level<1.or.grow<0.or.grow>1000000) return
+    call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,physical,valid)
+    if(.not.valid) return
+    if(target_level>=tree%level_count()) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(.not.valid) return
+    length=spacing*real(tree%nodes(1)%shape,dp)
+    allocate(candidate(4,size(positions,2)));candidate=0
+    do p=1,size(positions,2)
+      fraction=(positions(:,p)-lower)/length
+      do axis=1,3
+        if(periodic(axis)) fraction(axis)=modulo(fraction(axis),1._dp)
+      end do
+      cell=min(domain(:,target_level+1)-1,floor(fraction*real(domain(:,target_level+1),dp),kind=int64))
+      do pass=0,1
+        width=int(grow,int64)*pass
+        do node=1,size(tree%nodes)
+          if(tree%nodes(node)%level/=target_level) cycle
+          lo=origin(:,node)-width;hi=origin(:,node)+int(tree%nodes(node)%shape,int64)-1+width
+          shifted=cell
+          do axis=1,3
+            if(.not.periodic(axis)) cycle
+            if(shifted(axis)<lo(axis)) shifted(axis)=shifted(axis)+domain(axis,target_level+1)
+            if(shifted(axis)>hi(axis)) shifted(axis)=shifted(axis)-domain(axis,target_level+1)
+          end do
+          if(any(shifted<lo).or.any(shifted>hi)) cycle
+          candidate(:,p)=[node,int(shifted-origin(:,node))+1];exit
+        end do
+        if(candidate(1,p)>0) exit
+      end do
+    end do
+    call move_alloc(candidate,locations);ok=.true.
+  end subroutine locate_amr_tree_ghost_cells
 
   ! Input IDs are strictly increasing, as after MPI receive sorting. Stable
   ! rank bins preserve every parcel field and optional component association.

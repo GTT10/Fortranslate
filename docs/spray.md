@@ -32,8 +32,8 @@ leave parcels, components and partition outputs unchanged.
 This permits a caller-owned particle copy to be assigned to coarse-level
 owners without coarsening the gas topology or changing parcel coordinates,
 IDs, mass or breakup history. Virtual population creation is described below;
-ghost populations, aggregation and their connection to recursive SDC remain
-required. The pinned reference's
+ghost creation is described below. Aggregation and the connection to recursive
+SDC remain required. The pinned reference's
 `Source/Particle.cpp::particleMKD` creates virtual/ghost representations before
 level updates; these ownership APIs provide a prerequisite for that lifecycle.
 See the [focused checks](validation/spray-level-ownership-20260927.md).
@@ -57,9 +57,36 @@ these temporary populations at the level lifecycle boundaries.
 
 This implements the unaggregated coarse representation needed by the pinned
 PeleC virtual-particle lifecycle. It does not implement AMReX cell aggregation,
-reserved virtual IDs, ghost particles, level-specific interpolation/deposition
-or recursive time integration. Those connections remain open.
+reserved virtual IDs, level-specific interpolation/deposition or recursive time
+integration. Ghost creation is described below. Those connections remain open.
 See [creation checks](validation/spray-virtual-particles-20260927.md).
+
+## Fine-level ghost particle populations
+
+`create_mpi_amr_ghost_particles` copies immediate-coarse physical parcels
+into fine-level boxes enlarged by `grow` fine cells. `target_level` must be
+at least one. The separate output contains parcel copies, component masses
+and target node indices. Periodic images participate in lookup without
+changing parcel coordinates; valid boxes take precedence over enlarged boxes,
+and overlapping enlarged boxes use tree order for a single destination.
+`locate_amr_tree_ghost_cells` exposes the same lookup, with node zero for no
+match and local cell indices that may lie outside the valid patch.
+
+The source is read-only. Creation first validates a private physical migration,
+then selects only parcels whose finest covering level is `target_level-1`.
+Optional `nodal_phi` retains EB solid-point validation. All output arrays
+publish together after successful exchange; capacity failure, invalid geometry
+or rank-disagreeing target/width retains previous outputs. Source IDs are
+retained, so ghosts must remain separate from physical inventories and
+checkpoints. These copies require level-local ghost gas fields and source
+transfer; they cannot be fed directly into the existing composite coupling
+and treated as additional physical particles.
+
+This supplies the creation step used by the pinned reference's
+`setupGhostParticles`; grown-box tie ordering is this implementation's explicit
+contract and has not been compared to AMReX locator ordering. Per-subcycle
+refresh/removal, ghost evolution, source transfer and recursive application
+routing remain open. See [creation checks](validation/spray-ghost-particles-20260927.md).
 
 ## AMR and embedded boundaries
 

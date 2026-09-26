@@ -5,14 +5,16 @@ program test_spray_mpi_eb_tree
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
-  use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels,create_mpi_amr_virtual_particles
+  use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels,create_mpi_amr_virtual_particles, &
+    create_mpi_amr_ghost_particles
   implicit none
   type(amr_patch_3d) :: patch(1)
   type(amr_patch_tree_3d) :: tree
-  type(spray_parcel), allocatable :: drops(:),saved(:),virtuals(:)
-  real(dp), allocatable :: masses(:,:),saved_mass(:,:),virtual_mass(:,:)
+  type(spray_parcel), allocatable :: drops(:),saved(:),virtuals(:),ghosts(:)
+  real(dp), allocatable :: masses(:,:),saved_mass(:,:),virtual_mass(:,:),ghost_mass(:,:)
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=1
   integer :: rank,nranks,ierr,i,owners(2),p
+  integer, allocatable :: ghost_nodes(:)
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -30,6 +32,18 @@ program test_spray_mpi_eb_tree
   drops(1)=spray_parcel(int(rank+1,int64),[1._dp,1._dp,1._dp],[1._dp,2._dp,3._dp],1e-9_dp,350._dp,100._dp)
   masses(:,1)=drops(1)%mass*[.25_dp,.75_dp]
   saved=drops;saved_mass=masses
+  drops(1)%position(1)=2.125_dp
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,drops,masses,zero,spacing, &
+    [.false.,.false.,.false.],1,1,100,ghosts,ghost_mass,ghost_nodes,ok,phi)
+  call require(ok.and.size(ghosts)==merge(nranks,0,rank==nranks-1).and.all(ghost_nodes==2),'EB ghost halo')
+  if(rank==0) drops(1)%position(1)=.5_dp
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,drops,masses,zero,spacing, &
+    [.false.,.false.,.false.],1,1,100,ghosts,ghost_mass,ghost_nodes,ok,phi)
+  call require(.not.ok.and.size(ghosts)==merge(nranks,0,rank==nranks-1),'solid ghost rollback')
+  do p=1,size(ghosts)
+    call require(ghosts(p)%position(1)==2.125_dp.and.ghosts(p)%id==p,'retained ghost payload')
+  end do
+  drops=saved
   call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,drops,masses,zero,spacing, &
     [.false.,.false.,.false.],0,100,virtuals,virtual_mass,ok,phi)
   call require(ok.and.size(virtuals)==merge(nranks,0,rank==0),'EB virtual coarse ownership')

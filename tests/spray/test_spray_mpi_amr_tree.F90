@@ -5,15 +5,17 @@ program test_spray_mpi_amr_tree
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
-  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles
+  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
+    create_mpi_amr_ghost_particles
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
-  type(spray_parcel), allocatable :: parcels(:),saved(:),virtuals(:),saved_virtuals(:)
-  real(dp), allocatable :: masses(:,:),saved_mass(:,:),virtual_mass(:,:),saved_virtual_mass(:,:)
+  type(spray_parcel), allocatable :: parcels(:),saved(:),virtuals(:),saved_virtuals(:),ghosts(:)
+  real(dp), allocatable :: masses(:,:),saved_mass(:,:),virtual_mass(:,:),saved_virtual_mass(:,:),ghost_mass(:,:)
   type(spray_parcel) :: expected
   integer :: rank,nranks,ierr,p,id,owners(4),bad_owners(4),ceiling
   real(dp) :: zero(3)=0._dp,spacing(3)=1._dp,bad_lower(3)
+  integer, allocatable :: ghost_nodes(:)
   logical :: ok
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -34,6 +36,33 @@ program test_spray_mpi_amr_tree
     masses(:,p)=parcels(p)%mass*[.25_dp,.75_dp]
   end do
   saved=parcels;saved_mass=masses
+  do p=1,size(parcels)
+    parcels(p)%position=[merge(1.125_dp,3.875_dp,mod(parcels(p)%id,2_int64)==1),.25_dp,.25_dp]
+  end do
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],2,1,100,ghosts,ghost_mass,ghost_nodes,ok)
+  call require(ok.and.size(ghosts)==merge(2*nranks,0,rank==nranks-1),'fine and periodic ghost halo')
+  call require(all(ghost_nodes==4),'ghost target node')
+  do p=1,size(ghosts)
+    expected=make_parcel(int(ghosts(p)%id))
+    call require(all(ghost_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'ghost components')
+    call require(ghosts(p)%position(1)==merge(1.125_dp,3.875_dp,mod(ghosts(p)%id,2_int64)==1), &
+      'ghost position unchanged across periodic image')
+  end do
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],2,1,0,ghosts,ghost_mass,ghost_nodes,ok)
+  call require(.not.ok.and.size(ghosts)==merge(2*nranks,0,rank==nranks-1).and.all(ghost_nodes==4), &
+    'ghost capacity rollback')
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],2,merge(0,1,rank==0),100,ghosts,ghost_mass,ghost_nodes,ok)
+  call require(.not.ok.and.size(ghosts)==merge(2*nranks,0,rank==nranks-1),'ghost width agreement')
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],2,0,100,ghosts,ghost_mass,ghost_nodes,ok)
+  call require(ok.and.size(ghosts)==0.and.size(ghost_nodes)==0,'zero halo excludes coarse particles')
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
+    [.true.,.false.,.false.],1,8,100,ghosts,ghost_mass,ghost_nodes,ok)
+  call require(ok.and.size(ghosts)==0,'ghosts exclude particles already at target level')
+  parcels=saved
   call create_mpi_amr_virtual_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
     [.true.,.false.,.false.],1,100,virtuals,virtual_mass,ok)
   call require(ok.and.size(virtuals)==merge(nranks,0,rank==0),'virtuals select only deeper levels')
