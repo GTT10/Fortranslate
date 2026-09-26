@@ -44,10 +44,13 @@ hydro_method='plm_ctu', riemann_solver='pelec', boundary_faces=6*'outflow',
 ```
 
 This experimental path supports drag, heating and evaporation with gas chemistry
-and molecular transport. Gas force density uses `external_forcing`. Keep
+and molecular transport. Gas force density uses `external_forcing`;
+`acceleration` in `/eb_spray/` accelerates both gas and particles. Particle
+half kicks bracket each level interval, with physical-particle momentum and work
+reported in the `force` budget column
+([checks](../../docs/validation/spray-recursive-acceleration-20260927.md)). Keep
 `particle_options%breakup_model='none'`, `wall_impacts=.false.`,
-`walls%evolve=.false.` and `acceleration=0.` in `/eb_spray/`; recursive breakup,
-films and particle acceleration reject at input. Periodic migration also rejects.
+`walls%evolve=.false.` in `/eb_spray/`; recursive breakup and films reject at input. Periodic migration also rejects.
 Reflecting particle/EB walls are distinct from the unsupported film-impact model.
 
 Physical particle exchange is synchronized conservatively after each outer step.
