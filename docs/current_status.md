@@ -157,7 +157,10 @@ flux redistribution through sparse neighbor-rate and excess exchanges;
 rank-changing continuation retains the selector
 ([checks](validation/sdc-mpi-eb-redistribution-20260927.md)). MPI particle intervals now export independent owner-local integrated gas sources
 with collective rollback ([checks](validation/spray-sdc-source-export-20260927.md));
-old/new spray-source coupling into SDC remains open. A serial
+the serial/MPI EB SDC gas driver now consumes old/new auxiliary source callbacks
+with a separate exchange inventory
+([checks](validation/sdc-eb-auxiliary-source-20260927.md)). Particle kick/drift
+scheduling and spray application dispatch remain open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons

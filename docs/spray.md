@@ -13,8 +13,11 @@ MPI AMR/EB deposition and `advance_mpi_amr_mixture_coupling` accept optional
 fluid volume. It is accumulated independently of the gas background and published
 with the accepted gas/particle update. Failures retain its previous value. Divide
 by the interval for a source rate; wall/outflow inventories remain separate.
-The old/new SDC particle-stage connection is still open. See the
-[source-export checks](validation/spray-sdc-source-export-20260927.md).
+The EB SDC gas driver now accepts old/new source callbacks and reports their
+inventory separately from external forcing. Particle kick/drift scheduling and
+application dispatch remain open. See the
+[source-export checks](validation/spray-sdc-source-export-20260927.md) and
+[gas-stage checks](validation/sdc-eb-auxiliary-source-20260927.md).
 
 ## AMR and embedded boundaries
 
