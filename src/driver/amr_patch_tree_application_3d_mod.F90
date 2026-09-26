@@ -118,7 +118,6 @@ contains
     end if
     if (sdc) then
       if (subcycling) error stop 'SDC tree subcycling is not implemented'
-      if (present(schedule_path).or.regrid_interval_steps>0) error stop 'SDC tree regridding is not implemented'
     else
       if (any(config%external_forcing/=0)) error stop 'Tree external forcing requires SDC'
     end if
@@ -648,13 +647,16 @@ contains
     subroutine apply_event(next_tree)
       type(amr_patch_tree_3d), intent(in) :: next_tree
       type(amr_tree_state_3d) :: candidate,temps,absolute_state
+      type(amr_tree_state_3d), allocatable :: remapped_reaction
       integer(int64), allocatable :: o(:,:),d(:,:)
       integer, allocatable :: r(:)
       real(dp), allocatable :: spacing(:,:)
       real(dp) :: before(size(q)),after(size(q)),scale(size(q)),error
       integer :: peer
       logical :: valid
-      call remap_amr_patch_tree_reactive_3d(tree,state,temperature,next_tree,species,candidate,temps,valid)
+      if (allocated(reaction_source)) allocate(remapped_reaction)
+      call remap_amr_patch_tree_reactive_3d(tree,state,temperature,next_tree,species,candidate,temps,valid, &
+        old_reaction_source=reaction_source,reaction_source=remapped_reaction)
       if (.not.valid) error stop 'Scheduled tree remap failed'
       call composite_integrals_amr_patch_tree_3d(tree,state,root_h,before,valid)
       if (.not.valid) error stop 'Invalid pre-remap inventory'
@@ -675,6 +677,7 @@ contains
         spacing(:,peer)=root_h*real(d(:,1),dp)/real(d(:,next_tree%nodes(peer)%level+1),dp)
       end do
       tree=next_tree;state=candidate;temperature=temps
+      if (allocated(reaction_source)) reaction_source=remapped_reaction
       origin=o;domain=d;ratios=r;h=spacing;count=size(tree%nodes)-1
       max_remap_error=max(max_remap_error,error)
       write(*,'(a,es24.16,a,i0,a,i0)') 'Regrid time: ',time,' Nodes: ',count+1,' Levels: ',tree%level_count()

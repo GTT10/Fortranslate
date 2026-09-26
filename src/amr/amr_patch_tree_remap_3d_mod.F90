@@ -104,17 +104,28 @@ contains
     new_state=candidate;ok=.true.
   end subroutine
 
-  subroutine remap_amr_patch_tree_reactive_3d(old_tree,old_state,old_temperature,new_tree,species,state,temperature,ok)
+  subroutine remap_amr_patch_tree_reactive_3d(old_tree,old_state,old_temperature,new_tree,species,state,temperature,ok, &
+      old_reaction_source,reaction_source)
     type(amr_patch_tree_3d), intent(in) :: old_tree,new_tree
     type(amr_tree_state_3d), intent(in) :: old_state,old_temperature
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: candidate,temps
+    type(amr_tree_state_3d), optional, intent(in) :: old_reaction_source
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    type(amr_tree_state_3d) :: candidate,temps,rates
     real(dp), allocatable :: recovered(:,:,:)
     integer :: node,n(3)
     logical :: valid
     ok=.false.
+    if (present(old_reaction_source).neqv.present(reaction_source)) return
+    if (present(old_reaction_source)) then
+      if (.not.old_reaction_source%is_valid(old_tree)) return
+      if (size(old_reaction_source%fields(1)%values,1)/=reactive_nvar(size(species))-4) return
+      ! Signed source densities use geometric overlap, without species clipping.
+      call remap_amr_patch_tree_3d(old_tree,old_reaction_source,new_tree,rates,valid)
+      if (.not.valid) return
+    end if
     if (.not.old_state%is_valid(old_tree).or..not.old_temperature%is_valid(old_tree)) return
     if (size(old_state%fields(1)%values,1)/=reactive_nvar(size(species))) return
     if (size(old_temperature%fields(1)%values,1)/=1) return
@@ -135,7 +146,9 @@ contains
       temps%fields(node)%values(1,:,:,:)=recovered
       deallocate(recovered)
     end do
-    state=candidate;temperature=temps;ok=.true.
+    state=candidate;temperature=temps
+    if (present(reaction_source)) reaction_source=rates
+    ok=.true.
   end subroutine
 
   pure integer(int64) function gcd(a,b) result(g)
