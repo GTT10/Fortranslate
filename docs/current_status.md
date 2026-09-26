@@ -137,7 +137,9 @@ and temperature ([checks](validation/sdc-mpi-eb-rebalance-20260927.md)). MPI EB 
 restriction and PCM prolongation; scheduled changed-rank restart is checked
 ([evidence](validation/sdc-mpi-eb-regrid-20260927.md)). MPI EB SDC source halos now interpolate ancestor time endpoints with collective
 control agreement and rollback
-([checks](validation/sdc-mpi-eb-source-time-20260927.md)). MPI EB SDC recursive
+([checks](validation/sdc-mpi-eb-source-time-20260927.md)). MPI EB SDC hydro/transport stages now select a level and receive ancestor gas
+endpoints; hydro additionally accepts separate source endpoints and fractions
+([checks](validation/sdc-mpi-eb-level-stages-20260927.md)). MPI EB SDC recursive
 integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
