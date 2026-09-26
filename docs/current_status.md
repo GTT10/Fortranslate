@@ -98,6 +98,9 @@ limiter without averaging or synchronization
 The serial EB tree now couples those stages in a common-step SDC loop, with
 final peer/coarse-fine synchronization and separate source inventories
 ([checks](validation/sdc-eb-tree-loop-20260927.md)).
+The serial EB tree checkpoint envelope now preserves SDC forcing inventories
+and reaction fields, with transactional reads
+([checks](validation/sdc-eb-tree-checkpoint-20260927.md)).
 EB tree SDC application routing, recursive stepping and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
