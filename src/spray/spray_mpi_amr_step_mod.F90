@@ -29,7 +29,132 @@ module spray_mpi_amr_step_mod
   private
   public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo,advance_mpi_amr_ghost_halo
   public :: advance_mpi_eb_ghost_stage,advance_mpi_amr_level_halo,advance_mpi_eb_population_stage
+  public :: advance_mpi_eb_population_sdc_stage
+  type, public :: spray_sdc_population_stage
+    integer :: next_stage=0,iterations=0,depth=-1
+    real(dp) :: time=0,interval=0
+    type(spray_level_population) :: midpoint(3)
+    real(dp) :: old_wall(5)=0
+    real(dp), allocatable :: old_boundary(:)
+  end type spray_sdc_population_stage
 contains
+  ! Old half kick + full drift, then repeated private new half kicks. Only the
+  ! final iteration publishes particle populations. Sources are stage rates;
+  ! stage>0 ledgers contain old plus current-new physical boundary changes.
+  subroutine advance_mpi_eb_population_sdc_stage(comm,species,transport,components,options,tree,owners,geometry, &
+      state,temperature,width,target_level,grow,maximum_parcels,populations,work,time,interval,stage,iterations,faces, &
+      source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_parcels
+    type(spray_level_population), intent(inout) :: populations(3)
+    type(amr_tree_state_3d), intent(in) :: state,temperature,centroids,target_volume_fraction
+    real(dp), intent(in) :: time,interval,nodal_phi(0:,0:,0:)
+    integer, intent(in) :: stage,iterations
+    type(spray_sdc_population_stage), intent(inout) :: work
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5),boundary_change(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
+    real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
+    integer, optional, intent(in) :: maximum_received
+    type(spray_sdc_population_stage) :: candidate
+    type(spray_level_population) :: trial(3)
+    type(amr_tree_state_3d) :: change,leftover
+    real(dp) :: half_interval,drift,wall(5),exterior(reactive_nvar(size(species)))
+    real(dp) :: times(2),low_time(2),high_time(2)
+    integer :: flags(3),low(3),high(3),status
+    logical :: valid,agreed
+    ok=.false.;times=[time,interval]
+    valid=all(ieee_is_finite(times)).and.time>=0.and.interval>0.and.iterations>=1
+    valid=valid.and.stage>=0.and.stage<=iterations.and.size(boundary_change)==size(exterior)
+    if(stage==0) then
+      valid=valid.and.work%next_stage==0
+    else
+      valid=valid.and.stage==work%next_stage.and.iterations==work%iterations.and.target_level==work%depth
+      valid=valid.and.time==work%time.and.interval==work%interval.and.allocated(work%old_boundary)
+      if(allocated(work%old_boundary)) valid=valid.and.size(work%old_boundary)==size(exterior)
+    end if
+    call agree();if(.not.agreed) return
+    call MPI_Allreduce(times,low_time,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(times,high_time,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low_time/=high_time)) return
+    flags=[stage,iterations,target_level]
+    call MPI_Allreduce(flags,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    half_interval=.5_dp*interval
+    if(half_interval<=0) return
+    candidate=work;drift=0
+    if(stage==0) then
+      trial=populations;drift=interval
+    else
+      trial=work%midpoint
+    end if
+    call advance_mpi_eb_population_stage(comm,species,transport,components,options,tree,owners,geometry, &
+      state,temperature,width,target_level,grow,maximum_parcels,trial,half_interval,drift,faces, &
+      change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+    if(.not.valid) return
+    call to_rate(change)
+    if(.not.agreed) return
+    call to_rate(leftover)
+    if(.not.agreed) return
+    if(stage==0) then
+      candidate%midpoint=trial;candidate%old_wall=wall;candidate%old_boundary=exterior
+      candidate%time=time;candidate%interval=interval;candidate%depth=target_level;candidate%iterations=iterations
+    else
+      valid=all(ieee_is_finite(candidate%old_wall)).and.all(ieee_is_finite(candidate%old_boundary))
+      call agree();if(.not.agreed) return
+      valid=.not.any(wall>huge(1._dp)-max(candidate%old_wall,0._dp)).and. &
+        .not.any(wall< -huge(1._dp)-min(candidate%old_wall,0._dp))
+      valid=valid.and..not.any(exterior>huge(1._dp)-max(candidate%old_boundary,0._dp)).and. &
+        .not.any(exterior< -huge(1._dp)-min(candidate%old_boundary,0._dp))
+      call agree();if(.not.agreed) return
+      wall=wall+candidate%old_wall;exterior=exterior+candidate%old_boundary
+    end if
+    candidate%next_stage=stage+1
+    if(stage==iterations) then
+      candidate%next_stage=0
+      populations=trial
+    end if
+    work=candidate
+    call move_alloc(change%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    wall_change=wall;boundary_change=exterior;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+    subroutine to_rate(field)
+      type(amr_tree_state_3d), intent(inout) :: field
+      integer :: node
+      valid=.true.
+      if(half_interval<1) then
+        do node=1,size(owners)
+          if(.not.allocated(field%fields(node)%values)) cycle
+          if(any(abs(field%fields(node)%values)>huge(1._dp)*half_interval)) valid=.false.
+        end do
+      end if
+      call agree();if(.not.agreed) return
+      do node=1,size(owners)
+        if(allocated(field%fields(node)%values)) field%fields(node)%values=field%fields(node)%values/half_interval
+      end do
+    end subroutine to_rate
+  end subroutine advance_mpi_eb_population_sdc_stage
+
   ! One level stage, populations ordered physical / virtual / ghost.
   ! All populations sample the same frozen stage-time gas. Only physical
   ! wall/outflow ledgers belong to the physical system inventory.

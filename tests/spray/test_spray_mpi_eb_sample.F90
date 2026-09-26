@@ -1,7 +1,8 @@
 program test_spray_mpi_eb_sample
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
-  use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage
+  use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
+    advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage
   use spray_mpi_amr_tree_mod, only: spray_level_population
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,initialize_spray_liquid
   use spray_mixture_mod, only: advance_mixture_frozen_gas
@@ -114,7 +115,9 @@ contains
     type(spray_options) :: options
     type(spray_parcel), allocatable :: ghosts(:)
     type(spray_parcel) :: reference
-    type(spray_level_population) :: group(3),before_group(3)
+    type(spray_level_population) :: group(3),before_group(3),expected_group(3)
+    type(spray_sdc_population_stage) :: work
+    type(amr_tree_state_3d) :: expected_source,expected_remainder
     type(amr_tree_state_3d) :: group_source,group_remainder,old_group_source,old_group_remainder
     real(dp), allocatable :: mass(:,:),old_mass(:,:),delta(:),integral(:),ledger(:)
     real(dp) :: wall(5),reference_mass(1)
@@ -283,6 +286,64 @@ contains
         if(owners(p)/=rank) cycle
         call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
           all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values),'combined source rollback')
+      end do
+      group(3)%nodes=query_nodes
+      do population=1,3
+        if(count>0) group(population)%parcels(1)%velocity(1)=-20._dp
+      end do
+      before_group=group;fraction=.25_dp
+      call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,work,0._dp,2e-8_dp,0,2,faces,group_source,group_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(ok.and.work%next_stage==1,'old SDC kick and drift cached')
+      do population=1,3
+        call require(all(group(population)%component_mass==before_group(population)%component_mass), &
+          'old stage does not publish physical population')
+        if(count>0) call require(maxval(abs(work%midpoint(population)%parcels(1)%position- &
+          group(population)%parcels(1)%position-2e-8_dp*work%midpoint(population)%parcels(1)%velocity))<1e-14_dp, &
+          'old stage performs one full drift')
+      end do
+      expected_group=work%midpoint;fraction=1
+      call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,expected_group,1e-8_dp,0._dp,faces,expected_source,expected_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(ok,'single new half-kick reference')
+      call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,work,0._dp,2e-8_dp,1,2,faces,group_source,group_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(ok.and.work%next_stage==2,'first new SDC population iteration')
+      do population=1,3
+        call require(all(group(population)%component_mass==before_group(population)%component_mass), &
+          'intermediate iteration leaves population uncommitted')
+      end do
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==expected_source%fields(p)%values/1e-8_dp).and. &
+          all(group_remainder%fields(p)%values==expected_remainder%fields(p)%values/1e-8_dp), &
+          'SDC sources are rates over the actual half kick')
+      end do
+      old_group_source=group_source;old_group_remainder=group_remainder;wall=17;ledger=19
+      if(count>0) work%midpoint(3)%nodes=0
+      call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,work,0._dp,2e-8_dp,2,2,faces,group_source,group_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(.not.ok.and.work%next_stage==2.and.all(wall==17).and.all(ledger==19),'SDC late failure retains stage')
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values),'SDC late failure retains rates')
+      end do
+      work%midpoint(3)%nodes=query_nodes
+      call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,work,0._dp,2e-8_dp,2,2,faces,group_source,group_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction)
+      call require(ok.and.work%next_stage==0,'final SDC particle iteration commits')
+      do population=1,3
+        call require(all(group(population)%component_mass==expected_group(population)%component_mass), &
+          'repeated new iteration applies only one half kick')
+        if(count>0) call require(all(group(population)%parcels(1)%velocity==expected_group(population)%parcels(1)%velocity) &
+          .and.all(group(population)%parcels(1)%position==expected_group(population)%parcels(1)%position), &
+          'final SDC particles match one drift and one new kick')
       end do
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
