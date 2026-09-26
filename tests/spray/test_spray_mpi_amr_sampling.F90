@@ -1,11 +1,13 @@
 program test_spray_mpi_amr_sampling
   use mpi_f08
+  use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
+    amr_tree_integer_layout_3d
   use spray_amr_tree_coupling_mod, only: sample_amr_tree_spray_field
-  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field
+  use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,sample_mpi_amr_particle_halo
   implicit none
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
@@ -114,9 +116,67 @@ program test_spray_mpi_amr_sampling
   call require(ok.and.size(reference,2)==0,'empty serial bounded query')
   call sample_amr_tree_spray_field(tree,full,positions,zero,spacing,periodic,reference,ok,3)
   call require(.not.ok.and.size(reference,2)==0,'empty serial invalid level rollback')
+  call check_particle_halo()
   if (rank==0) print *, 'PASS: owner-local AMR spray field sampling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_particle_halo()
+    type(amr_tree_state_3d) :: halo,vf,packed
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:),query_nodes(:)
+    real(dp), allocatable :: query(:,:),values(:,:),retained(:,:)
+    real(dp) :: x(3),h(3),f
+    integer :: p,a,b,c,n(3),count,q
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    call require(ok,'halo layout')
+    allocate(halo%fields(3),vf%fields(3),packed%fields(3))
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      n=tree%nodes(p)%shape;h=4._dp/real(domain(:,tree%nodes(p)%level+1),dp)
+      allocate(halo%fields(p)%values(2,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2))
+      allocate(vf%fields(p)%values(1,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2));vf%fields(p)%values=.5_dp
+      do c=-1,n(3)+2
+      do b=-1,n(2)+2
+      do a=-1,n(1)+2
+        x=(real(origin(:,p),dp)+real([a,b,c],dp)-.5_dp)*h
+        f=2*x(1)+3*x(2)-x(3)+7*.25_dp
+        halo%fields(p)%values(:,a,b,c)=[f,-2*f]
+      end do
+      end do
+      end do
+      allocate(packed%fields(p)%values(2,n(1)+4,n(2)+4,n(3)+4))
+      packed%fields(p)%values=halo%fields(p)%values
+    end do
+    count=merge(2,0,rank==owners(2));allocate(query_nodes(count),query(3,count));query_nodes=2
+    if(count>0) then
+      query(:,1)=[2.125_dp,1.125_dp,1.125_dp]
+      query(:,2)=[3.875_dp,1.125_dp,1.125_dp]
+    end if
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
+      periodic,values,ok,vf)
+    call require(ok,'complete ghost halo sampling')
+    do q=1,count
+      x=query(:,q)
+      if(q==2) x(1)=x(1)-4
+      f=2*x(1)+3*x(2)-x(3)+7*.25_dp
+      call require(maxval(abs(values(:,q)-[f,-2*f]))<1e-13_dp,'affine ghost and periodic-image interpolation')
+    end do
+    retained=values
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,packed,2,2,query_nodes,query,zero,spacing, &
+      periodic,values,ok)
+    call require(ok.and.all(values==retained),'packed and physical halo bounds agree')
+    if(count>0) vf%fields(2)%values=0
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
+      periodic,values,ok,vf)
+    call require(.not.ok.and.all(values==retained),'zero-fluid support rollback')
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,merge(1,2,rank==0), &
+      query_nodes,query,zero,spacing,periodic,values,ok)
+    call require(.not.ok.and.all(values==retained),'halo width disagreement rollback')
+    if(count>0) query(2,1)=10
+    call sample_mpi_amr_particle_halo(MPI_COMM_WORLD,tree,owners,halo,2,2,query_nodes,query,zero,spacing, &
+      [.true.,.false.,.true.],values,ok)
+    call require(.not.ok.and.all(values==retained),'insufficient halo rollback')
+  end subroutine check_particle_halo
   subroutine sample()
     call sample_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,zero,spacing,periodic,samples,ok)
   end subroutine

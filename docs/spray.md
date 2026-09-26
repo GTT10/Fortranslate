@@ -125,6 +125,28 @@ source transfer/synchronization and the recursive spray driver still need to
 consume the separate level fields without double-counting virtual/ghost copies.
 See [source checks](validation/spray-level-source-20260927.md).
 
+## Particle sampling from complete gas halos
+
+`sample_mpi_amr_particle_halo` reads a caller-filled owner-local halo at the
+particle's assigned node resolution. Each query supplies its target node;
+that node must belong to the querying rank. Trilinear weights use the fine
+cell centers, including halo cells outside the valid patch. Periodic queries
+use the image nearest the patch center without modifying particle coordinates.
+Both physical spatial bounds (`1-width:N+width`) and packed bounds are accepted.
+An optional matching `fluid_fraction` halo multiplies and renormalizes weights;
+zero-fluid cells are ignored, and zero total support rejects the query.
+
+The caller must fill all required corner donors at the stage time. The existing
+`fill_mpi_eb_tree_halo_3d` produces compatible layouts and accepts ancestor time
+endpoints; requesting its volume-fraction output fills corners as well as faces.
+Wider EB halos require its target-resolution volume metrics. This sampler does
+not fill those arrays or perform time interpolation itself. It also does not
+check EB line-of-sight to cell centroids; this remains necessary before using
+it for arbitrary cut-cell particle coupling. Width/geometry disagreement,
+nonfinite requested values, wrong ownership or insufficient halo support reject
+collectively and preserve the previous samples. See
+[halo sampling checks](validation/spray-halo-sampling-20260927.md).
+
 ## AMR and embedded boundaries
 
 An AMR ownership library now locates parcels in the finest covering regular

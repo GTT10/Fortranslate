@@ -6,7 +6,8 @@ module spray_mpi_amr_field_mod
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,fetch_mpi_amr_tree_cells_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,fetch_mpi_amr_tree_cells_3d, &
+    validate_mpi_amr_tree_metadata_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
@@ -20,8 +21,150 @@ module spray_mpi_amr_field_mod
     real(dp), allocatable :: weights(:),volumes(:)
   end type
   public :: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
-  public :: deposit_mpi_amr_tree_spray_gas
+  public :: deposit_mpi_amr_tree_spray_gas,sample_mpi_amr_particle_halo
 contains
+  ! Interpolate caller-filled, owner-local full halos at the particle's assigned
+  ! node resolution. The caller supplies corner donors at the required time.
+  ! Storage may use either physical or packed spatial lower bounds.
+  subroutine sample_mpi_amr_particle_halo(comm,tree,owners,halo,nvar,width,nodes,positions,lower,spacing, &
+      periodic,samples,ok,fluid_fraction)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,width,nodes(:)
+    type(amr_tree_state_3d), intent(in) :: halo
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction
+    real(dp), intent(in) :: positions(:,:),lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    real(dp), allocatable, intent(inout) :: samples(:,:)
+    logical, intent(out) :: ok
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: candidate(:,:),term(:)
+    real(dp) :: bounds(6),reference(6),length(3),fraction(3),coordinate(3),part(3),weights(8),total,vf,w
+    integer :: flags(5),low(5),high(5),rank,status,node,p,level,q,a,b,c,base(3),idx(3),cells(3,8),storage(3),n(3)
+    logical :: valid,agreed
+    ok=.false.
+    call validate_mpi_amr_tree_metadata_3d(tree,owners,nvar,comm,valid)
+    if(.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    flags=[width,merge(1,0,periodic),merge(1,0,present(fluid_fraction))]
+    call MPI_Allreduce(flags,low,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    valid=width>=1.and.width<=1000000.and.all(shape(positions)==[3,size(nodes)])
+    valid=valid.and.all(ieee_is_finite([lower,spacing])).and.all(ieee_is_finite(positions))
+    valid=valid.and.all(abs(lower)<=1e9_dp).and.all(abs(positions)<=1e9_dp)
+    valid=valid.and.all(spacing>=1e-12_dp).and.all(spacing<=1e9_dp).and.allocated(halo%fields)
+    if(present(fluid_fraction)) valid=valid.and.allocated(fluid_fraction%fields)
+    call agree()
+    if(.not.agreed) return
+    bounds=[lower,spacing];reference=bounds
+    call MPI_Bcast(reference,6,MPI_DOUBLE_PRECISION,0,comm,status)
+    if(status/=MPI_SUCCESS) return
+    valid=all(bounds==reference).and.size(halo%fields)==size(owners)
+    if(present(fluid_fraction)) valid=valid.and.size(fluid_fraction%fields)==size(owners)
+    call agree()
+    if(.not.agreed) return
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      if(.not.allocated(halo%fields(node)%values)) then
+        valid=.false.;exit
+      end if
+      n=tree%nodes(node)%shape+2*width
+      if(any(shape(halo%fields(node)%values)/=[nvar,n])) valid=.false.
+      if(present(fluid_fraction)) then
+        if(.not.allocated(fluid_fraction%fields(node)%values)) then
+          valid=.false.;exit
+        end if
+        if(any(shape(fluid_fraction%fields(node)%values)/=[1,n])) valid=.false.
+      end if
+    end do
+    do p=1,size(nodes)
+      node=nodes(p)
+      if(node<1.or.node>size(owners)) then
+        valid=.false.;exit
+      end if
+      if(owners(node)/=rank) valid=.false.
+    end do
+    call agree()
+    if(.not.agreed) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(valid) valid=all(domain<=2_int64**52)
+    call agree()
+    if(.not.agreed) return
+    length=spacing*real(tree%nodes(1)%shape,dp)
+    allocate(candidate(nvar,size(nodes)),term(nvar));candidate=0
+    do p=1,size(nodes)
+      node=nodes(p);level=tree%nodes(node)%level+1;n=tree%nodes(node)%shape
+      fraction=(positions(:,p)-lower)/length
+      do a=1,3
+        if(.not.periodic(a)) cycle
+        fraction(a)=modulo(positions(a,p)-lower(a),length(a))/length(a)
+        fraction(a)=fraction(a)-anint(fraction(a)-(real(origin(a,node),dp)+.5_dp*n(a))/real(domain(a,level),dp))
+      end do
+      coordinate=fraction*real(domain(:,level),dp)-real(origin(:,node),dp)+.5_dp
+      if(any(coordinate<real(1-width,dp)).or.any(coordinate>real(n+width,dp))) then
+        valid=.false.;exit
+      end if
+      base=floor(coordinate);part=coordinate-real(base,dp);q=0
+      do c=0,1
+      do b=0,1
+      do a=0,1
+        q=q+1;idx=base+[a,b,c];cells(:,q)=idx
+        w=product(merge(part,1-part,[a,b,c]==1));weights(q)=0
+        if(w<=0) cycle
+        if(any(idx<1-width).or.any(idx>n+width)) then
+          valid=.false.;cycle
+        end if
+        vf=1
+        if(present(fluid_fraction)) then
+          storage=[lbound(fluid_fraction%fields(node)%values,2),lbound(fluid_fraction%fields(node)%values,3), &
+            lbound(fluid_fraction%fields(node)%values,4)]+idx+width-1
+          vf=fluid_fraction%fields(node)%values(1,storage(1),storage(2),storage(3))
+          if(.not.ieee_is_finite(vf)) then
+            valid=.false.;cycle
+          end if
+          if(vf<0.or.vf>1) then
+            valid=.false.;cycle
+          end if
+        end if
+        weights(q)=w*vf
+      end do
+      end do
+      end do
+      total=sum(weights)
+      if(.not.valid.or.total<=0) then
+        valid=.false.;exit
+      end if
+      do q=1,8
+        if(weights(q)<=0) cycle
+        storage=[lbound(halo%fields(node)%values,2),lbound(halo%fields(node)%values,3), &
+          lbound(halo%fields(node)%values,4)]+cells(:,q)+width-1
+        term=halo%fields(node)%values(:,storage(1),storage(2),storage(3))
+        if(.not.all(ieee_is_finite(term))) then
+          valid=.false.;exit
+        end if
+        term=(weights(q)/total)*term
+        if(any(candidate(:,p)>huge(1._dp)-max(term,0._dp)).or. &
+          any(candidate(:,p)<-huge(1._dp)-min(term,0._dp))) then
+          valid=.false.;exit
+        end if
+        candidate(:,p)=candidate(:,p)+term
+      end do
+      if(.not.valid) exit
+    end do
+    call agree()
+    if(.not.agreed) return
+    call move_alloc(candidate,samples);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine sample_mpi_amr_particle_halo
+
   ! Borrow the identical ordered species table on every rank. U/T publish only
   ! after owner-routed deposition, parent restriction and collective EOS success.
   ! Optional gas_change is the deposited increment per fluid volume, accumulated
