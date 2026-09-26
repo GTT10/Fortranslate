@@ -34,7 +34,7 @@ module eb_reactive_hydro_3d_mod
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
-  public :: compute_sdc_eb_hydro_3d
+  public :: compute_sdc_eb_hydro_3d,compute_sdc_eb_boundary_hydro_3d
   public :: advance_reactive_eb_boundary_ctu_3d
   public :: advance_reactive_eb_outflow_ctu_3d
   public :: compute_reactive_eb_flattening_3d
@@ -168,10 +168,31 @@ contains
       redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,shock_flattening)
   end subroutine advance_reactive_eb_outflow_ctu_3d
 
+  subroutine compute_sdc_eb_boundary_hydro_3d(species,state,temperature,extended,dt,conserved_source, &
+      hydro_rate,integrated_flux,boundary_change,wall_change,ok,boundary_faces,difmag,order,shock_flattening, &
+      inflow_state,inflow_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: extended
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt,conserved_source(:,:,:,:)
+    real(dp), intent(inout) :: hydro_rate(:,:,:,:),boundary_change(:),wall_change(:)
+    type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
+    logical, intent(out) :: ok
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_temperature(:)
+    integer, optional, intent(in) :: order
+    logical, optional, intent(in) :: shock_flattening
+    real(dp), allocatable :: unused(:,:,:,:),unused_t(:,:,:)
+    allocate(unused,mold=state);allocate(unused_t,mold=temperature)
+    call advance_reactive_eb_boundary_ctu_3d(species,state,temperature,extended,dt,unused,unused_t,ok, &
+      boundary_faces,difmag=difmag,integrated_flux=integrated_flux,boundary_change=boundary_change, &
+      wall_change=wall_change,order=order,shock_flattening=shock_flattening,inflow_state=inflow_state, &
+      inflow_temperature=inflow_temperature,conserved_source=conserved_source,hydro_rate=hydro_rate)
+  end subroutine compute_sdc_eb_boundary_hydro_3d
+
   subroutine advance_reactive_eb_boundary_ctu_3d(species,state,temperature,extended,dt, &
       new_state,new_temperature,ok,boundary_faces, &
       redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,shock_flattening, &
-      inflow_state,inflow_temperature)
+      inflow_state,inflow_temperature,conserved_source,hydro_rate)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
     type(eb_geometry_3d), intent(in) :: extended
@@ -185,6 +206,10 @@ contains
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
     character(len=*), intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
+    real(dp), optional, intent(in) :: conserved_source(:,:,:,:)
+    real(dp), optional, intent(inout) :: hydro_rate(:,:,:,:)
+    real(dp), allocatable :: source_ghost(:,:,:,:)
+    character(len=32) :: source_faces(6)
     real(dp) :: shift(3)
     logical :: reflect(3)
     type(eb_geometry_3d) :: working
@@ -200,6 +225,12 @@ contains
       if(.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
     end if
     if(any(n<1).or.any(shape(state)/=[nv,n])) return
+    if(present(conserved_source)) then
+      if(any(shape(conserved_source)/=[nv,n])) return
+    end if
+    if(present(hydro_rate)) then
+      if(.not.present(conserved_source).or.any(shape(hydro_rate)/=[nv,n])) return
+    end if
     if(any(shape(new_state)/=[nv,n]).or.any(shape(new_temperature)/=n)) return
     if(any([extended%nx,extended%ny,extended%nz]/=n+12)) return
     call extract_eb_geometry_3d(extended,[4,4,4],n+9,working,valid)
@@ -227,6 +258,22 @@ contains
     end do
     end do
     end do
+    if(present(conserved_source)) then
+      allocate(source_ghost(nv,n(1)+6,n(2)+6,n(3)+6));source_ghost=0
+      source_faces=boundary_faces
+      where(source_faces/='periodic') source_faces='outflow'
+      do k=1,n(3)+6
+      do j=1,n(2)+6
+      do i=1,n(1)+6
+        if(working%volume_fraction(i,j,k)<=0) cycle
+        call map_reactive_boundary_donor_3d([i,j,k]-3,n,source_faces,.false.,donor,reflect,shift,inlet,valid)
+        if(.not.valid) return
+        if(extended%volume_fraction(donor(1)+6,donor(2)+6,donor(3)+6)<=0) return
+        source_ghost(:,i,j,k)=conserved_source(:,donor(1),donor(2),donor(3))
+      end do
+      end do
+      end do
+    end if
     use_flattening=.true.
     if(present(shock_flattening)) use_flattening=shock_flattening
     if(use_flattening) then
@@ -236,8 +283,9 @@ contains
     boundary%lower=4;boundary%upper=n+3;boundary%faces=boundary_faces
     candidate=state;ct=temperature
     call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,candidate,ct,ok, &
-      redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,boundary)
-    if(.not.ok) return
+      redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,boundary, &
+      source_ghost,hydro_rate)
+    if(.not.ok.or.present(hydro_rate)) return
     ! Existing application and split operators preserve covered-cell storage.
     do k=1,n(3)
     do j=1,n(2)

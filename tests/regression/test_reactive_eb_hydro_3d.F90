@@ -1,5 +1,5 @@
 program test_reactive_eb_hydro_3d
-  use eb_reactive_hydro_3d_mod, only: compute_sdc_eb_hydro_3d
+  use eb_reactive_hydro_3d_mod, only: compute_sdc_eb_hydro_3d,compute_sdc_eb_boundary_hydro_3d
   use precision_mod, only: dp
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use state_indices_mod, only: irho
@@ -325,7 +325,8 @@ contains
   subroutine verify_boundary_ctu()
     type(reactive_eb_3d_config) :: cfg
     type(eb_geometry_3d) :: wide
-    type(eb_integrated_flux_3d) :: flux
+    type(eb_integrated_flux_3d) :: flux,stage_flux
+    real(dp) :: source(nvar,4,4,4),rates(nvar,4,4,4),sb(nvar),sw(nvar)
     real(dp) :: u(nvar,4,4,4),t(4,4,4),updated(nvar,4,4,4),ut(4,4,4),boundary(nvar),wall(nvar)
     real(dp) :: inlet(nvar,6),tin(6),cs,change,scale
     character(len=24) :: faces(6)
@@ -352,6 +353,13 @@ contains
       call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces, &
         integrated_flux=flux,boundary_change=boundary,wall_change=wall,inflow_state=inlet,inflow_temperature=tin)
       call require(valid,'physical boundary CTU step')
+      source=0
+      call compute_sdc_eb_boundary_hydro_3d(species,u,t,wide,1e-7_dp,source,rates,stage_flux,sb,sw,valid,faces, &
+        inflow_state=inlet,inflow_temperature=tin)
+      call require(valid.and.all(updated==u+1e-7_dp*rates),'boundary SDC zero-source update exact')
+      call require(all(sb==boundary).and.all(sw==wall),'boundary SDC ledgers exact')
+      call require(all(stage_flux%x==flux%x).and.all(stage_flux%y==flux%y).and.all(stage_flux%z==flux%z), &
+        'boundary SDC zero-source flux exact')
       do c=1,nvar
         change=sum(updated(c,:,:,:)-u(c,:,:,:))/64
         scale=max(1._dp,sum(abs(u(c,:,:,:)))/64)
@@ -369,6 +377,19 @@ contains
       end if
     end do
     end do
+    faces='outflow';source=0;source(2,:,:,:)=20000
+    call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces, &
+      integrated_flux=flux,boundary_change=boundary,wall_change=wall,conserved_source=source)
+    call require(valid,'physical CTU conserved source')
+    call compute_sdc_eb_boundary_hydro_3d(species,u,t,wide,1e-7_dp,source,rates,stage_flux,sb,sw,valid,faces)
+    call require(valid.and.all(updated==u+1e-7_dp*rates),'extrapolated source update exact')
+    call require(all(stage_flux%x==flux%x).and.all(stage_flux%y==flux%y).and.all(stage_flux%z==flux%z), &
+      'extrapolated source flux exact')
+    source(2,4,4,4)=ieee_value(0._dp,ieee_quiet_nan);rates=-21;sb=-22;sw=-23
+    call compute_sdc_eb_boundary_hydro_3d(species,u,t,wide,1e-7_dp,source,rates,stage_flux,sb,sw,valid,faces)
+    call require(.not.valid.and.all(rates==-21).and.all(sb==-22).and.all(sw==-23),'bad boundary source rollback')
+    call require(all(stage_flux%x==flux%x).and.all(stage_flux%y==flux%y).and.all(stage_flux%z==flux%z), &
+      'bad boundary source retains fluxes')
     updated=-17;ut=-18;boundary=-19;wall=-20
     faces='outflow';faces(1)='inflow'
     call advance_reactive_eb_boundary_ctu_3d(species,u,t,wide,1e-7_dp,updated,ut,valid,faces, &
