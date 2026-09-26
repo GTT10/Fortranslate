@@ -1090,6 +1090,11 @@ if(TARGET test_spray_mpi_eb_reactive)
 endif()
 
 if(TARGET pelef_mpi_eb_spray_3d)
+  add_test(NAME spray_mpi_eb_sdc_recursive_app
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
+      --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/spray-sdc-recursive-app" --recursive)
+  set_tests_properties(spray_mpi_eb_sdc_recursive_app PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "spray;mpi;eb;sdc")
   add_test(NAME spray_mpi_eb_sdc_restart
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_spray.py"
       --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"

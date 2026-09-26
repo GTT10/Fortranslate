@@ -26,7 +26,8 @@ program pelef_reactive_eb_tree_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
   use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
-  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
+  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc, &
+    advance_mpi_eb_spray_sdc_subcycle
 #endif
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end,iostat_eor
@@ -224,9 +225,6 @@ program pelef_reactive_eb_tree_3d
     if(time_integrator/='sdc') error stop 'Tree redistribution requires SDC'
   end if
   if(time_integrator=='sdc') then
-#ifdef PELEF_MPI_EB_SPRAY
-    if(subcycling) error stop 'Recursive EB spray SDC is not implemented'
-#endif
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
   else
@@ -525,7 +523,18 @@ program pelef_reactive_eb_tree_3d
       end if
 #ifdef PELEF_MPI_EB_SPRAY
       if(time_integrator=='sdc') then
-      if(wall_impacts) then
+      if(subcycling) then
+      step_split_created=0
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature)
+      else if(wall_impacts) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
@@ -797,6 +806,12 @@ contains
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Invalid fraction sum'
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
+    if(time_integrator=='sdc'.and.subcycling) then
+      if(particle_options%breakup_model/='none') error stop 'Recursive spray SDC breakup is not implemented'
+      if(wall_impacts.or.walls%evolve) error stop 'Recursive spray SDC wall films are not implemented'
+      if(any(acceleration/=0)) error stop 'Recursive spray SDC particle acceleration is not implemented'
+      if(any(boundary_faces=='periodic')) error stop 'Recursive spray SDC periodic migration is not implemented'
+    end if
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
     if(.not.all(ieee_is_finite(acceleration))) error stop 'Invalid MPI EB acceleration'
     if(any(abs(acceleration)>1e6_dp)) error stop 'Invalid MPI EB acceleration'
@@ -936,6 +951,8 @@ contains
       if(code/=0) error stop 'Cannot serialize spray context'
       rewind(stream)
       spray_context=mixture_evolution_id//'|'
+      if(time_integrator=='sdc'.and.subcycling) &
+        spray_context=spray_context//'RECURSIVE_SDC_PHYSICAL_SYNC_V1|'
       do
         read(stream,'(a)',iostat=code) context_line
         if(code==iostat_end) exit

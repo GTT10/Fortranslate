@@ -18,6 +18,7 @@ def main():
     p.add_argument('--selected', action='store_true')
     p.add_argument('--ctu', action='store_true')
     p.add_argument('--sdc', action='store_true')
+    p.add_argument('--recursive', action='store_true')
     p.add_argument('--scheduled', action='store_true')
     p.add_argument('--restart', action='store_true')
     p.add_argument('--rebalance', action='store_true')
@@ -36,6 +37,8 @@ def main():
         assert not a.mach
         assert sum((a.inflow,a.periodic,a.wall,a.isothermal))<=1
         a.ctu = True
+    if a.recursive:
+        a.sdc = True
     if a.sdc:
         a.ctu = True
     a.work.mkdir(parents=True, exist_ok=True)
@@ -43,7 +46,7 @@ def main():
     template = a.source / 'cases/mpi_eb_spray_3d'
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
 
-    def run(ranks, label, extra='', success=True, decreasing=False, altered=False):
+    def run(ranks, label, extra='', success=True, decreasing=False, altered=False, spray_extra=''):
         directory = work / label
         shutil.copytree(template, directory)
         text = (directory / 'tree.nml').read_text()
@@ -54,9 +57,13 @@ def main():
         if a.sdc:
             extra = ("time_integrator='sdc',sdc_iterations=2,boundary_faces=6*'outflow',"
                      "external_forcing=100.,-200.,300.," + extra)
+            if a.recursive:
+                extra = 'subcycling=.true.,' + extra
             spray = directory / 'spray.nml'
-            spray.write_text(spray.read_text().replace('&eb_spray',
-                '&eb_spray\n particle_outflow=.true.,acceleration=1000.,-2000.,3000.,', 1))
+            controls = 'particle_outflow=.true.,'
+            if not a.recursive:
+                controls += 'acceleration=1000.,-2000.,3000.,'
+            spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n ' + controls, 1))
         if a.scheduled:
             spray = directory / 'spray.nml'
             times = '5.e-9,5.e-9,5.e-9,1.e-8,2.e-8,3.e-8'
@@ -133,6 +140,9 @@ def main():
                 spray.write_text(spray.read_text().replace('temperatures(1)=330.', 'temperatures(1)=331.'))
             else:
                 spray.write_text(spray.read_text().replace('liquid_temperature=350.', 'liquid_temperature=351.'))
+        if spray_extra:
+            spray = directory / 'spray.nml'
+            spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n' + spray_extra, 1))
         command = [str(a.mpiexec.resolve()), '-n', str(ranks), str(a.exe.resolve()), 'tree.nml', 'spray.nml']
         result = subprocess.run(command, cwd=directory, env=env, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=90)
@@ -198,6 +208,29 @@ def main():
                 x, y = float(first[key]), float(second[key])
                 assert math.isfinite(x) and math.isfinite(y)
                 assert abs(x-y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
+    if a.recursive:
+        for label, controls, message in (
+            ('recursive_force_rejected', 'acceleration=1.,0.,0.,', 'particle acceleration is not implemented'),
+            ('recursive_film_rejected', 'wall_impacts=.true.,', 'wall films are not implemented'),
+        ):
+            rejected = run(2, label, success=False, spray_extra=controls)
+            assert message in (rejected / 'run.log').read_text()
+            assert not (rejected / 'result.csv').exists()
+        for directory in results:
+            budget = rows(directory / 'result.csv.budget.csv')
+            # Momentum can start at zero; use the mass/energy reference scale
+            # (kg m/s) rather than dividing flux cancellation by its tiny net result.
+            mass_scale = max(abs(float(budget[0][key])) for key in ('initial', 'final', 'injected'))
+            energy_scale = max(abs(float(budget[4][key])) for key in ('initial', 'final', 'injected'))
+            momentum_scale = math.sqrt(mass_scale * energy_scale)
+            for row in budget:
+                residual = float(row['final']) - float(row['initial'])
+                for key in ('boundary', 'wall', 'chemistry', 'injected', 'force'):
+                    residual -= float(row[key])
+                scale = max(abs(float(row['initial'])), abs(float(row['final'])), abs(float(row['injected'])), 1e-30)
+                if 2 <= int(row['component']) <= 4:
+                    scale = max(scale, momentum_scale)
+                assert abs(residual) <= 3e-12 * scale, (row, residual)
     rejected = run(2, 'restart_rejected', "restart_file='missing.chk',", False)
     assert not (rejected / 'result.csv').exists()
     assert 'Cannot open EB spray manifest' in (rejected / 'run.log').read_text()
