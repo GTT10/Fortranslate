@@ -79,7 +79,9 @@ ledgers ([checks](validation/sdc-eb-hydro-stage-20260927.md)). Physical boundary
 ([checks](validation/sdc-eb-boundary-stage-20260927.md)). Small-cell redistribution now has a transactional source-rate interface
 ([checks](validation/sdc-eb-redist-20260927.md)). The serial single-grid EB SDC loop now couples hydro, transport, forcing,
 reactions and redistribution ([checks](validation/sdc-eb-loop-20260927.md)).
-EB SDC application/restart and AMR/MPI integration remain open.
+Fixed/selected single-grid applications now accept SDC input and report
+separate forcing inventories ([checks](validation/sdc-eb-app-20260927.md)).
+EB SDC checkpoint/restart and AMR/MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive

@@ -77,3 +77,15 @@ other cannot be periodic in x and is rejected before stepping.
 Periodic hydro and transport use the same labels; transport shares seam transfer
 and species limiter coefficients. Restart requires the same periodic pairs.
 See the [periodic application checks](../../docs/validation/eb-periodic-application-20260925.md).
+
+## SDC
+
+Fixed and selected single-grid EB frontends accept `time_integrator='sdc'`,
+`sdc_iterations` (default 2) and `external_forcing(3)` (force per fluid volume).
+Use `hydro_method='plm_ctu'`, `riemann_solver='pelec'` and explicit
+`boundary_faces`; legacy boundary labels are rejected for SDC. `sdc.nml` is a
+small reacting/transporting/forced plane-cut example with state redistribution.
+The final inventory report adds a separate forcing column. Reaction estimates
+persist across successful timesteps. SDC checkpoint/restart is currently
+rejected because the stored format has not yet been extended for those fields.
+Other frontends retain their existing input gates.
