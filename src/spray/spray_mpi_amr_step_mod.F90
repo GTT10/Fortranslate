@@ -16,7 +16,7 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas, &
-    sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo
+    sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo,sum_mpi_amr_particle_source_halo
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
@@ -34,7 +34,8 @@ contains
   ! Gas source and particle/component updates publish together after MPI success.
   subroutine kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,nodes,parcels,component_mass,lower,spacing,periodic,dt,source_halo,ok, &
-      fluid_fraction,nodal_phi,centroids,drift_interval,boundary_faces,wall_change,boundary_change)
+      fluid_fraction,nodal_phi,centroids,drift_interval,boundary_faces,wall_change,boundary_change, &
+      target_level,level_source,source_remainder,route_to_coarse,eb_geometry,maximum_received)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -61,7 +62,12 @@ contains
     character(len=32) :: faces(6),reference_faces(6)
 
     type(spray_parcel), allocatable :: candidate(:)
-    type(amr_tree_state_3d) :: source
+    integer, optional, intent(in) :: target_level,maximum_received
+    type(amr_tree_state_3d), optional, intent(inout) :: level_source,source_remainder
+    logical, optional, intent(in) :: route_to_coarse
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    type(amr_tree_state_3d) :: source,routed,remainder
+    integer :: transfer_flags,transfer_low,transfer_high,node,rank,n(3)
     real(dp), allocatable :: masses(:,:),positions(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
     real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,low_dt,high_dt
     integer :: p,nv,nc,status
@@ -111,6 +117,16 @@ contains
       valid=all(faces==reference_faces)
       call agree();if(.not.agreed) return
     end if
+    transfer_flags=merge(1,0,present(target_level))+2*merge(1,0,present(level_source))+ &
+      4*merge(1,0,present(source_remainder))
+    call MPI_Allreduce(transfer_flags,transfer_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(transfer_flags,transfer_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.transfer_low/=transfer_high) return
+    if(transfer_flags/=0.and.transfer_flags/=7) return
+    valid=transfer_flags==7.or..not.(present(route_to_coarse).or.present(eb_geometry).or.present(maximum_received))
+    if(present(target_level)) valid=valid.and.(present(eb_geometry).eqv.present(fluid_fraction))
+    call agree();if(.not.agreed) return
     allocate(positions(3,size(parcels)),change(nv,size(parcels)))
     do p=1,size(parcels)
       positions(:,p)=parcels(p)%position
@@ -121,6 +137,13 @@ contains
     call sample_mpi_amr_particle_halo(comm,tree,owners,temperature_halo,1,width,nodes,positions,lower,spacing, &
       periodic,sampled_t,valid,fluid_fraction,nodal_phi,centroids)
     if(.not.valid) return
+    if(present(target_level)) then
+      valid=target_level>=0.and.target_level<=maxval(tree%nodes%level)
+      do p=1,size(nodes)
+        valid=valid.and.tree%nodes(nodes(p))%level==target_level
+      end do
+      call agree();if(.not.agreed) return
+    end if
     candidate=parcels;masses=component_mass;change=0
     do p=1,size(parcels)
       if(parcels(p)%mass<=0) cycle
@@ -170,6 +193,21 @@ contains
     call deposit_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,positions,change, &
       lower,spacing,periodic,source,valid,fluid_fraction,nodal_phi,centroids)
     if(.not.valid) return
+    if(present(target_level)) then
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      allocate(routed%fields(size(tree%nodes)))
+      do node=1,size(tree%nodes)
+        if(owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        allocate(routed%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      end do
+      call sum_mpi_amr_particle_source_halo(comm,tree,owners,source,nv,width,target_level,periodic, &
+        routed,remainder,valid,maximum_received,route_to_coarse,eb_geometry,fluid_fraction)
+      if(.not.valid) return
+      call move_alloc(routed%fields,level_source%fields)
+      call move_alloc(remainder%fields,source_remainder%fields)
+    end if
     if(present(drift_interval)) then
       wall_change=global_wall;boundary_change=global_exterior
     end if

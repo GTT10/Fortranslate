@@ -189,6 +189,19 @@ This does not migrate particles to new owners or regenerate ghost populations;
 the caller must keep assigned nodes and halo support valid for subsequent kicks.
 See [drift checks](validation/spray-halo-drift-20260927.md).
 
+Supplying `target_level`, `level_source` and `source_remainder` together also
+transfers the raw reaction halo before publication. Every queried node must
+belong to that level. The returned `level_source` is a fresh owner-local field
+on valid cells; `source_remainder` contains untransferred halo contributions.
+Optional `route_to_coarse` enables conservative transfer to covering ancestors,
+and `maximum_received` bounds the exchange. EB transfer requires `eb_geometry`
+together with the sampling `fluid_fraction`, preserving fluid-volume scaling.
+The raw `source_halo` is still returned for diagnostics. Transfer failure rolls
+back particles, components, all source outputs and optional drift ledgers.
+Applying the source to gas, synchronizing levels and avoiding duplicate
+physical/virtual/ghost contributions remain driver responsibilities.
+See [integrated transfer checks](validation/spray-halo-transfer-20260927.md).
+
 `sample_mpi_amr_particle_halo` reads a caller-filled owner-local halo at the
 particle's assigned node resolution. Each query supplies its target node;
 that node must belong to the querying rank. Trilinear weights use the fine

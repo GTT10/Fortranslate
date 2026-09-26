@@ -163,7 +163,7 @@ program test_spray_mpi_amr_step
   call MPI_Finalize(ierr)
 contains
   subroutine check_halo_kick()
-    type(amr_tree_state_3d) :: halo,ht,source,kept_source
+    type(amr_tree_state_3d) :: halo,ht,source,kept_source,routed,surplus,kept_routed,kept_surplus
     type(spray_parcel), allocatable :: hd(:),reference(:)
     real(dp), allocatable :: hm(:,:),rm(:,:)
     real(dp) :: delta(nv),expected_delta(nv),integral(nv),hp(nv),guess,cs,dt
@@ -204,7 +204,8 @@ contains
       expected_delta=expected_delta+delta
     end do
     call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
-      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,source,ok)
+      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,source,ok, &
+      target_level=1,level_source=routed,source_remainder=surplus,route_to_coarse=.true.)
     call require(ok,'halo kick accepts fine ghost particle')
     call require(all(hm==rm),'halo kick components')
     do a=1,count
@@ -228,6 +229,38 @@ contains
     call MPI_Allreduce(MPI_IN_PLACE,expected_delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(all(abs(integral-expected_delta)<=1e-12_dp*max(abs(expected_delta),1e-30_dp)), &
       'halo kick conserves extensive reaction')
+    integral=0
+    do a=1,3
+      if(owners(a)/=rank) cycle
+      sz=tree%nodes(a)%shape
+      do d=1,sz(3)
+      do c=1,sz(2)
+      do b=1,sz(1)
+        integral=integral+routed%fields(a)%values(:,b,c,d)*product(spacing/real(2**tree%nodes(a)%level,dp))
+      end do
+      end do
+      end do
+      call require(all(surplus%fields(a)%values==0),'routed halo kick leaves no in-domain remainder')
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,integral,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(abs(integral-expected_delta)<=1e-12_dp*max(abs(expected_delta),1e-30_dp)), &
+      'routed coarse and fine kick conserves reaction')
+    if(rank==owners(1)) call require(any(routed%fields(1)%values/=0),'fine ghost reaction reaches coarse owner')
+    kept_source=source;kept_routed=routed;kept_surplus=surplus;reference=hd;rm=hm
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,source,ok, &
+      target_level=1,level_source=routed,source_remainder=surplus,route_to_coarse=.true.,maximum_received=0)
+    call require(.not.ok.and.all(hm==rm),'transfer capacity failure rolls back kick components')
+    do a=1,count
+      call require(all(hd(a)%velocity==reference(a)%velocity).and.hd(a)%temperature==reference(a)%temperature, &
+        'transfer capacity failure rolls back particle kick')
+    end do
+    do a=1,3
+      if(owners(a)/=rank) cycle
+      call require(all(source%fields(a)%values==kept_source%fields(a)%values),'transfer failure preserves raw source')
+      call require(all(routed%fields(a)%values==kept_routed%fields(a)%values),'transfer failure preserves routed source')
+      call require(all(surplus%fields(a)%values==kept_surplus%fields(a)%values),'transfer failure preserves remainder')
+    end do
     ! The drift is independently timed; zero kick isolates periodic motion.
     drift_dt=2e-4_dp;faces='periodic';reference=hd;rm=hm
     call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
