@@ -56,8 +56,10 @@ donors, integrated-flux synchronization and application restart
 reaction stage with collective rollback and optional level selection
 ([checks](validation/sdc-mpi-reaction-20260926.md)). MPI SDC hydro now communicates
 signed predictor sources and returns owner-local rates/integrated fluxes
-([checks](validation/sdc-mpi-hydro-20260926.md)). MPI transport/iteration coupling
-and EB SDC remain open.
+([checks](validation/sdc-mpi-hydro-20260926.md)). MPI transport also returns
+owner-local SDC rates/fluxes with collective limiter reduction
+([checks](validation/sdc-mpi-transport-20260926.md)). MPI iteration coupling and
+EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
