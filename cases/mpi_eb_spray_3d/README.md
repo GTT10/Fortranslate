@@ -33,6 +33,29 @@ nondecreasing finite schedule and the global live-population cap are enforced.
 For example, `injection_events=3,injection_times=0.,1.e-8,2.e-8,
 injection_scales=1.,.5,2.` injects at the start, midpoint and end.
 
+## Recursive SDC
+
+The MPI spray executable selects recursive gas/particle stepping with these
+`/eb_tree/` controls:
+
+```fortran
+time_integrator='sdc', sdc_iterations=2, subcycling=.true.,
+hydro_method='plm_ctu', riemann_solver='pelec', boundary_faces=6*'outflow',
+```
+
+This experimental path supports drag, heating and evaporation with gas chemistry
+and molecular transport. Gas force density uses `external_forcing`. Keep
+`particle_options%breakup_model='none'`, `wall_impacts=.false.`,
+`walls%evolve=.false.` and `acceleration=0.` in `/eb_spray/`; recursive breakup,
+films and particle acceleration reject at input. Periodic migration also rejects.
+Reflecting particle/EB walls are distinct from the unsupported film-impact model.
+
+Physical particle exchange is synchronized conservatively after each outer step.
+This is a PeleF extension to the pinned source-transfer algorithm. See the
+[application checks](../../docs/validation/spray-recursive-app-20260927.md) for the
+bounded test scope. Recursive checkpoints carry a separate integration-mode tag;
+changed-rank continuation and recursive regridding still require their own checks.
+
 Output:
 
 - `result.csv`: exposed composite gas cells, using the existing MPI EB writer.

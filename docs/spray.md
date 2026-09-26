@@ -16,14 +16,15 @@ by the interval for a source rate; wall/outflow inventories remain separate.
 The EB SDC gas driver now accepts old/new source callbacks and reports their
 inventory separately from external forcing. The common-step MPI EB particle
 wrapper now connects kick/drift stages, physical gas boundaries and final
-computational splitting. The MPI EB spray application exposes common-step SDC. The new-time particle half kick runs only at the final SDC iteration; intermediate iterations retain the old particle source ([reference-order correction](validation/spray-sdc-reference-order-20260927.md)). See the
+computational splitting. The MPI EB spray application exposes common-step and recursive SDC. The new-time particle half kick runs only at the final SDC iteration; intermediate iterations retain the old particle source ([reference-order correction](validation/spray-sdc-reference-order-20260927.md)). See the
 [source-export checks](validation/spray-sdc-source-export-20260927.md) and
 [gas-stage checks](validation/sdc-eb-auxiliary-source-20260927.md).
 
 The library additionally provides `advance_mpi_eb_spray_sdc_subcycle`, connecting
 recursive gas stages, physical/virtual/ghost particles, predictor halos and final
-physical collection for a nonperiodic drag/heating/evaporation core. The application
-still exposes common-step SDC. Recursive breakup, films and particle acceleration
+physical collection for a nonperiodic drag/heating/evaporation core. The MPI spray
+application selects this path with `time_integrator='sdc'` and `subcycling=.true.`
+([application checks](validation/spray-recursive-app-20260927.md)). Recursive breakup, films and particle acceleration
 remain open. End-of-level virtual cleanup, final-subcycle ghost cleanup and
 synchronized physical subtree redistribution now run after gas synchronization
 ([lifecycle checks](validation/spray-recursive-lifecycle-20260927.md)). Inflow metadata and isothermal
@@ -42,7 +43,8 @@ coarse/fine crossing now pass the unchanged inventory criterion; see the
 [source synchronization checks](validation/spray-recursive-source-sync-20260927.md).
 The preceding [source audit and failure record](validation/spray-recursive-crossing-20260927.md)
 remains historical evidence. Three-level coupled evolution, temporal accuracy,
-strong-coupling admissibility and recursive application integration remain open.
+strong-coupling admissibility, recursive restart/regrid qualification and the
+remaining recursive particle models remain open.
 
 ## Level-bounded particle ownership
 
