@@ -16,7 +16,8 @@ program test_mpi_eb_tree_hydro_3d
   use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
   use eb_reactive_patch_tree_3d_mod, only: compute_sdc_eb_tree_hydro_3d
   use eb_reactive_patch_tree_3d_mod, only: fill_sdc_eb_tree_source_halo_3d
-  use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
+  use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d, &
+    fill_sdc_mpi_eb_particle_predictor_halo_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
@@ -208,11 +209,12 @@ contains
   subroutine check_sdc_hydro()
     type(eb_reactive_tree_3d) :: stage_tree,end_tree
     type(amr_tree_state_3d) :: local,lt,predictor,local_predictor,rates,reference,prior,provided,source_metrics
+    type(amr_tree_state_3d) :: particle_peers,particle_remainder,composed,saved_composed
     type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:)
     type(amr_tree_state_3d) :: end_local,end_source,local_end_source,level_rates,level_reference
     type(eb_integrated_flux_3d), allocatable :: level_flux(:),level_expected(:)
     real(dp) :: dt,nan
-    integer :: owners(count),p,mode,failure,c,halo_status
+    integer :: owners(count),p,mode,failure,c,halo_status,x,y,z
     logical :: good,changed,global_changed
     stage_tree=saved;nan=ieee_value(0._dp,ieee_quiet_nan)
     stage_tree%nodes(1)%state=1.01_dp*stage_tree%nodes(1)%state
@@ -264,6 +266,51 @@ contains
       call fill_sdc_mpi_eb_tree_source_halo_3d(topology,owners,physical,local_predictor,nv,3,provided, &
         MPI_COMM_WORLD,good,boundary_faces=labels,target_volume_fraction=source_metrics)
       call require(good,'prepare explicit predictor halo')
+      call fill_sdc_mpi_eb_tree_source_halo_3d(topology,owners,physical,local_predictor,nv,3,particle_peers, &
+        MPI_COMM_WORLD,good,boundary_faces=labels,target_volume_fraction=source_metrics,same_level_only=.true.)
+      call require(good,'particle source peer-only fill')
+      particle_remainder=particle_peers;changed=.false.
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        particle_remainder%fields(p)%values=0
+        changed=changed.or.any(particle_peers%fields(p)%values/=provided%fields(p)%values)
+        do z=1,10
+        do y=1,10
+        do x=1,10
+          if(all([x,y,z]>=4).and.all([x,y,z]<=7)) cycle
+          if(source_metrics%fields(p)%values(1,x,y,z)<=0) cycle
+          if(all(particle_peers%fields(p)%values(:,x,y,z)==0)) particle_remainder%fields(p)%values(2,x,y,z)=7
+        end do
+        end do
+        end do
+      end do
+      call MPI_Allreduce(changed,global_changed,1,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,halo_status)
+      call require(global_changed,'peer-only source excludes physical/ancestor extrapolation')
+      call fill_sdc_mpi_eb_particle_predictor_halo_3d(topology,owners,physical,local_predictor,local_predictor, &
+        particle_remainder,nv,3,composed,MPI_COMM_WORLD,good,labels,source_metrics, &
+        local_predictor,local_predictor,local_predictor,local_predictor,[.5_dp,.5_dp])
+      call require(good,'compose complete predictor with deposited particle halo')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(composed%fields(p)%values==particle_peers%fields(p)%values+ &
+          particle_remainder%fields(p)%values),'particle-only predictor has no duplicated ancestor contribution')
+      end do
+      call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+        extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t,predictor_halo=composed)
+      call require(good,'composed particle predictor reaches hydro')
+      saved_composed=composed
+      do p=1,count
+        if(owners(p)==rank) particle_remainder%fields(p)%values(2,4:7,4:7,4:7)=1
+      end do
+      call fill_sdc_mpi_eb_particle_predictor_halo_3d(topology,owners,physical,local_predictor,local_predictor, &
+        particle_remainder,nv,3,composed,MPI_COMM_WORLD,good,labels,source_metrics)
+      call require(.not.good,'particle remainder cannot replace valid-cell sources')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(composed%fields(p)%values==saved_composed%fields(p)%values),'particle predictor failure rollback')
+      end do
+
       call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
         extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
         inflow_state=inlet,inflow_temperature=inlet_t,predictor_halo=provided)

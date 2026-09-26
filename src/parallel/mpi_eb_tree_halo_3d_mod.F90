@@ -14,6 +14,7 @@ module mpi_eb_tree_halo_3d_mod
   implicit none
   private
   public :: fill_mpi_eb_tree_halo_3d,fill_sdc_mpi_eb_tree_source_halo_3d
+  public :: fill_sdc_mpi_eb_particle_predictor_halo_3d
 contains
   ! Collective PCM halos with outflow/Mach inlet and optional ancestor time interpolation.
   ! By default only face donors are exchanged; remaining slots are zero.
@@ -516,10 +517,104 @@ contains
     end do
     valid=.true.
   end function
+  ! Replace interpolated particle ghost sources by same-level particle donors
+  ! plus the unmatched deposited remainder. Valid cells retain rates exactly.
+  subroutine fill_sdc_mpi_eb_particle_predictor_halo_3d(tree,owners,geometry,rates,particle_rates,particle_remainder, &
+      nvar,width,ghost,comm,ok,boundary_faces,target_volume_fraction, &
+      ancestor_start,ancestor_end,particle_start,particle_end,ancestor_fraction)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,width
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: rates,particle_rates,particle_remainder,target_volume_fraction
+    type(amr_tree_state_3d), intent(inout) :: ghost
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,particle_start,particle_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    type(amr_tree_state_3d) :: candidate,interpolated,peers
+    integer :: flags,low,high,status,node,i,j,k,n(3),offset(3),rank
+    real(dp) :: value(nvar)
+    logical :: valid,agreed
+    ok=.false.
+    flags=sum(merge(1,0,[present(ancestor_start),present(ancestor_end),present(particle_start), &
+      present(particle_end),present(ancestor_fraction)]))
+    call MPI_Allreduce(flags,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low/=high.or.(flags/=0.and.flags/=5)) return
+    call fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,rates,nvar,width,candidate,comm,valid, &
+      boundary_faces,target_volume_fraction,ancestor_start,ancestor_end,ancestor_fraction)
+    if(.not.valid) return
+    call fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,particle_rates,nvar,width,interpolated,comm,valid, &
+      boundary_faces,target_volume_fraction,particle_start,particle_end,ancestor_fraction)
+    if(.not.valid) return
+    call fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,particle_rates,nvar,width,peers,comm,valid, &
+      boundary_faces,target_volume_fraction,same_level_only=.true.)
+    if(.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    valid=allocated(particle_remainder%fields)
+    if(valid) valid=size(particle_remainder%fields)==size(owners)
+    call agree();if(.not.agreed) return
+    do node=1,size(owners)
+      valid=allocated(particle_remainder%fields(node)%values).eqv.(owners(node)==rank)
+      if(.not.valid) exit
+      if(owners(node)/=rank) cycle
+      valid=all(shape(particle_remainder%fields(node)%values)==shape(candidate%fields(node)%values))
+      if(.not.valid) exit
+      valid=all(ieee_is_finite(particle_remainder%fields(node)%values))
+      if(.not.valid) exit
+      n=tree%nodes(node)%shape
+      offset=[lbound(particle_remainder%fields(node)%values,2),lbound(particle_remainder%fields(node)%values,3), &
+        lbound(particle_remainder%fields(node)%values,4)]-1
+      valid=all(particle_remainder%fields(node)%values(:,width+1+offset(1):width+n(1)+offset(1), &
+        width+1+offset(2):width+n(2)+offset(2),width+1+offset(3):width+n(3)+offset(3))==0)
+      if(.not.valid) exit
+      do k=1,n(3)+2*width
+      do j=1,n(2)+2*width
+      do i=1,n(1)+2*width
+        if(all([i,j,k]>width).and.all([i,j,k]<=n+width)) cycle
+        block
+          integer :: loc(4)
+          loc=lbound(target_volume_fraction%fields(node)%values)+[0,i-1,j-1,k-1]
+          if(target_volume_fraction%fields(node)%values(loc(1),loc(2),loc(3),loc(4))<=0) then
+            valid=valid.and.all(particle_remainder%fields(node)%values(:,i+offset(1),j+offset(2),k+offset(3))==0)
+            cycle
+          end if
+        end block
+        value=candidate%fields(node)%values(:,i,j,k)
+        call add(-interpolated%fields(node)%values(:,i,j,k))
+        call add(peers%fields(node)%values(:,i,j,k))
+        call add(particle_remainder%fields(node)%values(:,i+offset(1),j+offset(2),k+offset(3)))
+        if(valid) candidate%fields(node)%values(:,i,j,k)=value
+      end do
+      end do
+      end do
+      if(.not.valid) exit
+    end do
+    call agree();if(.not.agreed) return
+    call move_alloc(candidate%fields,ghost%fields);ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+    subroutine add(increment)
+      real(dp), intent(in) :: increment(:)
+      if(.not.valid) return
+      valid=.not.any(value>huge(1._dp)-max(increment,0._dp)).and. &
+        .not.any(value< -huge(1._dp)-min(increment,0._dp))
+      if(valid) value=value+increment
+    end subroutine add
+  end subroutine fill_sdc_mpi_eb_particle_predictor_halo_3d
+
   ! Signed source donors use scalar boundary extrapolation (no EOS or reflection).
   ! Only fluid donors needed by owned targets are exchanged; covered values may be NaN.
+  ! same_level_only leaves physical exterior and missing same-level donors zero;
+  ! it cannot be combined with ancestor interpolation. Default behavior is unchanged.
   subroutine fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,rates,nvar,halo_width,ghost,comm,ok, &
-      boundary_faces,target_volume_fraction,ancestor_start,ancestor_end,ancestor_fraction)
+      boundary_faces,target_volume_fraction,ancestor_start,ancestor_end,ancestor_fraction,same_level_only)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,halo_width
     type(eb_geometry_3d), intent(in) :: geometry(:)
@@ -532,25 +627,29 @@ contains
     type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end
     ! One fraction per ancestor depth, root first; length max tree level.
     real(dp), optional, intent(in) :: ancestor_fraction(:)
+    logical, optional, intent(in) :: same_level_only
+    logical :: peers
     type(amr_tree_state_3d) :: candidate
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),requests(:,:),destination(:,:),selected(:),queries(:,:)
     real(dp), allocatable :: values(:,:),fraction(:),fraction_low(:),fraction_high(:)
     integer(int64) :: global(3),mapped(3),local(3),maximum
     integer :: rank,status,ios,node,target,n(3),level,depth,donor,source(3),idx(3),i,j,k,axis,q
-    integer :: controls(4),low(4),high(4),width
+    integer :: controls(5),low(5),high(5),width
     character(len=32) :: faces(6),reference(6)
     real(dp) :: volume
     logical :: valid,ready
-    ok=.false.;width=halo_width
+    ok=.false.;width=halo_width;peers=.false.
+    if(present(same_level_only)) peers=same_level_only
     controls=[nvar,width,merge(1,0,present(target_volume_fraction)), &
-      sum(merge(1,0,[present(ancestor_start),present(ancestor_end),present(ancestor_fraction)]))]
-    call MPI_Allreduce(controls,low,4,MPI_INTEGER,MPI_MIN,comm,status)
+      sum(merge(1,0,[present(ancestor_start),present(ancestor_end),present(ancestor_fraction)])),merge(1,0,peers)]
+    call MPI_Allreduce(controls,low,5,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,5,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     if(nvar<1.or.width<1.or.width>6) return
     if(controls(4)/=0.and.controls(4)/=3) return
+    if(peers.and.controls(4)/=0) return
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
     reference=faces
@@ -639,12 +738,13 @@ contains
         do axis=1,3
           if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
         end do
+        if(peers.and.(any(global<0).or.any(global>=domain(:,level)))) cycle
         global=max(0_int64,min(domain(:,level)-1,global))
         donor=0
         if(all(idx>=1).and.all(idx<=n)) then
           donor=target;source=idx
         else
-          do depth=level,1,-1
+          do depth=level,merge(level,1,peers),-1
             mapped=global/(domain(:,level)/domain(:,depth))
             do node=1,size(owners)
               if(tree%nodes(node)%level+1/=depth) cycle
@@ -655,6 +755,7 @@ contains
             if(donor/=0) exit
           end do
         end if
+        if(donor==0.and.peers) cycle
         if(donor==0) then
           valid=.false.;exit targets
         end if
