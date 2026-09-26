@@ -6,15 +6,17 @@ program test_mpi_eb_tree_full_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
-  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive, &
+    reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d,react_sdc_eb_tree_3d
+  use eb_reactive_patch_tree_3d_mod, only: advance_reactive_eb_tree_sdc_3d,build_eb_tree_extended_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
-  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d,advance_mpi_eb_tree_sdc_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -91,6 +93,7 @@ program test_mpi_eb_tree_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  call check_sdc_loop()
   call check_sdc_reaction()
   do integrator_index=1,2
   do mode=0,3
@@ -122,6 +125,106 @@ program test_mpi_eb_tree_full_3d
   if (rank==0) print *, 'test_mpi_eb_tree_full_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine check_sdc_loop()
+    type(eb_reactive_tree_3d) :: initial,reference
+    type(eb_geometry_3d) :: geometry(count),extended_finest
+    type(eb_geometry_3d), allocatable :: extended(:)
+    type(amr_tree_state_3d) :: local,lt,ir,serial_ir,old_ir,old,ot
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter
+    real(dp) :: initial_inventory(nv),final_inventory(nv),error,force(3),viscosity_coefficient,recovered,sound
+    integer :: owners(count),p,x,y,z,layout,failure
+    character(len=16) :: faces(6)
+    logical :: good
+    initial=saved;faces='outflow';force=[2.e4_dp,-3.e4_dp,4.e4_dp]
+    do p=1,count
+      geometry(p)=initial%nodes(p)%geometry
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        if(geometry(p)%volume_fraction(x,y,z)<=0) cycle
+        call reactive_conserved_to_primitive(species,initial%nodes(p)%state(:,x,y,z), &
+          initial%nodes(p)%temperature(x,y,z),primitive,recovered,sound,good)
+        call require(good,'SDC fixture primitive')
+        primitive(5)=primitive(5)*1000._dp/recovered
+        call reactive_primitive_to_conserved(species,primitive,initial%nodes(p)%state(:,x,y,z), &
+          initial%nodes(p)%temperature(x,y,z),sound,good)
+        call require(good,'SDC fixture EOS')
+      end do
+      end do
+      end do
+    end do
+    call average_down_reactive_eb_tree_3d(species,initial,good)
+    call require(good,'SDC fixture restriction')
+    call build_axis_plane_eb_geometry_3d(64,64,64,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp, &
+      'z',.31_dp,extended_finest,good)
+    call require(good,'SDC extended finest')
+    call build_eb_tree_extended_geometry_3d(topology,geometry,extended_finest,extended,good)
+    call require(good,'SDC extended geometry')
+    allocate(serial_ir%fields(count))
+    do p=1,count
+      allocate(serial_ir%fields(p)%values(nv-4,4,4,4),source=0._dp)
+    end do
+    reference=initial
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
+      sb,sw,sch,sext,slimiter,good,serial_ir)
+    call require(good,'serial coupled SDC')
+    call integrate_reactive_eb_tree_3d(initial,initial_inventory,good)
+    call require(good,'SDC initial inventory')
+    do layout=1,2
+      owners=[(mod(p-1,nranks),p=1,count)]
+      if(layout==2) owners=0
+      allocate(local%fields(count),lt%fields(count),ir%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        local%fields(p)%values=initial%nodes(p)%state
+        allocate(lt%fields(p)%values(1,4,4,4),ir%fields(p)%values(nv-4,4,4,4))
+        lt%fields(p)%values(1,:,:,:)=initial%nodes(p)%temperature
+        ir%fields(p)%values=0
+      end do
+      old=local;ot=lt;old_ir=ir
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+        1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir)
+      call require(good,'MPI coupled SDC')
+      do p=1,count
+        call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'coupled SDC owner-local state')
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==reference%nodes(p)%state),'exact serial coupled SDC state')
+        call require(all(lt%fields(p)%values(1,:,:,:)==reference%nodes(p)%temperature),'exact serial coupled SDC T')
+        call require(all(ir%fields(p)%values==serial_ir%fields(p)%values),'exact serial coupled SDC IR')
+      end do
+      call require(limiter==slimiter,'exact coupled SDC limiter')
+      error=max(maxval(abs(b-sb)/max(1._dp,abs(sb))),maxval(abs(w-sw)/max(1._dp,abs(sw))), &
+        maxval(abs(ch-sch)/max(1._dp,abs(sch))),maxval(abs(ext-sext)/max(1._dp,abs(sext))))
+      call require(error<2.e-12_dp,'serial coupled SDC inventories')
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,local,final_inventory,MPI_COMM_WORLD,good)
+      call require(good,'SDC final inventory')
+      error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext)/max(1._dp,abs(initial_inventory)))
+      if(rank==0) print *, 'MPI SDC layout, composite residual: ',layout,error
+      call require(error<3.e-14_dp,'SDC composite closure')
+      do failure=1,2
+        local=old;lt=ot;ir=old_ir;b=17;w=19;ch=23;ext=29;limiter=31
+        viscosity_coefficient=.1_dp
+        if(failure==1) viscosity_coefficient=-1
+        if(failure==2.and.rank==nranks-1) force(1)=force(1)+1
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+          1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=viscosity_coefficient)
+        force=[2.e4_dp,-3.e4_dp,4.e4_dp]
+        call require(.not.good,'collective coupled SDC rejection')
+        do p=1,count
+          if(owners(p)/=rank) cycle
+          call require(all(local%fields(p)%values==old%fields(p)%values),'coupled SDC state rollback')
+          call require(all(lt%fields(p)%values==ot%fields(p)%values),'coupled SDC T rollback')
+          call require(all(ir%fields(p)%values==old_ir%fields(p)%values),'coupled SDC IR rollback')
+        end do
+        call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(ext==29).and.limiter==31, &
+          'coupled SDC inventory rollback')
+      end do
+      deallocate(local%fields,lt%fields,ir%fields)
+    end do
+  end subroutine check_sdc_loop
   subroutine check_sdc_reaction()
     type(amr_tree_state_3d) :: rates,ref_state,ref_temp,ref_ir,local,lt,lr,ir,old,ot,kept,kt,ki
     type(eb_geometry_3d) :: geometry(count)
