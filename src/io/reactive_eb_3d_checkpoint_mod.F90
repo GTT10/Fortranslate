@@ -1554,7 +1554,7 @@ contains
     ! Plain Euler patches may contain a grid-aligned plane or lie entirely on
     ! one side of it. Their stored metrics remain independently validated.
     ! The single-level application parser still requires redistribution.
-    if (trim(config%redistribution) == "none".or.(embedded.and.config%redistribution=="flux_redist")) return
+    if (trim(config%redistribution) == "none".or.embedded) return
     if (config%plane_position <= axis_lower .or. &
         config%plane_position >= axis_upper - spacing) then
       valid = .false.

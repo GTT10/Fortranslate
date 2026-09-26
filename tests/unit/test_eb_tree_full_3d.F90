@@ -92,9 +92,9 @@ program test_eb_tree_full_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
-  if(test_mode/='redist'.and.test_mode/='redist_recursive') call check_sdc_reaction()
+  if(test_mode/='redist'.and.test_mode/='redist_recursive'.and.test_mode/='state_redist') call check_sdc_reaction()
   call check_sdc_loop()
-  if(test_mode=='redist'.or.test_mode=='redist_recursive') then
+  if(test_mode=='redist'.or.test_mode=='redist_recursive'.or.test_mode=='state_redist') then
     deallocate(u,t)
     cycle
   end if
@@ -179,6 +179,7 @@ contains
       result=initial;ir=saved_ir
       method='none'
       if(step==2) method='flux_redist'
+      if(step==2.and.test_mode=='state_redist') method='state_redist'
       if(test_mode=='redist_recursive') then
         call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
           [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
@@ -208,12 +209,12 @@ contains
       counts=37
       call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
         [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
-        b,w,ch,ext,limiter,good,ir,difmag=-1._dp,level_steps=counts,redistribution='flux_redist')
+        b,w,ch,ext,limiter,good,ir,difmag=-1._dp,level_steps=counts,redistribution=method)
       call require(all(counts==37),'redistributed recursive counts rollback')
     else
     call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended,faces, &
-      b,w,ch,ext,limiter,good,ir,difmag=-1._dp,redistribution='flux_redist')
+      b,w,ch,ext,limiter,good,ir,difmag=-1._dp,redistribution=method)
     end if
     call require(.not.good,'redistributed failed hydro stage')
     do p=1,count
@@ -266,7 +267,7 @@ contains
     call require(ok,'SDC loop padded geometry')
     call build_eb_tree_extended_geometry_3d(topology,physical,padded,extended,ok)
     call require(ok,'SDC loop extended patches')
-    if(test_mode=='redist'.or.test_mode=='redist_recursive') then
+    if(test_mode=='redist'.or.test_mode=='redist_recursive'.or.test_mode=='state_redist') then
       call check_sdc_redistribution(initial,extended)
       return
     end if

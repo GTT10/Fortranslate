@@ -145,6 +145,7 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: time_step=1.e-9_dp,final_time=2.e-9_dp,rtol=2.e-7_dp,atol=1.e-12_dp
   logical :: chemistry_enabled=.true.,transport_enabled=.true.,stop_after_checkpoint=.false.
   character(len=16) :: geometry_type='plane',plane_axis='z',extrusion_axis='z'
+  real(dp) :: state_redist_target_volume_fraction=.5_dp
   character(len=16) :: riemann_solver='rusanov',hydro_method='pcm',redistribution='none'
 #ifdef PELEF_SELECTED_EB_TREE
   character(len=16) :: chemistry_integrator=selected_integrator
@@ -160,7 +161,7 @@ program pelef_reactive_eb_tree_3d
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure,wall_temperature, &
-    time_integrator,sdc_iterations,external_forcing,redistribution, &
+    time_integrator,sdc_iterations,external_forcing,redistribution,state_redist_target_volume_fraction, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -214,7 +215,17 @@ program pelef_reactive_eb_tree_3d
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
   if(time_integrator/='split'.and.time_integrator/='sdc') error stop 'Invalid time integrator'
   if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
-  if(redistribution/='none'.and.redistribution/='flux_redist') error stop 'Invalid tree redistribution'
+  if(redistribution/='none'.and.redistribution/='flux_redist'.and.redistribution/='state_redist') &
+    error stop 'Invalid tree redistribution'
+  if(.not.ieee_is_finite(state_redist_target_volume_fraction)) error stop 'Invalid redistribution target'
+  if(state_redist_target_volume_fraction<=0.or.state_redist_target_volume_fraction>1) &
+    error stop 'Invalid redistribution target'
+  if(redistribution=='state_redist') then
+    if(subcycling) error stop 'Recursive tree state redistribution is not implemented'
+#ifdef PELEF_MPI_EB_TREE
+    error stop 'MPI tree state redistribution is not implemented'
+#endif
+  end if
   if(redistribution/='none') then
     if(time_integrator/='sdc') error stop 'Tree redistribution requires SDC'
   end if
@@ -346,6 +357,7 @@ program pelef_reactive_eb_tree_3d
   config%geometry_type=geometry_type;config%plane_axis=plane_axis;config%plane_position=plane_position
   config%extrusion_axis=extrusion_axis;config%section_file=section_file;config%level_set_file=level_set_file
   config%cfl=hydro_cfl;config%transport_cfl=transport_cfl
+  config%state_redist_target_volume_fraction=state_redist_target_volume_fraction
   config%redistribution=redistribution;config%riemann_solver=riemann_solver;config%difmag=difmag
   config%hydro_method=hydro_method
   config%time_integrator=time_integrator;config%sdc_iterations=sdc_iterations;config%external_forcing=external_forcing
@@ -583,7 +595,7 @@ program pelef_reactive_eb_tree_3d
           [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution)
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
         end if
       else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
