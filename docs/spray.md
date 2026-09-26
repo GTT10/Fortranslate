@@ -114,6 +114,16 @@ at lifecycle boundaries, breakup/children and integration of ghost feedback
 without duplicate physical/virtual contributions remain to be connected.
 See [stage checks](validation/spray-ghost-stage-20260927.md).
 
+`advance_mpi_eb_ghost_stage` additionally fills the stage-time conserved and
+temperature halos directly from the gas state. It forwards optional ancestor
+state/temperature endpoints and interpolation fractions to the existing gas
+halo implementation, with snapshot restriction disabled. Caller-supplied
+target-resolution volume fractions and centroids provide EB sampling metrics.
+It then runs the complete ghost stage above. Gas snapshots remain read-only;
+halo-fill failure leaves all particle/source/ledger outputs untouched.
+The underlying EB redistribution still requires nonperiodic geometry.
+See [time-interpolated stage checks](validation/spray-ghost-temporal-20260927.md).
+
 ## Level-bounded gas sampling
 
 Regular/EB cloud stencils, the serial regular sampler and MPI regular/EB

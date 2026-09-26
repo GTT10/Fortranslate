@@ -19,6 +19,7 @@ module spray_mpi_amr_step_mod
     sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo,sum_mpi_amr_particle_source_halo
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels, &
     redistribute_mpi_amr_ghost_particles
+  use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
   use spray_eb_intersection_mod, only: intersect_spray_level_set
@@ -27,7 +28,53 @@ module spray_mpi_amr_step_mod
   implicit none
   private
   public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo,advance_mpi_amr_ghost_halo
+  public :: advance_mpi_eb_ghost_stage
 contains
+  ! Construct complete stage-time gas halos, then advance a ghost population.
+  ! Ancestor interpolation never averages down the caller's stage snapshots.
+  subroutine advance_mpi_eb_ghost_stage(comm,species,transport,components,options,tree,owners,geometry,state,temperature, &
+      width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,kick_dt,drift_dt,faces, &
+      source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_ghosts
+    integer, allocatable, intent(inout) :: nodes(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature,centroids,target_volume_fraction
+    type(spray_parcel), allocatable, intent(inout) :: ghosts(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: kick_dt,drift_dt,nodal_phi(0:,0:,0:)
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5),boundary_change(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:),inflow_state(:,:),inflow_mach(6)
+    real(dp), optional, intent(in) :: inflow_temperature(6),inflow_pressure(6)
+    integer, optional, intent(in) :: maximum_received
+    type(amr_tree_state_3d) :: halo,halo_t,volume
+    real(dp) :: lower(3),spacing(3)
+    logical :: valid,periodic(3)
+    ok=.false.
+    call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,halo,halo_t,comm,valid, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_mach,inflow_temperature,inflow_pressure,volume,width,target_volume_fraction, &
+      faces,inflow_state,restrict_snapshot=.false.)
+    if(.not.valid) return
+    lower=[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]
+    spacing=[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz]
+    periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
+    call advance_mpi_amr_ghost_halo(comm,species,transport,components,options,tree,owners,halo,halo_t, &
+      width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
+      source,remainder,wall_change,boundary_change,ok,volume,nodal_phi,centroids,geometry,maximum_received)
+  end subroutine advance_mpi_eb_ghost_stage
+
   ! One ghost-population stage: kick, drift, reaction transfer, then reassign.
   ! All outputs remain private until the final population exchange succeeds.
   subroutine advance_mpi_amr_ghost_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &

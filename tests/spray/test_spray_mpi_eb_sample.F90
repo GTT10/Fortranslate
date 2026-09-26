@@ -1,12 +1,18 @@
 program test_spray_mpi_eb_sample
   use mpi_f08
+  use, intrinsic :: iso_fortran_env, only: int64
+  use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage
+  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,initialize_spray_liquid
+  use spray_mixture_mod, only: advance_mixture_frozen_gas
+  use gas_transport_mod, only: gas_transport_species
+  use transport_database_mod, only: load_h2o2_full_transport
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field, &
     sample_mpi_eb_tree_particle_gas
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use mixture_thermo_mod, only: mixture_specific_gas_constant
-  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
+  use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved,reactive_conserved_to_primitive
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
@@ -101,7 +107,14 @@ program test_spray_mpi_eb_sample
 contains
   subroutine check_temporal_particle_gas()
     type(nasa7_species), allocatable :: species(:)
-    type(amr_tree_state_3d) :: gas,temp,ending,metrics,centroids
+    type(amr_tree_state_3d) :: gas,temp,ending,metrics,centroids,source,remainder,old_source
+    type(gas_transport_species), allocatable :: transport(:)
+    type(spray_liquid) :: liquid(1)
+    type(spray_options) :: options
+    type(spray_parcel), allocatable :: ghosts(:)
+    type(spray_parcel) :: reference
+    real(dp), allocatable :: mass(:,:),old_mass(:,:),delta(:),integral(:),ledger(:)
+    real(dp) :: wall(5),reference_mass(1)
     real(dp), allocatable :: primitive(:),cell(:),y(:),query(:,:),values(:,:),site_t(:),saved_values(:,:),saved_t(:)
     integer, allocatable :: query_nodes(:)
     real(dp) :: h(3),cell_lower(3),vf
@@ -171,6 +184,57 @@ contains
         call require(abs(site_t(1)-900)<1e-8_dp,'particle-site EOS temperature')
       end if
     end do
+    if(.not.any(periodic)) then
+      call load_h2o2_full_transport(transport,ok)
+      call require(ok,'ghost stage transport')
+      call initialize_spray_liquid(species,'H2O',1000._dp,4184._dp,373.15_dp,101325._dp,2.257e6_dp,liquid(1),ok)
+      call require(ok,'ghost stage liquid')
+      allocate(ghosts(count),mass(1,count),delta(nv),integral(nv),ledger(nv))
+      do stage=1,3
+        fraction=fractions(stage);delta=0
+        if(count>0) then
+          ghosts(1)=spray_parcel(1_int64,query(:,1),[20._dp,0._dp,0._dp],1e-12_dp,350._dp,100._dp)
+          mass(:,1)=ghosts(1)%mass;reference=ghosts(1);reference_mass=mass(:,1)
+          call reactive_conserved_to_primitive(species,(1+fraction(1))*cell,900._dp,primitive,t,sound,ok)
+          call require(ok,'time-interpolated ghost EOS reference')
+          call advance_mixture_frozen_gas(species,transport,primitive,t,reference,liquid,reference_mass, &
+            options,1e-8_dp,delta,ok)
+          call require(ok,'time-interpolated ghost physical reference')
+        end if
+        call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+          1,1,1,100,query_nodes,ghosts,mass,1e-8_dp,0._dp,faces,source,remainder,wall,ledger,ok,phi,centroids,metrics, &
+          gas,ending,temp,temp,fraction)
+        call require(ok.and.size(ghosts)==count,'stage-time EB halo reaches ghost evolution')
+        if(count>0) then
+          call require(maxval(abs(ghosts(1)%velocity-reference%velocity))<1e-12_dp.and. &
+            abs(ghosts(1)%temperature-reference%temperature)<1e-10_dp.and. &
+            abs(mass(1,1)-reference_mass(1))<1e-14_dp*reference_mass(1),'ghost responds to parent endpoint interpolation')
+        end if
+        integral=0
+        do p=1,2
+          if(owners(p)/=rank) cycle
+          n=tree%nodes(p)%shape
+          do c=1,n(3)
+          do b=1,n(2)
+          do a=1,n(1)
+            integral=integral+source%fields(p)%values(:,a,b,c)*g(p)%volume_fraction(a,b,c)*g(p)%dx*g(p)%dy*g(p)%dz
+          end do
+          end do
+          end do
+        end do
+        call MPI_Allreduce(MPI_IN_PLACE,integral,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+        call MPI_Allreduce(MPI_IN_PLACE,delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+        call require(all(abs(integral-delta)<1e-12_dp*max(abs(delta),1e-30_dp)),'stage-time EB reaction inventory')
+      end do
+      old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
+      call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,query_nodes,ghosts,mass,1e-8_dp,0._dp,faces,source,remainder,wall,ledger,ok,phi,centroids,metrics, &
+        gas,ending,temp,temp,fraction)
+      call require(.not.ok.and.all(mass==old_mass).and.all(wall==17).and.all(ledger==19),'bad stage time rollback')
+      do p=1,2
+        if(owners(p)==rank) call require(all(source%fields(p)%values==old_source%fields(p)%values),'stage-time source rollback')
+      end do
+    end if
     saved_values=values;saved_t=site_t;fraction=1.1_dp
     call sample_mpi_eb_tree_particle_gas(MPI_COMM_WORLD,species,tree,owners,g,gas,temp,1,query_nodes,query, &
       values,site_t,ok,gas,ending,temp,temp,fraction,target_volume_fraction=metrics,boundary_faces=faces, &
