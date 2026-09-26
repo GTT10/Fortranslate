@@ -54,8 +54,10 @@ one interval using parent state/source endpoints and exports integrated fluxes
 donors, integrated-flux synchronization and application restart
 ([checks](validation/sdc-subcycle-20260926.md)). MPI now has an owner-local SDC
 reaction stage with collective rollback and optional level selection
-([checks](validation/sdc-mpi-reaction-20260926.md)). MPI hydro/transport SDC
-coupling and EB SDC remain open.
+([checks](validation/sdc-mpi-reaction-20260926.md)). MPI SDC hydro now communicates
+signed predictor sources and returns owner-local rates/integrated fluxes
+([checks](validation/sdc-mpi-hydro-20260926.md)). MPI transport/iteration coupling
+and EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
