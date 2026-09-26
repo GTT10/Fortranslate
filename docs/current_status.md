@@ -116,7 +116,10 @@ inactive levels and exports interval fluxes plus old/new source predictors
 Recursive EB tree SDC now accumulates interval fluxes, synchronizes adjacent
 levels and routes through the serial application with checkpoint/restart
 ([checks](validation/sdc-eb-tree-subcycle-20260927.md)).
-EB tree SDC MPI integration remains open.
+MPI EB trees now expose an owner-local SDC reaction stage, including selected
+levels and collective failure handling
+([checks](validation/sdc-mpi-eb-reaction-20260927.md)).
+Coupled EB tree SDC MPI integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
