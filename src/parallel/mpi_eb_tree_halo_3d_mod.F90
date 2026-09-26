@@ -4,7 +4,7 @@ module mpi_eb_tree_halo_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
-  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
+  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d,valid_reactive_boundaries_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
@@ -13,7 +13,7 @@ module mpi_eb_tree_halo_3d_mod
   use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
   implicit none
   private
-  public :: fill_mpi_eb_tree_halo_3d
+  public :: fill_mpi_eb_tree_halo_3d,fill_sdc_mpi_eb_tree_source_halo_3d
 contains
   ! Collective PCM halos with outflow/Mach inlet and optional ancestor time interpolation.
   ! By default only face donors are exchanged; remaining slots are zero.
@@ -516,4 +516,164 @@ contains
     end do
     valid=.true.
   end function
+  ! Signed source donors use scalar boundary extrapolation (no EOS or reflection).
+  ! Only fluid donors needed by owned targets are exchanged; covered values may be NaN.
+  subroutine fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,rates,nvar,halo_width,ghost,comm,ok, &
+      boundary_faces,target_volume_fraction)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,halo_width
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: rates
+    type(amr_tree_state_3d), intent(inout) :: ghost
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
+    type(amr_tree_state_3d) :: candidate
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:),requests(:,:),destination(:,:)
+    real(dp), allocatable :: values(:,:)
+    integer(int64) :: global(3),mapped(3),local(3),maximum
+    integer :: rank,status,ios,node,target,n(3),level,depth,donor,source(3),idx(3),i,j,k,axis,q
+    integer :: controls(3),low(3),high(3),width
+    character(len=32) :: faces(6),reference(6)
+    real(dp) :: volume
+    logical :: valid,ready
+    ok=.false.;width=halo_width
+    controls=[nvar,width,merge(1,0,present(target_volume_fraction))]
+    call MPI_Allreduce(controls,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    if(nvar<1.or.width<1.or.width>6) return
+    faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    reference=faces
+    call MPI_Bcast(reference,len(reference)*6,MPI_CHARACTER,0,comm,status)
+    call agree(status==MPI_SUCCESS.and.all(faces==reference).and.valid_reactive_boundaries_3d(faces),ready)
+    if(.not.ready) return
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nvar,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,rates,nvar,comm,ready)
+    if(.not.ready) return
+    call agree(periodic_eb_faces_match(geometry(1),faces),ready)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    call agree(valid,ready)
+    if(.not.ready) return
+    valid=.true.
+    if(present(target_volume_fraction)) then
+      valid=allocated(target_volume_fraction%fields)
+      if(valid) valid=size(target_volume_fraction%fields)==size(owners)
+    end if
+    call agree(valid,ready)
+    if(.not.ready) return
+    maximum=0
+    do node=1,size(owners)
+      n=tree%nodes(node)%shape
+      if(any(n>huge(1)-2*width)) then
+        valid=.false.;exit
+      end if
+      if(owners(node)/=rank) cycle
+      maximum=maximum+product(int(n+2*width,int64))
+      if(present(target_volume_fraction)) then
+        if(.not.allocated(target_volume_fraction%fields(node)%values)) then
+          valid=.false.;exit
+        end if
+        associate(v=>target_volume_fraction%fields(node)%values)
+        if(any(shape(v)/=[1,n+2*width])) then
+          valid=.false.;exit
+        end if
+        if(.not.all(ieee_is_finite(v)).or.any(v<0).or.any(v>1)) then
+          valid=.false.;exit
+        end if
+        ! Use array positions, independent of caller lower bounds.
+        end associate
+      end if
+    end do
+    call agree(valid.and.maximum<=int(huge(1)/max(4,nvar),int64),ready)
+    if(.not.ready) return
+    allocate(candidate%fields(size(owners)),requests(4,int(maximum)),destination(4,int(maximum)),stat=ios)
+    call agree(ios==0,ready)
+    if(.not.ready) return
+    q=0
+    targets: do target=1,size(owners)
+      if(owners(target)/=rank) cycle
+      n=tree%nodes(target)%shape;level=tree%nodes(target)%level+1
+      allocate(candidate%fields(target)%values(nvar,n(1)+2*width,n(2)+2*width,n(3)+2*width),source=0._dp,stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+      do k=1,n(3)+2*width
+      do j=1,n(2)+2*width
+      do i=1,n(1)+2*width
+        idx=[i,j,k]-width
+        global=origin(:,target)+int(idx-1,int64)
+        do axis=1,3
+          if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
+        end do
+        global=max(0_int64,min(domain(:,level)-1,global))
+        donor=0
+        if(all(idx>=1).and.all(idx<=n)) then
+          donor=target;source=idx
+        else
+          do depth=level,1,-1
+            mapped=global/(domain(:,level)/domain(:,depth))
+            do node=1,size(owners)
+              if(tree%nodes(node)%level+1/=depth) cycle
+              local=mapped-origin(:,node)
+              if(any(local<0).or.any(local>=int(tree%nodes(node)%shape,int64))) cycle
+              donor=node;source=int(local)+1;exit
+            end do
+            if(donor/=0) exit
+          end do
+        end if
+        if(donor==0) then
+          valid=.false.;exit targets
+        end if
+        volume=geometry(donor)%volume_fraction(source(1),source(2),source(3))
+        if(present(target_volume_fraction)) then
+          block
+            integer :: loc(4)
+            loc=lbound(target_volume_fraction%fields(target)%values)+[0,i-1,j-1,k-1]
+            associate(v=>target_volume_fraction%fields(target)%values)
+            if(all(idx>=1).and.all(idx<=n)) then
+              if(v(loc(1),loc(2),loc(3),loc(4))/=volume) then
+                valid=.false.;exit targets
+              end if
+            end if
+            if(v(loc(1),loc(2),loc(3),loc(4))<=0) cycle
+            end associate
+          end block
+          if(volume<=0) then
+            valid=.false.;exit targets
+          end if
+        else
+          if(volume<=0) cycle
+        end if
+        q=q+1;requests(:,q)=[donor,source];destination(:,q)=[target,i,j,k]
+      end do
+      end do
+      end do
+    end do targets
+    call agree(valid,ready)
+    if(.not.ready) return
+    call fetch_mpi_amr_tree_cells_3d(tree,owners,rates,nvar,requests(:,:q),values,comm,ready)
+    if(.not.ready) return
+    do i=1,q
+      idx=destination(2:4,i);target=destination(1,i)
+      candidate%fields(target)%values(:,idx(1),idx(2),idx(3))=values(:,i)
+    end do
+    call move_alloc(candidate%fields,ghost%fields);ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine
+  end subroutine fill_sdc_mpi_eb_tree_source_halo_3d
 end module mpi_eb_tree_halo_3d_mod

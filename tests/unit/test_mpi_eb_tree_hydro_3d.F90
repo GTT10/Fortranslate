@@ -1,5 +1,6 @@
 program test_mpi_eb_tree_hydro_3d
   use mpi_f08
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -12,7 +13,9 @@ program test_mpi_eb_tree_hydro_3d
     build_eb_tree_extended_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
-  use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d
+  use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
+  use eb_reactive_patch_tree_3d_mod, only: compute_sdc_eb_tree_hydro_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -123,6 +126,7 @@ program test_mpi_eb_tree_hydro_3d
   if(index(test_mode,'wall')>0) then
     allocate(labels(6));labels='outflow';labels(1:2)='slip_wall';labels(3:4)='no_slip_wall'
   end if
+  if(allocated(extended)) call check_sdc_hydro()
   boundary=17._dp;wall=19._dp
   call advance_reactive_eb_tree_hydro_3d(species,solver,1.e-8_dp,tree,boundary,wall,ok, &
     difmag=coefficient,extended_geometry=extended, &
@@ -141,6 +145,73 @@ program test_mpi_eb_tree_hydro_3d
   if (rank==0) print *, 'test_mpi_eb_tree_hydro_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine check_sdc_hydro()
+    type(eb_reactive_tree_3d) :: stage_tree
+    type(amr_tree_state_3d) :: local,lt,predictor,local_predictor,rates,reference,prior
+    type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:)
+    real(dp) :: dt,nan
+    integer :: owners(count),p,mode,failure,c
+    logical :: good
+    stage_tree=saved;nan=ieee_value(0._dp,ieee_quiet_nan)
+    stage_tree%nodes(1)%state=1.01_dp*stage_tree%nodes(1)%state
+    allocate(predictor%fields(count))
+    do p=1,count
+      allocate(predictor%fields(p)%values(nv,4,4,4),source=0._dp)
+      predictor%fields(p)%values(2,:,:,:)=real(p,dp)*2.e4_dp
+      predictor%fields(p)%values(3,:,:,:)=-real(p,dp)*3.e4_dp
+      predictor%fields(p)%values(5,:,:,:)=real(p,dp)*1.e6_dp
+      do c=1,nv
+        where(physical(p)%volume_fraction<=0) predictor%fields(p)%values(c,:,:,:)=nan
+      end do
+    end do
+    call compute_sdc_eb_tree_hydro_3d(species,stage_tree,predictor,extended,1.e-8_dp,reference,expected,good, &
+      difmag=coefficient,boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
+    call require(good,'serial source-aware SDC hydro')
+    do mode=1,2
+      owners=[(mod(p-1,nranks),p=1,count)]
+      if(mode==2) owners=0
+      allocate(local%fields(count),lt%fields(count),local_predictor%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        local%fields(p)%values=stage_tree%nodes(p)%state
+        allocate(lt%fields(p)%values(1,4,4,4))
+        lt%fields(p)%values(1,:,:,:)=stage_tree%nodes(p)%temperature
+        local_predictor%fields(p)%values=predictor%fields(p)%values
+      end do
+      call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+        extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t)
+      call require(good,'MPI SDC hydro with covered NaNs')
+      do p=1,count
+        call require(allocated(rates%fields(p)%values).eqv.(owners(p)==rank),'owner-local SDC rates')
+        call require(allocated(flux(p)%x).eqv.(owners(p)==rank),'owner-local SDC flux')
+        if(owners(p)/=rank) cycle
+        call require(all(rates%fields(p)%values==reference%fields(p)%values),'exact serial SDC hydro rate')
+        call require(all(flux(p)%x==expected(p)%x).and.all(flux(p)%y==expected(p)%y).and. &
+          all(flux(p)%z==expected(p)%z),'exact serial SDC hydro flux')
+        call require(all(local%fields(p)%values==stage_tree%nodes(p)%state),'SDC preserves input U')
+        call require(all(lt%fields(p)%values(1,:,:,:)==stage_tree%nodes(p)%temperature),'SDC preserves input T')
+      end do
+      prior=rates;old_flux=flux
+      do failure=1,2
+        dt=1.e-8_dp
+        if(failure==1.and.rank==owners(count)) local_predictor%fields(count)%values(2,4,4,4)=nan
+        if(failure==2.and.rank==nranks-1) dt=-dt
+        call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+          extended,dt,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+          inflow_state=inlet,inflow_temperature=inlet_t)
+        call require(.not.good,'collective SDC hydro rejection')
+        do p=1,count
+          if(owners(p)/=rank) cycle
+          call require(all(rates%fields(p)%values==prior%fields(p)%values),'SDC hydro rates rollback')
+          call require(all(flux(p)%x==old_flux(p)%x).and.all(flux(p)%y==old_flux(p)%y).and. &
+            all(flux(p)%z==old_flux(p)%z),'SDC hydro flux rollback')
+        end do
+        if(rank==owners(count)) local_predictor%fields(count)%values=predictor%fields(count)%values
+      end do
+      deallocate(local%fields,lt%fields,local_predictor%fields)
+    end do
+  end subroutine check_sdc_hydro
   subroutine check_mpi_hydro()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)

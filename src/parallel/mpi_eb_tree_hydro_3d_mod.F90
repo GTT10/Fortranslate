@@ -10,15 +10,15 @@ module mpi_eb_tree_hydro_3d_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d, &
-    advance_reactive_eb_plm_ctu_3d,compute_reactive_eb_flattening_3d,eb_plm_boundary_3d
+    advance_reactive_eb_plm_ctu_3d,compute_reactive_eb_flattening_3d,eb_plm_boundary_3d,compute_sdc_eb_hydro_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d,validate_mpi_eb_tree_geometry_3d
   use eb_reactive_two_level_3d_mod, only: matching_eb_metrics_3d
-  use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
+  use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d,fill_sdc_mpi_eb_tree_source_halo_3d
   use mpi_eb_tree_flux_3d_mod, only: synchronize_mpi_eb_tree_flux_3d
   implicit none
   private
-  public :: advance_mpi_eb_tree_hydro_3d
+  public :: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
 contains
   ! Common interval with PCM or an explicit six-layer PLM CTU geometry cache.
   subroutine advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,state,temperature, &
@@ -227,4 +227,123 @@ contains
       if (ierr/=MPI_SUCCESS) result=.false.
     end subroutine
   end subroutine
+  ! SDC CTU stage: owner-local rates and integrated fluxes, without reflux or restriction.
+  subroutine compute_sdc_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,state,temperature,predictor, &
+      extended_geometry,dt,hydro_rate,flux,comm,ok,difmag,boundary_faces,inflow_state, &
+      inflow_mach,inflow_temperature,inflow_pressure)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended_geometry(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature,predictor
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: hydro_rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d) :: rates,metrics,source_metrics,ghost,gt,vf,source
+    type(eb_integrated_flux_3d), allocatable :: candidate_flux(:)
+    type(eb_geometry_3d) :: center,working
+    type(eb_plm_boundary_3d) :: physical_boundary
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: flat(:,:,:)
+    real(dp) :: coefficient,controls(2),low(2),high(2),work_stamp
+    real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
+    integer :: nv,rank,status,ios,node,n(3)
+    character(len=32) :: faces(6)
+    logical :: valid,ready
+    ok=.false.;nv=reactive_nvar(size(species))
+    coefficient=.1_dp
+    if(present(difmag)) coefficient=difmag
+    controls=[dt,coefficient]
+    call agree(all(ieee_is_finite(controls)).and.dt>0.and.coefficient>=0,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(controls,low,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=6)
+    if(.not.ready) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(valid) valid=all(domain<=int(huge(1)-4,int64))
+    call agree(valid,ready)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    allocate(metrics%fields(size(owners)),source_metrics%fields(size(owners)), &
+      rates%fields(size(owners)),candidate_flux(size(owners)),stat=ios)
+    call agree(ios==0,ready)
+    if(.not.ready) return
+    do node=1,size(owners)
+      n=tree%nodes(node)%shape
+      call extract_eb_geometry_3d(extended_geometry(node),[7,7,7],n+6,center,valid)
+      if(valid) valid=matching_eb_metrics_3d(center,geometry(node))
+      if(.not.valid) exit
+      if(owners(node)/=rank) cycle
+      allocate(metrics%fields(node)%values(1,-5:n(1)+6,-5:n(2)+6,-5:n(3)+6), &
+        source_metrics%fields(node)%values(1,n(1)+6,n(2)+6,n(3)+6), &
+        rates%fields(node)%values(nv,n(1),n(2),n(3)),stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+      metrics%fields(node)%values(1,:,:,:)=extended_geometry(node)%volume_fraction
+      source_metrics%fields(node)%values(1,:,:,:)=extended_geometry(node)%volume_fraction(4:n(1)+9,4:n(2)+9,4:n(3)+9)
+      rates%fields(node)%values=0
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,gt,comm,ready, &
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf,halo_width=6, &
+      target_volume_fraction=metrics,restrict_snapshot=.false.)
+    if(.not.ready) return
+    faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    if(present(inflow_mach)) then
+      where(inflow_mach>=0) faces='inflow'
+    end if
+    call fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,predictor,nv,3,source,comm,ready, &
+      boundary_faces=faces,target_volume_fraction=source_metrics)
+    if(.not.ready) return
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,working,valid)
+      if(.not.valid) exit
+      allocate(flat(0:n(1)+7,0:n(2)+7,0:n(3)+7),stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+      call compute_reactive_eb_flattening_3d(species,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:), &
+        vf%fields(node)%values(1,:,:,:),n+6,flat,valid)
+      if(.not.valid) exit
+      physical_boundary%lower=4-int(origin(:,node))
+      physical_boundary%upper=3+int(domain(:,tree%nodes(node)%level+1)-origin(:,node))
+      physical_boundary%faces=faces
+      work_stamp=tree_work_start()
+      call compute_sdc_eb_hydro_3d(species,working,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:), &
+        vf%fields(node)%values(1,:,:,:),dt,flat,source%fields(node)%values,rates%fields(node)%values, &
+        candidate_flux(node),boundary,wall,valid,difmag=coefficient,boundary=physical_boundary)
+      call tree_work_stop(node,work_stamp)
+      if(.not.valid) exit
+      deallocate(flat)
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    call move_alloc(rates%fields,hydro_rate%fields)
+    call move_alloc(candidate_flux,flux);ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine
+  end subroutine compute_sdc_mpi_eb_tree_hydro_3d
 end module mpi_eb_tree_hydro_3d_mod
