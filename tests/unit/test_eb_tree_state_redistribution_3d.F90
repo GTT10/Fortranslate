@@ -5,11 +5,13 @@ program test_eb_tree_state_redistribution_3d
   use amr_patch_tree_3d_mod, only: amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
     coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,redistribute_eb_tree_state_3d
+  use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,redistribute_eb_tree_state_3d, &
+    redistribute_sdc_eb_tree_state_level_rate_3d,redistribute_sdc_eb_tree_state_rate_3d
   use eb_reactive_redistribution_3d_mod, only: reactive_eb_weighted_state_redistribute_3d
 #ifdef PELEF_TEST_MPI_REDIST
   use mpi_f08
-  use mpi_eb_tree_redistribution_3d_mod, only: redistribute_mpi_eb_tree_state_3d
+  use mpi_eb_tree_redistribution_3d_mod, only: redistribute_mpi_eb_tree_state_3d, &
+    redistribute_sdc_mpi_eb_tree_state_level_rate_3d
 #endif
   implicit none
   type(eb_reactive_tree_3d) :: tree
@@ -96,6 +98,7 @@ program test_eb_tree_state_redistribution_3d
     end do
     call redistribute_eb_tree_state_3d(tree,raw,result,ok)
     call require(ok,'composite redistribution')
+    call check_decomposition(raw,result)
 #ifdef PELEF_TEST_MPI_REDIST
     call check_mpi(raw,result)
 #endif
@@ -189,10 +192,103 @@ program test_eb_tree_state_redistribution_3d
   call MPI_Finalize(status)
 #endif
 contains
+  subroutine check_decomposition(input,reference)
+    type(amr_tree_state_3d), intent(in) :: input,reference
+    type(amr_tree_state_3d) :: delta,total,rate,transfer,combined,full
+    real(dp) :: inventory(2),balance(2),h
+    integer :: depth,q,a,b,c,d(3)
+    logical :: good
 #ifdef PELEF_TEST_MPI_REDIST
-  subroutine check_mpi(input,reference,labels)
+    type(amr_tree_state_3d) :: local,local_state,mrate,mtransfer
+    type(eb_geometry_3d) :: metrics(size(tree%nodes))
+    integer :: owners(size(tree%nodes)),distribution
+#endif
+    total=input;combined=input
+    do q=1,size(tree%nodes)
+      total%fields(q)%values=0;combined%fields(q)%values=0
+      tree%nodes(q)%state=input%fields(q)%values
+    end do
+    h=.25_dp
+    call redistribute_sdc_eb_tree_state_rate_3d(tree,input,h,full,good)
+    call require(good,'full affine state rate')
+    do depth=0,tree%topology%level_count()-1
+      call redistribute_eb_tree_state_3d(tree,input,delta,good,correction_depth=depth)
+      call require(good,'selected conservative neighborhood correction')
+#ifdef PELEF_TEST_MPI_REDIST
+      call check_mpi(input,delta,depth=depth)
+#endif
+      call redistribute_sdc_eb_tree_state_level_rate_3d(tree,input,depth,h,rate,transfer,good)
+      call require(good,'selected affine rate and integrated transfer')
+      inventory=0;balance=0
+      do q=1,size(tree%nodes)
+        total%fields(q)%values=total%fields(q)%values+delta%fields(q)%values
+        combined%fields(q)%values=combined%fields(q)%values+rate%fields(q)%values+transfer%fields(q)%values/h
+        if(tree%topology%nodes(q)%level==depth) then
+          call require(all(transfer%fields(q)%values==0),'selected transfer zero')
+        else
+          call require(all(rate%fields(q)%values==0),'inactive rate zero')
+        end if
+        d=tree%topology%nodes(q)%shape
+        do c=1,d(3)
+        do b=1,d(2)
+        do a=1,d(1)
+          if(fluid_volume(q,a,b,c)<=0) cycle
+          inventory=inventory+fluid_volume(q,a,b,c)*delta%fields(q)%values(:,a,b,c)
+          balance=balance+fluid_volume(q,a,b,c)*(h*rate%fields(q)%values(:,a,b,c)+transfer%fields(q)%values(:,a,b,c))
+          if(tree%topology%nodes(q)%level==depth) &
+            balance=balance-h*fluid_volume(q,a,b,c)*input%fields(q)%values(:,a,b,c)
+        end do
+        end do
+        end do
+      end do
+      call require(maxval(abs(inventory))<3.e-14_dp,'each level baseline correction conserves')
+      call require(maxval(abs(balance))<3.e-14_dp,'each level affine rate conserves with transfers')
+#ifdef PELEF_TEST_MPI_REDIST
+      do distribution=1,2
+        owners=[(mod(q-1,nranks),q=1,size(tree%nodes))]
+        if(distribution==2) owners=0
+        allocate(local%fields(size(tree%nodes)),local_state%fields(size(tree%nodes)))
+        do q=1,size(tree%nodes)
+          metrics(q)=tree%nodes(q)%geometry
+          if(owners(q)/=rank) cycle
+          local%fields(q)%values=input%fields(q)%values
+          local_state%fields(q)%values=tree%nodes(q)%state
+        end do
+        call redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree%topology,owners,metrics,local_state,local, &
+          2,depth,h,mrate,mtransfer,MPI_COMM_WORLD,good)
+        call require(good,'MPI level state rate')
+        do q=1,size(tree%nodes)
+          call require(allocated(mrate%fields(q)%values).eqv.(owners(q)==rank),'owner-local level rate')
+          call require(allocated(mtransfer%fields(q)%values).eqv.(owners(q)==rank),'owner-local level transfer')
+          if(owners(q)/=rank) cycle
+          call require(all(mrate%fields(q)%values==rate%fields(q)%values),'exact serial MPI affine level rate')
+          call require(all(mtransfer%fields(q)%values==transfer%fields(q)%values),'exact serial MPI level transfer')
+        end do
+        deallocate(local%fields,local_state%fields)
+      end do
+#endif
+    end do
+    do q=1,size(tree%nodes)
+      d=tree%topology%nodes(q)%shape
+      call require(maxval(abs(combined%fields(q)%values-full%fields(q)%values))<3.e-14_dp, &
+        'sum of level rates and transfers equals full affine operator')
+      do c=1,d(3)
+      do b=1,d(2)
+      do a=1,d(1)
+        if(tree%nodes(q)%geometry%volume_fraction(a,b,c)<=0) cycle
+        call require(maxval(abs(total%fields(q)%values(:,a,b,c)- &
+          (reference%fields(q)%values(:,a,b,c)-input%fields(q)%values(:,a,b,c))))<3.e-14_dp, &
+          'sum of group corrections reconstructs full state displacement')
+      end do
+      end do
+      end do
+    end do
+  end subroutine check_decomposition
+#ifdef PELEF_TEST_MPI_REDIST
+  subroutine check_mpi(input,reference,labels,depth)
     type(amr_tree_state_3d), intent(in) :: input,reference
     character(len=*), optional, intent(in) :: labels(6)
+    integer, optional, intent(in) :: depth
     type(amr_tree_state_3d) :: local,output,previous
     type(eb_geometry_3d) :: geometry(size(tree%nodes))
     integer :: owners(size(tree%nodes)),q,distribution
@@ -212,7 +308,7 @@ contains
         if(owners(q)==rank) local%fields(q)%values=input%fields(q)%values
       end do
       call redistribute_mpi_eb_tree_state_3d(tree%topology,owners,geometry,local,2,output, &
-        MPI_COMM_WORLD,good,boundary_faces=faces)
+        MPI_COMM_WORLD,good,boundary_faces=faces,correction_depth=depth)
       call require(good,'MPI composite redistribution')
       do q=1,size(tree%nodes)
         call require(allocated(output%fields(q)%values).eqv.(owners(q)==rank),'MPI owner-local result')
@@ -239,7 +335,7 @@ contains
       end do
       if(owners(1)==rank) local%fields(1)%values(:,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
       call redistribute_mpi_eb_tree_state_3d(tree%topology,owners,geometry,local,2,output, &
-        MPI_COMM_WORLD,good,boundary_faces=faces)
+        MPI_COMM_WORLD,good,boundary_faces=faces,correction_depth=depth)
       call require(.not.good,'one-owner nonfinite rate rejected')
       do q=1,size(tree%nodes)
         if(owners(q)/=rank) cycle

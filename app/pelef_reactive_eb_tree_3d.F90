@@ -220,9 +220,6 @@ program pelef_reactive_eb_tree_3d
   if(.not.ieee_is_finite(state_redist_target_volume_fraction)) error stop 'Invalid redistribution target'
   if(state_redist_target_volume_fraction<=0.or.state_redist_target_volume_fraction>1) &
     error stop 'Invalid redistribution target'
-  if(redistribution=='state_redist') then
-    if(subcycling) error stop 'Recursive tree state redistribution is not implemented'
-  end if
   if(redistribution/='none') then
     if(time_integrator/='sdc') error stop 'Tree redistribution requires SDC'
   end if
@@ -560,7 +557,7 @@ program pelef_reactive_eb_tree_3d
           [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
           extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution)
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
         else
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
           mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
@@ -586,7 +583,7 @@ program pelef_reactive_eb_tree_3d
           [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution)
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
         else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
           [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &

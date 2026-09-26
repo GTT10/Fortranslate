@@ -11,6 +11,7 @@ module mpi_eb_tree_redistribution_3d_mod
   implicit none
   private
   public :: redistribute_sdc_mpi_eb_tree_flux_rate_3d,redistribute_sdc_mpi_eb_tree_level_rate_3d
+  public :: redistribute_sdc_mpi_eb_tree_state_level_rate_3d
   public :: redistribute_mpi_eb_tree_state_3d,redistribute_sdc_mpi_eb_tree_state_rate_3d
 contains
   ! Two sparse exchanges: neighbor rates for each owned cut leaf, followed by
@@ -307,9 +308,96 @@ contains
       if(ierr/=MPI_SUCCESS) result=.false.
     end subroutine agree
   end subroutine redistribute_sdc_mpi_eb_tree_level_rate_3d
+  subroutine redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree,owners,geometry,state,rhs,nvar,depth,dt, &
+      rate,transfer,comm,ok,target_volume_fraction,boundary_faces)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,depth
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: state,rhs
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: rate,transfer
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: target_volume_fraction
+    type(amr_tree_state_3d) :: selected,result,exchange,correction
+    integer :: p,rank,status,lower,upper
+    real(dp) :: dt_low,dt_high
+    logical :: valid,ready
+    ok=.false.
+    valid=ieee_is_finite(dt)
+    if(valid) valid=dt>0
+    call agree(valid,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(depth,lower,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(depth,upper,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.lower/=upper) return
+    call MPI_Allreduce(dt,dt_low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(dt,dt_high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.dt_low/=dt_high) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,rhs,nvar,comm,ready)
+    if(.not.ready) return
+    call agree(depth>=0.and.depth<tree%level_count(),ready)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    selected=rhs
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank) cycle
+      if(tree%nodes(p)%level/=depth) selected%fields(p)%values=0
+    end do
+    call redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,selected,nvar,result,comm,ready, &
+      target_volume_fraction,boundary_faces)
+    if(.not.ready) return
+    call redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,state,nvar,correction,comm,ready, &
+      target_volume_fraction,boundary_faces,depth)
+    if(.not.ready) return
+    exchange=result;valid=.true.
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank) cycle
+      if(tree%nodes(p)%level==depth) then
+        exchange%fields(p)%values=0
+        result%fields(p)%values=result%fields(p)%values+correction%fields(p)%values/dt
+      else
+        if(dt>1) then
+          if(any(abs(exchange%fields(p)%values)>huge(1._dp)/dt)) valid=.false.
+        end if
+      end if
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank.or.tree%nodes(p)%level==depth) cycle
+      exchange%fields(p)%values=dt*exchange%fields(p)%values+correction%fields(p)%values
+      result%fields(p)%values=0
+    end do
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank) cycle
+      valid=valid.and.all(ieee_is_finite(result%fields(p)%values))
+      valid=valid.and.all(ieee_is_finite(exchange%fields(p)%values))
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    call move_alloc(result%fields,rate%fields)
+    call move_alloc(exchange%fields,transfer%fields)
+    ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine agree
+  end subroutine redistribute_sdc_mpi_eb_tree_state_level_rate_3d
   ! Replicated geometry determines identical weighted neighborhoods. State and
   ! neighborhood means stay owner-local; two sparse fetches supply remote values.
-  subroutine redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,input,nv,result,comm,ok,target_volume_fraction,boundary_faces)
+  ! correction_depth returns signed displacements from neighborhoods at one
+  ! collectively selected depth, rather than the full redistributed state.
+  subroutine redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,input,nv,result,comm,ok, &
+      target_volume_fraction,boundary_faces,correction_depth)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nv
     type(eb_geometry_3d), intent(in) :: geometry(:)
@@ -319,6 +407,8 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: target_volume_fraction
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    integer, optional, intent(in) :: correction_depth
+    integer :: depth,depth_low,depth_high
     type :: neighborhood
       integer, allocatable :: member(:)
     end type
@@ -359,6 +449,16 @@ contains
     if(.not.ready) return
     call agree(periodic_eb_faces_match(geometry(1),faces),ready)
     if(.not.ready) return
+    depth=-1
+    if(present(correction_depth)) depth=correction_depth
+    valid=depth>=-1.and.depth<tree%level_count()
+    if(present(correction_depth)) valid=valid.and.depth>=0
+    call agree(valid,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(depth,depth_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(depth,depth_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.depth_low/=depth_high) return
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
@@ -381,7 +481,10 @@ contains
       allocate(ids%fields(p)%values(1,n(1),n(2),n(3)),source=0._dp,stat=allocation_status)
       call agree(allocation_status==0,ready)
       if(.not.ready) return
-      if(owners(p)==rank) averages%fields(p)%values=0
+      if(owners(p)==rank) then
+        averages%fields(p)%values=0
+        if(depth>=0) candidate%fields(p)%values=0
+      end if
       do child=p+1,size(tree%nodes)
         if(tree%nodes(child)%parent/=p) cycle
         associate(b=>tree%nodes(child)%patch)
@@ -482,6 +585,7 @@ contains
     needed=.false.
     do root=1,nc
       if(owners(cells(1,root))/=rank) cycle
+      if(depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
       needed(root)=.true.
       if(fallback) then
         if(allocated(groups(root)%member)) needed(groups(root)%member)=.true.
@@ -497,6 +601,7 @@ contains
     valid=.true.
     do root=1,nc
       if(owners(cells(1,root))/=rank) cycle
+      if(depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
       if(fallback) then
         count=1
         if(allocated(groups(root)%member)) count=size(groups(root)%member)
@@ -528,6 +633,7 @@ contains
     ! Fetch neighborhood means whose scatter reaches an owned recipient.
     needed=.false.
     do root=1,nc
+      if(depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
       needed(root)=owners(cells(1,root))==rank
       if(fallback) then
         if(allocated(groups(root)%member)) then
@@ -562,18 +668,27 @@ contains
           if(allocated(groups(root)%member)) other=groups(root)%member(m)
           p=cells(1,other);i=cells(2,other);j=cells(3,other);k=cells(4,other)
           if(owners(p)/=rank) cycle
+          mean=incoming(:,q)
+          if(depth>=0) mean=mean-input%fields(p)%values(:,i,j,k)
           candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
-            incoming(:,q)/real(memberships(other),dp)
+            mean/real(memberships(other),dp)
         end do
       else
         p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
-        if(owners(p)==rank) candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
-          self(root)*real(memberships(root),dp)*incoming(:,q)
+        if(owners(p)==rank) then
+          mean=incoming(:,q)
+          if(depth>=0) mean=mean-input%fields(p)%values(:,i,j,k)
+          candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
+            self(root)*real(memberships(root),dp)*mean
+        end if
         other=receiver(root)
         if(other>0) then
           p=cells(1,other);i=cells(2,other);j=cells(3,other);k=cells(4,other)
-          if(owners(p)==rank) candidate%fields(p)%values(:,i,j,k)= &
-            candidate%fields(p)%values(:,i,j,k)+beta(root)*incoming(:,q)
+          if(owners(p)==rank) then
+            mean=incoming(:,q)
+            if(depth>=0) mean=mean-input%fields(p)%values(:,i,j,k)
+            candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+beta(root)*mean
+          end if
         end if
       end if
     end do

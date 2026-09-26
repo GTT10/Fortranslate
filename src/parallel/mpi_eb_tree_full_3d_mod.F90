@@ -23,7 +23,7 @@ module mpi_eb_tree_full_3d_mod
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use mpi_eb_tree_redistribution_3d_mod, only: redistribute_sdc_mpi_eb_tree_flux_rate_3d, &
     redistribute_sdc_mpi_eb_tree_level_rate_3d,redistribute_mpi_eb_tree_state_3d, &
-    redistribute_sdc_mpi_eb_tree_state_rate_3d
+    redistribute_sdc_mpi_eb_tree_state_rate_3d,redistribute_sdc_mpi_eb_tree_state_level_rate_3d
   use mpi_eb_tree_flux_3d_mod, only: synchronize_mpi_eb_tree_flux_3d
   implicit none
   private
@@ -397,9 +397,8 @@ contains
       merge(1,0,present(redistribution_transfer))]
     valid=selected_depth>=-1
     if(present(target_depth)) valid=selected_depth>=0.and.present(integrated_flux)
-    if(redistribution_method=='state_redist') valid=valid.and.selected_depth<0
     valid=valid.and.(selection(2)==0.or.selection(2)==6).and.(selection(3)==0.or.selection(3)==2)
-    if(selected_depth>=0.and.redistribution_method=='flux_redist') then
+    if(selected_depth>=0.and.redistribution_method/='none') then
       valid=valid.and.present(redistribution_transfer)
     else
       valid=valid.and..not.present(redistribution_transfer)
@@ -486,8 +485,13 @@ contains
         source_start,source_end,midpoint)
       if(.not.ready) return
       if(redistribution_method=='state_redist') then
-        call redistribute_sdc_mpi_eb_tree_state_rate_3d(tree,owners,geometry,old,hydro,nv,dt,redistributed, &
-          comm,ready,redist_target,boundary_faces)
+        if(selected_depth>=0) then
+          call redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree,owners,geometry,old,hydro,nv,selected_depth,dt, &
+            redistributed,hydro_transfer,comm,ready,redist_target,boundary_faces)
+        else
+          call redistribute_sdc_mpi_eb_tree_state_rate_3d(tree,owners,geometry,old,hydro,nv,dt,redistributed, &
+            comm,ready,redist_target,boundary_faces)
+        end if
         if(.not.ready) return
         hydro=redistributed
       else if(redistribution_method=='flux_redist') then
@@ -718,7 +722,7 @@ contains
         if(owners(p)/=rank) cycle
         transport_rate%fields(p)%values=0
       end do
-      if(selected_depth>=0.and.redistribution_method=='flux_redist') exchange=transport_rate
+      if(selected_depth>=0.and.redistribution_method/='none') exchange=transport_rate
       if(diffusive) then
         call compute_sdc_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt, &
           transport_flags(1),transport_flags(2),transport_flags(3),transport_flags(4),gas,temp, &
@@ -727,8 +731,13 @@ contains
           target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
         if(.not.all_ok) return
         if(redistribution_method=='state_redist') then
-          call redistribute_sdc_mpi_eb_tree_state_rate_3d(tree,owners,geometry,gas,transport_rate,nv,dt,redistributed, &
-            comm,all_ok,redist_target,boundary_faces)
+          if(selected_depth>=0) then
+            call redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree,owners,geometry,gas,transport_rate,nv,selected_depth,dt, &
+              redistributed,exchange,comm,all_ok,redist_target,boundary_faces)
+          else
+            call redistribute_sdc_mpi_eb_tree_state_rate_3d(tree,owners,geometry,gas,transport_rate,nv,dt,redistributed, &
+              comm,all_ok,redist_target,boundary_faces)
+          end if
           if(.not.all_ok) return
           transport_rate=redistributed
         else if(redistribution_method=='flux_redist') then
@@ -774,7 +783,8 @@ contains
       dt,iterations,chemistry, &
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
-      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution)
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
+      target_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -795,6 +805,8 @@ contains
     real(dp), optional, intent(in) :: wall_temperature(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(in) :: target_volume_fraction
+    real(dp) :: redist_target
     character(len=16) :: method
     integer :: method_code,method_low,method_high
     type(amr_tree_state_3d), allocatable :: pending(:)
@@ -818,13 +830,15 @@ contains
     if(.not.ready) return
     method='none'
     if(present(redistribution)) method=redistribution
-    call agree(method=='none'.or.method=='flux_redist',comm,ready)
+    call agree(method=='none'.or.method=='flux_redist'.or.method=='state_redist',comm,ready)
     if(.not.ready) return
-    method_code=merge(1,0,method=='flux_redist')
+    method_code=merge(1,0,method=='flux_redist')+merge(2,0,method=='state_redist')
     call MPI_Allreduce(method_code,method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(method_code,method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.method_low/=method_high) return
+    redist_target=.5_dp
+    if(present(target_volume_fraction)) redist_target=target_volume_fraction
     candidate=state;ct=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,ready)
     if(.not.ready) return
@@ -856,7 +870,7 @@ contains
     call agree(valid,comm,ready)
     if(.not.ready) return
     source1=source0
-    if(method=='flux_redist') then
+    if(method/='none') then
       allocate(pending(0:levels-1),stat=ios)
       call agree(ios==0,comm,ready)
       if(.not.ready) return
@@ -932,7 +946,7 @@ contains
         starts%fields(p)%values=candidate%fields(p)%values
         ts%fields(p)%values=ct%fields(p)%values
       end do
-      if(method=='flux_redist') then
+      if(method/='none') then
         allocate(transfer,stat=allocation_status)
         call agree(allocation_status==0,comm,accepted)
         if(.not.accepted) return
@@ -940,9 +954,9 @@ contains
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer)
+        wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target)
       if(.not.accepted) return
-      if(method=='flux_redist') then
+      if(method/='none') then
         do p=1,size(tree%nodes)
           if(owners(p)/=rank) cycle
           target=tree%nodes(p)%level;bucket=min(level,target)
@@ -987,13 +1001,13 @@ contains
           elapsed=elapsed+sub_dt
         end do
       end if
-      if(method=='flux_redist') then
+      if(method/='none') then
         before_sync=candidate;before_t=ct
       end if
       call synchronize_mpi_eb_tree_flux_3d(species,tree,owners,geometry,candidate,ct,flux,comm,accepted, &
         minimum_level=level,maximum_level=min(level+1,levels-1),boundary_faces=boundary_faces)
       if(.not.accepted) return
-      if(method=='flux_redist') then
+      if(method/='none') then
         correction=source0
         do p=1,size(tree%nodes)
           if(owners(p)/=rank) cycle
@@ -1002,8 +1016,13 @@ contains
           if(target<level.or.target>level+1) cycle
           correction%fields(p)%values=candidate%fields(p)%values-before_sync%fields(p)%values
         end do
-        call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree,owners,geometry,correction,nv,redistributed, &
-          comm,accepted,boundary_faces)
+        if(method=='state_redist') then
+          call redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,correction,nv,redistributed, &
+            comm,accepted,redist_target,boundary_faces)
+        else
+          call redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree,owners,geometry,correction,nv,redistributed, &
+            comm,accepted,boundary_faces)
+        end if
         if(.not.accepted) return
         candidate=before_sync;ct=before_t
         do p=1,size(tree%nodes)

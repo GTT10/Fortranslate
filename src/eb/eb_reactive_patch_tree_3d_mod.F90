@@ -30,6 +30,7 @@ module eb_reactive_patch_tree_3d_mod
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
   public :: redistribute_eb_tree_state_3d,redistribute_sdc_eb_tree_state_rate_3d
+  public :: redistribute_sdc_eb_tree_state_level_rate_3d
   public :: build_eb_tree_extended_geometry_3d
   public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
@@ -259,16 +260,77 @@ contains
     ok=.true.
   end subroutine redistribute_sdc_eb_tree_level_rate_3d
 
+  ! S(P_l R) + D_l(U)/dt, where D_l contains conservative neighborhood
+  ! corrections rooted on level l. Off-level increments are returned separately.
+  subroutine redistribute_sdc_eb_tree_state_level_rate_3d(tree,rhs,depth,dt,rate,transfer,ok,target_volume_fraction,boundary_faces)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: rhs
+    integer, intent(in) :: depth
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: rate,transfer
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: target_volume_fraction
+    type(amr_tree_state_3d) :: selected,result,exchange,baseline,correction
+    integer :: p,nv
+    logical :: good
+    ok=.false.
+    if(.not.tree%topology%is_valid()) return
+    if(depth<0.or.depth>=tree%topology%level_count()) return
+    if(.not.ieee_is_finite(dt)) return
+    if(dt<=0.or..not.allocated(rhs%fields)) return
+    if(size(rhs%fields)/=size(tree%topology%nodes)) return
+    if(.not.allocated(rhs%fields(1)%values)) return
+    nv=size(rhs%fields(1)%values,1)
+    selected=rhs
+    do p=1,size(tree%topology%nodes)
+      if(.not.allocated(rhs%fields(p)%values)) return
+      if(any(shape(rhs%fields(p)%values)/=[nv,tree%topology%nodes(p)%shape])) return
+      if(tree%topology%nodes(p)%level/=depth) selected%fields(p)%values=0
+    end do
+    call redistribute_eb_tree_state_3d(tree,selected,result,good,target_volume_fraction,boundary_faces)
+    if(.not.good) return
+    baseline=selected
+    do p=1,size(tree%nodes)
+      baseline%fields(p)%values=tree%nodes(p)%state
+    end do
+    call redistribute_eb_tree_state_3d(tree,baseline,correction,good,target_volume_fraction,boundary_faces,depth)
+    if(.not.good) return
+    exchange=result
+    do p=1,size(tree%topology%nodes)
+      if(tree%topology%nodes(p)%level==depth) then
+        exchange%fields(p)%values=0
+        result%fields(p)%values=result%fields(p)%values+correction%fields(p)%values/dt
+      else
+        if(dt>1) then
+          if(any(abs(exchange%fields(p)%values)>huge(1._dp)/dt)) return
+        end if
+        exchange%fields(p)%values=dt*exchange%fields(p)%values+correction%fields(p)%values
+        result%fields(p)%values=0
+      end if
+    end do
+    do p=1,size(tree%nodes)
+      if(.not.all(ieee_is_finite(result%fields(p)%values))) return
+      if(.not.all(ieee_is_finite(exchange%fields(p)%values))) return
+    end do
+    call move_alloc(result%fields,rate%fields)
+    call move_alloc(exchange%fields,transfer%fields)
+    ok=.true.
+  end subroutine redistribute_sdc_eb_tree_state_level_rate_3d
+
   ! Zeroth-order weighted StateRedist on composite fluid leaves. Large outward
   ! receivers use the single-grid weights; otherwise connected neighborhoods
   ! grow to the source cell's target physical volume with overlap accounting.
-  subroutine redistribute_eb_tree_state_3d(tree,input,result,ok,target_volume_fraction,boundary_faces)
+  ! correction_depth returns only the conservative displacement contributed by
+  ! neighborhoods rooted at that depth, with zero hidden/solid entries.
+  subroutine redistribute_eb_tree_state_3d(tree,input,result,ok,target_volume_fraction,boundary_faces,correction_depth)
     type(eb_reactive_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(in) :: input
     type(amr_tree_state_3d), intent(inout) :: result
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: target_volume_fraction
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    integer, optional, intent(in) :: correction_depth
     type :: neighborhood
       integer, allocatable :: member(:)
     end type
@@ -293,6 +355,9 @@ contains
     nv=size(input%fields(1)%values,1)
     if(nv<1.or..not.valid_tree(tree,nv)) return
     if(size(input%fields)/=size(tree%nodes)) return
+    if(present(correction_depth)) then
+      if(correction_depth<0.or.correction_depth>=tree%topology%level_count()) return
+    end if
     if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if(.not.valid) return
@@ -309,6 +374,11 @@ contains
     if(allocation_status/=0) return
     scale=domain(1,size(ratios))/domain(1,:)
     candidate=input;nc=0
+    if(present(correction_depth)) then
+      do p=1,size(tree%nodes)
+        candidate%fields(p)%values=0
+      end do
+    end if
     do p=1,size(tree%nodes)
       n=tree%topology%nodes(p)%shape
       allocate(ids%fields(p)%values(1,n(1),n(2),n(3)),source=0._dp,stat=allocation_status)
@@ -388,9 +458,16 @@ contains
       end do
       output=0
       do root=1,nc
-        output(:,root)=output(:,root)+self(root)*real(memberships(root),dp)*average(:,root)
-        other=receiver(root)
-        if(other>0) output(:,other)=output(:,other)+beta(root)*average(:,root)
+        if(present(correction_depth)) then
+          if(tree%topology%nodes(cells(1,root))%level/=correction_depth) cycle
+          output(:,root)=output(:,root)+self(root)*real(memberships(root),dp)*(average(:,root)-value(:,root))
+          other=receiver(root)
+          if(other>0) output(:,other)=output(:,other)+beta(root)*(average(:,root)-value(:,other))
+        else
+          output(:,root)=output(:,root)+self(root)*real(memberships(root),dp)*average(:,root)
+          other=receiver(root)
+          if(other>0) output(:,other)=output(:,other)+beta(root)*average(:,root)
+        end if
       end do
       do root=1,nc
         output(:,root)=output(:,root)/real(memberships(root),dp)
@@ -432,10 +509,17 @@ contains
         end do
         if(total<=0) return
         average(:,root)=average(:,root)/total
+        if(present(correction_depth)) then
+          if(tree%topology%nodes(cells(1,root))%level/=correction_depth) cycle
+        end if
         do m=1,count
           other=root
           if(allocated(groups(root)%member)) other=groups(root)%member(m)
-          output(:,other)=output(:,other)+average(:,root)/real(memberships(other),dp)
+          if(present(correction_depth)) then
+            output(:,other)=output(:,other)+(average(:,root)-value(:,other))/real(memberships(other),dp)
+          else
+            output(:,other)=output(:,other)+average(:,root)/real(memberships(other),dp)
+          end if
         end do
       end do
     end if
@@ -1152,7 +1236,8 @@ contains
   subroutine advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,iterations,chemistry, &
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
-      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution)
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
+      target_volume_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1169,6 +1254,8 @@ contains
     real(dp), optional, intent(in) :: wall_temperature(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(in) :: target_volume_fraction
+    real(dp) :: redist_target
     character(len=16) :: method
     type(amr_tree_state_3d), allocatable :: pending(:)
     type(eb_reactive_tree_3d) :: candidate,starts,ends
@@ -1194,7 +1281,11 @@ contains
     end if
     method='none'
     if(present(redistribution)) method=redistribution
-    if(method/='none'.and.method/='flux_redist') return
+    if(method/='none'.and.method/='flux_redist'.and.method/='state_redist') return
+    redist_target=.5_dp
+    if(present(target_volume_fraction)) redist_target=target_volume_fraction
+    if(.not.ieee_is_finite(redist_target)) return
+    if(redist_target<=0.or.redist_target>1) return
     candidate=tree
     call average_down_reactive_eb_tree_3d(species,candidate,valid)
     if(.not.valid) return
@@ -1206,7 +1297,7 @@ contains
       allocate(source0%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
     end do
     source1=source0
-    if(method=='flux_redist') then
+    if(method/='none') then
       allocate(pending(0:levels-1))
       do c=0,levels-1
         pending(c)=source0
@@ -1266,13 +1357,13 @@ contains
       do p=1,size(tree%nodes)
         if(tree%topology%nodes(p)%level==level) starts%nodes(p)=candidate%nodes(p)
       end do
-      if(method=='flux_redist') allocate(transfer)
+      if(method/='none') allocate(transfer)
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
-        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer)
+        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target)
       if(.not.accepted) return
-      if(method=='flux_redist') then
+      if(method/='none') then
         do p=1,size(tree%nodes)
           target=tree%topology%nodes(p)%level;bucket=min(level,target)
           pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
@@ -1308,10 +1399,10 @@ contains
           elapsed=elapsed+sub_dt
         end do
       end if
-      if(method=='flux_redist') before_sync=candidate
+      if(method/='none') before_sync=candidate
       call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,accepted,level,min(level+1,levels-1),boundary_faces)
       if(.not.accepted) return
-      if(method=='flux_redist') then
+      if(method/='none') then
         correction=source0
         do p=1,size(tree%nodes)
           correction%fields(p)%values=0
@@ -1321,7 +1412,11 @@ contains
         end do
         ! This operator is linear in its argument, so an integrated reflux
         ! increment can be redistributed directly without division by dt.
-        call redistribute_sdc_eb_tree_flux_rate_3d(candidate,correction,redistributed,accepted,boundary_faces)
+        if(method=='state_redist') then
+          call redistribute_eb_tree_state_3d(candidate,correction,redistributed,accepted,redist_target,boundary_faces)
+        else
+          call redistribute_sdc_eb_tree_flux_rate_3d(candidate,correction,redistributed,accepted,boundary_faces)
+        end if
         if(.not.accepted) return
         candidate=before_sync
         do p=1,size(tree%nodes)
@@ -1432,8 +1527,7 @@ contains
     if(present(target_volume_fraction)) redist_target=target_volume_fraction
     if(.not.ieee_is_finite(redist_target)) return
     if(redist_target<=0.or.redist_target>1) return
-    if(selected_depth>=0.and.redistribution_method=='state_redist') return
-    if(selected_depth>=0.and.redistribution_method=='flux_redist') then
+    if(selected_depth>=0.and.redistribution_method/='none') then
       if(.not.present(redistribution_transfer)) return
     else
       if(present(redistribution_transfer)) return
@@ -1497,8 +1591,13 @@ contains
       if(.not.valid) return
       if(redistribution_method/='none') then
         if(selected_depth>=0) then
-          call redistribute_sdc_eb_tree_level_rate_3d(old,hydro,selected_depth,dt,redistributed, &
-            hydro_transfer,valid,boundary_faces)
+          if(redistribution_method=='state_redist') then
+            call redistribute_sdc_eb_tree_state_level_rate_3d(old,hydro,selected_depth,dt,redistributed, &
+              hydro_transfer,valid,redist_target,boundary_faces)
+          else
+            call redistribute_sdc_eb_tree_level_rate_3d(old,hydro,selected_depth,dt,redistributed, &
+              hydro_transfer,valid,boundary_faces)
+          end if
         else
           if(redistribution_method=='state_redist') then
             call redistribute_sdc_eb_tree_state_rate_3d(old,hydro,dt,redistributed,valid,redist_target,boundary_faces)
@@ -1694,7 +1793,7 @@ contains
       do p=1,size(tree%nodes)
         transport_rate%fields(p)%values=0
       end do
-      if(selected_depth>=0.and.redistribution_method=='flux_redist') exchange=transport_rate
+      if(selected_depth>=0.and.redistribution_method/='none') exchange=transport_rate
       if(diffusive) then
         call compute_sdc_eb_tree_transport_3d(species,transport,dt,transport_flags(1),transport_flags(2), &
           transport_flags(3),transport_flags(4),state,transport_rate,flux,stage_theta,good, &
@@ -1703,8 +1802,13 @@ contains
         if(.not.good) return
         if(redistribution_method/='none') then
           if(selected_depth>=0) then
-            call redistribute_sdc_eb_tree_level_rate_3d(state,transport_rate,selected_depth,dt,redistributed, &
-              exchange,good,boundary_faces)
+            if(redistribution_method=='state_redist') then
+              call redistribute_sdc_eb_tree_state_level_rate_3d(state,transport_rate,selected_depth,dt,redistributed, &
+                exchange,good,redist_target,boundary_faces)
+            else
+              call redistribute_sdc_eb_tree_level_rate_3d(state,transport_rate,selected_depth,dt,redistributed, &
+                exchange,good,boundary_faces)
+            end if
           else
             if(redistribution_method=='state_redist') then
               call redistribute_sdc_eb_tree_state_rate_3d(state,transport_rate,dt,redistributed,good, &

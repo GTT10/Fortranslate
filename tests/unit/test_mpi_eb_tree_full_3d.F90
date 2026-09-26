@@ -101,7 +101,7 @@ program test_mpi_eb_tree_full_3d
   saved=tree
   call check_sdc_loop()
   if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
-     test_mode=="state_redist") then
+     test_mode=="state_redist".or.test_mode=="state_recursive") then
     deallocate(u,t)
     cycle
   end if
@@ -177,7 +177,7 @@ contains
       call check_redist_level(initial,geometry,extended,faces,force)
       return
     end if
-    if(test_mode=="subcycle".or.test_mode=="redist_recursive") then
+    if(test_mode=="subcycle".or.test_mode=="redist_recursive".or.test_mode=="state_recursive") then
       call check_sdc_recursive(initial,geometry,extended,faces,force)
       return
     end if
@@ -366,6 +366,7 @@ contains
     logical :: good
     method="none"
     if(test_mode=="redist_recursive") method="flux_redist"
+    if(test_mode=="state_recursive") method="state_redist"
     reference=initial
     allocate(serial_ir%fields(count))
     do p=1,count
