@@ -12,7 +12,7 @@ module eb_reactive_patch_tree_3d_mod
     reactive_eb_transport_patch_timestep_3d,reactive_eb_halo_bounds_3d
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d,advance_reactive_eb_plm_ctu_3d, &
-    compute_reactive_eb_flattening_3d,eb_plm_boundary_3d
+    compute_reactive_eb_flattening_3d,eb_plm_boundary_3d,compute_sdc_eb_hydro_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
@@ -37,7 +37,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: advance_reactive_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_subcycle_transport_3d
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
-  public :: advance_reactive_eb_tree_hydro_3d
+  public :: advance_reactive_eb_tree_hydro_3d,compute_sdc_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
   public :: fill_reactive_eb_tree_halo_3d,fill_sdc_eb_tree_source_halo_3d
   public :: react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
@@ -749,6 +749,87 @@ contains
   ! Serial common-interval hydro with PCM donors and outflow/Mach inlet edges.
   ! Supplying extended geometry selects PLM CTU; omission retains PCM Euler.
   ! Every node reads the same averaged snapshot; all outputs commit together.
+  ! Provisional source-aware hydro: no restriction, redistribution or reflux.
+  ! Rates are per fluid volume; fluxes are time-integrated face densities.
+  subroutine compute_sdc_eb_tree_hydro_3d(species,tree,predictor,extended_geometry,dt,hydro_rate,flux,ok, &
+      difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: predictor
+    type(eb_geometry_3d), intent(in) :: extended_geometry(:)
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: hydro_rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d) :: rates
+    type(eb_integrated_flux_3d), allocatable :: candidate_flux(:)
+    type(eb_geometry_3d) :: working,center
+    type(eb_plm_boundary_3d) :: physical_boundary
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),flat(:,:,:),source(:,:,:,:)
+    real(dp) :: coefficient,boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
+    character(len=32) :: faces(6)
+    integer :: nv,node,n(3),level
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if(.not.ieee_is_finite(dt).or.dt<=0) return
+    if(.not.valid_tree(tree,nv)) return
+    if(size(extended_geometry)/=size(tree%nodes)) return
+    if(.not.allocated(predictor%fields)) return
+    if(size(predictor%fields)/=size(tree%nodes)) return
+    coefficient=.1_dp
+    if(present(difmag)) coefficient=difmag
+    if(.not.ieee_is_finite(coefficient).or.coefficient<0) return
+    faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    if(present(inflow_mach)) then
+      where(inflow_mach>=0) faces='inflow'
+    end if
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if(.not.valid) return
+    if(any(domain>int(huge(1)-4,int64))) return
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      if(.not.allocated(predictor%fields(node)%values)) return
+      if(any(shape(predictor%fields(node)%values)/=[nv,n])) return
+      if(any([extended_geometry(node)%nx,extended_geometry(node)%ny,extended_geometry(node)%nz]/=n+12)) return
+      call extract_eb_geometry_3d(extended_geometry(node),[7,7,7],n+6,center,valid)
+      if(.not.valid) return
+      if(.not.matching_eb_metrics_3d(center,tree%nodes(node)%geometry)) return
+    end do
+    allocate(rates%fields(size(tree%nodes)),candidate_flux(size(tree%nodes)))
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      allocate(ghost(nv,-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),gt(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6), &
+        vf(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),flat(0:n(1)+7,0:n(2)+7,0:n(3)+7), &
+        source(nv,n(1)+6,n(2)+6,n(3)+6),rates%fields(node)%values(nv,n(1),n(2),n(3)))
+      call fill_reactive_eb_tree_halo_3d(species,tree,node,ghost,gt,valid, &
+        inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf,halo_width=6, &
+        target_volume_fraction=extended_geometry(node)%volume_fraction,restrict_snapshot=.false.)
+      if(.not.valid) return
+      call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,working,valid)
+      if(.not.valid) return
+      call fill_sdc_eb_tree_source_halo_3d(tree,predictor,node,3,source,valid, &
+        boundary_faces=faces,target_volume_fraction=working%volume_fraction)
+      if(.not.valid) return
+      call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,n+6,flat,valid)
+      if(.not.valid) return
+      level=tree%topology%nodes(node)%level+1
+      physical_boundary%lower=4-int(origin(:,node))
+      physical_boundary%upper=3+int(domain(:,level)-origin(:,node))
+      physical_boundary%faces=faces
+      call compute_sdc_eb_hydro_3d(species,working,ghost,gt,vf,dt,flat,source,rates%fields(node)%values, &
+        candidate_flux(node),boundary,wall,valid,difmag=coefficient,boundary=physical_boundary)
+      if(.not.valid) return
+      deallocate(ghost,gt,vf,flat,source)
+    end do
+    hydro_rate=rates;call move_alloc(candidate_flux,flux);ok=.true.
+  end subroutine compute_sdc_eb_tree_hydro_3d
+
   subroutine advance_reactive_eb_tree_hydro_3d(species,solver,dt,tree,boundary_change,wall_change,ok, &
       inflow_mach,inflow_temperature,inflow_pressure,difmag,extended_geometry,boundary_faces,inflow_state)
     type(nasa7_species), intent(in) :: species(:)
@@ -1488,7 +1569,7 @@ contains
 
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
       ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure, &
-      ghost_volume_fraction,halo_width,target_volume_fraction,boundary_faces,inflow_state)
+      ghost_volume_fraction,halo_width,target_volume_fraction,boundary_faces,inflow_state,restrict_snapshot)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
@@ -1514,7 +1595,8 @@ contains
     real(dp) :: area,guess,recovered,speed,fraction,value(reactive_nvar(size(species)))
     integer :: n(3),nv,level,depth,node,donor,index(3),inside(3),source(3),first(3),last(3),axis,side,i,j,k,width
     real(dp) :: mach(6),pin(6),tin(6),inlet_value(reactive_nvar(size(species))),inlet_t
-    logical :: valid,physical
+    logical, optional, intent(in) :: restrict_snapshot
+    logical :: valid,physical,restrict_state
     ok=.false.;nv=reactive_nvar(size(species));width=1
     if(present(halo_width)) width=halo_width
     if(width<1.or.width>huge(1)/4) return
@@ -1573,8 +1655,12 @@ contains
       if (.not.matching_snapshot(ancestor_start).or..not.matching_snapshot(ancestor_end)) return
     end if
     snapshot=tree
-    call average_down_reactive_eb_tree_3d(species,snapshot,valid)
-    if (.not.valid) return
+    restrict_state=.true.
+    if(present(restrict_snapshot)) restrict_state=restrict_snapshot
+    if(restrict_state) then
+      call average_down_reactive_eb_tree_3d(species,snapshot,valid)
+      if (.not.valid) return
+    end if
     allocate(candidate(nv,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width), &
       temps(1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width), &
       primitive(reactive_nprim(size(species))))

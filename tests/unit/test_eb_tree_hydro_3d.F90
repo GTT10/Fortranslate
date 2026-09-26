@@ -6,11 +6,13 @@ program test_eb_tree_hydro_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_hydro_3d, &
-    fill_reactive_eb_tree_halo_3d,build_eb_tree_extended_geometry_3d
+    fill_reactive_eb_tree_halo_3d,build_eb_tree_extended_geometry_3d,compute_sdc_eb_tree_hydro_3d, &
+    synchronize_reactive_eb_tree_flux_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -139,6 +141,7 @@ program test_eb_tree_hydro_3d
   print *, 'CTU axis, nodes, inventory residual: ',axes(axis),count,residual
   call require(residual<3.e-14_dp,'CTU conservative peer and coarse/fine flux synchronization')
   call require(any(tree%nodes(count)%state/=ctu_start%nodes(count)%state),'nontrivial deep CTU update')
+  if(axis==3.and.count==5) call check_sdc_hydro()
   periodic_faces='periodic';periodic_faces(2*axis-1:2*axis)='outflow'
   tree=ctu_start
   call advance_reactive_eb_tree_hydro_3d(species,'pelec',1.e-8_dp,tree,boundary,wall,ok, &
@@ -230,6 +233,53 @@ program test_eb_tree_hydro_3d
   end do
   print *, 'test_eb_tree_hydro_3d: PASS'
 contains
+  subroutine check_sdc_hydro()
+    type(amr_tree_state_3d) :: predictor,rates,old_rates
+    type(eb_integrated_flux_3d), allocatable :: flux(:),old_flux(:)
+    type(eb_reactive_tree_3d) :: result
+    integer :: p,c
+    allocate(predictor%fields(count))
+    do p=1,count
+      allocate(predictor%fields(p)%values(nv,4,4,4),source=0._dp)
+    end do
+    call compute_sdc_eb_tree_hydro_3d(species,ctu_start,predictor,extended,1.e-8_dp,rates,flux,ok, &
+      difmag=coefficient)
+    call require(ok,'SDC tree hydro zero source')
+    result=ctu_start
+    do p=1,count
+      result%nodes(p)%state=result%nodes(p)%state+1.e-8_dp*rates%fields(p)%values
+    end do
+    call synchronize_reactive_eb_tree_flux_3d(species,result,flux,ok)
+    call require(ok,'SDC rate reconstruction reflux')
+    do p=1,count
+      call require(all(abs(result%nodes(p)%state-tree%nodes(p)%state)<= &
+        2.e-12_dp*max(1._dp,abs(tree%nodes(p)%state))),'SDC zero source reproduces common hydro')
+    end do
+    old_rates=rates
+    do p=1,count
+      predictor%fields(p)%values(2,:,:,:)=2.e4_dp
+      predictor%fields(p)%values(5,:,:,:)=2.e4_dp*ctu_start%nodes(p)%state(2,:,:,:)/ctu_start%nodes(p)%state(1,:,:,:)
+      do c=1,nv
+        where(ctu_start%nodes(p)%geometry%volume_fraction<=0) &
+          predictor%fields(p)%values(c,:,:,:)=ieee_value(0._dp,ieee_quiet_nan)
+      end do
+    end do
+    call compute_sdc_eb_tree_hydro_3d(species,ctu_start,predictor,extended,1.e-8_dp,rates,flux,ok, &
+      difmag=coefficient)
+    call require(ok,'SDC nonzero source hydro')
+    call require(any(rates%fields(count)%values/=old_rates%fields(count)%values),'SDC source affects deep hydro rates')
+    old_rates=rates;old_flux=flux
+    predictor%fields(count)%values(2,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
+    call compute_sdc_eb_tree_hydro_3d(species,ctu_start,predictor,extended,1.e-8_dp,rates,flux,ok, &
+      difmag=coefficient)
+    call require(.not.ok,'SDC invalid active source')
+    do p=1,count
+      call require(all(rates%fields(p)%values==old_rates%fields(p)%values).and. &
+        all(flux(p)%x==old_flux(p)%x).and.all(flux(p)%y==old_flux(p)%y).and. &
+        all(flux(p)%z==old_flux(p)%z),'SDC hydro rates and flux rollback')
+    end do
+  end subroutine check_sdc_hydro
+
   subroutine unchanged_tree()
     integer :: n
     do n=1,size(tree%nodes)

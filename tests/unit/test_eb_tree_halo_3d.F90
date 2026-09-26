@@ -75,6 +75,9 @@ program test_eb_tree_halo_3d
   call require(all(abs(ghost(:,0,1,3)-2._dp*u(:,1,1,3))<= &
     8._dp*epsilon(1._dp)*max(1._dp,abs(2._dp*u(:,1,1,3)))),'root uses restricted child inventory')
   call require(all(ghost(:,2,2,0)==0._dp).and.gt(2,2,0)==0._dp,'solid face remains empty')
+  call fill_reactive_eb_tree_halo_3d(species,tree,1,ghost,gt,ok,restrict_snapshot=.false.)
+  call require(ok,'provisional gas halo without restriction')
+  call require(all(ghost(:,0,1,3)==tree%nodes(1)%state(:,1,1,3)),'provisional parent retained exactly')
   do node=1,5
     call require(all(tree%nodes(node)%state==saved%nodes(node)%state).and. &
       all(tree%nodes(node)%temperature==saved%nodes(node)%temperature),'halo leaves source snapshot unchanged')
