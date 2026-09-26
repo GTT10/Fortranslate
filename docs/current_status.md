@@ -135,7 +135,9 @@ rank-changing checkpoint continuation
 ([checks](validation/sdc-mpi-eb-app-20260927.md)). MPI EB SDC load rebalancing now migrates reaction estimates atomically with gas
 and temperature ([checks](validation/sdc-mpi-eb-rebalance-20260927.md)). MPI EB SDC regridding now transfers signed reaction estimates with fluid-volume
 restriction and PCM prolongation; scheduled changed-rank restart is checked
-([evidence](validation/sdc-mpi-eb-regrid-20260927.md)). MPI EB SDC recursive
+([evidence](validation/sdc-mpi-eb-regrid-20260927.md)). MPI EB SDC source halos now interpolate ancestor time endpoints with collective
+control agreement and rollback
+([checks](validation/sdc-mpi-eb-source-time-20260927.md)). MPI EB SDC recursive
 integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
