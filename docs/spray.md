@@ -88,6 +88,20 @@ contract and has not been compared to AMReX locator ordering. Per-subcycle
 refresh/removal, ghost evolution, source transfer and recursive application
 routing remain open. See [creation checks](validation/spray-ghost-particles-20260927.md).
 
+`redistribute_mpi_amr_ghost_particles` reassigns an existing ghost population
+after movement or an owner-map change. It retains live copies in the target
+level's valid or grown boxes, including copies that have entered fine valid
+cells. Dead entries and copies outside every grown box are removed. This is
+temporary-copy retirement, not loss of physical particle inventory. Returned
+node indices follow the exchanged, ID-sorted population. Capacity or validation
+failure retains particles, components and node outputs together.
+
+The operation reuses the creation path's private migration checks; optional
+nodal EB geometry still excludes periodic EB domains and rejects solid live
+particles. It does not create additional copies from the physical population
+or choose the recursive lifecycle at which regeneration should occur.
+See [redistribution checks](validation/spray-ghost-redistribution-20260927.md).
+
 ## Level-bounded gas sampling
 
 Regular/EB cloud stencils, the serial regular sampler and MPI regular/EB

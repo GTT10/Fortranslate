@@ -6,7 +6,7 @@ program test_spray_mpi_amr_tree
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
-    create_mpi_amr_ghost_particles
+    create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -49,6 +49,7 @@ program test_spray_mpi_amr_tree
     call require(ghosts(p)%position(1)==merge(1.125_dp,3.875_dp,mod(ghosts(p)%id,2_int64)==1), &
       'ghost position unchanged across periodic image')
   end do
+  call check_ghost_redistribution()
   call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,parcels,masses,zero,spacing, &
     [.true.,.false.,.false.],2,1,0,ghosts,ghost_mass,ghost_nodes,ok)
   call require(.not.ok.and.size(ghosts)==merge(2*nranks,0,rank==nranks-1).and.all(ghost_nodes==4), &
@@ -174,6 +175,47 @@ program test_spray_mpi_amr_tree
   if (rank==0) print *, 'PASS: AMR spray MPI migration'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_ghost_redistribution()
+    type(spray_parcel), allocatable :: moved(:),before_move(:)
+    real(dp), allocatable :: moved_mass(:,:),before_mass(:,:)
+    integer, allocatable :: nodes(:)
+    integer :: map(4),a
+    moved=ghosts;moved_mass=ghost_mass;nodes=ghost_nodes;map=owners;map(4)=0
+    do a=1,size(moved)
+      select case(mod(moved(a)%id,4_int64))
+      case(1)
+        moved(a)%mass=0;moved_mass(:,a)=0;moved(a)%position=4._dp
+      case(2)
+        moved(a)%position(1)=2._dp
+      case(3)
+        moved(a)%position(1)=.875_dp
+      end select
+    end do
+    before_move=moved;before_mass=moved_mass
+    call redistribute_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,map,moved,moved_mass,nodes,zero,spacing, &
+      [.true.,.false.,.false.],2,1,0,ok)
+    call require(.not.ok.and.size(moved)==size(before_move),'ghost redistribution capacity rollback')
+    call require(all(moved_mass==before_mass).and.all(nodes==4),'ghost redistribution preserves components/nodes on failure')
+    do a=1,size(moved)
+      call require(all(moved(a)%position==before_move(a)%position),'ghost failure preserves coordinates')
+    end do
+    call redistribute_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,map,moved,moved_mass,nodes,zero,spacing, &
+      [.true.,.false.,.false.],2,1,100,ok)
+    call require(ok.and.size(moved)==merge(nranks,0,rank==0),'existing ghosts reassign to changed fine owner')
+    call require(all(nodes==4),'redistributed fine node indices')
+    do a=1,size(moved)
+      call require(mod(moved(a)%id,4_int64)==0.or.mod(moved(a)%id,4_int64)==3,'dead and escaped ghosts removed')
+      expected=make_parcel(int(moved(a)%id))
+      call require(all(moved_mass(:,a)==expected%mass*[.25_dp,.75_dp]),'surviving ghost components retained')
+      if(a>1) call require(moved(a)%id>moved(a-1)%id,'redistributed ghost IDs sorted')
+    end do
+    call redistribute_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,map,moved,moved_mass,nodes,zero,spacing, &
+      [.true.,.false.,.false.],2,0,100,ok)
+    call require(ok.and.size(moved)==merge(nranks/2,0,rank==0),'zero-grow retains ghosts now inside fine valid cells')
+    do a=1,size(moved)
+      call require(moved(a)%position(1)==.875_dp,'valid-cell ghost coordinates retained')
+    end do
+  end subroutine check_ghost_redistribution
   function make_parcel(number) result(parcel)
     integer, intent(in) :: number
     type(spray_parcel) :: parcel
