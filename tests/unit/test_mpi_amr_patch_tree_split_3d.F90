@@ -9,8 +9,8 @@ program test_mpi_amr_patch_tree_split_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d
-  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d
+  use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_split_3d,advance_mpi_amr_tree_sdc_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use amr_patch_tree_chemistry_3d_mod, only: advance_amr_patch_tree_chemistry_3d,advance_amr_patch_tree_strang_3d
@@ -76,6 +76,12 @@ program test_mpi_amr_patch_tree_split_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
+  if(trim(arg)=='sdc') then
+    call check_sdc()
+    if(rank==0) print *, 'PASS: coupled MPI SDC parity and rollback'
+    call MPI_Finalize(ierr)
+    stop
+  end if
   do mode=1,6
     owners=[0,1,0]
     if (mode==3) owners=0
@@ -148,6 +154,49 @@ program test_mpi_amr_patch_tree_split_3d
   if (rank==0) print *, 'PASS: distributed reaction transport hydro split, disabled operators, serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_sdc()
+    type(amr_tree_state_3d) :: ir,serial_ir,retained_ir
+    real(dp) :: external(12),serial_external(12),force(3),visc
+    integer :: peer,dims(3)
+    owners=mod([0,1,0],nranks);dt=1e-10_dp;faces='periodic';force=[20000._dp,-30000._dp,40000._dp]
+    allocate(local%fields(3),temperature%fields(3),ir%fields(3),serial_ir%fields(3))
+    do peer=1,3
+      dims=tree%nodes(peer)%shape
+      allocate(serial_ir%fields(peer)%values(8,dims(1),dims(2),dims(3)))
+      serial_ir%fields(peer)%values=0
+      if(owners(peer)/=rank) cycle
+      local%fields(peer)=global%fields(peer);temperature%fields(peer)=reference%fields(peer)
+      ir%fields(peer)=serial_ir%fields(peer)
+    end do
+    oracle=global;oracle_t=reference
+    call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,serial_budget,serial_external,serial_largest,serial_theta, &
+      ok,reaction_source=serial_ir)
+    call require(ok,'serial coupled SDC reference')
+    call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok,reaction_source=ir)
+    call require(ok,'MPI coupled SDC iteration')
+    call compare_state()
+    call require(all(budget==serial_budget).and.all(external==serial_external),'exact MPI SDC boundary/source inventory')
+    call require(largest==serial_largest.and.theta==serial_theta,'exact MPI SDC diagnostics')
+    do peer=1,3
+      call require(allocated(ir%fields(peer)%values).eqv.(owners(peer)==rank),'owner-local SDC estimate')
+      if(owners(peer)/=rank) cycle
+      call require(all(ir%fields(peer)%values==serial_ir%fields(peer)%values),'exact MPI SDC reaction estimates')
+    end do
+    saved=local;saved_t=temperature;retained_ir=ir;visc=.1_dp
+    if(rank==nranks-1) visc=-1
+    call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces,2,.true., &
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+      reaction_source=ir,difmag=visc)
+    call require(.not.ok,'idle-rank invalid hydro after transport rejects whole SDC step')
+    call unchanged()
+    call require(all(external==serial_external),'source inventory rollback')
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'reaction estimate rollback')
+    end do
+  end subroutine check_sdc
   subroutine compare_state()
     integer :: peer
     do peer=1,3

@@ -568,6 +568,10 @@ endif()
 if(PELEF_ENABLE_MPI)
   add_executable(test_mpi_amr_patch_tree_split_3d unit/test_mpi_amr_patch_tree_split_3d.F90)
   target_link_libraries(test_mpi_amr_patch_tree_split_3d PRIVATE pelef_mpi_support)
+  add_test(NAME unit_mpi_amr_patch_tree_sdc_3d_4
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_amr_patch_tree_split_3d> sdc ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_amr_patch_tree_sdc_3d_4 PROPERTIES PROCESSORS 4 TIMEOUT 300)
   foreach(tree_ranks IN ITEMS 2 3)
     add_test(NAME unit_mpi_amr_patch_tree_split_3d_${tree_ranks}
       COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" ${tree_ranks} ${MPIEXEC_PREFLAGS}
