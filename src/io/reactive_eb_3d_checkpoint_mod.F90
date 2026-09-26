@@ -29,6 +29,8 @@ module reactive_eb_3d_checkpoint_mod
   integer, parameter :: checkpoint_schema_elements = 3
   ! Schemas 4/5/6 add complete cumulative exchange vectors to 1/2/3.
   integer, parameter :: checkpoint_exchange_offset = 3
+  ! Schemas 10/11/12 add SDC controls, forcing inventory and optional reaction estimates.
+  integer, parameter :: checkpoint_sdc_offset = 6
   integer, parameter :: bundle_sha256_length = 64
   integer, parameter :: n_config_reals = 19
   integer, parameter :: n_config_ints = 5
@@ -64,7 +66,7 @@ contains
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
       chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
-      boundary_change, wall_change, chemistry_change, tree_patch)
+      boundary_change, wall_change, chemistry_change, tree_patch,source_change,reaction_source)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -88,6 +90,7 @@ contains
     integer, intent(in), optional :: checkpoint_unit
     character(len=*), optional, intent(in) :: element_names(:)
     real(dp), optional, intent(in) :: element_atoms(:,:)
+    real(dp), optional, intent(in) :: source_change(:),reaction_source(:,:,:,:)
     real(dp), optional, intent(in) :: boundary_change(:),wall_change(:),chemistry_change(:)
     ! Tree snapshots reuse this record with PCM boundary support; standalone defaults stay strict.
     logical, optional, intent(in) :: tree_patch
@@ -101,11 +104,30 @@ contains
 
     ok = .false.
     message = ""
-    if(config%time_integrator/='split'.or.any(config%external_forcing/=0)) then
-      message='EB SDC checkpoint fields are not implemented';return
-    end if
     unit = -1
     nvar = reactive_nvar(size(species))
+    if(config%time_integrator=='sdc') then
+      if(.not.present(source_change).or..not.present(boundary_change)) then
+        message='Missing SDC checkpoint inventory fields';return
+      end if
+      if(size(source_change)/=nvar.or.config%sdc_iterations<1.or. &
+        .not.all(ieee_is_finite(config%external_forcing))) then
+        message='Invalid SDC checkpoint controls';return
+      end if
+      if(present(reaction_source).neqv.config%chemistry_enabled) then
+        message='SDC checkpoint reaction-source presence mismatch';return
+      end if
+      if(present(reaction_source)) then
+        if(any(shape(reaction_source)/=[nvar-4,config%nx,config%ny,config%nz])) then
+          message='Invalid SDC checkpoint reaction-source dimensions';return
+        end if
+      end if
+    else
+      if(config%time_integrator/='split'.or.any(config%external_forcing/=0).or. &
+        present(source_change).or.present(reaction_source)) then
+        message='Invalid split checkpoint source context';return
+      end if
+    end if
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
 
@@ -209,6 +231,17 @@ contains
         return
       end if
       schema=schema+checkpoint_exchange_offset
+    end if
+    if(config%time_integrator=='sdc') then
+      if(.not.all(ieee_is_finite(source_change))) then
+        message='Nonfinite SDC source inventory';return
+      end if
+      if(present(reaction_source)) then
+        if(.not.all(ieee_is_finite(reaction_source))) then
+          message='Nonfinite SDC reaction source';return
+        end if
+      end if
+      schema=schema+checkpoint_sdc_offset
     end if
     if (present(checkpoint_unit)) then
       if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.true.)) then
@@ -517,6 +550,26 @@ contains
       end do
     end do
 
+    if(config%time_integrator=='sdc') then
+      write(unit,'(a)',iostat=status) 'SDC_SOURCES'
+      if(status/=0) go to 900
+      write(unit,*,iostat=status) config%sdc_iterations,merge(1,0,config%chemistry_enabled)
+      if(status/=0) go to 900
+      write(unit,'(*(es27.18e3,1x))',iostat=status) config%external_forcing
+      if(status/=0) go to 900
+      write(unit,'(*(es27.18e3,1x))',iostat=status) source_change
+      if(status/=0) go to 900
+      if(present(reaction_source)) then
+        do k=1,config%nz
+        do j=1,config%ny
+        do i=1,config%nx
+          write(unit,'(*(es27.18e3,1x))',iostat=status) reaction_source(:,i,j,k)
+          if(status/=0) go to 900
+        end do
+        end do
+        end do
+      end if
+    end if
     write(unit, '(a)', iostat=status) "END_CHECKPOINT"
     if (status /= 0) go to 900
     if (.not.present(checkpoint_unit)) then
@@ -540,7 +593,7 @@ contains
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
       chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
-      boundary_change, wall_change, chemistry_change, tree_patch)
+      boundary_change, wall_change, chemistry_change, tree_patch,source_change,reaction_source)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -564,6 +617,7 @@ contains
     integer, intent(in), optional :: checkpoint_unit
     character(len=*), optional, intent(in) :: element_names(:)
     real(dp), optional, intent(in) :: element_atoms(:,:)
+    real(dp), optional, intent(inout) :: source_change(:),reaction_source(:,:,:,:)
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:),chemistry_change(:)
     ! Tree snapshots reuse this record with PCM boundary support; standalone defaults stay strict.
     logical, optional, intent(in) :: tree_patch
@@ -614,16 +668,38 @@ contains
     real(dp), allocatable :: stored_base_mole_fractions(:)
     character(len=1024) :: stored_bundle_sha256
     character(len=1024) :: stored_chemistry_integrator
+    real(dp), allocatable :: candidate_source(:),candidate_ir(:,:,:,:)
+    real(dp) :: stored_force(3)
+    integer :: sdc_controls(2)
     integer :: expected_schema, stored_composition_size
     logical :: selected_context
 
     ok = .false.
     message = ""
-    if(config%time_integrator/='split'.or.any(config%external_forcing/=0)) then
-      message='EB SDC checkpoint fields are not implemented';return
-    end if
     unit = -1
     nvar = reactive_nvar(size(species))
+    if(config%time_integrator=='sdc') then
+      if(.not.present(source_change).or..not.present(boundary_change)) then
+        message='Missing SDC checkpoint inventory fields';return
+      end if
+      if(size(source_change)/=nvar.or.config%sdc_iterations<1.or. &
+        .not.all(ieee_is_finite(config%external_forcing))) then
+        message='Invalid SDC checkpoint controls';return
+      end if
+      if(present(reaction_source).neqv.config%chemistry_enabled) then
+        message='SDC checkpoint reaction-source presence mismatch';return
+      end if
+      if(present(reaction_source)) then
+        if(any(shape(reaction_source)/=[nvar-4,config%nx,config%ny,config%nz])) then
+          message='Invalid SDC checkpoint reaction-source dimensions';return
+        end if
+      end if
+    else
+      if(config%time_integrator/='split'.or.any(config%external_forcing/=0).or. &
+        present(source_change).or.present(reaction_source)) then
+        message='Invalid split checkpoint source context';return
+      end if
+    end if
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator) .or. present(base_mole_fractions)
 
@@ -710,6 +786,7 @@ contains
     end if
 
     if (present(boundary_change)) expected_schema=expected_schema+checkpoint_exchange_offset
+    if(config%time_integrator=='sdc') expected_schema=expected_schema+checkpoint_sdc_offset
     if (present(checkpoint_unit)) then
       if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.false.)) then
         message="Checkpoint unit is not open for the requested formatted operation"
@@ -1161,6 +1238,34 @@ contains
     if (.not. valid_checkpoint_state( &
           species, candidate_geometry, candidate_state, candidate_temperature)) go to 900
 
+    if(config%time_integrator=='sdc') then
+      read(unit,'(a)',iostat=status) marker
+      if(status/=0) go to 900
+      if(marker/='SDC_SOURCES') go to 900
+      read(unit,*,iostat=status) sdc_controls
+      if(status/=0) go to 900
+      if(any(sdc_controls/=[config%sdc_iterations,merge(1,0,config%chemistry_enabled)])) go to 900
+      read(unit,*,iostat=status) stored_force
+      if(status/=0) go to 900
+      if(.not.all(ieee_is_finite(stored_force))) go to 900
+      if(any(stored_force/=config%external_forcing)) go to 900
+      allocate(candidate_source(nvar))
+      read(unit,*,iostat=status) candidate_source
+      if(status/=0) go to 900
+      if(.not.all(ieee_is_finite(candidate_source))) go to 900
+      if(present(reaction_source)) then
+        allocate(candidate_ir(nvar-4,config%nx,config%ny,config%nz))
+        do k=1,config%nz
+        do j=1,config%ny
+        do i=1,config%nx
+          read(unit,*,iostat=status) candidate_ir(:,i,j,k)
+          if(status/=0) go to 900
+        end do
+        end do
+        end do
+        if(.not.all(ieee_is_finite(candidate_ir))) go to 900
+      end if
+    end if
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
     if (trim(marker) /= "END_CHECKPOINT") go to 900
@@ -1179,6 +1284,8 @@ contains
     if (present(boundary_change)) then
       boundary_change=candidate_boundary;wall_change=candidate_wall;chemistry_change=candidate_chemistry
     end if
+    if(present(source_change)) source_change=candidate_source
+    if(present(reaction_source)) reaction_source=candidate_ir
     geometry = candidate_geometry
     state = candidate_state
     temperature = candidate_temperature

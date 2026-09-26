@@ -573,9 +573,6 @@ contains
       if(config%hydro_method/='plm_ctu'.or.config%riemann_solver/='pelec') then
         message='EB SDC requires plm_ctu and pelec';return
       end if
-      if(config%checkpoint_interval_steps>0.or.len_trim(config%restart_file)>0) then
-        message='EB SDC checkpoint/restart is not implemented';return
-      end if
     else if(any(config%external_forcing/=0)) then
       message='EB external forcing requires SDC';return
     end if

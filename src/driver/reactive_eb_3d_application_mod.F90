@@ -62,7 +62,7 @@ contains
     real(dp), allocatable :: initial_l1_integrals(:), final_l1_integrals(:)
     real(dp), allocatable :: initial_element_integrals(:),final_element_integrals(:),element_roundoff(:)
     real(dp), allocatable :: boundary(:),wall(:),chemical(:),step_boundary(:),step_wall(:),step_chemical(:)
-    real(dp), allocatable :: forcing(:),step_forcing(:),ir(:,:,:,:)
+    real(dp), allocatable :: forcing(:),step_forcing(:),ir(:,:,:,:),checkpoint_source(:)
     real(dp), allocatable :: external_elements(:)
     real(dp) :: element_residual,component_roundoff
     real(dp) :: time, dt, hydro_dt, transport_dt, minimum_dt
@@ -129,6 +129,7 @@ contains
     allocate(external_elements(element_count))
     boundary=0._dp;wall=0._dp;chemical=0._dp
     allocate(forcing(nvar),step_forcing(nvar));forcing=0;step_forcing=0
+    if(config%time_integrator=='sdc') allocate(checkpoint_source(nvar),source=0._dp)
     if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
       allocate(ir(nvar-4,config%nx,config%ny,config%nz));ir=0
     end if
@@ -197,19 +198,22 @@ contains
           message, bundle_sha256=bundle_sha256, &
           chemistry_integrator=chemistry_integrator, &
           base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms, &
-          boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
+          boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+          source_change=checkpoint_source,reaction_source=ir)
       else
         call read_reactive_eb_3d_checkpoint( &
           trim(config%restart_file), species, reactions, transport, config, &
           geometry, state, temperature, time, step, initial_integrals, &
           initial_l1_integrals, initial_element_integrals, minimum_dt, &
           maximum_transport_diffusivity, minimum_transport_theta, ok, &
-          message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
+          message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+          source_change=checkpoint_source,reaction_source=ir)
       end if
       if (.not. ok) then
         write(*, '(a)') trim(message)
         error stop "Failed to restart public 3D EB state"
       end if
+      if(allocated(checkpoint_source)) forcing=checkpoint_source
       call check_inventory()
       restarted = .true.
       write(*, '(a,1x,a)') &
@@ -300,6 +304,7 @@ contains
       minimum_dt = min(minimum_dt, dt)
       if (config%checkpoint_interval_steps > 0) then
         if (mod(step, config%checkpoint_interval_steps) == 0) then
+          if(allocated(checkpoint_source)) checkpoint_source=forcing
           call check_inventory()
           if (selected_context) then
             call write_reactive_eb_3d_checkpoint( &
@@ -311,7 +316,8 @@ contains
               ok, message, bundle_sha256=bundle_sha256, &
               chemistry_integrator=chemistry_integrator, &
               base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms, &
-          boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
+          boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+          source_change=checkpoint_source,reaction_source=ir)
           else
             call write_reactive_eb_3d_checkpoint( &
               trim(config%checkpoint_file), species, reactions, transport, &
@@ -319,7 +325,8 @@ contains
               initial_integrals, initial_l1_integrals, &
               initial_element_integrals, minimum_dt, &
               maximum_transport_diffusivity, minimum_transport_theta, &
-              ok, message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical)
+              ok, message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
+          source_change=checkpoint_source,reaction_source=ir)
           end if
           if (.not. ok) then
             write(*, '(a)') trim(message)

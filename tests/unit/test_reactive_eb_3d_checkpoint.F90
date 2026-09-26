@@ -62,6 +62,7 @@ program test_reactive_eb_3d_checkpoint
   real(dp) :: read_time, read_minimum_dt, read_maximum_diffusivity
   real(dp) :: read_minimum_theta, saved_time, saved_minimum_dt
   real(dp) :: saved_maximum_diffusivity, saved_minimum_theta
+  real(dp), allocatable :: force(:), rf(:), ir(:,:,:,:), rir(:,:,:,:)
   integer :: steps, read_steps, saved_steps, nvar
   logical :: ok
   character(len=256) :: message
@@ -456,9 +457,75 @@ program test_reactive_eb_3d_checkpoint
   call remove_file(selected_invalid_write_path)
   call check_embedded_records()
   call check_exchange_records()
+  call check_sdc_records()
   write(*, '(a)') "test_reactive_eb_3d_checkpoint: PASS"
 
 contains
+
+  subroutine check_sdc_records()
+    integer :: stream, ios, line_number, mode
+    character(len=4096) :: line
+    allocate(force(nvar),rf(nvar),ir(nvar-4,write_config%nx,write_config%ny,write_config%nz))
+    force=2.e-9_dp;rf=-1._dp;ir=-3.e-4_dp;rir=ir
+    write_config%time_integrator='sdc'
+    restart_config%time_integrator='sdc'
+    write_config%external_forcing=[1._dp,2._dp,3._dp]
+    restart_config%external_forcing=write_config%external_forcing
+    do mode=1,2
+      if(mode==2) then
+        deallocate(ir,rir)
+        write_config%chemistry_enabled=.false.
+        restart_config%chemistry_enabled=.false.
+      end if
+      call write_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,write_config,geometry, &
+        state,temperature,time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt, &
+        maximum_diffusivity,minimum_theta,ok,message,bundle_sha256=sha,chemistry_integrator=integrator, &
+        base_mole_fractions=fractions,element_names=names,element_atoms=atoms, &
+        boundary_change=boundary,wall_change=wall,chemistry_change=chemistry,source_change=force,reaction_source=ir)
+      call require(ok,'write SDC checkpoint: '//trim(message))
+      call require_checkpoint_schema(exchange_path,12,'SELECTED_CONTEXT')
+      call read_sdc(exchange_path)
+      call require(ok,'read SDC checkpoint: '//trim(message))
+      call require(all(rf==force),'SDC forcing exact round trip')
+      if(allocated(ir)) call require(all(rir==ir),'SDC reaction exact round trip')
+      call save_targets()
+      restart_config%sdc_iterations=restart_config%sdc_iterations+1
+      call read_sdc(exchange_path)
+      call require_exchange_rollback('SDC iteration mismatch')
+      call require(all(rf==force),'SDC mismatch forcing rollback')
+      restart_config%sdc_iterations=restart_config%sdc_iterations-1
+      if(mode==1) then
+        open(newunit=stream,file=exchange_path,status='old',action='read')
+        line_number=0
+        do
+          read(stream,'(a)',iostat=ios) line
+          call require(ios==0,'find SDC marker')
+          line_number=line_number+1
+          if(line=='SDC_SOURCES') exit
+        end do
+        close(stream)
+        ir(1,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+        write(line,'(*(es27.18e3,1x))') ir(:,1,1,1)
+        ir(1,1,1,1)=-3.e-4_dp
+        call replace_checkpoint_line(exchange_path,exchange_bad, &
+          line_number+3+write_config%nx*write_config%ny*write_config%nz,trim(line))
+        call read_sdc(exchange_bad)
+        call require_exchange_rollback('late nonfinite SDC reaction')
+        call require(all(rf==force).and.all(rir==ir),'SDC source rollback')
+      end if
+    end do
+    call remove_file(exchange_path)
+    call remove_file(exchange_bad)
+  end subroutine check_sdc_records
+
+  subroutine read_sdc(path)
+    character(len=*), intent(in) :: path
+    call read_reactive_eb_3d_checkpoint(path,species,reactions,transport,restart_config,read_geometry, &
+      read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
+      read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message,bundle_sha256=sha, &
+      chemistry_integrator=integrator,base_mole_fractions=fractions,element_names=names,element_atoms=atoms, &
+      boundary_change=rb,wall_change=rw,chemistry_change=rc,source_change=rf,reaction_source=rir)
+  end subroutine read_sdc
 
   subroutine check_exchange_records()
     integer :: mode,i,stream,ios,exchange_line
