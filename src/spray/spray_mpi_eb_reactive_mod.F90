@@ -33,7 +33,8 @@ contains
       species,reactions,transport,liquids,options,state,temperature,parcels,component_mass,lower,spacing, &
       dt,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces,boundary_change,wall_change, &
       chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
-      redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration)
+      redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -58,6 +59,8 @@ contains
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(inout) :: gas_particle_change(:)
     integer(int64), optional, intent(inout) :: level_steps(:)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
     type(spray_level_population), allocatable :: physical(:),virtuals(:),ghosts(:)
     type(spray_sdc_population_stage), allocatable :: work(:)
     type(amr_tree_state_3d) :: gas,temp,metrics,centroids,particle_first,particle_last
@@ -74,7 +77,8 @@ contains
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid().and.valid_spray_options(options)
     valid=valid.and.options%breakup_model=='none'.and.all(boundary_faces=='outflow'.or. &
-      boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall')
+      boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
+      boundary_faces=='inflow'.or.boundary_faces=='isothermal_wall')
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
     call agree();if(.not.agreed) return
@@ -147,7 +151,9 @@ contains
       dt,iterations,chemistry,transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary,wall,chemical,external,theta,comm,agreed,ir,difmag,level_steps=counts,redistribution=redistribution, &
       target_volume_fraction=target_volume_fraction,halo_source=particle_source,auxiliary_change=exchange, &
-      gas_acceleration=gas_acceleration,predictor_builder=particle_predictor)
+      gas_acceleration=gas_acceleration,predictor_builder=particle_predictor,inflow_state=inflow_state, &
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      wall_temperature=wall_temperature)
     if(.not.agreed) return
     total_steps=0
     do p=1,levels
@@ -193,7 +199,8 @@ contains
       call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
         stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
         boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
-        ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+        ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
+        inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
       if(.not.good) return
       do p=1,size(owners)
         if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle

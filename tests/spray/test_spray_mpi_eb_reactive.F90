@@ -158,7 +158,7 @@ program test_spray_mpi_eb_reactive
   end if
   if(test_mode=='sdc-force') accel=[1000._dp,-2000._dp,3000._dp]
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
-  if(test_mode=='sdc-recursive') then
+  if(index(test_mode,'sdc-recursive')==1) then
     call check_recursive_spray()
     call MPI_Finalize(ierr)
     stop
@@ -265,7 +265,9 @@ contains
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
         species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
         1e-8_dp,2,.true.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
-        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,difmag=coefficient,gas_particle_change=exchange,level_steps=counts)
+        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,difmag=coefficient, &
+        gas_particle_change=exchange,level_steps=counts, &
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature)
       if(attempt==1) then
         call require(.not.ok.and.steps==0.and.last_id==1,'recursive hydro rejection after old particle stage')
         call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &

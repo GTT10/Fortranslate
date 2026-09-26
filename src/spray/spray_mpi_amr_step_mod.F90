@@ -290,6 +290,7 @@ contains
     type(amr_tree_state_3d) :: halo,halo_t,volume,total,leftover,part,part_leftover
     real(dp) :: lower(3),spacing(3),wall(5),physical_wall(5)
     real(dp) :: exterior(reactive_nvar(size(species))),physical_exterior(reactive_nvar(size(species)))
+    character(len=32) :: particle_faces(6)
     integer :: population,status
     logical :: valid,agreed,periodic(3)
     ok=.false.
@@ -309,12 +310,15 @@ contains
     lower=[geometry(1)%x_lower,geometry(1)%y_lower,geometry(1)%z_lower]
     spacing=[geometry(1)%dx,geometry(1)%dy,geometry(1)%dz]
     periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
+    particle_faces=faces
+    where(particle_faces=='inflow') particle_faces='outflow'
+    where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
     candidate=populations
     do population=1,3
       ! Root has no ghosts, but use retained routing for its allocated empty set.
       call advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners,halo,halo_t, &
         width,target_level,grow,maximum_parcels,candidate(population)%nodes,candidate(population)%parcels, &
-        candidate(population)%component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces,part,part_leftover, &
+        candidate(population)%component_mass,lower,spacing,periodic,kick_dt,drift_dt,particle_faces,part,part_leftover, &
         wall,exterior,valid,volume,nodal_phi,centroids,geometry,maximum_received,population<3.or.target_level==0)
       if(.not.valid) return
       if(population==1) then

@@ -1064,6 +1064,13 @@ if(TARGET test_spray_mpi_eb_reactive)
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc-recursive)
   set_tests_properties(spray_mpi_eb_sdc_recursive_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 120 PROCESSORS 2)
+  foreach(boundary inflow isothermal)
+    add_test(NAME spray_mpi_eb_sdc_recursive_${boundary}_2
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc-recursive-${boundary})
+    set_tests_properties(spray_mpi_eb_sdc_recursive_${boundary}_2
+      PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 120 PROCESSORS 2)
+  endforeach()
 endif()
 
 if(TARGET test_spray_mpi_eb_reactive)
