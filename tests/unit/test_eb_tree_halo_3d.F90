@@ -1,13 +1,14 @@
 program test_eb_tree_halo_3d
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
-    average_down_reactive_eb_tree_3d,fill_reactive_eb_tree_halo_3d
+    average_down_reactive_eb_tree_3d,fill_reactive_eb_tree_halo_3d,fill_sdc_eb_tree_source_halo_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -217,8 +218,82 @@ program test_eb_tree_halo_3d
   call fill_reactive_eb_tree_halo_3d(species,tree,1,wide,wide_t,ok, &
     ghost_volume_fraction=vf,halo_width=6,target_volume_fraction=target_vf,boundary_faces=faces)
   call require(.not.ok.and.all(wide==17).and.all(wide_t==19).and.all(vf==23),'unknown wall rollback')
+  call check_sdc_sources()
   print *, 'test_eb_tree_halo_3d: PASS'
 contains
+  subroutine check_sdc_sources()
+    type(amr_tree_state_3d) :: rates,early,late
+    real(dp) :: halo(2,-2:7,-2:7,-2:7),mask(-2:7,-2:7,-2:7),a
+    character(len=32) :: labels(6)
+    integer :: p,x,y,z,c,mode
+    allocate(rates%fields(5))
+    do p=1,5
+      allocate(rates%fields(p)%values(2,4,4,4))
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        rates%fields(p)%values(:,x,y,z)=[-1._dp,2._dp]*real(1000*p+100*x+10*y+z,dp)
+        if(saved%nodes(p)%geometry%volume_fraction(x,y,z)<=0) &
+          rates%fields(p)%values(:,x,y,z)=ieee_value(0._dp,ieee_quiet_nan)
+      end do
+      end do
+      end do
+    end do
+    early=rates;late=rates
+    do p=1,5
+      late%fields(p)%values=3*late%fields(p)%values
+    end do
+    call fill_sdc_eb_tree_source_halo_3d(saved,rates,4,3,halo,ok)
+    call require(ok,'SDC signed source halo')
+    call require(all(halo(:,5,2,2)==rates%fields(5)%values(:,1,2,2)),'SDC cross-parent peer')
+    call require(all(halo(:,2,5,2)==rates%fields(1)%values(:,2,3,2)),'SDC grandparent donor')
+    call require(all(halo(:,2,2,0)==rates%fields(2)%values(:,3,3,1)),'SDC parent donor')
+    do mode=0,2
+      a=.5_dp*real(mode,dp)
+      call fill_sdc_eb_tree_source_halo_3d(saved,rates,4,3,halo,ok, &
+        ancestor_start=early,ancestor_end=late,ancestor_fraction=[a,a])
+      call require(ok,'SDC ancestor source time interpolation')
+      call require(all(halo(:,2,5,2)==(1+2*a)*rates%fields(1)%values(:,2,3,2)), &
+        'SDC interpolated grandparent')
+      call require(all(halo(:,2,2,0)==(1+2*a)*rates%fields(2)%values(:,3,3,1)), &
+        'SDC interpolated parent')
+      call require(all(halo(:,5,2,2)==rates%fields(5)%values(:,1,2,2)),'SDC peer unaffected by time interpolation')
+    end do
+    labels='outflow';labels(1:4)='periodic'
+    call fill_sdc_eb_tree_source_halo_3d(saved,rates,1,3,halo,ok,boundary_faces=labels)
+    call require(ok,'SDC periodic corner halo')
+    call require(all(halo(:,-2,-2,4)==rates%fields(1)%values(:,2,2,4)),'SDC periodic corner donor')
+    do mode=1,4
+      labels='outflow'
+      select case(mode)
+      case(1);labels(1:4)='slip_wall'
+      case(2);labels(1:4)='no_slip_wall'
+      case(3);labels(1:4)='isothermal_wall'
+      case(4);labels(1:4)='inflow'
+      end select
+      call fill_sdc_eb_tree_source_halo_3d(saved,rates,1,3,halo,ok,boundary_faces=labels)
+      call require(ok,'SDC scalar physical extrapolation')
+      call require(all(halo(:,-2,-2,4)==rates%fields(1)%values(:,1,1,4)), &
+        'SDC physical source has no reflection or inlet state')
+      call require(all(halo(:,:, :,1)==0),'SDC solid source ignored')
+    end do
+    do z=-2,7
+    do y=-2,7
+    do x=-2,7
+      mask(x,y,z)=saved%nodes(1)%geometry%volume_fraction(max(1,min(4,x)),max(1,min(4,y)),max(1,min(4,z)))
+    end do
+    end do
+    end do
+    call fill_sdc_eb_tree_source_halo_3d(saved,rates,1,3,halo,ok,target_volume_fraction=mask)
+    call require(ok,'SDC target geometry mask')
+    mask(-2,-2,-2)=1;halo=17
+    call fill_sdc_eb_tree_source_halo_3d(saved,rates,1,3,halo,ok,target_volume_fraction=mask)
+    call require(.not.ok.and.all(halo==17),'SDC fluid target with solid donor rejects atomically')
+    rates%fields(1)%values(1,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
+    call fill_sdc_eb_tree_source_halo_3d(saved,rates,1,3,halo,ok)
+    call require(.not.ok.and.all(halo==17),'SDC late nonfinite donor rollback')
+  end subroutine check_sdc_sources
+
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label

@@ -4,7 +4,7 @@ module eb_reactive_patch_tree_3d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
-  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
+  use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d,valid_reactive_boundaries_3d
   use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
   use gas_transport_mod, only: gas_transport_species
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_patch_euler_3d, &
@@ -39,7 +39,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
   public :: advance_reactive_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
-  public :: fill_reactive_eb_tree_halo_3d
+  public :: fill_reactive_eb_tree_halo_3d,fill_sdc_eb_tree_source_halo_3d
   public :: react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
   public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
 contains
@@ -1367,6 +1367,125 @@ contains
   ! Wider halos require explicit target-resolution volume fractions, including
   ! edges/corners. Actual output bounds correspond to 1-width:N+width; array
   ! assignment preserves caller bounds. Width one retains the legacy face route.
+  ! Signed SDC source rates use PCM ancestor donors and scalar physical
+  ! extrapolation. Never apply EOS recovery, momentum reflection or restriction.
+  subroutine fill_sdc_eb_tree_source_halo_3d(tree,rates,target,halo_width,ghost,ok, &
+      boundary_faces,target_volume_fraction,ancestor_start,ancestor_end,ancestor_fraction)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: rates
+    integer, intent(in) :: target,halo_width
+    real(dp), intent(inout) :: ghost(:,:,:,:)
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: target_volume_fraction(:,:,:)
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    real(dp), allocatable :: candidate(:,:,:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer(int64) :: global(3),mapped(3),local(3)
+    integer :: n(3),index(3),source(3),nv,width,level,depth,node,donor,i,j,k,axis
+    real(dp) :: fraction,volume
+    character(len=32) :: faces(6)
+    logical :: valid
+    ok=.false.;width=halo_width;nv=size(ghost,1)
+    if(nv<1.or.width<1.or.width>6) return
+    if(.not.tree%topology%is_valid().or..not.allocated(tree%nodes)) return
+    if(size(tree%nodes)/=size(tree%topology%nodes)) return
+    if(target<1.or.target>size(tree%nodes)) return
+    if(.not.allocated(tree%nodes(1)%state)) return
+    if(.not.valid_tree(tree,size(tree%nodes(1)%state,1))) return
+    if(.not.field_shape(rates)) return
+    faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    if(.not.valid_reactive_boundaries_3d(faces)) return
+    if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
+    n=tree%topology%nodes(target)%shape;level=tree%topology%nodes(target)%level+1
+    if(any(n>huge(1)-2*width)) return
+    if(any(shape(ghost)/=[nv,n+2*width])) return
+    if(present(target_volume_fraction)) then
+      if(any(shape(target_volume_fraction)/=n+2*width)) return
+      if(.not.all(ieee_is_finite(target_volume_fraction))) return
+      if(any(target_volume_fraction<0).or.any(target_volume_fraction>1)) return
+      if(any(target_volume_fraction(width+1:width+n(1),width+1:width+n(2),width+1:width+n(3))/= &
+        tree%nodes(target)%geometry%volume_fraction)) return
+    end if
+    if(present(ancestor_start).or.present(ancestor_end).or.present(ancestor_fraction)) then
+      if(.not.(present(ancestor_start).and.present(ancestor_end).and.present(ancestor_fraction))) return
+      if(.not.field_shape(ancestor_start).or..not.field_shape(ancestor_end)) return
+      if(size(ancestor_fraction)/=level-1) return
+      if(.not.all(ieee_is_finite(ancestor_fraction))) return
+      if(any(ancestor_fraction<0).or.any(ancestor_fraction>1)) return
+    end if
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if(.not.valid) return
+    allocate(candidate(nv,n(1)+2*width,n(2)+2*width,n(3)+2*width),source=0._dp)
+    do k=1,n(3)+2*width
+    do j=1,n(2)+2*width
+    do i=1,n(1)+2*width
+      index=[i,j,k]-width
+      global=origin(:,target)+int(index-1,int64)
+      do axis=1,3
+        if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
+      end do
+      global=max(0_int64,min(domain(:,level)-1,global))
+      donor=0
+      if(all(index>=1).and.all(index<=n)) then
+        donor=target;source=index
+      else
+        do depth=level,1,-1
+          mapped=global/(domain(:,level)/domain(:,depth))
+          do node=1,size(tree%nodes)
+            if(tree%topology%nodes(node)%level+1/=depth) cycle
+            local=mapped-origin(:,node)
+            if(any(local<0).or.any(local>=int(tree%topology%nodes(node)%shape,int64))) cycle
+            donor=node;source=int(local)+1;exit
+          end do
+          if(donor/=0) exit
+        end do
+      end if
+      if(donor==0) return
+      volume=tree%nodes(donor)%geometry%volume_fraction(source(1),source(2),source(3))
+      if(present(target_volume_fraction)) then
+        if(target_volume_fraction(i,j,k)<=0) cycle
+        if(volume<=0) return
+      else
+        if(volume<=0) cycle
+      end if
+      depth=tree%topology%nodes(donor)%level+1
+      if(present(ancestor_fraction).and.depth<level) then
+        fraction=ancestor_fraction(depth)
+        if(fraction==0) then
+          candidate(:,i,j,k)=ancestor_start%fields(donor)%values(:,source(1),source(2),source(3))
+        else if(fraction==1) then
+          candidate(:,i,j,k)=ancestor_end%fields(donor)%values(:,source(1),source(2),source(3))
+        else
+          candidate(:,i,j,k)=(1-fraction)*ancestor_start%fields(donor)%values(:,source(1),source(2),source(3))+ &
+            fraction*ancestor_end%fields(donor)%values(:,source(1),source(2),source(3))
+        end if
+      else
+        candidate(:,i,j,k)=rates%fields(donor)%values(:,source(1),source(2),source(3))
+      end if
+      if(.not.all(ieee_is_finite(candidate(:,i,j,k)))) return
+    end do
+    end do
+    end do
+    ghost=candidate;ok=.true.
+  contains
+    logical function field_shape(field) result(good)
+      type(amr_tree_state_3d), intent(in) :: field
+      integer :: p
+      good=.false.
+      if(.not.allocated(field%fields)) return
+      if(size(field%fields)/=size(tree%nodes)) return
+      do p=1,size(field%fields)
+        if(.not.allocated(field%fields(p)%values)) return
+        if(any(shape(field%fields(p)%values)/=[nv,tree%topology%nodes(p)%shape])) return
+      end do
+      good=.true.
+    end function field_shape
+  end subroutine fill_sdc_eb_tree_source_halo_3d
+
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
       ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure, &
       ghost_volume_fraction,halo_width,target_volume_fraction,boundary_faces,inflow_state)
