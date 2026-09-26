@@ -23,6 +23,7 @@ module eb_reactive_patch_tree_3d_mod
     restrict_eb_integrated_flux_3d,reconcile_reactive_eb_peer_flux_3d,reflux_reactive_eb_state_3d
   use eb_reactive_transfer_3d_mod, only: prolong_reactive_eb_state_pcm_3d,restrict_reactive_eb_state_3d, &
     overlay_reactive_eb_peer_halo_3d
+  use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
   private
   type, public :: eb_reactive_tree_3d
@@ -1260,7 +1261,7 @@ contains
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1281,6 +1282,10 @@ contains
     procedure(eb_sdc_recursive_source), optional :: auxiliary_source
     real(dp), optional, intent(inout) :: auxiliary_change(:)
     real(dp) :: auxiliary(size(source_change)),source_time
+    logical, optional, intent(in) :: route_auxiliary
+    logical :: routing
+    type(amr_tree_state_3d) :: off_old,off_new
+    type(amr_tree_state_3d), allocatable :: auxiliary_pending(:)
     real(dp) :: redist_target
     character(len=16) :: method
     type(amr_tree_state_3d), allocatable :: pending(:)
@@ -1296,9 +1301,12 @@ contains
     integer :: nv,node,n(3),levels,c
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    routing=.false.
+    if(present(route_auxiliary)) routing=route_auxiliary
     if(.not.valid_tree(tree,nv).or..not.ieee_is_finite(dt).or.dt<=0) return
     if(any([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]/=nv)) return
     if(present(reaction_source).and..not.chemistry) return
+    if(routing.and..not.present(auxiliary_source)) return
     if(present(auxiliary_source).neqv.present(auxiliary_change)) return
     if(present(auxiliary_change)) then
       if(size(auxiliary_change)/=nv) return
@@ -1327,6 +1335,12 @@ contains
       allocate(source0%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
     end do
     source1=source0
+    if(routing) then
+      allocate(auxiliary_pending(0:levels-1))
+      do c=0,levels-1
+        auxiliary_pending(c)=source0
+      end do
+    end if
     if(method/='none') then
       allocate(pending(0:levels-1))
       do c=0,levels-1
@@ -1375,7 +1389,43 @@ contains
       integer, intent(in) :: stage,depth
       type(amr_tree_state_3d), intent(inout) :: rate
       logical, intent(out) :: ok
+      type(amr_tree_state_3d) :: off
+      integer :: p,x,y,z,d(3)
+      logical :: valid,agreed
       call auxiliary_source(state,interval,stage,depth,source_time,rate,ok)
+      if(.not.routing) return
+      if(.not.ok) return
+      ok=.false.
+      if(.not.allocated(rate%fields)) return
+      if(size(rate%fields)/=size(tree%nodes)) return
+      off=source0;valid=.true.
+      do p=1,size(tree%nodes)
+        if(allocated(off%fields(p)%values)) off%fields(p)%values=0
+      end do
+      do p=1,size(tree%nodes)
+        if(tree%topology%nodes(p)%level==depth) cycle
+        d=tree%topology%nodes(p)%shape
+        if(.not.allocated(rate%fields(p)%values)) return
+        if(any(shape(rate%fields(p)%values)/=[nv,d])) return
+        off%fields(p)%values=0
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          if(state%nodes(p)%geometry%volume_fraction(x,y,z)<=0.or.covered(tree%topology,p,[x,y,z])) cycle
+          off%fields(p)%values(:,x,y,z)=rate%fields(p)%values(:,x,y,z)
+        end do
+        end do
+        end do
+        valid=valid.and.all(ieee_is_finite(off%fields(p)%values))
+      end do
+      if(.not.valid) return
+      if(stage==0) then
+        off_old=off
+      else
+        off_new=off
+      end if
+      ok=.true.
+
     end subroutine source_adapter
     recursive subroutine advance_level(level,time,interval,flux,good)
       integer, intent(in) :: level
@@ -1384,6 +1434,9 @@ contains
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
       type(amr_tree_state_3d) :: op,np,correction,redistributed
+      type(amr_tree_state_3d) :: off_transfer
+      type(eb_reactive_tree_3d) :: off_ledger
+      real(dp) :: off_inventory(nv)
       real(dp), allocatable :: step_aux(:)
       type(amr_tree_state_3d), allocatable :: transfer
       type(eb_reactive_tree_3d) :: before_sync
@@ -1418,6 +1471,22 @@ contains
           target=tree%topology%nodes(p)%level;bucket=min(level,target)
           pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
         end do
+      end if
+      if(routing) then
+        off_transfer=off_old
+        do p=1,size(tree%nodes)
+          target=tree%topology%nodes(p)%level;bucket=min(level,target)
+          off_transfer%fields(p)%values=.5_dp*interval*(off_old%fields(p)%values+off_new%fields(p)%values)
+          auxiliary_pending(bucket)%fields(p)%values=auxiliary_pending(bucket)%fields(p)%values+ &
+            off_transfer%fields(p)%values
+        end do
+        off_ledger=candidate
+        do p=1,size(tree%nodes)
+          off_ledger%nodes(p)%state=off_transfer%fields(p)%values
+        end do
+        call integrate_reactive_eb_tree_3d(off_ledger,off_inventory,accepted)
+        if(.not.accepted) return
+        step_aux=step_aux+off_inventory
       end if
       if(present(auxiliary_source)) then
         auxiliary=auxiliary+step_aux
@@ -1482,6 +1551,16 @@ contains
               pending(level)%fields(p)%values
           end if
           pending(level)%fields(p)%values=0
+        end do
+        call recover_transfer(accepted)
+        if(.not.accepted) return
+        call average_down_reactive_eb_tree_3d(species,candidate,accepted)
+        if(.not.accepted) return
+      end if
+      if(routing) then
+        do p=1,size(tree%nodes)
+          candidate%nodes(p)%state=candidate%nodes(p)%state+auxiliary_pending(level)%fields(p)%values
+          auxiliary_pending(level)%fields(p)%values=0
         end do
         call recover_transfer(accepted)
         if(.not.accepted) return

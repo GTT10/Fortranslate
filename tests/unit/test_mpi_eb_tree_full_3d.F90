@@ -103,7 +103,8 @@ program test_mpi_eb_tree_full_3d
   saved=tree
   call check_sdc_loop()
   if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
-     test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source".or.test_mode=="aux_recursive") then
+     test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source".or. &
+     test_mode=="aux_recursive".or.test_mode=="aux_route") then
     deallocate(u,t)
     cycle
   end if
@@ -183,7 +184,8 @@ contains
       call check_redist_level(initial,geometry,extended,faces,force)
       return
     end if
-    if(test_mode=="subcycle".or.test_mode=="redist_recursive".or.test_mode=="state_recursive".or.test_mode=="aux_recursive") then
+    if(test_mode=="subcycle".or.test_mode=="redist_recursive".or.test_mode=="state_recursive".or. &
+     test_mode=="aux_recursive".or.test_mode=="aux_route") then
       call check_sdc_recursive(initial,geometry,extended,faces,force)
       return
     end if
@@ -575,7 +577,7 @@ contains
     procedure(eb_sdc_recursive_source), pointer :: serial_provider=>null()
     procedure(mpi_eb_sdc_recursive_source), pointer :: mpi_provider=>null()
     real(dp), allocatable :: aux(:),saux(:)
-    real(dp) :: coefficient,expected_aux(nv)
+    real(dp) :: coefficient,expected_aux(nv),source_factor
     integer :: x,y,z
     type(eb_reactive_tree_3d) :: reference,profile
     type(amr_tree_state_3d) :: local,lt,ir,serial_ir,old,ot,old_ir
@@ -589,7 +591,7 @@ contains
     if(test_mode=="redist_recursive") method="flux_redist"
     if(test_mode=="state_recursive") method="state_redist"
     nullify(serial_provider,mpi_provider)
-    if(test_mode=='aux_recursive') then
+    if(test_mode=='aux_recursive'.or.test_mode=='aux_route') then
       serial_provider=>serial_recursive_aux;mpi_provider=>mpi_recursive_aux
       allocate(aux(nv),saux(nv))
     end if
@@ -602,16 +604,18 @@ contains
     call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
       sb,sw,sch,sext,slimiter,good,serial_ir,level_steps=serial_counts,redistribution=method, &
-      auxiliary_source=serial_provider,auxiliary_change=saux)
+      auxiliary_source=serial_provider,auxiliary_change=saux,route_auxiliary=test_mode=='aux_route')
     call require(good,'serial recursive SDC')
     if(allocated(saux)) then
       call require(serial_source_calls==21,'serial recursive source calls')
       profile=initial
       do p=1,count
+        source_factor=3._dp-1._dp/2**topology%nodes(p)%level
+        if(test_mode=='aux_route') source_factor=7.25_dp
         do z=1,4
         do y=1,4
         do x=1,4
-          profile%nodes(p)%state(:,x,y,z)=1e-10_dp*(3._dp-1._dp/2**topology%nodes(p)%level)* &
+          profile%nodes(p)%state(:,x,y,z)=1e-10_dp*source_factor* &
             source_profile(p,x,y,z,0)
           if(profile%nodes(p)%geometry%volume_fraction(x,y,z)<=0) profile%nodes(p)%state(:,x,y,z)=0
         end do
@@ -641,7 +645,7 @@ contains
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
         b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,level_steps=counts,redistribution=method, &
-        auxiliary_source=mpi_provider,auxiliary_change=aux)
+        auxiliary_source=mpi_provider,auxiliary_change=aux,route_auxiliary=test_mode=='aux_route')
       call require(good,'MPI recursive SDC')
       if(allocated(aux)) then
         call require(mpi_source_calls==21,'MPI recursive source calls')
@@ -673,7 +677,7 @@ contains
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
         b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=coefficient,level_steps=counts,redistribution=method, &
-        auxiliary_source=mpi_provider,auxiliary_change=aux)
+        auxiliary_source=mpi_provider,auxiliary_change=aux,route_auxiliary=test_mode=='aux_route')
       call require(.not.good,'recursive rejected stage')
       if(allocated(aux)) then
         call require(mpi_source_calls==21.and.all(aux==41),'last descendant source failure and ledger rollback')

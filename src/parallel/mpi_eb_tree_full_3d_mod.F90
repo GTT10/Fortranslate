@@ -25,6 +25,7 @@ module mpi_eb_tree_full_3d_mod
     redistribute_sdc_mpi_eb_tree_level_rate_3d,redistribute_mpi_eb_tree_state_3d, &
     redistribute_sdc_mpi_eb_tree_state_rate_3d,redistribute_sdc_mpi_eb_tree_state_level_rate_3d
   use mpi_eb_tree_flux_3d_mod, only: synchronize_mpi_eb_tree_flux_3d
+  use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
   private
   public :: react_mpi_eb_tree_3d,advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d
@@ -857,7 +858,7 @@ contains
       transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -882,6 +883,10 @@ contains
     procedure(mpi_eb_sdc_recursive_source), optional :: auxiliary_source
     real(dp), optional, intent(inout) :: auxiliary_change(:)
     real(dp) :: auxiliary(size(source_change)),source_time
+    logical, optional, intent(in) :: route_auxiliary
+    logical :: routing
+    type(amr_tree_state_3d) :: off_old,off_new
+    type(amr_tree_state_3d), allocatable :: auxiliary_pending(:)
     real(dp) :: redist_target
     character(len=16) :: method
     integer :: method_code,method_low,method_high
@@ -898,10 +903,13 @@ contains
     integer :: nv,node,n(3),levels,c,rank,status,ios
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
+    routing=.false.
+    if(present(route_auxiliary)) routing=route_auxiliary
     valid=ieee_is_finite(dt)
     if(valid) valid=dt>0
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(reaction_source).and..not.chemistry) valid=.false.
+    valid=valid.and.(.not.routing.or.present(auxiliary_source))
     valid=valid.and.(present(auxiliary_source).eqv.present(auxiliary_change))
     if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
     call agree(valid,comm,ready)
@@ -909,6 +917,10 @@ contains
     call MPI_Allreduce(merge(1,0,present(auxiliary_source)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(merge(1,0,present(auxiliary_source)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.method_low/=method_high) return
+    call MPI_Allreduce(merge(1,0,routing),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(merge(1,0,routing),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     method='none'
     if(present(redistribution)) method=redistribution
@@ -952,6 +964,12 @@ contains
     call agree(valid,comm,ready)
     if(.not.ready) return
     source1=source0
+    if(routing) then
+      allocate(auxiliary_pending(0:levels-1))
+      do c=0,levels-1
+        auxiliary_pending(c)=source0
+      end do
+    end if
     if(method/='none') then
       allocate(pending(0:levels-1),stat=ios)
       call agree(ios==0,comm,ready)
@@ -1015,7 +1033,44 @@ contains
       type(amr_tree_state_3d), intent(inout) :: rate
       type(MPI_Comm), intent(in) :: comm
       logical, intent(out) :: ok
+      type(amr_tree_state_3d) :: off
+      integer :: p,x,y,z,d(3)
+      logical :: valid,agreed
       call auxiliary_source(state,temperature,interval,stage,depth,source_time,rate,comm,ok)
+      if(.not.routing) return
+      call agree(ok,comm,agreed)
+      ok=.false.
+      if(.not.agreed) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,rate,nv,comm,agreed)
+      if(.not.agreed) return
+      off=source0;valid=.true.
+      do p=1,size(tree%nodes)
+        if(allocated(off%fields(p)%values)) off%fields(p)%values=0
+      end do
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank) cycle
+        if(tree%nodes(p)%level==depth) cycle
+        d=tree%nodes(p)%shape
+        off%fields(p)%values=0
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          if(geometry(p)%volume_fraction(x,y,z)<=0.or.covered(tree,p,[x,y,z])) cycle
+          off%fields(p)%values(:,x,y,z)=rate%fields(p)%values(:,x,y,z)
+        end do
+        end do
+        end do
+        valid=valid.and.all(ieee_is_finite(off%fields(p)%values))
+      end do
+      call agree(valid,comm,agreed)
+      if(.not.agreed) return
+      if(stage==0) then
+        off_old=off
+      else
+        off_new=off
+      end if
+      ok=.true.
+
     end subroutine source_adapter
     recursive subroutine advance_level(level,time,interval,flux,good)
       integer, intent(in) :: level
@@ -1024,6 +1079,8 @@ contains
       logical, intent(out) :: good
       type(eb_integrated_flux_3d), allocatable :: fine_flux(:)
       type(amr_tree_state_3d) :: op,np,correction,redistributed,before_sync,before_t
+      type(amr_tree_state_3d) :: off_transfer
+      real(dp) :: off_inventory(nv)
       real(dp), allocatable :: step_aux(:)
       type(amr_tree_state_3d), allocatable :: transfer
       real(dp) :: fstart(levels-1),fend(levels-1),b(nv),w(nv),ch(nv),ext(nv),limiter,elapsed,sub_dt
@@ -1067,6 +1124,19 @@ contains
           target=tree%nodes(p)%level;bucket=min(level,target)
           pending(bucket)%fields(p)%values=pending(bucket)%fields(p)%values+transfer%fields(p)%values
         end do
+      end if
+      if(routing) then
+        off_transfer=off_old
+        do p=1,size(tree%nodes)
+          if(owners(p)/=rank) cycle
+          target=tree%nodes(p)%level;bucket=min(level,target)
+          off_transfer%fields(p)%values=.5_dp*interval*(off_old%fields(p)%values+off_new%fields(p)%values)
+          auxiliary_pending(bucket)%fields(p)%values=auxiliary_pending(bucket)%fields(p)%values+ &
+            off_transfer%fields(p)%values
+        end do
+        call integrate_mpi_eb_tree_3d(tree,owners,geometry,off_transfer,off_inventory,comm,accepted)
+        if(.not.accepted) return
+        step_aux=step_aux+off_inventory
       end if
       if(present(auxiliary_source)) then
         auxiliary=auxiliary+step_aux
@@ -1145,6 +1215,17 @@ contains
               pending(level)%fields(p)%values
           end if
           pending(level)%fields(p)%values=0
+        end do
+        call recover_transfer(accepted)
+        if(.not.accepted) return
+        call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,accepted)
+        if(.not.accepted) return
+      end if
+      if(routing) then
+        do p=1,size(tree%nodes)
+          if(owners(p)/=rank) cycle
+          candidate%fields(p)%values=candidate%fields(p)%values+auxiliary_pending(level)%fields(p)%values
+          auxiliary_pending(level)%fields(p)%values=0
         end do
         call recover_transfer(accepted)
         if(.not.accepted) return
