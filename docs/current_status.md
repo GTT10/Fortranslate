@@ -122,6 +122,9 @@ levels and collective failure handling
 MPI EB transport now returns owner-local SDC rates and integrated fluxes while
 preserving provisional parent states, with collective rollback
 ([checks](validation/sdc-mpi-eb-transport-20260927.md)).
+MPI EB SDC hydro now exchanges signed predictor sources and returns owner-local
+CTU rates and integrated fluxes, retaining provisional parent states
+([checks](validation/sdc-mpi-eb-hydro-20260927.md)).
 Coupled EB tree SDC MPI integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
