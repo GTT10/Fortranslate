@@ -1,5 +1,6 @@
 program test_mpi_eb_tree_full_3d
   use iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use mpi_f08
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -36,6 +37,7 @@ program test_mpi_eb_tree_full_3d
   real(dp) :: residual,theta,speed
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,rank,nranks,status
+  integer :: serial_source_calls=0,mpi_source_calls=0,source_failure=0
   character(len=16) :: test_mode
   logical :: ok,chemistry_on,transport_on
   character(len=8), parameter :: integrators(2)=[character(len=8)::'explicit','implicit']
@@ -101,7 +103,7 @@ program test_mpi_eb_tree_full_3d
   saved=tree
   call check_sdc_loop()
   if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
-     test_mode=="state_redist".or.test_mode=="state_recursive") then
+     test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source") then
     deallocate(u,t)
     cycle
   end if
@@ -173,6 +175,10 @@ contains
     call require(good,'SDC extended finest')
     call build_eb_tree_extended_geometry_3d(topology,geometry,extended_finest,extended,good)
     call require(good,'SDC extended geometry')
+    if(test_mode=="aux_source") then
+      call check_auxiliary_sources(initial,geometry,extended,faces,force)
+      return
+    end if
     if(test_mode=="redist_level") then
       call check_redist_level(initial,geometry,extended,faces,force)
       return
@@ -247,6 +253,163 @@ contains
       deallocate(local%fields,lt%fields,ir%fields)
     end do
   end subroutine check_sdc_loop
+  subroutine check_auxiliary_sources(initial,geometry,extended,faces,force)
+    type(eb_reactive_tree_3d), intent(in) :: initial
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(in) :: force(3)
+    type(eb_reactive_tree_3d) :: reference,profile
+    type(amr_tree_state_3d) :: local,lt,ir,serial_ir,old_ir,old,ot
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter
+    real(dp) :: aux(nv),saux(nv),expected_aux(nv),initial_inventory(nv),final_inventory(nv),error
+    integer :: owners(count),p,x,y,z,layout,failure
+    logical :: good
+    serial_source_calls=0;source_failure=0
+    allocate(serial_ir%fields(count))
+    do p=1,count
+      allocate(serial_ir%fields(p)%values(nv-4,4,4,4),source=0._dp)
+    end do
+    reference=initial
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
+      sb,sw,sch,sext,slimiter,good,serial_ir,auxiliary_source=serial_auxiliary,auxiliary_change=saux)
+    call require(good,'serial coupled SDC')
+    call require(serial_source_calls==3,'one old and two new serial source calls')
+    profile=initial
+    do p=1,count
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        profile%nodes(p)%state(:,x,y,z)=source_profile(p,x,y,z,0)
+        if(profile%nodes(p)%geometry%volume_fraction(x,y,z)<=0) profile%nodes(p)%state(:,x,y,z)=0
+      end do
+      end do
+      end do
+    end do
+    call integrate_reactive_eb_tree_3d(profile,expected_aux,good)
+    call require(good,'source profile inventory')
+    expected_aux=2.e-10_dp*expected_aux
+    call require(maxval(abs(saux-expected_aux)/max(1.e-30_dp,abs(expected_aux)))<3.e-14_dp, &
+      'accepted old/new source inventory excludes intermediate iterations')
+    call integrate_reactive_eb_tree_3d(initial,initial_inventory,good)
+    call require(good,'SDC initial inventory')
+    do layout=1,2
+      owners=[(mod(p-1,nranks),p=1,count)]
+      if(layout==2) owners=0
+      allocate(local%fields(count),lt%fields(count),ir%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        local%fields(p)%values=initial%nodes(p)%state
+        allocate(lt%fields(p)%values(1,4,4,4),ir%fields(p)%values(nv-4,4,4,4))
+        lt%fields(p)%values(1,:,:,:)=initial%nodes(p)%temperature
+        ir%fields(p)%values=0
+      end do
+      old=local;ot=lt;old_ir=ir;mpi_source_calls=0;source_failure=0
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+        1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,auxiliary_source=mpi_auxiliary,auxiliary_change=aux)
+      call require(good,'MPI coupled SDC')
+      call require(mpi_source_calls==3,'one old and two new MPI source calls')
+      call require(maxval(abs(aux-saux)/max(1.e-30_dp,abs(saux)))<3.e-14_dp,'separate serial MPI source ledger')
+      do p=1,count
+        call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'coupled SDC owner-local state')
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==reference%nodes(p)%state),'exact serial coupled SDC state')
+        call require(all(lt%fields(p)%values(1,:,:,:)==reference%nodes(p)%temperature),'exact serial coupled SDC T')
+        call require(all(ir%fields(p)%values==serial_ir%fields(p)%values),'exact serial coupled SDC IR')
+      end do
+      call require(limiter==slimiter,'exact coupled SDC limiter')
+      error=max(maxval(abs(b-sb)/max(1._dp,abs(sb))),maxval(abs(w-sw)/max(1._dp,abs(sw))), &
+        maxval(abs(ch-sch)/max(1._dp,abs(sch))),maxval(abs(ext-sext)/max(1._dp,abs(sext))))
+      call require(error<2.e-12_dp,'serial coupled SDC inventories')
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,local,final_inventory,MPI_COMM_WORLD,good)
+      call require(good,'SDC final inventory')
+      error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext-aux)/max(1._dp,abs(initial_inventory)))
+      if(rank==0) print *, 'MPI SDC layout, composite residual: ',layout,error
+      call require(error<3.e-14_dp,'SDC composite closure')
+      do failure=1,3
+        local=old;lt=ot;ir=old_ir;b=17;w=19;ch=23;ext=29;limiter=31
+        source_failure=failure;mpi_source_calls=0;aux=37
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+          1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,auxiliary_source=mpi_auxiliary,auxiliary_change=aux)
+        call require(.not.good,'collective late auxiliary source rejection')
+        call require(mpi_source_calls==3,'failure follows two successful source stages')
+        call require(all(aux==37),'auxiliary ledger rollback')
+        do p=1,count
+          if(owners(p)/=rank) cycle
+          call require(all(local%fields(p)%values==old%fields(p)%values),'coupled SDC state rollback')
+          call require(all(lt%fields(p)%values==ot%fields(p)%values),'coupled SDC T rollback')
+          call require(all(ir%fields(p)%values==old_ir%fields(p)%values),'coupled SDC IR rollback')
+        end do
+        call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(ext==29).and.limiter==31, &
+          'coupled SDC inventory rollback')
+      end do
+      deallocate(local%fields,lt%fields,ir%fields)
+    end do
+  end subroutine check_auxiliary_sources
+  subroutine serial_auxiliary(state,interval,stage,depth,rate,good)
+    type(eb_reactive_tree_3d), intent(in) :: state
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: stage,depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    logical, intent(out) :: good
+    integer :: p,x,y,z,d(3)
+    call require(interval==1.e-10_dp.and.depth==-1,'serial source interval/depth')
+    call require(stage==serial_source_calls,'serial source stage sequence')
+    serial_source_calls=serial_source_calls+1
+    do p=1,size(state%nodes)
+      d=state%topology%nodes(p)%shape
+      do z=1,d(3)
+      do y=1,d(2)
+      do x=1,d(1)
+        rate%fields(p)%values(:,x,y,z)=source_profile(p,x,y,z,stage)
+      end do
+      end do
+      end do
+    end do
+    good=.true.
+  end subroutine
+  subroutine mpi_auxiliary(state,temperature,interval,stage,depth,rate,comm,good)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: stage,depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    integer :: p,x,y,z,d(3),local_rank,ierr
+    call MPI_Comm_rank(comm,local_rank,ierr)
+    call require(ierr==MPI_SUCCESS.and.local_rank==rank,'source communicator')
+    call require(interval==1.e-10_dp.and.depth==-1,'MPI source interval/depth')
+    call require(stage==mpi_source_calls,'MPI source stage sequence')
+    mpi_source_calls=mpi_source_calls+1;good=.true.
+    do p=1,size(state%fields)
+      if(.not.allocated(state%fields(p)%values)) cycle
+      call require(allocated(temperature%fields(p)%values),'source temperature ownership')
+      d=shape(temperature%fields(p)%values(1,:,:,:))
+      do z=1,d(3)
+      do y=1,d(2)
+      do x=1,d(1)
+        rate%fields(p)%values(:,x,y,z)=source_profile(p,x,y,z,stage)
+      end do
+      end do
+      end do
+    end do
+    if(stage/=2) return
+    if(source_failure==1.and.rank==nranks-1) good=.false.
+    if(allocated(state%fields(1)%values)) then
+      if(source_failure==2) rate%fields(1)%values(:,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
+      if(source_failure==3) deallocate(rate%fields(1)%values)
+    end if
+  end subroutine
+  function source_profile(p,x,y,z,stage) result(value)
+    integer, intent(in) :: p,x,y,z,stage
+    real(dp) :: value(nv),amount
+    amount=1000._dp*real(stage+1,dp)*(p+.01_dp*x+.02_dp*y+.03_dp*z)
+    value=0;value(1)=amount;value(2:4)=amount*[2._dp,-3._dp,4._dp]
+    value(5)=amount*2.e6_dp;value(6)=amount
+    if(tree%nodes(p)%geometry%volume_fraction(x,y,z)<=0) value=ieee_value(0._dp,ieee_quiet_nan)
+  end function
   subroutine check_redist_level(initial,geometry,extended,faces,force)
     type(eb_reactive_tree_3d), intent(in) :: initial
     type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)

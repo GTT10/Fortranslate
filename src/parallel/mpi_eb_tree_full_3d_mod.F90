@@ -29,6 +29,21 @@ module mpi_eb_tree_full_3d_mod
   private
   public :: react_mpi_eb_tree_3d,advance_mpi_eb_tree_full_3d,react_sdc_mpi_eb_tree_3d
   public :: advance_mpi_eb_tree_sdc_3d,advance_mpi_eb_tree_sdc_subcycle_3d
+  ! Auxiliary sources receive the old state at stage 0 and provisional new
+  ! states at stages 1..iterations. Rates are per fluid volume per time.
+  ! Callback-owned physical state must remain private until the driver succeeds.
+  abstract interface
+    subroutine mpi_eb_sdc_auxiliary_source(state,temperature,interval,stage,depth,rate,comm,ok)
+      import :: amr_tree_state_3d,dp,MPI_Comm
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+    end subroutine
+  end interface
+  public :: mpi_eb_sdc_auxiliary_source
 contains
   subroutine agree(condition,comm,ok)
     logical, intent(in) :: condition
@@ -321,7 +336,7 @@ contains
       reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
-      target_volume_fraction)
+      target_volume_fraction,auxiliary_source,auxiliary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -344,6 +359,10 @@ contains
     type(amr_tree_state_3d) :: transfer0,transfer1,hydro_transfer,final_transfer
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
+    procedure(mpi_eb_sdc_auxiliary_source), optional :: auxiliary_source
+    real(dp), optional, intent(inout) :: auxiliary_change(:)
+    type(amr_tree_state_3d) :: a0,a1
+    real(dp) :: auxiliary(size(source_change))
     real(dp) :: redist_target
     character(len=16) :: redistribution_method
     type(amr_tree_state_3d) :: redistributed,before_sync,sync_rate
@@ -360,7 +379,7 @@ contains
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
     real(dp) :: controls(8),low(8),high(8),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
-    integer :: counts(7),mincounts(7),maxcounts(7),nv,rank,status,node,n(3),it,i,j,k,c,ios
+    integer :: counts(8),mincounts(8),maxcounts(8),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive
     ok=.false.;nv=reactive_nvar(size(species));theta=1
     redistribution_method='none'
@@ -377,16 +396,19 @@ contains
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     valid=valid.and..not.(transport_flags(4).and..not.transport_flags(3))
     valid=valid.and..not.(present(reaction_source).and..not.chemistry)
+    valid=valid.and.(present(auxiliary_source).eqv.present(auxiliary_change))
+    if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
     call agree(valid,comm,ready)
     if(.not.ready) return
     call MPI_Allreduce(controls,low,8,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,high,8,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
-    counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source))]
-    call MPI_Allreduce(counts,mincounts,7,MPI_INTEGER,MPI_MIN,comm,status)
+    counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
+      merge(1,0,present(auxiliary_source))]
+    call MPI_Allreduce(counts,mincounts,8,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,maxcounts,7,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,maxcounts,8,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(mincounts/=maxcounts)) return
     selected_depth=-1
     if(present(target_depth)) selected_depth=target_depth
@@ -472,10 +494,11 @@ contains
     call agree(valid,comm,ready)
     if(.not.ready) return
     candidate=old;ct=ot;diffusive=any(transport_flags(:3))
-    call sources(old,ot,e0,d0,f0,transfer0,ready,fractions_start)
+    call sources(old,ot,e0,d0,a0,0,f0,transfer0,ready,fractions_start)
     if(.not.ready) return
     e1=e0;d1=d0
-    call predictor_field(e0,d0,op,ready)
+    if(present(auxiliary_source)) a1=a0
+    call predictor_field(e0,d0,a0,op,ready)
     if(.not.ready) return
     do it=1,iterations
       call combined_rates(.true.)
@@ -511,7 +534,7 @@ contains
       end do
       call recover(ready)
       if(.not.ready) return
-      call sources(candidate,ct,e1,d1,f1,transfer1,ready,fractions_end)
+      call sources(candidate,ct,e1,d1,a1,it,f1,transfer1,ready,fractions_end)
       if(.not.ready) return
       call combined_rates(.false.)
       do node=1,size(owners)
@@ -545,6 +568,15 @@ contains
     call integrate_mpi_eb_tree_3d(tree,owners,geometry,e1,v1,comm,ready)
     if(.not.ready) return
     external=.5_dp*dt*(v0+v1)
+    if(present(auxiliary_source)) then
+      call integrate_mpi_eb_tree_3d(tree,owners,geometry,a0,v0,comm,ready)
+      if(.not.ready) return
+      call integrate_mpi_eb_tree_3d(tree,owners,geometry,a1,v1,comm,ready)
+      if(.not.ready) return
+      auxiliary=.5_dp*dt*(v0+v1)
+      call agree(all(ieee_is_finite(auxiliary)),comm,ready)
+      if(.not.ready) return
+    end if
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
       if(.not.active(node)) cycle
@@ -614,7 +646,7 @@ contains
     call MPI_Bcast(boundary,nv,MPI_DOUBLE_PRECISION,owners(1),comm,status)
     call agree(status==MPI_SUCCESS.and.all(ieee_is_finite(boundary)).and.all(ieee_is_finite(external)),comm,ready)
     if(.not.ready) return
-    call predictor_field(e1,d1,np,ready)
+    call predictor_field(e1,d1,a1,np,ready)
     if(.not.ready) return
     if(present(redistribution_transfer)) then
       final_transfer=hydro_transfer
@@ -638,6 +670,7 @@ contains
       end do
       reaction_source=ir
     end if
+    if(present(auxiliary_change)) auxiliary_change=auxiliary
     if(present(redistribution_transfer)) redistribution_transfer=final_transfer
     if(present(integrated_flux)) integrated_flux=hf
     if(present(old_predictor)) old_predictor=op
@@ -650,8 +683,8 @@ contains
       integer, intent(in) :: p
       active=selected_depth<0.or.tree%nodes(p)%level==selected_depth
     end function
-    subroutine predictor_field(ext,diff,output,good)
-      type(amr_tree_state_3d), intent(in) :: ext,diff
+    subroutine predictor_field(ext,diff,aux,output,good)
+      type(amr_tree_state_3d), intent(in) :: ext,diff,aux
       type(amr_tree_state_3d), intent(out) :: output
       logical, intent(out) :: good
       logical :: finite
@@ -660,6 +693,7 @@ contains
       do p=1,size(owners)
         if(owners(p)/=rank.or..not.active(p)) cycle
         output%fields(p)%values=ext%fields(p)%values+diff%fields(p)%values
+        if(present(auxiliary_source)) output%fields(p)%values=output%fields(p)%values+aux%fields(p)%values
         output%fields(p)%values(6:,:,:,:)=output%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
         output%fields(p)%values(5,:,:,:)=output%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
         if(.not.all(ieee_is_finite(output%fields(p)%values))) finite=.false.
@@ -673,14 +707,17 @@ contains
       do p=1,size(owners)
         if(owners(p)/=rank.or..not.active(p)) cycle
         rates%fields(p)%values=.5_dp*(e0%fields(p)%values+e1%fields(p)%values+d0%fields(p)%values+d1%fields(p)%values)
+        if(present(auxiliary_source)) rates%fields(p)%values=rates%fields(p)%values+ &
+          .5_dp*(a0%fields(p)%values+a1%fields(p)%values)
         if(.not.with_reaction) cycle
         rates%fields(p)%values(6:,:,:,:)=rates%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
         rates%fields(p)%values(5,:,:,:)=rates%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
       end do
     end subroutine
-    subroutine sources(gas,temp,external_rate,transport_rate,flux,exchange,good,fractions)
+    subroutine sources(gas,temp,external_rate,transport_rate,auxiliary_rate,stage,flux,exchange,good,fractions)
       type(amr_tree_state_3d), intent(in) :: gas,temp
-      type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate,exchange
+      type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate,auxiliary_rate,exchange
+      integer, intent(in) :: stage
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
       real(dp), optional, intent(in) :: fractions(:)
@@ -722,6 +759,32 @@ contains
         if(owners(p)/=rank) cycle
         transport_rate%fields(p)%values=0
       end do
+      if(present(auxiliary_source)) then
+        auxiliary_rate=transport_rate
+        call auxiliary_source(gas,temp,dt,stage,selected_depth,auxiliary_rate,comm,local_ok)
+        call agree(local_ok,comm,all_ok)
+        if(.not.all_ok) return
+        call validate_mpi_amr_tree_local_3d(tree,owners,auxiliary_rate,nv,comm,all_ok)
+        if(.not.all_ok) return
+        local_ok=.true.
+        do p=1,size(owners)
+          if(owners(p)/=rank) cycle
+          if(.not.active(p)) then
+            auxiliary_rate%fields(p)%values=0;cycle
+          end if
+          d=tree%nodes(p)%shape
+          do z=1,d(3)
+          do y=1,d(2)
+          do x=1,d(1)
+            if(geometry(p)%volume_fraction(x,y,z)<=0) auxiliary_rate%fields(p)%values(:,x,y,z)=0
+          end do
+          end do
+          end do
+          local_ok=local_ok.and.all(ieee_is_finite(auxiliary_rate%fields(p)%values))
+        end do
+        call agree(local_ok,comm,all_ok)
+        if(.not.all_ok) return
+      end if
       if(selected_depth>=0.and.redistribution_method/='none') exchange=transport_rate
       if(diffusive) then
         call compute_sdc_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt, &

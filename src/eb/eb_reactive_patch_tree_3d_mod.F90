@@ -46,6 +46,20 @@ module eb_reactive_patch_tree_3d_mod
   public :: fill_reactive_eb_tree_halo_3d,fill_sdc_eb_tree_source_halo_3d
   public :: react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
   public :: initialize_reactive_eb_tree_3d,average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d
+  ! Auxiliary sources receive the old state at stage 0 and provisional new
+  ! states at stages 1..iterations. Rates are per fluid volume per time.
+  ! Callback-owned physical state must remain private until the driver succeeds.
+  abstract interface
+    subroutine eb_sdc_auxiliary_source(state,interval,stage,depth,rate,ok)
+      import :: eb_reactive_tree_3d,amr_tree_state_3d,dp
+      type(eb_reactive_tree_3d), intent(in) :: state
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      logical, intent(out) :: ok
+    end subroutine
+  end interface
+  public :: eb_sdc_auxiliary_source
 contains
   ! Composite flux redistribution. Covered parents do not donate or receive.
   ! Each cut leaf exchanges excess with face-connected fluid leaves, including
@@ -1465,7 +1479,8 @@ contains
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,fractions_start,fractions_end,source_start,source_end, &
-      integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer,target_volume_fraction)
+      integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer,target_volume_fraction, &
+      auxiliary_source,auxiliary_change)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1486,6 +1501,10 @@ contains
     type(amr_tree_state_3d), optional, intent(inout) :: redistribution_transfer
     type(amr_tree_state_3d) :: transfer0,transfer1,hydro_transfer,final_transfer
     real(dp), optional, intent(in) :: target_volume_fraction
+    procedure(eb_sdc_auxiliary_source), optional :: auxiliary_source
+    real(dp), optional, intent(inout) :: auxiliary_change(:)
+    type(amr_tree_state_3d) :: a0,a1
+    real(dp) :: auxiliary(size(source_change))
     real(dp) :: redist_target
     character(len=*), optional, intent(in) :: redistribution
     character(len=16) :: redistribution_method
@@ -1513,6 +1532,10 @@ contains
     if(min(dt,rtol,atol)<=0.or..not.valid_reactive_boundaries_3d(boundary_faces)) return
     if(transport_flags(4).and..not.transport_flags(3)) return
     if(present(reaction_source).and..not.chemistry) return
+    if(present(auxiliary_source).neqv.present(auxiliary_change)) return
+    if(present(auxiliary_change)) then
+      if(size(auxiliary_change)/=nv) return
+    end if
     selected_depth=-1
     if(present(target_depth)) then
       selected_depth=target_depth
@@ -1572,10 +1595,11 @@ contains
       if(.not.all(ieee_is_finite(ir%fields(node)%values))) return
     end do
     candidate=old;diffusive=any(transport_flags(:3))
-    call sources(old,e0,d0,f0,transfer0,valid,fractions_start)
+    call sources(old,e0,d0,a0,0,f0,transfer0,valid,fractions_start)
     if(.not.valid) return
     e1=e0;d1=d0
-    call predictor_field(e0,d0,op)
+    if(present(auxiliary_source)) a1=a0
+    call predictor_field(e0,d0,a0,op)
     allocate(u%fields(size(tree%nodes)),t%fields(size(tree%nodes)))
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
@@ -1614,7 +1638,7 @@ contains
       end do
       call recover(valid)
       if(.not.valid) return
-      call sources(candidate,e1,d1,f1,transfer1,valid,fractions_end)
+      call sources(candidate,e1,d1,a1,it,f1,transfer1,valid,fractions_end)
       if(.not.valid) return
       call combined_rates(.false.)
       do node=1,size(tree%nodes)
@@ -1650,6 +1674,14 @@ contains
     call field_inventory(e1,v1,valid)
     if(.not.valid) return
     external=.5_dp*dt*(v0+v1)
+    if(present(auxiliary_source)) then
+      call field_inventory(a0,v0,valid)
+      if(.not.valid) return
+      call field_inventory(a1,v1,valid)
+      if(.not.valid) return
+      auxiliary=.5_dp*dt*(v0+v1)
+      if(.not.all(ieee_is_finite(auxiliary))) return
+    end if
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
       ledger%nodes(node)%state=0
@@ -1709,7 +1741,7 @@ contains
     end associate
     end if
     if(.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(external))) return
-    call predictor_field(e1,d1,np)
+    call predictor_field(e1,d1,a1,np)
     if(.not.op%is_valid(tree%topology).or..not.np%is_valid(tree%topology)) return
     if(present(redistribution_transfer)) then
       final_transfer=hydro_transfer
@@ -1731,6 +1763,7 @@ contains
     if(present(integrated_flux)) integrated_flux=hf
     if(present(old_predictor)) old_predictor=op
     if(present(new_predictor)) new_predictor=np
+    if(present(auxiliary_change)) auxiliary_change=auxiliary
     if(present(redistribution_transfer)) redistribution_transfer=final_transfer
     tree=candidate;boundary_change=boundary;wall_change=wall;chemical_change=chemical
     source_change=external;minimum_theta=theta;ok=.true.
@@ -1739,14 +1772,15 @@ contains
       integer, intent(in) :: p
       active=selected_depth<0.or.tree%topology%nodes(p)%level==selected_depth
     end function active
-    subroutine predictor_field(ext,diff,output)
-      type(amr_tree_state_3d), intent(in) :: ext,diff
+    subroutine predictor_field(ext,diff,aux,output)
+      type(amr_tree_state_3d), intent(in) :: ext,diff,aux
       type(amr_tree_state_3d), intent(out) :: output
       integer :: p
       output=ext
       do p=1,size(tree%nodes)
         if(.not.active(p)) cycle
         output%fields(p)%values=ext%fields(p)%values+diff%fields(p)%values
+        if(present(auxiliary_source)) output%fields(p)%values=output%fields(p)%values+aux%fields(p)%values
         output%fields(p)%values(6:,:,:,:)=output%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
         output%fields(p)%values(5,:,:,:)=output%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
       end do
@@ -1759,14 +1793,17 @@ contains
         if(.not.active(p)) cycle
         rates%fields(p)%values=.5_dp*(e0%fields(p)%values+e1%fields(p)%values+ &
           d0%fields(p)%values+d1%fields(p)%values)
+        if(present(auxiliary_source)) rates%fields(p)%values=rates%fields(p)%values+ &
+          .5_dp*(a0%fields(p)%values+a1%fields(p)%values)
         if(.not.with_reaction) cycle
         rates%fields(p)%values(6:,:,:,:)=rates%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
         rates%fields(p)%values(5,:,:,:)=rates%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
       end do
     end subroutine combined_rates
-    subroutine sources(state,external_rate,transport_rate,flux,exchange,good,fractions)
+    subroutine sources(state,external_rate,transport_rate,auxiliary_rate,stage,flux,exchange,good,fractions)
       type(eb_reactive_tree_3d), intent(in) :: state
-      type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate,exchange
+      type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate,auxiliary_rate,exchange
+      integer, intent(in) :: stage
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
       real(dp), optional, intent(in) :: fractions(:)
@@ -1793,6 +1830,30 @@ contains
       do p=1,size(tree%nodes)
         transport_rate%fields(p)%values=0
       end do
+      if(present(auxiliary_source)) then
+        auxiliary_rate=transport_rate
+        call auxiliary_source(state,dt,stage,selected_depth,auxiliary_rate,good)
+        if(.not.good) return
+        good=.false.
+        if(.not.allocated(auxiliary_rate%fields)) return
+        if(size(auxiliary_rate%fields)/=size(tree%nodes)) return
+        do p=1,size(tree%nodes)
+          d=tree%topology%nodes(p)%shape
+          if(.not.allocated(auxiliary_rate%fields(p)%values)) return
+          if(any(shape(auxiliary_rate%fields(p)%values)/=[nv,d])) return
+          if(.not.active(p)) then
+            auxiliary_rate%fields(p)%values=0;cycle
+          end if
+          do z=1,d(3)
+          do y=1,d(2)
+          do x=1,d(1)
+            if(state%nodes(p)%geometry%volume_fraction(x,y,z)<=0) auxiliary_rate%fields(p)%values(:,x,y,z)=0
+          end do
+          end do
+          end do
+          if(.not.all(ieee_is_finite(auxiliary_rate%fields(p)%values))) return
+        end do
+      end if
       if(selected_depth>=0.and.redistribution_method/='none') exchange=transport_rate
       if(diffusive) then
         call compute_sdc_eb_tree_transport_3d(species,transport,dt,transport_flags(1),transport_flags(2), &
