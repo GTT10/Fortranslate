@@ -1,7 +1,7 @@
 program test_spray_mpi_amr_step
   use mpi_f08
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo, &
-    advance_mpi_amr_ghost_halo
+    advance_mpi_amr_ghost_halo,advance_mpi_amr_level_halo
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties,advance_mixture_frozen_gas
@@ -310,19 +310,29 @@ contains
       hm(:,a)=hd(a)%mass*[.25_dp,.75_dp]
     end do
     reference=hd;rm=hm;kept_routed=routed;kept_surplus=surplus;wall=17;exterior=19
-    call advance_mpi_amr_ghost_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+    call advance_mpi_amr_level_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
       1,1,1,0,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,drift_dt,faces,routed,surplus,wall,exterior,ok)
-    call require(.not.ok.and.all(wall==17).and.all(exterior==19),'ghost stage final capacity failure preserves ledgers')
-    call require(size(hd)==count.and.all(hm==rm).and.all(nodes==2),'ghost stage capacity rollback')
+    call require(.not.ok.and.all(wall==17).and.all(exterior==19),'physical stage final capacity failure preserves ledgers')
+    call require(size(hd)==count.and.all(hm==rm).and.all(nodes==2),'physical stage capacity rollback')
     do a=1,count
       call require(all(hd(a)%position==reference(a)%position).and.all(hd(a)%velocity==reference(a)%velocity), &
-        'ghost stage rolls back kick and drift')
+        'physical stage rolls back kick and drift')
     end do
     do a=1,3
       if(owners(a)/=rank) cycle
-      call require(all(routed%fields(a)%values==kept_routed%fields(a)%values),'ghost stage rolls back reaction transfer')
-      call require(all(surplus%fields(a)%values==kept_surplus%fields(a)%values),'ghost stage rolls back remainder')
+      call require(all(routed%fields(a)%values==kept_routed%fields(a)%values),'physical stage rolls back reaction transfer')
+      call require(all(surplus%fields(a)%values==kept_surplus%fields(a)%values),'physical stage rolls back remainder')
     end do
+    call advance_mpi_amr_level_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
+      1,1,1,100,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,drift_dt,faces,routed,surplus,wall,exterior,ok)
+    call require(ok.and.size(hd)==count.and.all(nodes==2),'physical halo stage retains population')
+    do a=1,count
+      call require(hd(a)%mass<reference(a)%mass.and.hd(a)%temperature>reference(a)%temperature, &
+        'physical halo stage retains evaporation and heating')
+      call require(maxval(abs(hd(a)%position-reference(a)%position-drift_dt*hd(a)%velocity))<1e-15_dp, &
+        'physical halo stage drifts with kicked velocity')
+    end do
+    hd=reference;hm=rm;nodes=2
     call advance_mpi_amr_ghost_halo(MPI_COMM_WORLD,species,transport,liquids,options,tree,owners,halo,ht, &
       1,1,1,100,nodes,hd,hm,zero,spacing,[.true.,.true.,.true.],dt,drift_dt,faces,routed,surplus,wall,exterior,ok)
     call require(ok.and.size(hd)==count.and.all(nodes==2),'ghost stage keeps a copy entering valid fine cells')

@@ -18,7 +18,7 @@ module spray_mpi_amr_step_mod
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas, &
     sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo,sum_mpi_amr_particle_source_halo
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels, &
-    redistribute_mpi_amr_ghost_particles
+    redistribute_mpi_amr_ghost_particles,redistribute_mpi_amr_level_particles
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_drift_mod, only: drift_spray_level_set
@@ -28,7 +28,7 @@ module spray_mpi_amr_step_mod
   implicit none
   private
   public :: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo,advance_mpi_amr_ghost_halo
-  public :: advance_mpi_eb_ghost_stage
+  public :: advance_mpi_eb_ghost_stage,advance_mpi_amr_level_halo
 contains
   ! Construct complete stage-time gas halos, then advance a ghost population.
   ! Ancestor interpolation never averages down the caller's stage snapshots.
@@ -102,6 +102,68 @@ contains
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
     integer, optional, intent(in) :: maximum_received
+    call advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners, &
+      gas_halo,temperature_halo,width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass, &
+      lower,spacing,periodic,kick_dt,drift_dt,faces,source,remainder,wall_change,boundary_change,ok, &
+      fluid_fraction,nodal_phi,centroids,eb_geometry,maximum_received,.false.)
+  end subroutine advance_mpi_amr_ghost_halo
+
+  ! Physical stage: reject loss outside the level grow region after kick/drift.
+  subroutine advance_mpi_amr_level_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
+      width,target_level,grow,maximum_parcels,nodes,parcels,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
+      source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_parcels
+    integer, allocatable, intent(inout) :: nodes(:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),kick_dt,drift_dt
+    logical, intent(in) :: periodic(3)
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5),boundary_change(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    integer, optional, intent(in) :: maximum_received
+    call advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners, &
+      gas_halo,temperature_halo,width,target_level,grow,maximum_parcels,nodes,parcels,component_mass, &
+      lower,spacing,periodic,kick_dt,drift_dt,faces,source,remainder,wall_change,boundary_change,ok, &
+      fluid_fraction,nodal_phi,centroids,eb_geometry,maximum_received,.true.)
+  end subroutine advance_mpi_amr_level_halo
+
+  subroutine advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
+      width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
+      source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry,maximum_received,keep_physical)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_ghosts
+    integer, allocatable, intent(inout) :: nodes(:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(spray_parcel), allocatable, intent(inout) :: ghosts(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),kick_dt,drift_dt
+    logical, intent(in) :: periodic(3)
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5),boundary_change(:)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    integer, optional, intent(in) :: maximum_received
+    logical, intent(in) :: keep_physical
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: masses(:,:)
     integer, allocatable :: locations(:)
@@ -120,13 +182,18 @@ contains
       fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.false., &
       eb_geometry,maximum_received)
     if(.not.valid) return
+    if(keep_physical) then
+      call redistribute_mpi_amr_level_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &
+        periodic,target_level,grow,maximum_ghosts,valid,nodal_phi)
+    else
     call redistribute_mpi_amr_ghost_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &
       periodic,target_level,grow,maximum_ghosts,valid,nodal_phi)
+    end if
     if(.not.valid) return
     call move_alloc(candidate,ghosts);call move_alloc(masses,component_mass);call move_alloc(locations,nodes)
     call move_alloc(routed%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
     wall_change=wall;boundary_change=exterior;ok=.true.
-  end subroutine advance_mpi_amr_ghost_halo
+  end subroutine advance_mpi_amr_population_halo
 
   ! A single drag/thermal/evaporation kick on a caller-owned level population.
   ! Gas halos are frozen at the supplied stage time. Optional drift follows the
