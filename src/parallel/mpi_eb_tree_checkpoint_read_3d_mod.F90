@@ -21,7 +21,7 @@ module mpi_eb_tree_checkpoint_read_3d_mod
   public :: read_mpi_eb_tree_checkpoint_3d
 contains
   ! Borrow a formatted stream positioned after the application policy header.
-  ! V2 lengths give direct patch seeks; V1 requires a root boundary scan.
+  ! V2/V4 lengths give direct patch seeks; V1/V3 require a root boundary scan.
   subroutine read_mpi_eb_tree_checkpoint_3d(path,unit,species,reactions,transport,config,tree,owners, &
       geometry,state,temperature,record,comm,ok,bundle_sha256,chemistry_integrator,base_mole_fractions, &
       element_names,element_atoms)
@@ -43,15 +43,16 @@ contains
     type(eb_tree_checkpoint_3d) :: saved
     type(reactive_eb_3d_config) :: cfg
     type(eb_geometry_3d) :: g
-    integer(MPI_OFFSET_KIND), allocatable :: starts(:),ends(:)
+    integer(MPI_OFFSET_KIND), allocatable :: starts(:),ends(:),source_starts(:)
     integer(MPI_OFFSET_KIND) :: position,file_bytes,patch_bytes
     real(dp), allocatable :: current(:),integral(:),l1(:),elements(:),expected(:),expected_l1(:),expected_elements(:)
-    real(dp) :: got_time,got_dt,got_theta,diffusivity
-    integer :: rank,status,ios,node,nv,ne,count,descriptor(12),stored(12),got_steps
+    real(dp) :: got_time,got_dt,got_theta,diffusivity,stored_force(3)
+    integer :: rank,status,ios,node,nv,ne,count,descriptor(12),stored(12),got_steps,controls(2),i,j,k,n(3)
     character(len=64) :: label
     character(len=512) :: message
-    logical :: valid,indexed
+    logical :: valid,indexed,sdc
     ok=.false.;nv=reactive_nvar(size(species));ne=3
+    sdc=config%time_integrator=='sdc'
     if (present(element_names)) ne=size(element_names)
     candidate=state;ct=temperature
     call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,valid)
@@ -63,10 +64,15 @@ contains
     if (.not.valid) return
     allocate(current(nv),integral(nv),l1(nv),elements(ne),expected(nv),expected_l1(nv),expected_elements(ne), &
       saved%initial(nv),saved%scale(nv),saved%boundary(nv),saved%wall(nv),saved%chemical(nv), &
-      starts(size(owners)),ends(size(owners)))
+      starts(size(owners)),ends(size(owners)),source_starts(size(owners)))
     read(unit,'(a)',iostat=ios) label
-    indexed=label=='PELEF_EB_TREE_CHECKPOINT_V2'
-    valid=ios==0.and.(label=='PELEF_EB_TREE_CHECKPOINT_V1'.or.indexed)
+    indexed=label=='PELEF_EB_TREE_CHECKPOINT_V2'.or.label=='PELEF_EB_TREE_CHECKPOINT_V4'
+    if(sdc) then
+      valid=ios==0.and.(label=='PELEF_EB_TREE_CHECKPOINT_V3'.or.label=='PELEF_EB_TREE_CHECKPOINT_V4')
+    else
+      valid=ios==0.and.config%time_integrator=='split'.and. &
+        (label=='PELEF_EB_TREE_CHECKPOINT_V1'.or.label=='PELEF_EB_TREE_CHECKPOINT_V2')
+    end if
     if (valid) then
       read(unit,*,iostat=ios) count
       valid=ios==0
@@ -89,6 +95,23 @@ contains
     if (valid) then
       read(unit,*,iostat=ios) saved%initial,saved%scale,saved%boundary,saved%wall,saved%chemical
       valid=ios==0
+    end if
+    if(valid.and.sdc) then
+      read(unit,*,iostat=ios) controls
+      valid=ios==0
+      if(valid) valid=all(controls==[config%sdc_iterations,merge(1,0,config%chemistry_enabled)])
+      if(valid) then
+        read(unit,*,iostat=ios) stored_force
+        valid=ios==0
+        if(valid) valid=all(ieee_is_finite(stored_force))
+        if(valid) valid=all(stored_force==config%external_forcing)
+      end if
+      if(valid) then
+        allocate(saved%forcing(nv))
+        read(unit,*,iostat=ios) saved%forcing
+        valid=ios==0
+        if(config%chemistry_enabled) allocate(saved%reaction_source%fields(size(owners)))
+      end if
     end if
     if (valid) valid=valid_record(.false.)
     call agree(valid)
@@ -138,6 +161,26 @@ contains
           if (.not.valid) exit
         end do
       end if
+      if(valid.and.sdc.and..not.indexed.and.config%chemistry_enabled) then
+        read(unit,'(a)',iostat=ios) label
+        valid=ios==0.and.label=='SDC_REACTION_SOURCES'
+        do node=1,size(owners)
+          if(.not.valid) exit
+          inquire(unit,pos=source_starts(node),iostat=ios)
+          n=tree%nodes(node)%shape
+          do k=1,n(3)
+          do j=1,n(2)
+          do i=1,n(1)
+            if(ios==0) read(unit,'(a)',iostat=ios) label
+          end do
+          end do
+          end do
+          valid=ios==0
+          if(.not.valid) exit
+          inquire(unit,pos=ends(node),iostat=ios)
+          valid=ios==0
+        end do
+      end if
       if (valid) then
         read(unit,'(a)',iostat=ios) label
         valid=ios==0.and.label=='END_EB_TREE_CHECKPOINT'
@@ -153,12 +196,19 @@ contains
     if (status/=MPI_SUCCESS) return
     call MPI_Bcast(ends,size(owners),MPI_OFFSET,0,comm,status)
     if (status/=MPI_SUCCESS) return
+    if(sdc.and..not.indexed.and.config%chemistry_enabled) then
+      call MPI_Bcast(source_starts,size(owners),MPI_OFFSET,0,comm,status)
+      if(status/=MPI_SUCCESS) return
+    end if
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
       read(unit,'()',pos=starts(node),advance='no',iostat=ios)
       valid=ios==0
       if (.not.valid) exit
       g=geometry(node);cfg=config
+      if(sdc) then
+        cfg%time_integrator='split';cfg%external_forcing=0
+      end if
       cfg%nx=g%nx;cfg%ny=g%ny;cfg%nz=g%nz
       cfg%x_lower=g%x_lower;cfg%x_upper=g%x_upper
       cfg%y_lower=g%y_lower;cfg%y_upper=g%y_upper
@@ -168,6 +218,28 @@ contains
         ct%fields(node)%values(1,:,:,:),got_time,got_steps,integral,l1,elements,got_dt,diffusivity,got_theta, &
         valid,message,bundle_sha256,chemistry_integrator,base_mole_fractions,unit,element_names,element_atoms,tree_patch=.true.)
       if (.not.valid) exit
+      if(sdc.and.config%chemistry_enabled) then
+        if(indexed) then
+          read(unit,'(a)',iostat=ios) label
+          valid=ios==0.and.label=='SDC_REACTION_SOURCE'
+        else
+          read(unit,'()',pos=source_starts(node),advance='no',iostat=ios)
+          valid=ios==0
+        end if
+        if(.not.valid) exit
+        n=tree%nodes(node)%shape
+        allocate(saved%reaction_source%fields(node)%values(nv-4,n(1),n(2),n(3)))
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(ios==0) read(unit,*,iostat=ios) saved%reaction_source%fields(node)%values(:,i,j,k)
+        end do
+        end do
+        end do
+        valid=ios==0
+        if(valid) valid=all(ieee_is_finite(saved%reaction_source%fields(node)%values))
+        if(.not.valid) exit
+      end if
       inquire(unit,pos=position,iostat=ios)
       valid=ios==0.and.position==ends(node).and.matching_eb_metrics_3d(g,geometry(node))
       if (.not.valid) exit
@@ -209,7 +281,16 @@ contains
   contains
     logical function valid_record(check_inventory) result(good)
       logical, intent(in) :: check_inventory
-      good=.false.
+      real(dp) :: forcing(nv)
+      good=.false.;forcing=0
+      if(sdc) then
+        if(.not.allocated(saved%forcing).or.config%sdc_iterations<1) return
+        if(size(saved%forcing)/=nv) return
+        if(.not.all(ieee_is_finite(saved%forcing))) return
+        forcing=saved%forcing
+      else
+        if(any(config%external_forcing/=0)) return
+      end if
       if (.not.allocated(saved%initial).or..not.allocated(saved%scale).or..not.allocated(saved%boundary).or. &
         .not.allocated(saved%wall).or..not.allocated(saved%chemical)) return
       if (any([size(saved%initial),size(saved%scale),size(saved%boundary),size(saved%wall),size(saved%chemical)]/=nv)) return
@@ -220,8 +301,8 @@ contains
       if (.not.check_inventory) then
         good=.true.;return
       end if
-      if (any(abs(current-saved%initial-saved%boundary-saved%wall-saved%chemical)> &
-        5.e-10_dp*max(1._dp,saved%scale,abs(current),abs(saved%boundary)+abs(saved%wall)+abs(saved%chemical)))) return
+      if (any(abs(current-saved%initial-saved%boundary-saved%wall-saved%chemical-forcing)> &
+        5.e-10_dp*max(1._dp,saved%scale,abs(current),abs(saved%boundary)+abs(saved%wall)+abs(saved%chemical)+abs(forcing)))) return
       good=.true.
     end function valid_record
     subroutine agree(condition)

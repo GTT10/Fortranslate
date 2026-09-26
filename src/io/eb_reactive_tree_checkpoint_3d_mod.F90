@@ -68,11 +68,11 @@ contains
     if (reading) then
       read(unit,'(a)',iostat=ios) label
       if (ios/=0) return
-      indexed=label=='PELEF_EB_TREE_CHECKPOINT_V2'
+      indexed=label=='PELEF_EB_TREE_CHECKPOINT_V2'.or.label=='PELEF_EB_TREE_CHECKPOINT_V4'
       if(sdc) then
-        if(label/='PELEF_EB_TREE_CHECKPOINT_V3') return
+        if(label/='PELEF_EB_TREE_CHECKPOINT_V3'.and.label/='PELEF_EB_TREE_CHECKPOINT_V4') return
       else
-        if (label/=magic.and..not.indexed) return
+        if(label/=magic.and.label/='PELEF_EB_TREE_CHECKPOINT_V2') return
       end if
       read(unit,*,iostat=ios) got_step
       if (ios/=0) return
@@ -158,7 +158,7 @@ contains
     end if
     do node=1,count
       cfg=config
-      ! SDC controls and sources are bound by the outer V3 envelope. Embedded
+      ! SDC controls and sources are bound by the outer V3/V4 envelope. Embedded
       ! gas records retain their legacy format for reuse of mechanism checks.
       if(sdc) then
         cfg%time_integrator='split';cfg%external_forcing=0
@@ -177,6 +177,19 @@ contains
           integral,l1,elements,got_dt,diffusivity,got_theta,valid,message,bundle_sha256,chemistry_integrator, &
           base_mole_fractions,unit,element_names,element_atoms,tree_patch=.true.)
         if (.not.valid) return
+        if(indexed.and.sdc.and.config%chemistry_enabled) then
+          read(unit,'(a)',iostat=ios) label
+          if(ios/=0.or.label/='SDC_REACTION_SOURCE') return
+          n=tree%topology%nodes(node)%shape
+          do k=1,n(3)
+          do j=1,n(2)
+          do i=1,n(1)
+            read(unit,*,iostat=ios) saved%reaction_source%fields(node)%values(:,i,j,k)
+            if(ios/=0) return
+          end do
+          end do
+          end do
+        end if
         if (indexed) then
           inquire(unit,pos=patch_end,iostat=ios)
           if (ios/=0) return
@@ -206,7 +219,7 @@ contains
       end if
       end associate
     end do
-    if(sdc.and.config%chemistry_enabled) then
+    if(sdc.and.config%chemistry_enabled.and..not.indexed) then
       if(reading) then
         read(unit,'(a)',iostat=ios) label
         if(ios/=0) return

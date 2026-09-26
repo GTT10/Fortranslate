@@ -15,6 +15,7 @@ module mpi_eb_tree_checkpoint_3d_mod
   use reactive_eb_3d_driver_mod, only: reactive_eb_integrals_3d,reactive_eb_element_integrals_3d, &
     reactive_eb_composition_integrals_3d
   use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d,integrate_mpi_eb_tree_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
   implicit none
   private
   public :: write_mpi_eb_tree_checkpoint_3d
@@ -45,14 +46,15 @@ contains
     integer(MPI_OFFSET_KIND), allocatable :: local_bytes(:),bytes(:),offset(:),local_start(:)
     integer(MPI_OFFSET_KIND) :: cursor,header_bytes,total,position,remaining,source_position
     real(dp), allocatable :: current(:),integral(:),l1(:),elements(:)
-    integer :: rank,status,ios,stage,patch,node,nv,ne,descriptor(12),amount,written,close_status
+    integer :: rank,status,ios,stage,patch,node,nv,ne,descriptor(12),amount,written,close_status,i,j,k,n(3)
     character(len=4096) :: chunk
     character(len=512) :: message
     character(len=:), allocatable :: header,index_text
     character(len=21) :: index_line
     character(len=*), parameter :: ending='END_EB_TREE_CHECKPOINT'
-    logical :: valid,opened
+    logical :: valid,opened,sdc
     ok=.false.;opened=.false.;nv=reactive_nvar(size(species));ne=3
+    sdc=config%time_integrator=='sdc'
     if (present(element_names)) ne=size(element_names)
     allocate(current(nv),integral(nv),l1(nv),elements(ne))
     averaged=state;at=temperature
@@ -74,6 +76,22 @@ contains
     if (.not.valid) return
     call same_string(trim(path),valid)
     if (.not.valid) return
+    block
+      character(len=128) :: control_text
+      write(control_text,*) config%time_integrator,config%chemistry_enabled,config%sdc_iterations
+      call same_string(control_text,valid)
+      if(.not.valid) return
+    end block
+    if(sdc.and.config%chemistry_enabled) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,record%reaction_source,nv-4,comm,valid)
+      if(.not.valid) return
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        if(.not.all(ieee_is_finite(record%reaction_source%fields(node)%values))) valid=.false.
+      end do
+      call agree(valid)
+      if(.not.valid) return
+    end if
     allocate(local_bytes(size(owners)),bytes(size(owners)),offset(size(owners)),local_start(size(owners)))
     local_bytes=0
     open(newunit=stage,status='scratch',access='stream',form='unformatted',iostat=ios)
@@ -83,7 +101,11 @@ contains
       return
     end if
     ! Caller supplied only the application policy envelope; append tree metadata.
-    write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V2'
+    if(sdc) then
+      write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V4'
+    else
+      write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V2'
+    end if
     if (ios==0) write(prefix_unit,*,iostat=ios) size(owners)
     do node=1,size(owners)
       if (ios/=0) exit
@@ -97,6 +119,11 @@ contains
       record%time,record%steps,record%minimum_dt,record%minimum_theta
     if (ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) &
       record%initial,record%scale,record%boundary,record%wall,record%chemical
+    if(sdc) then
+      if(ios==0) write(prefix_unit,*,iostat=ios) config%sdc_iterations,merge(1,0,config%chemistry_enabled)
+      if(ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) config%external_forcing
+      if(ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) record%forcing
+    end if
     valid=ios==0;cursor=0
     if (valid) call stage_formatted(prefix_unit,valid)
     call agree(valid)
@@ -120,6 +147,9 @@ contains
       valid=ios==0
       if (.not.valid) exit
       cfg=config
+      if(sdc) then
+        cfg%time_integrator='split';cfg%external_forcing=0
+      end if
       associate(g=>geometry(node),u=>state%fields(node)%values,t=>temperature%fields(node)%values(1,:,:,:))
       cfg%nx=g%nx;cfg%ny=g%ny;cfg%nz=g%nz
       cfg%x_lower=g%x_lower;cfg%x_upper=g%x_upper
@@ -137,6 +167,18 @@ contains
         record%time,record%steps,integral,l1,elements,record%minimum_dt,0._dp,record%minimum_theta,valid,message, &
         bundle_sha256,chemistry_integrator,base_mole_fractions,patch,element_names,element_atoms,tree_patch=.true.)
       end associate
+      if(valid.and.sdc.and.config%chemistry_enabled) then
+        write(patch,'(a)',iostat=ios) 'SDC_REACTION_SOURCE'
+        n=tree%nodes(node)%shape
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(ios==0) write(patch,'(*(es27.18e3,1x))',iostat=ios) record%reaction_source%fields(node)%values(:,i,j,k)
+        end do
+        end do
+        end do
+        valid=ios==0
+      end if
       if (valid) call stage_formatted(patch,valid)
       close(patch,iostat=ios)
       valid=valid.and.ios==0
@@ -148,7 +190,7 @@ contains
     call MPI_Allreduce(local_bytes,bytes,size(owners),MPI_OFFSET,MPI_SUM,comm,status)
     valid=status==MPI_SUCCESS
     if (.not.valid) go to 900
-    ! V2 stores byte lengths before the unchanged serial patch records.
+    ! V2/V4 lengths index each gas record plus its optional V4 reaction source.
     valid=all(bytes>0).and.size(owners)<=(huge(1)-len(header))/21
     call agree(valid)
     if (.not.valid) go to 900
@@ -253,7 +295,20 @@ contains
       good=code==MPI_SUCCESS.and.written==len(value)
     end subroutine
     logical function valid_record() result(good)
-      good=.false.
+      real(dp) :: forcing(nv)
+      good=.false.;forcing=0
+      if(.not.sdc.and.config%time_integrator/='split') return
+      if(.not.all(ieee_is_finite(config%external_forcing))) return
+      if(sdc) then
+        if(config%sdc_iterations<1.or..not.allocated(record%forcing)) return
+        if(size(record%forcing)/=nv) return
+        if(.not.all(ieee_is_finite(record%forcing))) return
+        forcing=record%forcing
+        if(.not.config%chemistry_enabled.and.allocated(record%reaction_source%fields)) return
+      else
+        if(any(config%external_forcing/=0)) return
+        if(allocated(record%forcing).or.allocated(record%reaction_source%fields)) return
+      end if
       if (.not.allocated(record%initial).or..not.allocated(record%scale).or..not.allocated(record%boundary).or. &
         .not.allocated(record%wall).or..not.allocated(record%chemical)) return
       if (any([size(record%initial),size(record%scale),size(record%boundary),size(record%wall),size(record%chemical)]/=nv)) return
@@ -261,8 +316,9 @@ contains
         record%boundary,record%wall,record%chemical]))) return
       if (record%time<0._dp.or.record%steps<0.or.record%minimum_dt<0._dp.or. &
         record%minimum_theta<0._dp.or.record%minimum_theta>1._dp.or.any(record%scale<0._dp)) return
-      if (any(abs(current-record%initial-record%boundary-record%wall-record%chemical)> &
-        5.e-10_dp*max(1._dp,record%scale,abs(current),abs(record%boundary)+abs(record%wall)+abs(record%chemical)))) return
+      if (any(abs(current-record%initial-record%boundary-record%wall-record%chemical-forcing)> &
+        5.e-10_dp*max(1._dp,record%scale,abs(current), &
+          abs(record%boundary)+abs(record%wall)+abs(record%chemical)+abs(forcing)))) return
       good=.true.
     end function valid_record
     subroutine agree(condition)
