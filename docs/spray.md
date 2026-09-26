@@ -184,6 +184,27 @@ centroids came from that geometry. Without the optional pair it retains the
 fraction-only interpolation path. See
 [visibility checks](validation/spray-halo-visibility-20260927.md).
 
+## Same-level particle source halo summation
+
+`sum_mpi_amr_particle_source_halo` adds valid/halo source contributions to
+matching valid cells at `target_level`, including periodic images and remote
+patch owners. It uses integer cell coordinates and adds in source-rank order.
+The input halo is read-only; the updated source field and `remainder` publish
+together. Matched entries are zeroed in the remainder. Contributions without
+a same-level receiver, including coarse/fine gaps and nonperiodic domain
+exteriors, remain at their original halo location for subsequent handling.
+Other levels in the source field are unchanged; no parent restriction runs.
+
+Inputs are additive source contributions, not already synchronized ghost
+copies. Every representation of the same physical cell must use the same
+normalization and EB volume metrics. This routine performs no volume scaling,
+wall transformation, coarse/fine reflux or virtual/ghost de-duplication. The
+caller must consume each halo once and handle the remainder before claiming a
+completed source transfer. This supplies the same-level summation used by the
+pinned PelePhysics `transferSource`/`SumBoundary` path; recursive integration
+and coarse/fine synchronization remain open. See
+[source halo checks](validation/spray-source-halo-20260927.md).
+
 ## AMR and embedded boundaries
 
 An AMR ownership library now locates parcels in the finest covering regular

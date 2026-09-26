@@ -24,8 +24,156 @@ module spray_mpi_amr_field_mod
   end type
   public :: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_field
   public :: deposit_mpi_amr_tree_spray_gas,sample_mpi_amr_particle_halo
-  public :: sample_mpi_eb_tree_particle_gas
+  public :: sample_mpi_eb_tree_particle_gas,sum_mpi_amr_particle_source_halo
 contains
+  ! Sum additive level sources from valid/halo cells into same-level valid cells.
+  ! Unmatched coarse/fine or physical-boundary contributions remain in remainder.
+  ! Source values use the same per-cell normalization on every image of a cell.
+  subroutine sum_mpi_amr_particle_source_halo(comm,tree,owners,halo,nvar,width,target_level,periodic, &
+      source,remainder,ok,maximum_received)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,width,target_level
+    type(amr_tree_state_3d), intent(in) :: halo
+    logical, intent(in) :: periodic(3)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_received
+    type(amr_tree_state_3d) :: candidate,leftover
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:),counts(:),received(:),offsets(:),displacements(:),cursor(:)
+    integer, allocatable :: send_cells(:,:),recv_cells(:,:)
+    real(dp), allocatable :: send_values(:,:),recv_values(:,:),term(:)
+    integer(int64) :: global(3),cell(3),total64
+    integer :: rank,nranks,status,capacity,flags(5),lo(5),hi(5),node,n(3),i,j,k,pass,destination,idx(3),storage(3)
+    integer :: r,q,total,incoming,slot,axis
+    logical :: valid,agreed
+    ok=.false.;capacity=1000000
+    if(present(maximum_received)) capacity=maximum_received
+    call validate_mpi_amr_tree_local_3d(tree,owners,source,nvar,comm,valid)
+    if(.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,status)
+    if(status/=MPI_SUCCESS) return
+    flags=[width,target_level,merge(1,0,periodic)]
+    call MPI_Allreduce(flags,lo,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,hi,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(lo/=hi)) return
+    valid=width>=0.and.width<=1000000.and.target_level>=0.and.target_level<tree%level_count()
+    valid=valid.and.capacity>=0.and.capacity<=1000000.and.allocated(halo%fields)
+    call agree()
+    if(.not.agreed) return
+    valid=size(halo%fields)==size(owners)
+    call agree()
+    if(.not.agreed) return
+    do node=1,size(owners)
+      if(owners(node)/=rank.or.tree%nodes(node)%level/=target_level) cycle
+      n=tree%nodes(node)%shape
+      if(any(n>huge(1)-2*width).or..not.allocated(halo%fields(node)%values)) then
+        valid=.false.;exit
+      end if
+      if(any(shape(halo%fields(node)%values)/=[nvar,n+2*width])) then
+        valid=.false.;exit
+      end if
+      if(.not.all(ieee_is_finite(halo%fields(node)%values))) valid=.false.
+      if(.not.all(ieee_is_finite(source%fields(node)%values))) valid=.false.
+    end do
+    call agree()
+    if(.not.agreed) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    call agree()
+    if(.not.agreed) return
+    candidate=source;leftover=halo
+    allocate(counts(nranks),received(nranks),offsets(nranks),displacements(nranks),cursor(nranks),term(nvar))
+    counts=0;total64=0
+    do pass=1,2
+      do node=1,size(owners)
+        if(owners(node)/=rank.or.tree%nodes(node)%level/=target_level) cycle
+        n=tree%nodes(node)%shape
+        do k=1-width,n(3)+width
+        do j=1-width,n(2)+width
+        do i=1-width,n(1)+width
+          idx=[i,j,k]
+          storage=[lbound(halo%fields(node)%values,2),lbound(halo%fields(node)%values,3), &
+            lbound(halo%fields(node)%values,4)]+idx+width-1
+          term=halo%fields(node)%values(:,storage(1),storage(2),storage(3))
+          if(all(term==0)) cycle
+          global=origin(:,node)+int(idx-1,int64)
+          do axis=1,3
+            if(periodic(axis)) global(axis)=modulo(global(axis),domain(axis,target_level+1))
+          end do
+          if(any(global<0).or.any(global>=domain(:,target_level+1))) cycle
+          destination=0
+          do q=1,size(owners)
+            if(tree%nodes(q)%level/=target_level) cycle
+            cell=global-origin(:,q)
+            if(any(cell<0).or.any(cell>=int(tree%nodes(q)%shape,int64))) cycle
+            destination=q;exit
+          end do
+          if(destination==0) cycle
+          r=owners(destination)+1
+          if(pass==1) then
+            total64=total64+1
+            if(total64<=1000000_int64) counts(r)=counts(r)+1
+          else
+            slot=cursor(r);cursor(r)=slot+1
+            send_cells(:,slot)=[destination,int(global-origin(:,destination))+1]
+            send_values(:,slot)=term
+            leftover%fields(node)%values(:,storage(1),storage(2),storage(3))=0
+          end if
+        end do
+        end do
+        end do
+      end do
+      if(pass==1) then
+        valid=total64<=min(1000000_int64,int(huge(1)/max(4,nvar),int64))
+        call agree()
+        if(.not.agreed) return
+        total=int(total64);offsets(1)=0
+        do r=2,nranks
+          offsets(r)=offsets(r-1)+counts(r-1)
+        end do
+        cursor=offsets+1;allocate(send_cells(4,total),send_values(nvar,total))
+      end if
+    end do
+    call MPI_Alltoall(counts,1,MPI_INTEGER,received,1,MPI_INTEGER,comm,status)
+    if(status/=MPI_SUCCESS) return
+    total64=sum(int(received,int64));valid=total64<=min(int(capacity,int64),int(huge(1)/max(4,nvar),int64))
+    call agree()
+    if(.not.agreed) return
+    incoming=int(total64);displacements(1)=0
+    do r=2,nranks
+      displacements(r)=displacements(r-1)+received(r-1)
+    end do
+    allocate(recv_cells(4,incoming),recv_values(nvar,incoming))
+    call MPI_Alltoallv(send_cells,4*counts,4*offsets,MPI_INTEGER, &
+      recv_cells,4*received,4*displacements,MPI_INTEGER,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Alltoallv(send_values,nvar*counts,nvar*offsets,MPI_DOUBLE_PRECISION, &
+      recv_values,nvar*received,nvar*displacements,MPI_DOUBLE_PRECISION,comm,status)
+    if(status/=MPI_SUCCESS) return
+    do q=1,incoming
+      node=recv_cells(1,q);idx=recv_cells(2:4,q);term=recv_values(:,q)
+      associate(value=>candidate%fields(node)%values(:,idx(1),idx(2),idx(3)))
+      if(any(value>huge(1._dp)-max(term,0._dp)).or.any(value<-huge(1._dp)-min(term,0._dp))) then
+        valid=.false.;exit
+      end if
+      value=value+term
+      end associate
+    end do
+    call agree()
+    if(.not.agreed) return
+    call move_alloc(candidate%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine
+  end subroutine sum_mpi_amr_particle_source_halo
+
   ! Fill complete stage-time halos, then sample U and recover particle-site T.
   ! Ancestor endpoints are interpolated by the gas halo implementation. No
   ! average-down is allowed to replace the caller's level-stage states.

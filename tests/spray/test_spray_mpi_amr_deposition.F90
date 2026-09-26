@@ -6,7 +6,7 @@ program test_spray_mpi_amr_deposition
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     composite_integrals_amr_patch_tree_3d
   use spray_amr_tree_coupling_mod, only: deposit_amr_tree_spray_field
-  use spray_mpi_amr_field_mod, only: deposit_mpi_amr_tree_spray_field
+  use spray_mpi_amr_field_mod, only: deposit_mpi_amr_tree_spray_field,sum_mpi_amr_particle_source_halo
   implicit none
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
@@ -170,8 +170,75 @@ program test_spray_mpi_amr_deposition
     zero,spacing,periodic,ok,maximum_requests=0,maximum_received=0)
   call require(ok,'globally empty feedback');call unchanged()
   if (rank==0) print *, 'PASS: owner-routed AMR spray field deposition'
+  call check_source_halo()
   call MPI_Finalize(ierr)
 contains
+  subroutine check_source_halo()
+    type(amr_patch_3d) :: boxes(2)
+    type(amr_patch_tree_3d) :: peers
+    type(amr_tree_state_3d) :: halo,source,remainder,accepted_source,accepted_remainder
+    integer :: map(3),p,n(3)
+    real(dp) :: integral(2),remaining(2),pair(2)=[1._dp,-2._dp]
+    call initialize_amr_patch_3d(4,4,4,1,2,1,4,1,4,2,boxes(1),ok)
+    call require(ok,'halo source left patch')
+    call initialize_amr_patch_3d(4,4,4,3,4,1,4,1,4,2,boxes(2),ok)
+    call require(ok,'halo source right patch')
+    call initialize_amr_patch_tree_3d([4,4,4],[1,1],boxes,peers,ok)
+    call require(ok,'halo source tree')
+    map=[0,0,nranks-1];allocate(halo%fields(3),source%fields(3))
+    do p=1,3
+      if(map(p)/=rank) cycle
+      n=peers%nodes(p)%shape
+      allocate(source%fields(p)%values(2,n(1),n(2),n(3)));source%fields(p)%values=0
+      if(p==1) then
+        source%fields(p)%values=17;cycle
+      end if
+      allocate(halo%fields(p)%values(2,0:n(1)+1,0:n(2)+1,0:n(3)+1));halo%fields(p)%values=0
+      if(p==2) then
+        halo%fields(p)%values(:,1,2,2)=pair
+        halo%fields(p)%values(:,5,2,2)=2*pair
+        halo%fields(p)%values(:,1,0,2)=5*pair
+      else
+        halo%fields(p)%values(:,0,2,2)=3*pair
+        halo%fields(p)%values(:,5,2,2)=4*pair
+      end if
+    end do
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,peers,map,halo,2,1,1,[.true.,.false.,.false.], &
+      source,remainder,ok)
+    call require(ok,'same-level halo source sum')
+    integral=0;remaining=0
+    do p=1,3
+      if(map(p)/=rank) cycle
+      if(p==1) then
+        call require(all(source%fields(p)%values==17),'other-level source unchanged');cycle
+      end if
+      integral=integral+sum(sum(sum(source%fields(p)%values,dim=4),dim=3),dim=2)
+      remaining=remaining+sum(sum(sum(remainder%fields(p)%values,dim=4),dim=3),dim=2)
+      if(p==2) then
+        call require(all(source%fields(p)%values(:,1,2,2)==5*pair),'periodic source routes to peer')
+        call require(all(source%fields(p)%values(:,4,2,2)==3*pair),'remote left source')
+        call require(all(remainder%fields(p)%values(:,1,0,2)==5*pair),'physical-boundary source retained')
+      else
+        call require(all(source%fields(p)%values(:,1,2,2)==2*pair),'remote right source')
+      end if
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,integral,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,remaining,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(integral==10*pair).and.all(remaining==5*pair),'source plus remainder preserves every contribution')
+    accepted_source=source;accepted_remainder=remainder
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,peers,map,halo,2,1,1,[.true.,.false.,.false.], &
+      source,remainder,ok,maximum_received=0)
+    call require(.not.ok,'halo source capacity rejection')
+    do p=1,3
+      if(map(p)/=rank) cycle
+      call require(all(source%fields(p)%values==accepted_source%fields(p)%values),'source capacity rollback')
+      if(p>1) call require(all(remainder%fields(p)%values==accepted_remainder%fields(p)%values), &
+        'remainder capacity rollback')
+    end do
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,peers,map,halo,2,merge(0,1,rank==0),1, &
+      [.true.,.false.,.false.],source,remainder,ok)
+    call require(.not.ok,'source width disagreement rejection')
+  end subroutine check_source_halo
   subroutine deposit()
     call deposit_mpi_amr_tree_spray_field(MPI_COMM_WORLD,tree,owners,local,2,positions,contributions, &
       zero,spacing,periodic,ok)
