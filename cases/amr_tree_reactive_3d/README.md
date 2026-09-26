@@ -32,7 +32,8 @@ estimates and external-source inventories in V3 (plain) or V4 (indexed) records.
 Scheduled and automatic regridding transfer signed reaction estimates by the
 same volume-overlap remap used for the gas. All three fields (gas, temperature,
 reaction estimates) publish together after successful remapping. Recursive SDC uses the same checkpoint fields and binds the subcycling choice
-to restart context. MPI readers reject the SDC formats. Split stepping retains its existing capabilities and CSV format;
+to restart context. The MPI checkpoint library reads/writes these SDC formats,
+including changed-rank source redistribution; MPI SDC application routing remains open. Split stepping retains its existing capabilities and CSV format;
 nonzero external forcing requires SDC. This serial route does not enable MPI SDC.
 
 ## Pressure outlets
