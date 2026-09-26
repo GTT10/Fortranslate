@@ -15,6 +15,8 @@ program test_mpi_eb_tree_hydro_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
   use eb_reactive_patch_tree_3d_mod, only: compute_sdc_eb_tree_hydro_3d
+  use eb_reactive_patch_tree_3d_mod, only: fill_sdc_eb_tree_source_halo_3d
+  use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
@@ -145,6 +147,64 @@ program test_mpi_eb_tree_hydro_3d
   if (rank==0) print *, 'test_mpi_eb_tree_hydro_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine check_temporal_sources(owners,predictor,local_predictor)
+    integer, intent(in) :: owners(:)
+    type(amr_tree_state_3d), intent(in) :: predictor,local_predictor
+    type(amr_tree_state_3d) :: first,last,local_first,local_last,halo,previous
+    real(dp) :: fractions(2),reference(nv,10,10,10),nan
+    integer :: p,c,phase,depth
+    logical :: good
+    nan=ieee_value(0._dp,ieee_quiet_nan)
+    do phase=1,3
+      fractions=real(phase-1,dp)/2
+      first=predictor;last=predictor;local_first=local_predictor;local_last=local_predictor
+      do p=1,count
+        do c=1,nv
+          where(physical(p)%volume_fraction>0)
+            first%fields(p)%values(c,:,:,:)=predictor%fields(p)%values(c,:,:,:)-real(p,dp)
+            last%fields(p)%values(c,:,:,:)=predictor%fields(p)%values(c,:,:,:)+3*real(p,dp)
+          end where
+        end do
+        if(phase==1) last%fields(p)%values=nan
+        if(phase==3) first%fields(p)%values=nan
+        if(owners(p)/=rank) cycle
+        local_first%fields(p)%values=first%fields(p)%values
+        local_last%fields(p)%values=last%fields(p)%values
+      end do
+      call fill_sdc_mpi_eb_tree_source_halo_3d(topology,owners,physical,local_predictor,nv,3,halo, &
+        MPI_COMM_WORLD,good,boundary_faces=labels,ancestor_start=local_first,ancestor_end=local_last, &
+        ancestor_fraction=fractions)
+      call require(good,'MPI temporal source halo, unused endpoint NaNs ignored')
+      do p=1,count
+        call require(allocated(halo%fields(p)%values).eqv.(owners(p)==rank),'owner-local temporal source halo')
+        if(owners(p)/=rank) cycle
+        depth=topology%nodes(p)%level
+        call fill_sdc_eb_tree_source_halo_3d(saved,predictor,p,3,reference,good,boundary_faces=labels, &
+          ancestor_start=first,ancestor_end=last,ancestor_fraction=fractions(:depth))
+        call require(good,'serial temporal source halo')
+        call require(all(halo%fields(p)%values==reference),'exact serial temporal source halo')
+      end do
+    end do
+    previous=halo
+    fractions=.5_dp
+    if(rank==nranks-1) fractions(1)=.25_dp
+    call fill_sdc_mpi_eb_tree_source_halo_3d(topology,owners,physical,local_predictor,nv,3,halo, &
+      MPI_COMM_WORLD,good,ancestor_start=local_first,ancestor_end=local_last,ancestor_fraction=fractions)
+    call require(.not.good,'rank-dependent source fractions reject collectively')
+    do p=1,count
+      if(owners(p)/=rank) cycle
+      call require(all(halo%fields(p)%values==previous%fields(p)%values),'temporal source halo rollback')
+    end do
+    fractions=.5_dp;local_first=local_predictor;local_last=local_predictor
+    if(rank==owners(1)) local_last%fields(1)%values=nan
+    call fill_sdc_mpi_eb_tree_source_halo_3d(topology,owners,physical,local_predictor,nv,3,halo, &
+      MPI_COMM_WORLD,good,ancestor_start=local_first,ancestor_end=local_last,ancestor_fraction=fractions)
+    call require(.not.good,'used ancestor source NaN rejects collectively')
+    do p=1,count
+      if(owners(p)/=rank) cycle
+      call require(all(halo%fields(p)%values==previous%fields(p)%values),'failed source fetch rollback')
+    end do
+  end subroutine check_temporal_sources
   subroutine check_sdc_hydro()
     type(eb_reactive_tree_3d) :: stage_tree
     type(amr_tree_state_3d) :: local,lt,predictor,local_predictor,rates,reference,prior
@@ -178,6 +238,7 @@ contains
         lt%fields(p)%values(1,:,:,:)=stage_tree%nodes(p)%temperature
         local_predictor%fields(p)%values=predictor%fields(p)%values
       end do
+      call check_temporal_sources(owners,predictor,local_predictor)
       call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
         extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
         inflow_state=inlet,inflow_temperature=inlet_t)

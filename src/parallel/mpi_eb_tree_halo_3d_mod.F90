@@ -519,7 +519,7 @@ contains
   ! Signed source donors use scalar boundary extrapolation (no EOS or reflection).
   ! Only fluid donors needed by owned targets are exchanged; covered values may be NaN.
   subroutine fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,rates,nvar,halo_width,ghost,comm,ok, &
-      boundary_faces,target_volume_fraction)
+      boundary_faces,target_volume_fraction,ancestor_start,ancestor_end,ancestor_fraction)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,halo_width
     type(eb_geometry_3d), intent(in) :: geometry(:)
@@ -529,23 +529,28 @@ contains
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
     type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    ! One fraction per ancestor depth, root first; length max tree level.
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
     type(amr_tree_state_3d) :: candidate
     integer(int64), allocatable :: origin(:,:),domain(:,:)
-    integer, allocatable :: ratios(:),requests(:,:),destination(:,:)
-    real(dp), allocatable :: values(:,:)
+    integer, allocatable :: ratios(:),requests(:,:),destination(:,:),selected(:),queries(:,:)
+    real(dp), allocatable :: values(:,:),fraction(:),fraction_low(:),fraction_high(:)
     integer(int64) :: global(3),mapped(3),local(3),maximum
     integer :: rank,status,ios,node,target,n(3),level,depth,donor,source(3),idx(3),i,j,k,axis,q
-    integer :: controls(3),low(3),high(3),width
+    integer :: controls(4),low(4),high(4),width
     character(len=32) :: faces(6),reference(6)
     real(dp) :: volume
     logical :: valid,ready
     ok=.false.;width=halo_width
-    controls=[nvar,width,merge(1,0,present(target_volume_fraction))]
-    call MPI_Allreduce(controls,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    controls=[nvar,width,merge(1,0,present(target_volume_fraction)), &
+      sum(merge(1,0,[present(ancestor_start),present(ancestor_end),present(ancestor_fraction)]))]
+    call MPI_Allreduce(controls,low,4,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,4,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     if(nvar<1.or.width<1.or.width>6) return
+    if(controls(4)/=0.and.controls(4)/=3) return
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
     reference=faces
@@ -563,6 +568,25 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree(valid,ready)
     if(.not.ready) return
+    if(present(ancestor_fraction)) then
+      call agree(size(ancestor_fraction)==size(ratios)-1,ready)
+      if(.not.ready) return
+      call agree(all(ieee_is_finite(ancestor_fraction)),ready)
+      if(.not.ready) return
+      call agree(all(ancestor_fraction>=0).and.all(ancestor_fraction<=1),ready)
+      if(.not.ready) return
+      allocate(fraction_low(size(ancestor_fraction)),fraction_high(size(ancestor_fraction)),stat=ios)
+      call agree(ios==0,ready)
+      if(.not.ready) return
+      call MPI_Allreduce(ancestor_fraction,fraction_low,size(ancestor_fraction),MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(ancestor_fraction,fraction_high,size(ancestor_fraction),MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.any(fraction_low/=fraction_high)) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,ancestor_start,nvar,comm,ready)
+      if(.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,ancestor_end,nvar,comm,ready)
+      if(.not.ready) return
+    end if
     valid=.true.
     if(present(target_volume_fraction)) then
       valid=allocated(target_volume_fraction%fields)
@@ -595,10 +619,11 @@ contains
     end do
     call agree(valid.and.maximum<=int(huge(1)/max(4,nvar),int64),ready)
     if(.not.ready) return
-    allocate(candidate%fields(size(owners)),requests(4,int(maximum)),destination(4,int(maximum)),stat=ios)
+    allocate(candidate%fields(size(owners)),requests(4,int(maximum)),destination(4,int(maximum)), &
+      selected(int(maximum)),queries(4,int(maximum)),fraction(int(maximum)),stat=ios)
     call agree(ios==0,ready)
     if(.not.ready) return
-    q=0
+    q=0;fraction=-1
     targets: do target=1,size(owners)
       if(owners(target)/=rank) cycle
       n=tree%nodes(target)%shape;level=tree%nodes(target)%level+1
@@ -654,20 +679,62 @@ contains
           if(volume<=0) cycle
         end if
         q=q+1;requests(:,q)=[donor,source];destination(:,q)=[target,i,j,k]
+        depth=tree%nodes(donor)%level+1
+        if(present(ancestor_fraction).and.depth<level) fraction(q)=ancestor_fraction(depth)
       end do
       end do
       end do
     end do targets
     call agree(valid,ready)
     if(.not.ready) return
-    call fetch_mpi_amr_tree_cells_3d(tree,owners,rates,nvar,requests(:,:q),values,comm,ready)
+    call fetch_sources(rates,0,ready)
     if(.not.ready) return
-    do i=1,q
-      idx=destination(2:4,i);target=destination(1,i)
-      candidate%fields(target)%values(:,idx(1),idx(2),idx(3))=values(:,i)
+    if(present(ancestor_fraction)) then
+      call fetch_sources(ancestor_start,1,ready)
+      if(.not.ready) return
+      call fetch_sources(ancestor_end,2,ready)
+      if(.not.ready) return
+    end if
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      if(.not.all(ieee_is_finite(candidate%fields(node)%values))) valid=.false.
     end do
+    call agree(valid,ready)
+    if(.not.ready) return
     call move_alloc(candidate%fields,ghost%fields);ok=.true.
   contains
+    subroutine fetch_sources(field,phase,success)
+      type(amr_tree_state_3d), intent(in) :: field
+      integer, intent(in) :: phase
+      logical, intent(out) :: success
+      integer :: query,used,slot,p,cell(3)
+      real(dp) :: weight
+      used=0
+      do query=1,q
+        select case(phase)
+        case(0)
+          if(fraction(query)>=0) cycle
+        case(1)
+          if(fraction(query)<0.or.fraction(query)==1) cycle
+        case(2)
+          if(fraction(query)<=0) cycle
+        end select
+        used=used+1;queries(:,used)=requests(:,query);selected(used)=query
+      end do
+      call fetch_mpi_amr_tree_cells_3d(tree,owners,field,nvar,queries(:,:used),values,comm,success)
+      if(.not.success) return
+      do slot=1,used
+        query=selected(slot);p=destination(1,query);cell=destination(2:4,query)
+        if(phase==0) then
+          candidate%fields(p)%values(:,cell(1),cell(2),cell(3))=values(:,slot)
+        else
+          weight=fraction(query)
+          if(phase==1) weight=1-weight
+          candidate%fields(p)%values(:,cell(1),cell(2),cell(3))= &
+            candidate%fields(p)%values(:,cell(1),cell(2),cell(3))+weight*values(:,slot)
+        end if
+      end do
+    end subroutine fetch_sources
     subroutine agree(condition,result)
       logical, intent(in) :: condition
       logical, intent(out) :: result
