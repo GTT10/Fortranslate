@@ -132,8 +132,9 @@ inventories with direct patch offsets, reads serial V3 records and supports
 serial readers and changed-rank reads
 ([checks](validation/sdc-mpi-eb-checkpoint-20260927.md)). MPI EB application routing now supports fixed-topology common-step SDC with
 rank-changing checkpoint continuation
-([checks](validation/sdc-mpi-eb-app-20260927.md)). MPI EB SDC regrid,
-load rebalancing and recursive integration remain open.
+([checks](validation/sdc-mpi-eb-app-20260927.md)). MPI EB SDC load rebalancing now migrates reaction estimates atomically with gas
+and temperature ([checks](validation/sdc-mpi-eb-rebalance-20260927.md)). MPI EB
+SDC regrid and recursive integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive

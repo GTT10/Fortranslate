@@ -367,8 +367,8 @@ with one refinement-ratio worth of substeps per finer level. Scheduled/adaptive 
 transfers signed reaction estimates by fluid-volume restriction and PCM
 prolongation in the serial application. MPI accepts fixed-topology common-step
 SDC and preserves owner-local reaction estimates and forcing inventories in V4
-checkpoints. MPI SDC currently rejects subcycling, regridding/adaptation and
-load rebalancing. MPI EB spray SDC remains unavailable.
+checkpoints. MPI SDC currently rejects subcycling and regridding/adaptation. Load rebalancing
+transfers reaction estimates with gas and updates the checkpoint source layout. MPI EB spray SDC remains unavailable.
 See the [recursive restart checks](../../docs/validation/sdc-eb-tree-subcycle-20260927.md).
 See the [regrid/restart checks](../../docs/validation/sdc-eb-tree-regrid-20260927.md).
 
