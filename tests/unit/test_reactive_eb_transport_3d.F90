@@ -26,6 +26,8 @@ program test_reactive_eb_transport_3d
     reactive_eb_transport_timestep_3d, reactive_eb_transport_rhs_3d, reactive_eb_transport_patch_timestep_3d, &
     reactive_eb_transport_fluxes_rhs_3d, reactive_eb_transport_euler_update_3d, &
     advance_reactive_eb_transport_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
+  use eb_reactive_transport_3d_mod, only: compute_sdc_eb_transport_3d
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -152,6 +154,10 @@ contains
     type(gas_transport_species), intent(in) :: transport(:)
     character(len=*), intent(in) :: axis
 
+    type(eb_integrated_flux_3d) :: stage_flux,saved_flux
+    type(gas_transport_species) :: bad_transport(size(transport))
+    real(dp), allocatable :: stage_rate(:,:,:,:)
+    real(dp) :: stage_theta,rate_sum(5+size(species)),rate_scale(5+size(species))
     type(reactive_eb_3d_config) :: config
     type(eb_geometry_3d) :: geometry
     real(dp), allocatable :: state(:, :, :, :), saved_state(:, :, :, :)
@@ -278,6 +284,26 @@ contains
       minimum_theta, local_ok)
     call require(local_ok, "transport face fluxes")
     call require_closed_transport_faces(geometry, x_flux, y_flux, z_flux)
+    allocate(stage_rate,source=rhs);saved_state=state;saved_temperature=temperature
+    call compute_sdc_eb_transport_3d(species,transport,state,temperature,geometry,interval, &
+      [.true.,.true.,.true.,.true.],stage_rate,stage_flux,stage_theta,local_ok)
+    call require(local_ok.and.stage_theta==minimum_theta,'SDC transport stage limiter')
+    call require(all(stage_rate==rhs),'SDC transport rates exact')
+    call require(all(stage_flux%x==interval*x_flux).and.all(stage_flux%y==interval*y_flux).and. &
+      all(stage_flux%z==interval*z_flux),'SDC time integrated flux density exact')
+    call require(all(same_real_bits(state,saved_state)).and.all(same_real_bits(temperature,saved_temperature)), &
+      'SDC transport input unchanged')
+    call reactive_eb_integrals_3d(stage_rate,geometry,rate_sum,local_ok)
+    call require(local_ok,'SDC volume weighted rate integral')
+    call reactive_eb_integrals_3d(abs(stage_rate),geometry,rate_scale,local_ok)
+    call require(local_ok.and.all(abs(rate_sum)<=5e-12_dp*max(tiny(1._dp),rate_scale)), &
+      'closed EB source conserves volume weighted inventory')
+    saved_flux=stage_flux;bad_transport=transport;bad_transport(1)%diameter=-1
+    call compute_sdc_eb_transport_3d(species,bad_transport,state,temperature,geometry,interval, &
+      [.true.,.true.,.true.,.true.],stage_rate,stage_flux,stage_theta,local_ok)
+    call require(.not.local_ok.and.stage_theta==minimum_theta,'bad SDC transport coefficient rejected')
+    call require(all(stage_rate==rhs).and.all(stage_flux%x==saved_flux%x).and.all(stage_flux%y==saved_flux%y).and. &
+      all(stage_flux%z==saved_flux%z),'SDC transport outputs rollback')
 
     call reactive_eb_integrals_3d( &
       state, geometry, initial_integrals, local_ok)

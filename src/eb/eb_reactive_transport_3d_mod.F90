@@ -37,10 +37,50 @@ module eb_reactive_transport_3d_mod
   public :: reactive_eb_transport_timestep_3d,reactive_eb_transport_patch_timestep_3d
   public :: reactive_eb_transport_fluxes_rhs_3d
   public :: reactive_eb_transport_rhs_3d
+  public :: compute_sdc_eb_transport_3d
   public :: reactive_eb_transport_euler_update_3d
   public :: advance_reactive_eb_transport_3d,advance_reactive_eb_transport_patch_euler_3d
 
 contains
+  ! Conservative source stage, without state update or small-cell redistribution.
+  ! Rates are per fluid volume; exported flux densities include dt, not aperture.
+  subroutine compute_sdc_eb_transport_3d(species,transport,state,temperature,geometry,dt,flags, &
+      transport_rate,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces,physical_faces,wall_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
+    logical, intent(in) :: flags(4)
+    real(dp), intent(inout) :: transport_rate(:,:,:,:),minimum_theta
+    type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: ghost_state(:,0:,0:,0:),ghost_temperature(0:,0:,0:)
+    logical, optional, intent(in) :: faces(6)
+    character(len=*), optional, intent(in) :: physical_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    type(eb_integrated_flux_3d) :: flux
+    real(dp), allocatable :: rhs(:,:,:,:)
+    real(dp) :: theta
+    integer :: nv,n(3)
+    logical :: valid
+    ok=.false.
+    if(.not.ieee_is_finite(dt)) return
+    if(dt<=0.or..not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
+    nv=size(state,1);n=[geometry%nx,geometry%ny,geometry%nz]
+    if(any(shape(transport_rate)/=[nv,n])) return
+    allocate(rhs(nv,n(1),n(2),n(3)))
+    allocate(flux%x(nv,0:n(1),n(2),n(3)),flux%y(nv,n(1),0:n(2),n(3)),flux%z(nv,n(1),n(2),0:n(3)))
+    call reactive_eb_transport_fluxes_rhs_3d(species,transport,state,temperature,geometry,dt, &
+      flags(1),flags(2),flags(3),flags(4),rhs,flux%x,flux%y,flux%z,theta,valid, &
+      ghost_state,ghost_temperature,faces,physical_faces,wall_temperature)
+    if(.not.valid) return
+    flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
+    if(.not.all(ieee_is_finite(rhs)).or..not.ieee_is_finite(theta)) return
+    if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+      .not.all(ieee_is_finite(flux%z))) return
+    transport_rate=rhs;integrated_flux=flux;minimum_theta=theta;ok=.true.
+  end subroutine compute_sdc_eb_transport_3d
+
   ! Rate from the same half-cell heat-transfer law used by wall face fluxes.
   ! Multiplying by aperture/kappa accounts for the actual fluid heat capacity.
   subroutine reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,geometry,faces,wall_t,cfl,dt,ok)
