@@ -1,7 +1,8 @@
 program test_spray_mpi_eb_sample
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
-  use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage
+  use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage
+  use spray_mpi_amr_tree_mod, only: spray_level_population
   use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,initialize_spray_liquid
   use spray_mixture_mod, only: advance_mixture_frozen_gas
   use gas_transport_mod, only: gas_transport_species
@@ -113,13 +114,15 @@ contains
     type(spray_options) :: options
     type(spray_parcel), allocatable :: ghosts(:)
     type(spray_parcel) :: reference
+    type(spray_level_population) :: group(3),before_group(3)
+    type(amr_tree_state_3d) :: group_source,group_remainder,old_group_source,old_group_remainder
     real(dp), allocatable :: mass(:,:),old_mass(:,:),delta(:),integral(:),ledger(:)
     real(dp) :: wall(5),reference_mass(1)
     real(dp), allocatable :: primitive(:),cell(:),y(:),query(:,:),values(:,:),site_t(:),saved_values(:,:),saved_t(:)
     integer, allocatable :: query_nodes(:)
     real(dp) :: h(3),cell_lower(3),vf
     real(dp) :: gas_constant,t,sound,fraction(1),fractions(3)=[0._dp,.25_dp,1._dp]
-    integer :: nv,p,a,b,c,n(3),count,stage
+    integer :: nv,p,a,b,c,n(3),count,stage,population
     character(len=16) :: faces(6)
     call load_h2o2_full_thermo(species,ok)
     call require(ok,'particle halo thermo')
@@ -201,6 +204,10 @@ contains
             options,1e-8_dp,delta,ok)
           call require(ok,'time-interpolated ghost physical reference')
         end if
+        do population=1,3
+          group(population)%parcels=ghosts;group(population)%component_mass=mass;group(population)%nodes=query_nodes
+          if(count>0) group(population)%parcels(1)%id=int(population,int64)
+        end do
         call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
           1,1,1,100,query_nodes,ghosts,mass,1e-8_dp,0._dp,faces,source,remainder,wall,ledger,ok,phi,centroids,metrics, &
           gas,ending,temp,temp,fraction)
@@ -241,6 +248,41 @@ contains
         call MPI_Allreduce(MPI_IN_PLACE,delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
         call require(all(abs(integral-delta)<1e-12_dp*max(abs(delta),1e-30_dp)), &
           'stage-time EB valid plus retained halo reaction inventory')
+        call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+          1,1,1,100,group,1e-8_dp,0._dp,faces,group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics, &
+          gas,ending,temp,temp,fraction)
+        call require(ok,'combined physical virtual ghost stage')
+        do population=1,3
+          call require(all(group(population)%component_mass==mass),'all populations sample identical stage-time gas')
+          if(count>0) call require(all(group(population)%parcels(1)%velocity==ghosts(1)%velocity).and. &
+            group(population)%parcels(1)%temperature==ghosts(1)%temperature,'combined population physical update')
+        end do
+        do p=1,2
+          if(owners(p)/=rank) cycle
+          call require(all(group_source%fields(p)%values==3*source%fields(p)%values),'combined valid reaction')
+          call require(all(abs(group_remainder%fields(p)%values-3*remainder%fields(p)%values)< &
+            1e-12_dp*max(abs(remainder%fields(p)%values),1e-30_dp)),'combined retained halo reaction')
+        end do
+      end do
+      ! Reject the third population after the first two have advanced privately.
+      if(count>0) group(3)%nodes=0
+      before_group=group;old_group_source=group_source;old_group_remainder=group_remainder
+      wall=17;ledger=19
+      call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,1e-8_dp,0._dp,faces,group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics, &
+        gas,ending,temp,temp,fraction)
+      call require(.not.ok.and.all(wall==17).and.all(ledger==19),'late combined population failure')
+      do population=1,3
+        call require(all(group(population)%component_mass==before_group(population)%component_mass).and. &
+          all(group(population)%nodes==before_group(population)%nodes),'all population payloads roll back')
+        if(count>0) call require(all(group(population)%parcels(1)%velocity== &
+          before_group(population)%parcels(1)%velocity).and.group(population)%parcels(1)%temperature== &
+          before_group(population)%parcels(1)%temperature,'earlier population kicks roll back')
+      end do
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values),'combined source rollback')
       end do
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
