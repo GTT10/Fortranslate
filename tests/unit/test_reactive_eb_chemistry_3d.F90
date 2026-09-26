@@ -1,5 +1,6 @@
 program test_reactive_eb_chemistry_3d
   use, intrinsic :: iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
@@ -7,7 +8,7 @@ program test_reactive_eb_chemistry_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use reactive_1d_mod, only: reactive_nvar, reactive_species_component
-  use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_regular_cell_3d, &
     build_axis_plane_eb_geometry_3d
@@ -17,7 +18,7 @@ program test_reactive_eb_chemistry_3d
   use reactive_eb_3d_driver_mod, only: &
     initialize_reactive_eb_density_sheet_3d, &
     advance_reactive_eb_strang_3d, reactive_eb_integrals_3d, &
-    reactive_eb_element_integrals_3d
+    reactive_eb_element_integrals_3d,react_sdc_eb_state_3d
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
@@ -33,9 +34,58 @@ program test_reactive_eb_chemistry_3d
   call check_mask_axis(species, reactions, "y")
   call check_mask_axis(species, reactions, "z")
   call check_eb_split(species, reactions)
+  call check_sdc()
   write(*, '(a)') "test_reactive_eb_chemistry_3d: PASS"
 
 contains
+
+  subroutine check_sdc()
+    type(reactive_eb_3d_config) :: config
+    type(eb_geometry_3d) :: geometry
+    real(dp), allocatable :: old(:,:,:,:),t0(:,:,:),rates(:,:,:,:),u(:,:,:,:),t(:,:,:),ir(:,:,:,:)
+    real(dp), allocatable :: reference(:,:,:,:),rt(:,:,:),ri(:,:,:,:),saved(:,:,:,:),st(:,:,:),si(:,:,:,:)
+    integer :: nv,i
+    config%nx=4;config%ny=1;config%nz=1
+    call build_axis_plane_eb_geometry_3d(4,1,1,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'x',.37_dp,geometry,ok)
+    call require(ok,'SDC EB geometry')
+    nv=reactive_nvar(size(species))
+    allocate(old(nv,4,1,1),t0(4,1,1),rates(nv,4,1,1),ir(nv-4,4,1,1))
+    call initialize_reactive_eb_density_sheet_3d(species,config,geometry,old,t0,ok)
+    call require(ok,'SDC EB initial state')
+    reference=old;rt=t0
+    do i=1,4
+      if(geometry%cell_type(i,1,1)/=eb_covered_cell_3d) cycle
+      reference(:,i,1,1)=old(:,2,1,1);rt(i,1,1)=t0(2,1,1)
+    end do
+    rates=0;rates(2,:,:,:)=20000;rates(5,:,:,:)=30000
+    u=reference;t=rt;ir=-7;ri=ir
+    call react_sdc_state_3d(species,reactions,reference,rt,rates,1e-9_dp,1e-6_dp,1e-12_dp,u,t,ri,ok)
+    call require(ok,'regular forced reaction reference')
+    reference=u;rt=t
+    do i=1,4
+      if(geometry%cell_type(i,1,1)/=eb_covered_cell_3d) cycle
+      old(:,i,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+      t0(i,1,1)=-99;rates(:,i,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+    end do
+    u=old;t=t0
+    call react_sdc_eb_state_3d(species,reactions,old,t0,geometry,rates,1e-9_dp,1e-6_dp,1e-12_dp,u,t,ir,ok)
+    call require(ok,'EB forced reaction accepts covered sentinel')
+    do i=1,4
+      if(geometry%cell_type(i,1,1)==eb_covered_cell_3d) then
+        call require(all(same_real_bits(u(:,i,1,1),old(:,i,1,1))).and.t(i,1,1)==t0(i,1,1), &
+          'covered state and temperature preserved')
+        call require(all(ir(:,i,1,1)==-7),'covered reaction estimate preserved')
+      else
+        call require(all(u(:,i,1,1)==reference(:,i,1,1)).and.t(i,1,1)==rt(i,1,1),'active forced state exact')
+        call require(all(ir(:,i,1,1)==ri(:,i,1,1)),'active forced reaction estimate exact')
+      end if
+    end do
+    saved=u;st=t;si=ir;rates(1,4,1,1)=-1e30_dp
+    call react_sdc_eb_state_3d(species,reactions,old,t0,geometry,rates,1e-9_dp,1e-6_dp,1e-12_dp,u,t,ir,ok)
+    call require(.not.ok,'late active cell rejects EB reaction')
+    call require(all(same_real_bits(u,saved)).and.all(same_real_bits(t,st)).and.all(same_real_bits(ir,si)), &
+      'failed EB reaction retains all outputs')
+  end subroutine check_sdc
 
   subroutine check_mask_axis(species, reactions, axis)
     type(nasa7_species), intent(in) :: species(:)

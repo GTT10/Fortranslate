@@ -16,7 +16,7 @@ module reactive_eb_3d_driver_mod
   use eb_reactive_hydro_3d_mod, only: &
     advance_reactive_eb_redistributed_euler_3d,advance_reactive_eb_boundary_ctu_3d, &
     advance_reactive_eb_state_redistributed_euler_3d
-  use reactive_3d_mod, only: advance_reactive_chemistry_3d
+  use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
   use eb_reactive_transport_3d_mod, only: advance_reactive_eb_transport_3d,eb_transport_halo_provider_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
@@ -27,6 +27,7 @@ module reactive_eb_3d_driver_mod
   public :: initialize_reactive_eb_density_sheet_3d
   public :: advance_reactive_eb_strang_3d
   public :: advance_reactive_eb_full_3d
+  public :: react_sdc_eb_state_3d
   public :: reactive_eb_integrals_3d
   public :: reactive_eb_element_amounts_3d
   public :: reactive_eb_composition_integrals_3d
@@ -36,6 +37,40 @@ module reactive_eb_3d_driver_mod
   public :: write_reactive_eb_3d_csv
 
 contains
+
+  ! Rates and states are per fluid volume; geometry supplies the active mask.
+  subroutine react_sdc_eb_state_3d(species,reactions,old_state,old_temperature,geometry,nonreacting_rates, &
+      dt,rtol,atol,state,temperature,reaction_source,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: old_state(:,:,:,:),old_temperature(:,:,:),nonreacting_rates(:,:,:,:),dt,rtol,atol
+    real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),reaction_source(:,:,:,:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),ir(:,:,:,:)
+    integer :: nv,n(3),i,j,k
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species))
+    if(.not.geometry%is_valid().or.size(species)<1.or.size(reactions)<1) return
+    n=[geometry%nx,geometry%ny,geometry%nz]
+    if(any(shape(old_state)/=[nv,n]).or.any(shape(nonreacting_rates)/=[nv,n])) return
+    if(any(shape(state)/=[nv,n]).or.any(shape(old_temperature)/=n).or.any(shape(temperature)/=n)) return
+    if(any(shape(reaction_source)/=[nv-4,n])) return
+    if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
+    candidate=old_state;ct=old_temperature;ir=reaction_source
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+      call react_sdc_state_3d(species,reactions,old_state(:,i:i,j:j,k:k),old_temperature(i:i,j:j,k:k), &
+        nonreacting_rates(:,i:i,j:j,k:k),dt,rtol,atol,candidate(:,i:i,j:j,k:k),ct(i:i,j:j,k:k), &
+        ir(:,i:i,j:j,k:k),valid)
+      if(.not.valid) return
+    end do
+    end do
+    end do
+    state=candidate;temperature=ct;reaction_source=ir;ok=.true.
+  end subroutine react_sdc_eb_state_3d
 
   logical function valid_ctu_geometry(physical,extended,solver) result(valid)
     type(eb_geometry_3d), intent(in) :: physical
