@@ -113,7 +113,10 @@ time interpolation; hydro separately interpolates source predictors
 The coupled EB tree SDC loop now also advances a selected level, retains
 inactive levels and exports interval fluxes plus old/new source predictors
 ([checks](validation/sdc-eb-tree-level-loop-20260927.md)).
-EB tree SDC recursive stepping and MPI integration remain open.
+Recursive EB tree SDC now accumulates interval fluxes, synchronizes adjacent
+levels and routes through the serial application with checkpoint/restart
+([checks](validation/sdc-eb-tree-subcycle-20260927.md)).
+EB tree SDC MPI integration remains open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive

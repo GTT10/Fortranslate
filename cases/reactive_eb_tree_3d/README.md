@@ -362,9 +362,11 @@ physical-boundary stepping in the separate single-level application.
 
 `sdc.nml` selects `time_integrator='sdc'`, `sdc_iterations=2` and
 `external_forcing(3)` (force per fluid volume). This path requires PeleC CTU,
-explicit boundary faces and common steps. Scheduled/adaptive regridding also
+explicit boundary faces. Set `subcycling=.true.` for recursive SDC intervals
+with one refinement-ratio worth of substeps per finer level. Scheduled/adaptive regridding also
 transfers signed reaction estimates by fluid-volume restriction and PCM
-prolongation. MPI and subcycling remain rejected for SDC.
+prolongation. MPI remains rejected for SDC.
+See the [recursive restart checks](../../docs/validation/sdc-eb-tree-subcycle-20260927.md).
 See the [regrid/restart checks](../../docs/validation/sdc-eb-tree-regrid-20260927.md).
 
 Serial fixed/selected source routing preserves reaction estimates and forcing
