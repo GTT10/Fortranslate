@@ -5,6 +5,8 @@ program test_spray_mpi_amr_deposition
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     composite_integrals_amr_patch_tree_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d, &
+    coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use spray_amr_tree_coupling_mod, only: deposit_amr_tree_spray_field
   use spray_mpi_amr_field_mod, only: deposit_mpi_amr_tree_spray_field,sum_mpi_amr_particle_source_halo
   implicit none
@@ -171,8 +173,79 @@ program test_spray_mpi_amr_deposition
   call require(ok,'globally empty feedback');call unchanged()
   if (rank==0) print *, 'PASS: owner-routed AMR spray field deposition'
   call check_source_halo()
+  call check_coarse_source_halo()
   call MPI_Finalize(ierr)
 contains
+  subroutine check_coarse_source_halo()
+    type(amr_patch_3d) :: box(1)
+    type(amr_patch_tree_3d) :: hierarchy
+    type(eb_geometry_3d) :: fine,g(2)
+    type(amr_tree_state_3d) :: halo,source,remainder,fraction,initial,accepted_source,accepted_remainder
+    integer :: map(2),p,n(3),j
+    real(dp) :: phi(0:8,0:8,0:8),pair(2)=[1._dp,-2._dp],integral(2)
+    call initialize_amr_patch_3d(4,4,4,1,2,1,4,1,4,2,box(1),ok)
+    call require(ok,'coarse routing patch')
+    call initialize_amr_patch_tree_3d([4,4,4],[1],box,hierarchy,ok)
+    call require(ok,'coarse routing tree')
+    do j=0,8
+      phi(:,j,:)=.5_dp*j-1.25_dp
+    end do
+    call build_level_set_eb_geometry_3d(phi,zero,[4._dp,4._dp,4._dp],fine,ok)
+    call require(ok,'coarse routing finest geometry')
+    call coarsen_eb_geometry_3d(fine,2,g(1),ok)
+    call require(ok,'coarse routing root geometry')
+    call extract_eb_geometry_3d(fine,[1,1,1],[4,8,8],g(2),ok)
+    call require(ok,'coarse routing child geometry')
+    map=[0,nranks-1];allocate(source%fields(2),halo%fields(2),fraction%fields(2))
+    do p=1,2
+      if(map(p)/=rank) cycle
+      n=hierarchy%nodes(p)%shape
+      allocate(source%fields(p)%values(2,n(1),n(2),n(3)));source%fields(p)%values=0
+      if(p==1) cycle
+      allocate(halo%fields(p)%values(2,0:n(1)+1,0:n(2)+1,0:n(3)+1));halo%fields(p)%values=0
+      allocate(fraction%fields(p)%values(1,0:n(1)+1,0:n(2)+1,0:n(3)+1));fraction%fields(p)%values=1
+      halo%fields(p)%values(:,5,3,3)=12*pair;fraction%fields(p)%values(1,5,3,3)=.5_dp
+      halo%fields(p)%values(:,2,4,3)=2*pair
+      halo%fields(p)%values(:,0,3,3)=4*pair;fraction%fields(p)%values(1,0,3,3)=.5_dp
+    end do
+    initial=source
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,hierarchy,map,halo,2,1,1,[.false.,.false.,.false.], &
+      source,remainder,ok)
+    call require(ok,'default coarse gap retained')
+    if(rank==map(2)) call require(all(remainder%fields(2)%values(:,5,3,3)==12*pair),'unrouted fine halo retained')
+    source=initial
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,hierarchy,map,halo,2,1,1,[.false.,.false.,.false.], &
+      source,remainder,ok,route_to_coarse=.true.)
+    call require(ok,'regular coarse source routing')
+    if(rank==0) call require(all(source%fields(1)%values(:,3,2,2)==1.5_dp*pair),'geometric volume ratio')
+    source=initial
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,hierarchy,map,halo,2,1,1,[.false.,.false.,.false.], &
+      source,remainder,ok,route_to_coarse=.true.,eb_geometry=g,halo_volume_fraction=fraction)
+    call require(ok,'EB coarse source routing')
+    integral=0
+    if(rank==0) then
+      call require(maxval(abs(source%fields(1)%values(:,3,2,2)-pair))<1e-13_dp,'fluid volume ratio')
+      integral=source%fields(1)%values(:,3,2,2)*g(1)%volume_fraction(3,2,2)
+    end if
+    if(rank==map(2)) then
+      integral=integral+source%fields(2)%values(:,2,4,3)*.125_dp
+      call require(all(remainder%fields(2)%values(:,5,3,3)==0),'coarse-routed remainder cleared')
+      call require(all(remainder%fields(2)%values(:,0,3,3)==4*pair),'physical exterior still retained')
+    end if
+    call MPI_Allreduce(MPI_IN_PLACE,integral,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(maxval(abs(integral-pair))<1e-13_dp,'routed fluid-volume inventory')
+    accepted_source=source;accepted_remainder=remainder
+    if(rank==map(2)) fraction%fields(2)%values(1,5,3,3)=0
+    call sum_mpi_amr_particle_source_halo(MPI_COMM_WORLD,hierarchy,map,halo,2,1,1,[.false.,.false.,.false.], &
+      source,remainder,ok,route_to_coarse=.true.,eb_geometry=g,halo_volume_fraction=fraction)
+    call require(.not.ok,'nonzero source in zero fluid volume rejects')
+    do p=1,2
+      if(map(p)/=rank) cycle
+      call require(all(source%fields(p)%values==accepted_source%fields(p)%values),'coarse routing rollback')
+      if(p==2) call require(all(remainder%fields(p)%values==accepted_remainder%fields(p)%values), &
+        'coarse remainder rollback')
+    end do
+  end subroutine check_coarse_source_halo
   subroutine check_source_halo()
     type(amr_patch_3d) :: boxes(2)
     type(amr_patch_tree_3d) :: peers

@@ -198,12 +198,32 @@ Other levels in the source field are unchanged; no parent restriction runs.
 Inputs are additive source contributions, not already synchronized ghost
 copies. Every representation of the same physical cell must use the same
 normalization and EB volume metrics. This routine performs no volume scaling,
-wall transformation, coarse/fine reflux or virtual/ghost de-duplication. The
+wall transformation or virtual/ghost de-duplication. Optional coarse routing
+is described below. The
 caller must consume each halo once and handle the remainder before claiming a
 completed source transfer. This supplies the same-level summation used by the
 pinned PelePhysics `transferSource`/`SumBoundary` path; recursive integration
-and coarse/fine synchronization remain open. See
+and synchronization scheduling remain open. See
 [source halo checks](validation/spray-source-halo-20260927.md).
+
+## Conservative coarse routing of particle sources
+
+`sum_mpi_amr_particle_source_halo` additionally accepts `route_to_coarse`
+(default false). If no same-level cell receives an in-domain contribution,
+true selects the finest covering ancestor and scales the source density by
+source-cell volume / destination-cell volume. Optional paired `eb_geometry`
+and `halo_volume_fraction` replace geometric volumes by fluid volumes. The
+replicated EB hierarchy is validated; source halo fractions are owner-local
+and must match their target-resolution geometry. A routed nonzero source with
+zero source or destination fluid volume rejects collectively. Overflows and
+zero scaling also reject before publication.
+
+Same-level and coarse routing share the atomic source/remainder update.
+Nonperiodic exterior contributions remain unresolved. This transfers source
+inventories; it does not apply them to gas thermodynamics or select which
+real/virtual/ghost populations contribute to each subcycle. The recursive
+caller still must coordinate population clocks, source accounting and gas
+synchronization. See [coarse transfer checks](validation/spray-coarse-source-20260927.md).
 
 ## AMR and embedded boundaries
 

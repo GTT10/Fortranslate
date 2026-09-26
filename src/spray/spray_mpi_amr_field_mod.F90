@@ -9,6 +9,7 @@ module spray_mpi_amr_field_mod
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d,fetch_mpi_amr_tree_cells_3d, &
     validate_mpi_amr_tree_metadata_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
+  use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
@@ -29,8 +30,9 @@ contains
   ! Sum additive level sources from valid/halo cells into same-level valid cells.
   ! Unmatched coarse/fine or physical-boundary contributions remain in remainder.
   ! Source values use the same per-cell normalization on every image of a cell.
+  ! Optional coarse routing rescales source densities by geometric/fluid volume.
   subroutine sum_mpi_amr_particle_source_halo(comm,tree,owners,halo,nvar,width,target_level,periodic, &
-      source,remainder,ok,maximum_received)
+      source,remainder,ok,maximum_received,route_to_coarse,eb_geometry,halo_volume_fraction)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,width,target_level
@@ -38,44 +40,73 @@ contains
     logical, intent(in) :: periodic(3)
     type(amr_tree_state_3d), intent(inout) :: source,remainder
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: route_to_coarse
+    type(eb_geometry_3d), optional, intent(in) :: eb_geometry(:)
+    type(amr_tree_state_3d), optional, intent(in) :: halo_volume_fraction
     integer, optional, intent(in) :: maximum_received
     type(amr_tree_state_3d) :: candidate,leftover
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:),counts(:),received(:),offsets(:),displacements(:),cursor(:)
     integer, allocatable :: send_cells(:,:),recv_cells(:,:)
     real(dp), allocatable :: send_values(:,:),recv_values(:,:),term(:)
-    integer(int64) :: global(3),cell(3),total64
-    integer :: rank,nranks,status,capacity,flags(5),lo(5),hi(5),node,n(3),i,j,k,pass,destination,idx(3),storage(3)
-    integer :: r,q,total,incoming,slot,axis
-    logical :: valid,agreed
+    integer(int64) :: global(3),mapped(3),cell(3),total64
+    integer :: rank,nranks,status,capacity,flags(8),lo(8),hi(8),node,n(3),i,j,k,pass,destination,idx(3),storage(3)
+    integer :: r,q,total,incoming,slot,axis,depth,bottom,vf_storage(3)
+    real(dp) :: scale,source_fraction,destination_fraction
+    logical :: valid,agreed,routing
     ok=.false.;capacity=1000000
     if(present(maximum_received)) capacity=maximum_received
+    routing=.false.
+    if(present(route_to_coarse)) routing=route_to_coarse
     call validate_mpi_amr_tree_local_3d(tree,owners,source,nvar,comm,valid)
     if(.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,status)
     if(status/=MPI_SUCCESS) return
-    flags=[width,target_level,merge(1,0,periodic)]
-    call MPI_Allreduce(flags,lo,5,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[width,target_level,merge(1,0,periodic),merge(1,0,routing), &
+      merge(1,0,present(eb_geometry)),merge(1,0,present(halo_volume_fraction))]
+    call MPI_Allreduce(flags,lo,8,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,hi,5,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,hi,8,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(lo/=hi)) return
     valid=width>=0.and.width<=1000000.and.target_level>=0.and.target_level<tree%level_count()
     valid=valid.and.capacity>=0.and.capacity<=1000000.and.allocated(halo%fields)
+    valid=valid.and.(present(eb_geometry).eqv.present(halo_volume_fraction))
+    if(present(halo_volume_fraction)) valid=valid.and.allocated(halo_volume_fraction%fields)
     call agree()
     if(.not.agreed) return
     valid=size(halo%fields)==size(owners)
+    if(present(halo_volume_fraction)) valid=valid.and.size(halo_volume_fraction%fields)==size(owners)
     call agree()
     if(.not.agreed) return
+    if(present(eb_geometry)) then
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,eb_geometry,nvar,comm,valid)
+      if(.not.valid) return
+    end if
     do node=1,size(owners)
-      if(owners(node)/=rank.or.tree%nodes(node)%level/=target_level) cycle
+      if(owners(node)/=rank) cycle
+      if(routing) valid=valid.and.all(ieee_is_finite(source%fields(node)%values))
+      if(tree%nodes(node)%level/=target_level) cycle
       n=tree%nodes(node)%shape
       if(any(n>huge(1)-2*width).or..not.allocated(halo%fields(node)%values)) then
         valid=.false.;exit
       end if
       if(any(shape(halo%fields(node)%values)/=[nvar,n+2*width])) then
         valid=.false.;exit
+      end if
+      if(present(halo_volume_fraction)) then
+        if(.not.allocated(halo_volume_fraction%fields(node)%values)) then
+          valid=.false.;exit
+        end if
+        if(any(shape(halo_volume_fraction%fields(node)%values)/=[1,n+2*width])) then
+          valid=.false.;exit
+        end if
+        if(.not.all(ieee_is_finite(halo_volume_fraction%fields(node)%values))) then
+          valid=.false.;exit
+        end if
+        if(any(halo_volume_fraction%fields(node)%values<0).or.any(halo_volume_fraction%fields(node)%values>1)) &
+          valid=.false.
       end if
       if(.not.all(ieee_is_finite(halo%fields(node)%values))) valid=.false.
       if(.not.all(ieee_is_finite(source%fields(node)%values))) valid=.false.
@@ -105,21 +136,53 @@ contains
             if(periodic(axis)) global(axis)=modulo(global(axis),domain(axis,target_level+1))
           end do
           if(any(global<0).or.any(global>=domain(:,target_level+1))) cycle
-          destination=0
-          do q=1,size(owners)
-            if(tree%nodes(q)%level/=target_level) cycle
-            cell=global-origin(:,q)
-            if(any(cell<0).or.any(cell>=int(tree%nodes(q)%shape,int64))) cycle
-            destination=q;exit
+          destination=0;bottom=target_level
+          if(routing) bottom=0
+          do depth=target_level,bottom,-1
+            mapped=global/(domain(:,target_level+1)/domain(:,depth+1))
+            do q=1,size(owners)
+              if(tree%nodes(q)%level/=depth) cycle
+              cell=mapped-origin(:,q)
+              if(any(cell<0).or.any(cell>=int(tree%nodes(q)%shape,int64))) cycle
+              destination=q;exit
+            end do
+            if(destination>0) exit
           end do
           if(destination==0) cycle
+          scale=product(real(domain(:,depth+1),dp)/real(domain(:,target_level+1),dp))
+          if(present(eb_geometry)) then
+            vf_storage=[lbound(halo_volume_fraction%fields(node)%values,2), &
+              lbound(halo_volume_fraction%fields(node)%values,3), &
+              lbound(halo_volume_fraction%fields(node)%values,4)]+idx+width-1
+            source_fraction=halo_volume_fraction%fields(node)%values(1,vf_storage(1),vf_storage(2),vf_storage(3))
+            destination_fraction=eb_geometry(destination)%volume_fraction(int(cell(1))+1,int(cell(2))+1,int(cell(3))+1)
+            if(min(source_fraction,destination_fraction)<=0) then
+              valid=.false.;cycle
+            end if
+            scale=scale*source_fraction
+            if(destination_fraction<1) then
+              if(scale>huge(1._dp)*destination_fraction) then
+                valid=.false.;cycle
+              end if
+            end if
+            scale=scale/destination_fraction
+          end if
+          if(scale<=0) then
+            valid=.false.;cycle
+          end if
+          if(scale>1) then
+            if(any(abs(term)>huge(1._dp)/scale)) then
+              valid=.false.;cycle
+            end if
+          end if
+          term=scale*term
           r=owners(destination)+1
           if(pass==1) then
             total64=total64+1
             if(total64<=1000000_int64) counts(r)=counts(r)+1
           else
             slot=cursor(r);cursor(r)=slot+1
-            send_cells(:,slot)=[destination,int(global-origin(:,destination))+1]
+            send_cells(:,slot)=[destination,int(cell)+1]
             send_values(:,slot)=term
             leftover%fields(node)%values(:,storage(1),storage(2),storage(3))=0
           end if
@@ -128,7 +191,7 @@ contains
         end do
       end do
       if(pass==1) then
-        valid=total64<=min(1000000_int64,int(huge(1)/max(4,nvar),int64))
+        valid=valid.and.total64<=min(1000000_int64,int(huge(1)/max(4,nvar),int64))
         call agree()
         if(.not.agreed) return
         total=int(total64);offsets(1)=0
