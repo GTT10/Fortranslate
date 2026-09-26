@@ -1092,3 +1092,10 @@ if(TARGET test_spray_mpi_eb_film_reactive)
       $<TARGET_FILE:test_spray_mpi_eb_film_reactive> ${MPIEXEC_POSTFLAGS} sdc)
   set_tests_properties(spray_mpi_eb_sdc_film_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 60 PROCESSORS 2)
 endif()
+
+if(TARGET test_spray_mpi_eb_impact_reactive)
+  add_test(NAME spray_mpi_eb_sdc_impact_2
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_spray_mpi_eb_impact_reactive> ${MPIEXEC_POSTFLAGS} sdc)
+  set_tests_properties(spray_mpi_eb_sdc_impact_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 60 PROCESSORS 2)
+endif()

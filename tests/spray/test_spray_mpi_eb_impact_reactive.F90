@@ -8,7 +8,8 @@ program test_spray_mpi_eb_impact_reactive
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
+  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
+  use eb_reactive_patch_tree_3d_mod, only: build_eb_tree_extended_geometry_3d
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use spray_parcel_mod
@@ -18,6 +19,11 @@ program test_spray_mpi_eb_impact_reactive
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   implicit none
+  character(len=16) :: mode,faces(6)
+  type(eb_geometry_3d) :: extended_finest
+  type(eb_geometry_3d), allocatable :: extended(:)
+  real(dp) :: extended_phi(0:32,0:32,0:32)
+
   type(spray_wall_film), allocatable :: films(:),saved_films(:)
   real(dp), allocatable :: film_mass(:,:),saved_film_mass(:,:)
   type(spray_wall_options) :: walls
@@ -45,6 +51,8 @@ program test_spray_mpi_eb_impact_reactive
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=.001_dp,t,sound,r,volume
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
   logical :: ok,include_films=.true.,outflow=.false.
+  call get_command_argument(1,mode)
+  faces='outflow'
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -63,6 +71,16 @@ program test_spray_mpi_eb_impact_reactive
   call require(ok,'root geometry')
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
+  if(mode=='sdc') then
+    do j=0,32
+      extended_phi(:,j,:)=real(max(0,min(8,j-12)),dp)*.0005_dp-.00125_dp
+    end do
+    call build_level_set_eb_geometry_3d(extended_phi,[-.006_dp,-.006_dp,-.006_dp], &
+      [.010_dp,.010_dp,.010_dp],extended_finest,ok)
+    call require(ok,'extended geometry')
+    call build_eb_tree_extended_geometry_3d(tree,g,extended_finest,extended,ok)
+    call require(ok,'extended patches')
+  end if
   call load_h2o2_full_thermo(species,ok)
   call require(ok,'thermo');nv=reactive_nvar(size(species))
   allocate(cell(nv),primitive(nv),y(size(species)),total(nv),parent(nv),fine(nv))
@@ -97,6 +115,9 @@ program test_spray_mpi_eb_impact_reactive
   call load_h2o2_full_mechanism(reactions,ok)
   call require(ok,'mechanism')
   allocate(boundary(nv),chemical(nv))
+  if(mode=='sdc') then
+    allocate(force(nv));force=46
+  end if
   call initialize_spray_liquid(species,'H2O',1000._dp,4184._dp,373.15_dp,101325._dp,2.257e6_dp,liquids(1),ok)
   call require(ok,'water')
   call initialize_spray_liquid(species,'H2O2',800._dp,2000._dp,350._dp,101325._dp,1e6_dp,liquids(2),ok)
@@ -159,6 +180,12 @@ program test_spray_mpi_eb_impact_reactive
   do p=1,size(films)
     call require(films(p)%mass>0.and.films(p)%temperature>350,'new film evolves after impact')
   end do
+  if(mode=='sdc') then
+    if(rank==0) print *, 'PASS: SDC splash, new film evolution, rollback; residual=', &
+      maxval(abs(after-before-ledger-boundary-chemical)/max(abs(before),abs(after),1e-30_dp))
+    call MPI_Finalize(ierr)
+    stop
+  end if
   ! KH children without supplied films use the same private shared watermark.
   field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
   deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
@@ -278,6 +305,24 @@ contains
       last_id=last_id,acceleration=accel,source_change=force)
   end subroutine
   subroutine advance()
+    real(dp) :: coefficient
+    if(mode=='sdc') then
+      coefficient=.1_dp
+      if(solver=='invalid') coefficient=-1
+      if(include_films) then
+        call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
+          liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,2,.true., &
+          [.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,faces,boundary,ledger,chemical,force,theta, &
+          steps,last_id,ok,difmag=coefficient,films=films,film_mass=film_mass,film_settings=walls, &
+          film_steps=film_steps,film_impacts=.true.,model_rejected=rejected)
+      else
+        call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
+          liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,2,.true., &
+          [.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,faces,boundary,ledger,chemical,force,theta, &
+          steps,last_id,ok,difmag=coefficient,film_steps=film_steps,model_rejected=rejected)
+      end if
+      return
+    end if
     if(include_films) then
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &

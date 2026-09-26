@@ -309,10 +309,13 @@ contains
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
-      films,film_mass,film_settings,film_steps)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected)
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
     type(spray_wall_options), optional, intent(in) :: film_settings
+    logical, optional, intent(in) :: film_impacts
+    logical, optional, intent(out) :: model_rejected
+    logical :: impacts
     integer, optional, intent(out) :: film_steps
     type(spray_wall_film), allocatable :: midpoint_films(:),final_films(:)
     real(dp), allocatable :: midpoint_film_mass(:,:),final_film_mass(:,:)
@@ -360,13 +363,17 @@ contains
     character(len=32) :: particle_faces(6)
     logical :: valid,ready
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    if(present(split_created)) split_created=0
+    if(present(model_rejected)) model_rejected=.false.
+    impacts=.false.
+    if(present(film_impacts)) impacts=film_impacts
     if(present(film_steps)) film_steps=0
-    film_flag=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    film_flag=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))+8*merge(1,0,impacts)
     call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.film_low/=film_high) return
-    if(film_flag/=0.and.film_flag/=7) return
+    if(film_flag/=0.and.film_flag/=7.and.film_flag/=15) return
     if(present(split_created)) split_created=0
     accel=0
     if(present(particle_acceleration)) accel=particle_acceleration
@@ -472,7 +479,7 @@ contains
       integer(int64) :: watermark
       integer :: steps,p,status
       character(len=16) :: motion
-      logical :: accepted,all_ok
+      logical :: accepted,all_ok,rejected
       good=.false.
       if(depth/=-1) return
       half_interval=.5_dp*interval
@@ -496,10 +503,19 @@ contains
         call particle_force(trial,half_interval,force_delta,source_comm,accepted)
         if(.not.accepted) return
       end if
+      if(impacts) then
+      call advance_mpi_amr_mixture_coupling(source_comm,species,transport,liquids,options,work_gas,work_temperature, &
+        tree,owners,trial,masses,lower,spacing,interval,steps,accepted,last_id=watermark, &
+        boundary_change=wall_delta,eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=exterior, &
+        boundary_faces=particle_faces,gas_change=change,motion_mode=motion, &
+        wall_films=patches,film_mass=patch_mass,film_settings=film_settings,model_rejected=rejected)
+        if(present(model_rejected)) model_rejected=rejected
+      else
       call advance_mpi_amr_mixture_coupling(source_comm,species,transport,liquids,options,work_gas,work_temperature, &
         tree,owners,trial,masses,lower,spacing,interval,steps,accepted,last_id=watermark, &
         boundary_change=wall_delta,eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=exterior, &
         boundary_faces=particle_faces,gas_change=change,motion_mode=motion)
+      end if
       if(.not.accepted) return
       if(stage>0) then
         call particle_force(trial,half_interval,force_delta,source_comm,accepted)
