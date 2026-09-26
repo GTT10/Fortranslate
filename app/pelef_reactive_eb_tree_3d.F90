@@ -11,7 +11,7 @@ program pelef_reactive_eb_tree_3d
   use mpi_eb_tree_tagging_3d_mod, only: tag_mpi_eb_tree_temperature_3d
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
-  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,advance_mpi_eb_tree_sdc_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
 #endif
 #ifdef PELEF_MPI_EB_SPRAY
@@ -213,8 +213,12 @@ program pelef_reactive_eb_tree_3d
   if(time_integrator/='split'.and.time_integrator/='sdc') error stop 'Invalid time integrator'
   if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
   if(time_integrator=='sdc') then
-#ifdef PELEF_MPI_EB_TREE
-    error stop 'EB tree SDC MPI integration is not implemented'
+#ifdef PELEF_MPI_EB_SPRAY
+    error stop 'EB spray SDC integration is not implemented'
+#elif defined(PELEF_MPI_EB_TREE)
+    if(subcycling) error stop 'MPI EB SDC recursive stepping is not implemented'
+    if(regrid_count>0.or.temperature_adaptive) error stop 'MPI EB SDC regrid is not implemented'
+    if(rebalance_interval_steps>0) error stop 'MPI EB SDC source rebalancing is not implemented'
 #endif
     if(hydro_method/='plm_ctu'.or.riemann_solver/='pelec') error stop 'EB tree SDC requires PeleC CTU'
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
@@ -457,6 +461,9 @@ program pelef_reactive_eb_tree_3d
       allocate(sdc_ir)
       allocate(sdc_ir%fields(size(tree%nodes)))
       do node=1,size(tree%nodes)
+#ifdef PELEF_MPI_EB_TREE
+        if(mpi_owners(node)/=mpi_rank) cycle
+#endif
         n=tree%topology%nodes(node)%shape
         allocate(sdc_ir%fields(node)%values(nv-4,n(1),n(2),n(3)),source=0._dp)
       end do
@@ -534,12 +541,20 @@ program pelef_reactive_eb_tree_3d
         boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
       end if
 #else
+      if(time_integrator=='sdc') then
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
+          mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature)
+      else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
         riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
         boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+      end if
 #endif
       if (sample_work) call end_tree_work(measured_cost)
 #else
