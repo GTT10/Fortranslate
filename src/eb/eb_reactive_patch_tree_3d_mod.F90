@@ -29,6 +29,7 @@ module eb_reactive_patch_tree_3d_mod
     type(amr_patch_tree_3d) :: topology
     type(eb_reactive_patch_3d), allocatable :: nodes(:)
   end type
+  public :: redistribute_eb_tree_state_3d
   public :: build_eb_tree_extended_geometry_3d
   public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
@@ -257,6 +258,263 @@ contains
     call move_alloc(exchange%fields,transfer%fields)
     ok=.true.
   end subroutine redistribute_sdc_eb_tree_level_rate_3d
+
+  ! Zeroth-order weighted StateRedist on composite fluid leaves. Large outward
+  ! receivers use the single-grid weights; otherwise connected neighborhoods
+  ! grow to the source cell's target physical volume with overlap accounting.
+  subroutine redistribute_eb_tree_state_3d(tree,input,result,ok,target_volume_fraction,boundary_faces)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: input
+    type(amr_tree_state_3d), intent(inout) :: result
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: target_volume_fraction
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type :: neighborhood
+      integer, allocatable :: member(:)
+    end type
+    type(neighborhood), allocatable :: groups(:)
+    type(amr_tree_state_3d) :: ids,candidate
+    integer(int64), allocatable :: origin(:,:),domain(:,:),scale(:)
+    integer, allocatable :: ratios(:),cells(:,:),receiver(:),memberships(:),queue(:),seen(:),neighbors(:),directions(:)
+    real(dp), allocatable :: volume(:),target(:),beta(:),self(:),value(:,:),average(:,:),output(:,:)
+    integer(int64) :: maximum,cell_lo(3),cell_hi(3)
+    character(len=32) :: faces(6)
+    integer :: nv,p,n(3),i,j,k,child,lo(3),hi(3),nc,root,other,m,count,head,tail,current,allocation_status
+    real(dp) :: fraction,total,weight,normal(3),score,best
+    logical :: valid,fallback
+    ok=.false.;fraction=.5_dp;faces='outflow'
+    if(present(target_volume_fraction)) fraction=target_volume_fraction
+    if(present(boundary_faces)) faces=boundary_faces
+    if(.not.ieee_is_finite(fraction)) return
+    if(fraction<=0.or.fraction>1.or..not.valid_reactive_boundaries_3d(faces)) return
+    if(.not.allocated(input%fields)) return
+    if(size(input%fields)<1) return
+    if(.not.allocated(input%fields(1)%values)) return
+    nv=size(input%fields(1)%values,1)
+    if(nv<1.or..not.valid_tree(tree,nv)) return
+    if(size(input%fields)/=size(tree%nodes)) return
+    if(.not.periodic_eb_faces_match(tree%nodes(1)%geometry,faces)) return
+    call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
+    if(.not.valid) return
+    maximum=0
+    do p=1,size(tree%nodes)
+      if(.not.allocated(input%fields(p)%values)) return
+      n=tree%topology%nodes(p)%shape
+      if(any(shape(input%fields(p)%values)/=[nv,n])) return
+      if(int(n(1),int64)*n(2)>int(huge(1),int64)/n(3)) return
+      maximum=maximum+int(n(1),int64)*n(2)*n(3)
+      if(maximum>huge(1)) return
+    end do
+    allocate(ids%fields(size(tree%nodes)),scale(size(ratios)),cells(4,int(maximum)),stat=allocation_status)
+    if(allocation_status/=0) return
+    scale=domain(1,size(ratios))/domain(1,:)
+    candidate=input;nc=0
+    do p=1,size(tree%nodes)
+      n=tree%topology%nodes(p)%shape
+      allocate(ids%fields(p)%values(1,n(1),n(2),n(3)),source=0._dp,stat=allocation_status)
+      if(allocation_status/=0) return
+      do child=p+1,size(tree%nodes)
+        if(tree%topology%nodes(child)%parent/=p) cycle
+        call bounds(tree%topology,child,lo,hi)
+        ids%fields(p)%values(1,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=-1
+      end do
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(tree%nodes(p)%geometry%volume_fraction(i,j,k)<=0) then
+          candidate%fields(p)%values(:,i,j,k)=0
+          ids%fields(p)%values(1,i,j,k)=0
+          cycle
+        end if
+        if(.not.all(ieee_is_finite(input%fields(p)%values(:,i,j,k)))) return
+        if(ids%fields(p)%values(1,i,j,k)<0) cycle
+        nc=nc+1;cells(:,nc)=[p,i,j,k];ids%fields(p)%values(1,i,j,k)=real(nc,dp)
+      end do
+      end do
+      end do
+    end do
+    if(nc>huge(1)/6) return
+    allocate(groups(nc),receiver(nc),memberships(nc),queue(nc),seen(nc),neighbors(6*nc),directions(6*nc), &
+      volume(nc),target(nc),beta(nc),self(nc),value(nv,nc),average(nv,nc),output(nv,nc),stat=allocation_status)
+    if(allocation_status/=0) return
+    do root=1,nc
+      p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
+      associate(g=>tree%nodes(p)%geometry)
+        target(root)=fraction*g%dx*g%dy*g%dz
+        volume(root)=g%volume_fraction(i,j,k)*g%dx*g%dy*g%dz
+      end associate
+      if(min(volume(root),target(root))<=0) return
+      value(:,root)=input%fields(p)%values(:,i,j,k)
+    end do
+    receiver=0;memberships=1;self=1;beta=0;fallback=.false.
+    do root=1,nc
+      if(volume(root)>=target(root)) cycle
+      current=root
+      call adjacent(count)
+      p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
+      associate(g=>tree%nodes(p)%geometry)
+        normal=[g%boundary_normal_x(i,j,k),g%boundary_normal_y(i,j,k),g%boundary_normal_z(i,j,k)]
+      end associate
+      best=-1
+      do m=1,count
+        other=neighbors(m)
+        if(volume(other)<max(target(root),target(other))) cycle
+        score=normal(abs(directions(m)))*real(sign(1,directions(m)),dp)
+        if(score<=512*epsilon(1._dp).or.score<=best) cycle
+        best=score;receiver(root)=other
+      end do
+      if(receiver(root)==0) then
+        fallback=.true.;exit
+      end if
+      other=receiver(root)
+      beta(root)=(target(root)-volume(root))/volume(other)
+      memberships(other)=memberships(other)+1
+    end do
+    if(.not.fallback) then
+      do root=1,nc
+        other=receiver(root)
+        if(other==0) cycle
+        self(other)=self(other)-beta(root)/real(memberships(other),dp)
+      end do
+      do root=1,nc
+        total=self(root)*volume(root);average(:,root)=total*value(:,root)
+        other=receiver(root)
+        if(other>0) then
+          weight=beta(root)*volume(other)/real(memberships(other),dp)
+          total=total+weight;average(:,root)=average(:,root)+weight*value(:,other)
+        end if
+        if(total<=0.or.self(root)<0) return
+        average(:,root)=average(:,root)/total
+      end do
+      output=0
+      do root=1,nc
+        output(:,root)=output(:,root)+self(root)*real(memberships(root),dp)*average(:,root)
+        other=receiver(root)
+        if(other>0) output(:,other)=output(:,other)+beta(root)*average(:,root)
+      end do
+      do root=1,nc
+        output(:,root)=output(:,root)/real(memberships(root),dp)
+      end do
+    else
+      memberships=1;seen=0
+      do root=1,nc
+        if(volume(root)>=target(root)) cycle
+        head=1;tail=1;queue(1)=root;seen(root)=root;total=volume(root)
+        do while(total<target(root).and.head<=tail)
+          current=queue(head)
+          call adjacent(count)
+          do m=1,count
+            if(total>=target(root)) exit
+            other=neighbors(m)
+            if(seen(other)==root) cycle
+            tail=tail+1;queue(tail)=other;seen(other)=root;total=total+volume(other)
+          end do
+          head=head+1
+        end do
+        if(total<target(root)) return
+        allocate(groups(root)%member(tail),stat=allocation_status)
+        if(allocation_status/=0) return
+        groups(root)%member=queue(:tail)
+        do m=2,tail
+          other=queue(m);memberships(other)=memberships(other)+1
+        end do
+      end do
+      output=0
+      do root=1,nc
+        count=1
+        if(allocated(groups(root)%member)) count=size(groups(root)%member)
+        total=0;average(:,root)=0
+        do m=1,count
+          other=root
+          if(allocated(groups(root)%member)) other=groups(root)%member(m)
+          weight=volume(other)/real(memberships(other),dp)
+          total=total+weight;average(:,root)=average(:,root)+weight*value(:,other)
+        end do
+        if(total<=0) return
+        average(:,root)=average(:,root)/total
+        do m=1,count
+          other=root
+          if(allocated(groups(root)%member)) other=groups(root)%member(m)
+          output(:,other)=output(:,other)+average(:,root)/real(memberships(other),dp)
+        end do
+      end do
+    end if
+    if(.not.all(ieee_is_finite(output))) return
+    do root=1,nc
+      p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
+      candidate%fields(p)%values(:,i,j,k)=output(:,root)
+    end do
+    call move_alloc(candidate%fields,result%fields);ok=.true.
+  contains
+    subroutine adjacent(count)
+      integer, intent(out) :: count
+      integer :: axis,side,q,direction,lower(3),upper(3),xyz(3),a,b,c,face_cell
+      integer(int64) :: face,s,qlo(3),qhi(3),first(3),last(3)
+      integer :: neighbor
+      p=cells(1,current);i=cells(2,current);j=cells(3,current);k=cells(4,current)
+      cell_lo=(origin(:,p)+[i-1,j-1,k-1])*scale(tree%topology%nodes(p)%level+1)
+      cell_hi=cell_lo+scale(tree%topology%nodes(p)%level+1)
+      count=0
+      do axis=1,3
+      do side=0,1
+        if(.not.open_face(tree%nodes(p)%geometry,[i,j,k],axis,side)) cycle
+        face=cell_lo(axis)
+        if(side==1) face=cell_hi(axis)
+        if(faces(2*axis-1)=='periodic') then
+          if(side==0.and.face==0) face=domain(axis,size(ratios))
+          if(side==1.and.face==domain(axis,size(ratios))) face=0
+        end if
+        do q=1,size(tree%nodes)
+          s=scale(tree%topology%nodes(q)%level+1)
+          ! A leaf can touch this face only on an integer cell boundary.
+          if(modulo(face,s)/=0) cycle
+          qlo=origin(:,q)*s;qhi=(origin(:,q)+tree%topology%nodes(q)%shape)*s
+          if(side==0.and.(face<=qlo(axis).or.face>qhi(axis))) cycle
+          if(side==1.and.(face<qlo(axis).or.face>=qhi(axis))) cycle
+          first=0;last=0
+          do direction=1,3
+            if(direction==axis) cycle
+            first(direction)=max(cell_lo(direction),qlo(direction))
+            last(direction)=min(cell_hi(direction),qhi(direction))
+          end do
+          if(any([(last(direction)<=first(direction).and.direction/=axis,direction=1,3)])) cycle
+          do direction=1,3
+            if(direction==axis) cycle
+            lower(direction)=int(first(direction)/s-origin(direction,q))+1
+            upper(direction)=int((last(direction)-1)/s-origin(direction,q))+1
+          end do
+          face_cell=int(face/s-origin(axis,q))+side
+          lower(axis)=face_cell;upper(axis)=face_cell
+          do c=lower(3),upper(3)
+          do b=lower(2),upper(2)
+          do a=lower(1),upper(1)
+            xyz=[a,b,c]
+            if(ids%fields(q)%values(1,a,b,c)<=0) cycle
+            if(.not.open_face(tree%nodes(q)%geometry,xyz,axis,1-side)) cycle
+            neighbor=int(ids%fields(q)%values(1,a,b,c))
+            count=count+1;neighbors(count)=neighbor;directions(count)=axis*(2*side-1)
+          end do
+          end do
+          end do
+        end do
+      end do
+      end do
+    end subroutine adjacent
+    logical function open_face(g,cell,axis,side) result(opened)
+      type(eb_geometry_3d), intent(in) :: g
+      integer, intent(in) :: cell(3),axis,side
+      integer :: f(3)
+      f=cell;f(axis)=f(axis)-1+side
+      select case(axis)
+      case(1)
+        opened=g%x_face_fraction(f(1),f(2),f(3))>0
+      case(2)
+        opened=g%y_face_fraction(f(1),f(2),f(3))>0
+      case(3)
+        opened=g%z_face_fraction(f(1),f(2),f(3))>0
+      end select
+    end function open_face
+  end subroutine redistribute_eb_tree_state_3d
 
   subroutine bounds(tree,node,lo,hi)
     type(amr_patch_tree_3d), intent(in) :: tree
