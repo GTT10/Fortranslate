@@ -14,7 +14,10 @@ program test_mpi_eb_tree_transport_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use mpi_eb_tree_timestep_3d_mod, only: mpi_eb_tree_timestep_3d
   use eb_reactive_patch_tree_3d_mod, only: reactive_eb_tree_timestep_3d
-  use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d
+  use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d,compute_sdc_mpi_eb_tree_transport_3d
+  use eb_reactive_patch_tree_3d_mod, only: compute_sdc_eb_tree_transport_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
+  use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -94,6 +97,7 @@ program test_mpi_eb_tree_transport_3d
   call integrate_reactive_eb_tree_3d(tree,before,ok)
   call require(ok,'initial inventory')
   saved=tree
+  if(axis==3.and.count==5) call check_sdc_transport()
   boundary=17._dp;theta=19._dp
   call advance_reactive_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
     tree,boundary,theta,ok,boundary_faces=labels,wall_temperature=wall_t)
@@ -117,6 +121,71 @@ program test_mpi_eb_tree_transport_3d
   if (rank==0) print *, 'test_mpi_eb_tree_transport_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine check_sdc_transport()
+    type(eb_reactive_tree_3d) :: stage_tree
+    type(amr_tree_state_3d) :: local,lt,rates,reference,prior,ghost,gt
+    type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:)
+    type(eb_geometry_3d) :: geometry(count)
+    real(dp) :: limiter,expected_theta,dt
+    integer :: owners(count),p,mode,failure
+    logical :: good
+    stage_tree=saved
+    ! Provisional parents deliberately differ from the restricted fine state.
+    stage_tree%nodes(1)%state=1.01_dp*stage_tree%nodes(1)%state
+    call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+      stage_tree,reference,expected,expected_theta,good,boundary_faces=labels,wall_temperature=wall_t)
+    call require(good,'serial SDC stage')
+    do p=1,count
+      geometry(p)=stage_tree%nodes(p)%geometry
+    end do
+    do mode=1,2
+      owners=[(mod(p-1,nranks),p=1,count)]
+      if(mode==2) owners=0
+      allocate(local%fields(count),lt%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        local%fields(p)%values=stage_tree%nodes(p)%state
+        allocate(lt%fields(p)%values(1,4,4,4))
+        lt%fields(p)%values(1,:,:,:)=stage_tree%nodes(p)%temperature
+      end do
+      call compute_sdc_mpi_eb_tree_transport_3d(species,transport,topology,owners,geometry,1.e-8_dp, &
+        .true.,.true.,.true.,.true.,local,lt,rates,flux,limiter,MPI_COMM_WORLD,good, &
+        boundary_faces=labels,wall_temperature=wall_t)
+      call require(good.and.limiter==expected_theta,'MPI SDC limiter')
+      do p=1,count
+        call require(allocated(rates%fields(p)%values).eqv.(owners(p)==rank),'owner-local SDC rates')
+        call require(allocated(flux(p)%x).eqv.(owners(p)==rank),'owner-local SDC flux')
+        if(owners(p)/=rank) cycle
+        call require(all(rates%fields(p)%values==reference%fields(p)%values),'exact serial SDC rate')
+        call require(all(flux(p)%x==expected(p)%x).and.all(flux(p)%y==expected(p)%y).and. &
+          all(flux(p)%z==expected(p)%z),'exact serial SDC flux')
+        call require(all(local%fields(p)%values==stage_tree%nodes(p)%state),'SDC preserves input U')
+        call require(all(lt%fields(p)%values(1,:,:,:)==stage_tree%nodes(p)%temperature),'SDC preserves input T')
+      end do
+      prior=rates;old_flux=flux
+      do failure=1,2
+        dt=1.e-8_dp;limiter=19
+        if(failure==1.and.rank==owners(count)) local%fields(count)%values(1,4,4,4)=-1
+        if(failure==2.and.rank==nranks-1) dt=-dt
+        call compute_sdc_mpi_eb_tree_transport_3d(species,transport,topology,owners,geometry,dt, &
+          .true.,.true.,.true.,.true.,local,lt,rates,flux,limiter,MPI_COMM_WORLD,good, &
+          boundary_faces=labels,wall_temperature=wall_t)
+        call require(.not.good.and.limiter==19,'collective SDC rejection')
+        do p=1,count
+          if(owners(p)/=rank) cycle
+          call require(all(rates%fields(p)%values==prior%fields(p)%values),'SDC rates rollback')
+          call require(all(flux(p)%x==old_flux(p)%x).and.all(flux(p)%y==old_flux(p)%y).and. &
+            all(flux(p)%z==old_flux(p)%z),'SDC flux rollback')
+        end do
+        if(rank==owners(count)) local%fields(count)%values=stage_tree%nodes(count)%state
+      end do
+      call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,local,lt,ghost,gt,MPI_COMM_WORLD, &
+        good,restrict_snapshot=rank==0)
+      call require(.not.good.and..not.allocated(ghost%fields).and..not.allocated(gt%fields), &
+        'rank-dependent restriction rejected before halo exchange')
+      deallocate(local%fields,lt%fields)
+    end do
+  end subroutine check_sdc_transport
   subroutine check_mpi_transport()
     type(amr_tree_state_3d) :: local,lt,initial,it
     type(eb_geometry_3d) :: geometry(count)

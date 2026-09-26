@@ -9,7 +9,7 @@ module mpi_eb_tree_halo_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
   use eb_reactive_transfer_3d_mod, only: face_metrics
-  use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d
+  use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d,validate_mpi_eb_tree_geometry_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
   implicit none
   private
@@ -25,7 +25,7 @@ contains
   subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
       inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction,halo_width,target_volume_fraction, &
-      boundary_faces,inflow_state)
+      boundary_faces,inflow_state,restrict_snapshot)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -33,6 +33,7 @@ contains
     type(amr_tree_state_3d), intent(in) :: state,temperature
     type(amr_tree_state_3d), intent(inout) :: ghost,ghost_temperature
     type(amr_tree_state_3d), optional, intent(inout) :: ghost_volume_fraction
+    logical, optional, intent(in) :: restrict_snapshot
     integer, optional, intent(in) :: halo_width
     type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
     type(amr_tree_state_3d) :: cv
@@ -54,14 +55,16 @@ contains
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
     integer :: i,j,k,donor,source(3),count,q,width,wrap_axis
-    real(dp) :: controls(29+6*reactive_nvar(size(species)))
+    real(dp) :: controls(30+6*reactive_nvar(size(species)))
     real(dp) :: low_controls(size(controls)),high_controls(size(controls)),inlet(reactive_nvar(size(species)))
     real(dp) :: inlet_t
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
     integer :: inlet_face,momentum_sign(3)
-    logical :: valid,ready,full_halo
+    logical :: valid,ready,full_halo,restrict_state
     ok=.false.;nv=reactive_nvar(size(species))
+    restrict_state=.true.
+    if(present(restrict_snapshot)) restrict_state=restrict_snapshot
     full_halo=present(ghost_volume_fraction)
     width=1
     if(present(halo_width)) width=halo_width
@@ -83,7 +86,7 @@ contains
     if(present(inflow_state)) then
       controls(29)=1
       if(all(shape(inflow_state)==[nv,6])) then
-        controls(30:)=reshape(inflow_state,[6*nv])
+        controls(30:29+6*nv)=reshape(inflow_state,[6*nv])
       else
         valid=.false.
       end if
@@ -91,6 +94,7 @@ contains
     if (present(inflow_mach)) controls(:6)=inflow_mach
     if (present(inflow_temperature)) controls(7:12)=inflow_temperature
     if (present(inflow_pressure)) controls(13:18)=inflow_pressure
+    controls(size(controls))=merge(1._dp,0._dp,restrict_state)
     controls(19)=merge(1._dp,0._dp,full_halo)
     controls(20)=real(width,dp);controls(21)=merge(1._dp,0._dp,present(target_volume_fraction))
     valid=valid.and.width>=1.and.width<=huge(1)/4
@@ -109,11 +113,20 @@ contains
     call MPI_Allreduce(controls,high_controls,size(controls),MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low_controls/=high_controls)) return
-    ! Average only a private owner-local snapshot. This also validates geometry,
-    ! topology, owners and both input container shapes collectively.
+    ! SDC stage snapshots retain provisional parent states. Both paths validate
+    ! geometry, topology, owners and input shapes before donor exchange.
     snapshot=state;st=temperature
-    call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
-    if (.not.ready) return
+    if(restrict_state) then
+      call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
+      if (.not.ready) return
+    else
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
+      if (.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,nv,comm,ready)
+      if (.not.ready) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,ready)
+      if (.not.ready) return
+    end if
     valid=.true.
     if(present(boundary_faces)) valid=periodic_eb_faces_match(geometry(1),boundary_faces)
     call agree(valid,ready)
