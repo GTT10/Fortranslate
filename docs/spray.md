@@ -24,8 +24,11 @@ The library additionally provides `advance_mpi_eb_spray_sdc_subcycle`, connectin
 recursive gas stages, physical/virtual/ghost particles, predictor halos and final
 physical collection for a nonperiodic drag/heating/evaporation core. The application
 still exposes common-step SDC. Recursive breakup, films, particle acceleration,
-additional boundaries and complete subtree lifecycle integration remain open;
-see the [coupled core checks](validation/spray-recursive-core-20260927.md).
+complete subtree lifecycle integration remain open. Inflow metadata and isothermal
+wall temperatures now reach recursive gas stages; particle faces map inflow to
+outflow and isothermal walls to no-slip reflection, as in the common-step wrapper.
+See the [coupled core checks](validation/spray-recursive-core-20260927.md) and
+[boundary checks](validation/spray-recursive-boundary-20260927.md).
 
 ## Level-bounded particle ownership
 
