@@ -1,7 +1,10 @@
 # Recursive spray cell source and unresolved interface budget — 2026-09-27
 
 Implementation `d7854311`, based on `2d087ccd`, local main, version 0.246.0.
-**The new crossing regression fails. This change is not a conservation fix.**
+**At this recorded source identity, the new crossing regression fails.**
+The later [physical-source synchronization](spray-recursive-source-sync-20260927.md)
+resolves the recorded two-level crossing cases; the measurements below describe
+the preceding implementation.
 
 ## Source discrepancy corrected
 

@@ -32,13 +32,17 @@ outflow and isothermal walls to no-slip reflection, as in the common-step wrappe
 See the [coupled core checks](validation/spray-recursive-core-20260927.md) and
 [boundary checks](validation/spray-recursive-boundary-20260927.md).
 
-The recursive population source now uses the pinned PelePhysics containing-cell
-rule; gas sampling still uses surrounding donors. **Coarse/fine crossing
-conservation is currently failing**: the registered
-`spray_mpi_eb_sdc_recursive_crossing_2` regression has not passed. Physical
-ownership transfer succeeds, but physical exchange and composite deposited
-exchange disagree. See the [source audit and failure record](validation/spray-recursive-crossing-20260927.md).
-This must be resolved before qualifying recursive application stepping.
+The recursive population source uses the pinned PelePhysics containing-cell
+rule; gas sampling still uses surrounding donors. At outer synchronization,
+PeleF replaces the provisional copy-supported leaf exchange with the actual
+physical-particle exchange, deposited at its containing composite leaf cell.
+This conservative synchronization is an addition to the pinned same-level
+transfer, not a claim of exact upstream numerical parity. Both directions of
+coarse/fine crossing now pass the unchanged inventory criterion; see the
+[source synchronization checks](validation/spray-recursive-source-sync-20260927.md).
+The preceding [source audit and failure record](validation/spray-recursive-crossing-20260927.md)
+remains historical evidence. Three-level coupled evolution, temporal accuracy,
+strong-coupling admissibility and recursive application integration remain open.
 
 ## Level-bounded particle ownership
 
