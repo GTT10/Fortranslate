@@ -7,7 +7,7 @@ program test_spray_mpi_amr_tree
   use spray_parcel_mod, only: spray_parcel
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
     create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles, &
-    spray_level_population,collect_mpi_amr_level_particles
+    spray_level_population,collect_mpi_amr_level_particles,initialize_mpi_amr_sdc_populations
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -38,6 +38,7 @@ program test_spray_mpi_amr_tree
   end do
   saved=parcels;saved_mass=masses
   call check_physical_levels()
+  call check_sdc_populations()
   do p=1,size(parcels)
     parcels(p)%position=[merge(1.125_dp,3.875_dp,mod(parcels(p)%id,2_int64)==1),.25_dp,.25_dp]
   end do
@@ -177,6 +178,62 @@ program test_spray_mpi_amr_tree
   if (rank==0) print *, 'PASS: AMR spray MPI migration'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_sdc_populations()
+    type(spray_level_population), allocatable :: active(:),coarse_copies(:),fine_copies(:)
+    type(spray_level_population), allocatable :: old_active(:),old_coarse(:),old_fine(:)
+    integer :: level,a,seen(2*nranks)
+    call initialize_mpi_amr_sdc_populations(MPI_COMM_WORLD,tree,owners,saved,saved_mass,zero,spacing, &
+      [.true.,.false.,.false.],8,100,active,coarse_copies,fine_copies,ok)
+    call require(ok,'initialize synchronized SDC populations')
+    call require(size(active)==3.and.size(coarse_copies)==3.and.size(fine_copies)==3,'population level count')
+    seen=0
+    do level=1,3
+      do a=1,size(active(level)%parcels)
+        seen(int(active(level)%parcels(a)%id))=seen(int(active(level)%parcels(a)%id))+1
+      end do
+      call check_population(active(level),level-1)
+      call check_population(coarse_copies(level),level-1)
+      call check_population(fine_copies(level),level-1)
+    end do
+    call MPI_Allreduce(MPI_IN_PLACE,seen,size(seen),MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(all(seen==1),'initialized physical population has each ID once')
+    call require(size(active(1)%parcels)==0.and.size(fine_copies(1)%parcels)==0,'root physical and ghosts empty')
+    call require(size(coarse_copies(1)%parcels)==merge(2*nranks,0,rank==0),'all physical descendants copied to root')
+    call require(size(coarse_copies(2)%parcels)==merge(nranks,0,rank==0),'fine descendants copied to parent')
+    call require(size(coarse_copies(3)%parcels)==0,'no virtuals at finest level')
+    call require(size(fine_copies(3)%parcels)==merge(nranks,0,rank==nranks-1),'immediate coarse ghost population')
+    old_active=active;old_coarse=coarse_copies;old_fine=fine_copies
+    ! Physical level capacity fits; root virtual copies exceed it afterwards.
+    call initialize_mpi_amr_sdc_populations(MPI_COMM_WORLD,tree,owners,saved,saved_mass,zero,spacing, &
+      [.true.,.false.,.false.],8,nranks,active,coarse_copies,fine_copies,ok)
+    call require(.not.ok,'late virtual capacity rejects initialization')
+    do level=1,3
+      call compare_population(active(level),old_active(level))
+      call compare_population(coarse_copies(level),old_coarse(level))
+      call compare_population(fine_copies(level),old_fine(level))
+    end do
+    call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'SDC initialization retains physical input')
+  end subroutine check_sdc_populations
+  subroutine check_population(population,level)
+    type(spray_level_population), intent(in) :: population
+    integer, intent(in) :: level
+    integer :: a
+    do a=1,size(population%parcels)
+      expected=make_parcel(int(population%parcels(a)%id))
+      call require(tree%nodes(population%nodes(a))%level==level.and.owners(population%nodes(a))==rank, &
+        'initialized population level and owner')
+      call require(all(population%parcels(a)%position==expected%position).and. &
+        all(population%parcels(a)%velocity==expected%velocity).and. &
+        population%parcels(a)%temperature==expected%temperature,'population snapshot before motion')
+      call require(all(population%component_mass(:,a)==expected%mass*[.25_dp,.75_dp]),'population components')
+    end do
+  end subroutine check_population
+  subroutine compare_population(population,old)
+    type(spray_level_population), intent(in) :: population,old
+    call require(size(population%parcels)==size(old%parcels),'population count rollback')
+    call require(all(population%parcels%id==old%parcels%id).and.all(population%nodes==old%nodes).and. &
+      all(population%component_mass==old%component_mass),'population identity and components rollback')
+  end subroutine compare_population
   subroutine check_physical_levels()
     type(spray_parcel), allocatable :: selected(:),before(:)
     type(spray_level_population) :: populations(3)

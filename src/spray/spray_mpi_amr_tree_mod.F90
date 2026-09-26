@@ -16,12 +16,83 @@ module spray_mpi_amr_tree_mod
   public :: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels
   public :: create_mpi_amr_virtual_particles,create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
   public :: create_mpi_amr_level_particles,collect_mpi_amr_level_particles
+  public :: initialize_mpi_amr_sdc_populations
   type, public :: spray_level_population
     type(spray_parcel), allocatable :: parcels(:)
     real(dp), allocatable :: component_mass(:,:)
     integer, allocatable :: nodes(:)
   end type spray_level_population
 contains
+  ! Initialize an outer step from a synchronized physical population. Every
+  ! copy is made before any level moves. Outputs use level+1 indexing; only
+  ! physical populations may be collected into the final physical inventory.
+  subroutine initialize_mpi_amr_sdc_populations(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+      grow,maximum_parcels,physical,virtuals,ghosts,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),grow,maximum_parcels
+    type(spray_parcel), allocatable, intent(in) :: parcels(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_level_population), allocatable, intent(inout) :: physical(:),virtuals(:),ghosts(:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_level_population), allocatable :: active(:),coarse_copies(:),fine_copies(:)
+    real(dp), allocatable :: positions(:,:)
+    integer, allocatable :: locations(:,:)
+    integer :: levels,level,p,nc,status,ios,flags(4),low(4),high(4)
+    logical :: valid,agreed
+    ok=.false.;valid=tree%is_valid().and.grow>=0.and.maximum_parcels>=0
+    call agree();if(.not.agreed) return
+    levels=tree%level_count()
+    flags=[levels,grow,maximum_parcels,merge(1,0,present(nodal_phi))]
+    call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    allocate(active(levels),coarse_copies(levels),fine_copies(levels),stat=ios)
+    valid=ios==0;call agree();if(.not.agreed) return
+    ! Select every physical level first; none of these calls changes the source.
+    do level=0,levels-1
+      call create_mpi_amr_level_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+        level,maximum_parcels,active(level+1)%parcels,active(level+1)%component_mass, &
+        active(level+1)%nodes,valid,nodal_phi)
+      if(.not.valid) return
+    end do
+    nc=size(component_mass,1)
+    do level=0,levels-1
+      call create_mpi_amr_virtual_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+        level,maximum_parcels,coarse_copies(level+1)%parcels,coarse_copies(level+1)%component_mass,valid,nodal_phi)
+      if(.not.valid) return
+      allocate(positions(3,size(coarse_copies(level+1)%parcels)),stat=ios)
+      valid=ios==0;call agree();if(.not.agreed) return
+      do p=1,size(positions,2)
+        positions(:,p)=coarse_copies(level+1)%parcels(p)%position
+      end do
+      call locate_amr_tree_spray_cells(tree,positions,lower,spacing,periodic,locations,valid,maximum_level=level)
+      call agree();if(.not.agreed) return
+      coarse_copies(level+1)%nodes=locations(1,:)
+      deallocate(positions)
+      if(level==0) then
+        allocate(fine_copies(1)%parcels(0),fine_copies(1)%component_mass(nc,0),fine_copies(1)%nodes(0),stat=ios)
+        valid=ios==0;call agree();if(.not.agreed) return
+      else
+        call create_mpi_amr_ghost_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
+          level,grow,maximum_parcels,fine_copies(level+1)%parcels,fine_copies(level+1)%component_mass, &
+          fine_copies(level+1)%nodes,valid,nodal_phi)
+        if(.not.valid) return
+      end if
+    end do
+    call move_alloc(active,physical);call move_alloc(coarse_copies,virtuals);call move_alloc(fine_copies,ghosts)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine initialize_mpi_amr_sdc_populations
+
   ! Merge physical level snapshots after their clocks synchronize. Ghost and
   ! virtual copies must not be supplied. ID-bin exchange detects duplicates
   ! globally before the private result migrates to current geometric owners.
