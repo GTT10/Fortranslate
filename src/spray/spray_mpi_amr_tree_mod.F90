@@ -17,12 +17,88 @@ module spray_mpi_amr_tree_mod
   public :: create_mpi_amr_virtual_particles,create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles
   public :: create_mpi_amr_level_particles,collect_mpi_amr_level_particles
   public :: initialize_mpi_amr_sdc_populations,redistribute_mpi_amr_level_particles
+  public :: refresh_mpi_amr_level_copies
   type, public :: spray_level_population
     type(spray_parcel), allocatable :: parcels(:)
     real(dp), allocatable :: component_mass(:,:)
     integer, allocatable :: nodes(:)
   end type spray_level_population
 contains
+  ! Refresh copies before this level moves. Physical arrays carry logical
+  ! level ownership until synchronization, even across valid-box boundaries.
+  ! Descendants must be at this interval's start; next-level ghosts are made
+  ! from the current level only and retained through its child substeps.
+  subroutine refresh_mpi_amr_level_copies(comm,tree,owners,physical,lower,spacing,periodic,target_level,grow, &
+      maximum_parcels,virtuals,next_ghosts,ok,nodal_phi)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,grow,maximum_parcels
+    type(spray_level_population), intent(in) :: physical(:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    logical, intent(in) :: periodic(3)
+    type(spray_level_population), intent(inout) :: virtuals,next_ghosts
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    type(spray_level_population), allocatable :: descendants(:)
+    type(spray_level_population) :: coarse_copy,fine_copy
+    integer :: levels,level,nc,status,ios,flags(5),low(5),high(5)
+    logical :: valid,agreed
+    ok=.false.;valid=tree%is_valid()
+    call agree();if(.not.agreed) return
+    levels=tree%level_count()
+    valid=size(physical)==levels.and.target_level>=0.and.target_level<levels.and.grow>=0.and.maximum_parcels>=0
+    call agree();if(.not.agreed) return
+    flags=[levels,target_level,grow,maximum_parcels,merge(1,0,present(nodal_phi))]
+    call MPI_Allreduce(flags,low,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    nc=0
+    do level=1,levels
+      valid=allocated(physical(level)%parcels).and.allocated(physical(level)%component_mass)
+      if(.not.valid) exit
+      if(level==1) nc=size(physical(level)%component_mass,1)
+      valid=nc>=1.and.nc<=16
+      valid=valid.and.all(shape(physical(level)%component_mass)==[nc,size(physical(level)%parcels)])
+      if(.not.valid) exit
+    end do
+    call agree();if(.not.agreed) return
+    allocate(descendants(levels),stat=ios)
+    valid=ios==0;call agree();if(.not.agreed) return
+    do level=1,levels
+      if(level>target_level+1) then
+        descendants(level)=physical(level)
+      else
+        allocate(descendants(level)%parcels(0),descendants(level)%component_mass(nc,0),stat=ios)
+        valid=ios==0;call agree();if(.not.agreed) return
+      end if
+    end do
+    ! Collection validates unique live IDs; selection was by logical level,
+    ! not by current geometric containment. Its temporary finest owners do
+    ! not change which parcels are represented at the requested parent level.
+    call collect_mpi_amr_level_particles(comm,tree,owners,descendants,lower,spacing,periodic,1000000, &
+      coarse_copy%parcels,coarse_copy%component_mass,valid,nodal_phi)
+    if(.not.valid) return
+    call redistribute_mpi_amr_level_particles(comm,tree,owners,coarse_copy%parcels,coarse_copy%component_mass, &
+      coarse_copy%nodes,lower,spacing,periodic,target_level,grow,maximum_parcels,valid,nodal_phi)
+    if(.not.valid) return
+    if(target_level+1<levels) then
+      call route_mpi_amr_ghost_particles(comm,tree,owners,physical(target_level+1)%parcels, &
+        physical(target_level+1)%component_mass,lower,spacing,periodic,target_level+1,grow,maximum_parcels, &
+        fine_copy%parcels,fine_copy%component_mass,fine_copy%nodes,valid,.false.,nodal_phi)
+      if(.not.valid) return
+    else
+      allocate(fine_copy%parcels(0),fine_copy%component_mass(nc,0),fine_copy%nodes(0),stat=ios)
+      valid=ios==0;call agree();if(.not.agreed) return
+    end if
+    virtuals=coarse_copy;next_ghosts=fine_copy;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine refresh_mpi_amr_level_copies
+
   ! Initialize an outer step from a synchronized physical population. Every
   ! copy is made before any level moves. Outputs use level+1 indexing; only
   ! physical populations may be collected into the final physical inventory.

@@ -8,7 +8,7 @@ program test_spray_mpi_amr_tree
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
     create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles, &
     spray_level_population,collect_mpi_amr_level_particles,initialize_mpi_amr_sdc_populations, &
-    redistribute_mpi_amr_level_particles
+    redistribute_mpi_amr_level_particles,refresh_mpi_amr_level_copies
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -223,6 +223,7 @@ contains
   subroutine check_sdc_populations()
     type(spray_level_population), allocatable :: active(:),coarse_copies(:),fine_copies(:)
     type(spray_level_population), allocatable :: old_active(:),old_coarse(:),old_fine(:)
+    type(spray_level_population) :: refreshed_virtual,refreshed_ghost,old_virtual,old_ghost
     integer :: level,a,seen(2*nranks)
     call initialize_mpi_amr_sdc_populations(MPI_COMM_WORLD,tree,owners,saved,saved_mass,zero,spacing, &
       [.true.,.false.,.false.],8,100,active,coarse_copies,fine_copies,ok)
@@ -255,6 +256,49 @@ contains
       call compare_population(fine_copies(level),old_fine(level))
     end do
     call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'SDC initialization retains physical input')
+    ! Logical fine particles cross into coarse geometry, while logical coarse
+    ! particles enter the finer valid patch before synchronization.
+    do level=2,3
+      do a=1,size(active(level)%parcels)
+        active(level)%parcels(a)%position(1)=merge(.875_dp,1.125_dp,level==2)
+      end do
+    end do
+    old_active=active
+    call refresh_mpi_amr_level_copies(MPI_COMM_WORLD,tree,owners,active,zero,spacing,[.true.,.false.,.false.], &
+      1,1,100,refreshed_virtual,refreshed_ghost,ok)
+    call require(ok,'refresh copies from logical level populations')
+    call require(size(refreshed_virtual%parcels)==merge(nranks,0,rank==0),'crossing descendants remain virtual sources')
+    call require(size(refreshed_ghost%parcels)==merge(nranks,0,rank==nranks-1),'crossing parents remain ghost sources')
+    call require(all(refreshed_virtual%nodes==2).and.all(refreshed_ghost%nodes==4),'refreshed copy target nodes')
+    do a=1,size(refreshed_virtual%parcels)
+      call require(modulo(refreshed_virtual%parcels(a)%id,2_int64)==1,'virtual IDs selected from logical descendants')
+      call require(refreshed_virtual%parcels(a)%position(1)==1.125_dp,'virtual crossing position retained')
+      expected=make_parcel(int(refreshed_virtual%parcels(a)%id))
+      call require(all(refreshed_virtual%component_mass(:,a)==expected%mass*[.25_dp,.75_dp]),'refreshed virtual components')
+    end do
+    do a=1,size(refreshed_ghost%parcels)
+      call require(modulo(refreshed_ghost%parcels(a)%id,2_int64)==0,'ghost IDs selected from logical parent')
+      call require(refreshed_ghost%parcels(a)%position(1)==.875_dp,'ghost crossing position retained')
+      expected=make_parcel(int(refreshed_ghost%parcels(a)%id))
+      call require(all(refreshed_ghost%component_mass(:,a)==expected%mass*[.25_dp,.75_dp]),'refreshed ghost components')
+    end do
+    old_virtual=refreshed_virtual;old_ghost=refreshed_ghost
+    call refresh_mpi_amr_level_copies(MPI_COMM_WORLD,tree,owners,active,zero,spacing,[.true.,.false.,.false.], &
+      1,1,0,refreshed_virtual,refreshed_ghost,ok)
+    call require(.not.ok,'copy refresh capacity failure')
+    call compare_population(refreshed_virtual,old_virtual)
+    call compare_population(refreshed_ghost,old_ghost)
+    do level=1,3
+      call compare_population(active(level),old_active(level))
+      do a=1,size(active(level)%parcels)
+        call require(all(active(level)%parcels(a)%position==old_active(level)%parcels(a)%position), &
+          'copy refresh never moves source physical population')
+      end do
+    end do
+    call refresh_mpi_amr_level_copies(MPI_COMM_WORLD,tree,owners,active,zero,spacing,[.true.,.false.,.false.], &
+      2,1,100,refreshed_virtual,refreshed_ghost,ok)
+    call require(ok.and.size(refreshed_virtual%parcels)==0.and.size(refreshed_ghost%parcels)==0, &
+      'finest level creates no descendant or next-level copies')
   end subroutine check_sdc_populations
   subroutine check_population(population,level)
     type(spray_level_population), intent(in) :: population
