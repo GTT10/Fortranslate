@@ -230,7 +230,9 @@ contains
   ! SDC CTU stage: owner-local rates and integrated fluxes, without reflux or restriction.
   subroutine compute_sdc_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,state,temperature,predictor, &
       extended_geometry,dt,hydro_rate,flux,comm,ok,difmag,boundary_faces,inflow_state, &
-      inflow_mach,inflow_temperature,inflow_pressure)
+      inflow_mach,inflow_temperature,inflow_pressure, &
+      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      source_start,source_end,source_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -239,6 +241,12 @@ contains
     real(dp), intent(in) :: dt
     type(amr_tree_state_3d), intent(inout) :: hydro_rate
     type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    integer :: selected_depth,min_depth,max_depth
+    type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end
+    real(dp), optional, intent(in) :: source_fraction(:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
@@ -265,9 +273,24 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,high,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    selected_depth=-1
+    if(present(target_depth)) selected_depth=target_depth
+    valid=selected_depth>=-1
+    if(present(target_depth)) valid=selected_depth>=0
+    if(present(ancestor_start).or.present(ancestor_end).or.present(temperature_start).or. &
+      present(temperature_end).or.present(ancestor_fraction)) valid=valid.and.selected_depth>=0
+    if(present(source_start).or.present(source_end).or.present(source_fraction)) valid=valid.and.selected_depth>=0
+    call agree(valid,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(selected_depth,min_depth,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selected_depth,max_depth,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.min_depth/=max_depth) return
     call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
     if(.not.ready) return
     call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=6)
+    if(.not.ready) return
+    call agree(selected_depth<tree%level_count(),ready)
     if(.not.ready) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(valid) valid=all(domain<=int(huge(1)-4,int64))
@@ -300,7 +323,9 @@ contains
     call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,gt,comm,ready, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
       boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf,halo_width=6, &
-      target_volume_fraction=metrics,restrict_snapshot=.false.)
+      target_volume_fraction=metrics,restrict_snapshot=.false., &
+      ancestor_start=ancestor_start,ancestor_end=ancestor_end,temperature_start=temperature_start, &
+      temperature_end=temperature_end,ancestor_fraction=ancestor_fraction)
     if(.not.ready) return
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
@@ -308,10 +333,12 @@ contains
       where(inflow_mach>=0) faces='inflow'
     end if
     call fill_sdc_mpi_eb_tree_source_halo_3d(tree,owners,geometry,predictor,nv,3,source,comm,ready, &
-      boundary_faces=faces,target_volume_fraction=source_metrics)
+      boundary_faces=faces,target_volume_fraction=source_metrics, &
+      ancestor_start=source_start,ancestor_end=source_end,ancestor_fraction=source_fraction)
     if(.not.ready) return
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
+      if(selected_depth>=0.and.tree%nodes(node)%level/=selected_depth) cycle
       n=tree%nodes(node)%shape
       call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,working,valid)
       if(.not.valid) exit

@@ -122,11 +122,11 @@ program test_mpi_eb_tree_transport_3d
   call MPI_Finalize(status)
 contains
   subroutine check_sdc_transport()
-    type(eb_reactive_tree_3d) :: stage_tree
-    type(amr_tree_state_3d) :: local,lt,rates,reference,prior,ghost,gt
-    type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:)
+    type(eb_reactive_tree_3d) :: stage_tree,end_tree
+    type(amr_tree_state_3d) :: local,lt,rates,reference,prior,ghost,gt,end_local,level_rates,level_reference
+    type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:),level_flux(:),level_expected(:)
     type(eb_geometry_3d) :: geometry(count)
-    real(dp) :: limiter,expected_theta,dt
+    real(dp) :: limiter,expected_theta,dt,level_theta,level_expected_theta
     integer :: owners(count),p,mode,failure
     logical :: good
     stage_tree=saved
@@ -161,6 +161,30 @@ contains
           all(flux(p)%z==expected(p)%z),'exact serial SDC flux')
         call require(all(local%fields(p)%values==stage_tree%nodes(p)%state),'SDC preserves input U')
         call require(all(lt%fields(p)%values(1,:,:,:)==stage_tree%nodes(p)%temperature),'SDC preserves input T')
+      end do
+      end_tree=stage_tree;end_local=local
+      do p=1,count
+        end_tree%nodes(p)%state=1.01_dp*stage_tree%nodes(p)%state
+        if(owners(p)==rank) end_local%fields(p)%values=end_tree%nodes(p)%state
+      end do
+      call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+        stage_tree,level_reference,level_expected,level_expected_theta,good,boundary_faces=labels,wall_temperature=wall_t, &
+        target_depth=2,ancestor_start=stage_tree,ancestor_end=end_tree,ancestor_fraction=[.5_dp,.5_dp])
+      call require(good,'serial selected transport stage')
+      call compute_sdc_mpi_eb_tree_transport_3d(species,transport,topology,owners,geometry,1.e-8_dp, &
+        .true.,.true.,.true.,.true.,local,lt,level_rates,level_flux,level_theta,MPI_COMM_WORLD,good, &
+        boundary_faces=labels,wall_temperature=wall_t,target_depth=2,ancestor_start=local,ancestor_end=end_local, &
+        temperature_start=lt,temperature_end=lt,ancestor_fraction=[.5_dp,.5_dp])
+      call require(good.and.level_theta==level_expected_theta,'selected MPI transport limiter')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(level_rates%fields(p)%values==level_reference%fields(p)%values),'selected MPI transport rate')
+        if(topology%nodes(p)%level/=2) then
+          call require(.not.allocated(level_flux(p)%x),'inactive transport flux absent')
+          cycle
+        end if
+        call require(all(level_flux(p)%x==level_expected(p)%x).and.all(level_flux(p)%y==level_expected(p)%y).and. &
+          all(level_flux(p)%z==level_expected(p)%z),'selected MPI transport flux')
       end do
       prior=rates;old_flux=flux
       do failure=1,2

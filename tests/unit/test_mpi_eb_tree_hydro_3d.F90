@@ -206,9 +206,11 @@ contains
     end do
   end subroutine check_temporal_sources
   subroutine check_sdc_hydro()
-    type(eb_reactive_tree_3d) :: stage_tree
+    type(eb_reactive_tree_3d) :: stage_tree,end_tree
     type(amr_tree_state_3d) :: local,lt,predictor,local_predictor,rates,reference,prior
     type(eb_integrated_flux_3d), allocatable :: flux(:),expected(:),old_flux(:)
+    type(amr_tree_state_3d) :: end_local,end_source,local_end_source,level_rates,level_reference
+    type(eb_integrated_flux_3d), allocatable :: level_flux(:),level_expected(:)
     real(dp) :: dt,nan
     integer :: owners(count),p,mode,failure,c
     logical :: good
@@ -252,6 +254,38 @@ contains
           all(flux(p)%z==expected(p)%z),'exact serial SDC hydro flux')
         call require(all(local%fields(p)%values==stage_tree%nodes(p)%state),'SDC preserves input U')
         call require(all(lt%fields(p)%values(1,:,:,:)==stage_tree%nodes(p)%temperature),'SDC preserves input T')
+      end do
+      end_tree=stage_tree;end_local=local;end_source=predictor;local_end_source=local_predictor
+      do p=1,count
+        end_tree%nodes(p)%state=1.01_dp*stage_tree%nodes(p)%state
+        do c=1,nv
+          where(physical(p)%volume_fraction>0) end_source%fields(p)%values(c,:,:,:)= &
+            predictor%fields(p)%values(c,:,:,:)+real(p,dp)
+        end do
+        if(owners(p)/=rank) cycle
+        end_local%fields(p)%values=end_tree%nodes(p)%state
+        local_end_source%fields(p)%values=end_source%fields(p)%values
+      end do
+      call compute_sdc_eb_tree_hydro_3d(species,stage_tree,predictor,extended,1.e-8_dp, &
+        level_reference,level_expected,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t,target_depth=2,ancestor_start=stage_tree,ancestor_end=end_tree, &
+        ancestor_fraction=[.5_dp,.5_dp],source_start=predictor,source_end=end_source,source_fraction=[.25_dp,.25_dp])
+      call require(good,'serial selected SDC hydro')
+      call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
+        extended,1.e-8_dp,level_rates,level_flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &
+        inflow_state=inlet,inflow_temperature=inlet_t,target_depth=2,ancestor_start=local,ancestor_end=end_local, &
+        temperature_start=lt,temperature_end=lt,ancestor_fraction=[.5_dp,.5_dp], &
+        source_start=local_predictor,source_end=local_end_source,source_fraction=[.25_dp,.25_dp])
+      call require(good,'MPI selected SDC hydro')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(level_rates%fields(p)%values==level_reference%fields(p)%values),'selected MPI hydro rate')
+        if(topology%nodes(p)%level/=2) then
+          call require(.not.allocated(level_flux(p)%x),'inactive hydro flux absent')
+          cycle
+        end if
+        call require(all(level_flux(p)%x==level_expected(p)%x).and.all(level_flux(p)%y==level_expected(p)%y).and. &
+          all(level_flux(p)%z==level_expected(p)%z),'selected MPI hydro flux')
       end do
       prior=rates;old_flux=flux
       do failure=1,2

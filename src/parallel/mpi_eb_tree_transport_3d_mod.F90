@@ -158,7 +158,8 @@ contains
   ! restriction, redistribution or reflux. Publish only after collective success.
   subroutine compute_sdc_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt,viscosity,conduction, &
       diffusion,barodiffusion,state,temperature,transport_rate,integrated_flux,minimum_theta,comm,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
+      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -170,6 +171,10 @@ contains
     type(amr_tree_state_3d), intent(inout) :: transport_rate
     type(eb_integrated_flux_3d), allocatable, intent(inout) :: integrated_flux(:)
     real(dp), intent(inout) :: minimum_theta
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    integer :: selected_depth,min_depth,max_depth
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -214,12 +219,28 @@ contains
     if (status/=MPI_SUCCESS) return
     call MPI_Allreduce(flags,maxflags,4,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS.or.any(minflags/=maxflags)) return
+    selected_depth=-1
+    if(present(target_depth)) selected_depth=target_depth
+    valid=selected_depth>=-1
+    if(present(target_depth)) valid=selected_depth>=0
+    if(present(ancestor_start).or.present(ancestor_end).or.present(temperature_start).or. &
+      present(temperature_end).or.present(ancestor_fraction)) valid=valid.and.selected_depth>=0
+    call agree(valid,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(selected_depth,min_depth,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selected_depth,max_depth,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.min_depth/=max_depth) return
     call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,gt,comm,ready, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-        boundary_faces=boundary_faces,inflow_state=inflow_state,restrict_snapshot=.false.)
+        boundary_faces=boundary_faces,inflow_state=inflow_state,restrict_snapshot=.false., &
+      ancestor_start=ancestor_start,ancestor_end=ancestor_end,temperature_start=temperature_start, &
+      temperature_end=temperature_end,ancestor_fraction=ancestor_fraction)
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    call agree(selected_depth<tree%level_count(),ready)
+    if(.not.ready) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree(valid,ready)
     if (.not.ready) return
@@ -238,6 +259,7 @@ contains
       if(ios/=0) then
         valid=.false.;exit
       end if
+      if(selected_depth>=0.and.tree%nodes(node)%level/=selected_depth) cycle
       work_stamp=tree_work_start()
       if (present(inflow_mach)) faces=faces.or.(inflow_mach>=0)
       patch_faces='outflow'
