@@ -66,7 +66,10 @@ interchange ([checks](validation/sdc-mpi-checkpoint-20260926.md)). MPI fixed/sel
 regridding/rebalancing and changed-rank restart
 ([checks](validation/sdc-mpi-app-20260926.md)). MPI SDC hydro now selects a level
 and samples separate parent state/source temporal endpoints
-([checks](validation/sdc-mpi-level-hydro-20260926.md)). Recursive MPI SDC and EB SDC remain open.
+([checks](validation/sdc-mpi-level-hydro-20260926.md)). MPI transport now also
+selects levels and interpolates parent endpoints
+([checks](validation/sdc-mpi-level-transport-20260926.md)). The coupled MPI level
+and recursive SDC drivers and EB SDC remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
