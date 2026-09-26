@@ -172,7 +172,10 @@ external inventories through rank-changing coupled restart
 ([checks](validation/spray-sdc-app-20260927.md)). Film integration and recursive
 particle scheduling remain open. MPI AMR/EB film intervals now export independent
 integrated gas exchange for that connection
-([checks](validation/film-sdc-source-export-20260927.md)). A serial
+([checks](validation/film-sdc-source-export-20260927.md)); the common-step wrapper
+now evolves existing stationary films from saved midpoint states
+([checks](validation/spray-sdc-film-20260927.md)). Film impact/application
+coupling remains open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons

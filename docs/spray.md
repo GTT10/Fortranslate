@@ -3518,8 +3518,9 @@ bracket the coupled interval; each new kick is private to its SDC evaluation.
 The final source inventory sums gas forcing and the accepted particle impulse
 and kinetic work; `gas_particle_change` still contains internal exchange only.
 The MPI EB spray application exposes common-step SDC and coupled restart
-([application checks](validation/spray-sdc-app-20260927.md)). Film evolution and
-recursive particle stepping remain outside its scope. See the [acceleration checks](validation/spray-sdc-force-20260927.md). See the
+([application checks](validation/spray-sdc-app-20260927.md)). Stationary-film
+thermal evolution is connected at library level below; film impact/application
+coupling and recursive particle stepping remain open. See the [acceleration checks](validation/spray-sdc-force-20260927.md). See the
 [focused evidence](validation/spray-sdc-kick-drift-20260927.md).
 
 The boundary/splitting extension is recorded in the
@@ -3532,6 +3533,11 @@ field of time-integrated conserved gas feedback per fluid volume. It accumulates
 accepted deposition contributions directly and publishes only with the complete
 film/gas interval. Rejected trials and wall heat do not enter this field; wall
 heat retains its separate ledger. Empty or disabled film evolution returns a
-zero field. Presence must agree across ranks. This prepares film sources for
-SDC; the coupled SDC film scheduler and application dispatch remain open.
+zero field. Presence must agree across ranks. The common-step SDC wrapper now
+accepts `films`, `film_mass` and `film_settings` together, with optional
+`film_steps`. Existing stationary films receive a half-interval thermal update
+after each particle stage; each new evaluation restarts from the saved midpoint.
+Only the final film state and old/final wall heat publish. Particle contacts
+remain specular in this API: impact deposition/splash and application film
+selection remain open. See [SDC film checks](validation/spray-sdc-film-20260927.md).
 See [focused evidence](validation/film-sdc-source-export-20260927.md).
