@@ -95,7 +95,10 @@ time-integrated fluxes without averaging, redistribution or reflux
 Provisional EB tree transport now returns rates, integrated fluxes and a
 limiter without averaging or synchronization
 ([checks](validation/sdc-eb-tree-transport-20260927.md)).
-Coupled EB tree SDC iteration, application routing and MPI integration remain open.
+The serial EB tree now couples those stages in a common-step SDC loop, with
+final peer/coarse-fine synchronization and separate source inventories
+([checks](validation/sdc-eb-tree-loop-20260927.md)).
+EB tree SDC application routing, recursive stepping and MPI integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
