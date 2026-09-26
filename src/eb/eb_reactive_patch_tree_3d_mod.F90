@@ -622,7 +622,9 @@ contains
   subroutine advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,chemistry, &
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
-      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature)
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
+      target_depth,ancestor_start,ancestor_end,fractions_start,fractions_end,source_start,source_end, &
+      integrated_flux,old_predictor,new_predictor)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -634,6 +636,15 @@ contains
     character(len=*), intent(in) :: boundary_faces(6)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth
+    type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:)
+    type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end
+    type(eb_integrated_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
+    type(amr_tree_state_3d), optional, intent(inout) :: old_predictor,new_predictor
+    type(amr_tree_state_3d) :: op,np
+    real(dp), allocatable :: midpoint(:)
+    integer :: selected_depth
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6)
@@ -653,9 +664,30 @@ contains
     if(min(dt,rtol,atol)<=0.or..not.valid_reactive_boundaries_3d(boundary_faces)) return
     if(transport_flags(4).and..not.transport_flags(3)) return
     if(present(reaction_source).and..not.chemistry) return
+    selected_depth=-1
+    if(present(target_depth)) then
+      selected_depth=target_depth
+      if(selected_depth<0.or.selected_depth>=tree%topology%level_count()) return
+      if(.not.present(integrated_flux)) return
+    end if
+    if(present(ancestor_start).or.present(ancestor_end).or.present(fractions_start).or.present(fractions_end)) then
+      if(selected_depth<0) return
+      if(.not.(present(ancestor_start).and.present(ancestor_end).and. &
+        present(fractions_start).and.present(fractions_end))) return
+      if(size(fractions_start)/=selected_depth.or.size(fractions_end)/=selected_depth) return
+      if(.not.all(ieee_is_finite(fractions_start)).or..not.all(ieee_is_finite(fractions_end))) return
+      if(any(fractions_start<0).or.any(fractions_end>1).or.any(fractions_end<fractions_start)) return
+    end if
+    if(present(source_start).neqv.present(source_end)) return
+    if(present(source_start)) then
+      if(.not.present(fractions_start).or..not.present(fractions_end)) return
+      midpoint=.5_dp*(fractions_start+fractions_end)
+    end if
     old=tree
-    call average_down_reactive_eb_tree_3d(species,old,valid)
-    if(.not.valid) return
+    if(selected_depth<0) then
+      call average_down_reactive_eb_tree_3d(species,old,valid)
+      if(.not.valid) return
+    end if
     allocate(primitive(reactive_nprim(size(species))),ir%fields(size(tree%nodes)))
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
@@ -671,40 +703,53 @@ contains
       ir=reaction_source
     end if
     do node=1,size(tree%nodes)
+      if(.not.active(node)) cycle
       do c=1,nv-4
         where(old%nodes(node)%geometry%volume_fraction<=0) ir%fields(node)%values(c,:,:,:)=0
       end do
       if(.not.all(ieee_is_finite(ir%fields(node)%values))) return
     end do
     candidate=old;diffusive=any(transport_flags(:3))
-    call sources(old,e0,d0,f0,valid)
+    call sources(old,e0,d0,f0,valid,fractions_start)
     if(.not.valid) return
     e1=e0;d1=d0
+    call predictor_field(e0,d0,op)
+    allocate(u%fields(size(tree%nodes)),t%fields(size(tree%nodes)))
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      u%fields(node)%values=old%nodes(node)%state
+      allocate(t%fields(node)%values(1,n(1),n(2),n(3)))
+      t%fields(node)%values(1,:,:,:)=old%nodes(node)%temperature
+    end do
     do it=1,iterations
       call combined_rates(.true.)
       call compute_sdc_eb_tree_hydro_3d(species,old,rates,extended_geometry,dt,hydro,hf,valid, &
-        difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+        difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+        target_depth,ancestor_start,ancestor_end,fractions_start,source_start,source_end,midpoint)
       if(.not.valid) return
       do node=1,size(tree%nodes)
+        if(.not.active(node)) cycle
         candidate%nodes(node)%state=old%nodes(node)%state+dt*(rates%fields(node)%values+hydro%fields(node)%values)
       end do
       call recover(valid)
       if(.not.valid) return
-      call sources(candidate,e1,d1,f1,valid)
+      call sources(candidate,e1,d1,f1,valid,fractions_end)
       if(.not.valid) return
       call combined_rates(.false.)
       do node=1,size(tree%nodes)
         rates%fields(node)%values=rates%fields(node)%values+hydro%fields(node)%values
       end do
       if(chemistry) then
-        call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid)
+        call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid,target_depth)
         if(.not.valid) return
         do node=1,size(tree%nodes)
+          if(.not.active(node)) cycle
           candidate%nodes(node)%state=u%fields(node)%values
           candidate%nodes(node)%temperature=t%fields(node)%values(1,:,:,:)
         end do
       else
         do node=1,size(tree%nodes)
+          if(.not.active(node)) cycle
           candidate%nodes(node)%state=old%nodes(node)%state+dt*rates%fields(node)%values
         end do
         call recover(valid)
@@ -713,6 +758,8 @@ contains
     end do
     ledger=old
     do node=1,size(tree%nodes)
+      ledger%nodes(node)%state=0
+      if(.not.active(node)) cycle
       ledger%nodes(node)%state=candidate%nodes(node)%state-(old%nodes(node)%state+dt*rates%fields(node)%values)
     end do
     call integrate_reactive_eb_tree_3d(ledger,chemical,valid)
@@ -724,6 +771,8 @@ contains
     external=.5_dp*dt*(v0+v1)
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
+      ledger%nodes(node)%state=0
+      if(.not.active(node)) cycle
       allocate(wall_rate(nv,n(1),n(2),n(3)))
       call reactive_eb_slip_wall_source_3d(species,old%nodes(node)%state,old%nodes(node)%temperature, &
         old%nodes(node)%geometry,wall_rate,valid)
@@ -738,8 +787,12 @@ contains
     end do
     call integrate_reactive_eb_tree_3d(ledger,wall,valid)
     if(.not.valid) return
-    call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces)
-    if(.not.valid) return
+    if(selected_depth<0) then
+      call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces)
+      if(.not.valid) return
+    end if
+    boundary=0
+    if(selected_depth<=0) then
     n=tree%topology%nodes(1)%shape
     associate(g=>tree%nodes(1)%geometry,f=>hf(1))
     do c=1,nv
@@ -751,7 +804,10 @@ contains
         g%z_face_fraction(:,:,n(3))*f%z(c,:,:,n(3)))
     end do
     end associate
+    end if
     if(.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(external))) return
+    call predictor_field(e1,d1,np)
+    if(.not.op%is_valid(tree%topology).or..not.np%is_valid(tree%topology)) return
     if(present(reaction_source)) then
       do node=1,size(tree%nodes)
         do c=1,nv-4
@@ -761,14 +817,34 @@ contains
       end do
       reaction_source=ir
     end if
+    if(present(integrated_flux)) integrated_flux=hf
+    if(present(old_predictor)) old_predictor=op
+    if(present(new_predictor)) new_predictor=np
     tree=candidate;boundary_change=boundary;wall_change=wall;chemical_change=chemical
     source_change=external;minimum_theta=theta;ok=.true.
   contains
+    logical function active(p)
+      integer, intent(in) :: p
+      active=selected_depth<0.or.tree%topology%nodes(p)%level==selected_depth
+    end function active
+    subroutine predictor_field(ext,diff,output)
+      type(amr_tree_state_3d), intent(in) :: ext,diff
+      type(amr_tree_state_3d), intent(out) :: output
+      integer :: p
+      output=ext
+      do p=1,size(tree%nodes)
+        if(.not.active(p)) cycle
+        output%fields(p)%values=ext%fields(p)%values+diff%fields(p)%values
+        output%fields(p)%values(6:,:,:,:)=output%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
+        output%fields(p)%values(5,:,:,:)=output%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
+      end do
+    end subroutine predictor_field
     subroutine combined_rates(with_reaction)
       logical, intent(in) :: with_reaction
       integer :: p
       rates=e0
       do p=1,size(tree%nodes)
+        if(.not.active(p)) cycle
         rates%fields(p)%values=.5_dp*(e0%fields(p)%values+e1%fields(p)%values+ &
           d0%fields(p)%values+d1%fields(p)%values)
         if(.not.with_reaction) cycle
@@ -776,17 +852,19 @@ contains
         rates%fields(p)%values(5,:,:,:)=rates%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
       end do
     end subroutine combined_rates
-    subroutine sources(state,external_rate,transport_rate,flux,good)
+    subroutine sources(state,external_rate,transport_rate,flux,good,fractions)
       type(eb_reactive_tree_3d), intent(in) :: state
       type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate
       type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
       logical, intent(out) :: good
+      real(dp), optional, intent(in) :: fractions(:)
       integer :: p,d(3),x,y,z
       good=.false.
       allocate(external_rate%fields(size(tree%nodes)))
       do p=1,size(tree%nodes)
         d=tree%topology%nodes(p)%shape
         allocate(external_rate%fields(p)%values(nv,d(1),d(2),d(3)),source=0._dp)
+        if(.not.active(p)) cycle
         do z=1,d(3)
         do y=1,d(2)
         do x=1,d(1)
@@ -806,7 +884,8 @@ contains
       if(diffusive) then
         call compute_sdc_eb_tree_transport_3d(species,transport,dt,transport_flags(1),transport_flags(2), &
           transport_flags(3),transport_flags(4),state,transport_rate,flux,stage_theta,good, &
-          inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+          inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
+          target_depth,ancestor_start,ancestor_end,fractions)
         if(.not.good) return
         theta=min(theta,stage_theta)
       end if
@@ -816,6 +895,7 @@ contains
       logical, intent(out) :: good
       good=.false.
       do node=1,size(tree%nodes)
+        if(.not.active(node)) cycle
         n=tree%topology%nodes(node)%shape
         do k=1,n(3)
         do j=1,n(2)

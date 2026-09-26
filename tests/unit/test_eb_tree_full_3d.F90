@@ -14,6 +14,7 @@ program test_eb_tree_full_3d
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d, &
     advance_reactive_eb_tree_transport_3d,advance_reactive_eb_tree_hydro_3d,react_reactive_eb_tree_3d,react_sdc_eb_tree_3d, &
     build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,react_sdc_eb_state_3d
   implicit none
@@ -155,6 +156,10 @@ contains
     type(eb_geometry_3d), allocatable :: physical(:),extended(:)
     type(amr_tree_state_3d) :: ir,previous_ir
     real(dp) :: b(nv),w(nv),chem(nv),forcing(nv),v0(nv),v1(nv),limit,q(size(primitive)),temp,sound
+    type(eb_reactive_tree_3d) :: endpoint,interpolated,reference_level
+    type(amr_tree_state_3d) :: op,np,ref_op,ref_np,ref_ir
+    type(eb_integrated_flux_3d), allocatable :: flux(:),ref_flux(:)
+    real(dp) :: ref_diag(nv,4),ref_limit
     integer :: p,x,y,z
     initial=saved
     do p=1,count
@@ -200,6 +205,47 @@ contains
     call require(all(abs(v1-v0-b-w-chem-forcing)<=2.e-11_dp*max(1._dp,abs(v0))),'SDC composite ledger closure')
     call require(any(chem(6:)/=0).and.any(forcing(2:4)/=0),'SDC active chemistry and forcing')
     call require(limit>=0.and.limit<=1,'SDC loop limiter')
+    endpoint=initial;interpolated=initial
+    do p=1,count
+      if(initial%topology%nodes(p)%level>=2) cycle
+      endpoint%nodes(p)%state=1.01_dp*initial%nodes(p)%state
+      interpolated%nodes(p)%state=.75_dp*initial%nodes(p)%state+.25_dp*endpoint%nodes(p)%state
+      interpolated%nodes(p)%temperature=.75_dp*initial%nodes(p)%temperature+.25_dp*endpoint%nodes(p)%temperature
+    end do
+    reference_level=interpolated;ref_ir=previous_ir
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,reference_level,extended, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      ref_diag(:,1),ref_diag(:,2),ref_diag(:,3),ref_diag(:,4),ref_limit,ok,ref_ir, &
+      target_depth=2,integrated_flux=ref_flux,old_predictor=ref_op,new_predictor=ref_np)
+    call require(ok,'SDC explicit ancestor level reference')
+    result=initial;ir=previous_ir
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      b,w,chem,forcing,limit,ok,ir,target_depth=2,ancestor_start=initial,ancestor_end=endpoint, &
+      fractions_start=[.25_dp,.25_dp],fractions_end=[.25_dp,.25_dp],integrated_flux=flux, &
+      old_predictor=op,new_predictor=np)
+    call require(ok,'SDC coupled level with ancestor interpolation')
+    call require(all(b==ref_diag(:,1)).and.all(w==ref_diag(:,2)).and.all(chem==ref_diag(:,3)).and. &
+      all(forcing==ref_diag(:,4)).and.limit==ref_limit,'SDC exact level diagnostics')
+    do p=1,count
+      if(initial%topology%nodes(p)%level==2) then
+        call require(all(result%nodes(p)%state==reference_level%nodes(p)%state).and. &
+          all(result%nodes(p)%temperature==reference_level%nodes(p)%temperature).and. &
+          all(ir%fields(p)%values==ref_ir%fields(p)%values),'SDC exact level gas and reaction')
+        call require(all(flux(p)%x==ref_flux(p)%x).and.all(flux(p)%y==ref_flux(p)%y).and. &
+          all(flux(p)%z==ref_flux(p)%z),'SDC exact level flux')
+        call require(all(op%fields(p)%values==ref_op%fields(p)%values).and. &
+          all(np%fields(p)%values==ref_np%fields(p)%values),'SDC exact predictors')
+      else
+        call require(all(result%nodes(p)%state==initial%nodes(p)%state).and. &
+          all(result%nodes(p)%temperature==initial%nodes(p)%temperature).and. &
+          all(ir%fields(p)%values==previous_ir%fields(p)%values),'SDC inactive level remains unchanged')
+        call require(.not.allocated(flux(p)%x).and.all(op%fields(p)%values==0).and. &
+          all(np%fields(p)%values==0),'SDC inactive flux and predictors')
+      end if
+    end do
     result=initial;ir=previous_ir;b=17;w=19;chem=23;forcing=29;limit=31
     call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended, &
