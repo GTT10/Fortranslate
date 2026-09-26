@@ -6,13 +6,14 @@ program test_eb_tree_full_3d
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
-  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_full_3d, &
-    advance_reactive_eb_tree_transport_3d,advance_reactive_eb_tree_hydro_3d,react_reactive_eb_tree_3d,react_sdc_eb_tree_3d
+    advance_reactive_eb_tree_transport_3d,advance_reactive_eb_tree_hydro_3d,react_reactive_eb_tree_3d,react_sdc_eb_tree_3d, &
+    build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d,react_sdc_eb_state_3d
   implicit none
@@ -88,6 +89,7 @@ program test_eb_tree_full_3d
   call require(ok,'initial inventory')
   saved=tree
   call check_sdc_reaction()
+  call check_sdc_loop()
   do integrator_index=1,2
   do mode=0,3
     chemistry_on=btest(mode,0);transport_on=btest(mode,1)
@@ -147,6 +149,72 @@ program test_eb_tree_full_3d
   end do
   print *, 'test_eb_tree_full_3d: PASS'
 contains
+  subroutine check_sdc_loop()
+    type(eb_reactive_tree_3d) :: initial,result
+    type(eb_geometry_3d) :: padded
+    type(eb_geometry_3d), allocatable :: physical(:),extended(:)
+    type(amr_tree_state_3d) :: ir,previous_ir
+    real(dp) :: b(nv),w(nv),chem(nv),forcing(nv),v0(nv),v1(nv),limit,q(size(primitive)),temp,sound
+    integer :: p,x,y,z
+    initial=saved
+    do p=1,count
+      do z=1,4
+      do y=1,4
+      do x=1,4
+        if(initial%nodes(p)%geometry%volume_fraction(x,y,z)<=0) cycle
+        call reactive_conserved_to_primitive(species,initial%nodes(p)%state(:,x,y,z), &
+          initial%nodes(p)%temperature(x,y,z),q,temp,sound,ok)
+        call require(ok,'SDC loop initial EOS')
+        q(5)=q(5)*1000._dp/temp
+        call reactive_primitive_to_conserved(species,q,initial%nodes(p)%state(:,x,y,z), &
+          initial%nodes(p)%temperature(x,y,z),sound,ok)
+        call require(ok,'SDC loop warm fixture')
+      end do
+      end do
+      end do
+    end do
+    call average_down_reactive_eb_tree_3d(species,initial,ok)
+    call require(ok,'SDC loop initial restriction')
+    allocate(physical(count),ir%fields(count))
+    do p=1,count
+      physical(p)=initial%nodes(p)%geometry
+      allocate(ir%fields(p)%values(nv-4,4,4,4),source=0._dp)
+    end do
+    previous_ir=ir
+    call build_axis_plane_eb_geometry_3d(64,64,64,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp, &
+      'z',.31_dp,padded,ok)
+    call require(ok,'SDC loop padded geometry')
+    call build_eb_tree_extended_geometry_3d(topology,physical,padded,extended,ok)
+    call require(ok,'SDC loop extended patches')
+    result=initial
+    call integrate_reactive_eb_tree_3d(initial,v0,ok)
+    call require(ok,'SDC loop initial inventory')
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      b,w,chem,forcing,limit,ok,ir)
+    call require(ok,'coupled EB tree SDC step')
+    call integrate_reactive_eb_tree_3d(result,v1,ok)
+    call require(ok,'SDC loop final inventory')
+    print *, 'SDC tree inventory residual:',maxval(abs(v1-v0-b-w-chem-forcing)/max(1._dp,abs(v0)))
+    call require(all(abs(v1-v0-b-w-chem-forcing)<=2.e-11_dp*max(1._dp,abs(v0))),'SDC composite ledger closure')
+    call require(any(chem(6:)/=0).and.any(forcing(2:4)/=0),'SDC active chemistry and forcing')
+    call require(limit>=0.and.limit<=1,'SDC loop limiter')
+    result=initial;ir=previous_ir;b=17;w=19;chem=23;forcing=29;limit=31
+    call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,.true., &
+      [.true.,.true.,.true.,.true.],[2.e4_dp,-3.e4_dp,4.e4_dp],2.e-7_dp,1.e-12_dp,result,extended, &
+      [character(len=7)::'outflow','outflow','outflow','outflow','outflow','outflow'], &
+      b,w,chem,forcing,limit,ok,ir,difmag=-1._dp)
+    call require(.not.ok,'SDC hydro failure after old transport')
+    do p=1,count
+      call require(all(result%nodes(p)%state==initial%nodes(p)%state).and. &
+        all(result%nodes(p)%temperature==initial%nodes(p)%temperature).and. &
+        all(ir%fields(p)%values==previous_ir%fields(p)%values),'SDC complete tree rollback')
+    end do
+    call require(all(b==17).and.all(w==19).and.all(chem==23).and.all(forcing==29).and.limit==31, &
+      'SDC diagnostic rollback')
+  end subroutine check_sdc_loop
+
   subroutine check_sdc_reaction()
     type(amr_tree_state_3d) :: rates,states,temps,ir,rs,rt,ri
     type(eb_reactive_tree_3d) :: bad

@@ -33,7 +33,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: tag_reactive_eb_tree_temperature_3d
   public :: remap_reactive_eb_tree_3d
   public :: reactive_eb_tree_timestep_3d
-  public :: advance_reactive_eb_tree_full_3d
+  public :: advance_reactive_eb_tree_full_3d,advance_reactive_eb_tree_sdc_3d
   public :: advance_reactive_eb_tree_transport_3d,compute_sdc_eb_tree_transport_3d
   public :: advance_reactive_eb_tree_subcycle_transport_3d
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
@@ -563,6 +563,232 @@ contains
 
   ! R/2 T/2 H T/2 R/2 composition. Each successful stage remains private
   ! until the complete step and its exchange vectors can be committed.
+  subroutine advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,chemistry, &
+      transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
+      boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
+      difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: dt,force(3),rtol,atol
+    integer, intent(in) :: iterations
+    logical, intent(in) :: chemistry,transport_flags(4)
+    type(eb_reactive_tree_3d), intent(inout) :: tree
+    type(eb_geometry_3d), intent(in) :: extended_geometry(:)
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: wall_temperature(6)
+    type(eb_reactive_tree_3d) :: old,candidate,ledger
+    type(amr_tree_state_3d) :: e0,e1,d0,d1,rates,hydro,ir,u,t
+    type(eb_integrated_flux_3d), allocatable :: f0(:),f1(:),hf(:)
+    real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
+    real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
+    real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
+    real(dp) :: recovered,speed
+    integer :: nv,node,n(3),it,i,j,k,c
+    logical :: valid,diffusive
+    ok=.false.;nv=reactive_nvar(size(species));theta=1
+    if(.not.valid_tree(tree,nv)) return
+    if(any([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]/=nv)) return
+    if(iterations<1.or..not.all(ieee_is_finite([dt,force,rtol,atol]))) return
+    if(min(dt,rtol,atol)<=0.or..not.valid_reactive_boundaries_3d(boundary_faces)) return
+    if(transport_flags(4).and..not.transport_flags(3)) return
+    if(present(reaction_source).and..not.chemistry) return
+    old=tree
+    call average_down_reactive_eb_tree_3d(species,old,valid)
+    if(.not.valid) return
+    allocate(primitive(reactive_nprim(size(species))),ir%fields(size(tree%nodes)))
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      allocate(ir%fields(node)%values(nv-4,n(1),n(2),n(3)),source=0._dp)
+    end do
+    if(present(reaction_source)) then
+      if(.not.allocated(reaction_source%fields)) return
+      if(size(reaction_source%fields)/=size(tree%nodes)) return
+      do node=1,size(tree%nodes)
+        if(.not.allocated(reaction_source%fields(node)%values)) return
+        if(any(shape(reaction_source%fields(node)%values)/=shape(ir%fields(node)%values))) return
+      end do
+      ir=reaction_source
+    end if
+    do node=1,size(tree%nodes)
+      do c=1,nv-4
+        where(old%nodes(node)%geometry%volume_fraction<=0) ir%fields(node)%values(c,:,:,:)=0
+      end do
+      if(.not.all(ieee_is_finite(ir%fields(node)%values))) return
+    end do
+    candidate=old;diffusive=any(transport_flags(:3))
+    call sources(old,e0,d0,f0,valid)
+    if(.not.valid) return
+    e1=e0;d1=d0
+    do it=1,iterations
+      call combined_rates(.true.)
+      call compute_sdc_eb_tree_hydro_3d(species,old,rates,extended_geometry,dt,hydro,hf,valid, &
+        difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+      if(.not.valid) return
+      do node=1,size(tree%nodes)
+        candidate%nodes(node)%state=old%nodes(node)%state+dt*(rates%fields(node)%values+hydro%fields(node)%values)
+      end do
+      call recover(valid)
+      if(.not.valid) return
+      call sources(candidate,e1,d1,f1,valid)
+      if(.not.valid) return
+      call combined_rates(.false.)
+      do node=1,size(tree%nodes)
+        rates%fields(node)%values=rates%fields(node)%values+hydro%fields(node)%values
+      end do
+      if(chemistry) then
+        call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid)
+        if(.not.valid) return
+        do node=1,size(tree%nodes)
+          candidate%nodes(node)%state=u%fields(node)%values
+          candidate%nodes(node)%temperature=t%fields(node)%values(1,:,:,:)
+        end do
+      else
+        do node=1,size(tree%nodes)
+          candidate%nodes(node)%state=old%nodes(node)%state+dt*rates%fields(node)%values
+        end do
+        call recover(valid)
+        if(.not.valid) return
+      end if
+    end do
+    ledger=old
+    do node=1,size(tree%nodes)
+      ledger%nodes(node)%state=candidate%nodes(node)%state-(old%nodes(node)%state+dt*rates%fields(node)%values)
+    end do
+    call integrate_reactive_eb_tree_3d(ledger,chemical,valid)
+    if(.not.valid) return
+    call field_inventory(e0,v0,valid)
+    if(.not.valid) return
+    call field_inventory(e1,v1,valid)
+    if(.not.valid) return
+    external=.5_dp*dt*(v0+v1)
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      allocate(wall_rate(nv,n(1),n(2),n(3)))
+      call reactive_eb_slip_wall_source_3d(species,old%nodes(node)%state,old%nodes(node)%temperature, &
+        old%nodes(node)%geometry,wall_rate,valid)
+      if(.not.valid) return
+      ledger%nodes(node)%state=dt*wall_rate
+      deallocate(wall_rate)
+      if(diffusive) then
+        hf(node)%x=hf(node)%x+.5_dp*(f0(node)%x+f1(node)%x)
+        hf(node)%y=hf(node)%y+.5_dp*(f0(node)%y+f1(node)%y)
+        hf(node)%z=hf(node)%z+.5_dp*(f0(node)%z+f1(node)%z)
+      end if
+    end do
+    call integrate_reactive_eb_tree_3d(ledger,wall,valid)
+    if(.not.valid) return
+    call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces)
+    if(.not.valid) return
+    n=tree%topology%nodes(1)%shape
+    associate(g=>tree%nodes(1)%geometry,f=>hf(1))
+    do c=1,nv
+      boundary(c)=g%dy*g%dz*sum(g%x_face_fraction(0,:,:)*f%x(c,0,:,:)- &
+        g%x_face_fraction(n(1),:,:)*f%x(c,n(1),:,:))+ &
+        g%dx*g%dz*sum(g%y_face_fraction(:,0,:)*f%y(c,:,0,:)- &
+        g%y_face_fraction(:,n(2),:)*f%y(c,:,n(2),:))+ &
+        g%dx*g%dy*sum(g%z_face_fraction(:,:,0)*f%z(c,:,:,0)- &
+        g%z_face_fraction(:,:,n(3))*f%z(c,:,:,n(3)))
+    end do
+    end associate
+    if(.not.all(ieee_is_finite(boundary)).or..not.all(ieee_is_finite(external))) return
+    if(present(reaction_source)) then
+      do node=1,size(tree%nodes)
+        do c=1,nv-4
+          where(old%nodes(node)%geometry%volume_fraction<=0) &
+            ir%fields(node)%values(c,:,:,:)=reaction_source%fields(node)%values(c,:,:,:)
+        end do
+      end do
+      reaction_source=ir
+    end if
+    tree=candidate;boundary_change=boundary;wall_change=wall;chemical_change=chemical
+    source_change=external;minimum_theta=theta;ok=.true.
+  contains
+    subroutine combined_rates(with_reaction)
+      logical, intent(in) :: with_reaction
+      integer :: p
+      rates=e0
+      do p=1,size(tree%nodes)
+        rates%fields(p)%values=.5_dp*(e0%fields(p)%values+e1%fields(p)%values+ &
+          d0%fields(p)%values+d1%fields(p)%values)
+        if(.not.with_reaction) cycle
+        rates%fields(p)%values(6:,:,:,:)=rates%fields(p)%values(6:,:,:,:)+ir%fields(p)%values(:nv-5,:,:,:)
+        rates%fields(p)%values(5,:,:,:)=rates%fields(p)%values(5,:,:,:)+ir%fields(p)%values(nv-4,:,:,:)
+      end do
+    end subroutine combined_rates
+    subroutine sources(state,external_rate,transport_rate,flux,good)
+      type(eb_reactive_tree_3d), intent(in) :: state
+      type(amr_tree_state_3d), intent(out) :: external_rate,transport_rate
+      type(eb_integrated_flux_3d), allocatable, intent(out) :: flux(:)
+      logical, intent(out) :: good
+      integer :: p,d(3),x,y,z
+      good=.false.
+      allocate(external_rate%fields(size(tree%nodes)))
+      do p=1,size(tree%nodes)
+        d=tree%topology%nodes(p)%shape
+        allocate(external_rate%fields(p)%values(nv,d(1),d(2),d(3)),source=0._dp)
+        do z=1,d(3)
+        do y=1,d(2)
+        do x=1,d(1)
+          if(state%nodes(p)%geometry%volume_fraction(x,y,z)<=0) cycle
+          if(state%nodes(p)%state(1,x,y,z)<=0) return
+          external_rate%fields(p)%values(2:4,x,y,z)=force
+          external_rate%fields(p)%values(5,x,y,z)=dot_product(force,state%nodes(p)%state(2:4,x,y,z))/ &
+            state%nodes(p)%state(1,x,y,z)
+        end do
+        end do
+        end do
+      end do
+      transport_rate=external_rate
+      do p=1,size(tree%nodes)
+        transport_rate%fields(p)%values=0
+      end do
+      if(diffusive) then
+        call compute_sdc_eb_tree_transport_3d(species,transport,dt,transport_flags(1),transport_flags(2), &
+          transport_flags(3),transport_flags(4),state,transport_rate,flux,stage_theta,good, &
+          inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+        if(.not.good) return
+        theta=min(theta,stage_theta)
+      end if
+      good=.true.
+    end subroutine sources
+    subroutine recover(good)
+      logical, intent(out) :: good
+      good=.false.
+      do node=1,size(tree%nodes)
+        n=tree%topology%nodes(node)%shape
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(candidate%nodes(node)%geometry%volume_fraction(i,j,k)<=0) cycle
+          call reactive_conserved_to_primitive(species,candidate%nodes(node)%state(:,i,j,k), &
+            candidate%nodes(node)%temperature(i,j,k),primitive,recovered,speed,valid)
+          if(.not.valid) return
+          candidate%nodes(node)%temperature(i,j,k)=recovered
+        end do
+        end do
+        end do
+      end do
+      good=.true.
+    end subroutine recover
+    subroutine field_inventory(field,value,good)
+      type(amr_tree_state_3d), intent(in) :: field
+      real(dp), intent(inout) :: value(:)
+      logical, intent(out) :: good
+      type(eb_reactive_tree_3d) :: integral_tree
+      integer :: p
+      integral_tree=old
+      do p=1,size(tree%nodes)
+        integral_tree%nodes(p)%state=field%fields(p)%values
+      end do
+      call integrate_reactive_eb_tree_3d(integral_tree,value,good)
+    end subroutine field_inventory
+  end subroutine advance_reactive_eb_tree_sdc_3d
+
   subroutine advance_reactive_eb_tree_full_3d(species,reactions,transport,solver,dt,chemistry_enabled, &
       rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,tree,boundary_change, &
       wall_change,chemical_change,minimum_theta,ok,integrator,subcycling, &
