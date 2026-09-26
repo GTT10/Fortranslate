@@ -608,7 +608,7 @@ contains
     type(eb_geometry_3d) :: shape
     type(eb_plm_face_prediction_3d) :: result(3),saved(3)
     real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11)
-    real(dp) :: flat(0:9,0:9,0:9),source(nvar,8,8,8),esource(8,8,8)
+    real(dp) :: flat(0:9,0:9,0:9),source(nvar,8,8,8),esource(8,8,8),conserved(nvar,8,8,8)
     real(dp) :: vel(3),rho,cs,tc,position,expected(nvar),u(nvar),dt,face_rho,coord(3),nan_value
     integer :: cut,axis,ii,jj,kk,inside(3),idx(3),lo(3),hi(3)
     logical :: valid
@@ -668,6 +668,32 @@ contains
       do axis=1,3
         call require(all(result(axis)%flux==saved(axis)%flux),'zero-source CTU exact parity')
       end do
+      source=0;source(2,:,:,:)=8;esource=0;conserved=nan_value
+      do kk=1,8
+      do jj=1,8
+      do ii=1,8
+        if(vf(ii,jj,kk)==0) cycle
+        conserved(:,ii,jj,kk)=0
+        conserved(2,ii,jj,kk)=8*ghost(1,ii,jj,kk)
+        conserved(5,ii,jj,kk)=vel(1)*conserved(2,ii,jj,kk)
+      end do
+      end do
+      end do
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid, &
+        source=source,source_energy=esource)
+      call require(valid,'analytic acceleration primitive source')
+      call require(any(result(1)%flux/=saved(1)%flux),'source changes CTU flux')
+      saved=result
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid,conserved_source=conserved)
+      call require(valid,'conserved source with poisoned covered cells')
+      do axis=1,3
+        call require(maxval(abs(result(axis)%flux-saved(axis)%flux)/max(1._dp,abs(saved(axis)%flux)))<2e-12_dp, &
+          'conserved acceleration matches analytic primitive source flux')
+      end do
+      saved=result
+      conserved(2,8,8,8)=nan_value
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid,conserved_source=conserved)
+      call require(.not.valid,'invalid active conserved source rejected')
       call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,1._dp,flat,result,valid)
       call require(.not.valid,'CTU failed stage rejects')
       do axis=1,3

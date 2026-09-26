@@ -7,7 +7,7 @@ module eb_reactive_hydro_3d_mod
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive, &
     reactive_riemann_flux_x,reconstruct_pelec_plm_cell,compute_pelec_plm_slopes,reactive_pelec_primitive_flux_x, &
-    reactive_ppm_flattening_coefficient
+    reactive_ppm_flattening_coefficient,reactive_pelec_source_to_primitive
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
@@ -383,7 +383,7 @@ contains
   ! Output indices describe cells 3:N-2, shifted down by two. Fluxes are intensive
   ! face-center values, before viscosity or centroid interpolation.
   subroutine compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,ok,order,source,source_energy,boundary)
+      dt,flattening,prediction,ok,order,source,source_energy,boundary,conserved_source)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
@@ -392,7 +392,8 @@ contains
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
-    real(dp), optional, intent(in) :: source(:,:,:,:),source_energy(:,:,:)
+    real(dp), optional, intent(in) :: source(:,:,:,:),source_energy(:,:,:),conserved_source(:,:,:,:)
+    real(dp), allocatable :: forcing(:,:,:,:),forcing_energy(:,:,:)
     type(eb_plm_face_prediction_3d) :: normal(3),corner(3,3),final(3),candidate(3)
     real(dp), allocatable :: gamma(:,:,:),sound(:,:,:)
     real(dp) :: q(reactive_nvar(size(species))),recovered,speed,spacing(3)
@@ -402,6 +403,10 @@ contains
     if(any(n<5)) return
     if(.not.valid_plm_boundary(boundary)) return
     if(present(source).neqv.present(source_energy)) return
+    if(present(conserved_source)) then
+      if(present(source).or.present(source_energy)) return
+      if(any(shape(conserved_source)/=[nv,n])) return
+    end if
     if(present(source)) then
       if(any(shape(source)/=[nv,n]).or.any(shape(source_energy)/=n)) return
     end if
@@ -410,6 +415,12 @@ contains
     if(.not.valid) return
     spacing=[geometry%dx,geometry%dy,geometry%dz]
     allocate(gamma(n(1),n(2),n(3)),sound(n(1),n(2),n(3)));gamma=0;sound=0
+    if(present(source)) then
+      forcing=source;forcing_energy=source_energy
+    else if(present(conserved_source)) then
+      allocate(forcing(nv,n(1),n(2),n(3)),forcing_energy(n(1),n(2),n(3)))
+      forcing=0;forcing_energy=0
+    end if
     do k=1,n(3)
     do j=1,n(2)
     do i=1,n(1)
@@ -417,6 +428,11 @@ contains
       call reactive_conserved_to_primitive(species,ghost(:,i,j,k),temperature(i,j,k),q,recovered,speed,valid)
       if(.not.valid) return
       gamma(i,j,k)=speed**2*q(1)/q(5);sound(i,j,k)=speed
+      if(present(conserved_source)) then
+        call reactive_pelec_source_to_primitive(species,q,conserved_source(:,i,j,k), &
+          forcing(:,i,j,k),forcing_energy(i,j,k),valid)
+        if(.not.valid) return
+      end if
     end do
     end do
     end do
@@ -519,9 +535,9 @@ contains
             end if
           end do
         end do
-        if(nt==2.and.present(source)) then
+        if(nt==2.and.allocated(forcing)) then
           call apply_reactive_eb_transverse_3d(states,energies,gamma(cell(1),cell(2),cell(3)),na,ta,tf,tp,tv, &
-            coef,success,source(:,cell(1),cell(2),cell(3)),source_energy(cell(1),cell(2),cell(3)),.5_dp*dt)
+            coef,success,forcing(:,cell(1),cell(2),cell(3)),forcing_energy(cell(1),cell(2),cell(3)),.5_dp*dt)
         else
           call apply_reactive_eb_transverse_3d(states,energies,gamma(cell(1),cell(2),cell(3)),na,ta,tf,tp,tv,coef,success)
         end if
