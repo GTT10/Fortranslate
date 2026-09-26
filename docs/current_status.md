@@ -125,7 +125,10 @@ preserving provisional parent states, with collective rollback
 MPI EB SDC hydro now exchanges signed predictor sources and returns owner-local
 CTU rates and integrated fluxes, retaining provisional parent states
 ([checks](validation/sdc-mpi-eb-hydro-20260927.md)).
-Coupled EB tree SDC MPI integration remains open.
+Common-step MPI EB SDC now couples reactions, old/new transport and external
+sources, CTU hydro, final reflux and composite inventories
+([checks](validation/sdc-mpi-eb-loop-20260927.md)). MPI EB SDC application,
+checkpoint/regrid and recursive integration remain open.
 
 The variable-density forced chemistry RHS is now available as a library
 building block ([checks](validation/forced-reactor-rhs-20260926.md)). An adaptive
