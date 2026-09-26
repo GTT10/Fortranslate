@@ -947,7 +947,8 @@ contains
   ! level. Parent states are retained until the coupled driver synchronizes.
   subroutine compute_sdc_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,transport_rate,integrated_flux,minimum_theta,ok, &
-      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature)
+      inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
+      target_depth,ancestor_start,ancestor_end,ancestor_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
@@ -961,6 +962,10 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: wall_temperature(6)
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth
+    type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    integer :: selected_depth
     type(amr_tree_state_3d) :: rates
     type(eb_integrated_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
@@ -978,15 +983,28 @@ contains
     end if
     if (.not.ieee_is_finite(dt).or.dt<=0._dp) return
     if (.not.valid_tree(tree,nv)) return
+    selected_depth=-1
+    if(present(target_depth)) then
+      selected_depth=target_depth
+      if(selected_depth<0.or.selected_depth>=tree%topology%level_count()) return
+    end if
+    if(present(ancestor_start).or.present(ancestor_end).or.present(ancestor_fraction)) then
+      if(selected_depth<0) return
+      if(.not.(present(ancestor_start).and.present(ancestor_end).and.present(ancestor_fraction))) return
+    end if
+
     call amr_tree_integer_layout_3d(tree%topology,origin,domain,ratios,valid)
     if (.not.valid) return
     allocate(flux(size(tree%nodes)),rates%fields(size(tree%nodes)));theta=1._dp
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
+      allocate(rates%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      if(selected_depth>=0.and.tree%topology%nodes(node)%level/=selected_depth) cycle
       allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
       call fill_reactive_eb_tree_halo_3d(species,tree,node,ghost,gt,valid, &
         inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-        boundary_faces=boundary_faces,inflow_state=inflow_state,restrict_snapshot=.false.)
+        boundary_faces=boundary_faces,inflow_state=inflow_state,restrict_snapshot=.false., &
+        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction)
       if (.not.valid) return
       depth=tree%topology%nodes(node)%level+1
       ! Inactive physical domain faces remain closed to diffusion. Parent patch edges
@@ -1002,7 +1020,6 @@ contains
           patch_faces=boundary_faces
         faces=.true.
       end if
-      allocate(rates%fields(node)%values(nv,n(1),n(2),n(3)))
       call compute_sdc_eb_transport_3d(species,transport,tree%nodes(node)%state,tree%nodes(node)%temperature, &
         tree%nodes(node)%geometry,dt,[viscosity,conduction,diffusion,barodiffusion],rates%fields(node)%values, &
         flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces,wall_temperature=wall_temperature)
@@ -1106,7 +1123,8 @@ contains
   ! Provisional source-aware hydro: no restriction, redistribution or reflux.
   ! Rates are per fluid volume; fluxes are time-integrated face densities.
   subroutine compute_sdc_eb_tree_hydro_3d(species,tree,predictor,extended_geometry,dt,hydro_rate,flux,ok, &
-      difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure)
+      difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+      target_depth,ancestor_start,ancestor_end,ancestor_fraction,source_start,source_end,source_fraction)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(in) :: predictor
@@ -1115,6 +1133,12 @@ contains
     type(amr_tree_state_3d), intent(inout) :: hydro_rate
     type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth
+    type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    type(amr_tree_state_3d), optional, intent(in) :: source_start,source_end
+    real(dp), optional, intent(in) :: source_fraction(:)
+    integer :: selected_depth
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     type(amr_tree_state_3d) :: rates
@@ -1131,6 +1155,20 @@ contains
     ok=.false.;nv=reactive_nvar(size(species))
     if(.not.ieee_is_finite(dt).or.dt<=0) return
     if(.not.valid_tree(tree,nv)) return
+    selected_depth=-1
+    if(present(target_depth)) then
+      selected_depth=target_depth
+      if(selected_depth<0.or.selected_depth>=tree%topology%level_count()) return
+    end if
+    if(present(ancestor_start).or.present(ancestor_end).or.present(ancestor_fraction)) then
+      if(selected_depth<0) return
+      if(.not.(present(ancestor_start).and.present(ancestor_end).and.present(ancestor_fraction))) return
+    end if
+    if(present(source_start).or.present(source_end).or.present(source_fraction)) then
+      if(selected_depth<0) return
+      if(.not.(present(source_start).and.present(source_end).and.present(source_fraction))) return
+    end if
+
     if(size(extended_geometry)/=size(tree%nodes)) return
     if(.not.allocated(predictor%fields)) return
     if(size(predictor%fields)/=size(tree%nodes)) return
@@ -1157,18 +1195,22 @@ contains
     allocate(rates%fields(size(tree%nodes)),candidate_flux(size(tree%nodes)))
     do node=1,size(tree%nodes)
       n=tree%topology%nodes(node)%shape
+      allocate(rates%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      if(selected_depth>=0.and.tree%topology%nodes(node)%level/=selected_depth) cycle
       allocate(ghost(nv,-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),gt(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6), &
         vf(-5:n(1)+6,-5:n(2)+6,-5:n(3)+6),flat(0:n(1)+7,0:n(2)+7,0:n(3)+7), &
-        source(nv,n(1)+6,n(2)+6,n(3)+6),rates%fields(node)%values(nv,n(1),n(2),n(3)))
+        source(nv,n(1)+6,n(2)+6,n(3)+6))
       call fill_reactive_eb_tree_halo_3d(species,tree,node,ghost,gt,valid, &
         inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
         boundary_faces=boundary_faces,inflow_state=inflow_state,ghost_volume_fraction=vf,halo_width=6, &
-        target_volume_fraction=extended_geometry(node)%volume_fraction,restrict_snapshot=.false.)
+        target_volume_fraction=extended_geometry(node)%volume_fraction,restrict_snapshot=.false., &
+        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction)
       if(.not.valid) return
       call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,working,valid)
       if(.not.valid) return
       call fill_sdc_eb_tree_source_halo_3d(tree,predictor,node,3,source,valid, &
-        boundary_faces=faces,target_volume_fraction=working%volume_fraction)
+        boundary_faces=faces,target_volume_fraction=working%volume_fraction, &
+        ancestor_start=source_start,ancestor_end=source_end,ancestor_fraction=source_fraction)
       if(.not.valid) return
       call compute_reactive_eb_flattening_3d(species,ghost,gt,vf,n+6,flat,valid)
       if(.not.valid) return

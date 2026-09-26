@@ -182,6 +182,9 @@ contains
     type(eb_integrated_flux_3d), allocatable :: flux(:),old_flux(:)
     type(eb_reactive_tree_3d) :: result,bad
     real(dp) :: limiter
+    type(amr_tree_state_3d) :: level_rates,reference_rates
+    type(eb_integrated_flux_3d), allocatable :: level_flux(:),reference_flux(:)
+    type(eb_reactive_tree_3d) :: endpoint,interpolated
     integer :: p
     call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
       saved,rates,flux,limiter,ok)
@@ -196,6 +199,30 @@ contains
     do p=1,count
       call require(all(abs(result%nodes(p)%state-tree%nodes(p)%state)<= &
         2.e-12_dp*max(1._dp,abs(tree%nodes(p)%state))),'SDC transport reconstructs Euler state')
+    end do
+    endpoint=saved;interpolated=saved
+    do p=1,count
+      if(saved%topology%nodes(p)%level>=2) cycle
+      endpoint%nodes(p)%state=1.01_dp*saved%nodes(p)%state
+      interpolated%nodes(p)%state=.75_dp*saved%nodes(p)%state+.25_dp*endpoint%nodes(p)%state
+      interpolated%nodes(p)%temperature=.75_dp*saved%nodes(p)%temperature+.25_dp*endpoint%nodes(p)%temperature
+    end do
+    call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+      interpolated,reference_rates,reference_flux,limiter,ok,target_depth=2)
+    call require(ok,'explicit ancestor transport reference')
+    call compute_sdc_eb_tree_transport_3d(species,transport,1.e-8_dp,.true.,.true.,.true.,.true., &
+      saved,level_rates,level_flux,limiter,ok,target_depth=2, &
+      ancestor_start=saved,ancestor_end=endpoint,ancestor_fraction=[.25_dp,.25_dp])
+    call require(ok,'selected level transport with ancestor time interpolation')
+    do p=1,count
+      if(saved%topology%nodes(p)%level==2) then
+        call require(all(level_rates%fields(p)%values==reference_rates%fields(p)%values).and. &
+          all(level_flux(p)%x==reference_flux(p)%x).and.all(level_flux(p)%y==reference_flux(p)%y).and. &
+          all(level_flux(p)%z==reference_flux(p)%z),'exact interpolated level transport')
+      else
+        call require(all(level_rates%fields(p)%values==0).and..not.allocated(level_flux(p)%x), &
+          'inactive level has zero rates and absent flux')
+      end if
     end do
     old_rates=rates;old_flux=flux;bad=saved
     bad%nodes(count)%state(1,4,4,4)=-1

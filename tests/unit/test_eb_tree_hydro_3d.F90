@@ -237,6 +237,9 @@ contains
     type(amr_tree_state_3d) :: predictor,rates,old_rates
     type(eb_integrated_flux_3d), allocatable :: flux(:),old_flux(:)
     type(eb_reactive_tree_3d) :: result
+    type(amr_tree_state_3d) :: level_rates,reference_rates
+    type(eb_integrated_flux_3d), allocatable :: level_flux(:),reference_flux(:)
+    type(eb_reactive_tree_3d) :: endpoint,interpolated
     integer :: p,c
     allocate(predictor%fields(count))
     do p=1,count
@@ -268,6 +271,31 @@ contains
       difmag=coefficient)
     call require(ok,'SDC nonzero source hydro')
     call require(any(rates%fields(count)%values/=old_rates%fields(count)%values),'SDC source affects deep hydro rates')
+    endpoint=ctu_start;interpolated=ctu_start
+    do p=1,count
+      if(ctu_start%topology%nodes(p)%level>=2) cycle
+      endpoint%nodes(p)%state=1.01_dp*ctu_start%nodes(p)%state
+      interpolated%nodes(p)%state=.75_dp*ctu_start%nodes(p)%state+.25_dp*endpoint%nodes(p)%state
+      interpolated%nodes(p)%temperature=.75_dp*ctu_start%nodes(p)%temperature+.25_dp*endpoint%nodes(p)%temperature
+    end do
+    call compute_sdc_eb_tree_hydro_3d(species,interpolated,predictor,extended,1.e-8_dp, &
+      reference_rates,reference_flux,ok,difmag=coefficient,target_depth=2)
+    call require(ok,'explicit ancestor hydro reference')
+    call compute_sdc_eb_tree_hydro_3d(species,ctu_start,predictor,extended,1.e-8_dp, &
+      level_rates,level_flux,ok,difmag=coefficient,target_depth=2, &
+      ancestor_start=ctu_start,ancestor_end=endpoint,ancestor_fraction=[.25_dp,.25_dp], &
+      source_start=predictor,source_end=predictor,source_fraction=[.5_dp,.5_dp])
+    call require(ok,'selected level hydro with ancestor time interpolation')
+    do p=1,count
+      if(ctu_start%topology%nodes(p)%level==2) then
+        call require(all(level_rates%fields(p)%values==reference_rates%fields(p)%values).and. &
+          all(level_flux(p)%x==reference_flux(p)%x).and.all(level_flux(p)%y==reference_flux(p)%y).and. &
+          all(level_flux(p)%z==reference_flux(p)%z),'exact interpolated level hydro')
+      else
+        call require(all(level_rates%fields(p)%values==0).and..not.allocated(level_flux(p)%x), &
+          'inactive level has zero rates and absent flux')
+      end if
+    end do
     old_rates=rates;old_flux=flux
     predictor%fields(count)%values(2,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
     call compute_sdc_eb_tree_hydro_3d(species,ctu_start,predictor,extended,1.e-8_dp,rates,flux,ok, &
