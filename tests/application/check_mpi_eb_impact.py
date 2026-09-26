@@ -23,6 +23,7 @@ p.add_argument('--split', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--specular-outflow', action='store_true')
 p.add_argument('--force', action='store_true')
+p.add_argument('--sdc', action='store_true')
 a = p.parse_args()
 if a.periodic:
     assert not a.domain_wall and not a.reflect_domain, '--periodic excludes reflecting domain modes'
@@ -70,6 +71,10 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
     if a.periodic:
         tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
         controls += "boundary_faces='periodic','periodic','outflow','outflow','outflow','outflow',"
+    if a.sdc:
+        assert not (a.domain_wall or a.reflect_domain or a.periodic or a.pcm)
+        tree = tree.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
+        controls += "time_integrator='sdc',sdc_iterations=2,boundary_faces=6*'outflow',"
     if a.selected:
         controls += "composition_count=1,composition_species(1)='N2',composition_mole_fractions(1)=1.,"
     (directory / 'tree.nml').write_text(tree.replace('&eb_tree', '&eb_tree\n' + controls + extra, 1))
@@ -78,6 +83,8 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
                           'walls%enabled=6*.true.,walls%temperature=6*400.,walls%evolve=.true.,'
                           'walls%liquid_conductivity=.6,particle_options%liquid_viscosity=.001,'
                           'particle_options%surface_tension=.072,', 1)
+    if a.sdc:
+        spray = spray.replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1)
     if mode == 'splash':
         spray = spray.replace('speed=20.', 'speed=200.').replace('total_mass=1.e-10', 'total_mass=1.e-16')
     if mode == 'khrt':
@@ -122,7 +129,7 @@ def run(mode, label, ranks, extra='', success=True, altered=False):
     (directory / 'spray.nml').write_text(spray)
     result = subprocess.run([str(a.mpiexec.resolve()), '-n', str(ranks), str(a.exe.resolve()), 'tree.nml', 'spray.nml'],
                             cwd=directory, env=env, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, timeout=60)
+                            stderr=subprocess.STDOUT, timeout=120 if a.sdc else 60)
     (directory / 'run.log').write_text(result.stdout)
     assert (result.returncode == 0) == success, result.stdout
     return directory

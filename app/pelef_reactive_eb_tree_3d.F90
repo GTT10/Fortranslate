@@ -525,6 +525,20 @@ program pelef_reactive_eb_tree_3d
       end if
 #ifdef PELEF_MPI_EB_SPRAY
       if(time_integrator=='sdc') then
+      if(wall_impacts) then
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing+acceleration, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        split_created=step_split_created,particle_acceleration=acceleration, &
+        films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected)
+      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+      else
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
@@ -535,6 +549,7 @@ program pelef_reactive_eb_tree_3d
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         split_created=step_split_created,particle_acceleration=acceleration)
+      end if
       else if(wall_impacts) then
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
@@ -759,7 +774,6 @@ contains
     if(code/=0) error stop 'Cannot read MPI EB spray input'
     read(stream,nml=eb_spray,iostat=code)
     if(code/=0) error stop 'Invalid MPI EB spray input'
-    if(time_integrator=='sdc'.and.wall_impacts) error stop 'SDC film coupling is not implemented'
     if(allocated(active_faces).and..not.particle_outflow) &
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
     profile_files=''
@@ -1362,7 +1376,9 @@ contains
 #ifdef PELEF_MPI_EB_SPRAY
       call remap_mpi_eb_spray(MPI_COMM_WORLD,species,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
         drops,component_mass,layouts(stage),next_owners,geometry_levels(level),nodal_phi,domain_lower, &
-        (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid,films,film_mass,walls%maximum_films)
+        (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid, &
+        films,film_mass,walls%maximum_films,sdc_ir)
+      if(valid.and.allocated(sdc_ir)) record%reaction_source=sdc_ir
 #else
       call remap_mpi_eb_tree_3d(species,topology,layouts(stage),mpi_owners,next_owners,geometry_levels(level), &
         mpi_geometry,mpi_state,mpi_temperature,MPI_COMM_WORLD,valid,sdc_ir)

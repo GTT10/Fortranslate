@@ -15,7 +15,9 @@ module spray_mpi_eb_remap_mod
 contains
   ! Immutable physical geometry, common root/refinement lattice. All state commits together.
   subroutine remap_mpi_eb_spray(comm,species,tree,owners,geometry,state,temperature,parcels,components, &
-      new_tree,new_owners,finest,phi,lower,spacing,capacity,ok,wall_films,film_mass,maximum_films)
+      new_tree,new_owners,finest,phi,lower,spacing,capacity,ok,wall_films,film_mass,maximum_films,reaction_source)
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    type(amr_tree_state_3d), allocatable :: ir
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(inout) :: tree
@@ -52,7 +54,10 @@ contains
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.agreed) return
     gas=state;temp=temperature;candidate_geometry=geometry;drops=parcels;masses=components
-    call remap_mpi_eb_tree_3d(species,tree,new_tree,owners,new_owners,finest,candidate_geometry,gas,temp,comm,valid)
+    if(present(reaction_source)) then
+      allocate(ir);ir=reaction_source
+    end if
+    call remap_mpi_eb_tree_3d(species,tree,new_tree,owners,new_owners,finest,candidate_geometry,gas,temp,comm,valid,ir)
     if(.not.valid) return
     call migrate_eb_tree_spray_parcels(comm,new_tree,new_owners,phi,drops,lower,spacing,capacity,valid,masses)
     if(.not.valid) return
@@ -62,6 +67,7 @@ contains
         lower,spacing,maximum_films,valid,phi)
       if(.not.valid) return
     end if
+    if(present(reaction_source)) reaction_source=ir
     tree=new_tree;owners=new_owners
     call move_alloc(candidate_geometry,geometry)
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)

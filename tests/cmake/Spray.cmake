@@ -1099,3 +1099,11 @@ if(TARGET test_spray_mpi_eb_impact_reactive)
       $<TARGET_FILE:test_spray_mpi_eb_impact_reactive> ${MPIEXEC_POSTFLAGS} sdc)
   set_tests_properties(spray_mpi_eb_sdc_impact_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 60 PROCESSORS 2)
 endif()
+
+if(TARGET pelef_mpi_eb_spray_3d)
+  add_test(NAME spray_mpi_eb_sdc_impact_restart
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_mpi_eb_impact.py"
+      --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/spray-sdc-impact-restart" --sdc)
+  set_tests_properties(spray_mpi_eb_sdc_impact_restart PROPERTIES TIMEOUT 360 PROCESSORS 4 LABELS "spray;mpi;eb;sdc")
+endif()
