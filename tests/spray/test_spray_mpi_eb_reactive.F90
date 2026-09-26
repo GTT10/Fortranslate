@@ -9,7 +9,7 @@ program test_spray_mpi_eb_reactive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: build_eb_tree_extended_geometry_3d
-  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive
+  use spray_mpi_eb_reactive_mod, only: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
   use elementary_kinetics_mod, only: elementary_reaction
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use spray_parcel_mod
@@ -21,6 +21,8 @@ program test_spray_mpi_eb_reactive
   type(gas_transport_species), allocatable :: transport(:)
   type(elementary_reaction), allocatable :: reactions(:)
   real(dp), allocatable :: boundary(:),chemical(:)
+  real(dp), allocatable :: forcing(:),exchange(:)
+  integer(int64) :: last_id=1_int64
   real(dp) :: theta
   character(len=32) :: solver,test_mode
   character(len=16), allocatable :: labels(:)
@@ -65,7 +67,7 @@ program test_spray_mpi_eb_reactive
   call require(ok,'root geometry')
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
-  if(index(test_mode,'ctu')==1) then
+  if(index(test_mode,'ctu')==1.or.test_mode=='sdc') then
     do j=0,32
       extended_phi(:,j,:)=real(max(0,min(8,j-12)),dp)*.0005_dp-.00125_dp
     end do
@@ -108,7 +110,11 @@ program test_spray_mpi_eb_reactive
   call require(ok,'transport')
   call load_h2o2_full_mechanism(reactions,ok)
   call require(ok,'mechanism')
-  allocate(boundary(nv),chemical(nv))
+  allocate(boundary(nv),chemical(nv),forcing(nv),exchange(nv))
+  forcing=46;exchange=47
+  if(test_mode=='sdc') then
+    allocate(labels(6));labels='outflow'
+  end if
   call initialize_spray_liquid(species,'H2O',1000._dp,4184._dp,373.15_dp,101325._dp,2.257e6_dp,liquids(1),ok)
   call require(ok,'water')
   call initialize_spray_liquid(species,'H2O2',800._dp,2000._dp,350._dp,101325._dp,1e6_dp,liquids(2),ok)
@@ -159,6 +165,8 @@ program test_spray_mpi_eb_reactive
     call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'temperature rollback')
   end do
   call require(all(boundary==43).and.all(chemical==44).and.theta==45,'gas diagnostics rollback')
+  if(test_mode=='sdc') call require(last_id==1.and.all(forcing==46).and.all(exchange==47), &
+    'SDC ID and exchange rollback')
   solver='hllc'
   if(index(test_mode,'ctu')==1) solver='pelec'
   if(allocated(inlet)) then
@@ -186,10 +194,25 @@ program test_spray_mpi_eb_reactive
     call require(drops(1)%temperature>350.and.drops(1)%mass<1e-12_dp,'heating and evaporation')
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if
+  if(test_mode=='sdc') then
+    call require(all(forcing==0).and.any(exchange/=0),'particle exchange distinct from external forcing')
+    if(rank==0) print *, 'SDC combined residual: ', &
+      maxval(abs(after-before-ledger-boundary-chemical)/max(abs(before),abs(after),1e-30_dp))
+  end if
   if(rank==0) print *, 'PASS: MPI EB coupled reactive step and rollback'
   call MPI_Finalize(ierr)
 contains
   subroutine advance()
+    real(dp) :: coefficient
+    if(test_mode=='sdc') then
+      coefficient=.1_dp
+      if(solver=='invalid') coefficient=-1
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi,species,reactions,transport, &
+        liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,2,.true., &
+        [.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels,boundary,ledger,chemical, &
+        forcing,theta,steps,last_id,ok,difmag=coefficient,gas_particle_change=exchange)
+      return
+    end if
     call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,tree,owners,g,phi,species,reactions,transport, &
       liquids,options,field,temp,drops,masses,zero,spacing,1e-8_dp,solver, &
       .true.,.true.,.true.,.true.,.true.,.true.,2e-7_dp,1e-12_dp,steps,theta,boundary,ledger,chemical,ok,'implicit', &

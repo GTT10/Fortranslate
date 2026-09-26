@@ -11,7 +11,7 @@ module spray_mpi_eb_reactive_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
-  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d
+  use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,advance_mpi_eb_tree_sdc_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
   use spray_mpi_mod, only: split_mpi_spray_parcels
@@ -20,7 +20,7 @@ module spray_mpi_eb_reactive_mod
   use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
   private
-  public :: advance_mpi_eb_spray_reactive
+  public :: advance_mpi_eb_spray_reactive,advance_mpi_eb_spray_sdc
 contains
   ! S/2 - F/2 - EB reaction/transport/hydro - F/2 - S/2; atomic publication.
   ! Supplying last_id with film state enables EB impacts in both particle halves.
@@ -301,4 +301,134 @@ contains
       if(valid.and.outflow) exterior=exterior+half_exterior
     end subroutine
   end subroutine
+  ! Common-step gas/particle SDC. New kicks are reevaluated from one saved
+  ! kick-drift endpoint, never cumulatively advanced across SDC iterations.
+  ! This path supports moving parcels and specular EB/domain contacts, not films.
+  subroutine advance_mpi_eb_spray_sdc(comm,tree,owners,geometry,extended_geometry,phi,species,reactions,transport, &
+      liquids,options,state,temperature,parcels,component_mass,lower,spacing,dt,iterations,chemistry,transport_flags, &
+      force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
+      particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),iterations
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended_geometry(:)
+    real(dp), intent(in) :: phi(0:,0:,0:),lower(3),spacing(3),dt,force(3),rtol,atol
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: liquids(:)
+    type(spray_options), intent(in) :: options
+    type(amr_tree_state_3d), intent(inout) :: state,temperature
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    logical, intent(in) :: chemistry,transport_flags(4)
+    character(len=*), intent(in) :: boundary_faces(6)
+    real(dp), intent(inout) :: boundary_change(:),wall_change(:),chemical_change(:),source_change(:),minimum_theta
+    integer, intent(out) :: particle_steps
+    integer(int64), intent(inout) :: last_id
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
+    real(dp), optional, intent(in) :: difmag,target_volume_fraction
+    character(len=*), optional, intent(in) :: redistribution
+    real(dp), optional, intent(inout) :: gas_particle_change(:)
+    type(amr_tree_state_3d) :: gas,temp
+    type(amr_tree_state_3d), allocatable :: ir
+    type(spray_parcel), allocatable :: midpoint(:),final(:)
+    real(dp), allocatable :: midpoint_mass(:,:),final_mass(:,:)
+    integer(int64) :: midpoint_id,final_id
+    integer :: nv,ierr,old_steps,new_steps
+    real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
+    real(dp) :: external(size(source_change)),exchange(size(source_change)),theta
+    real(dp) :: old_wall(size(source_change)),new_wall(size(source_change))
+    real(dp) :: old_outflow(size(source_change)),new_outflow(size(source_change))
+    character(len=32) :: particle_faces(6)
+    logical :: valid,ready
+    ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    valid=allocated(parcels).and.allocated(component_mass)
+    valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
+    if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
+    call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.ready) return
+    particle_faces=boundary_faces
+    where(particle_faces=='inflow') particle_faces='outflow'
+    where(particle_faces=='isothermal_wall') particle_faces='no_slip_wall'
+    gas=state;temp=temperature;old_steps=0;new_steps=0
+    old_wall=0;new_wall=0;old_outflow=0;new_outflow=0
+    if(present(reaction_source)) then
+      allocate(ir);ir=reaction_source
+    end if
+    call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,gas,temp,extended_geometry, &
+      dt,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces,boundary,wall,chemical,external,theta, &
+      comm,ready,ir,difmag,redistribution=redistribution,target_volume_fraction=target_volume_fraction, &
+      auxiliary_source=particle_source,auxiliary_change=exchange)
+    if(.not.ready) return
+    valid=old_steps<=huge(1)-new_steps
+    call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.ready) return
+    boundary=boundary+old_outflow+new_outflow;wall=wall+old_wall+new_wall
+    valid=all(ieee_is_finite(boundary)).and.all(ieee_is_finite(wall))
+    call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.ready) return
+    call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
+    call move_alloc(final,parcels);call move_alloc(final_mass,component_mass)
+    last_id=final_id
+    if(present(reaction_source)) reaction_source=ir
+    boundary_change=boundary;wall_change=wall;chemical_change=chemical;source_change=external
+    if(present(gas_particle_change)) gas_particle_change=exchange
+    minimum_theta=theta;particle_steps=old_steps+new_steps;ok=.true.
+  contains
+    subroutine particle_source(stage_gas,stage_temperature,interval,stage,depth,rate,source_comm,good)
+      type(amr_tree_state_3d), intent(in) :: stage_gas,stage_temperature
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(MPI_Comm), intent(in) :: source_comm
+      logical, intent(out) :: good
+      type(amr_tree_state_3d) :: work_gas,work_temperature,change
+      type(spray_parcel), allocatable :: trial(:)
+      real(dp), allocatable :: masses(:,:)
+      real(dp) :: wall_delta(nv),exterior(nv),half_interval
+      integer(int64) :: watermark
+      integer :: steps,p,status
+      character(len=16) :: motion
+      logical :: accepted,all_ok
+      good=.false.
+      if(depth/=-1) return
+      half_interval=.5_dp*interval
+      if(half_interval<=0) return
+      work_gas=stage_gas;work_temperature=stage_temperature
+      if(stage==0) then
+        trial=parcels;masses=component_mass;watermark=last_id;motion='kick_drift'
+      else
+        trial=midpoint;masses=midpoint_mass;watermark=midpoint_id;motion='kick'
+      end if
+      call advance_mpi_amr_mixture_coupling(source_comm,species,transport,liquids,options,work_gas,work_temperature, &
+        tree,owners,trial,masses,lower,spacing,interval,steps,accepted,last_id=watermark, &
+        boundary_change=wall_delta,eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=exterior, &
+        boundary_faces=particle_faces,gas_change=change,motion_mode=motion)
+      if(.not.accepted) return
+      accepted=.true.
+      do p=1,size(owners)
+        if(.not.allocated(change%fields(p)%values)) cycle
+        if(half_interval<1) then
+          if(any(abs(change%fields(p)%values)>huge(1._dp)*half_interval)) accepted=.false.
+        end if
+      end do
+      call MPI_Allreduce(accepted,all_ok,1,MPI_LOGICAL,MPI_LAND,source_comm,status)
+      if(status/=MPI_SUCCESS.or..not.all_ok) return
+      do p=1,size(owners)
+        if(.not.allocated(change%fields(p)%values)) cycle
+        change%fields(p)%values=change%fields(p)%values/half_interval
+      end do
+      rate=change
+      if(stage==0) then
+        call move_alloc(trial,midpoint);call move_alloc(masses,midpoint_mass)
+        midpoint_id=watermark;old_steps=steps;old_wall=wall_delta;old_outflow=exterior
+      else
+        call move_alloc(trial,final);call move_alloc(masses,final_mass)
+        final_id=watermark;new_steps=steps;new_wall=wall_delta;new_outflow=exterior
+      end if
+      good=.true.
+    end subroutine particle_source
+  end subroutine advance_mpi_eb_spray_sdc
 end module

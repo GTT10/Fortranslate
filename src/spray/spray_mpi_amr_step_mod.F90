@@ -32,7 +32,7 @@ contains
   ! rejected trials and wall/outflow inventories do not enter this source.
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change,gas_change)
+      wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change,gas_change,motion_mode)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -43,6 +43,10 @@ contains
     type(amr_tree_state_3d) :: integrated_change
     type(amr_tree_state_3d), allocatable :: trial_change
     integer :: export_flag,export_low,export_high
+    character(len=*), optional, intent(in) :: motion_mode
+    character(len=16) :: motion
+    integer :: motion_code,motion_low,motion_high
+    real(dp) :: kick_fraction,kick_dt,motion_dt
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -108,6 +112,22 @@ contains
     if(ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(export_flag,export_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.export_low/=export_high) return
+    motion='coupled';kick_fraction=1
+    if(present(motion_mode)) motion=motion_mode
+    select case(motion)
+    case('coupled')
+      motion_code=0
+    case('kick_drift')
+      motion_code=1;kick_fraction=.5_dp
+    case('kick')
+      motion_code=2;kick_fraction=.5_dp
+    case default
+      motion_code=-1
+    end select
+    call MPI_Allreduce(motion_code,motion_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(motion_code,motion_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.motion_low<0.or.motion_low/=motion_high) return
     if(present(eb_geometry)) faces="slip_wall"
     if (present(boundary_faces)) faces=boundary_faces
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
@@ -264,17 +284,18 @@ contains
         if (.not.valid) exit
         call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid)
         if (.not.valid) exit
-        if (invtau>0) local_dt=min(local_dt,options%max_fractional_change/invtau)
+        if (invtau>0) local_dt=min(local_dt,options%max_fractional_change/invtau/kick_fraction)
         tdot=heat*(tg(p)-drops(p)%temperature)
         do n=1,nc
           if (rates(n)>0.and.y(n)>mixture_trace_fraction) &
-            local_dt=min(local_dt,options%max_fractional_change*masses(n,p)/rates(n))
+            local_dt=min(local_dt,options%max_fractional_change*masses(n,p)/rates(n)/kick_fraction)
           tdot=tdot-rates(n)*(hv(n)-liquid_energy(components(n),drops(p)%temperature))
         end do
         tdot=tdot/(drops(p)%mass*cp)
-        if (abs(tdot)>0) local_dt=min(local_dt,min(2.0_dp,options%max_fractional_change*drops(p)%temperature)/abs(tdot))
+        if (abs(tdot)>0) local_dt=min(local_dt, &
+          min(2.0_dp,options%max_fractional_change*drops(p)%temperature)/abs(tdot)/kick_fraction)
         speed=max(maxval(abs(drops(p)%velocity)),maxval(abs(primitive(2:4,p))))
-        if (speed>0) local_dt=min(local_dt,options%particle_cfl*minimum_spacing/speed)
+        if (speed>0.and.motion/='kick') local_dt=min(local_dt,options%particle_cfl*minimum_spacing/speed)
       end do
       call agree()
       if (.not.agreed) return
@@ -283,11 +304,13 @@ contains
       accepted=.false.
       do attempt=1,30
         if (dt<=0.or.elapsed+dt<=elapsed) exit
+        kick_dt=kick_fraction*dt;motion_dt=dt
+        if(motion=='kick') motion_dt=0
         trial=drops;next_mass=masses;change=0;valid=.true.;trial_id=accepted_id;reynolds=0;trial_ledger=0
         do p=1,np
           if (drops(p)%mass<=0) cycle
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
-            next_mass(:,p),options,dt,change(:,p),valid)
+            next_mass(:,p),options,kick_dt,change(:,p),valid)
           if (.not.valid) exit
           if (trial(p)%mass>0.and.options%breakup_model/='none') then
             old_mass=trial(p)%mass;y=next_mass(:,p)/old_mass
@@ -308,10 +331,15 @@ contains
                 parcel_diameter(trial(p),effective)/film%viscosity
             else
               call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
-                film%density,film%viscosity,dt,valid)
+                film%density,film%viscosity,kick_dt,valid)
               if (.not.valid) exit
               next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
             end if
+          end if
+          if(motion/='coupled') then
+            trial(p)%position=drops(p)%position
+            if(motion=='kick_drift'.and..not.present(eb_geometry)) &
+              trial(p)%position=trial(p)%position+motion_dt*trial(p)%velocity
           end if
           if(present(eb_geometry)) then
             trial(p)%position=drops(p)%position
@@ -323,7 +351,7 @@ contains
         if (agreed.and.options%khrt_children) then
           if(allocated(eligible)) deallocate(eligible)
           allocate(eligible(np));eligible=.true.
-          if(present(eb_geometry)) then
+          if(present(eb_geometry).and.motion_dt>0) then
             ! A parent crossing the EB takes the wall path, with no KH release
             ! on that substep. Unhit parents and their children then drift together.
             do p=1,np
@@ -334,7 +362,7 @@ contains
                   ! EB or reflecting-wall contacts after a periodic crossing.
                   preview(1)=trial(p);preview_contact=.false.
                   preview_change=0;preview_exterior=0;preview_hits=0
-                  call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,preview, &
+                  call drift_spray_level_set(nodal_phi,lower,lower+length,motion_dt,32,preview, &
                     preview_change,preview_hits,valid,faces,[0._dp],preview_exterior,preview_contact)
                   if(.not.valid) exit
                   eligible(p)=.not.preview_contact(1)
@@ -342,7 +370,7 @@ contains
                 end if
               end if
               crossing=.false.;crossing_fraction=0;crossing_position=0;crossing_normal=0;crossing_cell=0
-              delta=dt*trial(p)%velocity;finish=trial(p)%position+delta
+              delta=motion_dt*trial(p)%velocity;finish=trial(p)%position+delta
               if(present(eb_outflow_change)) then
                 flight_fraction=1
                 do axis=1,3
@@ -373,13 +401,13 @@ contains
             call agree()
           end if
           if(agreed) call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid,eligible)
+            primitive(2:4,:),reynolds,kick_dt,trial_id,child_energy,valid,eligible)
           if (valid) valid=size(trial)<=125000
           call agree()
           if (agreed) change(5,:)=change(5,:)+child_energy
         end if
         if(allocated(impact_exterior)) impact_exterior=0
-        if(agreed.and.present(eb_geometry).and..not.present(wall_films)) then
+        if(agreed.and.present(eb_geometry).and..not.present(wall_films).and.motion_dt>0) then
           exchange=0;eb_hits=0
           if(allocated(impact_exterior)) then
             if(allocated(liquid_energies)) deallocate(liquid_energies)
@@ -391,7 +419,7 @@ contains
               if(.not.valid) exit
               liquid_energies(p)=e
             end do
-            if(valid) call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid, &
+            if(valid) call drift_spray_level_set(nodal_phi,lower,lower+length,motion_dt,32,trial,exchange,eb_hits,valid, &
               outflow_faces,liquid_energies,impact_exterior(:5))
             if(valid) then
               do p=1,size(trial)
@@ -406,7 +434,7 @@ contains
               valid=ierr==MPI_SUCCESS
             end if
           else
-            call drift_spray_level_set(nodal_phi,lower,lower+length,dt,32,trial,exchange,eb_hits,valid)
+            call drift_spray_level_set(nodal_phi,lower,lower+length,motion_dt,32,trial,exchange,eb_hits,valid)
           end if
           if(valid) trial_ledger(:5)=exchange
           call agree()
@@ -416,11 +444,11 @@ contains
           trial_patches=patches;trial_patch_mass=patch_mass
           call prepare_impacts()
           call agree()
-          if (agreed) then
+          if (agreed.and.motion_dt>0) then
             if (present(eb_geometry)) then
               eb_hits=0
               call advance_mpi_level_set_impacts(comm,components,options,eb_walls,nodal_phi,mw,impact_pressure, &
-                lower,lower+length,dt,trial,next_mass,trial_patches,trial_patch_mass,trial_id,impact_wall, &
+                lower,lower+length,motion_dt,trial,next_mass,trial_patches,trial_patch_mass,trial_id,impact_wall, &
                 eb_hits,valid,rejected,impact_exterior,boundary_faces)
               if (rejected) then
                 if (present(model_rejected)) model_rejected=.true.
@@ -435,7 +463,7 @@ contains
           end if
         end if
         if (agreed) then
-          if (present(boundary_faces)) call apply_boundaries()
+          if (present(boundary_faces).and.motion_dt>0) call apply_boundaries()
           call agree()
         end if
         if (agreed) then

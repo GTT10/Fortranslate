@@ -146,9 +146,90 @@ program test_spray_mpi_eb_step
     call require(drops(1)%temperature>350.and.drops(1)%mass<1e-12_dp,'heating and evaporation')
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if
+  call check_kick_stages()
   if(rank==0) print *, 'PASS: MPI EB mixed-particle interval and global wall inventory'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_kick_stages()
+    type(amr_tree_state_3d) :: reference_gas,reference_t,reference_source,stage_gas,stage_t,stage_source
+    type(spray_parcel), allocatable :: initial(:),reference(:),candidate(:)
+    real(dp), allocatable :: initial_mass(:,:),reference_mass(:,:),candidate_mass(:,:)
+    character(len=16) :: stage_mode
+    real(dp) :: interval,wall(nv),wall_reference(nv),expected_position(3)
+    integer :: mode_index,q,substeps
+    logical :: good
+    initial=saved_drops;initial_mass=saved_mass;interval=2.e-10_dp
+    do q=1,size(initial)
+      initial(q)%position=[.0015_dp,.002_dp,.0015_dp]
+    end do
+    reference_gas=saved;reference_t=saved_t;reference=initial;reference_mass=initial_mass
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options, &
+      reference_gas,reference_t,tree,owners,reference,reference_mass,zero,spacing,.5_dp*interval,substeps,good, &
+      boundary_change=wall_reference,eb_geometry=g,nodal_phi=phi,gas_change=reference_source)
+    call require(good.and.substeps==1,'reference half kick')
+    do mode_index=1,2
+      stage_mode='kick'
+      if(mode_index==2) stage_mode='kick_drift'
+      stage_gas=saved;stage_t=saved_t;candidate=initial;candidate_mass=initial_mass
+      call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options, &
+        stage_gas,stage_t,tree,owners,candidate,candidate_mass,zero,spacing,interval,substeps,good, &
+        boundary_change=wall,eb_geometry=g,nodal_phi=phi,gas_change=stage_source,motion_mode=stage_mode)
+      call require(good.and.substeps==1,'kick stage interval')
+      call require(all(candidate_mass==reference_mass),'half-interval component transfer')
+      call require(size(candidate)==size(reference),'stage parcel ownership')
+      call require(all(wall==wall_reference),'stage wall ledger')
+      do q=1,size(candidate)
+        call require(all(candidate(q)%velocity==reference(q)%velocity),'half-interval velocity kick')
+        call require(candidate(q)%mass==reference(q)%mass.and.candidate(q)%temperature==reference(q)%temperature, &
+          'half-interval heat and mass update')
+        expected_position=[.0015_dp,.002_dp,.0015_dp]
+        if(mode_index==2) expected_position=expected_position+interval*candidate(q)%velocity
+        call require(all(candidate(q)%position==expected_position),'full drift or stationary kick')
+      end do
+      do q=1,size(owners)
+        if(owners(q)/=rank) cycle
+        call require(all(stage_gas%fields(q)%values==reference_gas%fields(q)%values),'half-interval gas feedback')
+        call require(all(stage_source%fields(q)%values==reference_source%fields(q)%values),'half-interval source export')
+      end do
+    end do
+    ! A kick after a completed drift must not move the particles again.
+    initial=candidate;initial_mass=candidate_mass
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options, &
+      stage_gas,stage_t,tree,owners,candidate,candidate_mass,zero,spacing,interval,substeps,good, &
+      boundary_change=wall,eb_geometry=g,nodal_phi=phi,gas_change=stage_source,motion_mode='kick')
+    call require(good,'second kick')
+    call require(size(candidate)==size(initial),'second kick ownership')
+    do q=1,size(candidate)
+      call require(all(candidate(q)%position==initial(q)%position),'second kick leaves drift endpoint unchanged')
+    end do
+    initial=candidate;initial_mass=candidate_mass;reference_gas=stage_gas;reference_source=stage_source
+    stage_mode='kick'
+    if(rank==0) stage_mode='kick_drift'
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options, &
+      stage_gas,stage_t,tree,owners,candidate,candidate_mass,zero,spacing,interval,substeps,good, &
+      boundary_change=wall,eb_geometry=g,nodal_phi=phi,gas_change=stage_source,motion_mode=stage_mode)
+    call require(.not.good,'rank-dependent kick mode rejected')
+    call require(all(candidate_mass==initial_mass),'mode disagreement component rollback')
+    do q=1,size(candidate)
+      call require(all(candidate(q)%position==initial(q)%position),'mode disagreement position rollback')
+    end do
+    do q=1,size(owners)
+      if(owners(q)/=rank) cycle
+      call require(all(stage_gas%fields(q)%values==reference_gas%fields(q)%values),'mode disagreement gas rollback')
+      call require(all(stage_source%fields(q)%values==reference_source%fields(q)%values),'mode disagreement source rollback')
+    end do
+    field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass
+    call inventory(before)
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
+      tree,owners,drops,masses,zero,spacing,2.e-5_dp,substeps,good, &
+      boundary_change=wall,eb_geometry=g,nodal_phi=phi,gas_change=stage_source,motion_mode='kick_drift')
+    call require(good.and.substeps>1,'subcycled EB kick-drift')
+    call inventory(after)
+    call require(all(abs(after-before-wall)<=3.e-12_dp*max(abs(before),abs(after),1.e-30_dp)), &
+      'subcycled kick-drift gas liquid wall conservation')
+    if(rank==0) print *, 'kick-drift relative inventory residual: ', &
+      maxval(abs(after-before-wall)/max(abs(before),abs(after),1.e-30_dp))
+  end subroutine check_kick_stages
   subroutine advance()
     type(amr_tree_state_3d) :: previous,source
     integer :: a
