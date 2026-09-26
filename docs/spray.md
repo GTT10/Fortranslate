@@ -3537,7 +3537,11 @@ zero field. Presence must agree across ranks. The common-step SDC wrapper now
 accepts `films`, `film_mass` and `film_settings` together, with optional
 `film_steps`. Existing stationary films receive a half-interval thermal update
 after each particle stage; each new evaluation restarts from the saved midpoint.
-Only the final film state and old/final wall heat publish. Particle contacts
-remain specular in this API: impact deposition/splash and application film
-selection remain open. See [SDC film checks](validation/spray-sdc-film-20260927.md).
+Only the final film state and old/final wall heat publish. Optional
+`film_impacts=.true.` connects the existing EB deposition/splash model during
+the old kick/drift stage and requires all film arguments. Its value must agree
+across ranks. New stages do not move particles and cannot repeat the impact.
+`model_rejected` reports empirical-model rejection; state and IDs still roll back.
+The default retains specular particle contacts. Application film selection remains
+open. See [impact checks](validation/spray-sdc-impact-20260927.md). See [SDC film checks](validation/spray-sdc-film-20260927.md).
 See [focused evidence](validation/film-sdc-source-export-20260927.md).

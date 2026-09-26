@@ -174,7 +174,8 @@ particle scheduling remain open. MPI AMR/EB film intervals now export independen
 integrated gas exchange for that connection
 ([checks](validation/film-sdc-source-export-20260927.md)); the common-step wrapper
 now evolves existing stationary films from saved midpoint states
-([checks](validation/spray-sdc-film-20260927.md)). Film impact/application
+([checks](validation/spray-sdc-film-20260927.md)). Optional EB impact deposition/splash now uses the shared private particle-ID
+transaction ([checks](validation/spray-sdc-impact-20260927.md)). Film application
 coupling remains open. A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
