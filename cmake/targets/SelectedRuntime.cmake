@@ -6,6 +6,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/core/constants_mod.F90
     src/physics/nasa7_thermo_mod.F90
     src/physics/mixture_thermo_mod.F90
+    src/physics/rotating_frame_3d_mod.F90
     src/chemistry/elementary_kinetics_mod.F90
     src/chemistry/constant_volume_reactor_mod.F90
     src/driver/selected_composition_mod.F90

@@ -14,7 +14,7 @@ contains
   ! Sound speeds belong to those cell centers, not the reconstructed states.
   ! Return intensive conservative flux in global momentum order. Caller owns
   ! open-face selection, area multiplication and EB centroid interpolation.
-  subroutine mol_riemann_flux_3d(species,q,sound,axis,connected,order,flux,ok,lax_friedrichs)
+  subroutine mol_riemann_flux_3d(species,q,sound,axis,connected,order,flux,ok,lax_friedrichs,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: q(:,-1:),sound(2)
     integer, intent(in) :: axis,order
@@ -22,12 +22,21 @@ contains
     real(dp), intent(inout) :: flux(:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: lax_friedrichs
+    ! Cell-center centrifugal potentials for the left/right cells (J/kg).
+    real(dp), optional, intent(in) :: rotating_potential(2)
+    real(dp) :: contact,potential(2),upwind_potential
     real(dp) :: slopes(size(species)+4,2),left(size(q,1)),right(size(q,1))
     real(dp) :: rotated_left(size(q,1)),rotated_right(size(q,1)),candidate(size(flux)),local(size(flux))
     integer :: velocity(3),cell
     logical :: valid,use_lax
     ok=.false.;use_lax=.false.
     if(present(lax_friedrichs)) use_lax=lax_friedrichs
+    potential=0
+    if(present(rotating_potential)) then
+      potential=rotating_potential
+      if(.not.all(ieee_is_finite(potential))) return
+      if(any(potential<0)) return
+    end if
     if(size(q,1)/=reactive_nprim(size(species)).or.size(q,2)/=4) return
     if(size(flux)/=reactive_nvar(size(species)).or.size(species)<1) return
     if(axis<1.or.axis>3.or.(order/=1.and.order/=2)) return
@@ -57,10 +66,15 @@ contains
     rotated_left=left;rotated_right=right
     rotated_left(2:4)=left(velocity);rotated_right(2:4)=right(velocity)
     if(use_lax) then
-      call mol_lax_friedrichs_x(species,rotated_left,rotated_right,local,valid)
+      call mol_lax_friedrichs_x(species,rotated_left,rotated_right,local,valid,rotating_potential)
     else
       call reactive_pelec_primitive_flux_x(species,rotated_left,rotated_right,.5_dp*(sound(1)+sound(2)), &
-        local,valid)
+        local,valid,contact_velocity=contact)
+      if(valid.and.present(rotating_potential)) then
+        ! Pinned Riemann.H uses the right potential at zero contact speed.
+        upwind_potential=merge(potential(1),potential(2),contact>0)
+        local(5)=local(5)-local(1)*upwind_potential
+      end if
     end if
     if(.not.valid.or..not.all(ieee_is_finite(local))) return
     candidate=local;candidate(velocity)=local(2:4)
@@ -68,11 +82,12 @@ contains
   end subroutine
   ! Pinned Riemann.H uses acoustic-impedance contact speed plus mean sound
   ! speed here, rather than the maximum of the two one-sided signal speeds.
-  subroutine mol_lax_friedrichs_x(species,left,right,flux,ok)
+  subroutine mol_lax_friedrichs_x(species,left,right,flux,ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: left(:),right(:)
     real(dp), intent(out) :: flux(:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential(2)
     real(dp) :: ul(size(flux)),ur(size(flux)),fl(size(flux)),fr(size(flux))
     real(dp) :: cl,cr,tl,tr,wl,wr,contact,speed
     logical :: valid
@@ -86,6 +101,10 @@ contains
     if(abs(contact)<1e-12_dp*.5_dp*(abs(left(2))+abs(right(2)))) contact=0
     speed=abs(contact)+.5_dp*(cl+cr)
     if(.not.ieee_is_finite(speed)) return
+    if(present(rotating_potential)) then
+      ul(5)=ul(5)-ul(1)*rotating_potential(1)
+      ur(5)=ur(5)-ur(1)*rotating_potential(2)
+    end if
     fl=ul*left(2);fr=ur*right(2)
     fl(2)=fl(2)+left(5);fr(2)=fr(2)+right(5)
     fl(5)=(ul(5)+left(5))*left(2);fr(5)=(ur(5)+right(5))*right(2)

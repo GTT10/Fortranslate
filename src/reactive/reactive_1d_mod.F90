@@ -542,18 +542,20 @@ contains
   ! Pressure-traced face states enter without a conserved-to-primitive round trip.
   ! cav is the neighboring cell-centered sound-speed mean used by PeleC.
   subroutine reactive_pelec_primitive_flux_x(species,ql,qr,cav,flux,ok, &
-      interface_density,interface_velocity,interface_pressure,passive_upwind)
+      interface_density,interface_velocity,interface_pressure,passive_upwind,contact_velocity)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: ql(:),qr(:),cav
     real(dp), intent(out) :: flux(:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: passive_upwind
+    real(dp), optional, intent(out) :: contact_velocity
     real(dp) :: contact
     real(dp), optional, intent(out) :: interface_density,interface_velocity,interface_pressure
     real(dp) :: scratch(reactive_nvar(size(species))),tl,tr,cl,cr
     real(dp) :: candidate(reactive_nvar(size(species)))
     logical :: left_ok,right_ok
     flux=0;ok=.false.
+    if(present(contact_velocity)) contact_velocity=0
     if (present(interface_density)) interface_density=0
     if (present(interface_velocity)) interface_velocity=0
     if (present(interface_pressure)) interface_pressure=0
@@ -583,6 +585,7 @@ contains
     if(.not.all(ieee_is_finite(candidate))) then
       ok=.false.;return
     end if
+    if(present(contact_velocity)) contact_velocity=contact
     flux=candidate
   end subroutine reactive_pelec_primitive_flux_x
 

@@ -17,6 +17,7 @@ add_library(
   src/physics/thermo_database_mod.F90
   src/physics/h2o2_full_thermo_mod.F90
   src/physics/mixture_thermo_mod.F90
+  src/physics/rotating_frame_3d_mod.F90
   src/transport/gas_transport_mod.F90
   src/transport/transport_database_mod.F90
   src/transport/mixture_transport_mod.F90

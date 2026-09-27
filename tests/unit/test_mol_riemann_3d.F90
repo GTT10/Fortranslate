@@ -8,7 +8,9 @@ program test_mol_riemann_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: q(:,:),center(:),jump(:),face(:),state(:),flux(:),expected(:),other_state(:)
-  real(dp) :: t,c,sound(2),nan,diffusion_speed
+  real(dp) :: t,c,sound(2),nan,diffusion_speed,potential(2),plain_energy
+  integer :: status,lax
+  character(len=32) :: mode
   logical :: ok,connected(2,2)
   integer :: axis,order,i,checks
   checks=0
@@ -18,6 +20,30 @@ program test_mol_riemann_3d
   allocate(center(size(q,1)),jump(size(q,1)),face(size(q,1)))
   allocate(state(reactive_nvar(size(species))))
   allocate(flux(size(state)),expected(size(state)),other_state(size(state)))
+  if(command_argument_count()>0) then
+    call get_command_argument(1,mode)
+    select case(trim(mode))
+    case('--thermo-stream')
+      do i=1,size(species)
+        write(*,'(16(es26.17e3,1x))') species(i)%molecular_weight,species(i)%temperature_mid, &
+          species(i)%low_coefficients,species(i)%high_coefficients
+      end do
+    case('--rotating-stream')
+      do
+        read(*,*,iostat=status) q(:,0),q(:,1),sound,potential,lax
+        if(status<0) exit
+        if(status/=0) error stop 'Invalid rotating MOL input'
+        q(:,-1)=q(:,0);q(:,2)=q(:,1);connected=.true.
+        call mol_riemann_flux_3d(species,q,sound,1,connected,1,flux,ok, &
+          lax_friedrichs=lax==1,rotating_potential=potential)
+        if(.not.ok) error stop 'Rejected rotating MOL input'
+        write(*,'(*(es26.17e3,1x))') flux
+      end do
+    case default
+      error stop 'Unknown MOL test mode'
+    end select
+    stop
+  end if
   center=0;center(1:5)=[2._dp,10._dp,-20._dp,30._dp,200000._dp]
   do i=1,size(species)
     if(species(i)%name=='N2') center(5+i)=.7_dp
@@ -48,6 +74,19 @@ program test_mol_riemann_3d
       call mol_riemann_flux_3d(species,q,sound,axis,connected,order,flux,ok,lax_friedrichs=.true.)
       call require(ok,'MOL LF flux')
       call require(maxval(abs(flux-expected)/max(1._dp,abs(expected)))<2e-13_dp,'LF analytic physical face flux')
+      potential=[400._dp,1600._dp];plain_energy=expected(5)
+      call mol_riemann_flux_3d(species,q,sound,axis,connected,order,flux,ok,rotating_potential=potential)
+      expected(5)=plain_energy-expected(1)*merge(potential(1),potential(2),face(axis+1)>0)
+      call require(ok.and.maxval(abs(flux-expected)/max(1._dp,abs(expected)))<2e-13_dp,'rotating acoustic energy flux')
+      expected(5)=plain_energy-.5_dp*expected(1)*sum(potential)+ &
+        .5_dp*(abs(face(axis+1))+c)*face(1)*(potential(2)-potential(1))
+      call mol_riemann_flux_3d(species,q,sound,axis,connected,order,flux,ok, &
+        lax_friedrichs=.true.,rotating_potential=potential)
+      call require(ok.and.maxval(abs(flux-expected)/max(1._dp,abs(expected)))<2e-13_dp,'rotating LF energy diffusion')
+      flux=19
+      call mol_riemann_flux_3d(species,q,sound,axis,connected,order,flux,ok,rotating_potential=[-1._dp,0._dp])
+      call require(.not.ok.and.all(flux==19),'invalid potential rollback')
+
     end do
     ! Stationary equal-pressure contact: the reference contact speed is zero,
     ! and the LF diffusion speed is the arithmetic mean of EOS sound speeds.
