@@ -66,7 +66,38 @@ the inversion change plus diagnostic logging, ending at `0.00043 s` instead
 of the full case's `0.0015 s`. The selected application rebuilt and its MPI
 runtime audit passed. Binary SHA256:
 `7f9998254ba67171cfa9cd3aca96d00bff565e89cba2f936d65f00ba2619aa1e`.
-Replay launched at `2026-09-27T10:37:58.697858+00:00`; it was running at the
-last observation. Consult `execution.json` and the actual process for status.
-This record does not yet claim that it crosses the failed interval, that the
-original `-O3` behavior matches `-O2`, or that the full Jet case completes.
+Replay launched at `2026-09-27T10:37:58.697858+00:00` and completed with exit 0
+at `2026-09-27T10:39:50.820609+00:00`, after `112.12270446680486 s`.
+It reaches `0.00043 s`, accepted step 2431, processing 2150 events and retaining
+8600 parcels. This crosses the original failed time `0.0004287942691061733 s`.
+No `JET_FAILED_CELL` rejection is reported in the repaired log. The recorded
+minimum interval is `1.0587911840678754e-22 s`; this is not presented as a
+qualified timestep-policy result.
+
+`bounded-inventory.json` verifies the first 2150 prepared event masses using
+`math.fsum`: expected fuel injection `8.955824160106864e-7 kg`, relative injected
+mass error `9.45790060313325e-16`, and relative total gas/particle/outflow fuel
+balance error `4.610726544027459e-15` against the existing `1e-8` fuel gate.
+The checker includes gas volume-weighted NC10H22 and parcel mass times
+multiplicity, subtracting signed boundary/wall fuel additions. The application
+reports composite inventory error `1.4122325172095824e-15`. This is bounded
+intervention evidence with the original source plus the inversion fix and
+diagnostic prints; it is not a full-current-main or `-O3` parity claim.
+
+## Full prepared continuation
+
+After bounded success, `python3 build/jet-energy-full/run.py` launched a
+continuation to the original prepared `0.0015 s` target. It starts from the
+preserved step-2400 checkpoint because the bounded replay did not reach its
+next scheduled checkpoint. A frozen copy of the repaired executable is
+`build/jet-energy-full/solver`, with the same SHA256 above. Original prepared
+metadata and inputs are copied; the driver refuses to start unless the bounded
+replay reports successful termination. `provenance.json` records the input
+hashes and intervention. Its live driver/solver were confirmed after launch.
+Consult `execution.json` and the actual process for later status.
+
+The full continuation is not yet reported as complete. Its eventual completion
+and fuel accounting must be checked with `tools/check_jet_inventory.py`; the
+bounded result cannot substitute for those checks. The prepared 4×8×4,
+reaction-free 1.5 ms Jet is itself distinct from full upstream refined Jet
+validation.

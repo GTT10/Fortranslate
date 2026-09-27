@@ -11,8 +11,8 @@ Older milestone prose remains historical detail, not a current global status.
 
 An extracted Jet failure revealed internal-energy inversion stagnation at
 adjacent representable temperatures near zero energy. The inversion now
-terminates on that resolved bracket; focused thermodynamic checks pass, while
-the bounded Jet intervention replay remains pending
+terminates on that resolved bracket; focused thermodynamic checks and a bounded
+Jet replay through 0.430 ms pass. Full prepared 1.5 ms continuation is running
 ([evidence](validation/temperature-inversion-resolution-20260927.md)).
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
