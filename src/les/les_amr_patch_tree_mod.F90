@@ -22,7 +22,12 @@ contains
   ! One instantaneous LES evaluation on every patch, before any reflux/update.
   subroutine compute_amr_patch_tree_les_rhs_3d(tree,species,state,temperature,spacing,faces,cs,prt,sct, &
       rates,flux,maximum_diffusivity,ok,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      target_depth,coarse_start,coarse_end,fractions)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+    real(dp), optional, intent(in) :: fractions(:)
+    integer :: depth
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -53,6 +58,21 @@ contains
     if(.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(.not.valid) return
+    depth=-1
+    if(present(target_depth)) depth=target_depth
+    if(depth < -1.or.depth>=tree%level_count()) return
+    if(present(coarse_start).neqv.present(coarse_end)) return
+    if(present(coarse_start).neqv.present(fractions)) return
+    if(depth>0.and..not.present(coarse_start)) return
+    if(present(coarse_start)) then
+      if(depth<1.or.size(fractions)/=depth) return
+      if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0).or.any(fractions>1)) return
+      if(.not.coarse_start%is_valid(tree).or..not.coarse_end%is_valid(tree)) return
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level>=depth) cycle
+        if(size(coarse_start%fields(peer)%values,1)/=nv+1.or.size(coarse_end%fields(peer)%values,1)/=nv+1) return
+      end do
+    end if
     mach=-1
     if(present(inflow_mach)) mach=inflow_mach
     if(any(faces=='inflow'.and.mach<0)) then
@@ -67,10 +87,14 @@ contains
       allocate(packed%fields(peer)%values(nv+1,n(1),n(2),n(3)))
       packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
       packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+      if(tree%nodes(peer)%level<depth) packed%fields(peer)%values=coarse_start%fields(peer)%values
+      candidate%fields(peer)%values=0
     end do
     do peer=1,size(tree%nodes)
+      if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
+        coarse_future=coarse_end,coarse_fractions=fractions, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity,species_count=size(species),ghost_width=width, &
         species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
       if(.not.valid) return

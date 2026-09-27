@@ -1,5 +1,6 @@
 program test_les_amr_sdc
   use precision_mod, only: dp
+  use, intrinsic :: iso_fortran_env, only: int64
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -22,6 +23,11 @@ program test_les_amr_sdc
   integer :: i,j,k,c,geometry,mode,node
   character(len=16) :: faces(6),models(4)
   logical :: ok,flags(4)
+  logical :: recursive_steps
+  character(len=16) :: command
+  integer(int64), allocatable :: counts(:)
+  call get_command_argument(1,command)
+  recursive_steps=command=='recursive'
   call load_h2o2_elementary_thermo(species,ok);call require(ok,'thermo')
   call load_h2o2_elementary_transport(transport,ok);call require(ok,'transport')
   models=[character(len=16)::'smagorinsky','wale','vreman','dynamic']
@@ -43,6 +49,8 @@ program test_les_amr_sdc
       call initialize_amr_patch_tree_3d([4,4,4],[1],patch,tree,ok)
     end if
     call require(ok,'tree')
+    if(allocated(counts)) deallocate(counts)
+    allocate(counts(tree%level_count()))
     call prolong_amr_patch_tree_3d(tree,root,saved,ok);call require(ok,'gas')
     call prolong_amr_patch_tree_3d(tree,rt,saved_t,ok);call require(ok,'temperature')
     call composite_integrals_amr_patch_tree_3d(tree,saved,h,initial,ok);call require(ok,'initial inventory')
@@ -51,8 +59,11 @@ program test_les_amr_sdc
       if(mode==3) flags=.false.
       u=saved;t=saved_t
       call advance_amr_patch_tree_les_sdc_3d(tree,species,reactions,transport,u,t,h,dt,faces,2,.false.,flags, &
-        [0._dp,0._dp,0._dp],1e-6_dp,1e-12_dp,.17_dp,.7_dp,.7_dp,bc,sc,correction,theta,diffusion,ok,model=trim(models(mode)))
+        [0._dp,0._dp,0._dp],1e-6_dp,1e-12_dp,.17_dp,.7_dp,.7_dp,bc,sc,correction,theta,diffusion,ok, &
+        model=trim(models(mode)),subcycling=recursive_steps,level_steps=counts)
       call require(ok.and.diffusion>0,'coupled AMR LES SDC')
+      call require(counts(1)==1,'root advances once')
+      if(geometry==2) call require(counts(2)==merge(2,1,recursive_steps),'fine-level substep count')
       call composite_integrals_amr_patch_tree_3d(tree,u,h,final,ok);call require(ok,'final inventory')
       scale=max(abs(initial),abs(final),1e-20_dp);scale(2:4)=max(scale(2:4),sqrt(initial(1)*initial(5)))
       maximum=max(maximum,maxval(abs(final-initial-bc-sc)/scale))
@@ -65,17 +76,18 @@ program test_les_amr_sdc
         call require(maxval(abs(u%fields(1)%values-serial)/max(1._dp,abs(serial)))<1e-12_dp,'root LES SDC parity')
       end if
     end do
-    u=saved;t=saved_t;bc=42;sc=43;diffusion=44
+    u=saved;t=saved_t;bc=42;sc=43;diffusion=44;counts=45
     call advance_amr_patch_tree_les_sdc_3d(tree,species,reactions,transport,u,t,h,dt,faces,2,.false.,flags, &
       [0._dp,0._dp,0._dp],1e-6_dp,1e-12_dp,.17_dp,.7_dp,.7_dp,bc,sc,correction,theta,diffusion,ok, &
-      model='dynamic',test_ratio=-1)
+      model='dynamic',test_ratio=-1,subcycling=recursive_steps,level_steps=counts)
     call require(.not.ok.and.all(bc==42).and.all(sc==43).and.diffusion==44,'AMR LES failure diagnostics')
+    call require(all(counts==45),'failed LES substep count rollback')
     do node=1,size(tree%nodes)
       call require(all(u%fields(node)%values==saved%fields(node)%values).and. &
         all(t%fields(node)%values==saved_t%fields(node)%values),'AMR LES failure state rollback')
     end do
   end do
-  print *, 'PASS: common AMR LES SDC four closures, root parity, reflux; residual ',maximum
+  print *, 'PASS: AMR LES SDC four closures, root parity, reflux; recursive, residual ',recursive_steps,maximum
 contains
   subroutine require(condition,label)
     logical, intent(in) :: condition

@@ -1,11 +1,12 @@
 module les_amr_sdc_mod
   use precision_mod, only: dp
+  use, intrinsic :: iso_fortran_env, only: int64
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
-  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_sdc_3d
+  use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_sdc_3d,advance_amr_patch_tree_sdc_subcycle_3d
   use les_amr_patch_tree_mod, only: compute_amr_patch_tree_les_rhs_3d
   implicit none
   private
@@ -15,7 +16,10 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,cs,prt,sct,boundary_change,source_change, &
       maximum_correction,minimum_theta,maximum_diffusivity,ok,reaction_source,model,ci, &
       test_model,test_ratio,grid_ratio,harmonic_mean,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      outlet_pressure,inflow_mach,inflow_pressure,difmag)
+      outlet_pressure,inflow_mach,inflow_pressure,difmag,subcycling,level_steps)
+    logical, optional, intent(in) :: subcycling
+    integer(int64), optional, intent(inout) :: level_steps(:)
+    logical :: recursive_steps
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -34,15 +38,28 @@ contains
     integer, optional, intent(in) :: test_ratio,grid_ratio
     logical, optional, intent(in) :: harmonic_mean
     real(dp) :: largest
-    largest=0
+    largest=0;recursive_steps=.false.;ok=.false.
+    if(present(subcycling)) recursive_steps=subcycling
+    if(present(level_steps)) then
+      if(size(level_steps)/=tree%level_count()) return
+    end if
+    if(recursive_steps) then
+      call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
+        iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
+        ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+        inflow_mach,inflow_pressure,difmag,level_steps,evaluate)
+    else
     call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
       inflow_mach,inflow_pressure,difmag,evaluate_diffusion=evaluate)
+    if(ok.and.present(level_steps)) level_steps=1
+    end if
     if(ok) maximum_diffusivity=largest
   contains
-    subroutine evaluate(u,t,depth,fractions,rates,flux,good)
+    subroutine evaluate(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good)
       type(amr_tree_state_3d), intent(in) :: u,t
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
       integer, intent(in) :: depth
       real(dp), optional, intent(in) :: fractions(:)
       type(amr_tree_state_3d), intent(inout) :: rates
@@ -50,10 +67,9 @@ contains
       logical, intent(out) :: good
       real(dp) :: diffusion
       good=.false.
-      if(depth/=-1.or.present(fractions)) return
       call compute_amr_patch_tree_les_rhs_3d(tree,species,u,t,spacing,faces,cs,prt,sct,rates,flux,diffusion,good, &
         model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_state,inflow_temperature, &
-        wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+        wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure,depth,coarse_start,coarse_end,fractions)
       if(good) largest=max(largest,diffusion)
     end subroutine evaluate
   end subroutine advance_amr_patch_tree_les_sdc_3d

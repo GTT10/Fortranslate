@@ -20,10 +20,11 @@ module amr_patch_tree_split_3d_mod
   private
   public :: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d,advance_amr_patch_tree_sdc_subcycle_3d
   abstract interface
-    subroutine amr_sdc_diffusion_evaluator(state,temperature,depth,fractions,rates,flux,ok)
+    subroutine amr_sdc_diffusion_evaluator(state,temperature,depth,fractions,coarse_start,coarse_end,rates,flux,ok)
       ! Return instantaneous rates and face flux density; the driver applies dt.
       import :: dp,amr_tree_state_3d,amr_tree_flux_3d
       type(amr_tree_state_3d), intent(in) :: state,temperature
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
       integer, intent(in) :: depth
       real(dp), optional, intent(in) :: fractions(:)
       type(amr_tree_state_3d), intent(inout) :: rates
@@ -36,7 +37,8 @@ contains
   subroutine advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,level_steps)
+      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion)
+    procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -134,14 +136,14 @@ contains
         call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
-          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np)
+          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
       else
         call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
           difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
           fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
-          integrated_flux=total,old_predictor=op,new_predictor=np)
+          integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
       end if
       if(.not.good) return
       executed(depth+1)=executed(depth+1)+1
@@ -441,7 +443,7 @@ contains
       end if
       if(present(evaluate_diffusion)) then
         extra=u
-        call evaluate_diffusion(u,t,depth,fractions,extra,extra_flux,good)
+        call evaluate_diffusion(u,t,depth,fractions,coarse_start,coarse_end,extra,extra_flux,good)
         if(.not.good) return
         good=extra%is_valid(tree).and.allocated(extra_flux)
         if(.not.good) return
