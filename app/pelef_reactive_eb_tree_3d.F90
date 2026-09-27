@@ -630,6 +630,17 @@ program pelef_reactive_eb_tree_3d
       call advance_step()
 #endif
       if (ok) exit
+#ifdef PELEF_MPI_EB_TREE
+      if(mpi_rank==0) then
+#endif
+        write(*,'(a,i0,a,es24.16,a,es24.16,a,i0)') 'Rejected tree step: ',record%steps+1, &
+          ' time: ',record%time,' interval: ',dt,' retry: ',retry
+#ifdef PELEF_MPI_EB_SPRAY
+        write(*,'(a,i0)') 'Processed injection events at rejection: ',next_injection-1
+#endif
+#ifdef PELEF_MPI_EB_TREE
+      end if
+#endif
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
       dt=.5_dp*dt
     end do
