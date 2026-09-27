@@ -616,3 +616,7 @@ set_tests_properties(
 
 set(SOD_PELEC_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod_pelec")
 file(MAKE_DIRECTORY "${SOD_PELEC_WORK_DIRECTORY}")
+
+add_executable(test_serial_sdc_species_3d unit/test_serial_sdc_species_3d.F90)
+target_link_libraries(test_serial_sdc_species_3d PRIVATE pelef_core)
+add_test(NAME unit_serial_sdc_species_3d COMMAND test_serial_sdc_species_3d)

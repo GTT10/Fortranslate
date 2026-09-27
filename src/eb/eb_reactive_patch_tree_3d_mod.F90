@@ -1587,6 +1587,7 @@ contains
         do y=1,d(2)
         do x=1,d(1)
           if(candidate%nodes(p)%geometry%volume_fraction(x,y,z)<=0) cycle
+          if(any(candidate%nodes(p)%state(6:,x,y,z)<0._dp)) return
           call reactive_conserved_to_primitive(species,candidate%nodes(p)%state(:,x,y,z), &
             candidate%nodes(p)%temperature(x,y,z),primitive,temperature,speed,accepted)
           if(.not.accepted) return
@@ -1880,6 +1881,21 @@ contains
       end do
       if(.not.final_transfer%is_valid(tree%topology)) return
     end if
+    ! EOS recovery permits roundoff-sized negative trial densities. Published
+    ! states must satisfy the strict nonnegative checkpoint contract instead.
+    ! Check after reflux/redistribution and before publishing any output.
+    do node=1,size(tree%nodes)
+      if(.not.active(node)) cycle
+      n=tree%topology%nodes(node)%shape
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(candidate%nodes(node)%geometry%volume_fraction(i,j,k)<=0) cycle
+        if(any(candidate%nodes(node)%state(6:,i,j,k)<0._dp)) return
+      end do
+      end do
+      end do
+    end do
     if(present(reaction_source)) then
       do node=1,size(tree%nodes)
         do c=1,nv-4
