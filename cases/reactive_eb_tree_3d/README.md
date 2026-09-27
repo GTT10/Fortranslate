@@ -357,6 +357,25 @@ is supported at nonperiodic walls. EB impact films can coexist with specular
 domain walls; films on the outer domain faces remain unsupported. This input support is not physical wall-flow validation.
 
 
+## Embedded-wall heat and no-slip
+
+Fixed/selected serial and MPI gas SDC applications accept:
+
+```fortran
+ time_integrator='sdc', transport_enabled=.true.,
+ thermal_conduction_enabled=.true., embedded_wall_temperature=400,
+ viscosity_enabled=.true., embedded_noslip=.true.,
+```
+
+These options apply to the cut surface inside the domain. Positive temperature
+is in kelvin; zero disables prescribed embedded-wall heat transfer. No-slip is
+optional and requires viscosity. CTU/MOL and common/recursive SDC account for
+wall heat and impulse. The stationary viscous wall performs no mechanical work.
+A wall transport frequency caps the time interval even with
+`automatic_timestep=.false.`. Both wall settings must match the checkpoint.
+See [serial/MPI integration evidence](../../docs/validation/serial-eb-wall-20260927.md)
+for the bounded comparisons and restart checks.
+
 ## Isothermal domain walls
 
 Fixed/selected serial and MPI gas executables also accept `isothermal_wall`:

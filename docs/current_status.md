@@ -125,6 +125,10 @@ MPI gas/particle applications now expose optional embedded no-slip, with a
 viscous interval cap and restart identity. Combined and adiabatic particle
 steps, exact rank-changing continuation and changed-setting rejection pass
 ([no-slip application](validation/eb-noslip-application-20260927.md)).
+Serial CTU/MOL common and recursive steps now also include embedded heat and
+viscous traction. Eight wall cases match MPI state/temperature exactly;
+serial-to-MPI restart, wall-setting rejection and the wall timestep cap pass
+([serial connection](validation/serial-eb-wall-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
