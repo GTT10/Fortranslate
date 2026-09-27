@@ -55,7 +55,10 @@ enables stationary film heat/evaporation with the existing `walls` controls
 are supported ([breakup checks](../../docs/validation/spray-recursive-breakup-20260927.md)).
 `khrt_children=.true.` with a positive `khrt_reference_diameter_cubed` also enables
 physical shedding children in the old-time stage; copies do not create children
-([checks](../../docs/validation/spray-recursive-children-20260927.md)). Periodic migration also rejects.
+([checks](../../docs/validation/spray-recursive-children-20260927.md)). Paired periodic
+faces now support recursive particle migration and source exchange when
+`wall_impacts=.false.` ([checks](../../docs/validation/spray-recursive-periodic-20260927.md));
+periodic film copies remain unsupported.
 The default `wall_impacts=.false.` retains specular particle/EB reflection.
 
 Physical particle exchange is synchronized conservatively after each outer step.
