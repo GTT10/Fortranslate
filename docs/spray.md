@@ -12,8 +12,11 @@ The Spray-Jet gas mechanism is available with
 `prepare_spray_reference.py --fuel decane-3sp`. Supply the pinned decane
 `mechanism.H` through `--simple-transport-header` to include Simple fits.
 Source/license checks, generation and compiled coefficient comparisons pass;
-the full jet case remains to be connected
+the full jet reference comparison remains open
 ([decane import](validation/decane-spray-import-20260927.md)).
+The [short jet case](../cases/spray_jet_3d/README.md) now connects pinned rate
+data, SI conversion and scheduled decane injection, with a completed
+[three-step inventory check](validation/decane-jet-connection-20260927.md).
 
 For the selected EB tree heptane reference, `prepare_spray_reference.py`
 accepts `--simple-transport-header` with the exact pinned heptane_3sp
