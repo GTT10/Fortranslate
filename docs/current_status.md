@@ -19,6 +19,9 @@ MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
 failure checks ([reconstruction](validation/mol-reconstruction-20260927.md),
 [interface flux](validation/mol-riemann-20260927.md)).
+The interface also implements the pinned Lax–Friedrichs diffusion speed and
+flux formulas, with analytic checks; spatial/application selection remains open
+([LF kernel](validation/mol-lax-friedrichs-20260927.md)).
 Prepared EB patches now assemble centroid-corrected MOL spatial rates and
 boundary/wall ledgers with stationary balance and conservation checks.
 Application integration remains open
