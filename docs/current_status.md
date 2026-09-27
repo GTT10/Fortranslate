@@ -30,6 +30,10 @@ Recursive MOL now forwards the same update through level subcycling; focused
 nonreacting wall and state-redistribution budgets pass on two ranks.
 Particle MOL connections remain open
 ([recursive update](validation/mpi-mol-recursive-20260927.md)).
+Common particle MOL staging is connected but fails its first evaporating
+fixture: characteristic reconstruction produces a negative trace-fuel face
+density. It remains unqualified
+([diagnostic](validation/mpi-mol-particle-diagnostic-20260927.md)).
 The MPI gas application now exposes `mol_mode`, binds it to checkpoint identity,
 and passes a short heated-wall case with exact rank-changing continuation
 ([application checks](validation/mpi-mol-application-20260927.md)).
