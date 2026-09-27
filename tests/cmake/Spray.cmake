@@ -775,6 +775,14 @@ if(PELEF_ENABLE_SPRAY)
       COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_les_mpi_amr_subcycle> ${MPIEXEC_POSTFLAGS})
     set_tests_properties(spray_les_mpi_amr_subcycle_2 PROPERTIES LABELS "spray;amr;mpi" TIMEOUT 180 PROCESSORS 2)
+    add_executable(test_les_mpi_amr_sdc spray/test_les_mpi_amr_sdc.F90)
+    target_link_libraries(test_les_mpi_amr_sdc PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
+    foreach(sdc_mode common recursive)
+      add_test(NAME les_mpi_amr_sdc_${sdc_mode}_4
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_les_mpi_amr_sdc> ${sdc_mode} ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(les_mpi_amr_sdc_${sdc_mode}_4 PROPERTIES LABELS "les;amr;mpi;sdc" TIMEOUT 180 PROCESSORS 4)
+    endforeach()
     add_executable(test_les_mpi_amr_tree spray/test_les_mpi_amr_tree.F90)
     target_link_libraries(test_les_mpi_amr_tree PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     foreach(les_ranks 2 4)
