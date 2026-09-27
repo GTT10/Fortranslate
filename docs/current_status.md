@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
+events with 32 parcels and closed fuel inventory. Original liquid-property
+values are preserved; full-duration reference parity remains open
+([case](../cases/spray_multijet_3d/README.md),
+[execution evidence](validation/multijet-connection-20260927.md)).
+
 The pinned reaction-free NC10H22/O2/N2 mechanism for Spray-Jet now imports
 with Simple transport fits. Six-state compiled coefficient checks pass; a
 decane jet reference comparison remains open
