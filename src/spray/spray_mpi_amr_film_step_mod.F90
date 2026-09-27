@@ -11,15 +11,138 @@ module spray_mpi_amr_film_step_mod
   use spray_mixture_mod, only: mixture_trace_fraction
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options, &
     valid_wall_component_inventory,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates, &
-    advance_mixture_wall_film_exchange
+    advance_mixture_wall_film_exchange,advance_mixture_wall_film_frozen
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
+  use spray_mpi_amr_field_mod, only: sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo, &
+    sum_mpi_amr_particle_source_halo,deposit_mpi_amr_tree_spray_field
   use eb_geometry_3d_mod, only: eb_geometry_3d
   implicit none
   private
-  public :: advance_mpi_amr_film_coupling
+  public :: advance_mpi_amr_film_coupling,kick_mpi_eb_film_halo
 contains
+  ! One frozen-gas film half step. Caller supplies owner-level nodes and probes
+  ! displaced into the fluid, and handles copy selection and stage publication.
+  ! Zero-mass outputs must be removed before a subsequent film call.
+  subroutine kick_mpi_eb_film_halo(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
+      gas_halo,temperature_halo,width,target_level,nodes,probes,films,film_mass,lower,spacing,periodic,dt, &
+      fluid_fraction,nodal_phi,centroids,source,remainder,wall_change,ok,physical_source)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_wall_options), intent(in) :: wall_options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    integer, intent(in) :: owners(:),width,target_level,nodes(:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo,fluid_fraction,centroids
+    real(dp), intent(in) :: probes(:,:),lower(3),spacing(3),dt,nodal_phi(0:,0:,0:)
+    logical, intent(in) :: periodic(3)
+    type(spray_wall_film), intent(inout) :: films(:)
+    real(dp), intent(inout) :: film_mass(:,:)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(spray_wall_film), allocatable :: candidate(:)
+    real(dp), allocatable :: masses(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
+    type(amr_tree_state_3d) :: raw,routed,leftover,physical_delta
+    real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,conductivity,wall_energy
+    real(dp) :: ledger,global_ledger,controls(3),low(3),high(3)
+    integer :: flags(4),lowflags(4),highflags(4),nv,nc,p,c,node,n(3),rank,status
+    logical :: valid,agreed
+    character(len=9) :: wall_faces(6)
+    ok=.false.;nv=reactive_nvar(size(species));nc=size(components);wall_faces='slip_wall'
+    valid=tree%is_valid().and.valid_spray_options(options).and.valid_wall_options(wall_options,wall_faces)
+    valid=valid.and.all(wall_options%temperature==wall_options%temperature(1)).and.ieee_is_finite(dt)
+    valid=valid.and.dt>=0.and.dt<=1e6_dp.and.nc>=1.and.nc<=min(16,size(species))
+    valid=valid.and.size(transport)==size(species).and.size(films)<=wall_options%maximum_films
+    valid=valid.and.all(shape(film_mass)==[nc,size(films)]).and.all(shape(probes)==[3,size(films)])
+    valid=valid.and.size(nodes)==size(films).and.target_level>=0
+    call agree();if(.not.agreed) return
+    valid=all(nodes>=1).and.all(nodes<=size(tree%nodes)).and.target_level<tree%level_count()
+    call agree();if(.not.agreed) return
+    do p=1,size(films)
+      valid=valid.and.valid_wall_component_inventory(films(p),film_mass(:,p))
+      valid=valid.and.tree%nodes(nodes(p))%level==target_level
+    end do
+    do c=1,nc
+      valid=valid.and.valid_spray_liquid(components(c)).and.components(c)%vapor_index<=size(species)
+    end do
+    call agree();if(.not.agreed) return
+    flags=[width,target_level,nc,merge(1,0,present(physical_source))]
+    controls=[dt,wall_options%temperature(1),merge(1._dp,0._dp,wall_options%evolve)]
+    call MPI_Allreduce(flags,lowflags,4,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,highflags,4,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(lowflags/=highflags)) return
+    call MPI_Allreduce(controls,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    call sample_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,probes,lower,spacing, &
+      periodic,sampled,valid,fluid_fraction,nodal_phi,centroids)
+    if(.not.valid) return
+    call sample_mpi_amr_particle_halo(comm,tree,owners,temperature_halo,1,width,nodes,probes,lower,spacing, &
+      periodic,sampled_t,valid,fluid_fraction,nodal_phi,centroids)
+    if(.not.valid) return
+    candidate=films;masses=film_mass;allocate(change(nv,size(films)));change=0;ledger=0
+    if(wall_options%evolve) then
+      do p=1,size(films)
+        call reactive_conserved_to_primitive(species,sampled(:,p),sampled_t(1,p),primitive,tg,sound,valid)
+        if(.not.valid) exit
+        conductivity=wall_liquid_conductivity_at_temperature(wall_options,films(p)%material_id,films(p)%temperature)
+        call advance_mixture_wall_film_frozen(candidate(p),components,masses(:,p),species,transport,primitive,tg, &
+          options,conductivity,wall_options%temperature(1),dt,wall_options%minimum_height,change(:,p),wall_energy,valid)
+        if(.not.valid) exit
+        if(candidate(p)%mass>0) valid= &
+          wall_liquid_conductivity_at_temperature(wall_options,candidate(p)%material_id,candidate(p)%temperature)>0
+        if(.not.valid) exit
+        valid=ieee_is_finite(wall_energy)
+        if(valid) valid=ledger<=huge(1._dp)+min(wall_energy,0._dp).and. &
+          ledger>=-huge(1._dp)+max(wall_energy,0._dp)
+        if(.not.valid) exit
+        ledger=ledger-wall_energy
+      end do
+    end if
+    call agree();if(.not.agreed) return
+    call deposit_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,probes,change,lower,spacing, &
+      periodic,raw,valid,fluid_fraction,nodal_phi,centroids,containing_cell=.true.)
+    if(.not.valid) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    allocate(routed%fields(size(owners)))
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      n=tree%nodes(node)%shape
+      allocate(routed%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+    end do
+    call sum_mpi_amr_particle_source_halo(comm,tree,owners,raw,nv,width,target_level,periodic, &
+      routed,leftover,valid,route_to_coarse=.false.,eb_geometry=geometry,halo_volume_fraction=fluid_fraction)
+    if(.not.valid) return
+    if(present(physical_source)) then
+      physical_delta=routed
+      do node=1,size(owners)
+        if(owners(node)==rank) physical_delta%fields(node)%values=0
+      end do
+      call deposit_mpi_amr_tree_spray_field(comm,tree,owners,physical_delta,nv,probes,change,lower,spacing, &
+        periodic,valid,eb_geometry=geometry,nodal_phi=nodal_phi,containing_cell=.true.)
+      if(.not.valid) return
+    end if
+    call MPI_Allreduce(ledger,global_ledger,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+    if(status/=MPI_SUCCESS.or..not.ieee_is_finite(global_ledger)) return
+    films=candidate;film_mass=masses;wall_change=0;wall_change(5)=global_ledger
+    call move_alloc(routed%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    if(present(physical_source)) call move_alloc(physical_delta%fields,physical_source%fields)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine kick_mpi_eb_film_halo
   ! Common film substeps, owner-local gas feedback and whole-interval publication.
   ! All model tables/options are identical across ranks by caller contract.
   subroutine advance_mpi_amr_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &

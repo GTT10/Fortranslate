@@ -3,8 +3,11 @@ program test_spray_mpi_eb_sample
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
     advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage,advance_mpi_eb_recursive_population_stage
+  use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,advance_mixture_wall_film_frozen
+  use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations
-  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,initialize_spray_liquid
+  use spray_parcel_mod, only: spray_parcel,spray_liquid,spray_options,initialize_spray_liquid,liquid_energy
   use spray_mixture_mod, only: advance_mixture_frozen_gas
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
@@ -114,6 +117,12 @@ contains
     type(gas_transport_species), allocatable :: transport(:)
     type(spray_liquid) :: liquid(1)
     type(spray_options) :: options,child_options
+    type(spray_wall_options) :: film_options
+    type(spray_wall_film), allocatable :: films(:),reference_films(:),kept_films(:)
+    type(amr_tree_state_3d) :: film_halo,film_halo_t,film_volume
+    real(dp), allocatable :: film_mass(:,:),reference_film_mass(:,:),probes(:,:)
+    integer, allocatable :: film_nodes(:)
+    real(dp) :: expected_wall,film_wall,film_energy_change
     type(spray_parcel), allocatable :: ghosts(:)
     type(spray_parcel) :: reference
     type(spray_level_population) :: group(3),before_group(3),expected_group(3)
@@ -480,6 +489,71 @@ contains
           call require(all(group(population)%parcels(p)%position==expected_group(population)%parcels(p)%position), &
             'new-time half kick does not drift children twice')
         end do
+      end do
+      call fill_mpi_eb_tree_halo_3d(species,tree,owners,g,gas,temp,film_halo,film_halo_t,MPI_COMM_WORLD,ok, &
+        ghost_volume_fraction=film_volume,halo_width=1,target_volume_fraction=metrics, &
+        boundary_faces=faces,restrict_snapshot=.false.)
+      call require(ok,'frozen film stage halo')
+      call reactive_conserved_to_primitive(species,cell,900._dp,primitive,t,sound,ok)
+      call require(ok,'frozen film reference gas')
+      allocate(films(2*count),film_mass(1,2*count),probes(3,2*count),film_nodes(2*count))
+      film_nodes=2;film_mass=1e-8_dp
+      do p=1,2*count
+        films(p)=spray_wall_film([1.5_dp,1.25_dp,1.5_dp],[0._dp,1._dp,0._dp], &
+          1e-8_dp,350._dp,1e-3_dp,1e-8_dp/(1000*.25_dp*acos(-1._dp)*1e-6_dp),p)
+        if(p==2) films(p)%position(1)=2.25_dp
+        probes(:,p)=films(p)%position+[0._dp,1e-8_dp,0._dp]
+      end do
+      film_options%enabled=.true.;film_options%evolve=.true.;film_options%temperature=400
+      film_options%liquid_conductivity=.6_dp;film_options%minimum_height=1e-15_dp
+      reference_films=films;reference_film_mass=film_mass;expected_wall=0;delta=0
+      do p=1,size(films)
+        call advance_mixture_wall_film_frozen(reference_films(p),liquid,reference_film_mass(:,p),species,transport, &
+          primitive,900._dp,options,.6_dp,400._dp,1e-10_dp,1e-15_dp,ledger,film_wall,ok)
+        call require(ok,'independent film half-step reference')
+        delta=delta+ledger;expected_wall=expected_wall-film_wall
+      end do
+      call MPI_Allreduce(MPI_IN_PLACE,delta,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call MPI_Allreduce(MPI_IN_PLACE,expected_wall,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_nodes,probes,films,film_mass,zero,spacing,periodic,1e-10_dp, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(ok,'film half step with frozen gas halo')
+      call require(maxval(abs(film_mass-reference_film_mass),mask=.true.)<1e-22_dp,'film component exchange reference')
+      call require(abs(wall(5)-expected_wall)<1e-12_dp*abs(expected_wall),'film wall heat reference')
+      do p=1,size(films)
+        call require(all(films(p)%position==reference_films(p)%position),'film stays at wall')
+        call require(abs(films(p)%temperature-reference_films(p)%temperature)<1e-10_dp,'film temperature reference')
+      end do
+      call integrate_mpi_eb_tree_3d(tree,owners,g,physical_source,integral,MPI_COMM_WORLD,ok)
+      call require(ok.and.all(abs(integral-delta)<=1e-12_dp*max(abs(delta),1e-30_dp)), &
+        'physical film exchange deposited on finest containing leaves')
+      film_energy_change=0
+      do p=1,size(films)
+        film_energy_change=film_energy_change+films(p)%mass*liquid_energy(liquid(1),films(p)%temperature)- &
+          1e-8_dp*liquid_energy(liquid(1),350._dp)
+      end do
+      call MPI_Allreduce(MPI_IN_PLACE,film_energy_change,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(abs(film_energy_change+integral(5)-wall(5))<1e-14_dp,'film gas and wall energy closure')
+      ! The first film can update privately before material 2 leaves its range.
+      kept_films=films;reference_film_mass=film_mass
+      old_group_source=group_source;old_group_remainder=group_remainder;old_physical_source=physical_source
+      film_options%port_conductivity_models(2)='polynomial'
+      film_options%port_conductivity_coefficients(1,2)=.6_dp
+      film_options%port_conductivity_temperature_ranges(:,2)=[300._dp,340._dp];wall=17
+      call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_nodes,probes,films,film_mass,zero,spacing,periodic,1e-10_dp, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(.not.ok.and.all(wall==17).and.all(film_mass==reference_film_mass),'late material failure rolls back film')
+      do p=1,size(films)
+        call require(films(p)%temperature==kept_films(p)%temperature.and.films(p)%mass==kept_films(p)%mass, &
+          'film payload rollback')
+      end do
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values).and. &
+          all(physical_source%fields(p)%values==old_physical_source%fields(p)%values),'all film sources roll back')
       end do
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
