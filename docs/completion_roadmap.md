@@ -59,8 +59,9 @@ Serial inviscid, nonreacting old/new sources, time integration and reflux recove
 are connected ([SDC evidence](validation/rotating-sdc-20260927.md)).
 Forced chemistry now carries rotating energy and density forcing
 ([reaction evidence](validation/rotating-reaction-20260927.md)).
-Complete the fixed-reference 3D MOL path through transport energy
-conventions, MPI owner-local transfer/stepping, conservative remapping, timestep selection,
+Serial transport and embedded-wall energy adapters are connected
+([transport evidence](validation/rotating-transport-20260927.md)).
+Complete the fixed-reference 3D MOL path through MPI owner-local transfer/stepping, conservative remapping, timestep selection,
 boundary/initial states, budgets and checkpoint identity. Frame axis, origin
 and angular speed must agree across ranks and restarts. Coupled-physics time integration
 and application support remain open; source/flux kernel agreement alone does

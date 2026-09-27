@@ -41,7 +41,9 @@ Serial inviscid, nonreacting MOL now integrates rotation on common or recursive
 time steps with bounded composite conservation checks
 ([SDC evidence](validation/rotating-sdc-20260927.md)). Forced chemistry now carries
 the rotating energy convention, including density forcing
-([reaction evidence](validation/rotating-reaction-20260927.md)). Transport, MPI and
+([reaction evidence](validation/rotating-reaction-20260927.md)). Viscosity, heat/species
+transport and embedded-wall sources now connect to serial rotating SDC
+([transport evidence](validation/rotating-transport-20260927.md)). MPI and
 application/restart integration remain open; rotating CFD input is not yet enabled.
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
