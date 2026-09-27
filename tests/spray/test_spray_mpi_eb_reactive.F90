@@ -21,6 +21,9 @@ program test_spray_mpi_eb_reactive
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
+  use les_mpi_eb_sdc_mod, only: compute_mpi_regular_eb_les_sdc_3d
+  use mpi_eb_tree_full_3d_mod, only: mpi_eb_sdc_diffusion_source
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   implicit none
   type(gas_transport_species), allocatable :: transport(:)
   type(elementary_reaction), allocatable :: reactions(:)
@@ -37,7 +40,11 @@ program test_spray_mpi_eb_reactive
   logical :: fail_post=.false.
   integer :: predictor_calls=0
   logical :: fail_predictor=.false.
-  logical :: recursive_steps
+  logical :: recursive_steps,les_failure=.false.
+  integer :: les_calls=0
+  real(dp) :: les_largest=0
+  character(len=16) :: les_model='smagorinsky'
+  type(eb_geometry_3d) :: les_cut(2)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
@@ -74,16 +81,33 @@ program test_spray_mpi_eb_reactive
   do j=0,8
     phi(:,j,:)=real(j,dp)*.0005_dp-.00125_dp
   end do
+  if(index(test_mode,"sdc-les")==1) phi=1
   call build_level_set_eb_geometry_3d(phi,zero,[.004_dp,.004_dp,.004_dp],finest,ok)
   call require(ok,'fine geometry')
   call coarsen_eb_geometry_3d(finest,2,g(1),ok)
   call require(ok,'root geometry')
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
+  if(index(test_mode,'sdc-les')==1) then
+    block
+      type(eb_geometry_3d) :: cut
+      real(dp) :: cut_phi(0:8,0:8,0:8)
+      do j=0,8
+        cut_phi(:,j,:)=real(j,dp)*.0005_dp-.00125_dp
+      end do
+      call build_level_set_eb_geometry_3d(cut_phi,zero,[.004_dp,.004_dp,.004_dp],cut,ok)
+      call require(ok,'LES rejection geometry')
+      call coarsen_eb_geometry_3d(cut,2,les_cut(1),ok)
+      call require(ok,'LES rejection root')
+      call extract_eb_geometry_3d(cut,[1,1,1],[4,8,8],les_cut(2),ok)
+      call require(ok,'LES rejection child')
+    end block
+  end if
   if(index(test_mode,'ctu')==1.or.index(test_mode,'sdc')==1) then
     do j=0,32
       extended_phi(:,j,:)=real(max(0,min(8,j-12)),dp)*.0005_dp-.00125_dp
     end do
+    if(index(test_mode,"sdc-les")==1) extended_phi=1
     call build_level_set_eb_geometry_3d(extended_phi,[-.006_dp,-.006_dp,-.006_dp], &
       [.010_dp,.010_dp,.010_dp],extended_finest,ok)
     call require(ok,'extended nodal geometry')
@@ -111,6 +135,12 @@ program test_spray_mpi_eb_reactive
     do k=1,dims(3)
     do j=1,dims(2)
     do i=1,dims(1)
+      if(index(test_mode,'sdc-les')==1) then
+        primitive(2)=1+sin(2*acos(-1._dp)*(g(node)%y_lower+(j-.5_dp)*g(node)%dy)/.004_dp)
+        primitive(3)=2+cos(2*acos(-1._dp)*(g(node)%x_lower+(i-.5_dp)*g(node)%dx)/.004_dp)
+        call reactive_primitive_to_conserved(species,primitive,cell,t,sound,ok)
+        call require(ok,'LES nonuniform state')
+      end if
       field%fields(node)%values(:,i,j,k)=cell;temp%fields(node)%values(1,i,j,k)=t
       if(g(node)%volume_fraction(i,j,k)==0) then
         field%fields(node)%values(:,i,j,k)=0;temp%fields(node)%values(1,i,j,k)=42
@@ -168,6 +198,12 @@ program test_spray_mpi_eb_reactive
   end if
   if(test_mode=='sdc-force') accel=[1000._dp,-2000._dp,3000._dp]
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
+  if(index(test_mode,'sdc-les')==1) then
+    allocate(labels(6));labels='outflow'
+    call check_les_spray()
+    call MPI_Finalize(ierr)
+    stop
+  end if
   if(index(test_mode,'sdc-recursive')==1) then
     if(index(test_mode,'sdc-recursive-impact')==1) then
       call check_recursive_impact()
@@ -373,6 +409,92 @@ contains
     call require(all(abs(after-before-ledger-boundary-chemical-forcing)<= &
       3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'recursive gas particle film wall conservation')
   end subroutine check_recursive_impact
+  subroutine check_les_spray()
+    character(len=16) :: models(4)
+    integer :: m,peer
+    real(dp) :: normalized,scale(nv),delta,global_delta
+    type(amr_tree_state_3d) :: no_les
+    models=[character(len=16)::'smagorinsky','wale','vreman','dynamic']
+    call inventory(before)
+    call les_step()
+    call require(ok,'gas particle reference without LES')
+    no_les=field
+    do m=1,4
+      les_model=models(m);field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass;last_id=1
+      les_calls=0;les_largest=0
+      call les_step(les_source)
+      call require(ok.and.les_largest>0,'active gas particle LES')
+      delta=0
+      do peer=1,size(owners)
+        if(owners(peer)/=rank) cycle
+        delta=max(delta,maxval(abs(field%fields(peer)%values-no_les%fields(peer)%values)))
+      end do
+      call MPI_Allreduce(delta,global_delta,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      call require(global_delta>0,'LES changes coupled gas state')
+      call inventory(after)
+      scale=max(abs(before),abs(after),1e-20_dp)
+      scale(2:4)=max(scale(2:4),sqrt(before(1)*before(5)))
+      normalized=maxval(abs(after-before-boundary-ledger-chemical-forcing)/scale)
+      call require(normalized<5e-12_dp,'gas particle LES composite inventory')
+      if(rank==0) print *, 'LES particle residual ',trim(les_model),normalized
+    end do
+    field=saved;temp=saved_t;drops=saved_drops;masses=saved_mass;last_id=1
+    boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37
+    les_failure=.true.;les_calls=0
+    call les_step(les_source)
+    call require(.not.ok,'cut-cell LES rejected during particle step')
+    call require(all(masses==saved_mass).and.size(drops)==size(saved_drops),'LES particle mass rollback')
+    do peer=1,size(drops)
+      call require(all(drops(peer)%position==saved_drops(peer)%position),'LES particle position rollback')
+      call require(all(drops(peer)%velocity==saved_drops(peer)%velocity),'LES particle velocity rollback')
+      call require(drops(peer)%temperature==saved_drops(peer)%temperature,'LES particle temperature rollback')
+    end do
+    do peer=1,size(owners)
+      if(owners(peer)/=rank) cycle
+      call require(all(field%fields(peer)%values==saved%fields(peer)%values),'LES gas rollback')
+      call require(all(temp%fields(peer)%values==saved_t%fields(peer)%values),'LES temperature rollback')
+    end do
+    call require(last_id==1.and.all(boundary==17).and.all(ledger==19).and.all(chemical==23).and. &
+      all(forcing==29).and.theta==31.and.all(exchange==37),'LES diagnostics rollback')
+    if(rank==0) print *, 'PASS: four LES models, particle conservation and cut-cell rejection rollback'
+  end subroutine
+  subroutine les_step(evaluator)
+    procedure(mpi_eb_sdc_diffusion_source), optional :: evaluator
+    if(index(test_mode,'subcycle')>0) then
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
+        species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
+        1e-8_dp,2,.false.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
+        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,gas_particle_change=exchange,evaluate_diffusion=evaluator)
+    else
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
+        species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
+        1e-8_dp,2,.false.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
+        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,gas_particle_change=exchange,evaluate_diffusion=evaluator)
+    end if
+  end subroutine
+  subroutine les_source(state,temperature,interval,depth,rate,flux,limiter,comm,good, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    real(dp), intent(inout) :: limiter
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: fractions(:)
+    type(eb_geometry_3d) :: geometry(2)
+    real(dp) :: diffusivity
+    les_calls=les_calls+1;geometry=g
+    if(les_failure.and.les_calls==2) geometry=les_cut
+    call compute_mpi_regular_eb_les_sdc_3d(tree,owners,geometry,species,state,temperature,spacing,labels, &
+      interval,depth,.17_dp,.7_dp,.7_dp,rate,flux,diffusivity,comm,good, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,fractions,model=les_model)
+    if(good) then
+      limiter=1;les_largest=max(les_largest,diffusivity)
+    end if
+  end subroutine
   subroutine check_recursive_spray()
     integer(int64) :: counts(2)
     integer :: attempt,final_owner,attempts,final_count

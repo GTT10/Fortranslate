@@ -1106,6 +1106,12 @@ if(PELEF_ENABLE_SPRAY)
 endif()
 
 if(TARGET test_spray_mpi_eb_reactive)
+  foreach(les_mode sdc-les sdc-les-subcycle)
+    add_test(NAME spray_mpi_eb_${les_mode}_4
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} ${les_mode})
+    set_tests_properties(spray_mpi_eb_${les_mode}_4 PROPERTIES LABELS "spray;mpi;les;sdc" TIMEOUT 180 PROCESSORS 4)
+  endforeach()
   add_test(NAME spray_mpi_eb_sdc_2
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc)

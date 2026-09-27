@@ -16,7 +16,7 @@ module spray_mpi_eb_reactive_mod
     collect_mpi_amr_level_particles,redistribute_mpi_amr_subtree_particles
   use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_particle_predictor_halo_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_full_3d,advance_mpi_eb_tree_sdc_3d, &
-    advance_mpi_eb_tree_sdc_subcycle_3d
+    advance_mpi_eb_tree_sdc_subcycle_3d,mpi_eb_sdc_diffusion_source
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_mod, only: spray_level_film_population,initialize_mpi_eb_film_levels,migrate_mpi_amr_wall_films
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling,spray_sdc_film_stage, &
@@ -37,7 +37,8 @@ contains
       chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration,split_created, &
-      films,film_mass,film_settings,film_steps,film_impacts,model_rejected)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,evaluate_diffusion)
+    procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -202,7 +203,7 @@ contains
       target_volume_fraction=target_volume_fraction,halo_source=particle_source,auxiliary_change=exchange, &
       gas_acceleration=gas_acceleration,predictor_builder=particle_predictor,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature,post_level=particle_post_level)
+      wall_temperature=wall_temperature,post_level=particle_post_level,evaluate_diffusion=evaluate_diffusion)
     if(.not.agreed) return
     call synchronize_particle_sources()
     if(.not.agreed) return
@@ -779,7 +780,8 @@ contains
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
-      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration,evaluate_diffusion)
+    procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
     type(spray_wall_options), optional, intent(in) :: film_settings
@@ -878,7 +880,7 @@ contains
       comm,ready,ir,difmag,redistribution=redistribution,target_volume_fraction=target_volume_fraction, &
       auxiliary_source=particle_source,auxiliary_change=exchange,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature,gas_acceleration=gas_acceleration)
+      wall_temperature=wall_temperature,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion)
     if(.not.ready) return
     before_split=final_id
     if(options%maximum_multiplicity>0) then
