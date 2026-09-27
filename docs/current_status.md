@@ -32,6 +32,11 @@ axial-momentum difference is `2.7e-6` relative to the reference maximum
 Fitted face coefficients now follow the pinned harmonic mean; three nonuniform
 faces agree to `6.2e-16`, without explaining the remaining evaporation residual
 ([face checks](validation/simple-face-transport-20260927.md)).
+The reference temperature inversion retains corrections below `1e-6 K`;
+a compiled 64-state audit reproduces its `8.87e-7 K` stored-temperature/EOS
+discrepancy. This bounds the temperature comparison without changing conserved
+energy; the momentum residual remains unresolved
+([inversion audit](validation/spray-temperature-inversion-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
