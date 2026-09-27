@@ -22,6 +22,9 @@ WALE, Vreman and Dynamic sources alongside molecular transport and forcing
 remain open.
 Regular LES SDC now exports combined hydro/transport/LES full-face fluxes for
 subsequent AMR synchronization ([reconstruction checks](validation/les-sdc-flux-20260927.md)).
+It also accepts caller-supplied stage halos and externally retained source
+estimates for coordinated patch iterations
+([halo checks](validation/les-sdc-halos-20260927.md)).
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
