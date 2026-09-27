@@ -20,7 +20,8 @@ python3 tools/check_jet_inventory.py --run-dir build/spray-a-case --fuel-species
 
 Default preparation retains the physical 12×12×60 mm domain, 900 K/6 MPa gas,
 N2/H2O/CO2 mole fractions, 90 µm nozzle, 89 µm injected drops, 363 K liquid,
-20-degree full cone angle, discharge coefficient 0.89, polynomial density,
+20-degree full cone angle, discharge coefficient 0.89, KHRT injection
+reference `0.1*(89e-6)**3` m³, polynomial density,
 inverse-temperature viscosity, Antoine pressure and KHRT constants from the
 pinned `Spray-A-Wbreakup/example.inp`. The referenced liquid conductivity is
 not used by this free-particle fixture; splash/film physics is disabled upstream.
@@ -40,3 +41,6 @@ particle-ID watermark and computational split count. It checks ID bounds and
 fuel inventory while allowing population growth; it does not establish
 breakup-dynamics parity. Full reference comparison and experimental penetration
 validation remain open.
+
+The [corrected eight-event check](../../docs/validation/spray-a-khrt-threshold-20260927.md)
+completes with 1,264 parcels and fuel error `3.13e-16` relative.

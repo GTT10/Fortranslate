@@ -1,5 +1,10 @@
 # Spray-A growing-population audit — 2026-09-27
 
+The live-run status below is historical. The 12-event run was interrupted
+after an input-normalization defect was found. Corrected completed runs and
+child-release evidence supersede it in the
+[normalization record](spray-a-khrt-threshold-20260927.md).
+
 Implementation `14f7831e90b6f6cae0242d9184c7a7ef8fe4a53c`, based on
 `6f56d1c3`. The MPI EB spray application now reports the accepted particle-ID
 watermark and cumulative computational parcel splits. Both values already

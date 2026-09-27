@@ -18,9 +18,10 @@ A 53-species Spray-A adaptation now completes its first two injection events
 with variable liquid properties and KHRT. Fuel accounting and a breakup-off
 intervention pass; full-duration/reference comparison remains open
 ([case and evidence](validation/spray-a-connection-20260927.md)).
-Runtime particle-ID bounds now support checking KHRT population growth.
-A twelve-event extension is running; child release is not yet established
-([audit and live-run record](validation/spray-a-population-audit-20260927.md)).
+The KHRT injection-reference normalization now includes the pinned 0.1
+multiplicity. A corrected eight-event Release run creates 1,232 new particle
+IDs, finishes with 1,264 parcels and conserves fuel within `3.13e-16` relative
+([correction and child release](validation/spray-a-khrt-threshold-20260927.md)).
 
 An extracted Jet failure revealed internal-energy inversion stagnation at
 adjacent representable temperatures near zero energy. The inversion now
