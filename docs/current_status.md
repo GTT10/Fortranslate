@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Periodic 3D transport face/flux and timestep APIs now accept explicit constant
+viscosity and conductivity, with analytical flux and coefficient-scaling checks
+([evidence](validation/constant-transport-20260927.md)). Application/SDC routing
+of these coefficients remains open.
+
 Primitive conversion now preserves exact forward-EOS endpoint states when
 inverse rounding lands outside the mechanism interval. Strict ranges and
 out-of-range rejection remain unchanged; endpoint unit checks and 300 K
