@@ -9,17 +9,17 @@ module mpi_eb_wall_heat_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_two_level_3d_mod, only: matching_eb_metrics_3d
-  use eb_wall_heat_source_3d_mod, only: compute_eb_wall_heat_source_3d
+  use eb_wall_heat_source_3d_mod, only: compute_eb_wall_transport_source_3d
   use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d,integrate_mpi_eb_tree_3d
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   implicit none
   private
-  public :: compute_mpi_eb_wall_heat_3d
+  public :: compute_mpi_eb_wall_heat_3d,compute_mpi_eb_wall_transport_3d
 contains
   ! Two same-resolution donor layers cover every quadratic stencil. Geometry
   ! is replicated; temperature/state are exchanged from owners at each call.
-  subroutine compute_mpi_eb_wall_heat_3d(species,transport,tree,owners,geometry,extended_geometry, &
-      state,temperature,wall_temperature,rate,wall_power,frequency,comm,ok, &
+  subroutine compute_mpi_eb_wall_transport_3d(species,transport,tree,owners,geometry,extended_geometry, &
+      state,temperature,conduction,noslip,wall_temperature,rate,wall_exchange,frequency,comm,ok, &
       boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,target_depth, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
     type(nasa7_species), intent(in) :: species(:)
@@ -28,9 +28,10 @@ contains
     integer, intent(in) :: owners(:)
     type(eb_geometry_3d), intent(in) :: geometry(:),extended_geometry(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
+    logical, intent(in) :: conduction,noslip
     real(dp), intent(in) :: wall_temperature
     type(amr_tree_state_3d), intent(inout) :: rate
-    real(dp), intent(inout) :: wall_power,frequency
+    real(dp), intent(inout) :: wall_exchange(:),frequency
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -40,21 +41,24 @@ contains
     real(dp), optional, intent(in) :: ancestor_fraction(:)
     type(amr_tree_state_3d) :: metrics,ghost,gt,vf,candidate
     type(eb_geometry_3d) :: center
-    real(dp), allocatable :: heat(:,:,:)
-    real(dp) :: low,high,power,local_frequency,global_frequency,node_frequency,inventory(reactive_nvar(size(species)))
+    real(dp), allocatable :: source(:,:,:,:)
+    real(dp) :: controls(3),low(3),high(3),local_frequency,global_frequency,node_frequency
+    real(dp) :: inventory(reactive_nvar(size(species))),node_exchange(reactive_nvar(size(species)))
     integer :: node,n(3),rank,status,ios,nv,depth,lo_depth,hi_depth
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species));depth=-1
     if(present(target_depth)) depth=target_depth
-    valid=ieee_is_finite(wall_temperature).and.wall_temperature>0.and.size(transport)==size(species)
+    valid=ieee_is_finite(wall_temperature).and.size(transport)==size(species).and.size(wall_exchange)==nv
+    if(conduction) valid=valid.and.wall_temperature>0
+    controls=[merge(1._dp,0._dp,conduction),merge(1._dp,0._dp,noslip),wall_temperature]
     valid=valid.and.depth>=-1
     if(present(target_depth)) valid=valid.and.depth>=0
     call agree(valid,ready)
     if(.not.ready) return
-    call MPI_Allreduce(wall_temperature,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(wall_temperature,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
-    if(status/=MPI_SUCCESS.or.low/=high) return
+    call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
     call MPI_Allreduce(depth,lo_depth,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(depth,hi_depth,1,MPI_INTEGER,MPI_MAX,comm,status)
@@ -98,16 +102,16 @@ contains
       if(owners(node)/=rank) cycle
       if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
       n=tree%nodes(node)%shape
-      allocate(heat(n(1),n(2),n(3)),stat=ios)
+      allocate(source(nv,n(1),n(2),n(3)),stat=ios)
       if(ios/=0) then
         valid=.false.;exit
       end if
-      call compute_eb_wall_heat_source_3d(species,transport,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:), &
-        extended_geometry(node),[3,3,3],n+2,wall_temperature,heat,power,node_frequency,valid)
+      call compute_eb_wall_transport_source_3d(species,transport,ghost%fields(node)%values,gt%fields(node)%values(1,:,:,:), &
+        extended_geometry(node),[3,3,3],n+2,conduction,noslip,wall_temperature,source,node_exchange,node_frequency,valid)
       if(.not.valid) exit
-      candidate%fields(node)%values(iet,:,:,:)=heat
+      candidate%fields(node)%values=source
       local_frequency=max(local_frequency,node_frequency)
-      deallocate(heat)
+      deallocate(source)
     end do
     call agree(valid,ready)
     if(.not.ready) return
@@ -117,7 +121,7 @@ contains
     call integrate_mpi_eb_tree_3d(tree,owners,geometry,candidate,inventory,comm,ready)
     if(.not.ready) return
     call move_alloc(candidate%fields,rate%fields)
-    wall_power=inventory(iet);frequency=global_frequency;ok=.true.
+    wall_exchange=inventory;frequency=global_frequency;ok=.true.
   contains
     subroutine agree(condition,result)
       logical, intent(in) :: condition
@@ -126,5 +130,33 @@ contains
       call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if(ierr/=MPI_SUCCESS) result=.false.
     end subroutine
+  end subroutine
+  ! Preserve the heat-only API and its scalar ledger.
+  subroutine compute_mpi_eb_wall_heat_3d(species,transport,tree,owners,geometry,extended_geometry, &
+      state,temperature,wall_temperature,rate,wall_power,frequency,comm,ok, &
+      boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,target_depth, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended_geometry(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: wall_temperature
+    type(amr_tree_state_3d), intent(inout) :: rate
+    real(dp), intent(inout) :: wall_power,frequency
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    real(dp) :: exchange(reactive_nvar(size(species)))
+    call compute_mpi_eb_wall_transport_3d(species,transport,tree,owners,geometry,extended_geometry,state,temperature, &
+      .true.,.false.,wall_temperature,rate,exchange,frequency,comm,ok,boundary_faces,inflow_state,inflow_mach, &
+      inflow_temperature,inflow_pressure,target_depth,ancestor_start,ancestor_end,temperature_start, &
+      temperature_end,ancestor_fraction)
+    if(ok) wall_power=exchange(iet)
   end subroutine
 end module

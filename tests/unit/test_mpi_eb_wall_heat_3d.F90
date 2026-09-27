@@ -12,8 +12,8 @@ program test_mpi_eb_wall_heat_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     build_eb_tree_extended_geometry_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
-  use eb_wall_heat_source_3d_mod, only: compute_eb_wall_heat_source_3d
-  use mpi_eb_wall_heat_3d_mod, only: compute_mpi_eb_wall_heat_3d
+  use eb_wall_heat_source_3d_mod, only: compute_eb_wall_heat_source_3d,compute_eb_wall_transport_source_3d
+  use mpi_eb_wall_heat_3d_mod, only: compute_mpi_eb_wall_heat_3d,compute_mpi_eb_wall_transport_3d
   use mpi_eb_tree_transport_3d_mod, only: compute_sdc_mpi_eb_tree_transport_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_3d,advance_mpi_eb_tree_sdc_subcycle_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
@@ -29,11 +29,13 @@ program test_mpi_eb_wall_heat_3d
   type(eb_geometry_3d), allocatable :: extended(:),extended_six(:)
   type(amr_tree_state_3d) :: local,lt,rate,stage,baseline
   type(amr_tree_state_3d) :: evolved,evolved_t
+  type(amr_tree_state_3d) :: visc_state,visc_rate
   type(eb_integrated_flux_3d), allocatable :: flux(:)
   real(dp), allocatable :: q(:),y(:),u(:),root(:,:,:,:),rt(:,:,:),wide(:,:,:,:),wt(:,:,:),heat(:,:,:)
   real(dp) :: mw,rgas,cp,cv,gamma,enthalpy,energy,entropy,t,sound,expected,ref_frequency,power,frequency
   real(dp) :: theta,wall_energy,stage_frequency,control
   real(dp), allocatable :: before(:),after(:),boundary(:),wall(:),chemical(:),external(:)
+  real(dp), allocatable :: visc_reference(:),visc_exchange(:),visc_source(:,:,:,:)
   real(dp) :: residual
   character(len=16) :: faces(6)
   integer :: status,rank,ranks,nv,s,node,owners(3),n(3),mode,scheme
@@ -45,6 +47,7 @@ program test_mpi_eb_wall_heat_3d
   call load_h2o2_elementary_transport(transport,ok);call require(ok,'transport')
   nv=reactive_nvar(size(species))
   allocate(reactions(0),before(nv),after(nv),boundary(nv),wall(nv),chemical(nv),external(nv))
+  allocate(visc_reference(nv),visc_exchange(nv),visc_source(nv,8,8,8))
   faces='outflow'
   allocate(q(reactive_nprim(size(species))),y(size(species)),u(nv),root(nv,4,4,4),rt(4,4,4))
   y=0
@@ -85,6 +88,12 @@ program test_mpi_eb_wall_heat_3d
   wt=500
   call compute_eb_wall_heat_source_3d(species,transport,wide,wt,padded,[5,5,5],[12,12,12], &
     400._dp,heat,expected,ref_frequency,ok);call require(ok,'whole fine reference')
+  wide(3,:,:,:)=wide(3,:,:,:)+2*wide(1,:,:,:)
+  wide(5,:,:,:)=wide(5,:,:,:)+2*wide(1,:,:,:)
+  call compute_eb_wall_transport_source_3d(species,transport,wide,wt,padded,[5,5,5],[12,12,12], &
+    .false.,.true.,0._dp,visc_source,visc_reference,ref_frequency,ok)
+  call require(ok.and.visc_reference(3)<0,'whole fine stationary-wall drag')
+  call require(visc_reference(1)==0.and.all(visc_reference(5:)==0),'stationary wall zero mass and energy')
   do mode=1,2
     owners=[0,0,mod(1,ranks)]
     if(mode==2) owners=0
@@ -101,6 +110,21 @@ program test_mpi_eb_wall_heat_3d
     call require(ok,'distributed heat')
     call require(abs(power-expected)<1e-12_dp*abs(expected),'composite heat excludes covered coarse wall')
     call require(frequency>0,'frequency')
+    visc_state=local
+    do node=1,3
+      if(owners(node)/=rank) cycle
+      visc_state%fields(node)%values(3,:,:,:)=visc_state%fields(node)%values(3,:,:,:)+ &
+        2*visc_state%fields(node)%values(1,:,:,:)
+      visc_state%fields(node)%values(5,:,:,:)=visc_state%fields(node)%values(5,:,:,:)+ &
+        2*visc_state%fields(node)%values(1,:,:,:)
+    end do
+    call compute_mpi_eb_wall_transport_3d(species,transport,topology,owners,geometry,extended,visc_state,lt, &
+      .false.,.true.,0._dp,visc_rate,visc_exchange,stage_frequency,MPI_COMM_WORLD,ok)
+    call require(ok,'distributed stationary-wall drag')
+    call require(maxval(abs(visc_exchange-visc_reference))<1e-12_dp*maxval(abs(visc_reference)), &
+      'composite traction excludes covered coarse wall')
+    call require(visc_exchange(1)==0.and.all(visc_exchange(5:)==0),'MPI zero mass and energy')
+    if(rank==0) print *, 'Stationary wall force:',visc_exchange(2:4)
     call compute_sdc_mpi_eb_tree_transport_3d(species,transport,topology,owners,geometry,1e-7_dp, &
       .false.,.true.,.false.,.false.,local,lt,baseline,flux,theta,MPI_COMM_WORLD,ok)
     call require(ok,'baseline MPI stage')
