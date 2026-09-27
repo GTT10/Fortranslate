@@ -13,6 +13,9 @@ Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
 ([checks](validation/sdc-app-20260926.md)). Molecular transport now participates
 as an old/new source family ([checks](validation/sdc-transport-20260926.md)).
+Regular SDC also accepts additional source callbacks together with molecular
+transport, preserving transport boundary inventories and exported fluxes
+([focused checks](validation/sdc-callback-transport-20260927.md)).
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
