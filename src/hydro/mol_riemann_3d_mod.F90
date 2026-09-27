@@ -3,7 +3,8 @@ module mol_riemann_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_pelec_primitive_flux_x
-  use mol_reconstruction_3d_mod, only: mol_characteristic_slope_3d,mol_reconstruct_face_3d
+  use mol_reconstruction_3d_mod, only: mol_characteristic_slope_3d,mol_reconstruct_face_3d, &
+    limit_mol_positive_slope_3d
   implicit none
   private
   public :: mol_riemann_flux_3d
@@ -33,6 +34,8 @@ contains
       do cell=0,1
         call mol_characteristic_slope_3d(q(:,cell-1),q(:,cell),q(:,cell+1), &
           sound(cell+1),axis,connected(:,cell+1),slopes(:,cell+1),valid)
+        if(.not.valid) return
+        call limit_mol_positive_slope_3d(q(:,cell),sound(cell+1),axis,slopes(:,cell+1),valid)
         if(.not.valid) return
       end do
     end if

@@ -3,7 +3,7 @@ module mol_reconstruction_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
-  public :: mol_characteristic_slope_3d,mol_reconstruct_face_3d
+  public :: mol_characteristic_slope_3d,mol_reconstruct_face_3d,limit_mol_positive_slope_3d
 contains
   ! Primitive layout: rho, u, v, w, p, Y(:). Slope layout: two acoustic
   ! amplitudes, two transverse velocities, species contact amplitudes.
@@ -53,6 +53,49 @@ contains
       d(5:)=b(1)*b(6:)-a(1)*a(6:)-center(6:)*pressure_jump/(sound*sound)
     end subroutine
   end subroutine
+
+  ! A single factor bounds both faces of one cell. Independent characteristic
+  ! limiting does not ensure nonnegative reconstructed partial densities.
+  ! This guard changes slopes only; cell averages and conservative flux assembly
+  ! are untouched. It is an additional positivity safeguard beyond pinned MOL.
+  subroutine limit_mol_positive_slope_3d(center,sound,axis,slope,ok)
+    real(dp), intent(in) :: center(:),sound
+    integer, intent(in) :: axis
+    real(dp), intent(inout) :: slope(:)
+    logical, intent(out) :: ok
+    real(dp) :: candidate(size(slope)),partial(size(center)-5),delta(size(center)-5)
+    real(dp) :: face(size(center)),theta,pressure_delta,acoustic
+    integer :: c,attempt
+    logical :: lower_ok,upper_ok
+    ok=.false.
+    if(size(center)<6.or.size(slope)/=size(center)-1) return
+    if(axis<1.or.axis>3) return
+    if(.not.all(ieee_is_finite(center)).or..not.all(ieee_is_finite(slope))) return
+    if(.not.ieee_is_finite(sound)) return
+    if(center(1)<=0.or.center(5)<=0.or.sound<=0.or.any(center(6:)<0)) return
+    partial=center(1)*center(6:)
+    if(sum(partial)<=0) return
+    acoustic=slope(1)+slope(2)
+    delta=.5_dp*(slope(5:)+center(6:)*acoustic/sound)
+    pressure_delta=.5_dp*acoustic*sound
+    if(.not.all(ieee_is_finite(delta)).or..not.ieee_is_finite(pressure_delta)) return
+    theta=1
+    do c=1,size(partial)
+      if(abs(delta(c))>partial(c)) theta=min(theta,partial(c)/abs(delta(c)))
+    end do
+    if(abs(pressure_delta)>=center(5)) theta=min(theta,center(5)/abs(pressure_delta))
+    ! Move inside an active bound, then verify the actual floating-point faces.
+    if(theta<1.or.abs(pressure_delta)>=center(5)) theta=theta*(1-16*epsilon(1._dp))
+    do attempt=1,55
+      candidate=theta*slope
+      call mol_reconstruct_face_3d(center,sound,axis,-1,candidate,face,lower_ok)
+      call mol_reconstruct_face_3d(center,sound,axis,1,candidate,face,upper_ok)
+      if(lower_ok.and.upper_ok) then
+        slope=candidate;ok=.true.;return
+      end if
+      theta=.5_dp*theta
+    end do
+  end subroutine limit_mol_positive_slope_3d
 
   ! side = +1 for a cell's upper face, -1 for its lower face.
   ! Reconstruct partial densities, sum them, then normalize mass fractions.
