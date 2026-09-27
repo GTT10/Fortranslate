@@ -537,6 +537,7 @@ contains
 
     real(dp), allocatable :: diffusion(:), yleft(:), yright(:), yface(:)
     real(dp), allocatable :: xleft(:), xright(:), hface(:), species_flux(:)
+    real(dp) :: molecular_weight,gas_constant,cp,cv,gamma,enthalpy,energy,entropy
     real(dp) :: viscosity, conductivity, density_face, pressure_face
     real(dp) :: divergence, tau_normal(3), velocity_face(3)
     real(dp) :: viscous_power
@@ -569,10 +570,26 @@ contains
     allocate(diffusion(nspecies), yleft(nspecies), yright(nspecies))
     allocate(yface(nspecies), xleft(nspecies), xright(nspecies))
     allocate(hface(nspecies), species_flux(nspecies))
+    if(present(constant_coefficients).and..not.species_diffusion_enabled) then
+      ! Prescribed viscosity/conductivity without species diffusion needs only
+      ! thermodynamics. Do not evaluate unused Lennard-Jones transport data.
+      if(min(left_primitive(1),right_primitive(1),left_primitive(5),right_primitive(5))<=0) return
+      yleft=left_primitive(6:);yright=right_primitive(6:)
+      call mixture_mass_properties(species,yleft,left_temperature,molecular_weight,gas_constant,cp,cv,gamma, &
+        enthalpy,energy,entropy,local_ok)
+      if(.not.local_ok) return
+      call mixture_mass_properties(species,yright,right_temperature,molecular_weight,gas_constant,cp,cv,gamma, &
+        enthalpy,energy,entropy,local_ok)
+      if(.not.local_ok) return
+      yface=.5_dp*yleft+.5_dp*yright
+      xleft=0;xright=0;hface=0;diffusion=0
+      viscosity=constant_coefficients(1);conductivity=constant_coefficients(2)
+    else
     call face_transport_data( &
       species, transport, left_primitive, right_primitive, &
       left_temperature, right_temperature, viscosity, conductivity, &
       diffusion, yleft, yright, yface, xleft, xright, hface, local_ok)
+    end if
     if (.not. local_ok) then
       call reset_transport_face_outputs_3d(flux, species_energy)
       return
@@ -1662,9 +1679,14 @@ contains
             mass_fractions(species_index) = &
               primitive(reactive_mass_fraction_component(species_index))
           end do
+          if(present(constant_coefficients).and..not.species_diffusion_enabled) then
+            viscosity=constant_coefficients(1);conductivity=constant_coefficients(2)
+            diffusion=0;local_ok=.true.
+          else
           call mixture_transport_coefficients( &
             species, transport, mass_fractions, checked_temperature, &
             primitive(5), viscosity, conductivity, diffusion, local_ok)
+          end if
           if (.not. local_ok) then
             call reset_transport_timestep_outputs_3d( &
               dt, maximum_diffusivity)

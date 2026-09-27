@@ -65,6 +65,22 @@ program test_constant_transport_3d
   call require(.not.ok.and.all(x==0).and.all(y==0).and.all(z==0),'negative coefficient rejection')
   call timestep([ieee_value(0._dp,ieee_quiet_nan),0._dp],dt,diff)
   call require(.not.ok.and.dt==0.and.diff==0,'nonfinite coefficient rejection')
+  ! An intentionally unusable molecular database must be irrelevant when the
+  ! only enabled constitutive inputs are prescribed viscosity/conductivity.
+  transport%diameter=0;transport%well_depth=0
+  call fluxes(coef)
+  call require(ok.and.all(x==refx).and.all(y==refy).and.all(z==refz),'prescribed flux needs no molecular data')
+  call timestep(coef,dt2,diff2)
+  call require(ok.and.diff2>0,'prescribed timestep needs no molecular data')
+  call reactive_transport_fluxes_3d(species,transport,u,t,4,4,4,h,h,h,0._dp, &
+    .true.,.true.,.false.,.false.,x,y,z,theta,ok)
+  call require(.not.ok.and.all(x==0).and.all(y==0).and.all(z==0),'molecular path still rejects invalid database')
+  call reactive_transport_fluxes_3d(species,transport,u,t,4,4,4,h,h,h,0._dp, &
+    .true.,.true.,.true.,.false.,x,y,z,theta,ok,constant_coefficients=coef)
+  call require(.not.ok,'species diffusion still requires molecular data')
+  u(1,1,1,1)=-1
+  call fluxes(coef)
+  call require(.not.ok,'prescribed transport still validates thermodynamic state')
   print *, 'PASS: constant stress/heat, periodic flux scaling and timestep; face error',error
 contains
   subroutine fluxes(coefficients)
