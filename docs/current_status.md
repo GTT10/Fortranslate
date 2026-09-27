@@ -21,6 +21,10 @@ The selected MPI EB tree particle SDC path also accepts this bundle with
 chemistry disabled; a one-rank, fully regular two-step evaporation case passes
 gas/liquid transfer and inventory checks
 ([evidence](validation/nonreacting-particle-sdc-20260927.md)).
+The full pinned Spray-Evaporation reference now runs this adapted case.
+Matching the drag law still leaves heating, evaporation and deceleration
+differences; trajectory parity remains open
+([comparison](validation/evaporation-full-reference-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale

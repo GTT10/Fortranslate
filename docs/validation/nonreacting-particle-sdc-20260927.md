@@ -46,3 +46,7 @@ returned zero and produced the stated outputs.
 No CTest matrix, multiple-rank continuation or full reference spray trajectory
 comparison is claimed. The pinned reference build remains in progress in
 `build/pelec-pinned-spray`; its log is `build/pelec-pinned-spray-build.log`.
+
+Subsequent update: the build and full reference run completed; see the
+[comparison record](evaporation-full-reference-20260927.md) for the remaining
+particle differences after matching the drag model.
