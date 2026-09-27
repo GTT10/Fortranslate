@@ -126,6 +126,9 @@ coordinates/time and records both normalized differences and the reference's
 change from its initial field. Its `1e-10` normalized difference gate is
 specified before the comparison; preparation alone is not a passing result.
 Add `--transport` for constant viscosity/conductivity and `--les wale` for
-WALE (also accepted: `smagorinsky`, `vreman`). Hydro, transport and
+WALE (also accepted: `smagorinsky`, `vreman`, `dynamic`). Dynamic uses the pinned
+optimized three-point test filter and harmonic face interpolation; see its
+[separate residual and limits](../../docs/validation/hit-dynamic-reference-20260927.md).
+Hydro, transport and
 transport/WALE one-step comparisons have now passed against the full pinned
 executable; see the [bounded results](../../docs/validation/hit-full-reference-20260927.md).
