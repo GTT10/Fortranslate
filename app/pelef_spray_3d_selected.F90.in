@@ -45,7 +45,8 @@ program pelef_spray_3d_selected
     "Selected reactive 3D", pelef_selected_species_count, &
     pelef_selected_reaction_count, species, reactions, transport_names, &
     transport_geometries, transport_values, transport, &
-    common_temperature_minimum, common_temperature_maximum, ok, message)
+    common_temperature_minimum, common_temperature_maximum, ok, message, &
+    allow_nonreacting=pelef_selected_reaction_count==0)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2

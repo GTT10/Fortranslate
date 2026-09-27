@@ -299,6 +299,7 @@ contains
     if (ios/=0) call fail('Cannot open spray input')
     read(unit,nml=spray,iostat=ios,iomsg=message)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
+    if(chemistry_enabled.and.size(reactions)==0) call fail('Nonreacting spray mechanism requires chemistry disabled')
     profile_file='';profile_files=''
     rewind(unit)
     read(unit,nml=spray_rate_files,iostat=ios)

@@ -1,0 +1,19 @@
+! Integration fixture using pinned heptane_3sp data; not the 273 K upstream case.
+! SI units; gas/drop temperatures remain inside the NASA7 range.
+&spray
+ cells=4,4,4, domain_length=.004,.004,.004,
+ gas_temperature=400, gas_pressure=101325,
+ mole_names='N2','O2','', mole_amounts=.79,.21,0,
+ chemistry_enabled=.false.,
+ vapor_name='NC7H16', liquid_density=681.4, liquid_cp=2248.3,
+ reference_temperature=300, reference_pressure=101325, latent_heat=363000,
+ vapor_pressure_model='antoine',
+ antoine_coefficients=4.02832,1268.636,-56.199,1e5,
+ antoine_temperature_range=300,371.6,
+ drop_temperature=310, drop_diameter=20e-6,
+ initial_liquid_mass=1e-10, parcel_count=4,
+ injection_center=.0015,.0015,.0015, injection_axis=0,0,1,
+ injection_speed=2, cone_angle=0,
+ final_time=2e-7, maximum_dt=1e-7,
+ output_prefix='heptane', checkpoint_file='heptane.chk'
+/

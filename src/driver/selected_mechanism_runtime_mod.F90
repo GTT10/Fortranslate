@@ -20,7 +20,8 @@ contains
       context, expected_species_count, expected_reaction_count, species, &
       reactions, transport_names, transport_geometries, transport_values, &
       transport, common_temperature_minimum, common_temperature_maximum, &
-      ok, message)
+      ok, message,allow_nonreacting)
+    logical, optional, intent(in) :: allow_nonreacting
     character(len=*), intent(in) :: context
     integer, intent(in) :: expected_species_count, expected_reaction_count
     type(nasa7_species), intent(in) :: species(:)
@@ -35,7 +36,7 @@ contains
     character(len=*), intent(out) :: message
 
     real(dp) :: reactant_mass, product_mass, mass_scale
-    integer :: first_index, second_index, reaction_index
+    integer :: first_index, second_index, reaction_index,minimum_reactions
 
     ok = .false.
     message = ""
@@ -47,7 +48,11 @@ contains
         " mechanism returned an unsupported species count"
       return
     end if
-    if (expected_reaction_count < 1 .or. &
+    minimum_reactions=1
+    if(present(allow_nonreacting)) then
+      if(allow_nonreacting) minimum_reactions=0
+    end if
+    if (expected_reaction_count < minimum_reactions .or. &
         size(reactions) /= expected_reaction_count) then
       message = trim(context) // " mechanism returned the wrong reaction count"
       return
