@@ -48,6 +48,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/driver/simulation_config_reactive_1d_mod.F90
     src/hydro/slope_limiter_mod.F90
     src/hydro/reconstruction_weno_mod.F90
+    src/hydro/mol_reconstruction_3d_mod.F90
     src/reactive/reactive_1d_mod.F90
   )
   set_target_properties(
