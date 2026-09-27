@@ -14,6 +14,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_eb_tree_subcycle_hydro_3d_mod.F90
     src/parallel/mpi_eb_tree_subcycle_transport_3d_mod.F90
     src/parallel/mpi_eb_tree_transport_3d_mod.F90
+    src/parallel/mpi_eb_wall_heat_3d_mod.F90
     src/parallel/mpi_eb_tree_full_3d_mod.F90
     src/parallel/mpi_eb_tree_timestep_3d_mod.F90
     src/parallel/mpi_eb_tree_remap_3d_mod.F90

@@ -1,5 +1,6 @@
 module mpi_eb_tree_transport_3d_mod
   use mpi_f08
+  use mpi_eb_wall_heat_3d_mod, only: compute_mpi_eb_wall_heat_3d
   use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -159,7 +160,8 @@ contains
   subroutine compute_sdc_mpi_eb_tree_transport_3d(species,transport,tree,owners,geometry,dt,viscosity,conduction, &
       diffusion,barodiffusion,state,temperature,transport_rate,integrated_flux,minimum_theta,comm,ok, &
       inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
-      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      embedded_wall_temperature,extended_geometry,embedded_wall_energy,embedded_frequency)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -180,9 +182,13 @@ contains
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
     real(dp), optional, intent(in) :: wall_temperature(6)
-    real(dp) :: thermal(7),thermal_low(7),thermal_high(7)
+    real(dp), optional, intent(in) :: embedded_wall_temperature
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
+    real(dp), optional, intent(inout) :: embedded_wall_energy,embedded_frequency
+    real(dp) :: heat_power,heat_frequency,heat_energy
+    real(dp) :: thermal(9),thermal_low(9),thermal_high(9)
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: rates,ghost,gt
+    type(amr_tree_state_3d) :: rates,ghost,gt,heat
     type(eb_integrated_flux_3d), allocatable :: flux(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
@@ -197,18 +203,25 @@ contains
     if (valid) valid=dt>0._dp
     thermal=0
     if(present(wall_temperature)) then
-      thermal(1)=1;thermal(2:)=wall_temperature
+      thermal(1)=1;thermal(2:7)=wall_temperature
       valid=valid.and.present(boundary_faces)
       valid=valid.and.all(ieee_is_finite(wall_temperature)).and.all(wall_temperature>0)
     end if
     if(present(boundary_faces)) then
       if(any(boundary_faces=='isothermal_wall')) valid=valid.and.conduction.and.present(wall_temperature)
     end if
+    valid=valid.and.(present(embedded_wall_temperature).eqv.present(extended_geometry))
+    valid=valid.and.(present(embedded_wall_temperature).eqv.present(embedded_wall_energy))
+    valid=valid.and.(present(embedded_wall_temperature).eqv.present(embedded_frequency))
+    if(present(embedded_wall_temperature)) then
+      valid=valid.and.conduction.and.ieee_is_finite(embedded_wall_temperature).and.embedded_wall_temperature>0
+      thermal(8:9)=[1._dp,embedded_wall_temperature]
+    end if
     call agree(valid,ready)
     if (.not.ready) return
-    call MPI_Allreduce(thermal,thermal_low,7,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(thermal,thermal_low,9,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(thermal,thermal_high,7,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(thermal,thermal_high,9,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(thermal_low/=thermal_high)) return
     call MPI_Allreduce(dt,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
@@ -283,9 +296,30 @@ contains
     call MPI_Allreduce(local_theta,theta,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     call agree(status==MPI_SUCCESS.and.ieee_is_finite(theta),ready)
     if (.not.ready) return
+    if(present(embedded_wall_temperature)) then
+      call compute_mpi_eb_wall_heat_3d(species,transport,tree,owners,geometry,extended_geometry,state,temperature, &
+        embedded_wall_temperature,heat,heat_power,heat_frequency,comm,ready,boundary_faces=boundary_faces, &
+        inflow_state=inflow_state,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature, &
+        inflow_pressure=inflow_pressure,target_depth=target_depth,ancestor_start=ancestor_start, &
+        ancestor_end=ancestor_end,temperature_start=temperature_start,temperature_end=temperature_end, &
+        ancestor_fraction=ancestor_fraction)
+      if(.not.ready) return
+      heat_energy=dt*heat_power
+      valid=ieee_is_finite(heat_energy)
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        rates%fields(node)%values=rates%fields(node)%values+heat%fields(node)%values
+        valid=valid.and.all(ieee_is_finite(rates%fields(node)%values))
+      end do
+      call agree(valid,ready)
+      if(.not.ready) return
+    end if
     call move_alloc(rates%fields,transport_rate%fields)
     call move_alloc(flux,integrated_flux)
     minimum_theta=theta;ok=.true.
+    if(present(embedded_wall_temperature)) then
+      embedded_wall_energy=heat_energy;embedded_frequency=heat_frequency
+    end if
   contains
     subroutine agree(condition,result)
       logical, intent(in) :: condition

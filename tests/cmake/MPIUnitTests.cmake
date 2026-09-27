@@ -1,4 +1,10 @@
 if(PELEF_ENABLE_MPI)
+  add_executable(test_mpi_eb_wall_heat_3d unit/test_mpi_eb_wall_heat_3d.F90)
+  target_link_libraries(test_mpi_eb_wall_heat_3d PRIVATE pelef_mpi_support)
+  add_test(NAME unit_mpi_eb_wall_heat_3d_np2
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_wall_heat_3d> ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_eb_wall_heat_3d_np2 PROPERTIES TIMEOUT 120 PROCESSORS 2)
   add_test(NAME mpi_amr_ppm_hierarchy_3d_np8
     COMMAND "${MPIEXEC_EXECUTABLE}" ${MPIEXEC_NUMPROC_FLAG} 8 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_mpi_amr_reactive_3d> --ppm-hierarchy-only ${MPIEXEC_POSTFLAGS})
