@@ -51,9 +51,11 @@ PeleLMeX; PeleMP is the available alternative. See the
 
 The momentum source, reversible relative-energy conversion and MOL interface
 energy corrections now have [focused evidence](validation/rotating-frame-kernels-20260927.md).
+Cell EOS, wall-pressure recovery and single-patch flux divergence are connected
+([bounded patch evidence and larger-speed failure](validation/rotating-mol-patch-20260927.md)).
 Complete the fixed-reference 3D MOL path by carrying the rotating total-energy
-definition through cell/halo EOS recovery, reaction forcing, old/new source
-evaluation, flux divergence, conservative AMR restriction/reflux/remapping,
+definition through tree/halo EOS recovery, reaction and transport, old/new source
+evaluation, conservative AMR restriction/reflux/remapping,
 boundary/initial states, budgets and checkpoint identity. Frame axis, origin
 and angular speed must agree across ranks and restarts. Full time integration
 and application support remain open; source/flux kernel agreement alone does

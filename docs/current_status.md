@@ -31,9 +31,11 @@ Jet replay through 0.430 ms pass. Full prepared 1.5 ms continuation is running
 
 Rotating-frame momentum/energy kernels and optional MOL energy-flux correction
 now have analytic checks and a 60-case compiled-reference comparison
-(maximum scaled error `4.37e-15`). Cell-state/EOS/AMR/restart integration remains
-open; rotating CFD is not yet enabled
-([kernel evidence](validation/rotating-frame-kernels-20260927.md)).
+(maximum scaled error `4.37e-15`; [kernel evidence](validation/rotating-frame-kernels-20260927.md)).
+EOS recovery, wall pressure and single-patch MOL now accept rotating energy.
+A bounded 400 rad/s patch check passes; a 1000 rad/s LF condition exceeds the
+existing absolute conservation gate ([patch evidence](validation/rotating-mol-patch-20260927.md)).
+Tree/time integration and restart remain open; rotating CFD is not yet enabled.
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
