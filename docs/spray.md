@@ -47,7 +47,9 @@ film stages now enforce parent/child clocks and retain incoming ghosts through
 the final child cycle ([clock and cleanup checks](validation/spray-film-recursive-stage-20260927.md));
 stationary films now also join the recursive gas source, predictor and physical
 inventory synchronization ([coupled checks](validation/spray-recursive-film-20260927.md)).
-Collision-created films, splash and application routing remain open. Uniform particle acceleration now
+The frozen particle halo kernel now supports collision-created films and splash
+with transactional IDs ([impact checks](validation/spray-halo-impact-20260927.md));
+their population-stage lifecycle and application routing remain open. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and
