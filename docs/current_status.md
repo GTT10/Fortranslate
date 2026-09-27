@@ -14,8 +14,10 @@ species densities and internal-energy sources. Inert analytical, early-time
 native-reactor comparison and failure/reuse checks pass
 ([backend evidence](validation/forced-cvode-20260927.md)). Cell and regular-grid
 SDC now accept an explicit reactor callback, with CVODE source/history and
-rollback checks; application and hierarchy selection remain open
-([dispatch evidence](validation/sdc-cvode-bridge-20260927.md)).
+rollback checks ([dispatch evidence](validation/sdc-cvode-bridge-20260927.md)).
+Fixed/selected regular gas applications expose `sdc_reactor='cvode'` when built
+with SUNDIALS, with exact matched-composition output checks. Hierarchy selection
+remains open ([application evidence](validation/sdc-cvode-app-20260927.md)).
 
 KHRT now connects reference-count/azimuth children, deterministic samples and
 conservative gas momentum/energy compensation to application input through

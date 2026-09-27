@@ -1,5 +1,18 @@
 # Regular 3D physical boundaries
 
+## SDC reactor selection
+
+In `reactive_3d`, `sdc_reactor='native'` is the default forced adaptive implicit
+solver. A build with `PELEF_ENABLE_SUNDIALS=ON` also accepts
+`sdc_reactor='cvode'` in `pelef_reactive_3d` and
+`pelef_reactive_3d_selected`. It requires `time_integrator='sdc'` and
+`chemistry_enabled=.true.`. Add it to `sdc_reacting.nml` to select forced CVODE
+BDF; the run log identifies the backend. Unsupported builds and hierarchy
+applications reject this selection. See the
+[focused application checks](../../docs/validation/sdc-cvode-app-20260927.md).
+
+## Boundary input
+
 `pelef_reactive_3d` and the selected-mechanism front end accept six face
 conditions in `boundary_faces`, ordered **x-low, x-high, y-low, y-high,
 z-low, z-high**. Empty entries inherit `boundary_condition` (default
