@@ -12,8 +12,12 @@ Older milestone prose remains historical detail, not a current global status.
 The pinned 53-species n-dodecane bundle now imports Simple transport fits.
 All 6,148 coefficients match compiled upstream output; four transport states
 agree within `1.73e-15` relative. This prepares the transport dependency for
-Spray-A-Wbreakup; case execution remains open
+Spray-A-Wbreakup
 ([import evidence](validation/dodecane-simple-import-20260927.md)).
+A 53-species Spray-A adaptation now completes its first two injection events
+with variable liquid properties and KHRT. Fuel accounting and a breakup-off
+intervention pass; full-duration/reference comparison remains open
+([case and evidence](validation/spray-a-connection-20260927.md)).
 
 An extracted Jet failure revealed internal-energy inversion stagnation at
 adjacent representable temperatures near zero energy. The inversion now
