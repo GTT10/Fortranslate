@@ -632,3 +632,7 @@ add_test(NAME unit_rotating_eb_tree_3d COMMAND test_rotating_eb_tree_3d)
 add_executable(test_rotating_reaction_3d unit/test_rotating_reaction_3d.F90)
 target_link_libraries(test_rotating_reaction_3d PRIVATE pelef_core)
 add_test(NAME unit_rotating_reaction_3d COMMAND test_rotating_reaction_3d)
+
+add_executable(test_rotating_transport_3d unit/test_rotating_transport_3d.F90)
+target_link_libraries(test_rotating_transport_3d PRIVATE pelef_core)
+add_test(NAME unit_rotating_transport_3d COMMAND test_rotating_transport_3d)

@@ -1695,8 +1695,6 @@ contains
     end if
     if(present(frame)) then
       if(.not.mol) return
-      ! Diffusive operators still need the same rotating energy convention.
-      if(any(transport_flags)) return
     end if
     mol_wall_old=0;mol_wall_new=0
     heat_old=0;heat_new=0;impulse_old=0;impulse_new=0
@@ -2113,7 +2111,7 @@ contains
           target_depth,ancestor_start,ancestor_end,fractions, &
           embedded_wall_temperature=embedded_wall_temperature,extended_geometry=heat_geometry, &
           embedded_wall_energy=heat_stage,embedded_frequency=heat_frequency, &
-          embedded_noslip=embedded_noslip,embedded_wall_impulse=wall_impulse)
+          embedded_noslip=embedded_noslip,embedded_wall_impulse=wall_impulse,frame=frame)
         if(.not.good) return
         if(wall_active) then
           if(stage==0) then
@@ -2342,11 +2340,45 @@ contains
 
   ! Two-cell donor margins for the quadratic embedded-wall stencil. Publish
   ! composite wall exchange only after every active patch succeeds.
+  ! Transport has zero total-mass flux, so its energy flux needs no potential
+  ! correction. Restore ordinary energy only in private input copies, after
+  ! conserved rotating halos have been filled at their receiving positions.
+  subroutine ordinary_transport_energy(frame,geometry,first,active,state,ok)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    type(eb_geometry_3d), intent(in) :: geometry
+    integer, intent(in) :: first(3)
+    logical, intent(in) :: active(:,:,:)
+    real(dp), intent(inout) :: state(:,:,:,:)
+    logical, intent(out) :: ok
+    real(dp) :: position(3),energy
+    integer :: i,j,k
+    ok=.true.
+    if(.not.present(frame)) return
+    ok=.false.
+    if(.not.frame%is_valid().or.size(state,1)<5) return
+    if(any(shape(active)/=shape(state(1,:,:,:)))) return
+    do k=1,size(active,3)
+    do j=1,size(active,2)
+    do i=1,size(active,1)
+      if(.not.active(i,j,k)) cycle
+      position=[geometry%x_lower,geometry%y_lower,geometry%z_lower]+ &
+        (real(first+[i,j,k]-1,dp)-.5_dp)*[geometry%dx,geometry%dy,geometry%dz]
+      energy=state(5,i,j,k)
+      call convert_rotating_energy_3d(frame,position,state(1,i,j,k),state(5,i,j,k),.false.,energy,ok)
+      if(.not.ok) return
+      state(5,i,j,k)=energy
+    end do
+    end do
+    end do
+    ok=.true.
+  end subroutine ordinary_transport_energy
+
   subroutine compute_eb_tree_wall_transport_3d(species,transport,tree,extended_geometry, &
       conduction,noslip,wall_temperature,rate,wall_exchange,frequency,ok, &
       boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,target_depth, &
-      ancestor_start,ancestor_end,ancestor_fraction)
+      ancestor_start,ancestor_end,ancestor_fraction,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_reactive_tree_3d), intent(in) :: tree
     type(eb_geometry_3d), intent(in) :: extended_geometry(:)
@@ -2368,6 +2400,9 @@ contains
     integer :: nv,node,n(3),depth
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species));depth=-1
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if(.not.valid_tree(tree,nv).or.size(transport)/=size(species)) return
     if(.not.ieee_is_finite(wall_temperature).or.size(wall_exchange)/=nv) return
     if(conduction.and.wall_temperature<=0) return
@@ -2394,7 +2429,9 @@ contains
         boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_mach=inflow_mach, &
         inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf, &
         halo_width=2,target_volume_fraction=extended_geometry(node)%volume_fraction,restrict_snapshot=.false., &
-        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction)
+        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction,frame=frame)
+      if(.not.valid) return
+      call ordinary_transport_energy(frame,tree%nodes(node)%geometry,[-1,-1,-1],vf>0,ghost,valid)
       if(.not.valid) return
       call compute_eb_wall_transport_source_3d(species,transport,ghost,gt,extended_geometry(node), &
         [3,3,3],n+2,conduction,noslip,wall_temperature,candidate%fields(node)%values,node_exchange,node_frequency,valid)
@@ -2421,8 +2458,9 @@ contains
       inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,ancestor_fraction, &
       embedded_wall_temperature,extended_geometry,embedded_wall_energy,embedded_frequency, &
-      embedded_noslip,embedded_wall_impulse)
+      embedded_noslip,embedded_wall_impulse,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(gas_transport_species), intent(in) :: transport(:)
     logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
     real(dp), intent(in) :: dt
@@ -2448,7 +2486,7 @@ contains
     integer :: selected_depth
     type(amr_tree_state_3d) :: rates
     type(eb_integrated_flux_3d), allocatable :: flux(:)
-    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),ordinary(:,:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     real(dp) :: theta,stage_theta
@@ -2457,6 +2495,9 @@ contains
     integer :: nv,node,n(3),depth
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     noslip=.false.;wall_temp=0
     if(present(embedded_noslip)) noslip=embedded_noslip
     wall_active=noslip.or.present(embedded_wall_temperature)
@@ -2496,7 +2537,7 @@ contains
       call fill_reactive_eb_tree_halo_3d(species,tree,node,ghost,gt,valid, &
         inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
         boundary_faces=boundary_faces,inflow_state=inflow_state,restrict_snapshot=.false., &
-        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction)
+        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction,frame=frame)
       if (.not.valid) return
       depth=tree%topology%nodes(node)%level+1
       ! Inactive physical domain faces remain closed to diffusion. Parent patch edges
@@ -2512,7 +2553,13 @@ contains
           patch_faces=boundary_faces
         faces=.true.
       end if
-      call compute_sdc_eb_transport_3d(species,transport,tree%nodes(node)%state,tree%nodes(node)%temperature, &
+      ordinary=tree%nodes(node)%state
+      call ordinary_transport_energy(frame,tree%nodes(node)%geometry,[1,1,1], &
+        tree%nodes(node)%geometry%volume_fraction>0,ordinary,valid)
+      if(.not.valid) return
+      call ordinary_transport_energy(frame,tree%nodes(node)%geometry,[0,0,0],gt>0,ghost,valid)
+      if(.not.valid) return
+      call compute_sdc_eb_transport_3d(species,transport,ordinary,tree%nodes(node)%temperature, &
         tree%nodes(node)%geometry,dt,[viscosity,conduction,diffusion,barodiffusion],rates%fields(node)%values, &
         flux(node),stage_theta,valid,ghost,gt,faces,physical_faces=patch_faces,wall_temperature=wall_temperature)
       if (.not.valid) return
@@ -2524,7 +2571,7 @@ contains
       call compute_eb_tree_wall_transport_3d(species,transport,tree,extended_geometry, &
         present(embedded_wall_temperature),noslip,wall_temp,heat,wall_values,heat_frequency,valid, &
         boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,target_depth, &
-        ancestor_start,ancestor_end,ancestor_fraction)
+        ancestor_start,ancestor_end,ancestor_fraction,frame)
       if(.not.valid) return
       heat_energy=dt*wall_values(5);wall_impulse=dt*wall_values(2:4)
       if(.not.all(ieee_is_finite([heat_energy,wall_impulse]))) return
