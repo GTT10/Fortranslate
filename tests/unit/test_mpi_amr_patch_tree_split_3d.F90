@@ -31,6 +31,8 @@ program test_mpi_amr_patch_tree_split_3d
   real(dp) :: pressure(6),mach(6),pin(6)
   character(len=32) :: faces(6),reconstruction,integrator,arg,solver
   real(dp) :: coefficient
+  logical :: diffusion_failure=.false.
+  integer :: diffusion_calls=0
   logical :: ppm
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   logical :: ok,enabled,bad_enabled
@@ -164,7 +166,8 @@ contains
     type(amr_tree_state_3d) :: start,finish,owned_start,owned_end,src0,src1,owned_src0,owned_src1,op,np,sop,snp
     type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:)
     integer(int64) :: counts(3),serial_counts(3)
-    integer :: peer,dims(3)
+    integer :: peer,dims(3),variant
+    logical :: flags(4)
     owners=mod([0,1,0],nranks);dt=1e-10_dp;faces='periodic';force=[20000._dp,-30000._dp,40000._dp]
     allocate(local%fields(3),temperature%fields(3),ir%fields(3),serial_ir%fields(3))
     do peer=1,3
@@ -276,7 +279,79 @@ contains
       if(owners(peer)/=rank) cycle
       call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'recursive IR rollback')
     end do
+    do variant=1,2
+      flags=variant==1
+      oracle=global;oracle_t=reference
+      do peer=1,3
+        if(owners(peer)/=rank) cycle
+        local%fields(peer)=global%fields(peer);temperature%fields(peer)=reference%fields(peer)
+      end do
+      if(variant==1) then
+        call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces,2,.false., &
+          flags,force,1e-6_dp,1e-14_dp,serial_budget,serial_external,serial_largest,serial_theta, &
+          ok,evaluate_diffusion=test_diffusion)
+        call require(ok,'serial diffusion callback')
+        call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
+          2,.false.,flags,force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+          evaluate_diffusion=test_diffusion)
+      else
+        call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces, &
+          2,.false.,flags,force,1e-6_dp,1e-14_dp,serial_budget,serial_external,serial_largest,serial_theta, &
+          ok,level_steps=serial_counts,evaluate_diffusion=test_diffusion)
+        call require(ok,'serial recursive diffusion callback')
+        call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing, &
+          dt,faces,2,.false.,flags,force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+          level_steps=counts,evaluate_diffusion=test_diffusion)
+        call require(all(counts==serial_counts),'diffusion callback recursive counts')
+      end if
+      call require(ok,'MPI diffusion callback')
+      call compare_state()
+      call require(all(budget==serial_budget).and.all(external==serial_external),'diffusion callback inventories exact')
+      saved=local;saved_t=temperature;diffusion_failure=.true.;diffusion_calls=0
+      call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing, &
+        dt,faces,2,.false.,flags,force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
+        evaluate_diffusion=test_diffusion)
+      call require(.not.ok,'single-rank callback failure rejects collective step')
+      call unchanged()
+      call require(all(budget==serial_budget).and.all(external==serial_external),'callback failure ledger rollback')
+      diffusion_failure=.false.
+    end do
   end subroutine check_sdc
+  subroutine test_diffusion(state,temps,selected_depth,fractions,coarse_start,coarse_end,rates,flux,good)
+    type(amr_tree_state_3d), intent(in) :: state,temps
+    type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+    integer, intent(in) :: selected_depth
+    real(dp), optional, intent(in) :: fractions(:)
+    type(amr_tree_state_3d), intent(inout) :: rates
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+    logical, intent(out) :: good
+    integer :: peer,cells(3),face,ancestor
+    real(dp) :: dx
+    rates=state
+    if(allocated(flux)) deallocate(flux)
+    allocate(flux(size(tree%nodes)))
+    do peer=1,size(tree%nodes)
+      if(.not.allocated(state%fields(peer)%values)) cycle
+      rates%fields(peer)%values=0
+      if(selected_depth>=0.and.tree%nodes(peer)%level/=selected_depth) cycle
+      cells=tree%nodes(peer)%shape;dx=spacing(1);ancestor=peer
+      do while(ancestor>1)
+        dx=dx/real(tree%nodes(ancestor)%patch%refinement_ratio,dp)
+        ancestor=tree%nodes(ancestor)%parent
+      end do
+      allocate(flux(peer)%x(12,cells(1)+1,cells(2),cells(3)), &
+        flux(peer)%y(12,cells(1),cells(2)+1,cells(3)),flux(peer)%z(12,cells(1),cells(2),cells(3)+1))
+      flux(peer)%x=0;flux(peer)%y=0;flux(peer)%z=0
+      do face=2,cells(1)
+        flux(peer)%x(2,face,:,:)=1000._dp*real((face-1)*(cells(1)+1-face),dp)
+      end do
+      do face=1,cells(1)
+        rates%fields(peer)%values(:,face,:,:)=-(flux(peer)%x(:,face+1,:,:)-flux(peer)%x(:,face,:,:))/dx
+      end do
+    end do
+    diffusion_calls=diffusion_calls+1
+    good=.not.(diffusion_failure.and.rank==0.and.diffusion_calls==2)
+  end subroutine test_diffusion
   subroutine compare_state()
     integer :: peer
     do peer=1,3

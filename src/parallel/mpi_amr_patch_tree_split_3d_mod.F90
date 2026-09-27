@@ -3,6 +3,7 @@ module mpi_amr_patch_tree_split_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use amr_patch_tree_split_3d_mod, only: amr_sdc_diffusion_evaluator
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
@@ -31,7 +32,8 @@ contains
   subroutine advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,level_steps)
+      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion)
+    procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -143,14 +145,14 @@ contains
         call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,comm,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
-          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np)
+          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
       else
         call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,comm,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
           difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
           fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
-          integrated_flux=total,old_predictor=op,new_predictor=np)
+          integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
       end if
       if(.not.good) return
       executed(depth+1)=executed(depth+1)+1
@@ -229,7 +231,8 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
       inflow_mach,inflow_pressure,difmag,target_depth,coarse_start,coarse_end,fractions_start,fractions_end, &
-      source_start,source_end,integrated_flux,old_predictor,new_predictor)
+      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion)
+    procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -259,7 +262,7 @@ contains
     real(dp) :: budget(size(boundary_change)),volume(size(source_change)),correction(size(boundary_change))
     real(dp) :: first(size(source_change)),last(size(source_change)),largest,theta,stage_theta
     integer :: nv,node,n(3),iteration,c,rank,status,ios
-    integer :: switches(9),low_switches(9),high_switches(9)
+    integer :: switches(10),low_switches(10),high_switches(10)
     real(dp) :: controls(9),low_controls(9),high_controls(9)
     logical :: valid,do_transport
     ok=.false.;nv=5+size(species)
@@ -272,10 +275,10 @@ contains
     call agree(valid)
     if(.not.valid) return
     switches=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
-      size(species),size(reactions)]
-    call MPI_Allreduce(switches,low_switches,9,MPI_INTEGER,MPI_MIN,comm,status)
+      size(species),size(reactions),merge(1,0,present(evaluate_diffusion))]
+    call MPI_Allreduce(switches,low_switches,10,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(switches,high_switches,9,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(switches,high_switches,10,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(low_switches/=high_switches)) return
     call MPI_Allreduce(controls,low_controls,9,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -392,7 +395,7 @@ contains
         if(.not.valid) return
       end if
     end do
-    if(do_transport) then
+    if(do_transport.or.present(evaluate_diffusion)) then
       do node=1,size(tree%nodes)
         if(owners(node)/=rank) cycle
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
@@ -475,7 +478,9 @@ contains
       type(amr_tree_flux_3d), allocatable, intent(inout) :: face_flux(:)
       logical, intent(out) :: good
       real(dp), optional, intent(in) :: fractions(:)
-      integer :: peer
+      integer :: peer,cells(3)
+      type(amr_tree_state_3d) :: extra
+      type(amr_tree_flux_3d), allocatable :: extra_flux(:)
       external=u;diffusive=u;good=.true.
       do peer=1,size(tree%nodes)
         if(owners(peer)/=rank) cycle
@@ -494,6 +499,44 @@ contains
           outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,fractions)
         if(.not.good) return
         theta=min(theta,stage_theta)
+      end if
+      if(present(evaluate_diffusion)) then
+        extra=u
+        call evaluate_diffusion(u,t,depth,fractions,coarse_start,coarse_end,extra,extra_flux,good)
+        call agree(good)
+        if(.not.good) return
+        call validate_mpi_amr_tree_local_3d(tree,owners,extra,nv,comm,good)
+        if(.not.good) return
+        good=allocated(extra_flux)
+        if(good) good=size(extra_flux)==size(tree%nodes)
+        call agree(good)
+        if(.not.good) return
+        do peer=1,size(tree%nodes)
+          if(owners(peer)/=rank) cycle
+          if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
+          cells=tree%nodes(peer)%shape
+          good=allocated(extra_flux(peer)%x).and.allocated(extra_flux(peer)%y).and.allocated(extra_flux(peer)%z)
+          if(.not.good) exit
+          good=all(shape(extra_flux(peer)%x)==[nv,cells(1)+1,cells(2),cells(3)]).and. &
+            all(shape(extra_flux(peer)%y)==[nv,cells(1),cells(2)+1,cells(3)]).and. &
+            all(shape(extra_flux(peer)%z)==[nv,cells(1),cells(2),cells(3)+1])
+          if(.not.good) exit
+          good=all(ieee_is_finite(extra%fields(peer)%values)).and. &
+            all(ieee_is_finite(extra_flux(peer)%x)).and.all(ieee_is_finite(extra_flux(peer)%y)).and. &
+            all(ieee_is_finite(extra_flux(peer)%z))
+          if(.not.good) exit
+          diffusive%fields(peer)%values=diffusive%fields(peer)%values+extra%fields(peer)%values
+          extra_flux(peer)%x=dt*extra_flux(peer)%x;extra_flux(peer)%y=dt*extra_flux(peer)%y
+          extra_flux(peer)%z=dt*extra_flux(peer)%z
+          if(do_transport) then
+            face_flux(peer)%x=face_flux(peer)%x+extra_flux(peer)%x
+            face_flux(peer)%y=face_flux(peer)%y+extra_flux(peer)%y
+            face_flux(peer)%z=face_flux(peer)%z+extra_flux(peer)%z
+          end if
+        end do
+        call agree(good)
+        if(.not.good) return
+        if(.not.do_transport) face_flux=extra_flux
       end if
       good=.true.
     end subroutine
