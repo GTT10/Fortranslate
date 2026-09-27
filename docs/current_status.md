@@ -20,11 +20,15 @@ mixture Riemann interface flux are now implemented with focused analytic and
 failure checks ([reconstruction](validation/mol-reconstruction-20260927.md),
 [interface flux](validation/mol-riemann-20260927.md)).
 The interface also implements the pinned Lax–Friedrichs diffusion speed and
-flux formulas, with analytic checks; spatial/application selection remains open
-([LF kernel](validation/mol-lax-friedrichs-20260927.md)).
+flux formulas, with analytic checks. `mol_lax_friedrichs` now selects this
+branch throughout the MPI tree application and binds it to restart identity.
+Gas and single-level particle checks pass; a nested particle case produces
+negative fuel density and remains unresolved
+([LF kernel](validation/mol-lax-friedrichs-20260927.md),
+[application evidence](validation/mol-lf-application-20260927.md)).
 Prepared EB patches now assemble centroid-corrected MOL spatial rates and
 boundary/wall ledgers with stationary balance and conservation checks.
-Application integration remains open
+The application connections are described below
 ([spatial rate](validation/eb-mol-spatial-rate-20260927.md)).
 Owner-local MPI MOL rates and fluxes now match serial evaluation in a nested
 wall fixture, including empty-rank ownership and collective rollback
