@@ -58,3 +58,27 @@ Child release, the new runtime bound on a completed growing population,
 full-duration reference parity and physical validation remain unproven here.
 The separate frozen Jet continuation was also confirmed live as PID 648941;
 its numerical binary was not changed by this work.
+
+## Live progress observation
+
+Subsequent read-only GDB attachment, followed by explicit detach, observed
+accepted time 4.0 microseconds / step 22 / particle-ID watermark 1672, then
+4.2 microseconds / step 23 / watermark 3448. All 12 injections had been
+processed; the current computational-split counter was zero. With 48 injected
+parcels and computational splitting disabled in the input, this observes new
+IDs from the KHRT path. It does not establish final surviving population or
+fuel conservation. Scripts/logs: `build/spray-a-progress.gdb`,
+`build/spray-a-progress.log`, `build/spray-a-progress-2.log`. The same process
+was still live at elapsed 13 min 56 s; no restart was performed.
+
+The frozen Jet run was separately observed at 0.5556 ms / step 3169 /
+next event 2778 / particle-ID watermark 11108
+(`build/jet-energy-progress.log`). It remains in progress, not a completed
+1.5 ms qualification.
+
+For subsequent runs, a separate Release configuration was created at
+`build/dodecane-simple-mpi-release` with the same compiler/MPI/bundle options
+as the Debug build, changing only `CMAKE_BUILD_TYPE=Release`. Configure passes
+(`build/dodecane-release-configure.log`); the selected spray target build is
+running (`build/dodecane-release-build.log`). No Release test is counted yet.
+The currently running Debug and frozen Jet binaries are unchanged.
