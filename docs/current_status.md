@@ -31,6 +31,11 @@ to `8.48e-16`; the evaporation temperature/velocity differences shrink to
 `4.7e-8 K` / `3.0e-8 m/s`. One-to-two-rank continuation matches the continuous
 run; particle integration differences remain
 ([integration](validation/simple-transport-integration-20260927.md)).
+An explicit Euler mixture-particle option now reduces temperature/velocity
+differences to `2.6e-11 K` / `2.4e-13 m/s`, with conservative gas feedback and
+matching rank-changing restart. Gas-field differences remain, including
+`2.0e-4` fuel-density difference relative to its reference maximum
+([comparison](validation/spray-euler-mixture-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale

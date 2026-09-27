@@ -15,6 +15,11 @@ new bundle. Build against that bundle and enable `simple_transport_enabled`
 in `eb_tree`; `prepare_evaporation_reference.py` enables it for fitted bundles.
 The coefficients are used by both gas and particle-film transport and bound
 to restart identity. See [integration and limits](validation/simple-transport-integration-20260927.md).
+The fixture also selects `particle_options%mixture_time_scheme='euler'` in
+`eb_spray`, matching the reference's explicit free-particle update while
+retaining conservative gas exchange. The default remains `'conservative'`;
+switching schemes on restart is rejected. See the
+[particle and gas comparison](validation/spray-euler-mixture-20260927.md).
 
 The selected serial spray executable also accepts an explicitly nonreacting
 mechanism bundle. Use `--fuel heptane-3sp` with `tools/prepare_spray_reference.py`
