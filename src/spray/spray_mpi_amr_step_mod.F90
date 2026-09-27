@@ -1129,7 +1129,7 @@ contains
   subroutine advance_mpi_amr_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       tree,owners,parcels,component_mass,lower,spacing,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
       wall_films,film_mass,film_settings,eb_geometry,nodal_phi,model_rejected,eb_outflow_change,gas_change, &
-      motion_mode,maximum_level)
+      motion_mode,maximum_level,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1151,6 +1151,7 @@ contains
     real(dp), allocatable, intent(inout) :: component_mass(:,:)
     real(dp), intent(in) :: lower(3),spacing(3),interval
     integer, intent(out) :: substeps
+    logical, optional, intent(in) :: containing_cell
     logical, intent(out) :: ok
     integer(int64), optional, intent(inout) :: last_id
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -1330,7 +1331,8 @@ contains
     change=0
     ! This collective also validates geometry and the original gas on every rank.
     call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,gas,temp,positions,change, &
-      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,maximum_level=maximum_level)
+      lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi,maximum_level=maximum_level, &
+      containing_cell=containing_cell)
     if (.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree()
@@ -1573,7 +1575,7 @@ contains
           next_gas=gas;next_temp=temp
           call deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,next_gas,next_temp,positions,change, &
             lower,spacing,periodic,valid,eb_geometry=eb_geometry,nodal_phi=nodal_phi, &
-            gas_change=trial_change,maximum_level=maximum_level)
+            gas_change=trial_change,maximum_level=maximum_level,containing_cell=containing_cell)
           if (valid) then
             accepted=.true.;exit
           end if

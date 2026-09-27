@@ -1085,6 +1085,7 @@ contains
       if(code/=0) error stop 'Cannot serialize spray context'
       rewind(stream)
       spray_context=mixture_evolution_id//'|'
+      if(time_integrator=='sdc'.and..not.subcycling) spray_context=spray_context//'COMMON_SDC_CELL_SOURCE_V1|'
       if(time_integrator=='sdc'.and.subcycling) &
         spray_context=spray_context//'RECURSIVE_SDC_PHYSICAL_SYNC_V1|'
       do

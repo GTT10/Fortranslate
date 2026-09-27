@@ -988,14 +988,14 @@ contains
       call advance_mpi_amr_mixture_coupling(source_comm,species,transport,liquids,options,work_gas,work_temperature, &
         tree,owners,trial,masses,lower,spacing,interval,steps,accepted,last_id=watermark, &
         boundary_change=wall_delta,eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=exterior, &
-        boundary_faces=particle_faces,gas_change=change,motion_mode=motion, &
+        boundary_faces=particle_faces,gas_change=change,motion_mode=motion,containing_cell=.true., &
         wall_films=patches,film_mass=patch_mass,film_settings=film_settings,model_rejected=rejected)
         if(present(model_rejected)) model_rejected=rejected
       else
       call advance_mpi_amr_mixture_coupling(source_comm,species,transport,liquids,options,work_gas,work_temperature, &
         tree,owners,trial,masses,lower,spacing,interval,steps,accepted,last_id=watermark, &
         boundary_change=wall_delta,eb_geometry=geometry,nodal_phi=phi,eb_outflow_change=exterior, &
-        boundary_faces=particle_faces,gas_change=change,motion_mode=motion)
+        boundary_faces=particle_faces,gas_change=change,motion_mode=motion,containing_cell=.true.)
       end if
       if(.not.accepted) return
       if(stage>0) then

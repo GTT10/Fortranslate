@@ -590,13 +590,14 @@ contains
   ! Optional gas_change is the deposited increment per fluid volume, accumulated
   ! independently of the gas background and published with U/T.
   subroutine deposit_mpi_amr_tree_spray_gas(comm,species,tree,owners,state,temperature,positions,contributions, &
-      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level)
+      lower,spacing,periodic,ok,maximum_requests,maximum_received,eb_geometry,nodal_phi,gas_change,maximum_level,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
+    logical, optional, intent(in) :: containing_cell
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: maximum_requests,maximum_received,maximum_level
@@ -625,7 +626,7 @@ contains
     if(present(gas_change)) allocate(change)
     call deposit_mpi_amr_tree_spray_field(comm,tree,owners,candidate,reactive_nvar(size(species)), &
       positions,contributions,lower,spacing,periodic,valid,maximum_requests,maximum_received,eb_geometry,nodal_phi, &
-      change,maximum_level)
+      change,maximum_level,containing_cell)
     if (.not.valid) return
     has_particles=size(positions,2)>0
     call MPI_Allreduce(has_particles,any_particles,1,MPI_LOGICAL,MPI_LOR,comm,ierr)
