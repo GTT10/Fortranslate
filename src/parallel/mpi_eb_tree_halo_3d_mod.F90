@@ -609,7 +609,8 @@ contains
     end subroutine add
   end subroutine fill_sdc_mpi_eb_particle_predictor_halo_3d
 
-  ! Signed source donors use scalar boundary extrapolation (no EOS or reflection).
+  ! Signed sources use scalar extension with mirrored wall donor positions;
+  ! component values have no EOS recovery or momentum sign flip.
   ! Only fluid donors needed by owned targets are exchanged; covered values may be NaN.
   ! same_level_only leaves physical exterior and missing same-level donors zero;
   ! it cannot be combined with ancestor interpolation. Default behavior is unchanged.
@@ -635,6 +636,7 @@ contains
     real(dp), allocatable :: values(:,:),fraction(:),fraction_low(:),fraction_high(:)
     integer(int64) :: global(3),mapped(3),local(3),maximum
     integer :: rank,status,ios,node,target,n(3),level,depth,donor,source(3),idx(3),i,j,k,axis,q
+    integer :: boundary_face
     integer :: controls(5),low(5),high(5),width
     character(len=32) :: faces(6),reference(6)
     real(dp) :: volume
@@ -739,6 +741,21 @@ contains
           if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
         end do
         if(peers.and.(any(global<0).or.any(global>=domain(:,level)))) cycle
+        ! Match state/geometry donor locations at physical walls. Source
+        ! components retain their existing scalar extension convention.
+        do axis=1,3
+          do while(global(axis)<0.or.global(axis)>=domain(axis,level))
+            boundary_face=2*axis
+            if(global(axis)<0) boundary_face=boundary_face-1
+            if(faces(boundary_face)/='slip_wall'.and.faces(boundary_face)/='no_slip_wall'.and. &
+              faces(boundary_face)/='isothermal_wall') exit
+            if(global(axis)<0) then
+              global(axis)=-global(axis)-1
+            else
+              global(axis)=2*domain(axis,level)-global(axis)-1
+            end if
+          end do
+        end do
         global=max(0_int64,min(domain(:,level)-1,global))
         donor=0
         if(all(idx>=1).and.all(idx<=n)) then

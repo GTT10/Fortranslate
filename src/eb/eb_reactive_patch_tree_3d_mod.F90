@@ -3047,8 +3047,8 @@ contains
   ! Wider halos require explicit target-resolution volume fractions, including
   ! edges/corners. Actual output bounds correspond to 1-width:N+width; array
   ! assignment preserves caller bounds. Width one retains the legacy face route.
-  ! Signed SDC source rates use PCM ancestor donors and scalar physical
-  ! extrapolation. Never apply EOS recovery, momentum reflection or restriction.
+  ! Signed SDC sources use PCM ancestors and scalar extension: mirrored donor
+  ! positions at walls, clamped elsewhere. No EOS, momentum sign flip or restriction.
   subroutine fill_sdc_eb_tree_source_halo_3d(tree,rates,target,halo_width,ghost,ok, &
       boundary_faces,target_volume_fraction,ancestor_start,ancestor_end,ancestor_fraction)
     type(eb_reactive_tree_3d), intent(in) :: tree
@@ -3064,6 +3064,7 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer(int64) :: global(3),mapped(3),local(3)
+    integer :: boundary_face
     integer :: n(3),index(3),source(3),nv,width,level,depth,node,donor,i,j,k,axis
     real(dp) :: fraction,volume
     character(len=32) :: faces(6)
@@ -3107,6 +3108,21 @@ contains
       global=origin(:,target)+int(index-1,int64)
       do axis=1,3
         if(faces(2*axis-1)=='periodic') global(axis)=modulo(global(axis),domain(axis,level))
+      end do
+      ! Match state/geometry donor locations at physical walls. Source
+      ! components retain their existing scalar extension convention.
+      do axis=1,3
+        do while(global(axis)<0.or.global(axis)>=domain(axis,level))
+          boundary_face=2*axis
+          if(global(axis)<0) boundary_face=boundary_face-1
+          if(faces(boundary_face)/='slip_wall'.and.faces(boundary_face)/='no_slip_wall'.and. &
+            faces(boundary_face)/='isothermal_wall') exit
+          if(global(axis)<0) then
+            global(axis)=-global(axis)-1
+          else
+            global(axis)=2*domain(axis,level)-global(axis)-1
+          end if
+        end do
       end do
       global=max(0_int64,min(domain(:,level)-1,global))
       donor=0
