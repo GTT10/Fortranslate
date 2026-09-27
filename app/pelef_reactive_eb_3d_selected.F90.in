@@ -27,7 +27,16 @@ program pelef_reactive_eb_3d_selected
       @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@, &
     selected_element_names => @PELEF_BUNDLE_ELEMENT_NAMES_SYMBOL@, &
     selected_element_atoms => @PELEF_BUNDLE_ELEMENT_ATOMS_SYMBOL@
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
+#ifdef PELEF_SDC_CVODE
+  use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
+#endif
   implicit none
+#ifdef PELEF_SDC_CVODE
+  logical, parameter :: cvode_available=.true.
+#else
+  logical, parameter :: cvode_available=.false.
+#endif
 
   character(len=*), parameter :: pelef_selected_bundle_sha256 = &
     "@PELEF_BUNDLE_BUNDLE_SHA256@"
@@ -55,7 +64,7 @@ program pelef_reactive_eb_3d_selected
   call get_command_argument(1, input_path)
   call read_reactive_eb_3d_configuration( &
     trim(input_path), config, ok, message, allow_selected=.true.,allow_difmag=.true.,allow_ctu=.true., &
-    allow_boundaries=.true.,allow_inlet_composition=.true.,allow_sdc=.true.)
+    allow_boundaries=.true.,allow_inlet_composition=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
@@ -135,9 +144,22 @@ program pelef_reactive_eb_3d_selected
 
   write(*, '(a,i0)') "Species: ", pelef_selected_species_count
   write(*, '(a,i0)') "Reactions: ", pelef_selected_reaction_count
+#ifdef PELEF_SDC_CVODE
+  if(config%sdc_reactor=='cvode') then
+    call run(advance_forced_reactor_cvode)
+  else
+    call run()
+  endif
+#else
+  call run()
+#endif
+contains
+  subroutine run(evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
   call run_reactive_eb_3d_application( &
     trim(input_path), "selected mechanism reactive planar EB 3D", &
     pelef_selected_bundle_sha256, config, species, reactions, transport, &
     mole_fractions, pelef_selected_chemistry_integrator, &
-    selected_element_names, selected_element_atoms)
+    selected_element_names, selected_element_atoms,evaluate_reaction=evaluate_reaction)
+  end subroutine run
 end program pelef_reactive_eb_3d_selected

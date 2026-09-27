@@ -40,6 +40,7 @@ module simulation_config_reactive_eb_3d_mod
     real(dp) :: inflow_density(6)=.31_dp,inflow_pressure(6)=135000._dp,inflow_velocity(3,6)=0._dp
     real(dp) :: wall_temperature(6)=1000._dp
     character(len=32) :: time_integrator="split"
+    character(len=16) :: sdc_reactor="native"
     integer :: sdc_iterations=2
     real(dp) :: external_forcing(3)=0
     character(len=32) :: riemann_solver = "rusanov"
@@ -323,7 +324,8 @@ contains
   end subroutine
 
   subroutine read_reactive_eb_3d_configuration( &
-      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition,allow_sdc)
+      path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition,allow_sdc, &
+      allow_sdc_cvode)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
@@ -331,6 +333,8 @@ contains
     logical, intent(in), optional :: allow_selected,allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition,allow_sdc
 
     integer :: nx, ny, nz, maximum_steps, checkpoint_interval_steps
+    logical, optional, intent(in) :: allow_sdc_cvode
+    character(len=16) :: sdc_reactor
     integer :: sdc_iterations
     real(dp) :: external_forcing(3)
     character(len=32) :: time_integrator
@@ -363,7 +367,7 @@ contains
     logical :: barodiffusion_enabled, stop_after_checkpoint
     logical :: selected_allowed
 
-    namelist /reactive_eb_3d/ time_integrator,sdc_iterations,external_forcing, &
+    namelist /reactive_eb_3d/ time_integrator,sdc_iterations,sdc_reactor,external_forcing, &
       nx, ny, nz, maximum_steps, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, plane_axis, plane_position, riemann_solver, difmag, hydro_method, &
@@ -403,6 +407,7 @@ contains
     boundary_faces=config%boundary_faces;inflow_density=config%inflow_density
     inflow_pressure=config%inflow_pressure;inflow_velocity=config%inflow_velocity
     hydro_method = config%hydro_method
+    sdc_reactor=config%sdc_reactor
     time_integrator=config%time_integrator;sdc_iterations=config%sdc_iterations;external_forcing=config%external_forcing
     riemann_solver = config%riemann_solver
     difmag=config%difmag
@@ -475,6 +480,7 @@ contains
     config%boundary_faces=boundary_faces;config%inflow_density=inflow_density
     config%inflow_pressure=inflow_pressure;config%inflow_velocity=inflow_velocity
     config%hydro_method = trim(hydro_method)
+    config%sdc_reactor=trim(sdc_reactor)
     config%time_integrator=trim(time_integrator);config%sdc_iterations=sdc_iterations;config%external_forcing=external_forcing
     config%riemann_solver = trim(riemann_solver)
     config%difmag=difmag
@@ -543,6 +549,13 @@ contains
         message='SDC input is not enabled in this application';return
       end if
     end if
+    if(config%sdc_reactor=='cvode') then
+      ok=.false.
+      if(present(allow_sdc_cvode)) ok=allow_sdc_cvode
+      if(.not.ok) then
+        message='SDC CVODE backend is unavailable in this application';return
+      end if
+    end if
     call validate_reactive_eb_3d_configuration( &
       config, ok, message, allow_selected=selected_allowed)
   end subroutine read_reactive_eb_3d_configuration
@@ -560,6 +573,12 @@ contains
 
     ok = .false.
     message = ""
+    if(config%sdc_reactor/='native'.and.config%sdc_reactor/='cvode') then
+      message='Unknown EB SDC reactor';return
+    end if
+    if(config%sdc_reactor=='cvode'.and.(config%time_integrator/='sdc'.or..not.config%chemistry_enabled)) then
+      message='EB SDC CVODE requires reacting SDC';return
+    end if
     if(config%time_integrator/='split'.and.config%time_integrator/='sdc') then
       message='Unsupported EB time integrator';return
     end if

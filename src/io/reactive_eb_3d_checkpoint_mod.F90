@@ -551,7 +551,11 @@ contains
     end do
 
     if(config%time_integrator=='sdc') then
-      write(unit,'(a)',iostat=status) 'SDC_SOURCES'
+      if(config%sdc_reactor=='cvode') then
+        write(unit,'(a)',iostat=status) 'SDC_CVODE_SOURCES'
+      else
+        write(unit,'(a)',iostat=status) 'SDC_SOURCES'
+      end if
       if(status/=0) go to 900
       write(unit,*,iostat=status) config%sdc_iterations,merge(1,0,config%chemistry_enabled)
       if(status/=0) go to 900
@@ -1241,7 +1245,11 @@ contains
     if(config%time_integrator=='sdc') then
       read(unit,'(a)',iostat=status) marker
       if(status/=0) go to 900
-      if(marker/='SDC_SOURCES') go to 900
+      if(config%sdc_reactor=='cvode') then
+        if(marker/='SDC_CVODE_SOURCES') go to 900
+      else
+        if(marker/='SDC_SOURCES') go to 900
+      end if
       read(unit,*,iostat=status) sdc_controls
       if(status/=0) go to 900
       if(any(sdc_controls/=[config%sdc_iterations,merge(1,0,config%chemistry_enabled)])) go to 900

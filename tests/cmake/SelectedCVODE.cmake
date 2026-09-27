@@ -37,6 +37,11 @@ if(PELEF_ENABLE_SUNDIALS)
         --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>
         --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/sdc-cvode-app")
       set_tests_properties(application_sdc_cvode PROPERTIES TIMEOUT 300)
+      add_test(NAME application_eb_sdc_cvode COMMAND ${Python3_EXECUTABLE}
+        "${PROJECT_SOURCE_DIR}/tests/application/check_eb_sdc_cvode_app.py"
+        --fixed $<TARGET_FILE:pelef_reactive_eb_3d> --selected $<TARGET_FILE:pelef_reactive_eb_3d_selected>
+        --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/eb-sdc-cvode")
+      set_tests_properties(application_eb_sdc_cvode PROPERTIES TIMEOUT 300)
       if(PELEF_ENABLE_MPI)
         add_test(NAME application_amr_sdc_cvode COMMAND ${Python3_EXECUTABLE}
           "${PROJECT_SOURCE_DIR}/tests/application/check_amr_sdc_cvode_app.py"

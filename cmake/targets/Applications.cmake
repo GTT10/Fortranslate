@@ -133,6 +133,10 @@ target_link_libraries(pelef_reactive_eb_two_level_3d PRIVATE pelef_core)
 
 add_executable(pelef_reactive_eb_3d app/pelef_reactive_eb_3d.F90)
 target_link_libraries(pelef_reactive_eb_3d PRIVATE pelef_core)
+if(PELEF_ENABLE_SUNDIALS)
+  target_compile_definitions(pelef_reactive_eb_3d PRIVATE PELEF_SDC_CVODE)
+  target_link_libraries(pelef_reactive_eb_3d PRIVATE pelef_fixed_forced_cvode_runtime)
+endif()
 
 add_executable(pelef_amr_reactive_3d app/pelef_amr_reactive_3d.F90)
 target_link_libraries(pelef_amr_reactive_3d PRIVATE pelef_core)

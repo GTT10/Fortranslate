@@ -3,6 +3,7 @@ module reactive_eb_3d_application_mod
   use selected_composition_mod, only: resolve_selected_composition
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use constants_mod, only: pelef_version
   use state_indices_mod, only: ncons, imx, imy, imz
   use nasa7_thermo_mod, only: nasa7_species
@@ -36,7 +37,8 @@ contains
 
   subroutine run_reactive_eb_3d_application( &
       input_path, application_label, bundle_sha256, config, species, &
-      reactions, transport, base_mole_fractions, chemistry_integrator, element_names, element_atoms)
+      reactions, transport, base_mole_fractions, chemistry_integrator, element_names, element_atoms, evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     character(len=*), intent(in) :: input_path, application_label
     character(len=*), intent(in) :: bundle_sha256
     type(reactive_eb_3d_config), intent(in) :: config
@@ -181,6 +183,8 @@ contains
       if (.not. ok) error stop "Failed to integrate initial EB elements"
     end if
 
+    if((config%sdc_reactor=='cvode').neqv.present(evaluate_reaction)) &
+      error stop 'EB SDC reactor selection does not match backend'
     time = 0.0_dp
     step = 0
     minimum_dt = huge(1.0_dp)
@@ -277,7 +281,8 @@ contains
           config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,config%redistribution, &
           boundary_faces,step_boundary,step_wall,step_forcing,step_transport_theta,ok,reaction_source=ir, &
           difmag=config%difmag,target_volume_fraction=config%state_redist_target_volume_fraction, &
-          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t,chemistry_change=step_chemical)
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t,chemistry_change=step_chemical, &
+          evaluate_reaction=evaluate_reaction)
       else
       call advance_reactive_eb_full_3d( &
         species, reactions, transport, state, temperature, geometry, &
@@ -373,6 +378,7 @@ contains
           "Chemistry integrator:", trim(chemistry_integrator)
       end if
     end if
+    if(config%time_integrator=="sdc") write(*,'(a)') "SDC reactor: "//trim(config%sdc_reactor)
     write(*, '(a,1x,a)') "Input:", trim(input_path)
     write(*, '(a,i0,a,i0,a,i0)') &
       "Grid: nx=", config%nx, ", ny=", config%ny, ", nz=", config%nz
