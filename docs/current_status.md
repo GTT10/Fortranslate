@@ -42,6 +42,10 @@ a compiled 64-state audit reproduces its `8.87e-7 K` stored-temperature/EOS
 discrepancy. This bounds the temperature comparison without changing conserved
 energy; the momentum residual remains unresolved
 ([inversion audit](validation/spray-temperature-inversion-20260927.md)).
+A full reference build with tighter temperature inversion reduces the maximum
+temperature difference to `3.75e-9 K`; momentum remains at `2.66e-6` relative.
+This separates the temperature stopping rule from the remaining momentum
+residual ([intervention](validation/spray-tight-temperature-reference-20260927.md)).
 EB tree inputs now expose individual gas transport operators with unchanged
 defaults; a two-rank continuation preserves the gas output and rejects changed
 transport settings ([controls](validation/eb-tree-transport-controls-20260927.md)).
