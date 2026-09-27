@@ -16,7 +16,7 @@ def main():
     for key in ('pelec', 'fortran', 'exporter', 'velocity', 'work'):
         parser.add_argument('--' + key, type=Path, required=True)
     parser.add_argument('--transport', action='store_true', help='Enable matched constant viscosity and conductivity')
-    parser.add_argument('--les', choices=('smagorinsky', 'wale', 'vreman'))
+    parser.add_argument('--les', choices=('smagorinsky', 'wale', 'vreman', 'dynamic'))
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
     for key in ('pelec', 'fortran', 'exporter', 'velocity'):
@@ -39,12 +39,13 @@ def main():
             'transport_enabled=.false.', 'transport_enabled=.true.') +
             "\n&reactive_constant_transport enabled=.true.,mode='hit',lambda0=.005,reynolds_lambda0=100,prandtl=.71 /\n")
     if args.les:
-        model = dict(smagorinsky=0, wale=2, vreman=3)[args.les]
+        model = dict(smagorinsky=0, dynamic=1, wale=2, vreman=3)[args.les]
         with (work / 'pelec_reference.inp').open('a') as stream:
             stream.write(f'\npelec.do_les = 1\npelec.les_model = {model}\n'
                          'pelec.Cs = .5\npelec.Cw = .5\npelec.CI = .09\npelec.PrT = .7\n')
         with (work / 'hydro_reference.nml').open('a') as stream:
-            stream.write(f"\n&reactive_les enabled=.true.,model='{args.les}',cs=.5,ci=.09,prt=.7 /\n")
+            controls = "ci=0,test_model='box3opt',test_ratio=2,grid_ratio=1,harmonic_mean=.true." if args.les == 'dynamic' else 'ci=.09'
+            stream.write(f"\n&reactive_les enabled=.true.,model='{args.les}',cs=.5,prt=.7,{controls} /\n")
     env = dict(os.environ)
     for key in ('LD_LIBRARY_PATH', 'LIBRARY_PATH', 'DISPLAY'):
         env.pop(key, None)
