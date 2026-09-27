@@ -44,6 +44,9 @@ and Mach scaling. Manufactured interpolation and pinned 32³ input checks reach
 WALE SDC with exact fixed/selected output
 ([evidence](validation/hit-input-20260927.md), [case](../cases/reactive_hit_3d/README.md)).
 This is initialization/integration evidence, not evolved HIT reference parity.
+The pinned C++ `pc_initdata`/`locate` functions also agree with the SI gamma-law
+initial field on 64 cells (maximum normalized difference `3.77e-15`;
+[direct kernel comparison](validation/hit-initialization-reference-20260927.md)).
 
 The forced reactor now has a transactional CVODE BDF backend for changing
 species densities and internal-energy sources. Inert analytical, early-time
