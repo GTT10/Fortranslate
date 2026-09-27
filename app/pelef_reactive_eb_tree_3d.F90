@@ -524,6 +524,20 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
       if(time_integrator=='sdc') then
       if(subcycling) then
+      if(wall_impacts) then
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
+        films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected)
+      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+      else
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
@@ -534,6 +548,7 @@ program pelef_reactive_eb_tree_3d
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created)
+      end if
       else if(wall_impacts) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
@@ -809,7 +824,6 @@ contains
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
     if(time_integrator=='sdc'.and.subcycling) then
-      if(wall_impacts.or.walls%evolve) error stop 'Recursive spray SDC wall films are not implemented'
       if(any(boundary_faces=='periodic')) error stop 'Recursive spray SDC periodic migration is not implemented'
     end if
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'

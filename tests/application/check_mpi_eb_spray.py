@@ -211,7 +211,6 @@ def main():
     if a.recursive:
         for label, controls, message in (
             ('recursive_force_rejected', 'acceleration=1.e7,0.,0.,', 'Invalid MPI EB acceleration'),
-            ('recursive_film_rejected', 'wall_impacts=.true.,', 'wall films are not implemented'),
         ):
             rejected = run(2, label, success=False, spray_extra=controls)
             assert message in (rejected / 'run.log').read_text()
