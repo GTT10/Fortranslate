@@ -31,7 +31,10 @@ Fixed/selected single-grid EB applications now expose CVODE selection with
 exact restart and backend-mismatch rejection. Integration also repaired forced
 CVODE density closure and Newton trial-state handling
 ([EB application evidence](validation/eb-sdc-cvode-app-20260927.md)).
-Forced CVODE selection in EB tree applications and particle SDC remains open.
+Fixed/selected serial/MPI EB tree and MPI particle applications now expose
+CVODE selection with reactor-bound checkpoints. Focused gas common/recursive
+and reacting particle recursive LES checks establish exact changed-rank
+continuation ([tree/particle evidence](validation/eb-tree-particle-cvode-20260927.md)).
 
 KHRT now connects reference-count/azimuth children, deterministic samples and
 conservative gas momentum/energy compensation to application input through

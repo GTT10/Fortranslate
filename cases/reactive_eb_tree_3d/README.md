@@ -401,3 +401,16 @@ column. The fixed executable's continuous/restart comparison is recorded in
 The same `sdc.nml` fixture runs with `pelef_mpi_reactive_eb_tree_3d`.
 A two-rank run and one-rank checkpoint continuation are recorded in the
 [MPI application checks](../../docs/validation/sdc-mpi-eb-app-20260927.md).
+
+## SDC CVODE reactor
+
+SUNDIALS-enabled fixed/selected serial and MPI gas executables, and MPI particle
+executables, accept `sdc_reactor='cvode'` in `&eb_tree`. It requires reacting
+SDC. `native` remains the default; this selector is independent of the split-step
+`chemistry_integrator`. Common and recursive stepping forward the selected
+reactor, including the particle path's optional LES/film callbacks.
+
+Restart requires the same reactor. Native checkpoint control values remain
+unchanged; CVODE uses an additional control flag that older readers reject.
+See [focused gas/particle checks](../../docs/validation/eb-tree-particle-cvode-20260927.md)
+for the tested combinations and limits.
