@@ -28,5 +28,12 @@ without this setting remain readable when it is disabled.
 
 Wall heat appears in the energy row of `fortran.csv.budget.csv`; particle-wall
 impulse and physical domain boundaries retain their separate accounting.
-The hot wall here supplies molecular heat only. Embedded viscous no-slip
-traction, full pinned Spray-EB execution and physical validation remain open.
+The supplied input enables molecular wall heat only. Add
+`embedded_noslip=.true.` to `eb_tree` to enable stationary-wall viscous traction;
+SDC, transport and viscosity must be enabled. It works independently of wall
+heat: set `embedded_wall_temperature=0` for an adiabatic no-slip wall. Both
+common and recursive MPI gas/particle paths support it; serial rejects it.
+The interval cap includes the frozen viscous frequency, and checkpoints bind
+the no-slip setting. Stationary traction supplies wall momentum without wall
+mechanical energy. Full pinned Spray-EB execution and physical validation
+remain open.

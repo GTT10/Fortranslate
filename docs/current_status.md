@@ -24,7 +24,7 @@ a two-rank cooling case closes total inventory to `1.8e-15` relative
 MPI gas/particle SDC applications now expose embedded wall temperature, cap
 thermal intervals and bind restart settings. A heated particle case, exact
 rank-changing continuation and changed-temperature rejection pass; full
-Spray-EB parity and embedded viscous traction remain open
+Spray-EB parity remains open
 ([application evidence](validation/eb-wall-application-20260927.md)).
 A separate embedded viscous-traction kernel now includes normal bulk viscosity
 and tangential shear, matching the compiled pinned function to `1.44e-14` in
@@ -35,8 +35,12 @@ MPI force ledger; cross-owner and covered-coarse exclusion checks pass
 ([force source](validation/eb-wall-viscous-source-20260927.md)).
 Common and recursive MPI SDC now integrate this force with wall impulse and
 zero stationary-wall mechanical energy. A two-rank adiabatic drag fixture closes
-inventory to `3.1e-17` relative; application no-slip controls remain open
+inventory to `3.1e-17` relative
 ([traction time integration](validation/eb-wall-viscous-integrator-20260927.md)).
+MPI gas/particle applications now expose optional embedded no-slip, with a
+viscous interval cap and restart identity. Combined and adiabatic particle
+steps, exact rank-changing continuation and changed-setting rejection pass
+([no-slip application](validation/eb-noslip-application-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
