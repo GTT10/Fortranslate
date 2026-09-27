@@ -39,7 +39,7 @@ contains
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration,split_created, &
       films,film_mass,film_settings,film_steps,film_impacts,model_rejected,evaluate_diffusion,evaluate_reaction, &
-      embedded_wall_temperature,embedded_noslip)
+      embedded_wall_temperature,embedded_noslip,mol_mode)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(MPI_Comm), intent(in) :: comm
@@ -69,7 +69,7 @@ contains
     integer(int64), optional, intent(out) :: split_created
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: embedded_wall_temperature
-    logical, optional, intent(in) :: embedded_noslip
+    logical, optional, intent(in) :: embedded_noslip,mol_mode
     real(dp), optional, intent(in) :: wall_temperature(6),particle_acceleration(3)
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
@@ -86,6 +86,9 @@ contains
     type(spray_level_population), allocatable :: physical(:),virtuals(:),ghosts(:)
     type(spray_sdc_population_stage), allocatable :: work(:)
     type(amr_tree_state_3d) :: gas,temp,metrics,centroids,particle_first,particle_last,source_correction
+    type(amr_tree_state_3d), allocatable :: mol_particle_rate(:)
+    integer :: particle_iterations
+    logical :: mol
     type(amr_tree_state_3d), allocatable :: ir
     type(spray_parcel), allocatable :: final(:)
     real(dp), allocatable :: masses(:,:)
@@ -97,6 +100,12 @@ contains
     real(dp) :: exterior(size(source_change)),particle_force_total(size(source_change)),theta,h(3),origin(3)
     integer :: nv,levels,rank,status,node,n(3),i,j,k,p,ios
     logical :: valid,agreed,periodic(3)
+    mol=.false.
+    if(present(mol_mode)) mol=mol_mode
+    particle_iterations=iterations
+    if(mol) then
+      particle_iterations=1
+    end if
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     impacts=.false.
     if(present(film_impacts)) impacts=film_impacts
@@ -154,7 +163,8 @@ contains
       if(.not.valid) exit
     end do
     call agree();if(.not.agreed) return
-    allocate(work(levels),counts(levels),metrics%fields(size(owners)),centroids%fields(size(owners)),stat=ios)
+    allocate(work(levels),mol_particle_rate(levels),counts(levels),metrics%fields(size(owners)), &
+        centroids%fields(size(owners)),stat=ios)
     valid=ios==0;call agree();if(.not.agreed) return
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
@@ -202,6 +212,17 @@ contains
     if(present(reaction_source)) then
       allocate(ir);ir=reaction_source
     end if
+    if(mol) then
+    call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,geometry,gas,temp, &
+      dt,iterations,chemistry,transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
+      boundary,wall,chemical,external,theta,comm,agreed,ir,difmag,level_steps=counts,redistribution=redistribution, &
+      target_volume_fraction=target_volume_fraction,halo_source=particle_source,auxiliary_change=exchange, &
+      gas_acceleration=gas_acceleration,inflow_state=inflow_state, &
+      inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      wall_temperature=wall_temperature,post_level=particle_post_level,evaluate_diffusion=evaluate_diffusion, &
+      evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
+      embedded_noslip=embedded_noslip,mol_mode=mol_mode)
+    else
     call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,tree,owners,geometry,gas,temp, &
       dt,iterations,chemistry,transport_flags,force,rtol,atol,extended_geometry,boundary_faces, &
       boundary,wall,chemical,external,theta,comm,agreed,ir,difmag,level_steps=counts,redistribution=redistribution, &
@@ -210,7 +231,8 @@ contains
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
       wall_temperature=wall_temperature,post_level=particle_post_level,evaluate_diffusion=evaluate_diffusion, &
       evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-      embedded_noslip=embedded_noslip)
+      embedded_noslip=embedded_noslip,mol_mode=mol_mode)
+    end if
     if(.not.agreed) return
     call synchronize_particle_sources()
     if(.not.agreed) return
@@ -381,13 +403,17 @@ contains
       type(spray_wall_film), allocatable :: impact_films(:)
       real(dp), allocatable :: impact_mass(:,:)
       integer :: p,old_films
+      if(mol.and.stage>1) then
+        rate=mol_particle_rate(depth+1);good=.true.;return
+      end if
       if(impacts) then
         ! The particle snapshot is for impact thickness and appended deposits;
         ! it must never replace the independently evolved film hierarchy.
         impact_films=film_physical(depth+1)%films;impact_mass=film_physical(depth+1)%component_mass
         old_films=size(impact_films)
       call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
-        stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
+        stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage, &
+        particle_iterations, &
         boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
         inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate, &
@@ -396,7 +422,8 @@ contains
         if(rejected.and.present(model_rejected)) model_rejected=.true.
       else
       call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
-        stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
+        stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage, &
+        particle_iterations, &
         boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
         inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate, &
@@ -406,7 +433,7 @@ contains
       if(present(films)) then
         call advance_mpi_eb_recursive_film_stage(source_comm,species,transport,liquids,options,film_settings, &
           tree,owners,geometry,stage_gas,stage_temp,3,depth,2,film_settings%maximum_films, &
-          film_physical,film_virtuals,film_ghosts,film_work,time,interval,stage,iterations,boundary_faces, &
+          film_physical,film_virtuals,film_ghosts,film_work,time,interval,stage,particle_iterations,boundary_faces, &
           film_rate,film_remainder,film_wall_delta,good,phi,centroids,metrics, &
           ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
           inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=film_actual)
@@ -434,7 +461,8 @@ contains
         if(stage==0) particle_first%fields(p)%values=rate%fields(p)%values
         particle_last%fields(p)%values=rate%fields(p)%values
       end do
-      if(stage/=iterations) return
+      if(mol.and.stage==1) mol_particle_rate(depth+1)=rate
+      if(stage/=particle_iterations) return
       ! All fields are rates. Count each accepted physical half kick once;
       ! remove only this logical level's provisional valid-cell source.
       do p=1,size(owners)

@@ -259,9 +259,6 @@ program pelef_reactive_eb_tree_3d
 #ifndef PELEF_MPI_EB_TREE
     error stop 'MOL requires the MPI tree application'
 #endif
-#ifdef PELEF_MPI_EB_SPRAY
-    if(subcycling) error stop 'Recursive particle MOL staging is not connected'
-#endif
     if(time_integrator/='sdc') error stop 'MOL requires the coupled time integrator'
   end if
   if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
@@ -871,7 +868,7 @@ contains
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
         films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
         evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction, &
-        embedded_wall_temperature=active_embedded_temperature,embedded_noslip=embedded_noslip)
+        embedded_wall_temperature=active_embedded_temperature,embedded_noslip=embedded_noslip,mol_mode=mol_mode)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -885,7 +882,7 @@ contains
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
         evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction, &
-        embedded_wall_temperature=active_embedded_temperature,embedded_noslip=embedded_noslip)
+        embedded_wall_temperature=active_embedded_temperature,embedded_noslip=embedded_noslip,mol_mode=mol_mode)
       end if
       else if(wall_impacts) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
