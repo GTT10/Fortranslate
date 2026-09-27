@@ -9,33 +9,22 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
-Explicit reaction-free mechanism import now supports the pinned NC7H16/O2/N2
-Spray-Evaporation material data, retaining source/license hashes and typed
-zero-reaction generated arrays. Focused importer checks and generated-module
-compilation pass ([evidence](validation/nonreacting-spray-import-20260927.md)).
-The selected serial spray application now runs this reaction-free bundle with
-active evaporation and conserved gas/liquid transfer at temperatures inside
-the source range. Chemistry ON and 273 K gas are rejected; full upstream
-spray parity remains pending ([integration](validation/nonreacting-spray-app-20260927.md)).
-The selected MPI EB tree particle SDC path also accepts this bundle with
-chemistry disabled; a one-rank, fully regular two-step evaporation case passes
-gas/liquid transfer and inventory checks
-([evidence](validation/nonreacting-particle-sdc-20260927.md)).
-The full pinned Spray-Evaporation reference now runs this adapted case.
-Matching the drag law still leaves heating, evaporation and deceleration
-differences; trajectory parity remains open
-([comparison](validation/evaporation-full-reference-20260927.md)).
-Pinned Simple transport fits now import with source checks and connect to
-selected EB tree gas/particle transport. Six states agree with compiled C++
-to `8.48e-16`; the evaporation temperature/velocity differences shrink to
-`4.7e-8 K` / `3.0e-8 m/s`. One-to-two-rank continuation matches the continuous
-run; particle integration differences remain
+The pinned reaction-free NC7H16/O2/N2 mechanism imports with source/license
+checks; selected serial spray and MPI EB tree SDC paths require chemistry OFF
+and temperatures inside the source range
+([import](validation/nonreacting-spray-import-20260927.md),
+[application boundary](validation/nonreacting-spray-app-20260927.md)).
+Selected EB tree gas/particle transport can use pinned Simple fits, with
+coefficient provenance and restart identity checks
 ([integration](validation/simple-transport-integration-20260927.md)).
-An explicit Euler mixture-particle option now reduces temperature/velocity
-differences to `2.6e-11 K` / `2.4e-13 m/s`, with conservative gas feedback and
-matching rank-changing restart. Gas-field differences remain, including
-`2.0e-4` fuel-density difference relative to its reference maximum
-([comparison](validation/spray-euler-mixture-20260927.md)).
+
+The periodic 4³ two-step Spray-Evaporation adaptation now uses explicit Euler
+particle updates and the pinned single-cell source deposition. Particle
+temperature/velocity differences are `4.0e-13 K` / `3.9e-14 m/s`; fuel-density
+difference is `1.4e-11` relative to its reference maximum. Rank-changing restart
+matches continuous output. Gas momentum and stored-temperature differences
+remain, so full spray parity and physical validation are still open
+([current comparison](validation/spray-cell-source-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale

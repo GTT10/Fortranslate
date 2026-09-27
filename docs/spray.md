@@ -20,6 +20,10 @@ The fixture also selects `particle_options%mixture_time_scheme='euler'` in
 retaining conservative gas exchange. The default remains `'conservative'`;
 switching schemes on restart is rejected. See the
 [particle and gas comparison](validation/spray-euler-mixture-20260927.md).
+Common and recursive particle SDC deposit sources into the cell containing the
+particle, matching the pinned reference. Common-SDC snapshots from the preceding
+weighted-deposition implementation are incompatible; see the
+[deposition comparison](validation/spray-cell-source-20260927.md).
 
 The selected serial spray executable also accepts an explicitly nonreacting
 mechanism bundle. Use `--fuel heptane-3sp` with `tools/prepare_spray_reference.py`
