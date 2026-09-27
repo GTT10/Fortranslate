@@ -8,6 +8,14 @@ AMR/EB/MPI applications or claim those features are connected to particles.
 
 ## LES in particle SDC
 
+For the selected EB tree heptane reference, `prepare_spray_reference.py`
+accepts `--simple-transport-header` with the exact pinned heptane_3sp
+`mechanism.H`. It verifies and imports Simple transport coefficients into a
+new bundle. Build against that bundle and enable `simple_transport_enabled`
+in `eb_tree`; `prepare_evaporation_reference.py` enables it for fitted bundles.
+The coefficients are used by both gas and particle-film transport and bound
+to restart identity. See [integration and limits](validation/simple-transport-integration-20260927.md).
+
 The selected serial spray executable also accepts an explicitly nonreacting
 mechanism bundle. Use `--fuel heptane-3sp` with `tools/prepare_spray_reference.py`
 and build with the returned bundle/source paths. The

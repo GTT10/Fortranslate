@@ -25,10 +25,12 @@ The full pinned Spray-Evaporation reference now runs this adapted case.
 Matching the drag law still leaves heating, evaporation and deceleration
 differences; trajectory parity remains open
 ([comparison](validation/evaporation-full-reference-20260927.md)).
-The pinned ideal-gas Simple transport kernel is now implemented separately;
-six states agree with compiled C++ transport to `8.48e-16`. Fit import and
-application selection remain to be connected
-([kernel evidence](validation/simple-transport-kernel-20260927.md)).
+Pinned Simple transport fits now import with source checks and connect to
+selected EB tree gas/particle transport. Six states agree with compiled C++
+to `8.48e-16`; the evaporation temperature/velocity differences shrink to
+`4.7e-8 K` / `3.0e-8 m/s`. One-to-two-rank continuation matches the continuous
+run; particle integration differences remain
+([integration](validation/simple-transport-integration-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
