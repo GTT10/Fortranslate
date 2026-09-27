@@ -76,6 +76,9 @@ transport, preserving transport boundary inventories and exported fluxes
 The opt-in LES runtime now supplies a regular SDC wrapper for Smagorinsky,
 WALE, Vreman and Dynamic sources alongside molecular transport and forcing
 ([library checks](validation/les-sdc-20260927.md)); application routing remains open.
+The regular LES SDC wrapper now also forwards selectable forced reactors, with
+four-closure CVODE dispatch, conservation and rollback checks
+([reactor integration](validation/les-sdc-cvode-20260927.md)).
 Regular LES SDC now exports combined hydro/transport/LES full-face fluxes for
 subsequent AMR synchronization ([reconstruction checks](validation/les-sdc-flux-20260927.md)).
 It also accepts caller-supplied stage halos and externally retained source
