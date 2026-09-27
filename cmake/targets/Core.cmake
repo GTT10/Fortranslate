@@ -31,6 +31,7 @@ add_library(
   src/driver/simulation_config_reactive_eb_amr_2d_mod.F90
   src/hydro/reconstruction_weno_mod.F90
   src/hydro/mol_reconstruction_3d_mod.F90
+  src/hydro/mol_riemann_3d_mod.F90
   src/reactive/reactive_1d_mod.F90
   src/reactive/reactive_directional_flux_3d_mod.F90
   src/eb/reactive_eb_cfl_2d_mod.F90

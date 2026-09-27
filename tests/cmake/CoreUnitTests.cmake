@@ -6,6 +6,10 @@ add_executable(test_mol_reconstruction_3d unit/test_mol_reconstruction_3d.F90)
 target_link_libraries(test_mol_reconstruction_3d PRIVATE pelef_core)
 add_test(NAME unit_mol_reconstruction_3d COMMAND test_mol_reconstruction_3d)
 
+add_executable(test_mol_riemann_3d unit/test_mol_riemann_3d.F90)
+target_link_libraries(test_mol_riemann_3d PRIVATE pelef_core)
+add_test(NAME unit_mol_riemann_3d COMMAND test_mol_riemann_3d)
+
 add_executable(test_eb_boundary_gradient_3d unit/test_eb_boundary_gradient_3d.F90)
 target_link_libraries(test_eb_boundary_gradient_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_boundary_gradient_3d COMMAND test_eb_boundary_gradient_3d)
