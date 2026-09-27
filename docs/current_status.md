@@ -28,8 +28,11 @@ iterations; a homogeneous reactor comparison and late-reactor rollback pass.
 ([reacting update](validation/mpi-mol-reaction-20260927.md)).
 Recursive MOL now forwards the same update through level subcycling; focused
 nonreacting wall and state-redistribution budgets pass on two ranks.
-Particle/application MOL connections remain open
+Particle MOL connections remain open
 ([recursive update](validation/mpi-mol-recursive-20260927.md)).
+The MPI gas application now exposes `mol_mode`, binds it to checkpoint identity,
+and passes a short heated-wall case with exact rank-changing continuation
+([application checks](validation/mpi-mol-application-20260927.md)).
 
 The pinned Spray-EB plane and five initial physical droplets now have an
 auditable SI input preparer preserving the default 64³ grid and final time.
