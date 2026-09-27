@@ -9,10 +9,22 @@ MPI EB tree application accept up to 16,384 points; inline namelist profiles
 retain their 64-point limit. Restart binds every numerical knot, including
 those outside the current run interval. The event schedule still controls
 which part of the table is injected; this case uses two active intervals.
+The generated schedule is `events.dat`, selected by
+`&eb_spray_events_file event_file='events.dat' /`. Each whitespace-separated
+row contains `begin_s end_s port scale`; comments start with `#` or `!`.
+External schedules accept 65,536 events, nondecreasing start times and ports
+1 through 16. They cannot be combined with nondefault inline event settings.
+Every event is bound to restart identity. Inline schedules retain their
+1,024-event limit and existing input format.
 
 ```sh
 python3 tools/prepare_jet_reference.py --bundle build/decane-3sp-simple-reference/decane_3sp.json --reference-source build/pelec-pinned-hit-source --output build/decane-jet-connection
 ```
+
+`--events 7499` prepares all positive-rate intervals through 1.5 ms; the default
+is two. This creates inputs only. Full-duration execution and reference jet
+parity have not been established. The coarse mesh and deterministic sampling
+adaptations still apply.
 
 First prepare the decane bundle as described in the
 [import record](../../docs/validation/decane-spray-import-20260927.md).

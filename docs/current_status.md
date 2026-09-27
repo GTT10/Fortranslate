@@ -19,6 +19,9 @@ mass balance ([connection](validation/decane-jet-connection-20260927.md)).
 External MPI EB tree rate files now accept all 7,502 reference knots, with
 exact numerical restart identity and a two-rank continuation check
 ([long profiles](validation/long-spray-rate-profiles-20260927.md)).
+External event schedules now support 65,536 entries; a 1,100-entry bounded
+application check and old/new schedule restart checks pass. Full positive-rate
+jet execution remains open ([schedules](validation/spray-event-files-20260927.md)).
 
 The pinned reaction-free NC7H16/O2/N2 mechanism imports with source/license
 checks; selected serial spray and MPI EB tree SDC paths require chemistry OFF
