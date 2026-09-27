@@ -92,3 +92,16 @@ and external forcing. Schemas 10/11/12 extend the fixed/selected/element-aware
 exchange formats; legacy split checkpoints retain schemas 1 through 6.
 See the [restart checks](../../docs/validation/sdc-eb-restart-20260927.md).
 Other frontends retain their existing input gates.
+
+## SDC CVODE reactor
+
+With `PELEF_ENABLE_SUNDIALS=ON`, fixed and selected single-grid EB executables
+accept `sdc_reactor='cvode'` in `&reactive_eb_3d`. Set
+`time_integrator='sdc'` and `chemistry_enabled=.true.`. The default `native`
+retains the existing reactor. The selector is independent of a selected
+mechanism bundle's split-step integrator.
+
+Restart must use the same reactor. Native checkpoints retain their existing
+SDC marker; CVODE checkpoints use a distinct marker and are rejected by older
+readers. Focused cut-cell execution and exact continuation are recorded in
+[the validation record](../../docs/validation/eb-sdc-cvode-app-20260927.md).
