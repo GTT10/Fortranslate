@@ -1,4 +1,4 @@
-! Breakup equations adapted from PelePhysics TABBreakup.H and ReitzKHRT.H,
+! Breakup equations adapted from PelePhysics TABBreakup.H, ReitzKHRT.H and SpraySB.cpp,
 ! revision 6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b.
 ! Copyright and redistribution terms: references/pelephysics-spray-license.txt.
 module spray_breakup_mod
@@ -17,7 +17,87 @@ module spray_breakup_mod
     real(dp) :: mass=0,drop_mass=0,multiplicity=0,diameter=0,tangential_speed=0
   end type
   public :: advance_khrt_shedding,construct_khrt_children,advance_mixture_khrt_shedding
+  public :: khrt_reference_child_count,construct_reference_khrt_children
 contains
+  subroutine khrt_reference_child_count(multiplicity,exponent,capacity,number,ok)
+    real(dp), intent(in) :: multiplicity,exponent
+    integer, intent(in) :: capacity
+    integer, intent(inout) :: number
+    logical, intent(out) :: ok
+    real(dp) :: weight,count
+    ok=.false.
+    if(.not.all(ieee_is_finite([multiplicity,exponent]))) return
+    if(multiplicity<=0.or.multiplicity>1e18_dp.or.exponent<0.or.exponent>1.or.capacity<1) return
+    ! SpraySB.cpp: N_s = N**factor; N_d = max(1, int(N/N_s)).
+    weight=multiplicity**exponent;count=multiplicity/weight
+    ! Check before real-to-integer conversion, including truncation at capacity.
+    if(count>=real(capacity,dp)+1._dp) return
+    number=max(1,int(count));ok=.true.
+  end subroutine
+
+  subroutine construct_reference_khrt_children(parent,release,axis,exponent,uniforms,first_id, &
+      children,gas_exchange,ok)
+    type(spray_parcel), intent(in) :: parent
+    type(spray_khrt_release), intent(in) :: release
+    real(dp), intent(in) :: axis(3),exponent,uniforms(:)
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    ! Momentum and total-energy compensation; mass/species do not change.
+    real(dp), intent(inout) :: gas_exchange(4)
+    logical, intent(out) :: ok
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp) :: normal(3),testvec(3),psi_axis(3),beta_axis(3),dv(3),angle,exchange(4),weight
+    integer :: number,n,stat
+    ok=.false.
+    if(.not.valid_spray_parcel(parent)) return
+    if(.not.all(ieee_is_finite([axis,release%mass,release%drop_mass,release%multiplicity, &
+        release%diameter,release%tangential_speed]))) return
+    if(maxval(abs(axis))>1e9_dp) return
+    if(norm2(axis)<1e-12_dp) return
+    if(release%mass<=0.or.release%drop_mass<=0.or.release%drop_mass>1.or.release%diameter<=0) return
+    if(release%multiplicity<=0.or.release%multiplicity>1e18_dp) return
+    if(release%tangential_speed<0.or.release%tangential_speed>1e7_dp) return
+    if(abs(release%mass-release%drop_mass*release%multiplicity)>1e-12_dp*release%mass) return
+    number=0
+    call khrt_reference_child_count(release%multiplicity,exponent,size(uniforms),number,ok)
+    if(.not.ok) return
+    ok=.false.
+    if(size(uniforms)/=number) return
+    if(.not.all(ieee_is_finite(uniforms))) return
+    if(any(uniforms<0).or.any(uniforms>=1)) return
+    if(first_id<=parent%id.or.first_id>huge(first_id)-int(number-1,int64)) return
+    normal=axis/norm2(axis);testvec=[1._dp,0._dp,0._dp]
+    psi_axis=cross(testvec,normal)
+    if(norm2(psi_axis)<1e-5_dp) then
+      testvec=[0._dp,1._dp,0._dp];psi_axis=cross(testvec,normal)
+    endif
+    psi_axis=psi_axis/norm2(psi_axis)
+    beta_axis=cross(psi_axis,normal);beta_axis=beta_axis/norm2(beta_axis)
+    allocate(candidate(number),stat=stat)
+    if(stat/=0) return
+    weight=release%multiplicity/real(number,dp);exchange=0
+    do n=1,number
+      angle=2*acos(-1._dp)*uniforms(n)
+      dv=release%tangential_speed*(sin(angle)*psi_axis+cos(angle)*beta_axis)
+      candidate(n)=parent;candidate(n)%id=first_id+int(n-1,int64);candidate(n)%parent_id=parent%id
+      candidate(n)%mass=release%drop_mass;candidate(n)%multiplicity=weight
+      candidate(n)%velocity=parent%velocity+dv
+      candidate(n)%deformation=0;candidate(n)%deformation_rate=0;candidate(n)%rt_time=0
+      candidate(n)%khrt_initial_count=weight;candidate(n)%khrt_shed_volume=0
+      if(.not.valid_spray_parcel(candidate(n))) return
+      exchange(:3)=exchange(:3)-release%drop_mass*weight*dv
+      exchange(4)=exchange(4)-release%drop_mass*weight*(dot_product(parent%velocity,dv)+.5_dp*sum(dv**2))
+    enddo
+    if(.not.all(ieee_is_finite(exchange))) return
+    call move_alloc(candidate,children);gas_exchange=exchange;ok=.true.
+  contains
+    pure function cross(a,b) result(c)
+      real(dp), intent(in) :: a(3),b(3)
+      real(dp) :: c(3)
+      c=[a(2)*b(3)-a(3)*b(2),a(3)*b(1)-a(1)*b(3),a(1)*b(2)-a(2)*b(1)]
+    end function
+  end subroutine
+
   subroutine advance_mixture_khrt_shedding(components,options,parcels,component_mass,gas_density, &
       gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible)
     type(spray_liquid), intent(in) :: components(:)

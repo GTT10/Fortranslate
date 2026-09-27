@@ -24,6 +24,8 @@ program test_spray_core
   real(dp) :: port_centers(3,2),port_axes(3,2),port_fractions(2)
   real(dp) :: value,td,omega,wer,initial_mass,z,tkh,wavelength,tau,acceleration
   real(dp) :: property_input(6)
+  real(dp) :: child_exchange(4),saved_exchange(4),child_uniforms(3),reference_velocity(3,3)
+  integer :: child_count
   real(dp), parameter :: watson_temperatures(4)=[250.0_dp,300.0_dp,373.15_dp,600.0_dp]
   real(dp), parameter :: watson_expected(4)=[2631208.1205871335658_dp,2500000.0_dp, &
     2284912.9098340806911_dp,1169531.6904902340281_dp]
@@ -79,6 +81,65 @@ program test_spray_core
   options%abramzon_sirignano=.false.
   lower=0.0_dp; spacing=0.001_dp
   select case(trim(test))
+  case('khrt_reference_children')
+    child_count=-1
+    call khrt_reference_child_count(16._dp,.5_dp,4,child_count,ok)
+    call require(ok.and.child_count==4,'reference square-root parcel count')
+    call khrt_reference_child_count(16._dp,0._dp,16,child_count,ok)
+    call require(ok.and.child_count==16,'reference exponent zero')
+    call khrt_reference_child_count(16._dp,1._dp,1,child_count,ok)
+    call require(ok.and.child_count==1,'reference exponent one')
+    call khrt_reference_child_count(.25_dp,.5_dp,1,child_count,ok)
+    call require(ok.and.child_count==1,'reference subunit multiplicity')
+    call khrt_reference_child_count(15._dp,.5_dp,3,child_count,ok)
+    call require(ok.and.child_count==3,'reference truncation before capacity test')
+    call khrt_reference_child_count(1e18_dp,0._dp,huge(child_count),child_count,ok)
+    call require(.not.ok.and.child_count==3,'oversized count rejected without integer overflow')
+    p%velocity=[2._dp,3._dp,4._dp]
+    release=spray_khrt_release(mass=15e-9_dp,drop_mass=1e-9_dp,multiplicity=15._dp, &
+      diameter=1e-4_dp,tangential_speed=5._dp)
+    child_uniforms=[0._dp,.25_dp,.5_dp];child_exchange=99
+    call construct_reference_khrt_children(p,release,[0._dp,0._dp,1._dp],.5_dp,child_uniforms, &
+      2_int64,drops,child_exchange,ok)
+    call require(ok.and.size(drops)==3,'reference nonsymmetric child construction')
+    reference_velocity(:,1)=[-3._dp,3._dp,4._dp]
+    reference_velocity(:,2)=[2._dp,-2._dp,4._dp]
+    reference_velocity(:,3)=[7._dp,3._dp,4._dp]
+    child_totals=0
+    do n=1,3
+      call require(maxval(abs(drops(n)%velocity-reference_velocity(:,n)))<2e-15_dp,'reference azimuth basis')
+      call require(drops(n)%multiplicity==5.and.drops(n)%khrt_initial_count==5,'reference child weight and N0')
+      call require(drops(n)%id==n+1.and.drops(n)%parent_id==p%id,'reference child identity')
+      call require(all(drops(n)%position==p%position),'construction retains release location before drift')
+      call require(drops(n)%temperature==p%temperature.and.drops(n)%material_id==p%material_id, &
+        'reference children retain thermal state and material')
+      value=drops(n)%mass*drops(n)%multiplicity
+      child_totals(1)=child_totals(1)+value
+      child_totals(2:4)=child_totals(2:4)+value*drops(n)%velocity
+      child_totals(5)=child_totals(5)+.5_dp*value*sum(drops(n)%velocity**2)
+    enddo
+    q=p;q%mass=release%drop_mass;q%multiplicity=release%multiplicity
+    child_totals(1)=child_totals(1)-release%mass
+    child_totals(2:4)=child_totals(2:4)-release%mass*p%velocity
+    child_totals(5)=child_totals(5)-.5_dp*release%mass*sum(p%velocity**2)
+    child_totals(2:5)=child_totals(2:5)+child_exchange
+    call require(maxval(abs(child_totals))<1e-17_dp,'nonsymmetric children plus gas conserve mass momentum energy')
+    call require(abs(child_exchange(2)-25e-9_dp)<1e-22_dp,'nonzero transverse momentum compensation')
+    saved_drops=drops;saved_exchange=child_exchange;child_uniforms(2)=1
+    call construct_reference_khrt_children(p,release,[0._dp,0._dp,1._dp],.5_dp,child_uniforms, &
+      2_int64,drops,child_exchange,ok)
+    call require(.not.ok.and.all(child_exchange==saved_exchange),'invalid random sample feedback rollback')
+    do n=1,3
+      call require(all(drops(n)%velocity==saved_drops(n)%velocity).and.drops(n)%id==saved_drops(n)%id, &
+        'invalid random sample child rollback')
+    enddo
+    child_uniforms=[0._dp,.25_dp,.5_dp]
+    call construct_reference_khrt_children(p,release,[0._dp,0._dp,1._dp],.5_dp,child_uniforms, &
+      huge(1_int64),drops,child_exchange,ok)
+    call require(.not.ok.and.all(child_exchange==saved_exchange),'reference child ID overflow rollback')
+    call construct_reference_khrt_children(p,release,[1._dp,0._dp,0._dp],.5_dp,child_uniforms, &
+      2_int64,drops,child_exchange,ok)
+    call require(ok.and.abs(drops(1)%velocity(2)+2._dp)<1e-15_dp,'reference parallel-axis basis fallback')
   case('mixture_terminal')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
