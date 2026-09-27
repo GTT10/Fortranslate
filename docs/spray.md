@@ -107,6 +107,9 @@ have a [focused lifecycle check](validation/spray-periodic-lifecycle-20260927.md
 Common-step particle/film coupling also forwards periodic axes during migration,
 including stationary-film thermal updates at a periodic endpoint
 ([thermal and application checks](validation/spray-periodic-common-film-20260927.md)).
+The standalone atomic `advance_mpi_eb_tree_impacts` API also accepts optional
+`boundary_faces`, forwarding them to flight and periodic particle/film migration
+([wrapped deposition checks](validation/spray-periodic-tree-impact-20260927.md)).
 
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
 regular/EB MPI migration APIs accept optional `maximum_level` (zero based).
