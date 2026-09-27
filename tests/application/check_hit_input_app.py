@@ -14,6 +14,7 @@ def main():
     for name in ('fixed', 'selected', 'work'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--reference', type=Path)
+    parser.add_argument('--constant-transport', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='hit_', dir=args.work.resolve()))
@@ -27,7 +28,7 @@ def main():
     for key in ('LD_LIBRARY_PATH', 'LIBRARY_PATH', 'DISPLAY'):
         env.pop(key, None)
 
-    def run(label, path, binary=False, selected=False, end=1e-20, les=False, size=2, error=False):
+    def run(label, path, binary=False, selected=False, end=1e-20, les=False, size=2, error=False, coefficients=None, boundary=None):
         directory = work / label
         directory.mkdir()
         composition = ("thermo_model='selected',composition_count=1,composition_species='N2',"
@@ -45,6 +46,11 @@ output_file='hit.csv'
 /
 &reactive_hit input_file='{path}',inres={size},binfmt={'.true.' if binary else '.false.'},mach_t0=.1,uin_norm=1 /
 """
+        if args.constant_transport:
+            values = coefficients if coefficients is not None else ('.001', '.5')
+            text += f"&reactive_constant_transport enabled=.true.,viscosity={values[0]},conductivity={values[1]} /\n"
+        if boundary:
+            text = text.replace("boundary_condition='periodic'", f"boundary_condition='{boundary}'")
         if les:
             text += "&reactive_les enabled=.true.,model='wale' /\n"
         inp = directory / 'input.nml'
@@ -56,7 +62,8 @@ output_file='hit.csv'
         (directory / 'run.log').write_text(log)
         output = directory / 'hit.csv'
         if error:
-            assert result.returncode != 0 and 'Invalid HIT velocity input' in log, log
+            expected_error = 'Invalid HIT velocity input' if error is True else error
+            assert result.returncode != 0 and expected_error in log, log
             assert not output.exists()
             return
         assert result.returncode == 0, log
@@ -92,6 +99,14 @@ output_file='hit.csv'
     unordered = work / 'unordered.csv'
     unordered.write_text(ascii_file.read_text().replace('0.75', '0.25'))
     run('unordered', unordered, error=True)
+    if args.constant_transport:
+        active, _ = run('constant_only', ascii_file, end=1e-8)
+        zero, _ = run('zero_transport', ascii_file, end=1e-8, coefficients=('0', '0'))
+        assert active.read_bytes() != zero.read_bytes(), 'Constant transport must change the solution'
+        run('negative_transport', ascii_file, coefficients=('-1', '0'),
+            error='Negative constant transport coefficient')
+        run('nonperiodic_transport', ascii_file, boundary='outflow',
+            error='Constant transport requires periodic SDC with transport enabled')
     if args.reference:
         fixed, _ = run('reference', args.reference.resolve(), size=32, end=1e-8, les=True)
         selected, _ = run('reference_selected', args.reference.resolve(), size=32, end=1e-8, les=True, selected=True)

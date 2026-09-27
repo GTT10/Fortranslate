@@ -37,6 +37,25 @@ module reactive_3d_application_mod
     end subroutine
   end interface
 contains
+  subroutine read_constant_transport(input_path,coefficients)
+    character(len=*), intent(in) :: input_path
+    real(dp), allocatable, intent(out) :: coefficients(:)
+    real(dp) :: viscosity,conductivity
+    logical :: enabled
+    integer :: unit,ios
+    namelist /reactive_constant_transport/ enabled,viscosity,conductivity
+    enabled=.false.;viscosity=0;conductivity=0
+    open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
+    if(ios/=0) error stop 'Cannot open constant transport input'
+    read(unit,nml=reactive_constant_transport,iostat=ios)
+    close(unit)
+    if(ios>0) error stop 'Invalid reactive_constant_transport namelist'
+    if(.not.enabled) return
+    if(.not.all(ieee_is_finite([viscosity,conductivity]))) error stop 'Nonfinite constant transport coefficient'
+    if(min(viscosity,conductivity)<0) error stop 'Negative constant transport coefficient'
+    coefficients=[viscosity,conductivity]
+  end subroutine
+
   subroutine read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean)
     character(len=*), intent(in) :: input_path
     logical, intent(out) :: enabled,harmonic_mean
@@ -59,6 +78,7 @@ contains
       reactions, transport, base_mole_fractions, chemistry_integrator,evaluate_reaction,evaluate_diffusion)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(application_diffusion), optional :: evaluate_diffusion
+    real(dp), allocatable :: constant_coefficients(:)
     real(dp), allocatable :: sdc_force(:),diffusion_rates(:,:,:,:),old_boundary_rate(:),new_boundary_rate(:)
     real(dp) :: extra_diffusivity
     integer :: source_calls
@@ -137,6 +157,12 @@ contains
     allocate(source_totals(nvar),step_source_change(nvar));source_totals=0
     if(any(config%external_forcing/=0)) external_force=config%external_forcing
     faces=resolved_reactive_boundaries_3d(config)
+    call read_constant_transport(input_path,constant_coefficients)
+    if(allocated(constant_coefficients)) then
+      if(config%time_integrator/='sdc'.or..not.config%transport_enabled.or.any(faces/='periodic')) &
+        error stop 'Constant transport requires periodic SDC with transport enabled'
+      write(*,'(a,2es24.16)') 'Constant viscosity/conductivity: ',constant_coefficients
+    end if
     allocate(mass_fractions(size(species)))
     allocate(primitive(reactive_nprim(size(species))))
     call uniform_cell_centers_3d( &
@@ -288,7 +314,7 @@ contains
           config%transport_cfl, config%viscosity_enabled, &
           config%thermal_conduction_enabled, &
           config%species_diffusion_enabled, transport_dt, &
-          step_maximum_diffusivity, ok)
+          step_maximum_diffusivity, ok,constant_coefficients=constant_coefficients)
         if (.not. ok) then
           error stop "Failed to compute reactive 3D transport step"
         end if
@@ -463,7 +489,7 @@ contains
           boundary_faces=faces,boundary_change=step_boundary_change,outlet_pressure=config%outlet_pressure, &
           inflow_state=inflow_state,inflow_temperature=inflow_t,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,constant_coefficients=constant_coefficients)
     end subroutine
     subroutine evaluate_sources(u,t,stage_time,rates,good)
       real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),stage_time

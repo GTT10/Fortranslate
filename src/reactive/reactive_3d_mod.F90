@@ -85,7 +85,8 @@ contains
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z, &
-      fill_halos,fill_source_halos,new_source_estimate,evaluate_reaction)
+      fill_halos,fill_source_halos,new_source_estimate,evaluate_reaction,constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(2)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -146,6 +147,11 @@ contains
     end if
     faces='periodic'
     if(present(boundary_faces)) faces=boundary_faces
+    if(present(constant_coefficients)) then
+      if(.not.present(transport).or.present(fill_halos).or.any(faces/='periodic')) return
+      if(.not.all(ieee_is_finite(constant_coefficients))) return
+      if(any(constant_coefficients<0)) return
+    end if
     if(present(boundary_change)) then
       boundary_change=0
       if(size(boundary_change)/=nv) return
@@ -349,7 +355,8 @@ contains
       if(.not.good.or..not.present(transport)) return
       if(all(faces=='periodic').and..not.present(fill_halos)) then
         call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
-          spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
+          spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good, &
+          constant_coefficients=constant_coefficients)
         if(.not.good) return
         call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,source_count),good)
       else
