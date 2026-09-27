@@ -29,6 +29,12 @@ terminates on that resolved bracket; focused thermodynamic checks and a bounded
 Jet replay through 0.430 ms pass. Full prepared 1.5 ms continuation is running
 ([evidence](validation/temperature-inversion-resolution-20260927.md)).
 
+Rotating-frame momentum/energy kernels and optional MOL energy-flux correction
+now have analytic checks and a 60-case compiled-reference comparison
+(maximum scaled error `4.37e-15`). Cell-state/EOS/AMR/restart integration remains
+open; rotating CFD is not yet enabled
+([kernel evidence](validation/rotating-frame-kernels-20260927.md)).
+
 MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
 failure checks ([reconstruction](validation/mol-reconstruction-20260927.md),

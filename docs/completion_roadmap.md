@@ -47,6 +47,18 @@ GCM is excluded from this pinned PeleC port because upstream restricts it to
 PeleLMeX; PeleMP is the available alternative. See the
 [property source audit](validation/spray-property-scope-20260925.md).
 
+## Rotating-frame integration
+
+The momentum source, reversible relative-energy conversion and MOL interface
+energy corrections now have [focused evidence](validation/rotating-frame-kernels-20260927.md).
+Complete the fixed-reference 3D MOL path by carrying the rotating total-energy
+definition through cell/halo EOS recovery, reaction forcing, old/new source
+evaluation, flux divergence, conservative AMR restriction/reflux/remapping,
+boundary/initial states, budgets and checkpoint identity. Frame axis, origin
+and angular speed must agree across ranks and restarts. Full time integration
+and application support remain open; source/flux kernel agreement alone does
+not satisfy this responsibility.
+
 ## Consolidation versus solver completion
 
 The source-provenance repair, documentation ownership, CMake module split,
