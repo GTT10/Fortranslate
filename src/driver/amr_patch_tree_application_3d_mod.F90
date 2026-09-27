@@ -7,6 +7,7 @@ module amr_patch_tree_application_3d_mod
     read_amr_tree_checkpoint_3d,write_amr_tree_checkpoint_3d
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use amr_patch_tree_subcycle_3d_mod, only: compute_amr_patch_tree_subcycle_cfl_3d
   use amr_patch_tree_transport_subcycle_3d_mod, only: compute_amr_patch_tree_subcycle_transport_timestep_3d
   use constants_mod, only: pelef_version
@@ -55,7 +56,8 @@ module amr_patch_tree_application_3d_mod
   end interface
 contains
   subroutine run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
-      schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate_diffusion,diffusion_identity)
+      schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate_diffusion,diffusion_identity,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(tree_application_diffusion), optional :: evaluate_diffusion
     character(len=*), optional, intent(in) :: diffusion_identity
     type(amr_tree_state_3d) :: diffusion_rates
@@ -100,6 +102,7 @@ contains
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
     namelist /amr_tree_timestepping/ subcycling
     sdc=trim(config%time_integrator)=='sdc'
+    if((config%sdc_reactor=='cvode').neqv.present(evaluate_reaction)) error stop 'SDC reactor selection does not match backend'
     if(present(evaluate_diffusion).neqv.present(diffusion_identity)) error stop 'Diffusion callback requires identity'
     if(present(evaluate_diffusion).and..not.sdc) error stop 'Additional tree diffusion requires SDC'
     subcycling=.false.
@@ -461,6 +464,7 @@ contains
     end do
     close(unit,iostat=status)
     if (status/=0) error stop 'Cannot close tree budget CSV'
+    if(sdc) write(*,'(a)') 'SDC reactor: '//trim(config%sdc_reactor)
     write(*,'(a,i0,a,es12.4)') 'Regrids: ',regrids,' Maximum remap error: ',max_remap_error
     write(*,'(a,i0,a,es24.16)') 'Steps: ',step,' Final time: ',time
     write(*,'(a,es12.4,a,es12.4)') 'Maximum reflux: ',max_correction,' Minimum transport theta: ',min_theta
@@ -475,7 +479,7 @@ contains
             inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
             wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
-            evaluate_diffusion=callback)
+            evaluate_diffusion=callback,evaluate_reaction=evaluate_reaction)
           else
           call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
             config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
@@ -484,7 +488,7 @@ contains
             inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
             wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
-            evaluate_diffusion=callback)
+            evaluate_diffusion=callback,evaluate_reaction=evaluate_reaction)
           end if
     end subroutine advance_sdc
     subroutine evaluate_stage_diffusion(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good)

@@ -1,6 +1,7 @@
 module les_mpi_amr_application_mod
   use mpi_f08
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
@@ -14,7 +15,8 @@ module les_mpi_amr_application_mod
   public :: run_mpi_amr_les_application_3d
 contains
   subroutine run_mpi_amr_les_application_3d(topology_path,input_path,config,species,reactions,transport, &
-      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path)
+      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     character(len=*), intent(in) :: topology_path,input_path
     character(len=*), optional, intent(in) :: chemistry_integrator,mechanism_identity,schedule_path
     type(reactive_3d_config), intent(in) :: config
@@ -41,7 +43,8 @@ contains
     if(ios>0) call fatal('Invalid amr_tree_les namelist')
     if(.not.enabled) then
       call run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
-        mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path,handled_input_group="amr_tree_les")
+        mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path,handled_input_group="amr_tree_les", &
+        evaluate_reaction=evaluate_reaction)
       return
     end if
     pressure=0
@@ -54,7 +57,8 @@ contains
     write(identity,'(a,4es25.17,2a,2i6,l2)') 'les-sdc-v1:',cs,prt,sct,ci,trim(model)//':', &
       trim(test_model)//':',test_ratio,grid_ratio,harmonic_mean
     call run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
-      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path,evaluate,trim(identity),"amr_tree_les")
+      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path,evaluate,trim(identity),"amr_tree_les", &
+      evaluate_reaction=evaluate_reaction)
   contains
     subroutine evaluate(tree,owners,u,t,h,faces,inlet,inlet_t,depth,fractions,coarse_start,coarse_end,rates,flux,diffusivity,ok)
       type(amr_patch_tree_3d), intent(in) :: tree

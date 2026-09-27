@@ -19,7 +19,16 @@ program pelef_mpi_amr_tree_reactive_3d
 #else
   use mpi_amr_patch_tree_application_3d_mod, only: run_mpi_amr_patch_tree_application_3d
 #endif
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
+#ifdef PELEF_SDC_CVODE
+  use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
+#endif
   implicit none
+#ifdef PELEF_SDC_CVODE
+  logical, parameter :: cvode_available=.true.
+#else
+  logical, parameter :: cvode_available=.false.
+#endif
 
   type(reactive_3d_config) :: config
   type(nasa7_species), allocatable :: species(:)
@@ -41,7 +50,7 @@ program pelef_mpi_amr_tree_reactive_3d
   call read_reactive_3d_configuration( &
     trim(input_path), config, ok, message, &
     allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true., &
-    allow_sdc=.true.,allow_external_forcing=.true.)
+    allow_sdc=.true.,allow_external_forcing=.true.,allow_sdc_cvode=cvode_available)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     call fatal('Invalid MPI tree command or input')
@@ -68,16 +77,30 @@ program pelef_mpi_amr_tree_reactive_3d
   call reactive_3d_mole_fractions( &
     config, size(species), mole_fractions, ok)
   if (.not. ok) call fatal('Failed to resolve fixed 3D AMR composition')
+#ifdef PELEF_SDC_CVODE
+  if(config%sdc_reactor=='cvode') then
+    call run(advance_forced_reactor_cvode)
+  else
+    call run()
+  endif
+#else
+  call run()
+#endif
+  call MPI_Finalize(ierr)
+contains
+  subroutine run(evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
   if (command_argument_count()==3) then
     call get_command_argument(3,schedule_path)
     call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions,transport, &
-      mole_fractions,MPI_COMM_WORLD,schedule_path=trim(schedule_path))
+      mole_fractions,MPI_COMM_WORLD,schedule_path=trim(schedule_path), &
+      evaluate_reaction=evaluate_reaction)
   else
     call run_mpi_amr_patch_tree_application_3d(trim(topology_path),trim(input_path),config,species,reactions,transport, &
-      mole_fractions,MPI_COMM_WORLD)
+      mole_fractions,MPI_COMM_WORLD, &
+      evaluate_reaction=evaluate_reaction)
   end if
-  call MPI_Finalize(ierr)
-contains
+  end subroutine run
   subroutine fatal(reason)
     character(len=*), intent(in) :: reason
     integer :: status

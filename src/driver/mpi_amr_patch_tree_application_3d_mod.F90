@@ -11,6 +11,7 @@ module mpi_amr_patch_tree_application_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -72,7 +73,8 @@ module mpi_amr_patch_tree_application_3d_mod
 contains
   subroutine run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
       mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path, &
-      evaluate_diffusion,diffusion_identity,handled_input_group)
+      evaluate_diffusion,diffusion_identity,handled_input_group,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(tree_application_diffusion), optional :: evaluate_diffusion
     character(len=*), optional, intent(in) :: diffusion_identity,handled_input_group
     type(amr_tree_state_3d) :: diffusion_rates
@@ -135,6 +137,7 @@ contains
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI rank')
     call MPI_Comm_size(comm,nranks,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI size')
+    if((config%sdc_reactor=='cvode').neqv.present(evaluate_reaction)) call fatal('SDC reactor selection does not match backend')
     if(present(evaluate_diffusion).neqv.present(diffusion_identity)) call fatal('Diffusion callback requires identity')
     if(present(evaluate_diffusion).and..not.sdc) call fatal('Additional tree diffusion requires SDC')
     call check_paths(input_path)
@@ -495,6 +498,7 @@ contains
     end do
     close(unit,iostat=status)
     if (status/=0) call fatal('Cannot close tree budget CSV')
+    if(sdc) write(*,'(a)') 'SDC reactor: '//trim(config%sdc_reactor)
     write(*,'(a,i0,a,es12.4)') 'Regrids: ',regrids,' Maximum remap error: ',max_remap_error
     write(*,'(a,i0,a,es24.16)') 'Steps: ',step,' Final time: ',time
     write(*,'(a,es12.4,a,es12.4)') 'Maximum reflux: ',max_correction,' Minimum transport theta: ',min_theta
@@ -512,7 +516,7 @@ contains
             inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
             wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
-            evaluate_diffusion=callback)
+            evaluate_diffusion=callback,evaluate_reaction=evaluate_reaction)
           else
           call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
             config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
@@ -521,7 +525,7 @@ contains
             inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
             wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
-            evaluate_diffusion=callback)
+            evaluate_diffusion=callback,evaluate_reaction=evaluate_reaction)
           end if
     end subroutine advance_sdc
 

@@ -1,5 +1,6 @@
 module les_amr_application_mod
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
@@ -13,7 +14,8 @@ module les_amr_application_mod
   public :: run_amr_les_application_3d
 contains
   subroutine run_amr_les_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
-      schedule_path,chemistry_integrator,input_path,mechanism_identity)
+      schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     character(len=*), intent(in) :: topology_path
     character(len=*), optional, intent(in) :: chemistry_integrator,mechanism_identity,schedule_path,input_path
     type(reactive_3d_config), intent(in) :: config
@@ -41,7 +43,7 @@ contains
     end if
     if(.not.enabled) then
       call run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
-        schedule_path,chemistry_integrator,input_path,mechanism_identity)
+        schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate_reaction=evaluate_reaction)
       return
     end if
     pressure=0
@@ -54,7 +56,7 @@ contains
     write(identity,'(a,4es25.17,2a,2i6,l2)') 'les-sdc-v1:',cs,prt,sct,ci,trim(model)//':', &
       trim(test_model)//':',test_ratio,grid_ratio,harmonic_mean
     call run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
-      schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate,trim(identity))
+      schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate,trim(identity),evaluate_reaction=evaluate_reaction)
   contains
     subroutine evaluate(tree,u,t,h,faces,inlet,inlet_t,depth,fractions,coarse_start,coarse_end,rates,flux,diffusivity,ok)
       type(amr_patch_tree_3d), intent(in) :: tree

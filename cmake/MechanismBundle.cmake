@@ -961,6 +961,10 @@ function(pelef_add_mechanism_bundle)
         "${mechanism_target}"
         pelef_selected_amr_tree_reactive_3d_runtime
     )
+    if(PELEF_ENABLE_SUNDIALS)
+      target_compile_definitions("${PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME}" PRIVATE PELEF_SDC_CVODE)
+      target_link_libraries("${PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME}" PRIVATE pelef_selected_cvode_runtime)
+    endif()
     list(APPEND install_targets "${PELEF_BUNDLE_AMR_TREE_REACTIVE_3D_NAME}")
   endif()
 
@@ -992,6 +996,10 @@ function(pelef_add_mechanism_bundle)
         pelef_selected_mpi_amr_tree_reactive_3d_runtime
     )
     pelef_require_coherent_mpi_runtime("${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}")
+    if(PELEF_ENABLE_SUNDIALS)
+      target_compile_definitions("${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}" PRIVATE PELEF_SDC_CVODE)
+      target_link_libraries("${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}" PRIVATE pelef_selected_cvode_runtime)
+    endif()
     list(APPEND install_targets "${PELEF_BUNDLE_MPI_AMR_TREE_REACTIVE_3D_NAME}")
   endif()
 
