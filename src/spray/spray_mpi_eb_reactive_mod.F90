@@ -1,6 +1,7 @@
 module spray_mpi_eb_reactive_mod
   use mpi_f08
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
@@ -37,7 +38,8 @@ contains
       chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration,split_created, &
-      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,evaluate_diffusion)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,evaluate_diffusion,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -203,7 +205,8 @@ contains
       target_volume_fraction=target_volume_fraction,halo_source=particle_source,auxiliary_change=exchange, &
       gas_acceleration=gas_acceleration,predictor_builder=particle_predictor,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature,post_level=particle_post_level,evaluate_diffusion=evaluate_diffusion)
+      wall_temperature=wall_temperature,post_level=particle_post_level,evaluate_diffusion=evaluate_diffusion, &
+      evaluate_reaction=evaluate_reaction)
     if(.not.agreed) return
     call synchronize_particle_sources()
     if(.not.agreed) return
@@ -780,7 +783,8 @@ contains
       force,rtol,atol,boundary_faces,boundary_change,wall_change,chemical_change,source_change,minimum_theta, &
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
-      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration,evaluate_diffusion)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration,evaluate_diffusion,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
@@ -880,7 +884,8 @@ contains
       comm,ready,ir,difmag,redistribution=redistribution,target_volume_fraction=target_volume_fraction, &
       auxiliary_source=particle_source,auxiliary_change=exchange,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion)
+      wall_temperature=wall_temperature,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
+      evaluate_reaction=evaluate_reaction)
     if(.not.ready) return
     before_split=final_id
     if(options%maximum_multiplicity>0) then

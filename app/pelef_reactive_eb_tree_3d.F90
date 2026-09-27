@@ -35,6 +35,10 @@ program pelef_reactive_eb_tree_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end,iostat_eor
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
+#ifdef PELEF_SDC_CVODE
+  use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
+#endif
   use nasa7_thermo_mod, only: nasa7_species
 #ifndef PELEF_SELECTED_EB_TREE
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -142,7 +146,7 @@ program pelef_reactive_eb_tree_3d
   integer :: maximum_steps=100,maximum_step_retries=12,checkpoint_interval_steps=0
   real(dp) :: domain_lower(3)=0._dp,domain_upper(3)=1._dp,plane_position=.31_dp
   logical :: automatic_timestep=.false.,subcycling=.false.
-  character(len=16) :: time_integrator="split"
+  character(len=16) :: time_integrator="split",sdc_reactor="native"
   integer :: sdc_iterations=2
   real(dp) :: external_forcing(3)=0
   type(amr_tree_state_3d), allocatable :: sdc_ir
@@ -175,7 +179,7 @@ program pelef_reactive_eb_tree_3d
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure,wall_temperature, &
-    time_integrator,sdc_iterations,external_forcing,redistribution,state_redist_target_volume_fraction, &
+    time_integrator,sdc_iterations,sdc_reactor,external_forcing,redistribution,state_redist_target_volume_fraction, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -229,6 +233,13 @@ program pelef_reactive_eb_tree_3d
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
   if(time_integrator/='split'.and.time_integrator/='sdc') error stop 'Invalid time integrator'
   if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
+  if(sdc_reactor/='native'.and.sdc_reactor/='cvode') error stop 'Unknown EB tree SDC reactor'
+  if(sdc_reactor=='cvode') then
+#ifndef PELEF_SDC_CVODE
+    error stop 'SDC CVODE backend is unavailable in this application'
+#endif
+    if(time_integrator/='sdc'.or..not.chemistry_enabled) error stop 'EB tree CVODE requires reacting SDC'
+  end if
   if(redistribution/='none'.and.redistribution/='flux_redist'.and.redistribution/='state_redist') &
     error stop 'Invalid tree redistribution'
   if(.not.ieee_is_finite(state_redist_target_volume_fraction)) error stop 'Invalid redistribution target'
@@ -365,6 +376,7 @@ program pelef_reactive_eb_tree_3d
   config%state_redist_target_volume_fraction=state_redist_target_volume_fraction
   config%redistribution=redistribution;config%riemann_solver=riemann_solver;config%difmag=difmag
   config%hydro_method=hydro_method
+  config%sdc_reactor=sdc_reactor
   config%time_integrator=time_integrator;config%sdc_iterations=sdc_iterations;config%external_forcing=external_forcing
   if(allocated(active_faces)) config%boundary_faces=active_faces
   config%regular_density=regular_density;config%cut_density=cut_density;config%initial_pressure=initial_pressure
@@ -536,94 +548,14 @@ program pelef_reactive_eb_tree_3d
 #endif
     do retry=0,maximum_step_retries
       if (record%time+dt<=record%time) error stop 'Time increment underflow'
-#ifdef PELEF_MPI_EB_TREE
-      if (sample_work) then
-        call begin_tree_work(size(topology%nodes),ok)
-        call MPI_Allreduce(ok,work_ready,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,mpi_ierr)
-        if (mpi_ierr/=MPI_SUCCESS.or..not.work_ready) error stop 'Cannot allocate tree work counters'
-      end if
-#ifdef PELEF_MPI_EB_SPRAY
-      if(time_integrator=='sdc') then
-        if(les_enabled) then
-          call advance_particle_sdc(les_source)
-        else
-          call advance_particle_sdc()
-        end if
-      else if(wall_impacts) then
-      call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
-        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
-        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
-        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
-        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
-        films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
-        split_created=step_split_created,particle_outflow=particle_outflow, &
-        acceleration=acceleration,source_change=step_force, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
-      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+#ifdef PELEF_SDC_CVODE
+      if(sdc_reactor=='cvode') then
+        call advance_step(advance_forced_reactor_cvode)
       else
-      call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
-        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
-        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
-        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
-        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
-        split_created=step_split_created,particle_outflow=particle_outflow, &
-        acceleration=acceleration,source_change=step_force, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+        call advance_step()
       end if
 #else
-      if(time_integrator=='sdc') then
-        if(subcycling) then
-        call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
-          mpi_state,mpi_temperature,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
-          extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
-          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
-        else
-        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
-          mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
-          active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
-          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
-        end if
-      else
-      call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
-        riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
-        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
-      end if
-#endif
-      if (sample_work) call end_tree_work(measured_cost)
-#else
-      if(time_integrator=='sdc') then
-        if(subcycling) then
-        call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
-          tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
-          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
-        else
-        call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
-          tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
-          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
-          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction)
-        end if
-      else
-      call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
-        rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
-        chemistry_integrator,subcycling, &
-        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
-        difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
-      end if
+      call advance_step()
 #endif
       if (ok) exit
       if (retry==maximum_step_retries) error stop 'Tree step retry limit exhausted'
@@ -717,6 +649,7 @@ program pelef_reactive_eb_tree_3d
   if (mpi_rank==0) then
 #endif
   write(*,'(a,i0,a,es24.16)') 'Completed steps: ',record%steps,' time: ',record%time
+  if(time_integrator=='sdc') write(*,'(a)') 'SDC reactor: '//trim(sdc_reactor)
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
   write(*,'(a,es24.16)') 'Minimum accepted interval: ',record%minimum_dt
 #ifdef PELEF_MPI_EB_TREE
@@ -725,8 +658,105 @@ program pelef_reactive_eb_tree_3d
   if (mpi_ierr/=MPI_SUCCESS) error stop 'MPI finalize failed'
 #endif
 contains
+  subroutine advance_step(evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
+#ifdef PELEF_MPI_EB_TREE
+      if (sample_work) then
+        call begin_tree_work(size(topology%nodes),ok)
+        call MPI_Allreduce(ok,work_ready,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,mpi_ierr)
+        if (mpi_ierr/=MPI_SUCCESS.or..not.work_ready) error stop 'Cannot allocate tree work counters'
+      end if
 #ifdef PELEF_MPI_EB_SPRAY
-  subroutine advance_particle_sdc(evaluator)
+      if(time_integrator=='sdc') then
+        if(les_enabled) then
+          call advance_particle_sdc(les_source,evaluate_reaction)
+        else
+          call advance_particle_sdc(evaluate_reaction=evaluate_reaction)
+        end if
+      else if(wall_impacts) then
+      call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
+        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
+        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
+        films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
+        split_created=step_split_created,particle_outflow=particle_outflow, &
+        acceleration=acceleration,source_change=step_force, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+      else
+      call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
+        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
+        theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
+        split_created=step_split_created,particle_outflow=particle_outflow, &
+        acceleration=acceleration,source_change=step_force, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+      end if
+#else
+      if(time_integrator=='sdc') then
+        if(subcycling) then
+        call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
+          mpi_state,mpi_temperature,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
+          evaluate_reaction=evaluate_reaction)
+        else
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
+          mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
+          evaluate_reaction=evaluate_reaction)
+        end if
+      else
+      call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
+        riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
+        mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+      end if
+#endif
+      if (sample_work) call end_tree_work(measured_cost)
+#else
+      if(time_integrator=='sdc') then
+        if(subcycling) then
+        call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
+          evaluate_reaction=evaluate_reaction)
+        else
+        call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
+          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
+          difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
+          redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
+          evaluate_reaction=evaluate_reaction)
+        end if
+      else
+      call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
+        rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
+        chemistry_integrator,subcycling, &
+        inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
+        difmag=difmag,extended_geometry=extended_geometry, &
+        boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature)
+      end if
+#endif
+  end subroutine advance_step
+#ifdef PELEF_MPI_EB_SPRAY
+  subroutine advance_particle_sdc(evaluator,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluator
       if(subcycling) then
       if(wall_impacts) then
@@ -741,7 +771,7 @@ contains
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
         films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
-        evaluate_diffusion=evaluator)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -754,7 +784,7 @@ contains
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
-        evaluate_diffusion=evaluator)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
       end if
       else if(wall_impacts) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -768,7 +798,7 @@ contains
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
         films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
-        evaluate_diffusion=evaluator)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -781,7 +811,7 @@ contains
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
-        evaluate_diffusion=evaluator)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
       end if
   end subroutine advance_particle_sdc
   subroutine les_source(state,temperature,interval,depth,rate,flux,limiter,comm,good, &

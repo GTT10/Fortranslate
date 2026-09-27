@@ -78,7 +78,7 @@ contains
     if (.not.valid) return
     block
       character(len=128) :: control_text
-      write(control_text,*) config%time_integrator,config%chemistry_enabled,config%sdc_iterations
+      write(control_text,*) config%time_integrator,config%chemistry_enabled,config%sdc_iterations,config%sdc_reactor
       call same_string(control_text,valid)
       if(.not.valid) return
     end block
@@ -120,7 +120,8 @@ contains
     if (ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) &
       record%initial,record%scale,record%boundary,record%wall,record%chemical
     if(sdc) then
-      if(ios==0) write(prefix_unit,*,iostat=ios) config%sdc_iterations,merge(1,0,config%chemistry_enabled)
+      if(ios==0) write(prefix_unit,*,iostat=ios) config%sdc_iterations, &
+          merge(1,0,config%chemistry_enabled)+merge(2,0,config%sdc_reactor=="cvode")
       if(ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) config%external_forcing
       if(ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) record%forcing
     end if
@@ -148,7 +149,7 @@ contains
       if (.not.valid) exit
       cfg=config
       if(sdc) then
-        cfg%time_integrator='split';cfg%external_forcing=0
+        cfg%time_integrator='split';cfg%external_forcing=0;cfg%sdc_reactor='native'
       end if
       associate(g=>geometry(node),u=>state%fields(node)%values,t=>temperature%fields(node)%values(1,:,:,:))
       cfg%nx=g%nx;cfg%ny=g%ny;cfg%nz=g%nz

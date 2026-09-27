@@ -43,6 +43,27 @@ if(PELEF_ENABLE_SUNDIALS)
         --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/eb-sdc-cvode")
       set_tests_properties(application_eb_sdc_cvode PROPERTIES TIMEOUT 300)
       if(PELEF_ENABLE_MPI)
+        add_test(NAME application_eb_tree_sdc_cvode COMMAND ${Python3_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_sdc_cvode_app.py"
+          --serial $<TARGET_FILE:pelef_reactive_eb_tree_3d> --mpi $<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d>
+          --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/eb-tree-cvode"
+          --mpiexec "${MPIEXEC_EXECUTABLE}")
+        add_test(NAME application_eb_tree_sdc_cvode_recursive_selected COMMAND ${Python3_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_sdc_cvode_app.py"
+          --serial $<TARGET_FILE:pelef_reactive_eb_tree_3d_selected>
+          --mpi $<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d_selected>
+          --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/eb-tree-cvode-selected"
+          --mpiexec "${MPIEXEC_EXECUTABLE}" --recursive --selected)
+        set_tests_properties(application_eb_tree_sdc_cvode application_eb_tree_sdc_cvode_recursive_selected
+          PROPERTIES TIMEOUT 300 PROCESSORS 4)
+        if(PELEF_ENABLE_SPRAY)
+          add_test(NAME application_eb_particle_sdc_cvode COMMAND ${Python3_EXECUTABLE}
+            "${PROJECT_SOURCE_DIR}/tests/application/check_les_particle_sdc_app.py"
+            --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+            --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/eb-particle-cvode" --cvode --recursive)
+          set_tests_properties(application_eb_particle_sdc_cvode PROPERTIES TIMEOUT 300 PROCESSORS 4)
+        endif()
+
         add_test(NAME application_amr_sdc_cvode COMMAND ${Python3_EXECUTABLE}
           "${PROJECT_SOURCE_DIR}/tests/application/check_amr_sdc_cvode_app.py"
           --serial $<TARGET_FILE:pelef_amr_tree_reactive_3d> --mpi $<TARGET_FILE:pelef_mpi_amr_tree_reactive_3d>

@@ -99,7 +99,8 @@ contains
     if(valid.and.sdc) then
       read(unit,*,iostat=ios) controls
       valid=ios==0
-      if(valid) valid=all(controls==[config%sdc_iterations,merge(1,0,config%chemistry_enabled)])
+      if(valid) valid=all(controls==[config%sdc_iterations, &
+          merge(1,0,config%chemistry_enabled)+merge(2,0,config%sdc_reactor=="cvode")])
       if(valid) then
         read(unit,*,iostat=ios) stored_force
         valid=ios==0
@@ -207,7 +208,7 @@ contains
       if (.not.valid) exit
       g=geometry(node);cfg=config
       if(sdc) then
-        cfg%time_integrator='split';cfg%external_forcing=0
+        cfg%time_integrator='split';cfg%external_forcing=0;cfg%sdc_reactor='native'
       end if
       cfg%nx=g%nx;cfg%ny=g%ny;cfg%nz=g%nz
       cfg%x_lower=g%x_lower;cfg%x_upper=g%x_upper

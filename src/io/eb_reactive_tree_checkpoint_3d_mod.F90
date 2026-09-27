@@ -123,7 +123,8 @@ contains
       if(reading) then
         read(unit,*,iostat=ios) controls
         if(ios/=0) return
-        if(any(controls/=[config%sdc_iterations,merge(1,0,config%chemistry_enabled)])) return
+        if(any(controls/=[config%sdc_iterations, &
+          merge(1,0,config%chemistry_enabled)+merge(2,0,config%sdc_reactor=="cvode")])) return
         read(unit,*,iostat=ios) stored_force
         if(ios/=0) return
         if(.not.all(ieee_is_finite(stored_force))) return
@@ -140,7 +141,8 @@ contains
           end do
         end if
       else
-        write(unit,*,iostat=ios) config%sdc_iterations,merge(1,0,config%chemistry_enabled)
+        write(unit,*,iostat=ios) config%sdc_iterations, &
+          merge(1,0,config%chemistry_enabled)+merge(2,0,config%sdc_reactor=="cvode")
         if(ios/=0) return
         write(unit,'(*(es27.18e3,1x))',iostat=ios) config%external_forcing
         if(ios/=0) return
@@ -161,7 +163,7 @@ contains
       ! SDC controls and sources are bound by the outer V3/V4 envelope. Embedded
       ! gas records retain their legacy format for reuse of mechanism checks.
       if(sdc) then
-        cfg%time_integrator='split';cfg%external_forcing=0
+        cfg%time_integrator='split';cfg%external_forcing=0;cfg%sdc_reactor='native'
       end if
       associate(g=>candidate%nodes(node)%geometry,u=>candidate%nodes(node)%state,t=>candidate%nodes(node)%temperature)
       cfg%nx=g%nx;cfg%ny=g%ny;cfg%nz=g%nz

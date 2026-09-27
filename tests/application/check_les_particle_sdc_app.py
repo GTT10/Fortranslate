@@ -19,6 +19,7 @@ def main():
     for name in ('exe', 'mpiexec', 'source', 'work'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--recursive', action='store_true')
+    parser.add_argument('--cvode', action='store_true', help='Exercise reacting CVODE SDC')
     parser.add_argument('--selected', action='store_true', help='Use selected H2O2 composition input')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
@@ -27,12 +28,15 @@ def main():
     archive = work / 'stopped' / 'saved.step1'
     template = (args.source / 'cases/mpi_eb_spray_3d/tree.nml').read_text()
     template = template.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
-    template = template.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.')
+    if not args.cvode:
+        template = template.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.')
     if args.selected:
         template = template.replace('&eb_tree', "&eb_tree\n composition_count=1, "
                                     "composition_species(1)='N2', composition_mole_fractions(1)=1.,", 1)
     template = template.replace("output_file='result.csv'", "output_file='result.csv',time_integrator='sdc',"
                                 "sdc_iterations=2,boundary_faces=6*'outflow'")
+    if args.cvode:
+        template = template.replace("time_integrator='sdc'", "time_integrator='sdc',sdc_reactor='cvode'")
     if args.recursive:
         template = template.replace('&eb_tree', '&eb_tree\n subcycling=.true.,', 1)
     spray = """&eb_spray
@@ -43,12 +47,15 @@ def main():
 """
     les = "\n&eb_spray_les les_enabled=.true.,les_model='smagorinsky',les_cs=.17 /\n"
 
-    def run(label, controls='', ranks=4, settings=les, cut=False, error=None):
+    def run(label, controls='', ranks=4, settings=les, cut=False, error=None, reactor=None):
         directory = work / label
         shutil.copytree(args.source / 'cases/mpi_eb_spray_3d', directory)
         if not cut:
             (directory / 'level_set.dat').write_text('8 8 8\n' + '1.0\n' * 9**3)
-        (directory / 'tree.nml').write_text(template.replace('&eb_tree', '&eb_tree\n' + controls, 1))
+        content = template
+        if reactor:
+            content = content.replace("sdc_reactor='cvode'", f"sdc_reactor='{reactor}'")
+        (directory / 'tree.nml').write_text(content.replace('&eb_tree', '&eb_tree\n' + controls, 1))
         (directory / 'spray.nml').write_text(spray + settings)
         result = subprocess.run([str(args.mpiexec.resolve()), '-n', str(ranks), str(args.exe.resolve()),
                                  'tree.nml', 'spray.nml'], cwd=directory, env=env, capture_output=True,
@@ -57,6 +64,8 @@ def main():
         (directory / 'run.log').write_text(log)
         if error:
             assert result.returncode != 0 and error in log, log
+            if reactor:
+                assert not (directory / 'result.csv').exists()
         else:
             assert result.returncode == 0, log
         return directory
@@ -72,6 +81,9 @@ def main():
     baseline = outputs(continuous)
     assert baseline[0] != outputs(disabled)[0], 'LES must change the coupled gas CSV'
     budget = rows(continuous / 'result.csv.budget.csv')
+    if args.cvode:
+        assert 'SDC reactor: cvode' in (continuous / 'run.log').read_text()
+        assert any(float(row['chemistry']) != 0 for row in budget[5:]), 'Chemistry must be active'
     mass = max(abs(float(budget[0][key])) for key in ('initial', 'final', 'injected'))
     energy = max(abs(float(budget[4][key])) for key in ('initial', 'final', 'injected'))
     maximum = 0.0
@@ -89,6 +101,8 @@ def main():
     restart = f"restart_file='{archive}',"
     continued = run('continued', restart)
     assert outputs(continued) == baseline, 'Changed-rank gas/particle continuation differs'
+    if args.cvode:
+        run('changed_reactor', restart, reactor='native', error='Gas snapshot restore failed')
     run('changed_les', restart, settings=les.replace('les_cs=.17', 'les_cs=.18'), error='EB spray context mismatch')
     run('removed_les', restart, settings='', error='EB spray context mismatch')
     run('cut_rejected', cut=True, error='Invalid particle LES state or non-regular geometry')
