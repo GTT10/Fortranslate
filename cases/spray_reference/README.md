@@ -25,7 +25,7 @@ the pinned `SprayComps` ordering, with x varying first in position/velocity.
 After a successful build, run `PeleC-Spray-Evaporation reference.inp` from the
 prepared directory. The executable is under
 `build/pelec-pinned-spray/Exec/RegTests/Spray-Evaporation/`.
-The input requests two `1e-7` s steps, PPM and two SDC iterations. Reference
+The input requests two `1e-7` s steps, fourth-order PLM and two SDC iterations. Reference
 gas and particle outputs will be written for initialization and each step.
 
 ## Current evidence boundary
@@ -44,3 +44,12 @@ application's different gas/particle integration path. Scheme, staging,
 deposition and property conventions must be aligned before treating a field
 comparison as solver parity. No tolerance or reference material data has been
 changed to hide those differences.
+
+Preparation now also creates `tree.nml`, `spray.nml` and an all-fluid nodal
+`level_set.dat` for the selected MPI EB tree particle SDC application. This
+uses the source molecular weights to set gas density at 400 K. Build it in a
+separate MPI-enabled selected-mechanism configuration and run
+`mpiexec -n 1 pelef_mpi_reactive_eb_tree_3d_selected_spray tree.nml spray.nml`.
+The one-rank integration check is recorded
+[here](../../docs/validation/nonreacting-particle-sdc-20260927.md); full reference
+trajectory parity remains pending.

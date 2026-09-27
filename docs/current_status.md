@@ -17,6 +17,10 @@ The selected serial spray application now runs this reaction-free bundle with
 active evaporation and conserved gas/liquid transfer at temperatures inside
 the source range. Chemistry ON and 273 K gas are rejected; full upstream
 spray parity remains pending ([integration](validation/nonreacting-spray-app-20260927.md)).
+The selected MPI EB tree particle SDC path also accepts this bundle with
+chemistry disabled; a one-rank, fully regular two-step evaporation case passes
+gas/liquid transfer and inventory checks
+([evidence](validation/nonreacting-particle-sdc-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
