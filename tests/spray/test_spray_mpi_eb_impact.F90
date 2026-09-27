@@ -27,6 +27,7 @@ program test_spray_mpi_eb_impact
   integer(int64) :: last_id
   integer :: rank,nranks,ierr,i,j,k,p,hits,mode
   logical :: ok,rejected
+  character(len=16) :: faces(6)
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -234,6 +235,33 @@ program test_spray_mpi_eb_impact
       call inventory(after)
       call require(all(abs(after+wall-before-exterior(:5))<=3e-12_dp*max(abs(before),1e-20_dp)), &
         'migrated wall film exterior inventory')
+    end if
+  end do
+  ! Wrap in z before depositing on the oblique x/y EB, then migrate the film.
+  deallocate(drops,masses,films,film_mass,pressure)
+  allocate(drops(1),masses(1,1),films(0),film_mass(1,0),pressure(1))
+  drops=saved;drops(1)%position=[.35_dp,.35_dp,.99_dp];drops(1)%velocity=[-1._dp,-1._dp,1._dp]
+  masses=1e-12_dp;pressure=101325;last_id=nranks;wall=42;hits=43;exterior=44
+  faces='outflow';faces(5:6)='periodic'
+  call inventory(before)
+  do mode=1,2
+    walls%maximum_films=merge(1,100,mode==1)
+    call advance_mpi_eb_tree_impacts(MPI_COMM_WORLD,tree,owners,liquids,options,walls,tree_phi,mw,pressure, &
+      [0._dp,0._dp,0._dp],[.5_dp,.5_dp,.5_dp],.2_dp, &
+      drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior,faces)
+    if(mode==1) then
+      call require(.not.ok.and.last_id==nranks.and.hits==43,'periodic late film migration rollback')
+      call require(size(drops)==1.and.size(films)==0.and.all(wall==42).and.all(exterior==44),'periodic rollback payload')
+      call require(all(drops(1)%position==[.35_dp,.35_dp,.99_dp]),'periodic original position rollback')
+    else
+      call require(ok.and..not.rejected.and.size(drops)==0,'periodic wrapped deposition')
+      call require(size(films)==merge(nranks,0,rank==nranks-1),'periodic deposit reaches fine owner')
+      call require(all(exterior==0),'periodic flight has no exterior loss')
+      do p=1,size(films)
+        call require(abs(films(p)%position(3)-.09_dp)<1e-14_dp,'wrapped contact position')
+      end do
+      call inventory(after)
+      call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'periodic wall inventory')
     end if
   end do
   if(rank==0) print *, 'PASS: distributed EB impact interval and atomic final migration'

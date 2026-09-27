@@ -371,7 +371,7 @@ contains
   ! Initial and final film migration use private payloads within this transaction.
   subroutine advance_mpi_eb_tree_impacts(comm,tree,owners,components,properties,settings,phi,molecular_weights, &
       pressure,lower,spacing,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected, &
-      outflow_change)
+      outflow_change,boundary_faces)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -395,31 +395,39 @@ contains
     integer(int64) :: watermark
     integer :: count,ierr
     logical :: valid,agreed,rejected
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    logical :: periodic(3)
     ok=.false.
     if(present(model_rejected)) model_rejected=.false.
     valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
     valid=valid.and.tree%is_valid()
+    periodic=.false.
+    if(present(boundary_faces)) then
+      valid=valid.and.valid_spray_boundary_faces(boundary_faces).and.present(outflow_change)
+      valid=valid.and.all(boundary_faces/='inflow')
+      periodic=boundary_faces([1,3,5])=='periodic'
+    end if
     if(present(outflow_change)) valid=valid.and.size(outflow_change)==5+size(components)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if(ierr/=MPI_SUCCESS.or..not.agreed) return
     if(present(outflow_change)) allocate(exterior(size(outflow_change)))
     drops=parcels;masses=component_mass;patches=films;patch_mass=film_mass;watermark=last_id
     call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
-      settings%maximum_films,valid,phi)
+      settings%maximum_films,valid,phi,periodic=periodic)
     if(.not.valid) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp);budget=0;count=0
     call advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
-      lower,upper,dt,drops,masses,patches,patch_mass,watermark,budget,count,valid,rejected,exterior)
+      lower,upper,dt,drops,masses,patches,patch_mass,watermark,budget,count,valid,rejected,exterior,boundary_faces)
     if(rejected) then
       if(present(model_rejected)) model_rejected=.true.
       return
     end if
     if(.not.valid) return
     call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing, &
-      properties%maximum_parcels,valid,masses)
+      properties%maximum_parcels,valid,masses,periodic=periodic)
     if(.not.valid) return
     call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
-      settings%maximum_films,valid,phi)
+      settings%maximum_films,valid,phi,periodic=periodic)
     if(.not.valid) return
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
     call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
