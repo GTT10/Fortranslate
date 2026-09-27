@@ -6,6 +6,10 @@ add_executable(test_eb_boundary_gradient_3d unit/test_eb_boundary_gradient_3d.F9
 target_link_libraries(test_eb_boundary_gradient_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_boundary_gradient_3d COMMAND test_eb_boundary_gradient_3d)
 
+add_executable(test_eb_wall_heat_source_3d unit/test_eb_wall_heat_source_3d.F90)
+target_link_libraries(test_eb_wall_heat_source_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_wall_heat_source_3d COMMAND test_eb_wall_heat_source_3d)
+
 add_executable(test_rusanov unit/test_rusanov.F90)
 target_link_libraries(test_rusanov PRIVATE pelef_core)
 add_test(NAME unit_rusanov COMMAND test_rusanov)

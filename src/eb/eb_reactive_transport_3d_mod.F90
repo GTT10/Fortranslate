@@ -13,6 +13,7 @@ module eb_reactive_transport_3d_mod
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d,periodic_eb_faces_match
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
+  use eb_wall_heat_source_3d_mod, only: compute_eb_wall_heat_source_3d
   use eb_reactive_redistribution_3d_mod, only: &
     advance_reactive_eb_state_redistributed_3d
   implicit none
@@ -45,7 +46,8 @@ contains
   ! Conservative source stage, without state update or small-cell redistribution.
   ! Rates are per fluid volume; exported flux densities include dt, not aperture.
   subroutine compute_sdc_eb_transport_3d(species,transport,state,temperature,geometry,dt,flags, &
-      transport_rate,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces,physical_faces,wall_temperature)
+      transport_rate,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces,physical_faces,wall_temperature, &
+      embedded_wall_temperature,embedded_wall_energy,embedded_frequency)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -58,14 +60,19 @@ contains
     logical, optional, intent(in) :: faces(6)
     character(len=*), optional, intent(in) :: physical_faces(6)
     real(dp), optional, intent(in) :: wall_temperature(6)
+    real(dp), optional, intent(in) :: embedded_wall_temperature
+    real(dp), optional, intent(inout) :: embedded_wall_energy,embedded_frequency
     type(eb_integrated_flux_3d) :: flux
-    real(dp), allocatable :: rhs(:,:,:,:)
-    real(dp) :: theta
+    real(dp), allocatable :: rhs(:,:,:,:),heat(:,:,:)
+    real(dp) :: theta,wall_power,wall_energy,wall_frequency
     integer :: nv,n(3)
     logical :: valid
     ok=.false.
     if(.not.ieee_is_finite(dt)) return
     if(dt<=0.or..not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
+    if(present(embedded_wall_temperature).neqv.present(embedded_wall_energy)) return
+    if(present(embedded_wall_temperature).neqv.present(embedded_frequency)) return
+    if(present(embedded_wall_temperature).and..not.flags(2)) return
     nv=size(state,1);n=[geometry%nx,geometry%ny,geometry%nz]
     if(any(shape(transport_rate)/=[nv,n])) return
     allocate(rhs(nv,n(1),n(2),n(3)))
@@ -74,11 +81,23 @@ contains
       flags(1),flags(2),flags(3),flags(4),rhs,flux%x,flux%y,flux%z,theta,valid, &
       ghost_state,ghost_temperature,faces,physical_faces,wall_temperature)
     if(.not.valid) return
+    if(present(embedded_wall_temperature)) then
+      allocate(heat(n(1),n(2),n(3)))
+      call compute_eb_wall_heat_source_3d(species,transport,state,temperature,geometry,[1,1,1],n, &
+        embedded_wall_temperature,heat,wall_power,wall_frequency,valid)
+      if(.not.valid) return
+      rhs(iet,:,:,:)=rhs(iet,:,:,:)+heat
+      wall_energy=dt*wall_power
+      if(.not.ieee_is_finite(wall_energy)) return
+    end if
     flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
     if(.not.all(ieee_is_finite(rhs)).or..not.ieee_is_finite(theta)) return
     if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
       .not.all(ieee_is_finite(flux%z))) return
     transport_rate=rhs;integrated_flux=flux;minimum_theta=theta;ok=.true.
+    if(present(embedded_wall_temperature)) then
+      embedded_wall_energy=wall_energy;embedded_frequency=wall_frequency
+    end if
   end subroutine compute_sdc_eb_transport_3d
 
   ! Rate from the same half-cell heat-transfer law used by wall face fluxes.
