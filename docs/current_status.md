@@ -20,7 +20,9 @@ settings in checkpoint identity ([application checks](validation/les-mpi-amr-app
 The serial gas application now uses the same input and checkpoint identity,
 with exact serial/MPI output and checkpoint interchange in focused common and
 recursive cases ([serial application checks](validation/les-serial-amr-app-20260927.md)).
-Particle-SDC application routing remains open.
+MPI EB SDC now accepts additional diffusion rates and integrated face fluxes
+for common and recursive steps ([callback checks](validation/eb-sdc-diffusion-callback-20260927.md)).
+The LES adapter and particle-SDC application routing remain open.
 
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
