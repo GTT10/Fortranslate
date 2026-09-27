@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
+model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
+checks for four LES closures ([evidence](validation/gamma-law-app-20260927.md)).
+Its prescribed transport needs no invented molecular database; gamma-law
+MPI/AMR support and external evolved-field parity are not established.
+
 Periodic 3D transport face/flux and timestep APIs now accept explicit constant
 viscosity and conductivity, with analytical flux and coefficient-scaling checks
 ([evidence](validation/constant-transport-20260927.md)). Periodic regular SDC

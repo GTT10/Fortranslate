@@ -69,3 +69,19 @@ Use one constant-transport namelist. `lambda0` is in metres. Density, cp and
 Positive length/Re/Pr and positive initialized scales are required. Explicit
 nonzero coefficients cannot be mixed with `mode='hit'`. The default mode is
 `specified`. See [coefficient checks](../../docs/validation/hit-transport-scales-20260927.md).
+
+## Calorically perfect reference gas
+
+Use [gamma_law.nml](gamma_law.nml) with `pelef_reactive_3d` for a one-component
+pseudo-air model. `thermo_model='gamma_law'` selects a constant cp/cv ratio;
+`&gamma_law gamma=1.4 /` sets it explicitly. Molecular weight is 28.97 kg/kmol,
+formation energy is zero, and the supported temperature interval is 1–1e6 K.
+This model requires nonreacting SDC and no named composition. Transport, when
+enabled, must use explicit constant transport with species diffusion disabled.
+The selected-mechanism executable retains its own mechanism.
+
+The example preserves numeric 2π coordinate and 0.5 Taylor-length values in
+PeleF's SI units; it is not a centimetre-to-metre conversion of a PeleC run.
+External physical comparisons require consistent conversion of the velocity
+file coordinates, domain, Taylor length and time. The 16³ template has not been
+qualified as a reference trajectory. See [gamma-law checks](../../docs/validation/gamma-law-app-20260927.md).
