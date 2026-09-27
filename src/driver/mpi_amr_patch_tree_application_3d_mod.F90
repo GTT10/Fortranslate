@@ -3,6 +3,8 @@ module mpi_amr_patch_tree_application_3d_mod
   use mpi_amr_patch_tree_remap_3d_mod, only: remap_mpi_amr_tree_reactive_3d,remap_mpi_amr_tree_3d
   use amr_patch_tree_remap_3d_mod, only: cell_covered=>covered
   use mpi_amr_patch_tree_tagging_3d_mod, only: tag_mpi_amr_tree_temperature_3d
+  use amr_patch_tree_split_3d_mod, only: amr_sdc_diffusion_evaluator
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use mpi_f08
   use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -42,6 +44,23 @@ module mpi_amr_patch_tree_application_3d_mod
   implicit none
   private
   public :: run_mpi_amr_patch_tree_application_3d
+  abstract interface
+    subroutine tree_application_diffusion(tree,owners,u,t,h,faces,inlet,inlet_t,depth,fractions, &
+        coarse_start,coarse_end,rates,flux,diffusivity,ok)
+      import amr_patch_tree_3d,amr_tree_state_3d,amr_tree_flux_3d,dp
+      type(amr_patch_tree_3d), intent(in) :: tree
+      integer, intent(in) :: owners(:),depth
+      type(amr_tree_state_3d), intent(in) :: u,t
+      real(dp), intent(in) :: h(3),inlet(:,:),inlet_t(:)
+      character(len=*), intent(in) :: faces(6)
+      real(dp), optional, intent(in) :: fractions(:)
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+      type(amr_tree_state_3d), intent(inout) :: rates
+      type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+      real(dp), intent(inout) :: diffusivity
+      logical, intent(out) :: ok
+    end subroutine
+  end interface
   interface
     function system_getcwd(buffer,length) bind(C,name='getcwd') result(pointer)
       import c_char,c_size_t,c_ptr
@@ -52,7 +71,12 @@ module mpi_amr_patch_tree_application_3d_mod
   end interface
 contains
   subroutine run_mpi_amr_patch_tree_application_3d(topology_path,input_path,config,species,reactions,transport, &
-      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path)
+      mole_fractions,comm,chemistry_integrator,mechanism_identity,schedule_path, &
+      evaluate_diffusion,diffusion_identity,handled_input_group)
+    procedure(tree_application_diffusion), optional :: evaluate_diffusion
+    character(len=*), optional, intent(in) :: diffusion_identity,handled_input_group
+    type(amr_tree_state_3d) :: diffusion_rates
+    type(amr_tree_flux_3d), allocatable :: diffusion_flux(:)
     character(len=*), intent(in) :: topology_path,input_path
     character(len=*), optional, intent(in) :: chemistry_integrator,mechanism_identity,schedule_path
     type(reactive_3d_config), intent(in) :: config
@@ -111,6 +135,8 @@ contains
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI rank')
     call MPI_Comm_size(comm,nranks,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot read MPI size')
+    if(present(evaluate_diffusion).neqv.present(diffusion_identity)) call fatal('Diffusion callback requires identity')
+    if(present(evaluate_diffusion).and..not.sdc) call fatal('Additional tree diffusion requires SDC')
     call check_paths(input_path)
     call check_paths(topology_path)
     ! Read tree-specific controls before the shared regular-grid configuration.
@@ -152,6 +178,9 @@ contains
         read(unit,nml=amr_tree_checkpoint,iostat=status)
         if (status/=0) call fatal('Invalid MPI tree checkpoint configuration')
       else if (index(message,'&amr_tree_')==1.or.index(message,'$amr_tree_')==1) then
+        if(present(handled_input_group)) then
+          if(index(message,'&'//handled_input_group)==1.or.index(message,'$'//handled_input_group)==1) cycle
+        end if
         call fatal('Unsupported MPI tree configuration group')
       end if
     end do
@@ -234,6 +263,7 @@ contains
       call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
         identity,integrator,schedule_identity,context,ok)
       if (.not.ok) call fatal('Cannot build MPI tree checkpoint context')
+      if(present(diffusion_identity)) context=context//'diffusion:'//diffusion_identity//new_line('a')
     end if
     count=size(tree%nodes)-1
     call assign_owners(tree,owners)
@@ -393,6 +423,13 @@ contains
         if (.not.ok) call fatal('Invalid MPI tree transport timestep')
         dt=min(dt,transport_dt)
       end if
+      if(present(evaluate_diffusion)) then
+        call evaluate_diffusion(tree,owners,state,temperature,root_h,faces,inlet,inlet_t,-1, &
+          rates=diffusion_rates,flux=diffusion_flux,diffusivity=diffusivity,ok=ok)
+        if(.not.ok) call fatal('Invalid additional tree diffusion timestep')
+        if(.not.ieee_is_finite(diffusivity).or.diffusivity<0) call fatal('Invalid additional diffusivity')
+        if(diffusivity>0) dt=min(dt,.1_dp/(diffusivity*sum(1._dp/minval(h,dim=2)**2)))
+      end if
       if(any(config%inflow_mach>=0)) call limit_mach_step()
       sample_work=.false.
       if (rebalance_interval_steps>0) sample_work=mod(step+1,rebalance_interval_steps)==0
@@ -403,22 +440,10 @@ contains
           if (.not.ok) call fatal('Cannot allocate tree work counters')
         end if
         if(sdc) then
-          if(subcycling) then
-          call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
-            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
-            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-            change,source_change,correction,theta,comm,ok,reaction_source=reaction_source, &
-            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
-            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+          if(present(evaluate_diffusion)) then
+            call advance_sdc(evaluate_stage_diffusion)
           else
-          call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
-            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
-            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-            change,source_change,correction,theta,comm,ok,reaction_source=reaction_source, &
-            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
-            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+            call advance_sdc()
           end if
         else
         call advance_mpi_amr_tree_split_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
@@ -477,6 +502,42 @@ contains
     call MPI_Barrier(comm,status)
     if (status/=MPI_SUCCESS) call fatal('Cannot complete MPI tree output')
   contains
+    subroutine advance_sdc(callback)
+      procedure(amr_sdc_diffusion_evaluator), optional :: callback
+          if(subcycling) then
+          call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,comm,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
+            evaluate_diffusion=callback)
+          else
+          call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,comm,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
+            evaluate_diffusion=callback)
+          end if
+    end subroutine advance_sdc
+
+    subroutine evaluate_stage_diffusion(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good)
+      type(amr_tree_state_3d), intent(in) :: u,t
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+      integer, intent(in) :: depth
+      real(dp), optional, intent(in) :: fractions(:)
+      type(amr_tree_state_3d), intent(inout) :: rates
+      type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+      logical, intent(out) :: good
+      real(dp) :: maximum_diffusion
+      call evaluate_diffusion(tree,owners,u,t,root_h,faces,inlet,inlet_t,depth,fractions,coarse_start,coarse_end, &
+        rates,flux,maximum_diffusion,good)
+    end subroutine
+
     subroutine limit_mach_step()
       type(amr_tree_state_3d) :: packed,halos
       real(dp) :: bound,dmax,factor,local_bound,global_bound

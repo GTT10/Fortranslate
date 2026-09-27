@@ -775,6 +775,17 @@ if(PELEF_ENABLE_SPRAY)
       COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_les_mpi_amr_subcycle> ${MPIEXEC_POSTFLAGS})
     set_tests_properties(spray_les_mpi_amr_subcycle_2 PROPERTIES LABELS "spray;amr;mpi" TIMEOUT 180 PROCESSORS 2)
+    foreach(app_mode common recursive)
+      set(les_app_options)
+      if(app_mode STREQUAL "recursive")
+        list(APPEND les_app_options --recursive)
+      endif()
+      add_test(NAME les_mpi_amr_sdc_app_${app_mode}
+        COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/check_les_mpi_amr_sdc_app.py"
+          --binary $<TARGET_FILE:pelef_mpi_amr_tree_reactive_3d> --source "${PROJECT_SOURCE_DIR}"
+          --work "${PROJECT_BINARY_DIR}/les-mpi-amr-sdc-app-${app_mode}" --mpiexec "${MPIEXEC_EXECUTABLE}" ${les_app_options})
+      set_tests_properties(les_mpi_amr_sdc_app_${app_mode} PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "les;amr;mpi;sdc")
+    endforeach()
     add_executable(test_les_mpi_amr_sdc spray/test_les_mpi_amr_sdc.F90)
     target_link_libraries(test_les_mpi_amr_sdc PRIVATE pelef_spray_tree_runtime MPI::MPI_Fortran)
     foreach(sdc_mode common recursive)

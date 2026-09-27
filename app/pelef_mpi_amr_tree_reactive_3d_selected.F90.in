@@ -9,7 +9,11 @@ program pelef_mpi_amr_tree_reactive_3d_selected
   use simulation_config_reactive_3d_mod, only: &
     reactive_3d_config, read_reactive_3d_configuration, &
     resolve_reactive_3d_selected_composition
+#ifdef PELEF_TREE_LES
+  use les_mpi_amr_application_mod, only: run_mpi_amr_patch_tree_application_3d=>run_mpi_amr_les_application_3d
+#else
   use mpi_amr_patch_tree_application_3d_mod, only: run_mpi_amr_patch_tree_application_3d
+#endif
   use @PELEF_BUNDLE_MODULE_NAME@, only: &
     pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
     pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &
