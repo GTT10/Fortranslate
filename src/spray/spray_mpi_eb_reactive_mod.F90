@@ -39,7 +39,7 @@ contains
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration,split_created, &
       films,film_mass,film_settings,film_steps,film_impacts,model_rejected,evaluate_diffusion,evaluate_reaction, &
-      embedded_wall_temperature)
+      embedded_wall_temperature,embedded_noslip)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(MPI_Comm), intent(in) :: comm
@@ -69,6 +69,7 @@ contains
     integer(int64), optional, intent(out) :: split_created
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: embedded_wall_temperature
+    logical, optional, intent(in) :: embedded_noslip
     real(dp), optional, intent(in) :: wall_temperature(6),particle_acceleration(3)
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
@@ -208,7 +209,8 @@ contains
       gas_acceleration=gas_acceleration,predictor_builder=particle_predictor,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
       wall_temperature=wall_temperature,post_level=particle_post_level,evaluate_diffusion=evaluate_diffusion, &
-      evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature)
+      evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
+      embedded_noslip=embedded_noslip)
     if(.not.agreed) return
     call synchronize_particle_sources()
     if(.not.agreed) return
@@ -786,7 +788,7 @@ contains
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
       films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration,evaluate_diffusion,evaluate_reaction, &
-      embedded_wall_temperature)
+      embedded_wall_temperature,embedded_noslip)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
@@ -825,6 +827,7 @@ contains
     real(dp), optional, intent(inout) :: gas_particle_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: embedded_wall_temperature
+    logical, optional, intent(in) :: embedded_noslip
     real(dp), optional, intent(in) :: wall_temperature(6)
     real(dp), optional, intent(in) :: particle_acceleration(3)
     integer(int64), optional, intent(out) :: split_created
@@ -889,7 +892,8 @@ contains
       auxiliary_source=particle_source,auxiliary_change=exchange,inflow_state=inflow_state, &
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
       wall_temperature=wall_temperature,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
-      evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature)
+      evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
+      embedded_noslip=embedded_noslip)
     if(.not.ready) return
     before_split=final_id
     if(options%maximum_multiplicity>0) then
