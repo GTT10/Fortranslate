@@ -25,6 +25,7 @@ module mixture_transport_mod
   public :: binary_diffusion_coefficients
   public :: mixture_averaged_diffusion_coefficients
   public :: mixture_transport_coefficients
+  public :: pelephysics_simple_transport
 
 contains
 
@@ -847,5 +848,68 @@ contains
     diffusion_coefficients = candidate_diffusion
     ok = .true.
   end subroutine mixture_transport_coefficients
+
+  subroutine pelephysics_simple_transport(molecular_weights,y,temperature,pressure, &
+      fitmu,fitlam,fitbinary,viscosity,conductivity,rho_diffusion,binary,ok)
+    ! Pinned PelePhysics Simple.H ideal-gas transport. Fits use natural log T
+    ! and CGS output units; return SI mu, lambda, rho*D and binary D at pressure.
+    ! Binary fits are packed (1,1),(1,2),(2,2),(1,3),... as upstream.
+    real(dp), intent(in) :: molecular_weights(:),y(:),temperature,pressure
+    real(dp), intent(in) :: fitmu(:,:),fitlam(:,:),fitbinary(:,:)
+    real(dp), intent(out) :: viscosity,conductivity,rho_diffusion(:),binary(:,:)
+    logical, intent(out) :: ok
+    real(dp) :: ym(size(y)),x(size(y)),mu(size(y)),lam(size(y)),weights(4)
+    real(dp) :: resistance(size(y)),db(size(y),size(y)),rd(size(y)),mw,exponent,d
+    real(dp) :: mu_mix,lam_mix
+    integer :: n,i,j,k
+    viscosity=0;conductivity=0;rho_diffusion=0;binary=0;ok=.false.
+    n=size(y)
+    if(n<2.or.size(molecular_weights)/=n.or.size(rho_diffusion)/=n) return
+    if(any(shape(fitmu)/=[4,n]).or.any(shape(fitlam)/=[4,n])) return
+    if(any(shape(fitbinary)/=[4,n*(n+1)/2]).or.any(shape(binary)/=[n,n])) return
+    if(.not.all(ieee_is_finite([temperature,pressure,molecular_weights,y]))) return
+    if(temperature<1.or.temperature>1e6_dp.or.pressure<1e-10_dp.or.pressure>1e15_dp) return
+    if(any(molecular_weights<1e-3_dp).or.any(molecular_weights>1e5_dp)) return
+    if(any(y<0).or.abs(sum(y)-1)>5e-12_dp) return
+    if(.not.all(ieee_is_finite(fitmu)).or..not.all(ieee_is_finite(fitlam)).or. &
+        .not.all(ieee_is_finite(fitbinary))) return
+    if(maxval(abs(fitmu))>1e6_dp.or.maxval(abs(fitlam))>1e6_dp.or.maxval(abs(fitbinary))>1e6_dp) return
+    weights(1)=1;weights(2)=log(temperature)
+    weights(3)=weights(2)**2;weights(4)=weights(2)*weights(3)
+    ym=y+1e-15_dp*(sum(y)/n-y)
+    mw=1/sum(ym/molecular_weights);x=ym*mw/molecular_weights
+    do i=1,n
+      exponent=sum(fitmu(:,i)*weights)
+      if(abs(exponent)>100) return
+      mu(i)=exp(exponent)
+      exponent=sum(fitlam(:,i)*weights)
+      if(abs(exponent)>100) return
+      lam(i)=exp(exponent)
+    end do
+    mu_mix=sum(x*mu**6)**(1.0_dp/6)*.1_dp
+    lam_mix=sum(x*sqrt(sqrt(lam)))**4*1e-5_dp
+    resistance=0;db=0
+    do j=1,n
+      do i=1,j
+        k=j*(j-1)/2+i
+        exponent=sum(fitbinary(:,k)*weights)
+        if(abs(exponent)>100) return
+        d=exp(exponent)
+        db(i,j)=d*1e-4_dp*standard_atmosphere/pressure;db(j,i)=db(i,j)
+        if(i==j) cycle
+        resistance(i)=resistance(i)+x(j)/d
+        resistance(j)=resistance(j)+x(i)/d
+      end do
+    end do
+    if(any(resistance<=0)) return
+    do i=1,n
+      ! Sum other mass fractions directly to preserve pure-species trace terms.
+      rd(i)=(sum(ym(:i-1))+sum(ym(i+1:)))*molecular_weights(i)/resistance(i) &
+        *1013250.0_dp/(8.31446261815324e7_dp*temperature)*.1_dp
+    end do
+    if(.not.all(ieee_is_finite([mu_mix,lam_mix,rd]))) return
+    if(.not.all(ieee_is_finite(db))) return
+    viscosity=mu_mix;conductivity=lam_mix;rho_diffusion=rd;binary=db;ok=.true.
+  end subroutine pelephysics_simple_transport
 
 end module mixture_transport_mod
