@@ -11,8 +11,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 A 3D embedded-wall quadratic gradient and scalar heat-flux kernel now follows
 the pinned type-0 stencil. Its coefficients agree with a compiled reference in
-24 orientations; application transport/budget/restart integration remains open
-([kernel evidence](validation/eb-boundary-gradient-20260927.md)).
+24 orientations ([kernel evidence](validation/eb-boundary-gradient-20260927.md)).
+An optional SDC transport source now returns gas energy rates and integrated
+wall heat, with analytic heat/ledger and rollback checks. AMR donor exchange
+and application budget/timestep/restart wiring remain open
+([source integration](validation/eb-wall-heat-source-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
