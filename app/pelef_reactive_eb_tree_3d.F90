@@ -17,6 +17,9 @@ program pelef_reactive_eb_tree_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d
 #endif
 #ifdef PELEF_MPI_EB_SPRAY
+  use les_mpi_eb_sdc_mod, only: compute_mpi_regular_eb_les_sdc_3d
+  use mpi_eb_tree_full_3d_mod, only: mpi_eb_sdc_diffusion_source
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
@@ -101,6 +104,16 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: acceleration(3)=0
   logical :: wall_impacts=.false.,particle_outflow=.false.,model_rejected
   real(dp), allocatable :: nodal_phi(:,:,:),component_mass(:,:)
+  logical :: les_enabled=.false.,les_harmonic_mean=.false.
+  real(dp) :: les_cs=.17_dp,les_prt=.7_dp,les_sct=.7_dp,les_ci=0,les_cfl=.1_dp
+  real(dp) :: les_diffusivity,les_theta,les_spacing(3)
+  character(len=32) :: les_model='smagorinsky',les_test_model='box'
+  integer :: les_test_ratio=2,les_grid_ratio=1
+  character(len=:), allocatable :: les_filter
+  integer, allocatable :: les_ratio,les_grid
+  logical, allocatable :: les_harmonic
+  type(amr_tree_state_3d) :: les_rates
+  type(eb_integrated_flux_3d), allocatable :: les_flux(:)
   character(len=:), allocatable :: spray_context
   character(len=1024) :: spray_input
   integer :: particle_steps,restart_layout_stage=0
@@ -508,6 +521,14 @@ program pelef_reactive_eb_tree_3d
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
     end if
+#ifdef PELEF_MPI_EB_SPRAY
+    if(les_enabled) then
+      call les_source(mpi_state,mpi_temperature,dt,-1,les_rates,les_flux,les_theta,MPI_COMM_WORLD,ok)
+      if(.not.ok) error stop 'Invalid particle LES state or non-regular geometry'
+      les_spacing=[minval(mpi_geometry%dx),minval(mpi_geometry%dy),minval(mpi_geometry%dz)]
+      if(les_diffusivity>0) dt=min(dt,les_cfl/(les_diffusivity*sum(1._dp/les_spacing**2)))
+    end if
+#endif
     if (regrid_stage<regrid_count) dt=min(dt,regrid_times(regrid_stage+1)-record%time)
 #ifdef PELEF_MPI_EB_TREE
     sample_work=.false.
@@ -523,57 +544,11 @@ program pelef_reactive_eb_tree_3d
       end if
 #ifdef PELEF_MPI_EB_SPRAY
       if(time_integrator=='sdc') then
-      if(subcycling) then
-      if(wall_impacts) then
-      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
-        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
-        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
-        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
-        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
-        target_volume_fraction=state_redist_target_volume_fraction, &
-        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
-        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
-        particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
-        films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected)
-      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
-      else
-      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
-        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
-        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
-        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
-        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
-        target_volume_fraction=state_redist_target_volume_fraction, &
-        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
-        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
-        particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created)
-      end if
-      else if(wall_impacts) then
-      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
-        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
-        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
-        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
-        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
-        target_volume_fraction=state_redist_target_volume_fraction, &
-        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
-        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
-        split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
-        films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected)
-      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
-      else
-      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
-        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
-        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
-        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
-        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
-        target_volume_fraction=state_redist_target_volume_fraction, &
-        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
-        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
-        split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration)
-      end if
+        if(les_enabled) then
+          call advance_particle_sdc(les_source)
+        else
+          call advance_particle_sdc()
+        end if
       else if(wall_impacts) then
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
@@ -751,6 +726,86 @@ program pelef_reactive_eb_tree_3d
 #endif
 contains
 #ifdef PELEF_MPI_EB_SPRAY
+  subroutine advance_particle_sdc(evaluator)
+    procedure(mpi_eb_sdc_diffusion_source), optional :: evaluator
+      if(subcycling) then
+      if(wall_impacts) then
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
+        films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
+        evaluate_diffusion=evaluator)
+      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+      else
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
+        evaluate_diffusion=evaluator)
+      end if
+      else if(wall_impacts) then
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
+        films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
+        evaluate_diffusion=evaluator)
+      if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
+      else
+      call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
+        species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
+        domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
+        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
+        reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
+        target_volume_fraction=state_redist_target_volume_fraction, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+        inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
+        split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
+        evaluate_diffusion=evaluator)
+      end if
+  end subroutine advance_particle_sdc
+  subroutine les_source(state,temperature,interval,depth,rate,flux,limiter,comm,good, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    real(dp), intent(inout) :: limiter
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: fractions(:)
+    call compute_mpi_regular_eb_les_sdc_3d(topology,mpi_owners,mpi_geometry,species,state,temperature, &
+      (domain_upper-domain_lower)/real(root_shape,dp),active_faces,interval,depth,les_cs,les_prt,les_sct, &
+      rate,flux,les_diffusivity,comm,good,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
+      model=les_model,ci=les_ci,test_model=les_filter,test_ratio=les_ratio,grid_ratio=les_grid,harmonic_mean=les_harmonic, &
+      inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
+      inflow_pressure=active_pressure,wall_temperature=active_wall_temperature)
+    if(good) limiter=1
+  end subroutine les_source
+#endif
+#ifdef PELEF_MPI_EB_SPRAY
   subroutine initialize_particles()
     integer :: nc,number,q,c,stream,code,closed,port,port_numbers(16),port_profile_points(16)
     real(dp) :: port_profile_times(64,16),port_profile_rates(64,16),injection_end_times(1024),profile_mass
@@ -771,6 +826,8 @@ contains
     character(len=4096) :: context_line
     character(len=1024) :: profile_files(16)
     namelist /eb_spray_rate_files/ profile_files
+    namelist /eb_spray_les/ les_enabled,les_model,les_cs,les_prt,les_sct,les_ci,les_cfl, &
+      les_test_model,les_test_ratio,les_grid_ratio,les_harmonic_mean
     character(len=24) :: vapor_names(16)
     real(dp) :: densities(16),heat_capacities(16),reference_temperatures(16)
     real(dp) :: reference_pressures(16),latent_heats(16),fractions(16)
@@ -806,6 +863,20 @@ contains
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)
     if(code>0) error stop 'Invalid EB spray rate files input'
+    rewind(stream)
+    read(stream,nml=eb_spray_les,iostat=code)
+    if(code>0) error stop 'Invalid EB spray LES input'
+    if(les_enabled) then
+      if(time_integrator/='sdc') error stop 'Particle LES requires SDC'
+      if(.not.ieee_is_finite(les_cfl)) error stop 'Invalid particle LES CFL'
+      if(les_cfl<=0.or.les_cfl>.2_dp) error stop 'Invalid particle LES CFL'
+      if(les_model=='dynamic') then
+        les_filter=trim(les_test_model);les_ratio=les_test_ratio;les_grid=les_grid_ratio;les_harmonic=les_harmonic_mean
+      else
+        if(les_test_model/='box'.or.les_test_ratio/=2.or.les_grid_ratio/=1.or.les_harmonic_mean) &
+          error stop 'Particle LES filter controls require dynamic model'
+      end if
+    end if
     close(stream,iostat=closed)
     if(closed/=0) error stop 'Invalid MPI EB spray input'
     if(port_count<1.or.port_count>16) error stop 'Invalid port count'
@@ -958,6 +1029,7 @@ contains
       open(newunit=stream,status='scratch',form='formatted',iostat=code)
       if(code/=0) error stop 'Cannot stage spray context'
       write(stream,nml=eb_spray,iostat=code)
+      if(code==0.and.les_enabled) write(stream,nml=eb_spray_les,iostat=code)
       if(code==0) write(stream,'(es27.18e3)',iostat=code) nodal_phi
       if(code/=0) error stop 'Cannot serialize spray context'
       rewind(stream)

@@ -1112,6 +1112,17 @@ if(TARGET test_spray_mpi_eb_reactive)
         $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} ${les_mode})
     set_tests_properties(spray_mpi_eb_${les_mode}_4 PROPERTIES LABELS "spray;mpi;les;sdc" TIMEOUT 180 PROCESSORS 4)
   endforeach()
+  foreach(les_app_mode common recursive)
+    set(les_app_options)
+    if(les_app_mode STREQUAL "recursive")
+      list(APPEND les_app_options --recursive)
+    endif()
+    add_test(NAME spray_mpi_les_sdc_app_${les_app_mode}
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_les_particle_sdc_app.py"
+        --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/les-particle-app-${les_app_mode}" ${les_app_options})
+    set_tests_properties(spray_mpi_les_sdc_app_${les_app_mode} PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "spray;mpi;les;sdc")
+  endforeach()
   add_test(NAME spray_mpi_eb_sdc_2
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc)
