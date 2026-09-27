@@ -11,9 +11,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
-failure checks. Spatial rate assembly and time/application integration remain
-open ([reconstruction](validation/mol-reconstruction-20260927.md),
+failure checks ([reconstruction](validation/mol-reconstruction-20260927.md),
 [interface flux](validation/mol-riemann-20260927.md)).
+Prepared EB patches now assemble centroid-corrected MOL spatial rates and
+boundary/wall ledgers with stationary balance and conservation checks.
+Time/MPI/application integration remains open
+([spatial rate](validation/eb-mol-spatial-rate-20260927.md)).
 
 The pinned Spray-EB plane and five initial physical droplets now have an
 auditable SI input preparer preserving the default 64³ grid and final time.
