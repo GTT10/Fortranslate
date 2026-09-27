@@ -28,8 +28,12 @@ iterations; a homogeneous reactor comparison and late-reactor rollback pass.
 ([reacting update](validation/mpi-mol-reaction-20260927.md)).
 Recursive MOL now forwards the same update through level subcycling; focused
 nonreacting wall and state-redistribution budgets pass on two ranks.
-Particle MOL connections remain open
+Recursive gas MOL is connected
 ([recursive update](validation/mpi-mol-recursive-20260927.md)).
+Recursive particle MOL staging now completes a short two-level case, but
+checkpoint writing rejects a negative trace-fuel cell density; its restart
+qualification remains open
+([diagnostic](validation/mpi-mol-recursive-particle-20260927.md)).
 Common particle MOL now passes its short evaporating fixture and exact
 rank-changing restart after adding a positive-face slope bound. This safeguard
 extends the pinned reconstruction; full reference parity remains open
