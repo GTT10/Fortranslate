@@ -37,7 +37,10 @@ A bounded 400 rad/s patch check passes; a 1000 rad/s LF condition exceeds the
 existing absolute conservation gate ([patch evidence](validation/rotating-mol-patch-20260927.md)).
 Serial tree initialization, conserved transfer, halos and MOL spatial rates now
 carry the frame ([tree evidence](validation/rotating-eb-tree-transfer-20260927.md)).
-MPI, time integration and restart remain open; rotating CFD is not yet enabled.
+Serial inviscid, nonreacting MOL now integrates rotation on common or recursive
+time steps with bounded composite conservation checks
+([SDC evidence](validation/rotating-sdc-20260927.md)). Reaction/transport, MPI and
+application/restart integration remain open; rotating CFD input is not yet enabled.
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
