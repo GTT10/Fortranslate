@@ -864,6 +864,10 @@ function(pelef_add_mechanism_bundle)
         "${mechanism_target}"
         pelef_selected_reactive_3d_runtime
     )
+    if(PELEF_ENABLE_SUNDIALS)
+      target_compile_definitions("${PELEF_BUNDLE_REACTIVE_3D_NAME}" PRIVATE PELEF_SDC_CVODE)
+      target_link_libraries("${PELEF_BUNDLE_REACTIVE_3D_NAME}" PRIVATE pelef_selected_cvode_runtime)
+    endif()
     list(APPEND install_targets "${PELEF_BUNDLE_REACTIVE_3D_NAME}")
   endif()
 

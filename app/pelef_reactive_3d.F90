@@ -14,7 +14,16 @@ program pelef_reactive_3d
     reactive_3d_config, read_reactive_3d_configuration, &
     reactive_3d_mole_fractions
   use reactive_3d_application_mod, only: run_reactive_3d_application
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
+#ifdef PELEF_SDC_CVODE
+  use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
+#endif
   implicit none
+#ifdef PELEF_SDC_CVODE
+  logical, parameter :: cvode_available=.true.
+#else
+  logical, parameter :: cvode_available=.false.
+#endif
 
   type(reactive_3d_config) :: config
   type(nasa7_species), allocatable :: species(:)
@@ -31,7 +40,7 @@ program pelef_reactive_3d
   call get_command_argument(1, input_path)
   call read_reactive_3d_configuration(trim(input_path), config, ok, message, &
     allow_pressure_outlet=.true., allow_mach_inlet=.true., allow_characteristic_ppm=.true., &
-    allow_difmag=.true.,allow_external_forcing=.true.,allow_sdc=.true.)
+    allow_difmag=.true.,allow_external_forcing=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
@@ -62,7 +71,20 @@ program pelef_reactive_3d
   call reactive_3d_mole_fractions( &
     config, size(species), mole_fractions, ok)
   if (.not. ok) error stop "Failed to resolve reactive 3D composition"
+#ifdef PELEF_SDC_CVODE
+  if(config%sdc_reactor=='cvode') then
+    call run(advance_forced_reactor_cvode)
+  else
+    call run()
+  endif
+#else
+  call run()
+#endif
+contains
+  subroutine run(evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
   call run_reactive_3d_application( &
     trim(input_path), "3D reactive flow", "", config, species, reactions, &
-    transport, mole_fractions)
+    transport, mole_fractions,evaluate_reaction=evaluate_reaction)
+  end subroutine run
 end program pelef_reactive_3d

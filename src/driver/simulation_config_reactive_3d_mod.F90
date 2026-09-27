@@ -17,6 +17,7 @@ module simulation_config_reactive_3d_mod
     integer :: nz = 12
     integer :: maximum_steps = 100000
     integer :: sdc_iterations=2
+    character(len=16) :: sdc_reactor='native'
     character(len=32) :: time_integrator="split"
     real(dp) :: x_lower = 0.0_dp
     real(dp) :: x_upper = 0.01_dp
@@ -478,14 +479,15 @@ contains
 
   subroutine read_reactive_3d_configuration( &
       path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag, &
-      allow_external_forcing,allow_sdc)
+      allow_external_forcing,allow_sdc,allow_sdc_cvode)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
-    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing,allow_sdc
+    logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing,allow_sdc,allow_sdc_cvode
 
+    character(len=16) :: sdc_reactor
     character(len=32) :: time_integrator
     integer :: sdc_iterations
     integer :: nx, ny, nz, maximum_steps, unit, io_status
@@ -518,7 +520,7 @@ contains
     logical :: selected_allowed
 
     namelist /reactive_3d/ &
-      nx, ny, nz, maximum_steps, time_integrator, sdc_iterations, &
+      nx, ny, nz, maximum_steps, time_integrator, sdc_iterations, sdc_reactor, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, difmag, external_forcing, &
       thermo_model, riemann_solver, &
@@ -541,6 +543,7 @@ contains
     nx = config%nx
     ny = config%ny
     nz = config%nz
+    sdc_reactor=config%sdc_reactor
     time_integrator=config%time_integrator;sdc_iterations=config%sdc_iterations
     maximum_steps = config%maximum_steps
     x_lower = config%x_lower
@@ -629,6 +632,7 @@ contains
     config%nx = nx
     config%ny = ny
     config%nz = nz
+    config%sdc_reactor=sdc_reactor
     config%time_integrator=time_integrator;config%sdc_iterations=sdc_iterations
     config%maximum_steps = maximum_steps
     config%x_lower = x_lower
@@ -705,6 +709,13 @@ contains
         message='SDC input is not connected in this application';return
       end if
     end if
+    if(config%sdc_reactor=='cvode') then
+      ok=.false.
+      if(present(allow_sdc_cvode)) ok=allow_sdc_cvode
+      if(.not.ok) then
+        message='SDC CVODE backend is unavailable in this application';return
+      endif
+    endif
     if(any(config%external_forcing/=0)) then
       ok=.false.
       if(present(allow_external_forcing)) ok=allow_external_forcing
@@ -764,6 +775,14 @@ contains
     if(config%time_integrator/='split'.and.config%time_integrator/='sdc') then
       message='Unknown reactive 3D time integrator';return
     end if
+    if(config%sdc_reactor/='native'.and.config%sdc_reactor/='cvode') then
+      message='Unknown SDC reactor';return
+    endif
+    if(config%sdc_reactor=='cvode') then
+      if(config%time_integrator/='sdc'.or..not.config%chemistry_enabled) then
+        message='SDC CVODE requires reacting SDC';return
+      endif
+    endif
     if(config%sdc_iterations<1) then
       message='SDC iterations must be positive';return
     end if

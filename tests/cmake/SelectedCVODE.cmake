@@ -28,6 +28,17 @@ file(
 )
 
 if(PELEF_ENABLE_SUNDIALS)
+  if(PELEF_MECHANISM_BUNDLE AND TARGET pelef_reactive_3d_selected)
+    file(SHA256 "${PELEF_MECHANISM_BUNDLE}" sdc_cvode_bundle_sha)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json" sdc_cvode_h2o2_sha)
+    if(sdc_cvode_bundle_sha STREQUAL sdc_cvode_h2o2_sha)
+      add_test(NAME application_sdc_cvode COMMAND ${Python3_EXECUTABLE}
+        "${PROJECT_SOURCE_DIR}/tests/application/check_sdc_cvode_app.py"
+        --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>
+        --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/sdc-cvode-app")
+      set_tests_properties(application_sdc_cvode PROPERTIES TIMEOUT 300)
+    endif()
+  endif()
   add_executable(test_sdc_cvode_bridge unit/test_sdc_cvode_bridge.F90)
   target_link_libraries(test_sdc_cvode_bridge PRIVATE fixture_mechanism
     pelef_selected_reactive_3d_runtime pelef_selected_cvode_runtime)

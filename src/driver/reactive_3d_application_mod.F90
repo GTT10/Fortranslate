@@ -1,5 +1,6 @@
 module reactive_3d_application_mod
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use constants_mod, only: pelef_version
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
   use nasa7_thermo_mod, only: nasa7_species
@@ -28,7 +29,8 @@ contains
 
   subroutine run_reactive_3d_application( &
       input_path, application_label, bundle_sha256, config, species, &
-      reactions, transport, base_mole_fractions, chemistry_integrator)
+      reactions, transport, base_mole_fractions, chemistry_integrator,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     character(len=*), intent(in) :: input_path, application_label
     character(len=*), intent(in) :: bundle_sha256
     type(reactive_3d_config), intent(in) :: config
@@ -67,6 +69,8 @@ contains
     logical :: ok, cell_ok
     integer :: step, i, j, k, nvar, face
 
+    if((config%sdc_reactor=='cvode').neqv.present(evaluate_reaction)) &
+      error stop 'SDC reactor selection does not match supplied backend'
     if (size(species) < 1 .or. size(reactions) < 1 .or. &
         size(transport) /= size(species) .or. &
         size(base_mole_fractions) /= size(species)) then
@@ -155,7 +159,7 @@ contains
     if (len_trim(bundle_sha256) > 0) then
       write(*, '(a,1x,a)') "Bundle SHA-256:", trim(bundle_sha256)
       if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
-        write(*,'(a)') 'Chemistry integrator: forced adaptive implicit (SDC)'
+        write(*,'(a,a)') 'SDC reactor: ',trim(config%sdc_reactor)
       else if (present(chemistry_integrator)) then
         write(*, '(a,1x,a)') "Chemistry integrator:", &
           trim(chemistry_integrator)
@@ -167,6 +171,8 @@ contains
     write(*, '(a,1x,a)') "Problem:", trim(config%problem)
     write(*, '(a,1x,a)') "Thermodynamics:", trim(config%thermo_model)
     write(*,'(a,a)') 'Time integrator: ',trim(config%time_integrator)
+    if(config%time_integrator=='sdc'.and.len_trim(bundle_sha256)==0) &
+      write(*,'(a,a)') 'SDC reactor: ',trim(config%sdc_reactor)
     if(config%time_integrator=='sdc') write(*,'(a,i0)') 'SDC iterations: ',config%sdc_iterations
     difmag=resolved_reactive_difmag_3d(config)
     write(*,'(a,es24.16)') 'Artificial-viscosity coefficient: ',difmag
@@ -263,7 +269,8 @@ contains
           chemistry_absolute_tolerance=config%chemistry_absolute_tolerance, &
           boundary_faces=faces,boundary_change=step_boundary_change,outlet_pressure=config%outlet_pressure, &
           inflow_state=inflow_state,inflow_temperature=inflow_t,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity)
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity, &
+          evaluate_reaction=evaluate_reaction)
       else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &

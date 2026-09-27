@@ -109,6 +109,21 @@ target_link_libraries(pelef_reactive_2d PRIVATE pelef_core)
 
 add_executable(pelef_reactive_3d app/pelef_reactive_3d.F90)
 target_link_libraries(pelef_reactive_3d PRIVATE pelef_core)
+if(PELEF_ENABLE_SUNDIALS)
+  add_library(pelef_fixed_forced_cvode_runtime STATIC src/chemistry/sundials_forced_reactor_mod.F90)
+  set_target_properties(pelef_fixed_forced_cvode_runtime PROPERTIES
+    Fortran_MODULE_DIRECTORY "${PROJECT_BINARY_DIR}/fixed_forced_cvode_modules")
+  target_include_directories(pelef_fixed_forced_cvode_runtime PUBLIC
+    "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/fixed_forced_cvode_modules>")
+  target_link_libraries(pelef_fixed_forced_cvode_runtime PUBLIC pelef_core
+    SUNDIALS::fcvode_mod_static SUNDIALS::fnvecserial_mod_static
+    SUNDIALS::fsunmatrixdense_mod_static SUNDIALS::fsunlinsoldense_mod_static)
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(pelef_fixed_forced_cvode_runtime PRIVATE -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+  endif()
+  target_compile_definitions(pelef_reactive_3d PRIVATE PELEF_SDC_CVODE)
+  target_link_libraries(pelef_reactive_3d PRIVATE pelef_fixed_forced_cvode_runtime)
+endif()
 
 add_executable(pelef_reactive_eb_tree_3d app/pelef_reactive_eb_tree_3d.F90)
 target_link_libraries(pelef_reactive_eb_tree_3d PRIVATE pelef_core)
