@@ -104,6 +104,9 @@ faces and use wrapped ownership while retaining their unwrapped coordinates
 Periodic axes also reach EB particle/film remapping, load balancing and checkpoint
 migration. Recursive periodic film-bearing regrid and changed-rank continuation
 have a [focused lifecycle check](validation/spray-periodic-lifecycle-20260927.md).
+Common-step particle/film coupling also forwards periodic axes during migration,
+including stationary-film thermal updates at a periodic endpoint
+([thermal and application checks](validation/spray-periodic-common-film-20260927.md)).
 
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
 regular/EB MPI migration APIs accept optional `maximum_level` (zero based).
