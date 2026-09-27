@@ -100,6 +100,21 @@ contains
     end subroutine
   end subroutine
 
+  subroutine read_regular_timestep_limit(input_path,maximum_dt)
+    character(len=*), intent(in) :: input_path
+    real(dp), intent(out) :: maximum_dt
+    integer :: unit,ios
+    namelist /reactive_timestep/ maximum_dt
+    maximum_dt=huge(1._dp)
+    open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
+    if(ios/=0) error stop 'Cannot open timestep input'
+    read(unit,nml=reactive_timestep,iostat=ios)
+    close(unit)
+    if(ios>0) error stop 'Invalid reactive_timestep namelist'
+    if(.not.ieee_is_finite(maximum_dt)) error stop 'Invalid maximum timestep'
+    if(maximum_dt<=0) error stop 'Invalid maximum timestep'
+  end subroutine
+
   subroutine read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio, &
       harmonic_mean,reference_heat_flux)
     character(len=*), intent(in) :: input_path
@@ -130,7 +145,7 @@ contains
     real(dp), allocatable :: constant_coefficients(:),hit_parameters(:)
     real(dp) :: hit_properties(3)
     real(dp), allocatable :: sdc_force(:),diffusion_rates(:,:,:,:),old_boundary_rate(:),new_boundary_rate(:)
-    real(dp) :: extra_diffusivity
+    real(dp) :: extra_diffusivity,maximum_dt
     integer :: source_calls
     logical :: les_enabled,les_harmonic
     real(dp) :: les_cs,les_prt,les_sct,les_ci
@@ -174,6 +189,7 @@ contains
     logical :: ok, cell_ok
     integer :: step, i, j, k, nvar, face
 
+    call read_regular_timestep_limit(input_path,maximum_dt)
     if(.not.present(evaluate_diffusion)) then
       call read_regular_les_controls(input_path,les_enabled,les_cs,les_prt,les_sct,les_ci, &
         les_model,les_filter,les_test_ratio,les_grid_ratio,les_harmonic)
@@ -395,7 +411,8 @@ contains
         if(extra_diffusivity>0) dt=min(dt,.1_dp/(extra_diffusivity*sum(1._dp/[dx,dy,dz]**2)))
         maximum_diffusivity=max(maximum_diffusivity,extra_diffusivity)
       end if
-      dt = min(dt, config%final_time - time)
+      dt = min(dt, maximum_dt, config%final_time - time)
+      if(time+dt<=time) error stop 'Maximum timestep cannot advance time'
       if(config%time_integrator=='sdc') then
         step_boundary_change=0;step_transport_theta=1;source_calls=0
         if(present(evaluate_diffusion)) then

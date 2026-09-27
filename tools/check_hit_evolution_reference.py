@@ -1,4 +1,4 @@
-"""Run the pinned full HIT application and compare one hydro step in SI units."""
+"""Run the pinned full HIT application and compare hydro evolution in SI units."""
 import argparse
 import csv
 import hashlib
@@ -18,7 +18,11 @@ def main():
     parser.add_argument('--transport', action='store_true', help='Enable matched constant viscosity and conductivity')
     parser.add_argument('--les', choices=('smagorinsky', 'wale', 'vreman', 'dynamic'))
     parser.add_argument('--pinned-heat-flux', action='store_true', help='Reproduce pinned dynamic heat-component selection')
+    parser.add_argument('--steps', type=int, default=1)
     args = parser.parse_args()
+    if not 1 <= args.steps <= 10000:
+        parser.error('--steps must be between 1 and 10000')
+    final_time = args.steps * 1e-8
     if args.pinned_heat_flux and args.les != 'dynamic':
         parser.error('--pinned-heat-flux requires --les dynamic')
     source = Path(__file__).resolve().parents[1]
@@ -32,6 +36,12 @@ def main():
     shutil.copy(args.velocity, work / 'hit_ic_4_32.dat')
     for name in ('pelec_reference.inp', 'hydro_reference.nml'):
         shutil.copy(source / 'cases/reactive_hit_3d' / name, work / name)
+    reference_input = work / 'pelec_reference.inp'
+    reference_input.write_text(reference_input.read_text().replace('max_step = 1\n', f'max_step = {args.steps}\n').replace(
+        'stop_time = 1.e-8', f'stop_time = {final_time:.17g}'))
+    fortran_input = work / 'hydro_reference.nml'
+    fortran_input.write_text(fortran_input.read_text().replace('final_time=1e-8,maximum_steps=1',
+        f'final_time={final_time:.17g},maximum_steps={args.steps}') + '\n&reactive_timestep maximum_dt=1e-8 /\n')
     if args.transport:
         reference_input = work / 'pelec_reference.inp'
         reference_input.write_text(reference_input.read_text().replace(
@@ -63,7 +73,8 @@ def main():
 
     run([args.pelec, 'pelec_reference.inp'], 'pelec.log')
     run([args.fortran, 'hydro_reference.nml'], 'fortran.log')
-    run([args.exporter, 'plt00001', 'reference.csv'], 'export.log')
+    assert f'Completed steps: {args.steps}' in (work / 'fortran.log').read_text()
+    run([args.exporter, f'plt{args.steps:05d}', 'reference.csv'], 'export.log')
     run([args.exporter, 'plt00000', 'reference_initial.csv'], 'export_initial.log')
 
     def rows(name):
@@ -81,7 +92,7 @@ def main():
                   rhoE=('rho_E', .1, 101300/.4), temperature=('Temp', 1, 300),
                   pressure=('pressure', .1, 101300))
     for a, b in zip(actual, reference):
-        assert float(a['time']) == float(b['time']) == 1e-8
+        assert float(a['time']) == float(b['time']) == final_time
         for key in ('x', 'y', 'z'):
             assert abs(float(a[key]) - .01*float(b[key])) < 1e-16
     errors, updates = {}, {}
@@ -90,7 +101,7 @@ def main():
                           for a, b in zip(actual, reference))
         updates[key] = max(factor*abs(float(b[name])-float(c[name]))/scale
                            for b, c in zip(reference, initial))
-    report = dict(pinned_heat_flux=args.pinned_heat_flux, transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
+    report = dict(steps=args.steps, final_time=final_time, pinned_heat_flux=args.pinned_heat_flux, transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
                   absolute_normalized_gate=1e-10, velocity_sha256=velocity_hash,
                   binaries={key: hashlib.sha256(getattr(args, key).read_bytes()).hexdigest()
                             for key in ('pelec', 'fortran', 'exporter')})
@@ -98,7 +109,7 @@ def main():
     print(json.dumps(report, indent=2))
     assert max(updates.values()) > 1e-7, 'Reference did not materially evolve'
     assert all(math.isfinite(v) and v < 1e-10 for v in errors.values()), errors
-    print('PASS: full HIT one-step comparison')
+    print(f'PASS: full HIT {args.steps}-step comparison')
 
 
 if __name__ == '__main__':
