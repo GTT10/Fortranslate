@@ -28,6 +28,11 @@ file(
 )
 
 if(PELEF_ENABLE_SUNDIALS)
+  add_executable(test_sdc_cvode_bridge unit/test_sdc_cvode_bridge.F90)
+  target_link_libraries(test_sdc_cvode_bridge PRIVATE fixture_mechanism
+    pelef_selected_reactive_3d_runtime pelef_selected_cvode_runtime)
+  add_test(NAME unit_sdc_cvode_bridge COMMAND test_sdc_cvode_bridge)
+  set_tests_properties(unit_sdc_cvode_bridge PROPERTIES TIMEOUT 120)
   add_executable(test_sundials_forced_reactor unit/test_sundials_forced_reactor.F90)
   target_link_libraries(test_sundials_forced_reactor PRIVATE fixture_mechanism pelef_selected_cvode_runtime)
   add_test(NAME unit_sundials_forced_reactor COMMAND test_sundials_forced_reactor)

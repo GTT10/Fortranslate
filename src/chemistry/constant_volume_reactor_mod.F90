@@ -23,6 +23,20 @@ module constant_volume_reactor_mod
   public :: backward_euler_trial
   public :: advance_constant_volume_implicit_adaptive
 
+  public :: forced_reactor_integrator
+  abstract interface
+    subroutine forced_reactor_integrator(species,reactions,initial_energy_density,external_species, &
+        external_energy,duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps)
+      import :: dp,nasa7_species,elementary_reaction
+      type(nasa7_species), intent(in) :: species(:)
+      type(elementary_reaction), intent(in) :: reactions(:)
+      real(dp), intent(in) :: initial_energy_density,external_species(:),external_energy,duration,rtol,atol
+      real(dp), intent(inout) :: species_density(:),temperature
+      integer, intent(out) :: completed_steps
+      logical, intent(out) :: ok
+      integer, optional, intent(in) :: maximum_steps
+    end subroutine
+  end interface
 contains
 
   ! Reactor state for SDC: rhoY evolves with chemistry plus fixed external

@@ -6,7 +6,7 @@ module reactive_3d_mod
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use constant_volume_reactor_mod, only: advance_forced_reactor_interval
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval,forced_reactor_integrator
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
@@ -84,7 +84,8 @@ contains
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z, &
-      fill_halos,fill_source_halos,new_source_estimate)
+      fill_halos,fill_source_halos,new_source_estimate,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
@@ -161,6 +162,7 @@ contains
     if(present(chemistry_absolute_tolerance)) atol=chemistry_absolute_tolerance
     if(.not.all(ieee_is_finite([rtol,atol])).or.min(rtol,atol)<=0) return
     if(present(reaction_source).and..not.present(reactions)) return
+    if(present(evaluate_reaction).and..not.present(reactions)) return
     allocate(ir(nv-4,n(1),n(2),n(3)));ir=0
     if(present(reaction_source)) then
       if(any(shape(reaction_source)/=shape(ir))) return
@@ -278,7 +280,8 @@ contains
         ! React.cpp builds rates without I_R, then integrates from the old state.
         call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,hydro)
         if(.not.valid) return
-        call react_sdc_state_3d(species,reactions,state,temperature,predictor,dt,rtol,atol,candidate,ct,ir,valid)
+        call react_sdc_state_3d(species,reactions,state,temperature,predictor,dt,rtol,atol, &
+          candidate,ct,ir,valid,evaluate_reaction)
         if(.not.valid) return
       end if
       if(.not.present(reactions)) then
@@ -379,7 +382,8 @@ contains
   ! React.cpp cell update, exposed separately for hierarchy stage coordination.
   ! Nonreacting rates include hydro and averaged external/transport sources.
   subroutine react_sdc_state_3d(species,reactions,old_state,old_temperature,nonreacting_rates,dt,rtol,atol, &
-      state,temperature,reaction_source,ok)
+      state,temperature,reaction_source,ok,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: old_state(:,:,:,:),old_temperature(:,:,:),nonreacting_rates(:,:,:,:),dt,rtol,atol
@@ -408,8 +412,13 @@ contains
       rhoe_old=old_state(5,i,j,k)-.5_dp*sum(old_state(2:4,i,j,k)**2)/old_state(1,i,j,k)
       rhoe_new=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
       rhoy=old_state(6:,i,j,k);react_t=old_temperature(i,j,k)
+      if(present(evaluate_reaction)) then
+        call evaluate_reaction(species,reactions,rhoe_old,nonreacting_rates(6:,i,j,k), &
+          (rhoe_new-rhoe_old)/dt,dt,rtol,atol*old_state(1,i,j,k),rhoy,react_t,steps,valid)
+      else
       call advance_forced_reactor_interval(species,reactions,rhoe_old,nonreacting_rates(6:,i,j,k), &
         (rhoe_new-rhoe_old)/dt,dt,rtol,atol*old_state(1,i,j,k),rhoy,react_t,steps,valid)
+      endif
       if(.not.valid) return
       nonreact_energy=candidate(5,i,j,k)
       candidate(1,i,j,k)=sum(rhoy);candidate(6:,i,j,k)=rhoy
