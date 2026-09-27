@@ -1,0 +1,11 @@
+&eb_spray
+ particle_outflow=.true.,
+ nc=1,number=4,vapor_names(1)='NC7H16',fractions(1)=1,
+ densities(1)=681.4,heat_capacities(1)=2248.3,
+ reference_temperatures(1)=300,reference_pressures(1)=101325,latent_heats(1)=363000,
+ mixture_vapor_pressure_models(1)='antoine',
+ mixture_antoine_coefficients(:,1)=4.02832,1268.636,-56.199,1e5,
+ mixture_antoine_temperature_ranges(:,1)=300,371.6,
+ total_mass=1e-10,center=.0015,.0015,.0015,axis=0,0,1,
+ speed=2,half_angle=0,diameter=20e-6,liquid_temperature=310
+/

@@ -418,8 +418,10 @@ program pelef_reactive_eb_tree_3d
   if (.not.ok) error stop 'Selected reaction load failed'
   call load_selected_transport(transport_names,transport_geometries,transport_values,ok)
   if (.not.ok) error stop 'Selected transport load failed'
+  if(selected_nreactions==0.and.chemistry_enabled) error stop 'Nonreacting EB tree requires chemistry disabled'
   call prepare_selected_mechanism('EB tree',selected_nspecies,selected_nreactions,species,reactions, &
-    transport_names,transport_geometries,transport_values,transport,common_tmin,common_tmax,ok,message)
+    transport_names,transport_geometries,transport_values,transport,common_tmin,common_tmax,ok,message, &
+    allow_nonreacting=selected_nreactions==0)
   if (.not.ok) then
     write(*,'(a)') trim(message)
     error stop 'Invalid selected mechanism'

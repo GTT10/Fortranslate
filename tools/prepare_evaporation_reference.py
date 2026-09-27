@@ -26,11 +26,16 @@ def main():
     mw = {s['name']: s['molecular_weight'] for s in bundle['thermo']}
     denominator = .21*mw['O2'] + .79*mw['N2']
     oxygen = .21*mw['O2']/denominator
+    density = 101325 * denominator / (8314.46261815324 * 400)
     multiplicity = 1e-10 / (4 * 681.4 * math.pi/6 * (20e-6)**3)
     args.output.mkdir(parents=True, exist_ok=False)
     text = (root / 'cases/spray_reference/evaporation.inp.in').read_text()
     text = text.replace('@O2@', format(oxygen, '.17g')).replace('@N2@', format(1-oxygen, '.17g'))
     (args.output / 'reference.inp').write_text(text)
+    tree = (root / 'cases/spray_reference/tree.nml.in').read_text().replace('@DENSITY@', format(density, '.17g'))
+    (args.output / 'tree.nml').write_text(tree)
+    (args.output / 'spray.nml').write_bytes((root / 'cases/spray_reference/spray.nml').read_bytes())
+    (args.output / 'level_set.dat').write_text('4 4 4\n' + '1.0\n' * 5**3)
     # 3 positions + 11 SprayComps real values: velocity, T, diameter,
     # composition, current/initial multiplicity, breakup state and film height.
     row = [.15,.15,.15,0,0,200,310,.002,1,multiplicity,multiplicity,0,0,0]
