@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Primitive conversion now preserves exact forward-EOS endpoint states when
+inverse rounding lands outside the mechanism interval. Strict ranges and
+out-of-range rejection remain unchanged; endpoint unit checks and 300 K
+fixed/selected uniform applications pass
+([repair evidence](validation/eos-endpoint-20260927.md)).
+
 Regular fixed/selected gas applications now accept pinned-format HIT velocity
 cubes through `reactive_hit`, with ASCII/binary input, periodic interpolation
 and Mach scaling. Manufactured interpolation and pinned 32³ input checks reach
