@@ -19,7 +19,7 @@ module mpi_eb_tree_full_3d_mod
   use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d,compute_sdc_mpi_eb_tree_transport_3d
   use mpi_eb_tree_subcycle_hydro_3d_mod, only: advance_mpi_eb_tree_subcycle_hydro_3d
   use mpi_eb_tree_subcycle_transport_3d_mod, only: advance_mpi_eb_tree_subcycle_transport_3d
-  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use mpi_eb_tree_redistribution_3d_mod, only: redistribute_sdc_mpi_eb_tree_flux_rate_3d, &
     redistribute_sdc_mpi_eb_tree_level_rate_3d,redistribute_mpi_eb_tree_state_3d, &
@@ -33,7 +33,24 @@ module mpi_eb_tree_full_3d_mod
   ! Auxiliary sources receive the old state at stage 0 and provisional new
   ! states at stages 1..iterations. Rates are per fluid volume per time.
   ! Callback-owned physical state must remain private until the driver succeeds.
+  public :: mpi_eb_sdc_diffusion_source
   abstract interface
+    ! Rates per fluid volume/time; flux integrated over interval per open face area.
+    subroutine mpi_eb_sdc_diffusion_source(state,temperature,interval,depth,rate,flux,theta,comm,ok, &
+        ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+      import :: amr_tree_state_3d,eb_integrated_flux_3d,dp,MPI_Comm
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+      real(dp), intent(inout) :: theta
+      type(MPI_Comm), intent(in) :: comm
+      logical, intent(out) :: ok
+      type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+      real(dp), optional, intent(in) :: fractions(:)
+    end subroutine
+
     ! Called after descendants and gas synchronization, before publication.
     ! Callback state must remain private until the entire outer step succeeds.
     subroutine mpi_eb_sdc_post_level(depth,time,interval,iteration,ncycle,comm,ok)
@@ -391,7 +408,8 @@ contains
       reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder)
+      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder,evaluate_diffusion)
+    procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -438,9 +456,10 @@ contains
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
     real(dp) :: controls(11),low(11),high(11),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
-    integer :: counts(9),mincounts(9),maxcounts(9),nv,rank,status,node,n(3),it,i,j,k,c,ios
-    logical :: valid,ready,diffusive
+    integer :: counts(10),mincounts(10),maxcounts(10),nv,rank,status,node,n(3),it,i,j,k,c,ios
+    logical :: valid,ready,diffusive,has_diffusion
     ok=.false.;nv=reactive_nvar(size(species));theta=1
+    has_diffusion=present(evaluate_diffusion)
     accel=0
     if(present(gas_acceleration)) accel=gas_acceleration
     redistribution_method='none'
@@ -466,10 +485,10 @@ contains
     call MPI_Allreduce(controls,high,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
-      merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder))]
-    call MPI_Allreduce(counts,mincounts,9,MPI_INTEGER,MPI_MIN,comm,status)
+      merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder)),merge(1,0,present(evaluate_diffusion))]
+    call MPI_Allreduce(counts,mincounts,10,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,maxcounts,9,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,maxcounts,10,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(mincounts/=maxcounts)) return
     selected_depth=-1
     if(present(target_depth)) selected_depth=target_depth
@@ -660,7 +679,7 @@ contains
       if(.not.valid) exit
       ledger%fields(node)%values=dt*wall_rate
       deallocate(wall_rate)
-      if(diffusive) then
+      if(diffusive.or.has_diffusion) then
         hf(node)%x=hf(node)%x+.5_dp*(f0(node)%x+f1(node)%x)
         hf(node)%y=hf(node)%y+.5_dp*(f0(node)%y+f1(node)%y)
         hf(node)%z=hf(node)%z+.5_dp*(f0(node)%z+f1(node)%z)
@@ -793,6 +812,9 @@ contains
       real(dp), optional, intent(in) :: fractions(:)
       integer :: p,d(3),x,y,z,alloc_status
       logical :: local_ok,all_ok
+      type(amr_tree_state_3d) :: extra
+      type(eb_integrated_flux_3d), allocatable :: extra_flux(:)
+      real(dp) :: extra_theta,global_theta
       local_ok=.true.;good=.false.
       allocate(external_rate%fields(size(owners)),stat=alloc_status)
       call agree(alloc_status==0,comm,all_ok)
@@ -865,6 +887,41 @@ contains
           boundary_faces,inflow_state,wall_temperature, &
           target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
         if(.not.all_ok) return
+      else
+        stage_theta=1
+      end if
+      if(has_diffusion) then
+        extra=transport_rate;extra_theta=1
+        call evaluate_diffusion(gas,temp,dt,selected_depth,extra,extra_flux,extra_theta,comm,local_ok, &
+          ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+        call agree(local_ok,comm,all_ok)
+        if(.not.all_ok) return
+        call validate_mpi_amr_tree_local_3d(tree,owners,extra,nv,comm,all_ok)
+        if(.not.all_ok) return
+        local_ok=allocated(extra_flux).and.ieee_is_finite(extra_theta)
+        if(local_ok) local_ok=size(extra_flux)==size(owners).and.extra_theta>=0.and.extra_theta<=1
+        call agree(local_ok,comm,all_ok)
+        if(.not.all_ok) return
+        do p=1,size(owners)
+          if(owners(p)/=rank.or..not.active(p)) cycle
+          local_ok=valid_eb_integrated_flux_3d(extra_flux(p),geometry(p),nv)
+          local_ok=local_ok.and.all(ieee_is_finite(extra%fields(p)%values))
+          if(.not.local_ok) exit
+          transport_rate%fields(p)%values=transport_rate%fields(p)%values+extra%fields(p)%values
+          if(diffusive) then
+            flux(p)%x=flux(p)%x+extra_flux(p)%x
+            flux(p)%y=flux(p)%y+extra_flux(p)%y
+            flux(p)%z=flux(p)%z+extra_flux(p)%z
+          end if
+        end do
+        call agree(local_ok,comm,all_ok)
+        if(.not.all_ok) return
+        call MPI_Allreduce(extra_theta,global_theta,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+        if(status/=MPI_SUCCESS) return
+        stage_theta=min(stage_theta,global_theta)
+        if(.not.diffusive) call move_alloc(extra_flux,flux)
+      end if
+      if(diffusive.or.has_diffusion) then
         if(redistribution_method=='state_redist') then
           if(selected_depth>=0) then
             call redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree,owners,geometry,gas,transport_rate,nv,selected_depth,dt, &
@@ -920,7 +977,8 @@ contains
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source, &
-      predictor_builder,post_level)
+      predictor_builder,post_level,evaluate_diffusion)
+    procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1208,13 +1266,15 @@ contains
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter)
+        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
+        evaluate_diffusion=evaluate_diffusion)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter)
+        redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
+        evaluate_diffusion=evaluate_diffusion)
       end if
       else
       if(has_auxiliary) then
@@ -1222,13 +1282,13 @@ contains
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration)
+        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,gas_acceleration=gas_acceleration)
+        redist_target,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion)
       end if
       end if
       if(.not.accepted) return

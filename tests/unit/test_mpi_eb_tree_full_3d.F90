@@ -24,6 +24,7 @@ program test_mpi_eb_tree_full_3d
   use mpi_eb_tree_full_3d_mod, only: advance_mpi_eb_tree_sdc_subcycle_3d,mpi_eb_sdc_recursive_source
   use eb_reactive_patch_tree_3d_mod, only: advance_reactive_eb_tree_sdc_subcycle_3d,eb_sdc_recursive_source
   use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
+  use mpi_eb_tree_transport_3d_mod, only: compute_sdc_mpi_eb_tree_transport_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
   type(gas_transport_species), allocatable :: transport(:)
@@ -39,6 +40,10 @@ program test_mpi_eb_tree_full_3d
   character(len=1), parameter :: axes(3)=['x','y','z']
   integer :: nv,node,axis,count,i,j,k,mode,integrator_index,rank,nranks,status
   integer :: serial_source_calls=0,mpi_source_calls=0,source_failure=0
+  integer, allocatable :: diffusion_owners(:)
+  type(eb_geometry_3d), allocatable :: diffusion_geometry(:)
+  logical :: diffusion_failure=.false.
+  integer :: diffusion_calls=0
   integer :: predictor_calls=0
   integer, allocatable :: predictor_owners(:)
   type(eb_geometry_3d), allocatable :: predictor_geometry(:)
@@ -109,7 +114,7 @@ program test_mpi_eb_tree_full_3d
   call check_sdc_loop()
   if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
      test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source".or. &
-     test_mode=="aux_recursive".or.test_mode=="aux_route") then
+     test_mode=="aux_recursive".or.test_mode=="aux_route".or.test_mode=="diffusion") then
     deallocate(u,t)
     cycle
   end if
@@ -144,6 +149,29 @@ program test_mpi_eb_tree_full_3d
   if (rank==0) print *, 'test_mpi_eb_tree_full_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine diffusion_source(state,temp,interval,depth,rate,flux,limiter,comm,good, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+    type(amr_tree_state_3d), intent(in) :: state,temp
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    real(dp), intent(inout) :: limiter
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: fractions(:)
+    character(len=16) :: faces(6)
+    integer, allocatable :: selected
+    faces='outflow'
+    if(depth>=0) selected=depth
+    call compute_sdc_mpi_eb_tree_transport_3d(species,transport,topology,diffusion_owners,diffusion_geometry,interval, &
+      .true.,.true.,.true.,.true.,state,temp,rate,flux,limiter,comm,good,boundary_faces=faces,target_depth=selected, &
+      ancestor_start=ancestor_start,ancestor_end=ancestor_end,temperature_start=temperature_start, &
+      temperature_end=temperature_end,ancestor_fraction=fractions)
+    diffusion_calls=diffusion_calls+1
+    if(diffusion_failure.and.rank==nranks-1.and.diffusion_calls==2) good=.false.
+  end subroutine diffusion_source
   subroutine check_sdc_loop()
     type(eb_reactive_tree_3d) :: initial,reference
     type(eb_geometry_3d) :: geometry(count),extended_finest
@@ -221,6 +249,14 @@ contains
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
         b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,redistribution=method)
       call require(good,'MPI coupled SDC')
+      if(test_mode=='diffusion') then
+        diffusion_owners=owners;diffusion_geometry=geometry
+        local=old;lt=ot;ir=old_ir
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+          1.e-10_dp,2,.true.,[.false.,.false.,.false.,.false.],force,2.e-7_dp,1.e-12_dp,faces, &
+          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,evaluate_diffusion=diffusion_source)
+        call require(good,'MPI callback transport SDC')
+      end if
       do p=1,count
         call require(allocated(local%fields(p)%values).eqv.(owners(p)==rank),'coupled SDC owner-local state')
         if(owners(p)/=rank) cycle
@@ -257,6 +293,45 @@ contains
         call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(ext==29).and.limiter==31, &
           'coupled SDC inventory rollback')
       end do
+      if(test_mode=='diffusion') then
+        block
+          type(amr_tree_state_3d) :: expected,expected_t,expected_ir
+          real(dp) :: eb(nv),ew(nv),ech(nv),ee(nv),et
+          local=old;lt=ot;ir=old_ir
+          call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
+            1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
+            eb,ew,ech,ee,et,MPI_COMM_WORLD,good,ir)
+          call require(good,'native recursive transport reference')
+          expected=local;expected_t=lt;expected_ir=ir
+          local=old;lt=ot;ir=old_ir
+          call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
+            1.e-10_dp,2,.true.,[.false.,.false.,.false.,.false.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
+            b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,evaluate_diffusion=diffusion_source)
+          call require(good,'recursive diffusion callback')
+          do p=1,count
+            if(owners(p)/=rank) cycle
+            call require(all(local%fields(p)%values==expected%fields(p)%values),'recursive callback state exact')
+            call require(all(lt%fields(p)%values==expected_t%fields(p)%values),'recursive callback T exact')
+            call require(all(ir%fields(p)%values==expected_ir%fields(p)%values),'recursive callback IR exact')
+          end do
+          call require(all(b==eb).and.all(w==ew).and.all(ch==ech).and.all(ext==ee).and.limiter==et, &
+            'recursive callback diagnostics exact')
+          diffusion_failure=.true.;diffusion_calls=0
+          call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
+            1.e-10_dp,2,.true.,[.false.,.false.,.false.,.false.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
+            b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,evaluate_diffusion=diffusion_source)
+          call require(.not.good,'rank-local callback failure rejects recursive step')
+          diffusion_failure=.false.
+          do p=1,count
+            if(owners(p)/=rank) cycle
+            call require(all(local%fields(p)%values==expected%fields(p)%values),'callback state rollback')
+            call require(all(lt%fields(p)%values==expected_t%fields(p)%values),'callback T rollback')
+            call require(all(ir%fields(p)%values==expected_ir%fields(p)%values),'callback IR rollback')
+          end do
+          call require(all(b==eb).and.all(w==ew).and.all(ch==ech).and.all(ext==ee).and.limiter==et, &
+            'callback diagnostics rollback')
+        end block
+      end if
       deallocate(local%fields,lt%fields,ir%fields)
     end do
   end subroutine check_sdc_loop
