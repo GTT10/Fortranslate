@@ -49,7 +49,9 @@ stationary films now also join the recursive gas source, predictor and physical
 inventory synchronization ([coupled checks](validation/spray-recursive-film-20260927.md)).
 The frozen particle halo kernel now supports collision-created films and splash
 with transactional IDs ([impact checks](validation/spray-halo-impact-20260927.md));
-their population-stage lifecycle and application routing remain open. Uniform particle acceleration now
+physical-only impact routing and old/intermediate/final particle SDC snapshots are
+also connected ([stage lifecycle](validation/spray-population-impact-20260927.md)).
+Recursive newborn-film placement, thermal ordering and application routing remain open. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and
