@@ -439,8 +439,24 @@ contains
 
       if (residual > 0.0_dp) then
         upper = working_temperature
+        energy_upper = internal_energy
       else
         lower = working_temperature
+        energy_lower = internal_energy
+      end if
+
+      ! Formation energies can cancel near zero, making the energy residual
+      ! criterion unattainable at binary64 temperature resolution. A signed
+      ! bracket with adjacent representable endpoints is already fully resolved.
+      if(energy_lower<=target_internal_energy.and.target_internal_energy<=energy_upper) then
+        if(nearest(lower,1._dp)>=upper.and. &
+          .not.any(lower<=species%temperature_mid.and.upper>species%temperature_mid)) then
+          temperature=lower
+          if(abs(energy_upper-target_internal_energy)<abs(energy_lower-target_internal_energy)) temperature=upper
+          ok=.true.
+          if(present(iterations)) iterations=iteration
+          return
+        end if
       end if
 
       call divide_finite(residual, cv, step, local_ok)

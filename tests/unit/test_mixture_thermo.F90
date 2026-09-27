@@ -111,6 +111,26 @@ program test_mixture_thermo
   call check_nonfinite_contract(species, mass_fractions, ok)
   if (.not. ok) error stop "Mixture thermodynamics finite contract failed"
 
+  block
+    real(dp) :: near_zero(4),target,below,above,lower_energy,upper_energy
+    integer :: sample
+    near_zero=[0._dp,1.0351682798876758_dp,-1._dp,1e-6_dp]
+    mass_fractions=0;mass_fractions(gri_n2_index)=1
+    do sample=1,size(near_zero)
+      target=near_zero(sample)
+      call temperature_from_internal_energy(species,mass_fractions,target,440._dp,recovered_temperature,ok,iterations)
+      if(.not.ok.or.iterations>=100) error stop 'Near-zero energy inversion stagnates'
+      below=nearest(recovered_temperature,-1._dp);above=nearest(recovered_temperature,1._dp)
+      call mixture_mass_properties(species,mass_fractions,below,molecular_weight,gas_constant, &
+        cp,cv,gamma,enthalpy,lower_energy,entropy,ok)
+      if(.not.ok) error stop 'Lower neighbor thermodynamics'
+      call mixture_mass_properties(species,mass_fractions,above,molecular_weight,gas_constant, &
+        cp,cv,gamma,enthalpy,upper_energy,entropy,ok)
+      if(.not.ok) error stop 'Upper neighbor thermodynamics'
+      if(target<lower_energy.or.target>upper_energy) error stop 'Recovered temperature does not bracket target energy'
+    end do
+  end block
+
   write(*, '(a)') "test_mixture_thermo: PASS"
 
 contains
