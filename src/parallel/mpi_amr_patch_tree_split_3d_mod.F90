@@ -3,6 +3,7 @@ module mpi_amr_patch_tree_split_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use amr_patch_tree_split_3d_mod, only: amr_sdc_diffusion_evaluator
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -32,7 +33,8 @@ contains
   subroutine advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion)
+      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -58,18 +60,20 @@ contains
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: starts(:),finishes(:)
     real(dp) :: budget(size(boundary_change)),volume(size(source_change)),largest,theta
-    integer :: nv,node,n(3),level,rank,status,flags(3),low(3),high(3)
+    integer :: nv,node,n(3),level,rank,status,flags(4),low(4),high(4)
     logical :: valid
     ok=.false.;nv=5+size(species)
-    flags=[merge(1,0,chemistry),merge(1,0,present(reaction_source)),merge(1,0,present(level_steps))]
-    call MPI_Allreduce(flags,low,3,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[merge(1,0,chemistry),merge(1,0,present(reaction_source)),merge(1,0,present(level_steps)), &
+      merge(1,0,present(evaluate_reaction))]
+    call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,4,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(low/=high)) return
     valid=size(boundary_change)==nv.and.size(source_change)==nv
     valid=valid.and.all(ieee_is_finite([spacing,dt])).and.minval(spacing)>0.and.dt>0
     valid=valid.and.(chemistry.or..not.present(reaction_source))
+    valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
     call agree(valid)
     if(.not.valid) return
     call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
@@ -145,14 +149,16 @@ contains
         call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,comm,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
-          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
+          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np, &
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction)
       else
         call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,comm,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
           difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
           fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
-          integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
+          integrated_flux=total,old_predictor=op,new_predictor=np, &
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction)
       end if
       if(.not.good) return
       executed(depth+1)=executed(depth+1)+1
@@ -231,7 +237,8 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
       inflow_mach,inflow_pressure,difmag,target_depth,coarse_start,coarse_end,fractions_start,fractions_end, &
-      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion)
+      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -262,7 +269,7 @@ contains
     real(dp) :: budget(size(boundary_change)),volume(size(source_change)),correction(size(boundary_change))
     real(dp) :: first(size(source_change)),last(size(source_change)),largest,theta,stage_theta
     integer :: nv,node,n(3),iteration,c,rank,status,ios
-    integer :: switches(10),low_switches(10),high_switches(10)
+    integer :: switches(11),low_switches(11),high_switches(11)
     real(dp) :: controls(9),low_controls(9),high_controls(9)
     logical :: valid,do_transport
     ok=.false.;nv=5+size(species)
@@ -272,13 +279,14 @@ contains
     valid=valid.and.minval(spacing)>0.and.min(dt,rtol,atol)>0.and.valid_reactive_boundaries_3d(faces)
     valid=valid.and..not.(transport_flags(4).and..not.transport_flags(3))
     valid=valid.and.(chemistry.or..not.present(reaction_source))
+    valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
     call agree(valid)
     if(.not.valid) return
     switches=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
-      size(species),size(reactions),merge(1,0,present(evaluate_diffusion))]
-    call MPI_Allreduce(switches,low_switches,10,MPI_INTEGER,MPI_MIN,comm,status)
+      size(species),size(reactions),merge(1,0,present(evaluate_diffusion)),merge(1,0,present(evaluate_reaction))]
+    call MPI_Allreduce(switches,low_switches,11,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(switches,high_switches,10,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(switches,high_switches,11,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(low_switches/=high_switches)) return
     call MPI_Allreduce(controls,low_controls,9,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -383,7 +391,7 @@ contains
       end do
       if(chemistry) then
         call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,ot,rates,dt,rtol,atol,candidate,ct,ir,comm,valid, &
-          target_depth)
+          target_depth,evaluate_reaction)
         if(.not.valid) return
       else
         do node=1,size(tree%nodes)

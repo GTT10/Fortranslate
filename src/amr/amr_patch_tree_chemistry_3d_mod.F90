@@ -1,6 +1,7 @@
 module amr_patch_tree_chemistry_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar
@@ -13,7 +14,8 @@ module amr_patch_tree_chemistry_3d_mod
   public :: react_sdc_amr_patch_tree_3d
 contains
   subroutine react_sdc_amr_patch_tree_3d(tree,species,reactions,old_state,old_temperature,nonreacting_rates, &
-      dt,rtol,atol,state,temperature,reaction_source,ok,target_depth)
+      dt,rtol,atol,state,temperature,reaction_source,ok,target_depth,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -54,7 +56,7 @@ contains
       sources%fields(node)%values=0
       call react_sdc_state_3d(species,reactions,old_state%fields(node)%values, &
         old_temperature%fields(node)%values(1,:,:,:),nonreacting_rates%fields(node)%values,dt,rtol,atol, &
-        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid)
+        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid,evaluate_reaction)
       if(.not.valid) return
     end do
     state=candidate;temperature=temps;reaction_source=sources;ok=.true.

@@ -3,6 +3,7 @@ module mpi_amr_patch_tree_chemistry_3d_mod
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar
@@ -18,7 +19,8 @@ module mpi_amr_patch_tree_chemistry_3d_mod
   public :: react_sdc_mpi_amr_tree_3d
 contains
   subroutine react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old_state,old_temperature,nonreacting_rates, &
-      dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth)
+      dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
@@ -31,7 +33,7 @@ contains
     integer, optional, intent(in) :: target_depth
     type(amr_tree_state_3d) :: candidate,temps,sources
     real(dp) :: controls(3),low(3),high(3),work_stamp
-    integer :: rank,status,ios,node,n(3),nv,depth,counts(3),min_counts(3),max_counts(3)
+    integer :: rank,status,ios,node,n(3),nv,depth,counts(4),min_counts(4),max_counts(4)
     logical :: valid
     ok=.false.;controls=[dt,rtol,atol];depth=-1;nv=reactive_nvar(size(species))
     valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0
@@ -46,10 +48,10 @@ contains
     call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(low/=high)) return
-    counts=[size(species),size(reactions),depth]
-    call MPI_Allreduce(counts,min_counts,3,MPI_INTEGER,MPI_MIN,comm,status)
+    counts=[size(species),size(reactions),depth,merge(1,0,present(evaluate_reaction))]
+    call MPI_Allreduce(counts,min_counts,4,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,max_counts,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,max_counts,4,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(min_counts/=max_counts)) return
     call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),old_state,old_temperature, &
@@ -94,7 +96,7 @@ contains
       work_stamp=tree_work_start()
       call react_sdc_state_3d(species,reactions,old_state%fields(node)%values, &
         old_temperature%fields(node)%values(1,:,:,:),nonreacting_rates%fields(node)%values,dt,rtol,atol, &
-        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid)
+        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid,evaluate_reaction)
       call tree_work_stop(node,work_stamp)
       if(.not.valid) exit
     end do

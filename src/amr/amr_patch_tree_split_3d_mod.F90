@@ -2,6 +2,7 @@ module amr_patch_tree_split_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use amr_patch_tree_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_hydro_3d
   use amr_patch_tree_transport_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_transport_3d
   use nasa7_thermo_mod, only: nasa7_species
@@ -37,7 +38,8 @@ contains
   subroutine advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion)
+      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
@@ -64,6 +66,7 @@ contains
     integer :: nv,node,n(3),level
     logical :: valid
     ok=.false.;nv=5+size(species)
+    if(present(evaluate_reaction).and..not.chemistry) return
     if(.not.state%is_valid(tree).or..not.temperature%is_valid(tree)) return
     if(size(state%fields(1)%values,1)/=nv.or.size(temperature%fields(1)%values,1)/=1) return
     if(size(boundary_change)/=nv.or.size(source_change)/=nv) return
@@ -136,14 +139,16 @@ contains
         call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
-          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
+          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np, &
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction)
       else
         call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
           difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
           fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
-          integrated_flux=total,old_predictor=op,new_predictor=np,evaluate_diffusion=evaluate_diffusion)
+          integrated_flux=total,old_predictor=op,new_predictor=np, &
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction)
       end if
       if(.not.good) return
       executed(depth+1)=executed(depth+1)+1
@@ -220,7 +225,8 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
       inflow_mach,inflow_pressure,difmag,target_depth,coarse_start,coarse_end,fractions_start,fractions_end, &
-      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion)
+      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion,evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
@@ -249,6 +255,7 @@ contains
     integer :: nv,node,n(3),iteration,c,depth
     logical :: valid,do_transport
     ok=.false.;nv=5+size(species)
+    if(present(evaluate_reaction).and..not.chemistry) return
     if(.not.state%is_valid(tree).or..not.temperature%is_valid(tree)) return
     if(size(state%fields(1)%values,1)/=nv.or.size(temperature%fields(1)%values,1)/=1) return
     if(size(boundary_change)/=nv.or.size(source_change)/=nv.or.iterations<1) return
@@ -321,7 +328,8 @@ contains
         rates%fields(node)%values=rates%fields(node)%values+hydro%fields(node)%values
       end do
       if(chemistry) then
-        call react_sdc_amr_patch_tree_3d(tree,species,reactions,old,ot,rates,dt,rtol,atol,candidate,ct,ir,valid,target_depth)
+        call react_sdc_amr_patch_tree_3d(tree,species,reactions,old,ot,rates,dt,rtol,atol,candidate,ct,ir,valid, &
+          target_depth,evaluate_reaction)
         if(.not.valid) return
       else
         do node=1,size(tree%nodes)

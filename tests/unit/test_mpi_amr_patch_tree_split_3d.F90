@@ -2,6 +2,7 @@ program test_mpi_amr_patch_tree_split_3d
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
@@ -32,7 +33,8 @@ program test_mpi_amr_patch_tree_split_3d
   character(len=32) :: faces(6),reconstruction,integrator,arg,solver
   real(dp) :: coefficient
   logical :: diffusion_failure=.false.
-  integer :: diffusion_calls=0
+  integer :: diffusion_calls=0,reactor_calls=0
+  logical :: reactor_failure=.false.
   logical :: ppm
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
   logical :: ok,enabled,bad_enabled
@@ -160,6 +162,23 @@ program test_mpi_amr_patch_tree_split_3d
   if (rank==0) print *, 'PASS: distributed reaction transport hydro split, disabled operators, serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine reactor_adapter(species,reactions,initial_energy_density,external_species,external_energy, &
+      duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: initial_energy_density,external_species(:),external_energy,duration,rtol,atol
+    real(dp), intent(inout) :: species_density(:),temperature
+    integer, intent(out) :: completed_steps
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_steps
+    reactor_calls=reactor_calls+1
+    if(reactor_failure.and.rank==0.and.reactor_calls==2) then
+      species_density=-1;temperature=-1;completed_steps=0;ok=.false.
+      return
+    end if
+    call advance_forced_reactor_interval(species,reactions,initial_energy_density,external_species,external_energy, &
+      duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps=maximum_steps)
+  end subroutine reactor_adapter
   subroutine check_sdc()
     type(amr_tree_state_3d) :: ir,serial_ir,retained_ir
     real(dp) :: external(12),serial_external(12),force(3),visc
@@ -181,11 +200,14 @@ contains
     oracle=global;oracle_t=reference
     call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,oracle,oracle_t,spacing,dt,faces,2,.true., &
       [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,serial_budget,serial_external,serial_largest,serial_theta, &
-      ok,reaction_source=serial_ir)
-    call require(ok,'serial coupled SDC reference')
+      ok,reaction_source=serial_ir,evaluate_reaction=reactor_adapter)
+    call require(ok.and.reactor_calls>0,'serial coupled SDC callback')
+    reactor_calls=0
     call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces,2,.true., &
-      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok,reaction_source=ir)
+      [.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok,reaction_source=ir, &
+      evaluate_reaction=reactor_adapter)
     call require(ok,'MPI coupled SDC iteration')
+    call require((reactor_calls>0).eqv.any(owners==rank),'callback only on owning ranks')
     call compare_state()
     call require(all(budget==serial_budget).and.all(external==serial_external),'exact MPI SDC boundary/source inventory')
     call require(largest==serial_largest.and.theta==serial_theta,'exact MPI SDC diagnostics')
@@ -258,7 +280,7 @@ contains
     call require(ok,'serial recursive SDC')
     call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
       2,.true.,[.true.,.true.,.true.,.true.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta,MPI_COMM_WORLD,ok, &
-      reaction_source=ir,level_steps=counts)
+      reaction_source=ir,level_steps=counts,evaluate_reaction=reactor_adapter)
     call require(ok.and.all(counts==serial_counts),'MPI recursive SDC and counts')
     call compare_state()
     call require(all(budget==serial_budget).and.all(external==serial_external),'recursive inventories exact')
@@ -279,6 +301,32 @@ contains
       if(owners(peer)/=rank) cycle
       call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'recursive IR rollback')
     end do
+    ! Fail after successful cells, and reject callback presence disagreement on an idle rank.
+    do variant=1,3
+      reactor_calls=0;reactor_failure=variant<=2
+      if(variant==1) then
+        call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,local,temperature,spacing,dt,faces, &
+          2,.true.,[.false.,.false.,.false.,.false.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta, &
+          MPI_COMM_WORLD,ok,reaction_source=ir,evaluate_reaction=reactor_adapter)
+      else if(variant==2.or.rank/=nranks-1) then
+        call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing, &
+          dt,faces,2,.true.,[.false.,.false.,.false.,.false.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta, &
+          MPI_COMM_WORLD,ok,reaction_source=ir,level_steps=counts,evaluate_reaction=reactor_adapter)
+      else
+        call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,local,temperature,spacing, &
+          dt,faces,2,.true.,[.false.,.false.,.false.,.false.],force,1e-6_dp,1e-14_dp,budget,external,largest,theta, &
+          MPI_COMM_WORLD,ok,reaction_source=ir,level_steps=counts)
+      end if
+      call require(.not.ok,'reactor failure or rank mismatch rejected')
+      call unchanged()
+      call require(all(counts==serial_counts).and.all(external==serial_external),'reactor rollback ledgers')
+      do peer=1,3
+        if(owners(peer)/=rank) cycle
+        call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'reactor history rollback')
+      end do
+      if(variant==3) call require(reactor_calls==0,'presence mismatch rejected before reaction')
+    end do
+    reactor_failure=.false.
     do variant=1,2
       flags=variant==1
       oracle=global;oracle_t=reference
