@@ -132,6 +132,12 @@ contains
         if (vn>=0) return
         old_velocity=trial(p)%velocity
         trial(p)%velocity=trial(p)%velocity-2*vn*normal
+        ! Keep the next segment on the fluid side of the computed contact.
+        ! A surface point can interpolate slightly negative after rounding.
+        do axis=1,3
+          if(normal(axis)==0) cycle
+          trial(p)%position(axis)=nearest(trial(p)%position(axis),normal(axis))
+        end do
         if(present(outer_faces)) then
           weight=trial(p)%mass*trial(p)%multiplicity;event_change=0
           event_change(2:4)=weight*(trial(p)%velocity-old_velocity)

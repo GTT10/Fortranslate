@@ -1,14 +1,27 @@
 program test_spray_eb_drift
   use precision_mod, only: dp
+  use, intrinsic :: iso_fortran_env, only: int64
   use spray_parcel_mod, only: spray_parcel
   use spray_eb_drift_mod, only: drift_spray_level_set
   implicit none
   type(spray_parcel) :: p(2),saved(2)
   real(dp) :: phi(0:2,0:2,0:2),lo(3)=0,hi(3)=2,change(5),normal(3),v(3),expected(3)
+  real(dp) :: small_phi(0:8,0:8,0:8)
   real(dp) :: exterior(5),energy(2)=10
   character(len=16) :: faces(6)
   integer :: i,j,k,hits
   logical :: ok,contact(2)
+  ! A dimensional wall contact can round just below zero in the next
+  ! tetrahedral interpolation, despite an exactly representable wall position.
+  do j=0,8
+    small_phi(:,j,:)=real(j,dp)*.0005_dp-.00125_dp
+  end do
+  p(1)=spray_parcel(1_int64,[.0012_dp,.001250001_dp,.0015_dp], &
+    [2.9e-6_dp,-100._dp,8.74e-6_dp],1e-9_dp,350._dp,1._dp)
+  p(2)=p(1);p(2)%mass=0
+  call drift_spray_level_set(small_phi,[0._dp,0._dp,0._dp],[.004_dp,.004_dp,.004_dp],1e-8_dp,8,p,change,hits,ok)
+  call require(ok.and.hits==1,'dimensional wall reflection remains on fluid side')
+  call require(p(1)%velocity(2)==100.and.p(1)%position(2)>.00125_dp,'dimensional reflected remainder advances')
   ! Oblique plane x+y=1, fluid to the upper right. Tangential z motion persists.
   do k=0,2
   do j=0,2
