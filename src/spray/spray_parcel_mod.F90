@@ -55,6 +55,7 @@ module spray_parcel_mod
     character(len=8) :: breakup_model='none'
     real(dp) :: surface_tension=0.0_dp,liquid_viscosity=0.0_dp
     character(len=24) :: drag_model="schiller-naumann"
+    character(len=24) :: mixture_time_scheme='conservative'
     logical :: drag = .true., heat = .true., evaporation = .true.
     logical :: abramzon_sirignano = .true.
     real(dp) :: max_fractional_change = 0.1_dp, particle_cfl = 0.25_dp
@@ -315,6 +316,7 @@ contains
       if (o%khrt_reference_diameter_cubed/=0) return
     end if
     if (o%drag_model/="schiller-naumann".and.o%drag_model/="pelephysics") return
+    if(o%mixture_time_scheme/='conservative'.and.o%mixture_time_scheme/='euler') return
     select case(trim(o%breakup_model))
     case('none')
     case('etab','khrt')

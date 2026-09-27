@@ -1,6 +1,7 @@
 &eb_spray
  particle_outflow=.true.,
  particle_options%drag_model='pelephysics',
+ particle_options%mixture_time_scheme='euler',
  nc=1,number=4,vapor_names(1)='NC7H16',fractions(1)=1,
  densities(1)=681.4,heat_capacities(1)=2248.3,
  reference_temperatures(1)=300,reference_pressures(1)=101325,latent_heats(1)=363000,

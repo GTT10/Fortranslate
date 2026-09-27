@@ -336,11 +336,16 @@ contains
     end if
     candidate=parcel;remaining=component_mass
     if (options%drag) candidate%velocity=primitive(2:4)+(parcel%velocity-primitive(2:4))*exp(-min(700.0_dp,invtau*dt))
+    if(options%drag.and.options%mixture_time_scheme=='euler') then
+      if(invtau*dt>1) return
+      candidate%velocity=parcel%velocity+dt*invtau*(primitive(2:4)-parcel%velocity)
+    end if
     candidate%position=parcel%position+.5_dp*dt*(parcel%velocity+candidate%velocity)
     drag=0;drag(2:4)=mass*parcel%multiplicity*(parcel%velocity-candidate%velocity)
     drag(5)=.5_dp*mass*parcel%multiplicity*(sum(parcel%velocity**2)-sum(candidate%velocity**2))
     call advance_mixture_evaporation(candidate,components,remaining,evaporated,hv, &
-      heat*(gas_temperature-parcel%temperature)*dt*parcel%multiplicity,exchange,valid)
+      heat*(gas_temperature-parcel%temperature)*dt*parcel%multiplicity,exchange,valid, &
+      euler_temperature=options%mixture_time_scheme=='euler')
     if (.not.valid) return
     exchange(1:5)=exchange(1:5)+drag
     if (.not.all(ieee_is_finite(exchange))) return
@@ -384,18 +389,22 @@ contains
     surface_x=candidate;ok=.true.
   end subroutine
 
-  subroutine advance_mixture_evaporation(parcel,components,component_mass,evaporated_mass,vapor_enthalpy,heat,gas_change,ok)
+  subroutine advance_mixture_evaporation(parcel,components,component_mass,evaporated_mass,vapor_enthalpy,heat,gas_change,ok, &
+      euler_temperature)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(inout) :: component_mass(:)
     real(dp), intent(in) :: evaporated_mass(:),vapor_enthalpy(:),heat
     real(dp), intent(out) :: gas_change(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: euler_temperature
     real(dp) :: remaining(size(component_mass)),y(size(component_mass)),exchange(size(gas_change))
-    real(dp) :: old_mass,new_mass,rho,cp,old_e,new_e,target,t,kinetic,drop_heat
+    real(dp) :: old_mass,new_mass,rho,cp,old_e,new_e,target,t,kinetic,drop_heat,latent_energy
     integer :: i,n
-    logical :: valid
+    logical :: valid,use_euler
     type(spray_parcel) :: candidate
+    use_euler=.false.
+    if(present(euler_temperature)) use_euler=euler_temperature
     ok=.false.;gas_change=0;n=size(component_mass)
     if (n<1.or.n>16.or.size(components)/=n.or.size(evaporated_mass)/=n.or.size(vapor_enthalpy)/=n) return
     if (size(gas_change)<6.or..not.valid_spray_parcel(parcel)) return
@@ -414,11 +423,22 @@ contains
     candidate=parcel;candidate%mass=new_mass;new_e=0
     if (new_mass>0) then
       y=remaining/new_mass;drop_heat=heat/parcel%multiplicity
-      target=old_mass*old_e+drop_heat-sum(evaporated_mass*vapor_enthalpy)
-      if (abs(target)>1e15_dp*new_mass) return
-      target=target/new_mass;t=parcel%temperature
-      call liquid_mixture_temperature(components,y,target,t,valid)
-      if (.not.valid) return
+      if(use_euler) then
+        ! Pinned Drag.H evolves temperature with old mass/cp and latent heat.
+        ! Charge the gas for the actual accepted liquid-energy change below.
+        latent_energy=0
+        do i=1,n
+          latent_energy=latent_energy+evaporated_mass(i)* &
+            (vapor_enthalpy(i)-liquid_energy(components(i),parcel%temperature))
+        end do
+        t=parcel%temperature+(drop_heat-latent_energy)/(old_mass*cp)
+      else
+        target=old_mass*old_e+drop_heat-sum(evaporated_mass*vapor_enthalpy)
+        if (abs(target)>1e15_dp*new_mass) return
+        target=target/new_mass;t=parcel%temperature
+        call liquid_mixture_temperature(components,y,target,t,valid)
+        if (.not.valid) return
+      end if
       call liquid_mixture_properties(components,y,t,rho,cp,new_e,valid)
       if (.not.valid) return
       candidate%temperature=t

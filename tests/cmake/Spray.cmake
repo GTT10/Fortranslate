@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_executable(test_spray_mixture_euler spray/test_spray_mixture_euler.F90)
+  target_link_libraries(test_spray_mixture_euler PRIVATE pelef_spray_runtime)
+  add_test(NAME spray_mixture_euler COMMAND test_spray_mixture_euler)
+  set_tests_properties(spray_mixture_euler PROPERTIES LABELS "spray" TIMEOUT 30)
   add_test(NAME application_gamma_law COMMAND ${Python3_EXECUTABLE}
     "${PROJECT_SOURCE_DIR}/tests/application/check_gamma_law_app.py"
     --exe $<TARGET_FILE:pelef_reactive_3d> --work "${PROJECT_BINARY_DIR}/gamma-law-app")

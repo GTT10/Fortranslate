@@ -16,7 +16,11 @@ def main():
     parser.add_argument('--reference', type=Path, required=True)
     parser.add_argument('--candidate', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--reference-gas', type=Path, help='CGS plotfile-export CSV for this 4-cubed fixture')
+    parser.add_argument('--candidate-gas', type=Path, help='SI EB tree CSV for this fixture')
     args = parser.parse_args()
+    if bool(args.reference_gas) != bool(args.candidate_gas):
+        parser.error('Both gas CSV paths are required together')
     lines = args.reference.read_text().splitlines()
     if list(map(int, lines[:5])) != [4, 11, 0, 0, 0]:
         raise ValueError('Expected four-parcel, single-fuel PeleC ASCII format')
@@ -63,6 +67,39 @@ def main():
                            sha256=hashlib.sha256(path.read_bytes()).hexdigest())
                 for name, path in [('reference', args.reference), ('candidate', args.candidate)]},
         particles=particles)
+    if args.reference_gas:
+        with args.reference_gas.open() as stream:
+            reference_gas = list(csv.DictReader(stream))
+        with args.candidate_gas.open() as stream:
+            rows = list(csv.DictReader(stream))
+        candidate_gas = {(int(r['i']),int(r['j']),int(r['k'])):r for r in rows}
+        cells = {(i,j,k) for i in range(1,5) for j in range(1,5) for k in range(1,5)}
+        if len(rows)!=64 or len(reference_gas)!=64 or set(candidate_gas)!=cells:
+            raise ValueError('Expected one regular 4-cubed patch')
+        mapped = {}
+        for row in reference_gas:
+            xyz = [float(row[c]) for c in ('x','y','z')]
+            key = tuple(round(v*10+.5) for v in xyz)
+            if key not in cells or key in mapped or any(abs(v-(i-.5)*.1)>1e-12 for v,i in zip(xyz,key)):
+                raise ValueError('Invalid reference cell coordinates')
+            if abs(float(row['time'])-2e-7)>1e-20:
+                raise ValueError('Unexpected reference final time')
+            mapped[key] = row
+        fields = {'rho':('density',1000),'rhou':('xmom',10),'rhov':('ymom',10),
+                  'rhow':('zmom',10),'rhoE':('rho_E',.1),'temperature':('Temp',1),
+                  **{f'rhoY_{s}':(f'rho_{s}',1000) for s in ('NC7H16','O2','N2')}}
+        report['gas'] = {}
+        for field,(source,factor) in fields.items():
+            expected = [float(mapped[key][source])*factor for key in sorted(cells)]
+            actual = [float(candidate_gas[key][field]) for key in sorted(cells)]
+            if not all(map(math.isfinite,expected+actual)):
+                raise ValueError('Nonfinite gas state')
+            difference = max(abs(a-b) for a,b in zip(expected,actual))
+            scale = max(map(abs,expected))
+            report['gas'][field] = dict(max_absolute_difference=difference,reference_max=scale,
+                                       relative_to_field_max=difference/scale if scale else None)
+        for name,path in [('reference_gas',args.reference_gas),('candidate_gas',args.candidate_gas)]:
+            report['inputs'][name] = dict(path=str(path.resolve()),sha256=hashlib.sha256(path.read_bytes()).hexdigest())
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     print(args.output)
 
