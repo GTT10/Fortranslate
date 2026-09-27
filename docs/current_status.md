@@ -25,8 +25,11 @@ exchange with trapezoidal weights. Focused heat, viscosity and nonuniform
 inviscid cases conserve inventory ([time update](validation/mpi-mol-time-20260927.md)).
 Reacting common MOL now re-evaluates the preceding reacted state between
 iterations; a homogeneous reactor comparison and late-reactor rollback pass.
-Recursive and particle/application MOL connections remain open
 ([reacting update](validation/mpi-mol-reaction-20260927.md)).
+Recursive MOL now forwards the same update through level subcycling; focused
+nonreacting wall and state-redistribution budgets pass on two ranks.
+Particle/application MOL connections remain open
+([recursive update](validation/mpi-mol-recursive-20260927.md)).
 
 The pinned Spray-EB plane and five initial physical droplets now have an
 auditable SI input preparer preserving the default 64³ grid and final time.
