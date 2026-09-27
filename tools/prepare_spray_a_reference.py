@@ -56,6 +56,7 @@ def main():
     density = 6e6*mw/(8314.46261815324*900)
     rho_coefficients = [1779.9145710513213, -6.848424883513244, .015016559178741312, -1.2149370117669905e-5]
     liquid_density = sum(a*363**i for i,a in enumerate(rho_coefficients))
+    reference_volume = .1*(89e-6)**3  # SprayParticles.cpp: inject_ppp * average diameter cubed
     fmt = lambda v: format(v, '.17g')
     args.output.mkdir(parents=True, exist_ok=False)
     for name, data in source.items():
@@ -101,7 +102,7 @@ def main():
  particle_options%breakup_model='khrt',particle_options%surface_tension=.015,
  particle_options%khrt_b0=.61,particle_options%khrt_b1=7.3,particle_options%khrt_c3=5.3,
  particle_options%khrt_children=.true.,particle_options%khrt_parcel_factor=.5,
- particle_options%khrt_reference_diameter_cubed={fmt((89e-6)**3)},
+ particle_options%khrt_reference_diameter_cubed={fmt(reference_volume)},
  particle_options%liquid_viscosity_model='inverse-temperature',
  particle_options%liquid_viscosity_coefficients=-.0028611188933370675,3.940765272136905,-1812.5486152106896,302158.7187559424,
  particle_options%liquid_viscosity_temperature_range=300,658,
@@ -116,7 +117,7 @@ def main():
 ''')
     (args.output/'preparation.json').write_text(json.dumps(dict(
         reference=manifest, bundle_sha256=hashlib.sha256(args.bundle.read_bytes()).hexdigest(),
-        initial_gas_temperature_K=900, initial_mole_fractions=composition, liquid_density_at_injection_kg_m3=liquid_density, breakup_model="KHRT", chemistry_enabled=False, initial_pressure_Pa=6e6,
+        initial_gas_temperature_K=900, initial_mole_fractions=composition, liquid_density_at_injection_kg_m3=liquid_density, breakup_model="KHRT", khrt_reference_weighted_diameter_cubed_m3=reference_volume, chemistry_enabled=False, initial_pressure_Pa=6e6,
         event_masses_kg=masses, expected_injected_mass_kg=math.fsum(masses),
         event_speeds_m_s=[m/((b[0]-a[0])*liquid_density*math.pi*(4.5e-5)**2*.89) for m, (a, b) in zip(masses, intervals)],
         rate_points=len(points), injection_events=args.events, expected_parcels=4*args.events, final_time_s=end_time,

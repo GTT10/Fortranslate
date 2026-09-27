@@ -28,6 +28,12 @@
     "SprayParticlesInitInsert.cpp": {
       "path": "Exec/RegTests/Spray-A-Wbreakup/SprayParticlesInitInsert.cpp",
       "sha256": "5eb87182821b5f2513ebd1ff2a90f3abedc8bc0359cbb55d133fb596762b7614"
+    },
+    "SprayParticles.cpp": {
+      "path": "Submodules/PelePhysics/Source/Spray/SprayParticles.cpp",
+      "sha256": "0e376f77df434ae7eec9fba39ab67af5ad4c20fb4c46529a9ff35b6d978b4d05",
+      "repository": "https://github.com/Pele-Suite/PelePhysics",
+      "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b"
     }
   }
 }
