@@ -19,6 +19,19 @@ module amr_patch_tree_split_3d_mod
   implicit none
   private
   public :: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d,advance_amr_patch_tree_sdc_subcycle_3d
+  abstract interface
+    subroutine amr_sdc_diffusion_evaluator(state,temperature,depth,fractions,rates,flux,ok)
+      ! Return instantaneous rates and face flux density; the driver applies dt.
+      import :: dp,amr_tree_state_3d,amr_tree_flux_3d
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      integer, intent(in) :: depth
+      real(dp), optional, intent(in) :: fractions(:)
+      type(amr_tree_state_3d), intent(inout) :: rates
+      type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+      logical, intent(out) :: ok
+    end subroutine amr_sdc_diffusion_evaluator
+  end interface
+  public :: amr_sdc_diffusion_evaluator
 contains
   subroutine advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
@@ -205,7 +218,8 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
       inflow_mach,inflow_pressure,difmag,target_depth,coarse_start,coarse_end,fractions_start,fractions_end, &
-      source_start,source_end,integrated_flux,old_predictor,new_predictor)
+      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion)
+    procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -316,7 +330,7 @@ contains
         if(.not.valid) return
       end if
     end do
-    if(do_transport) then
+    if(do_transport.or.present(evaluate_diffusion)) then
       do node=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         flux(node)%x=flux(node)%x+.5_dp*(old_flux(node)%x+new_flux(node)%x)
@@ -406,7 +420,9 @@ contains
       type(amr_tree_flux_3d), allocatable, intent(inout) :: face_flux(:)
       logical, intent(out) :: good
       real(dp), optional, intent(in) :: fractions(:)
-      integer :: peer
+      integer :: peer,cells(3)
+      type(amr_tree_state_3d) :: extra
+      type(amr_tree_flux_3d), allocatable :: extra_flux(:)
       external=u;diffusive=u
       do peer=1,size(tree%nodes)
         external%fields(peer)%values=0;diffusive%fields(peer)%values=0
@@ -422,6 +438,39 @@ contains
           outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,fractions)
         if(.not.good) return
         theta=min(theta,stage_theta)
+      end if
+      if(present(evaluate_diffusion)) then
+        extra=u
+        call evaluate_diffusion(u,t,depth,fractions,extra,extra_flux,good)
+        if(.not.good) return
+        good=extra%is_valid(tree).and.allocated(extra_flux)
+        if(.not.good) return
+        good=size(extra_flux)==size(tree%nodes)
+        if(.not.good) return
+        do peer=1,size(tree%nodes)
+          if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
+          cells=tree%nodes(peer)%shape
+          good=size(extra%fields(peer)%values,1)==nv.and.allocated(extra_flux(peer)%x).and. &
+            allocated(extra_flux(peer)%y).and.allocated(extra_flux(peer)%z)
+          if(.not.good) return
+          good=all(shape(extra_flux(peer)%x)==[nv,cells(1)+1,cells(2),cells(3)]).and. &
+            all(shape(extra_flux(peer)%y)==[nv,cells(1),cells(2)+1,cells(3)]).and. &
+            all(shape(extra_flux(peer)%z)==[nv,cells(1),cells(2),cells(3)+1])
+          if(.not.good) return
+          good=all(ieee_is_finite(extra%fields(peer)%values)).and.all(ieee_is_finite(extra_flux(peer)%x)).and. &
+            all(ieee_is_finite(extra_flux(peer)%y)).and.all(ieee_is_finite(extra_flux(peer)%z))
+          if(.not.good) return
+          diffusive%fields(peer)%values=diffusive%fields(peer)%values+extra%fields(peer)%values
+          extra_flux(peer)%x=dt*extra_flux(peer)%x
+          extra_flux(peer)%y=dt*extra_flux(peer)%y
+          extra_flux(peer)%z=dt*extra_flux(peer)%z
+          if(do_transport) then
+            face_flux(peer)%x=face_flux(peer)%x+extra_flux(peer)%x
+            face_flux(peer)%y=face_flux(peer)%y+extra_flux(peer)%y
+            face_flux(peer)%z=face_flux(peer)%z+extra_flux(peer)%z
+          end if
+        end do
+        if(.not.do_transport) face_flux=extra_flux
       end if
       good=.true.
     end subroutine

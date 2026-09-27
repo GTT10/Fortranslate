@@ -48,7 +48,7 @@ if(PELEF_ENABLE_SPRAY)
   endfunction()
   pelef_add_spray_runtime(pelef_spray_runtime pelef_core)
   function(pelef_add_spray_tree_runtime target spray_base tree_base)
-    add_library(${target} STATIC src/les/les_amr_patch_tree_mod.F90
+    add_library(${target} STATIC src/les/les_amr_patch_tree_mod.F90 src/les/les_amr_sdc_mod.F90
       src/les/les_amr_subcycle_mod.F90
       src/spray/spray_eb_intersection_mod.F90
       src/spray/spray_eb_drift_mod.F90

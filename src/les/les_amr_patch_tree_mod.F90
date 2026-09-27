@@ -16,8 +16,87 @@ module les_amr_patch_tree_mod
   implicit none
   private
   public :: advance_amr_patch_tree_les_3d,compute_amr_patch_tree_les_timestep_3d
+  public :: compute_amr_patch_tree_les_rhs_3d
   public :: advance_amr_patch_tree_les_level_3d
 contains
+  ! One instantaneous LES evaluation on every patch, before any reflux/update.
+  subroutine compute_amr_patch_tree_les_rhs_3d(tree,species,state,temperature,spacing,faces,cs,prt,sct, &
+      rates,flux,maximum_diffusivity,ok,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean, &
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: spacing(3),cs,prt,sct
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: rates
+    type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+    real(dp), intent(inout) :: maximum_diffusivity
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: model,test_model
+    real(dp), optional, intent(in) :: ci,inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
+    real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    integer, optional, intent(in) :: test_ratio,grid_ratio
+    logical, optional, intent(in) :: harmonic_mean
+    type(amr_tree_state_3d) :: packed,candidate
+    type(amr_tree_flux_3d), allocatable :: result(:)
+    real(dp), allocatable :: h(:,:),ghost(:,:,:,:),inlet(:,:)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: peer,n(3),nv,axis,level,width,ratio
+    real(dp) :: diffusion,largest,mach(6)
+    character(len=32) :: filter,local_faces(6)
+    logical :: valid,dynamic
+    ok=.false.;largest=0;nv=reactive_nvar(size(species))
+    call prepare(tree,species,state,temperature,spacing,h,valid)
+    if(.not.valid) return
+    call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean,dynamic,filter,ratio,width,valid)
+    if(.not.valid) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    if(.not.valid) return
+    mach=-1
+    if(present(inflow_mach)) mach=inflow_mach
+    if(any(faces=='inflow'.and.mach<0)) then
+      if(.not.present(inflow_state).or..not.present(inflow_temperature)) return
+      if(any(shape(inflow_state)/=[nv,6]).or.size(inflow_temperature)/=6) return
+      allocate(inlet(nv+1,6));inlet(:nv,:)=inflow_state;inlet(nv+1,:)=inflow_temperature
+    end if
+    allocate(packed%fields(size(tree%nodes)),result(size(tree%nodes)))
+    candidate=state
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      allocate(packed%fields(peer)%values(nv+1,n(1),n(2),n(3)))
+      packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
+      packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+    end do
+    do peer=1,size(tree%nodes)
+      n=tree%nodes(peer)%shape
+      call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
+        viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity,species_count=size(species),ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      if(.not.valid) return
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width)
+      if(.not.valid) return
+      allocate(result(peer)%x(nv,n(1)+1,n(2),n(3)),result(peer)%y(nv,n(1),n(2)+1,n(3)))
+      allocate(result(peer)%z(nv,n(1),n(2),n(3)+1))
+      local_faces='outflow';level=tree%nodes(peer)%level+1
+      do axis=1,3
+        if(origin(axis,peer)==0) local_faces(2*axis-1)=faces(2*axis-1)
+        if(origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
+      end do
+      if(dynamic) then
+        call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),h(:,peer),filter,ratio,width, &
+          candidate%fields(peer)%values,result(peer)%x,result(peer)%y,result(peer)%z,valid,grid_ratio,harmonic_mean, &
+          diffusion,local_faces,wall_temperature)
+      else
+        call compute_les_ghosted_rhs_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),n,h(:,peer),cs,prt,sct, &
+          candidate%fields(peer)%values,diffusion,valid,boundary_faces=local_faces,wall_temperature=wall_temperature, &
+          model=model,ci=ci,fx=result(peer)%x,fy=result(peer)%y,fz=result(peer)%z)
+      end if
+      if(.not.valid) return
+      largest=max(largest,diffusion)
+    end do
+    rates=candidate;call move_alloc(result,flux);maximum_diffusivity=largest;ok=.true.
+  end subroutine compute_amr_patch_tree_les_rhs_3d
   subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure)
