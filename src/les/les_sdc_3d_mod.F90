@@ -5,8 +5,10 @@ module les_sdc_3d_mod
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_3d_mod, only: advance_reactive_sdc_3d,compute_reactive_external_source_3d
-  use les_smagorinsky_3d_mod, only: compute_les_rhs_3d
-  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_boundary_rhs_3d
+  use reactive_3d_mod, only: reactive_sdc_halo_filler,reactive_sdc_source_halo_filler
+  use les_filter_3d_mod, only: les_filter_weights
+  use les_smagorinsky_3d_mod, only: compute_les_rhs_3d,compute_les_ghosted_rhs_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_boundary_rhs_3d,compute_dynamic_les_rhs_ghosted_3d
   implicit none
   private
   public :: advance_les_sdc_3d
@@ -17,7 +19,13 @@ contains
       boundary_change,source_change,maximum_diffusivity,ok,model,ci,external_force,transport,transport_flags, &
       reactions,reaction_source,chemistry_relative_tolerance,chemistry_absolute_tolerance,difmag,boundary_faces, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,outlet_pressure,wall_temperature,wall_velocity, &
-      test_filter,test_ratio,grid_ratio,harmonic_mean,flux_x,flux_y,flux_z)
+      test_filter,test_ratio,grid_ratio,harmonic_mean,flux_x,flux_y,flux_z,fill_halos,fill_source_halos,new_source_estimate)
+    procedure(reactive_sdc_halo_filler), optional :: fill_halos
+    procedure(reactive_sdc_source_halo_filler), optional :: fill_source_halos
+    ! Families are force, LES, and optional molecular transport. For external
+    ! iterations, reset gas/T to the interval start and retain this estimate.
+    real(dp), optional, intent(inout) :: new_source_estimate(:,:,:,:,:)
+    real(dp), allocatable :: estimate(:,:,:,:,:)
     ! Time-averaged full-face flux density, including hydro, transport and LES.
     real(dp), optional, intent(inout) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     real(dp), allocatable :: x(:,:,:,:),y(:,:,:,:),z(:,:,:,:),lx(:,:,:,:),ly(:,:,:,:),lz(:,:,:,:)
@@ -46,6 +54,7 @@ contains
     character(len=32) :: closure,filter
     logical :: valid
     ok=.false.;calls=0;diffusion=0;old_rate=0;new_rate=0
+    if(present(fill_halos).neqv.present(fill_source_halos)) return
     if(size(boundary_change)/=size(state,1).or.size(source_change)/=size(state,1)) return
     closure='smagorinsky';filter='box';ratio=2;isotropic=0;force=0
     if(present(model)) closure=model
@@ -75,6 +84,10 @@ contains
       allocate(x,mold=flux_x);allocate(y,mold=flux_y);allocate(z,mold=flux_z)
       allocate(lx,mold=x);allocate(ly,mold=y);allocate(lz,mold=z)
     end if
+    if(present(fill_halos).and..not.allocated(lx)) then
+      allocate(lx(nv,n(1)+1,n(2),n(3)),ly(nv,n(1),n(2)+1,n(3)),lz(nv,n(1),n(2),n(3)+1))
+    end if
+    if(present(new_source_estimate)) allocate(estimate,source=new_source_estimate)
     candidate=state;ct=temperature
     if(present(reaction_source)) then
       if(.not.present(reactions)) return
@@ -86,7 +99,8 @@ contains
       chemistry_relative_tolerance=chemistry_relative_tolerance,chemistry_absolute_tolerance=chemistry_absolute_tolerance, &
       boundary_faces=boundary_faces,boundary_change=boundary,outlet_pressure=outlet_pressure, &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature,wall_velocity=wall_velocity,flux_x=x,flux_y=y,flux_z=z)
+      wall_temperature=wall_temperature,wall_velocity=wall_velocity,flux_x=x,flux_y=y,flux_z=z, &
+      fill_halos=fill_halos,fill_source_halos=fill_source_halos,new_source_estimate=estimate)
     if(.not.valid) return
     les_boundary=.5_dp*dt*(old_rate+new_rate)
     boundary=boundary+les_boundary;source=source-les_boundary
@@ -96,6 +110,7 @@ contains
       if(.not.all(ieee_is_finite(x)).or..not.all(ieee_is_finite(y)).or..not.all(ieee_is_finite(z))) return
       flux_x=x;flux_y=y;flux_z=z
     end if
+    if(present(new_source_estimate)) new_source_estimate=estimate
     state=candidate;temperature=ct
     if(present(reaction_source)) reaction_source=ir
     boundary_change=boundary;source_change=source;maximum_diffusivity=diffusion;ok=.true.
@@ -105,11 +120,39 @@ contains
       real(dp), intent(out) :: rates(:,:,:,:,:)
       logical, intent(out) :: good
       real(dp) :: rate(size(state,1)),viscosity
+      real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),weights(:)
+      integer :: width,c
       rates=0;good=.false.;rate=0;viscosity=0
       if(.not.ieee_is_finite(stage_time).or.size(rates,5)/=2) return
       call compute_reactive_external_source_3d(u,force,rates(:,:,:,:,1),good)
       if(.not.good) return
-      if(closure=='dynamic') then
+      if(present(fill_halos)) then
+        width=2
+        if(closure=='dynamic') then
+          call les_filter_weights(filter,ratio,weights,good)
+          if(.not.good) return
+          width=(size(weights)-1)/2+5
+        end if
+        if(width>128) then
+          good=.false.;return
+        end if
+        allocate(ghost(nv,n(1)+2*width,n(2)+2*width,n(3)+2*width),gt(n(1)+2*width,n(2)+2*width,n(3)+2*width))
+        call fill_halos(u,t,stage_time,width,.true.,ghost,gt,good)
+        if(.not.good) return
+        if(closure=='dynamic') then
+          call compute_dynamic_les_rhs_ghosted_3d(species,ghost,gt,spacing,filter,ratio,width, &
+            rates(:,:,:,:,2),lx,ly,lz,good,grid_ratio,harmonic_mean,viscosity,boundary_faces,wall_temperature)
+        else
+          call compute_les_ghosted_rhs_3d(species,ghost,gt,n,spacing,cs,prt,sct,rates(:,:,:,:,2),viscosity,good, &
+            boundary_faces=boundary_faces,wall_temperature=wall_temperature,model=closure,ci=isotropic,fx=lx,fy=ly,fz=lz)
+        end if
+        if(.not.good) return
+        do c=1,nv
+          rate(c)=(sum(lx(c,1,:,:))-sum(lx(c,n(1)+1,:,:)))*spacing(2)*spacing(3)+ &
+            (sum(ly(c,:,1,:))-sum(ly(c,:,n(2)+1,:)))*spacing(1)*spacing(3)+ &
+            (sum(lz(c,:,:,1))-sum(lz(c,:,:,n(3)+1)))*spacing(1)*spacing(2)
+        end do
+      else if(closure=='dynamic') then
         call compute_dynamic_les_boundary_rhs_3d(species,u,t,spacing,filter,ratio,rates(:,:,:,:,2),viscosity,good, &
           grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,boundary_faces=boundary_faces,boundary_rate=rate, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &

@@ -1,4 +1,43 @@
+module les_sdc_halo_test_mod
+  use precision_mod, only: dp
+  use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d
+  implicit none
+  logical :: sdc_failure=.false.
+  integer :: sdc_calls=0
+  integer :: halo_calls=0,source_halo_calls=0
+contains
+  subroutine sdc_test_halos(state,temp,time,width,viscous,ghost,gt,valid)
+    real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
+    integer, intent(in) :: width
+    logical, intent(in) :: viscous
+    real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
+    logical, intent(out) :: valid
+    character(len=8) :: faces(6)
+    halo_calls=halo_calls+1;valid=.false.;ghost=0;gt=0
+    if(sdc_failure.and.time>0) return
+    faces='periodic'
+    call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,valid,ghost_width=width,viscous_wall=viscous)
+  end subroutine sdc_test_halos
+  subroutine sdc_test_source_halos(source,time,ghost,valid)
+    real(dp), intent(in) :: source(:,:,:,:),time
+    real(dp), intent(out) :: ghost(:,:,:,:)
+    logical, intent(out) :: valid
+    integer :: i,j,k,n(3),index(3)
+    source_halo_calls=source_halo_calls+1
+    n=shape(source(1,:,:,:))
+    do k=1,n(3)+8
+    do j=1,n(2)+8
+    do i=1,n(1)+8
+      index=modulo([i,j,k]-5,n)+1
+      ghost(:,i,j,k)=source(:,index(1),index(2),index(3))
+    end do
+    end do
+    end do
+    valid=time>=0
+  end subroutine sdc_test_source_halos
+end module les_sdc_halo_test_mod
 program test_les_sdc_3d
+  use les_sdc_halo_test_mod, only: sdc_test_halos,sdc_test_source_halos,sdc_failure,halo_calls
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -13,7 +52,8 @@ program test_les_sdc_3d
   real(dp) :: q(12),sound,h(3),dt,boundary(12),source(12),diffusion,before(12),after(12),scale(12)
   real(dp) :: ref_boundary(12),ref_source(12),wall_t(6),maximum
   real(dp) :: fx(12,0:4,4,4),fy(12,4,0:4,4),fz(12,4,4,0:4),expected(12,4,4,4)
-  integer :: i,j,k,c,mode,b
+  real(dp) :: estimate(12,4,4,4,3)
+  integer :: i,j,k,c,mode,b,iteration
   character(len=16) :: faces(6),models(4)
   logical :: ok
   models=[character(len=16)::'smagorinsky','wale','vreman','dynamic']
@@ -74,8 +114,35 @@ program test_les_sdc_3d
       end do
       call require(maxval(abs(u-expected)/max(1._dp,abs(expected)))<1e-12_dp, &
         'combined face divergence reconstructs every LES SDC cell')
+      if(b==1) then
+        expected=u;u=initial;t=it;halo_calls=0
+        call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+          model=trim(models(mode)),transport=transport,flux_x=fx,flux_y=fy,flux_z=fz, &
+          fill_halos=sdc_test_halos,fill_source_halos=sdc_test_source_halos)
+        call require(ok.and.halo_calls>3,'LES supplied stage halos used')
+        call require(maxval(abs(u-expected)/max(1._dp,abs(expected)))<1e-12_dp,'supplied halo LES matches periodic path')
+      end if
     end do
   end do
+  u=initial;t=it;estimate=0
+  call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+    transport=transport,new_source_estimate=estimate,fill_halos=sdc_test_halos,fill_source_halos=sdc_test_source_halos)
+  call require(ok,'externally seeded reference')
+  expected=u;estimate=0
+  do iteration=1,2
+    u=initial;t=it
+    call advance_les_sdc_3d(species,u,t,h,dt,0._dp,1,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+      transport=transport,new_source_estimate=estimate,fill_halos=sdc_test_halos,fill_source_halos=sdc_test_source_halos)
+    call require(ok,'externally coordinated LES iteration')
+  end do
+  call require(maxval(abs(u-expected)/max(1._dp,abs(expected)))<1e-14_dp,'external and internal LES iterations match')
+  u=initial;t=it;estimate=0;sdc_failure=.true.;boundary=42;source=43;diffusion=44;fx=45;fy=46;fz=47
+  call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+    transport=transport,new_source_estimate=estimate,flux_x=fx,flux_y=fy,flux_z=fz, &
+    fill_halos=sdc_test_halos,fill_source_halos=sdc_test_source_halos)
+  call require(.not.ok.and.all(u==initial).and.all(t==it).and.all(estimate==0),'new-time halo failure rolls back')
+  call require(all(boundary==42).and.all(source==43).and.diffusion==44.and.all(fx==45),'halo failure diagnostics rollback')
+  sdc_failure=.false.
   u=initial;t=it;boundary=42;source=43;diffusion=44;fx=45;fy=46;fz=47
   call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
     model='dynamic',test_ratio=-1,transport=transport,flux_x=fx,flux_y=fy,flux_z=fz)

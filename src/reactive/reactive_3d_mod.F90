@@ -27,6 +27,7 @@ module reactive_3d_mod
   public :: compute_reactive_external_source_3d
   public :: react_sdc_state_3d
   public :: construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
+  public :: reactive_sdc_halo_filler,reactive_sdc_source_halo_filler
   public :: advance_reactive_sdc_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
