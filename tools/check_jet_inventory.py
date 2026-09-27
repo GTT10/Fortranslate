@@ -1,4 +1,4 @@
-"""Check completion and fuel accounting for the prepared single-fuel decane jet."""
+"""Check completion and fuel accounting for the prepared single-fuel jet."""
 import argparse
 import csv
 import hashlib
@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--fuel-species', choices=['NC10H22', 'NC12H26'], default='NC10H22')
     args = parser.parse_args()
     folder = args.run_dir
     metadata = json.loads((folder/'preparation.json').read_text())
@@ -58,7 +59,10 @@ def main():
     expected = metadata['expected_injected_mass_kg']
     if expected <= 0 or not math.isfinite(expected):
         raise ValueError('Invalid prepared fuel mass')
-    vapor = math.fsum(float(v['fluid_volume'])*float(v['rhoY_NC10H22']) for v in gas)
+    species_columns = [name for name in gas[0] if name.startswith('rhoY_')]
+    if not species_columns or species_columns[0] != 'rhoY_'+args.fuel_species:
+        raise ValueError('Fuel must be first species for component-six ledger')
+    vapor = math.fsum(float(v['fluid_volume'])*float(v['rhoY_'+args.fuel_species]) for v in gas)
     liquid = math.fsum(float(v['mass'])*float(v['multiplicity']) for v in particles)
     fuel = {k: float(v) for k, v in budget[6].items()}
     if any(fuel[k] != 0 for k in ('initial', 'chemistry', 'force')):
@@ -68,7 +72,7 @@ def main():
     error = abs(reconstructed-expected)/expected
     inventory_error = abs(vapor+liquid-fuel['final'])/expected
     injected_error = abs(fuel['injected']-expected)/expected
-    result = dict(completed_steps=int(complete[-1][0]), completed_time_s=float(complete[-1][1]),
+    result = dict(fuel_species=args.fuel_species, completed_steps=int(complete[-1][0]), completed_time_s=float(complete[-1][1]),
                   processed_events=int(events[-1]), retained_parcels=len(particles),
                   expected_injected_mass_kg=expected, gas_fuel_mass_kg=vapor, liquid_fuel_mass_kg=liquid,
                   signed_boundary_fuel_kg=fuel['boundary'], signed_wall_fuel_kg=fuel['wall'],
