@@ -20,6 +20,8 @@ The opt-in LES runtime now supplies a regular SDC wrapper for Smagorinsky,
 WALE, Vreman and Dynamic sources alongside molecular transport and forcing
 ([library checks](validation/les-sdc-20260927.md)); application and AMR routing
 remain open.
+Regular LES SDC now exports combined hydro/transport/LES full-face fluxes for
+subsequent AMR synchronization ([reconstruction checks](validation/les-sdc-flux-20260927.md)).
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
