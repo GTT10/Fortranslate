@@ -171,6 +171,32 @@ program test_mpi_eb_wall_heat_3d
           'time-integrated cooling ledger')
         if(rank==0) print *, 'Wall scheme, heat, budget residual:',scheme,wall(5),residual
       end do
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,visc_state,before,MPI_COMM_WORLD,ok)
+      call require(ok,'initial viscous inventory')
+      do scheme=1,2
+        evolved=visc_state;evolved_t=lt
+        boundary=0;wall=0;chemical=0;external=0;theta=1
+        if(scheme==1) then
+          call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
+            extended_six,1e-7_dp,2,.false.,[.true.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
+            1e-8_dp,1e-12_dp,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
+            embedded_noslip=.true.)
+        else
+          call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
+            1e-7_dp,2,.false.,[.true.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
+            1e-8_dp,1e-12_dp,extended_six,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
+            embedded_noslip=.true.)
+        end if
+        call require(ok,'evolved adiabatic stationary wall')
+        call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
+        call require(ok,'final viscous inventory')
+        residual=maxval(abs(after-before-boundary-wall-chemical-external)/max(1._dp,abs(before)))
+        call require(residual<1e-12_dp,'viscous time-integrated conservation')
+        call require(wall(5)==0,'stationary adiabatic wall energy')
+        call require(wall(3)<0.and.abs(wall(3)-1e-7_dp*visc_reference(3)) &
+          <1e-5_dp*abs(1e-7_dp*visc_reference(3)),'time-integrated tangential drag ledger')
+        if(rank==0) print *, 'Wall scheme, tangential impulse, budget residual:',scheme,wall(3),residual
+      end do
     end if
     deallocate(local%fields,lt%fields)
   end do
