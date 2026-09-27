@@ -3,7 +3,8 @@ program test_spray_mpi_eb_sample
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
     advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage,advance_mpi_eb_recursive_population_stage
-  use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo
+  use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage,spray_sdc_film_stage
+  use spray_mpi_amr_film_mod, only: spray_level_film_population
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,advance_mixture_wall_film_frozen
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations
@@ -118,6 +119,10 @@ contains
     type(spray_liquid) :: liquid(1)
     type(spray_options) :: options,child_options
     type(spray_wall_options) :: film_options
+    type(spray_level_film_population) :: film_groups(3),old_film_groups(3)
+    type(spray_sdc_film_stage) :: film_work,depletion_work
+    type(amr_tree_state_3d) :: expected_film_source,expected_film_remainder,expected_physical_film
+    real(dp) :: old_film_wall(5),expected_film_wall(5)
     type(spray_wall_film), allocatable :: films(:),reference_films(:),kept_films(:)
     type(amr_tree_state_3d) :: film_halo,film_halo_t,film_volume
     real(dp), allocatable :: film_mass(:,:),reference_film_mass(:,:),probes(:,:)
@@ -554,6 +559,87 @@ contains
         call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
           all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values).and. &
           all(physical_source%fields(p)%values==old_physical_source%fields(p)%values),'all film sources roll back')
+      end do
+      film_options%port_conductivity_models(2)=''
+      film_options%port_conductivity_coefficients(:,2)=0
+      film_options%port_conductivity_temperature_ranges(:,2)=0
+      do population=1,3
+        film_groups(population)%films=films;film_groups(population)%component_mass=film_mass
+        film_groups(population)%nodes=film_nodes;film_groups(population)%probes=probes
+      end do
+      old_film_groups=film_groups
+      reference_films=films;reference_film_mass=film_mass
+      call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_nodes,probes,reference_films,reference_film_mass,zero,spacing,periodic,1e-10_dp, &
+        film_volume,phi,centroids,expected_film_source,expected_film_remainder,old_film_wall,ok,expected_physical_film)
+      call require(ok,'single-population old film half-step reference')
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,0,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(ok.and.film_work%next_stage==1.and.all(wall==old_film_wall),'old film stage physical-only wall ledger')
+      do population=1,3
+        call require(all(film_groups(population)%component_mass==old_film_groups(population)%component_mass), &
+          'old film stage defers publication')
+        call require(all(film_work%midpoint(population)%component_mass==reference_film_mass),'all film copies advance once')
+      end do
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(abs(group_source%fields(p)%values-3*expected_film_source%fields(p)%values/1e-10_dp)<= &
+          1e-12_dp*max(abs(group_source%fields(p)%values),1e-30_dp)),'combined film rates include all copies')
+        call require(all(physical_source%fields(p)%values==expected_physical_film%fields(p)%values/1e-10_dp), &
+          'physical film rates exclude virtual and ghost copies')
+      end do
+      old_group_source=group_source;old_group_remainder=group_remainder;old_physical_source=physical_source
+      if(count>0) film_work%midpoint(3)%films(2)%material_id=17
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,1,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(ok.and.film_work%next_stage==2,'intermediate film stage skips exchange')
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(physical_source%fields(p)%values==old_physical_source%fields(p)%values),'intermediate film rates stay cached')
+      end do
+      wall=17
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,2,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(.not.ok.and.film_work%next_stage==2.and.all(wall==17),'late film copy failure retains stage')
+      do population=1,3
+        call require(all(film_groups(population)%component_mass==old_film_groups(population)%component_mass), &
+          'late film copy failure rolls back every population')
+      end do
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values).and. &
+          all(physical_source%fields(p)%values==old_physical_source%fields(p)%values),'late film copy source rollback')
+      end do
+      if(count>0) film_work%midpoint(3)%films(2)%material_id=2
+      call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_nodes,probes,reference_films,reference_film_mass,zero,spacing,periodic,1e-10_dp, &
+        film_volume,phi,centroids,expected_film_source,expected_film_remainder,expected_film_wall,ok,expected_physical_film)
+      call require(ok,'single-population new film half-step reference')
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,2,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(ok.and.film_work%next_stage==0.and.all(wall==old_film_wall+expected_film_wall), &
+        'final film stage commits both physical wall half steps once')
+      do population=1,3
+        call require(all(film_groups(population)%component_mass==reference_film_mass),'film final half-step state')
+      end do
+      ! Depletion removes film payloads, nodes and probes together before the new half step.
+      film_groups=old_film_groups;film_options%minimum_height=1e-3_dp
+      do stage=0,2
+        call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+          film_halo,film_halo_t,1,1,film_groups,depletion_work,zero,spacing,periodic,0._dp,2e-10_dp,stage,2, &
+          film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+        call require(ok,'depleted film continuation')
+      end do
+      do population=1,3
+        call require(size(film_groups(population)%films)==0.and.size(film_groups(population)%nodes)==0.and. &
+          size(film_groups(population)%probes,2)==0.and.size(film_groups(population)%component_mass,2)==0, &
+          'depleted film population and metadata compact together')
       end do
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &

@@ -10,6 +10,11 @@ module spray_mpi_amr_film_mod
   implicit none
   private
   public :: migrate_mpi_amr_wall_films
+  type, public :: spray_level_film_population
+    type(spray_wall_film), allocatable :: films(:)
+    real(dp), allocatable :: component_mass(:,:),probes(:,:)
+    integer, allocatable :: nodes(:)
+  end type spray_level_film_population
 contains
   ! Stationary films use the finest containing cell, with closed physical bounds.
   ! Optional maximum_level caps ownership without changing the wall geometry.

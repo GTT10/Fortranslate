@@ -13,15 +13,189 @@ module spray_mpi_amr_film_step_mod
     valid_wall_component_inventory,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates, &
     advance_mixture_wall_film_exchange,advance_mixture_wall_film_frozen
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films,spray_level_film_population
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo, &
     sum_mpi_amr_particle_source_halo,deposit_mpi_amr_tree_spray_field
   use eb_geometry_3d_mod, only: eb_geometry_3d
   implicit none
   private
-  public :: advance_mpi_amr_film_coupling,kick_mpi_eb_film_halo
+  public :: advance_mpi_amr_film_coupling,kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage
+  type, public :: spray_sdc_film_stage
+    integer :: next_stage=0,iterations=0,depth=-1
+    real(dp) :: time=0,interval=0,old_wall(5)=0
+    logical :: exports_physical=.false.
+    type(spray_level_film_population) :: midpoint(3)
+    type(amr_tree_state_3d) :: old_source,old_remainder,old_physical_source
+  end type spray_sdc_film_stage
 contains
+  ! Populations are physical / virtual / ghost. Their halos are supplied at
+  ! the current gas stage time by the recursive owner. Sources returned are rates.
+  subroutine advance_mpi_eb_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
+      gas_halo,temperature_halo,width,target_level,populations,work,lower,spacing,periodic,time,interval,stage,iterations, &
+      fluid_fraction,nodal_phi,centroids,source,remainder,wall_change,ok,physical_source)
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_wall_options), intent(in) :: wall_options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    integer, intent(in) :: owners(:),width,target_level,stage,iterations
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo,fluid_fraction,centroids
+    real(dp), intent(in) :: lower(3),spacing(3),time,interval,nodal_phi(0:,0:,0:)
+    logical, intent(in) :: periodic(3)
+    type(spray_level_film_population), intent(inout) :: populations(3)
+    type(spray_sdc_film_stage), intent(inout) :: work
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(spray_level_film_population) :: trial(3)
+    type(spray_sdc_film_stage) :: candidate
+    type(amr_tree_state_3d) :: total,leftover,part,part_remainder,exported
+    type(amr_tree_state_3d), allocatable :: physical_delta
+    real(dp) :: half_interval,wall(5),physical_wall(5),times(2),lowtime(2),hightime(2)
+    integer :: flags(5),lowflags(5),highflags(5),population,status
+    logical :: valid,agreed
+    ok=.false.;times=[time,interval]
+    valid=all(ieee_is_finite(times)).and.time>=0.and.interval>0.and.interval<=1e6_dp
+    valid=valid.and.iterations>=1.and.stage>=0.and.stage<=iterations
+    if(stage==0) then
+      valid=valid.and.work%next_stage==0
+    else
+      valid=valid.and.work%next_stage==stage.and.work%iterations==iterations.and.work%depth==target_level
+      valid=valid.and.work%time==time.and.work%interval==interval
+      valid=valid.and.(work%exports_physical.eqv.present(physical_source))
+    end if
+    call agree();if(.not.agreed) return
+    flags=[width,target_level,stage,iterations,merge(1,0,present(physical_source))]
+    call MPI_Allreduce(flags,lowflags,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,highflags,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(lowflags/=highflags)) return
+    call MPI_Allreduce(times,lowtime,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(times,hightime,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(lowtime/=hightime)) return
+    half_interval=.5_dp*interval
+    if(half_interval<=0) return
+    if(stage>0.and.stage<iterations) then
+      source=work%old_source;remainder=work%old_remainder;wall_change=work%old_wall
+      if(present(physical_source)) physical_source=work%old_physical_source
+      work%next_stage=stage+1;ok=.true.;return
+    end if
+    candidate=work
+    if(stage==0) then
+      trial=populations
+    else
+      trial=work%midpoint
+    end if
+    valid=.true.
+    do population=1,3
+      valid=valid.and.allocated(trial(population)%films).and.allocated(trial(population)%component_mass).and. &
+        allocated(trial(population)%probes).and.allocated(trial(population)%nodes)
+    end do
+    call agree();if(.not.agreed) return
+    if(present(physical_source)) allocate(physical_delta)
+    do population=1,3
+      call kick_mpi_eb_film_halo(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
+        gas_halo,temperature_halo,width,target_level,trial(population)%nodes,trial(population)%probes, &
+        trial(population)%films,trial(population)%component_mass,lower,spacing,periodic,half_interval, &
+        fluid_fraction,nodal_phi,centroids,part,part_remainder,wall,valid,physical_delta)
+      if(.not.valid) return
+      call remove_depleted(trial(population))
+      if(population==1) then
+        total=part;leftover=part_remainder;physical_wall=wall
+        if(present(physical_source)) then
+          exported=physical_delta;deallocate(physical_delta)
+        end if
+      else
+        call add_field(total,part);if(.not.agreed) return
+        call add_field(leftover,part_remainder);if(.not.agreed) return
+      end if
+    end do
+    call to_rate(total);if(.not.agreed) return
+    call to_rate(leftover);if(.not.agreed) return
+    if(present(physical_source)) then
+      call to_rate(exported);if(.not.agreed) return
+    end if
+    if(stage==0) then
+      candidate%time=time;candidate%interval=interval;candidate%depth=target_level;candidate%iterations=iterations
+      candidate%midpoint=trial;candidate%old_source=total;candidate%old_remainder=leftover;candidate%old_wall=physical_wall
+      candidate%exports_physical=present(physical_source)
+      if(present(physical_source)) candidate%old_physical_source=exported
+    else
+      valid=all(ieee_is_finite(candidate%old_wall))
+      if(valid) valid=.not.any(physical_wall>huge(1._dp)-max(candidate%old_wall,0._dp)).and. &
+        .not.any(physical_wall< -huge(1._dp)-min(candidate%old_wall,0._dp))
+      call agree();if(.not.agreed) return
+      physical_wall=physical_wall+candidate%old_wall
+    end if
+    candidate%next_stage=stage+1
+    if(stage==iterations) then
+      candidate%next_stage=0;populations=trial
+    end if
+    work=candidate;wall_change=physical_wall
+    call move_alloc(total%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    if(present(physical_source)) call move_alloc(exported%fields,physical_source%fields)
+    ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+    subroutine remove_depleted(group)
+      type(spray_level_film_population), intent(inout) :: group
+      type(spray_level_film_population) :: kept
+      logical :: live(size(group%films))
+      integer :: c
+      live=group%films%mass>0
+      kept%films=pack(group%films,live);kept%nodes=pack(group%nodes,live)
+      allocate(kept%component_mass(size(components),count(live)),kept%probes(3,count(live)))
+      do c=1,size(components)
+        kept%component_mass(c,:)=pack(group%component_mass(c,:),live)
+      end do
+      do c=1,3
+        kept%probes(c,:)=pack(group%probes(c,:),live)
+      end do
+      group=kept
+    end subroutine remove_depleted
+    subroutine add_field(destination,addition)
+      type(amr_tree_state_3d), intent(inout) :: destination
+      type(amr_tree_state_3d), intent(in) :: addition
+      integer :: node
+      valid=.true.
+      do node=1,size(owners)
+        if(.not.allocated(destination%fields(node)%values)) cycle
+        associate(a=>destination%fields(node)%values,b=>addition%fields(node)%values)
+          valid=valid.and.all(ieee_is_finite(a)).and.all(ieee_is_finite(b))
+          if(valid) valid=.not.any(a>huge(1._dp)-max(b,0._dp)).and..not.any(a< -huge(1._dp)-min(b,0._dp))
+        end associate
+      end do
+      call agree();if(.not.agreed) return
+      do node=1,size(owners)
+        if(allocated(destination%fields(node)%values)) &
+          destination%fields(node)%values=destination%fields(node)%values+addition%fields(node)%values
+      end do
+    end subroutine add_field
+    subroutine to_rate(field)
+      type(amr_tree_state_3d), intent(inout) :: field
+      integer :: node
+      valid=.true.
+      do node=1,size(owners)
+        if(.not.allocated(field%fields(node)%values)) cycle
+        valid=valid.and.all(ieee_is_finite(field%fields(node)%values))
+        if(half_interval<1) valid=valid.and.all(abs(field%fields(node)%values)<=huge(1._dp)*half_interval)
+      end do
+      call agree();if(.not.agreed) return
+      do node=1,size(owners)
+        if(allocated(field%fields(node)%values)) field%fields(node)%values=field%fields(node)%values/half_interval
+      end do
+    end subroutine to_rate
+  end subroutine advance_mpi_eb_film_sdc_stage
+
   ! One frozen-gas film half step. Caller supplies owner-level nodes and probes
   ! displaced into the fluid, and handles copy selection and stage publication.
   ! Zero-mass outputs must be removed before a subsequent film call.
