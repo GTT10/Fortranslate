@@ -573,6 +573,12 @@ contains
     ok = .true.
   end subroutine recover_primitives_2d
 
+  pure real(dp) function positive_harmonic_mean(a,b) result(value)
+    real(dp), intent(in) :: a,b
+    value=0
+    if(min(a,b)>0) value=min(a,b)/(.5_dp+.5_dp*min(a,b)/max(a,b))
+  end function
+
   subroutine face_transport_data( &
       species, transport, left_primitive, right_primitive, left_temperature, &
       right_temperature, viscosity, conductivity, diffusion, yleft, yright, &
@@ -588,6 +594,8 @@ contains
 
     real(dp) :: tface, pface, cp, cv, hleft, hright, eint, entropy
     real(dp) :: candidate_viscosity, candidate_conductivity
+    real(dp) :: mu_left,mu_right,k_left,k_right,rho_face,rd_left,rd_right,rd_face
+    real(dp) :: d_left(size(species)),d_right(size(species))
     real(dp) :: midpoint, composition_total
     real(dp), allocatable :: candidate_diffusion(:), candidate_yleft(:)
     real(dp), allocatable :: candidate_yright(:), candidate_yface(:)
@@ -666,10 +674,33 @@ contains
     if (.not. local_ok) return
     call midpoint_finite(left_primitive(5), right_primitive(5), pface, local_ok)
     if (.not. local_ok) return
+    if(allocated(transport(1)%simple_binary)) then
+      ! Pinned PeleC moves cell transport coefficients to faces by harmonic mean.
+      call mixture_transport_coefficients(species,transport,candidate_yleft,left_temperature,left_primitive(5), &
+        mu_left,k_left,d_left,local_ok)
+      if(.not.local_ok) return
+      call mixture_transport_coefficients(species,transport,candidate_yright,right_temperature,right_primitive(5), &
+        mu_right,k_right,d_right,local_ok)
+      if(.not.local_ok) return
+      candidate_viscosity=positive_harmonic_mean(mu_left,mu_right)
+      candidate_conductivity=positive_harmonic_mean(k_left,k_right)
+      call midpoint_finite(left_primitive(1),right_primitive(1),rho_face,local_ok)
+      if(.not.local_ok) return
+      do k=1,nspecies
+        call multiply_finite(left_primitive(1),d_left(k),rd_left,local_ok)
+        if(.not.local_ok) return
+        call multiply_finite(right_primitive(1),d_right(k),rd_right,local_ok)
+        if(.not.local_ok) return
+        rd_face=positive_harmonic_mean(rd_left,rd_right)
+        call divide_finite(rd_face,rho_face,candidate_diffusion(k),local_ok)
+        if(.not.local_ok) return
+      end do
+    else
     call mixture_transport_coefficients( &
       species, transport, candidate_yface, tface, pface, candidate_viscosity, &
       candidate_conductivity, candidate_diffusion, local_ok)
     if (.not. local_ok) return
+    end if
     call mole_fractions_from_mass_fractions( &
       species, candidate_yleft, candidate_xleft, local_ok)
     if (.not. local_ok) return

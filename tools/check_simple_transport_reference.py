@@ -169,10 +169,14 @@ def main():
         fortran = fortran.replace('  implicit none',
             '  use mixture_transport_mod, only: simple_bulk_viscosity\n'
             '  use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,reactive_transport_timestep_3d\n'
+            '  use reactive_transport_2d_mod, only: face_transport_data\n'
+            '  use gas_transport_mod, only: write_simple_transport_fits,check_simple_transport_fits\n'
             '  use reactive_1d_mod, only: reactive_primitive_to_conserved\n  implicit none')
         fortran = fortran.replace('  integer :: ios,i,j',
             '  real(dp) :: bulk,q(8),gradient(3,3),flux(8),species_energy,dt,dmax,sound\n'
-            '  real(dp) :: state(8,2,2,2),temperatures(2,2,2)\n  integer :: ios,i,j,ii,jj,kk')
+            '  real(dp) :: state(8,2,2,2),temperatures(2,2,2)\n'
+            '  real(dp) :: tl,tr,pl,pr,yl(3),yr(3),ql(8),qr(8),fmu,fk,df(3),ol(3),orr(3),yf(3),xl(3),xr(3),hf(3)\n'
+            '  integer :: ios,i,j,ii,jj,kk,record_status')
         fortran = fortran.replace("    write(11,'(5es26.17)') mu,k,rd",'''    call simple_bulk_viscosity(species,records,y,t,bulk,ok)
     if(.not.ok) error stop 'Bulk viscosity failed'
     write(11,'(6es26.17)') mu,k,rd,bulk''')
@@ -199,6 +203,30 @@ def main():
     .true.,.false.,.false.,dt,dmax,ok)
   if(.not.ok.or.dt<=0) error stop 'Bulk timestep failed'
   if(abs(dmax-(4*mu/3+bulk)/rho)>1e-12_dp*dmax) error stop 'Bulk timestep omitted dilatation viscosity'
+  open(12,file='states.dat',status='old')
+  open(13,file='candidate-faces.dat',status='new')
+  do i=1,3
+    read(12,*) tl,pl,yl
+    read(12,*) tr,pr,yr
+    ql=[pl/(8314.46261815324_dp*tl*sum(yl/mw)),0._dp,0._dp,0._dp,pl,yl]
+    qr=[pr/(8314.46261815324_dp*tr*sum(yr/mw)),0._dp,0._dp,0._dp,pr,yr]
+    call face_transport_data(species,records,ql,qr,tl,tr,fmu,fk,df,ol,orr,yf,xl,xr,hf,ok)
+    if(.not.ok) error stop 'Nonuniform face failed'
+    write(13,'(5es26.17)') fmu,fk,.5_dp*(ql(1)+qr(1))*df
+  end do
+  close(12);close(13)
+  open(14,status='scratch',form='formatted')
+  call write_simple_transport_fits(14,records(1),record_status)
+  if(record_status/=0) error stop 'Fit record write failed'
+  rewind(14)
+  call check_simple_transport_fits(14,records(1),record_status)
+  if(record_status/=0) error stop 'Fit record round trip failed'
+  rewind(14)
+  write(14,'(a)') 'PELEF_SIMPLE_TRANSPORT_V2'
+  rewind(14)
+  call check_simple_transport_fits(14,records(1),record_status)
+  if(record_status==0) error stop 'Old face model accepted'
+  close(14)
   y=[-1.0_dp,1.0_dp,1.0_dp]''')
     (out/'candidate.f90').write_text(fortran)
     states = [(340,101325,.25,.17,.58), (400,101325,0,.233,.767),
@@ -216,7 +244,8 @@ def main():
          str(candidate/'libpelef_selected_runtime_core.a'),'-o','candidate'],
         ['./candidate']]
     if args.bulk:
-        commands[2][1:1] = ['-I'+str(candidate/'selected_reactive_3d_private_modules')]
+        commands[2][1:1] = ['-I'+str(candidate/'selected_reactive_3d_private_modules'),
+                            '-I'+str(candidate/'selected_reactive_2d_runtime_modules')]
         index = commands[2].index(str(candidate/'libpelef_selected_reactive_1d_runtime.a'))
         commands[2][index:index] = [str(candidate/'libpelef_selected_reactive_3d_runtime.a'),
                                    str(candidate/'libpelef_selected_reactive_2d_runtime.a')]
@@ -232,12 +261,28 @@ def main():
         if len(row)!=(6 if args.bulk else 5) or not all(math.isfinite(v) and v>0 for v in row):
             raise ValueError('Invalid transport output')
     errors = [max(abs(a-b)/abs(a) for a,b in zip(r,c)) for r,c in zip(expected,actual)]
+    face_error = None
+    if args.bulk:
+        faces = read('candidate-faces.dat')
+        if len(faces)!=3 or any(len(row)!=5 for row in faces):
+            raise ValueError('Incomplete face output')
+        face_errors = []
+        for i, row in enumerate(faces):
+            if not all(math.isfinite(v) and v>0 for v in row):
+                raise ValueError('Invalid face transport')
+            ref = [2*a*b/(a+b) for a,b in zip(expected[2*i][:5],expected[2*i+1][:5])]
+            face_errors.extend(abs(a-b)/abs(a) for a,b in zip(ref,row))
+        face_error = max(face_errors)
+        if face_error>2e-12:
+            raise ValueError(f'Face transport mismatch: {face_error}')
     report = dict(states=states, relative_errors=errors, maximum_relative_error=max(errors),
                   tolerance=2e-12, commands=commands,
                   reference_identity=identity, source_sha256=source_hashes,
                   bundle_sha256=bundle_hash,
                   bulk_viscosity=args.bulk,
                   bulk_stress_and_timestep_checks=args.bulk,
+                  face_maximum_relative_error=face_error,
+                  fitted_checkpoint_record_checks=args.bulk,
                   fits_sha256=hashlib.sha256((out/'fits.dat').read_bytes()).hexdigest())
     (out/'comparison.json').write_text(json.dumps(report,indent=2)+'\n')
     if max(errors)>2e-12:
