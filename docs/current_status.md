@@ -30,6 +30,10 @@ Prepared EB patches now assemble centroid-corrected MOL spatial rates and
 boundary/wall ledgers with stationary balance and conservation checks.
 The application connections are described below
 ([spatial rate](validation/eb-mol-spatial-rate-20260927.md)).
+MOL now uses its pinned centroid-stencil rules separately from CTU; focused
+analytic checks and acoustic-MOL nested restart pass. The LF negative-fuel
+case is traced to neighboring diffusive fluxes entering centroid interpolation
+([stencil and diagnosis](validation/mol-centroid-stencil-20260927.md)).
 Owner-local MPI MOL rates and fluxes now match serial evaluation in a nested
 wall fixture, including empty-rank ownership and collective rollback
 ([MPI spatial evaluation](validation/mpi-eb-mol-rate-20260927.md)).
