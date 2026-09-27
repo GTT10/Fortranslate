@@ -745,6 +745,10 @@ program pelef_reactive_eb_tree_3d
   if(mol_lax_friedrichs) write(*,'(a)') 'MOL interface flux: Lax-Friedrichs'
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
   write(*,'(a,es24.16)') 'Minimum accepted interval: ',record%minimum_dt
+#ifdef PELEF_MPI_EB_SPRAY
+  write(*,'(a,i0)') 'Particle ID watermark: ',last_particle_id
+  write(*,'(a,i0)') 'Computational split parcels: ',split_created_total
+#endif
 #ifdef PELEF_MPI_EB_TREE
   end if
   call MPI_Finalize(mpi_ierr)

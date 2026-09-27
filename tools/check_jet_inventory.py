@@ -21,6 +21,8 @@ def main():
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--fuel-species', choices=['NC10H22', 'NC12H26'], default='NC10H22')
+    parser.add_argument('--allow-khrt-children', action='store_true',
+                        help='Require KHRT metadata and reported ID watermark for a growing population')
     args = parser.parse_args()
     folder = args.run_dir
     metadata = json.loads((folder/'preparation.json').read_text())
@@ -50,7 +52,18 @@ def main():
     ids = [int(v['id']) for v in particles]
     if len(set(keys)) != len(gas) or len(set(ids)) != len(ids):
         raise ValueError('Duplicate cells or parcel IDs')
-    if len(particles) > metadata['expected_parcels'] or any(i <= 0 for i in ids):
+    population_limit = metadata['expected_parcels']
+    created_ids = 0
+    if args.allow_khrt_children:
+        watermark = re.findall(r'Particle ID watermark:\s*(\d+)', log)
+        splits = re.findall(r'Computational split parcels:\s*(\d+)', log)
+        if metadata.get('breakup_model') != 'KHRT' or not watermark or not splits:
+            raise ValueError('Missing KHRT population provenance')
+        population_limit = int(watermark[-1])
+        created_ids = population_limit-metadata['expected_parcels']-int(splits[-1])
+        if created_ids < 0 or any(i > population_limit for i in ids):
+            raise ValueError('Inconsistent particle ID accounting')
+    if len(particles) > population_limit or any(i <= 0 for i in ids):
         raise ValueError('Unexpected parcel population')
     for p in particles:
         if float(p['mass']) <= 0 or float(p['multiplicity']) <= 0 or not math.isclose(
@@ -72,7 +85,7 @@ def main():
     error = abs(reconstructed-expected)/expected
     inventory_error = abs(vapor+liquid-fuel['final'])/expected
     injected_error = abs(fuel['injected']-expected)/expected
-    result = dict(fuel_species=args.fuel_species, completed_steps=int(complete[-1][0]), completed_time_s=float(complete[-1][1]),
+    result = dict(fuel_species=args.fuel_species, additional_particle_ids=created_ids, completed_steps=int(complete[-1][0]), completed_time_s=float(complete[-1][1]),
                   processed_events=int(events[-1]), retained_parcels=len(particles),
                   expected_injected_mass_kg=expected, gas_fuel_mass_kg=vapor, liquid_fuel_mass_kg=liquid,
                   signed_boundary_fuel_kg=fuel['boundary'], signed_wall_fuel_kg=fuel['wall'],

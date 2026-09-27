@@ -69,7 +69,7 @@ def main():
  root_shape=4,4,8,child_count=0,
  domain_lower=-.006,-.006,0,domain_upper=.006,.006,.06,
  geometry_type='level_set',level_set_file='level_set.dat',
- time_step={fmt(dt)},final_time={fmt(end_time)},maximum_steps={2*args.events+2},maximum_step_retries=0,
+ time_step={fmt(dt)},final_time={fmt(end_time)},maximum_steps={math.ceil(end_time/dt)+args.events+2},maximum_step_retries=0,
  time_integrator='sdc',sdc_iterations=2,subcycling=.false.,automatic_timestep=.false.,
  chemistry_enabled=.false.,transport_enabled=.true.,simple_transport_enabled=.true.,
  hydro_method='plm_ctu',riemann_solver='pelec',
