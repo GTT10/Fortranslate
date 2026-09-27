@@ -19,7 +19,7 @@ each direction. The application is also registered for installation.
 
 ## SDC
 
-With `PELEF_ENABLE_SPRAY=ON`, the MPI fixed and selected frontends also route
+With `PELEF_ENABLE_SPRAY=ON`, the serial/MPI fixed and selected frontends also route
 LES into SDC. Add this group to the flow input:
 
 ```fortran
@@ -36,8 +36,9 @@ the current finest cell width, including in recursive mode. LES settings are
 part of checkpoint identity; changing or removing enabled LES rejects restart.
 Omitting the group leaves LES disabled. The selected route is wired but the
 [focused application check](../../docs/validation/les-mpi-amr-app-20260927.md)
-was run only for the fixed mechanism. Serial gas and particle-SDC routing are
-separate work.
+was run only for the fixed mechanism. Serial/MPI output and checkpoint
+interchange also have [focused evidence](../../docs/validation/les-serial-amr-app-20260927.md).
+Particle-SDC routing remains separate work.
 
 
 Serial and MPI fixed/selected frontends accept `time_integrator='sdc'` with

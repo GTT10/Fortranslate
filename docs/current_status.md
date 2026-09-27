@@ -17,7 +17,10 @@ owner-local stage evaluation and temporal parent donors
 ([MPI LES checks](validation/les-mpi-amr-sdc-20260927.md)). The opt-in MPI gas
 application now accepts `amr_tree_les`, limits the timestep and preserves LES
 settings in checkpoint identity ([application checks](validation/les-mpi-amr-app-20260927.md)).
-Serial gas and particle-SDC application routing remain open.
+The serial gas application now uses the same input and checkpoint identity,
+with exact serial/MPI output and checkpoint interchange in focused common and
+recursive cases ([serial application checks](validation/les-serial-amr-app-20260927.md)).
+Particle-SDC application routing remains open.
 
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
