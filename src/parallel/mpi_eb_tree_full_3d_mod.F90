@@ -702,7 +702,7 @@ contains
         if(owners(node)/=rank.or..not.active(node)) cycle
         candidate%fields(node)%values=old%fields(node)%values+dt*(rates%fields(node)%values+hydro%fields(node)%values)
       end do
-      call recover(ready)
+      call recover(ready,.false.)
       if(.not.ready) return
       end if
       call sources(candidate,ct,e1,d1,a1,it,f1,transfer1,ready,fractions_end)
@@ -722,7 +722,7 @@ contains
           if(owners(node)/=rank.or..not.active(node)) cycle
           candidate%fields(node)%values=old%fields(node)%values+dt*rates%fields(node)%values
         end do
-        call recover(ready)
+        call recover(ready,.true.)
         if(.not.ready) return
       end if
     end do
@@ -800,7 +800,7 @@ contains
           if(owners(node)/=rank) cycle
           candidate%fields(node)%values=before_sync%fields(node)%values+dt*redistributed%fields(node)%values
         end do
-        call recover(ready)
+        call recover(ready,.true.)
         if(.not.ready) return
         call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,candidate,ct,comm,ready)
         if(.not.ready) return
@@ -1081,8 +1081,9 @@ contains
       end if
       good=.true.
     end subroutine
-    subroutine recover(good)
+    subroutine recover(good,final_state)
       logical, intent(out) :: good
+      logical, intent(in) :: final_state
       logical :: local_ok,cell_ok
       local_ok=.true.
       do node=1,size(owners)
@@ -1092,6 +1093,11 @@ contains
         do j=1,n(2)
         do i=1,n(1)
           if(geometry(node)%volume_fraction(i,j,k)<=0) cycle
+          ! Primitive recovery tolerates roundoff negatives for evaluation;
+          ! an accepted conservative state must also be writable as a restart.
+          if(final_state.and.any(candidate%fields(node)%values(6:,i,j,k)<0)) then
+            local_ok=.false.;cycle
+          end if
           call reactive_conserved_to_primitive(species,candidate%fields(node)%values(:,i,j,k), &
             ct%fields(node)%values(1,i,j,k),primitive,recovered,speed,cell_ok)
           if(.not.cell_ok) then
@@ -1576,6 +1582,9 @@ contains
         do y=1,d(2)
         do x=1,d(1)
           if(geometry(p)%volume_fraction(x,y,z)<=0) cycle
+          if(any(candidate%fields(p)%values(6:,x,y,z)<0)) then
+            local_ok=.false.;cycle
+          end if
           call reactive_conserved_to_primitive(species,candidate%fields(p)%values(:,x,y,z), &
             ct%fields(p)%values(1,x,y,z),primitive,recovered,speed,accepted)
           if(.not.accepted) then

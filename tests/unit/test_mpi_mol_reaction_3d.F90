@@ -21,9 +21,9 @@ program test_mpi_mol_reaction_3d
   type(amr_patch_tree_3d) :: tree
   type(eb_geometry_3d) :: geometry(1),extended(1)
   type(amr_tree_state_3d) :: initial,initial_t,state,temp,saved,saved_t
-  real(dp), allocatable :: y(:),q(:),u(:),reference(:),b(:),w(:),ch(:),source(:)
+  real(dp), allocatable :: y(:),q(:),u(:),reference(:),b(:),w(:),ch(:),source(:),aux(:)
   real(dp) :: mw,r,cp,cv,gamma,h,e,entropy,t,c,reference_t,theta,error
-  integer :: rank,status,nv,s,iteration,steps,i,j,k,calls,global_calls
+  integer :: rank,status,nv,s,iteration,steps,i,j,k,calls,global_calls,bad_species,aux_calls
   logical :: ok,fail_late
   character(len=16) :: faces(6)
   call MPI_Init(status);call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
@@ -32,7 +32,7 @@ program test_mpi_mol_reaction_3d
   call load_h2o2_elementary_mechanism(reactions,ok);call require(ok,'reactions')
   nv=reactive_nvar(size(species))
   allocate(y(size(species)),q(reactive_nprim(size(species))),u(nv),reference(size(species)), &
-    b(nv),w(nv),ch(nv),source(nv))
+    b(nv),w(nv),ch(nv),source(nv),aux(nv))
   y=0
   do s=1,size(species)
     select case(species(s)%name)
@@ -87,6 +87,23 @@ program test_mpi_mol_reaction_3d
       print *, 'MOL iterations, reactor calls, maximum error:',iteration,global_calls,error
     end if
   end do
+  ! Even a sub-tolerance negative species must fail before publication: the
+  ! restart format requires genuinely nonnegative partial densities.
+  state=initial;temp=initial_t;saved=state;saved_t=temp
+  bad_species=5+findloc(y,0._dp,dim=1);aux_calls=0;aux=31
+  b=17;w=19;ch=23;source=29
+  call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,[0],geometry,state,temp,extended, &
+    1e-10_dp,2,.false.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
+    1e-8_dp,1e-12_dp,faces,b,w,ch,source,theta,MPI_COMM_WORLD,ok, &
+    auxiliary_source=negative_source,auxiliary_change=aux,mol_mode=.true.)
+  call require(aux_calls==2,'negative source reached both stages')
+  call require(.not.ok,'sub-tolerance negative species rejection')
+  call require(all(aux==31),'negative-species auxiliary rollback')
+  call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(source==29),'negative-species ledger rollback')
+  if(rank==0) then
+    call require(all(state%fields(1)%values==saved%fields(1)%values),'negative-species state rollback')
+    call require(all(temp%fields(1)%values==saved_t%fields(1)%values),'negative-species temperature rollback')
+  end if
   saved=state;saved_t=temp;calls=0;fail_late=.true.;b=17;w=19;ch=23;source=29
   call step(2,ok);call require(.not.ok,'late reactor failure')
   call require(all(b==17).and.all(w==19).and.all(ch==23).and.all(source==29),'ledger rollback')
@@ -104,6 +121,24 @@ contains
       1e-10_dp,iterations,.true.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
       1e-8_dp,1e-12_dp,faces,b,w,ch,source,theta,MPI_COMM_WORLD,good,evaluate_reaction=reactor,mol_mode=.true.)
   end subroutine
+  subroutine negative_source(gas,temperature,interval,stage,depth,rate,comm,good)
+    type(amr_tree_state_3d), intent(in) :: gas,temperature
+    real(dp), intent(in) :: interval
+    integer, intent(in) :: stage,depth
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: good
+    aux_calls=aux_calls+1
+    rate=gas
+    if(rank==0) then
+      rate%fields(1)%values=0
+      if(stage>0) then
+        rate%fields(1)%values(1,:,:,:)=-1e-8_dp
+        rate%fields(1)%values(bad_species,:,:,:)=-1e-8_dp
+      end if
+    end if
+    good=.true.
+  end subroutine negative_source
   subroutine reactor(species,reactions,initial_energy_density,external_species,external_energy, &
       duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps)
     type(nasa7_species), intent(in) :: species(:)
