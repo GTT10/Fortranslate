@@ -15,6 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('pelec', 'fortran', 'exporter', 'velocity', 'work'):
         parser.add_argument('--' + key, type=Path, required=True)
+    parser.add_argument('--transport', action='store_true', help='Enable matched constant viscosity and conductivity')
+    parser.add_argument('--les', choices=('smagorinsky', 'wale', 'vreman'))
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
     for key in ('pelec', 'fortran', 'exporter', 'velocity'):
@@ -27,6 +29,22 @@ def main():
     shutil.copy(args.velocity, work / 'hit_ic_4_32.dat')
     for name in ('pelec_reference.inp', 'hydro_reference.nml'):
         shutil.copy(source / 'cases/reactive_hit_3d' / name, work / name)
+    if args.transport:
+        reference_input = work / 'pelec_reference.inp'
+        reference_input.write_text(reference_input.read_text().replace(
+            'pelec.diffuse_vel = 0', 'pelec.diffuse_vel = 1').replace(
+            'pelec.diffuse_temp = 0', 'pelec.diffuse_temp = 1'))
+        fortran_input = work / 'hydro_reference.nml'
+        fortran_input.write_text(fortran_input.read_text().replace(
+            'transport_enabled=.false.', 'transport_enabled=.true.') +
+            "\n&reactive_constant_transport enabled=.true.,mode='hit',lambda0=.005,reynolds_lambda0=100,prandtl=.71 /\n")
+    if args.les:
+        model = dict(smagorinsky=0, wale=2, vreman=3)[args.les]
+        with (work / 'pelec_reference.inp').open('a') as stream:
+            stream.write(f'\npelec.do_les = 1\npelec.les_model = {model}\n'
+                         'pelec.Cs = .5\npelec.Cw = .5\npelec.CI = .09\npelec.PrT = .7\n')
+        with (work / 'hydro_reference.nml').open('a') as stream:
+            stream.write(f"\n&reactive_les enabled=.true.,model='{args.les}',cs=.5,ci=.09,prt=.7 /\n")
     env = dict(os.environ)
     for key in ('LD_LIBRARY_PATH', 'LIBRARY_PATH', 'DISPLAY'):
         env.pop(key, None)
@@ -66,7 +84,7 @@ def main():
                           for a, b in zip(actual, reference))
         updates[key] = max(factor*abs(float(b[name])-float(c[name]))/scale
                            for b, c in zip(reference, initial))
-    report = dict(normalized_errors=errors, normalized_reference_updates=updates,
+    report = dict(transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
                   absolute_normalized_gate=1e-10, velocity_sha256=velocity_hash,
                   binaries={key: hashlib.sha256(getattr(args, key).read_bytes()).hexdigest()
                             for key in ('pelec', 'fortran', 'exporter')})
