@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+A 3D embedded-wall quadratic gradient and scalar heat-flux kernel now follows
+the pinned type-0 stencil. Its coefficients agree with a compiled reference in
+24 orientations; application transport/budget/restart integration remains open
+([kernel evidence](validation/eb-boundary-gradient-20260927.md)).
+
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
 values are preserved; full-duration reference parity remains open
