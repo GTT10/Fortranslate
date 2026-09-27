@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+An extracted Jet failure revealed internal-energy inversion stagnation at
+adjacent representable temperatures near zero energy. The inversion now
+terminates on that resolved bracket; focused thermodynamic checks pass, while
+the bounded Jet intervention replay remains pending
+([evidence](validation/temperature-inversion-resolution-20260927.md)).
+
 MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
 failure checks ([reconstruction](validation/mol-reconstruction-20260927.md),
