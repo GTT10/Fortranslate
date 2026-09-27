@@ -34,7 +34,8 @@ if(PELEF_ENABLE_SPRAY)
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/${target}_modules>")
     target_link_libraries(${target} PUBLIC ${base})
     if(PELEF_ENABLE_SUNDIALS)
-      target_sources(${target} PRIVATE src/chemistry/sundials_constant_volume_reactor_mod.F90)
+      target_sources(${target} PRIVATE src/chemistry/sundials_constant_volume_reactor_mod.F90
+        src/chemistry/sundials_forced_reactor_mod.F90)
       target_compile_definitions(${target} PRIVATE PELEF_SPRAY_CVODE=1)
       target_link_libraries(${target} PRIVATE SUNDIALS::fcvode_mod_static
         SUNDIALS::fnvecserial_mod_static SUNDIALS::fsunmatrixdense_mod_static SUNDIALS::fsunlinsoldense_mod_static)

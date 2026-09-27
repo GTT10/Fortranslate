@@ -707,6 +707,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     add_library(
       pelef_selected_cvode_runtime
       STATIC src/chemistry/sundials_constant_volume_reactor_mod.F90
+        src/chemistry/sundials_forced_reactor_mod.F90
     )
     set_target_properties(
       pelef_selected_cvode_runtime
