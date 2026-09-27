@@ -34,6 +34,10 @@ MOL now uses its pinned centroid-stencil rules separately from CTU; focused
 analytic checks and acoustic-MOL nested restart pass. The LF negative-fuel
 case is traced to neighboring diffusive fluxes entering centroid interpolation
 ([stencil and diagnosis](validation/mol-centroid-stencil-20260927.md)).
+Accepted MPI SDC states now reject even tiny negative species before
+publication; a two-rank red/green rollback test and nested restart pass.
+The upstream clipping cleanup changes species inventory and is not applied
+([acceptance repair and conservation boundary](validation/sdc-negative-species-20260927.md)).
 Owner-local MPI MOL rates and fluxes now match serial evaluation in a nested
 wall fixture, including empty-rank ownership and collective rollback
 ([MPI spatial evaluation](validation/mpi-eb-mol-rate-20260927.md)).
