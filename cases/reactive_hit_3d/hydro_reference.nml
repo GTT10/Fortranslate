@@ -1,0 +1,15 @@
+&reactive_3d
+ nx=4,ny=4,nz=4
+ x_upper=.06283185307179586,y_upper=.06283185307179586,z_upper=.06283185307179586
+ final_time=1e-8,maximum_steps=1,time_integrator='sdc',sdc_iterations=2
+ problem='uniform_reactor',thermo_model='gamma_law'
+ reconstruction='characteristic_ppm',riemann_solver='pelec',boundary_condition='periodic'
+ difmag=.1
+ chemistry_enabled=.false.,transport_enabled=.false.
+ species_diffusion_enabled=.false.,barodiffusion_enabled=.false.
+ initial_temperature=300,initial_pressure=101300
+ initial_velocity_x=0,initial_velocity_y=0,initial_velocity_z=0
+ output_file='fortran.csv'
+/
+&gamma_law gamma=1.4 /
+&reactive_hit input_file='hit_ic_4_32.dat',inres=32,coordinate_scale=.01,mach_t0=.1,uin_norm=1 /

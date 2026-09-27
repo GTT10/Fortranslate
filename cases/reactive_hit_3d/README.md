@@ -109,3 +109,19 @@ reference run with PPM and two SDC iterations. Supply the pinned velocity file
 in its working directory. It uses CGS units and `1e-8` seconds. This preparation
 does not establish evolved-field parity; the current completed comparison is
 the [initialization kernel check](../../docs/validation/hit-initialization-reference-20260927.md).
+
+After the reference build completes, build a CSV exporter against its AMReX
+library and run the one-step comparison:
+
+```sh
+cmake -S tools/plotfile_export -B build/pelec-plotfile-export -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_BUILD_TYPE=Release -DAMReX_DIR="$PWD/build/pelec-pinned-hit/Submodules/PelePhysics/Submodules/amrex/lib/cmake/AMReX"
+cmake --build build/pelec-plotfile-export --parallel 2
+python3 tools/check_hit_evolution_reference.py --pelec build/pelec-pinned-hit/Exec/RegTests/HIT/PeleC-HIT --fortran build/amr-cvode-app-debug/pelef_reactive_3d --exporter build/pelec-plotfile-export/pelef_plotfile_csv --velocity build/pelec-pinned-hit-source/Exec/RegTests/HIT/hit_ic_4_32.dat --work build/hit-full-reference
+```
+
+The matching Fortran input is [hydro_reference.nml](hydro_reference.nml).
+The exporter uses AMReX's reader, preserves raw units, and requires serial,
+single-level Cartesian data. The comparison converts CGS to SI, checks cell
+coordinates/time and records both normalized differences and the reference's
+change from its initial field. Its `1e-10` normalized difference gate is
+specified before the comparison; preparation alone is not a passing result.

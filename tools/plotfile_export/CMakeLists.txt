@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.23)
+project(PeleFReferencePlotfileExport LANGUAGES CXX)
+find_package(AMReX CONFIG REQUIRED)
+add_executable(pelef_plotfile_csv main.cpp)
+target_link_libraries(pelef_plotfile_csv PRIVATE AMReX::amrex)
+target_compile_features(pelef_plotfile_csv PRIVATE cxx_std_20)
