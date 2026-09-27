@@ -125,3 +125,7 @@ single-level Cartesian data. The comparison converts CGS to SI, checks cell
 coordinates/time and records both normalized differences and the reference's
 change from its initial field. Its `1e-10` normalized difference gate is
 specified before the comparison; preparation alone is not a passing result.
+Add `--transport` for constant viscosity/conductivity and `--les wale` for
+WALE (also accepted: `smagorinsky`, `vreman`). Hydro, transport and
+transport/WALE one-step comparisons have now passed against the full pinned
+executable; see the [bounded results](../../docs/validation/hit-full-reference-20260927.md).

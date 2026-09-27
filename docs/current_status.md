@@ -13,7 +13,10 @@ The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
 checks for four LES closures ([evidence](validation/gamma-law-app-20260927.md)).
 Its prescribed transport needs no invented molecular database; gamma-law
-MPI/AMR support and external evolved-field parity are not established.
+MPI/AMR support is not established. A full pinned PeleC HIT build now agrees
+on a 4³ one-step comparison for hydro, constant transport and WALE (maximum
+normalized difference `3.92e-15`; [evidence](validation/hit-full-reference-20260927.md)).
+Long-time turbulence parity remains unestablished.
 HIT input also accepts an explicit coordinate-unit factor; the gamma-law
 template converts centimetre reference lengths to metres, with exact
 manufactured-input equivalence ([checks](validation/hit-coordinate-20260927.md)).
