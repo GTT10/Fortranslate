@@ -56,9 +56,12 @@ are supported ([breakup checks](../../docs/validation/spray-recursive-breakup-20
 `khrt_children=.true.` with a positive `khrt_reference_diameter_cubed` also enables
 physical shedding children in the old-time stage; copies do not create children
 ([checks](../../docs/validation/spray-recursive-children-20260927.md)). Paired periodic
-faces now support recursive particle migration and source exchange when
-`wall_impacts=.false.` ([checks](../../docs/validation/spray-recursive-periodic-20260927.md));
-periodic film copies remain unsupported.
+faces now support recursive particle migration and source exchange
+([checks](../../docs/validation/spray-recursive-periodic-20260927.md)), including
+wall impacts, film copies and thermal evolution
+([film checks](../../docs/validation/spray-recursive-periodic-film-20260927.md)).
+Film surface-validation probes must remain inside the closed physical domain;
+wall normals whose probes cross a periodic seam remain unsupported.
 The default `wall_impacts=.false.` retains specular particle/EB reflection.
 
 Physical particle exchange is synchronized conservatively after each outer step.

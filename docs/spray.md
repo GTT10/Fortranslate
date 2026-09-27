@@ -95,8 +95,12 @@ periodic axes, with canonical coordinate wrapping and matching nodal seam
 validation ([checks](validation/spray-eb-periodic-levels-20260927.md)). Recursive
 particle stages and sources now support periodic axes, including application
 input ([coupled checks](validation/spray-recursive-periodic-20260927.md)).
-Periodic film-copy integration remains open, so recursive periodic film input
-still rejects.
+Recursive film placement, virtual/ghost copies, newborn attachment and thermal
+source exchange now also accept periodic axes, including application wall impacts
+([focused checks](validation/spray-recursive-periodic-film-20260927.md)). Film wall
+coordinates are preserved; surface-validation probes must remain inside the
+closed physical domain. Geometry whose normal probe crosses a periodic seam
+remains unsupported.
 
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
 regular/EB MPI migration APIs accept optional `maximum_level` (zero based).
