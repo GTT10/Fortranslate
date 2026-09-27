@@ -2,6 +2,10 @@ program test_mpi_eb_tree_hydro_3d
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
+  use eb_mol_hydro_3d_mod, only: compute_mol_eb_hydro_3d
+  use eb_geometry_3d_mod, only: extract_eb_geometry_3d
+  use eb_reactive_patch_tree_3d_mod, only: fill_reactive_eb_tree_halo_3d
+  use mpi_eb_tree_hydro_3d_mod, only: compute_mol_mpi_eb_tree_hydro_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
@@ -148,6 +152,54 @@ program test_mpi_eb_tree_hydro_3d
   if (rank==0) print *, 'test_mpi_eb_tree_hydro_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine check_mol_sources(stage_tree,owners,local,lt)
+    type(eb_reactive_tree_3d), intent(in) :: stage_tree
+    integer, intent(in) :: owners(:)
+    type(amr_tree_state_3d), intent(in) :: local,lt
+    type(eb_geometry_3d) :: three(count)
+    type(amr_tree_state_3d) :: rates,prior
+    type(eb_integrated_flux_3d), allocatable :: flux(:),previous(:)
+    type(eb_integrated_flux_3d) :: reference_flux
+    real(dp) :: ghost(nv,10,10,10),gt(10,10,10),vf(10,10,10),expected(nv,4,4,4),b(nv),w(nv)
+    integer :: p,wrong_order
+    logical :: good
+    do p=1,count
+      call extract_eb_geometry_3d(extended(p),[4,4,4],[13,13,13],three(p),good)
+      call require(good,'MOL three-layer geometry')
+    end do
+    call compute_mol_mpi_eb_tree_hydro_3d(species,topology,owners,physical,three,local,lt,1e-8_dp,2, &
+      rates,flux,MPI_COMM_WORLD,good,boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t)
+    call require(good,'distributed MOL rate')
+    do p=1,count
+      call require(allocated(rates%fields(p)%values).eqv.(owners(p)==rank),'owner-local MOL rate')
+      call require(allocated(flux(p)%x).eqv.(owners(p)==rank),'owner-local MOL flux')
+      if(owners(p)/=rank) cycle
+      call fill_reactive_eb_tree_halo_3d(species,stage_tree,p,ghost,gt,good, &
+        halo_width=3,target_volume_fraction=three(p)%volume_fraction,ghost_volume_fraction=vf, &
+        boundary_faces=labels,inflow_state=inlet,inflow_temperature=inlet_t,restrict_snapshot=.false.)
+      call require(good,'serial MOL donors')
+      call compute_mol_eb_hydro_3d(species,three(p),ghost,gt,1e-8_dp,2,expected,reference_flux,b,w,good)
+      call require(good,'serial MOL rate')
+      call require(maxval(abs(rates%fields(p)%values-expected)/max(1._dp,abs(expected)))<1e-12_dp, &
+        'serial distributed MOL rate agreement')
+      call require(maxval(abs(flux(p)%x-reference_flux%x)/max(1._dp,abs(reference_flux%x)))<1e-12_dp.and. &
+        maxval(abs(flux(p)%y-reference_flux%y)/max(1._dp,abs(reference_flux%y)))<1e-12_dp.and. &
+        maxval(abs(flux(p)%z-reference_flux%z)/max(1._dp,abs(reference_flux%z)))<1e-12_dp, &
+        'serial distributed MOL flux agreement')
+    end do
+    prior=rates;previous=flux;wrong_order=2
+    if(rank==nranks-1) wrong_order=0
+    call compute_mol_mpi_eb_tree_hydro_3d(species,topology,owners,physical,three,local,lt,1e-8_dp,wrong_order, &
+      rates,flux,MPI_COMM_WORLD,good,boundary_faces=labels)
+    call require(.not.good,'collective MOL invalid control')
+    do p=1,count
+      if(owners(p)/=rank) cycle
+      call require(all(rates%fields(p)%values==prior%fields(p)%values),'MOL rate rollback')
+      call require(all(flux(p)%x==previous(p)%x).and.all(flux(p)%y==previous(p)%y).and. &
+        all(flux(p)%z==previous(p)%z),'MOL flux rollback')
+    end do
+    if(rank==0) print *, 'PASS: MPI MOL source and flux comparison, collective rollback'
+  end subroutine check_mol_sources
   subroutine check_temporal_sources(owners,predictor,local_predictor)
     integer, intent(in) :: owners(:)
     type(amr_tree_state_3d), intent(in) :: predictor,local_predictor
@@ -242,6 +294,7 @@ contains
         lt%fields(p)%values(1,:,:,:)=stage_tree%nodes(p)%temperature
         local_predictor%fields(p)%values=predictor%fields(p)%values
       end do
+      call check_mol_sources(stage_tree,owners,local,lt)
       call check_temporal_sources(owners,predictor,local_predictor)
       call compute_sdc_mpi_eb_tree_hydro_3d(species,topology,owners,physical,local,lt,local_predictor, &
         extended,1.e-8_dp,rates,flux,MPI_COMM_WORLD,good,difmag=coefficient,boundary_faces=labels, &

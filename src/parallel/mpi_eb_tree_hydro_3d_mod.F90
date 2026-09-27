@@ -4,6 +4,7 @@ module mpi_eb_tree_hydro_3d_mod
   use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use eb_mol_hydro_3d_mod, only: compute_mol_eb_hydro_3d
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
@@ -19,6 +20,7 @@ module mpi_eb_tree_hydro_3d_mod
   implicit none
   private
   public :: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
+  public :: compute_mol_mpi_eb_tree_hydro_3d
 contains
   ! Common interval with PCM or an explicit six-layer PLM CTU geometry cache.
   subroutine advance_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,solver,dt,state,temperature, &
@@ -407,4 +409,102 @@ contains
       if(ierr/=MPI_SUCCESS) result=.false.
     end subroutine
   end subroutine compute_sdc_mpi_eb_tree_hydro_3d
+  ! Spatial MOL evaluation only: no update, redistribution, restriction or reflux.
+  ! Extended metrics contain three cells on each side; publication is collective.
+  subroutine compute_mol_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,extended_geometry,state,temperature, &
+      dt,order,hydro_rate,flux,comm,ok,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),order
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended_geometry(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: hydro_rate
+    type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    integer, optional, intent(in) :: target_depth
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    type(amr_tree_state_3d) :: rates,metrics,ghost,gt,vf
+    type(eb_integrated_flux_3d), allocatable :: candidate_flux(:)
+    type(eb_geometry_3d) :: center
+    real(dp) :: low,high,stamp,boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
+    integer :: nv,rank,status,node,n(3),ios,depth,controls(2),minimum(2),maximum(2)
+    logical :: valid,ready
+    ok=.false.;nv=reactive_nvar(size(species));depth=-1
+    if(present(target_depth)) depth=target_depth
+    valid=ieee_is_finite(dt).and.dt>0.and.(order==1.or.order==2).and.depth>=-1
+    if(present(target_depth)) valid=valid.and.depth>=0
+    if(present(ancestor_start).or.present(ancestor_end).or.present(temperature_start).or. &
+      present(temperature_end).or.present(ancestor_fraction)) valid=valid.and.depth>=0
+    call agree(valid,ready)
+    if(.not.ready) return
+    controls=[order,depth]
+    call MPI_Allreduce(controls,minimum,2,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,2,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(minimum/=maximum)) return
+    call MPI_Allreduce(dt,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(dt,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low/=high) return
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
+    if(.not.ready) return
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=3)
+    if(.not.ready) return
+    call agree(depth<tree%level_count(),ready)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    allocate(rates%fields(size(owners)),metrics%fields(size(owners)),candidate_flux(size(owners)),stat=ios)
+    call agree(ios==0,ready)
+    if(.not.ready) return
+    do node=1,size(owners)
+      n=tree%nodes(node)%shape
+      call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+3,center,valid)
+      if(valid) valid=matching_eb_metrics_3d(center,geometry(node))
+      if(.not.valid) exit
+      if(owners(node)/=rank) cycle
+      allocate(metrics%fields(node)%values(1,-2:n(1)+3,-2:n(2)+3,-2:n(3)+3), &
+        rates%fields(node)%values(nv,n(1),n(2),n(3)),stat=ios)
+      if(ios/=0) then
+        valid=.false.;exit
+      end if
+      metrics%fields(node)%values(1,:,:,:)=extended_geometry(node)%volume_fraction
+      rates%fields(node)%values=0
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,gt,comm,ready, &
+      boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_mach=inflow_mach, &
+      inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf, &
+      halo_width=3,target_volume_fraction=metrics,restrict_snapshot=.false., &
+      ancestor_start=ancestor_start,ancestor_end=ancestor_end,temperature_start=temperature_start, &
+      temperature_end=temperature_end,ancestor_fraction=ancestor_fraction)
+    if(.not.ready) return
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+      stamp=tree_work_start()
+      call compute_mol_eb_hydro_3d(species,extended_geometry(node),ghost%fields(node)%values, &
+        gt%fields(node)%values(1,:,:,:),dt,order,rates%fields(node)%values,candidate_flux(node),boundary,wall,valid)
+      call tree_work_stop(node,stamp)
+      if(.not.valid) exit
+    end do
+    call agree(valid,ready)
+    if(.not.ready) return
+    call move_alloc(rates%fields,hydro_rate%fields);call move_alloc(candidate_flux,flux);ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine
+  end subroutine compute_mol_mpi_eb_tree_hydro_3d
 end module mpi_eb_tree_hydro_3d_mod
