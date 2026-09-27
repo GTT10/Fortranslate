@@ -505,8 +505,8 @@ contains
     valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
     if(present(embedded_wall_temperature)) valid=valid.and.transport_flags(2).and.embedded_wall_temperature>0
     if(noslip) valid=valid.and.transport_flags(1)
-    ! First MOL connection follows the reference nonreacting old/new update.
-    if(mol) valid=valid.and..not.chemistry.and..not.present(predictor_builder)
+    ! Particle predictor callbacks still require their own MOL staging.
+    if(mol) valid=valid.and..not.present(predictor_builder)
     call agree(valid,comm,ready)
     if(.not.ready) return
     call MPI_Allreduce(controls,low,15,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -653,7 +653,10 @@ contains
       end do
       if(present(redistribution_transfer)) hydro_transfer=hydro
     end if
-    do it=1,merge(1,iterations,mol)
+    do it=1,merge(1,iterations,mol.and..not.chemistry)
+      ! Later reacting MOL iterations re-evaluate the previous reacted state;
+      ! only the first iteration forms the Euler predictor.
+      if(.not.mol.or.it==1) then
       call combined_rates(.true.)
       if(present(predictor_builder)) then
         if(allocated(predictor_halo)) deallocate(predictor_halo)
@@ -698,6 +701,7 @@ contains
       end do
       call recover(ready)
       if(.not.ready) return
+      end if
       call sources(candidate,ct,e1,d1,a1,it,f1,transfer1,ready,fractions_end)
       if(.not.ready) return
       call combined_rates(.false.)
