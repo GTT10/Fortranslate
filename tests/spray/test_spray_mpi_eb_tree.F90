@@ -6,7 +6,7 @@ program test_spray_mpi_eb_tree
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels,create_mpi_amr_virtual_particles, &
-    create_mpi_amr_ghost_particles
+    create_mpi_amr_ghost_particles,initialize_mpi_amr_sdc_populations,collect_mpi_amr_level_particles,spray_level_population
   implicit none
   type(amr_patch_3d) :: patch(1)
   type(amr_patch_tree_3d) :: tree
@@ -15,7 +15,8 @@ program test_spray_mpi_eb_tree
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=1
   integer :: rank,nranks,ierr,i,owners(2),p
   integer, allocatable :: ghost_nodes(:)
-  logical :: ok
+  type(spray_level_population), allocatable :: physical(:),coarse_copies(:),incoming(:)
+  logical :: ok,wrap(3)
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -86,6 +87,58 @@ program test_spray_mpi_eb_tree
   owners=[nranks-1,0]
   call migrate(100)
   call require(ok.and.size(drops)==merge(nranks,0,rank==nranks-1),'changed gas ownership')
+  ! Periodic tangential axes wrap before nodal fluid checks and level routing.
+  wrap=[.false.,.true.,.true.]
+  do p=1,size(drops)
+    drops(p)%position=[1._dp,-3._dp,9._dp]
+  end do
+  call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,phi,drops,zero,spacing,100,ok,masses,periodic=wrap)
+  call require(ok.and.size(drops)==merge(nranks,0,rank==owners(2)),'periodic EB migration selects fine owner')
+  do p=1,size(drops)
+    call require(all(drops(p)%position==1._dp).and.drops(p)%id==p,'periodic EB wrap and ID order')
+    call require(all(masses(:,p)==1e-9_dp*[.25_dp,.75_dp]),'periodic EB component inventory')
+  end do
+  call initialize_mpi_amr_sdc_populations(MPI_COMM_WORLD,tree,owners,drops,masses,zero,spacing,wrap,1,100, &
+    physical,coarse_copies,incoming,ok,phi)
+  call require(ok.and.size(physical(2)%parcels)==size(drops),'periodic EB physical hierarchy')
+  call require(size(coarse_copies(1)%parcels)==merge(nranks,0,rank==owners(1)), &
+    'periodic EB coarse virtual ownership')
+  call collect_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,wrap,100,drops,masses,ok,phi)
+  call require(ok.and.size(drops)==merge(nranks,0,rank==owners(2)),'periodic EB physical collection')
+  do p=1,size(drops)
+    drops(p)%position=[2.125_dp,-3._dp,9._dp]
+  end do
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,drops,masses,zero,spacing,wrap,1,1,100, &
+    ghosts,ghost_mass,ghost_nodes,ok,phi)
+  call require(ok.and.size(ghosts)==merge(nranks,0,rank==owners(2)),'periodic EB grown ghost routing')
+  do p=1,size(ghosts)
+    call require(all(ghosts(p)%position==[2.125_dp,1._dp,1._dp]).and.ghosts(p)%id==p,'wrapped ghost payload')
+  end do
+  ! Geometry must be periodic on every requested axis, even for empty ranks.
+  call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,phi,drops,zero,spacing,100,ok,masses, &
+    periodic=[.true.,.false.,.false.])
+  call require(.not.ok,'nonperiodic nodal seam rejects')
+  do p=1,size(drops)
+    call require(all(drops(p)%position==[2.125_dp,-3._dp,9._dp]),'seam rejection retains unwrapped coordinates')
+  end do
+  if(rank==0) wrap(3)=.false.
+  call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,phi,drops,zero,spacing,100,ok,masses,periodic=wrap)
+  call require(.not.ok,'rank-disagreed periodic controls reject')
+  ! A coarse particle near the right seam supplies a left fine ghost box.
+  do i=0,8
+    phi(:,i,:)=real(i,dp)*.5_dp-.75_dp
+  end do
+  wrap=[.true.,.false.,.true.]
+  do p=1,size(drops)
+    drops(p)%position=[3.875_dp,1._dp,1._dp]
+  end do
+  call create_mpi_amr_ghost_particles(MPI_COMM_WORLD,tree,owners,drops,masses,zero,spacing,wrap,1,1,100, &
+    ghosts,ghost_mass,ghost_nodes,ok,phi)
+  call require(ok.and.size(ghosts)==merge(nranks,0,rank==owners(2)).and.all(ghost_nodes==2), &
+    'EB ghost ownership reaches fine box across periodic seam')
+  do p=1,size(ghosts)
+    call require(all(ghosts(p)%position==[3.875_dp,1._dp,1._dp]),'periodic ghost keeps canonical position')
+  end do
   deallocate(drops,masses);allocate(drops(0),masses(2,0))
   call migrate(100)
   call require(ok,'empty population')

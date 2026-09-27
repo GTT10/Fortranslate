@@ -286,7 +286,6 @@ contains
       total=total+count(levels(level)%parcels%mass>0,kind=int64)
     end do
     valid=valid.and.total<=1000000
-    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
     call agree();if(.not.agreed) return
     flag=merge(1,0,present(nodal_phi))
     call MPI_Allreduce(flag,low,1,MPI_INTEGER,MPI_MIN,comm,status)
@@ -317,7 +316,8 @@ contains
     call exchange_spray_parcel_bins(comm,candidate,counts,offsets,1000000,valid,mass)
     if(.not.valid) return
     if(present(nodal_phi)) then
-      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,candidate,lower,spacing,maximum_parcels,valid,mass)
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,candidate,lower,spacing, &
+        maximum_parcels,valid,mass,periodic=periodic)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,periodic,maximum_parcels,valid,mass)
     end if
@@ -424,7 +424,6 @@ contains
     valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid()
     if(valid) valid=target_level>=merge(0,1,keep_live.and..not.coarse_only).and. &
       target_level<tree%level_count().and.grow>=0.and.grow<=1000000
-    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
     call agree()
     if(.not.agreed) return
     flags=[target_level,grow,merge(1,0,present(nodal_phi)),merge(1,0,coarse_only),merge(1,0,keep_live)]
@@ -452,7 +451,7 @@ contains
       end do
     end if
     if(present(nodal_phi)) then
-      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,physical,lower,spacing,1000000,valid,mass)
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,physical,lower,spacing,1000000,valid,mass,periodic=periodic)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,physical,lower,spacing,periodic,1000000,valid,mass)
     end if
@@ -605,7 +604,6 @@ contains
     if(valid) valid=target_level>=0.and.target_level<tree%level_count()
     if(valid) valid=size(component_mass,2)==size(parcels)
     if(valid) valid=size(component_mass,1)>=1.and.size(component_mass,1)<=16
-    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
     call agree()
     if(.not.agreed) return
     flags=[target_level,merge(1,0,present(nodal_phi)),merge(1,0,finer_copies)]
@@ -639,7 +637,7 @@ contains
     end do
     if(present(nodal_phi)) then
       call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,copies,lower,spacing, &
-        maximum_parcels,valid,masses,target_level)
+        maximum_parcels,valid,masses,target_level,periodic)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,copies,lower,spacing,periodic, &
         maximum_parcels,valid,masses,target_level)
@@ -654,9 +652,10 @@ contains
     end subroutine
   end subroutine select_mpi_amr_level_copies
   ! The replicated nodal field describes the root domain at the finest tree
-  ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder. No periodic wrapping.
+  ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder.
+  ! Optional periodic axes wrap before EB checking and require matching nodal seams.
   subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing, &
-      maximum_parcels,ok,component_mass,maximum_level)
+      maximum_parcels,ok,component_mass,maximum_level,periodic)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, optional, intent(in) :: maximum_level
@@ -664,15 +663,18 @@ contains
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),spacing(3)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    logical, optional, intent(in) :: periodic(3)
+    logical :: wrap(3)
     logical, intent(out) :: ok
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: masses(:,:),reference(:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    integer :: dims(3),low(3),high(3),ios,ierr,p,cell(3)
+    integer :: dims(3),low(3),high(3),ios,ierr,p,axis,cell(3)
     real(dp) :: upper(3),fraction,position(3),normal(3)
     logical :: valid,agreed,hit
-    ok=.false.;dims=shape(phi)-1
+    ok=.false.;dims=shape(phi)-1;wrap=.false.
+    if(present(periodic)) wrap=periodic
     valid=allocated(parcels).and.all(dims>=1).and.all(dims<=1000000)
     if(present(component_mass)) valid=valid.and.allocated(component_mass)
     call agree()
@@ -682,14 +684,19 @@ contains
     if(valid) valid=maxval(abs(phi))<=1e100_dp
     call agree()
     if(.not.agreed) return
+    valid=.true.
+    if(wrap(1)) valid=valid.and.all(phi(0,:,:)==phi(dims(1),:,:))
+    if(wrap(2)) valid=valid.and.all(phi(:,0,:)==phi(:,dims(2),:))
+    if(wrap(3)) valid=valid.and.all(phi(:,:,0)==phi(:,:,dims(3)))
+    call agree();if(.not.agreed) return
     candidate=parcels
     if(present(component_mass)) then
       masses=component_mass
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
-        [.false.,.false.,.false.],maximum_parcels,valid,masses,maximum_level)
+        wrap,maximum_parcels,valid,masses,maximum_level)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
-        [.false.,.false.,.false.],maximum_parcels,valid,maximum_level=maximum_level)
+        wrap,maximum_parcels,valid,maximum_level=maximum_level)
     end if
     if(.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
@@ -713,6 +720,12 @@ contains
     if(.not.agreed) return
     hit=.false.;fraction=0;position=0;normal=0;cell=0
     do p=1,size(candidate)
+      ! General AMR migration wraps the ownership lookup but preserves payload
+      ! coordinates. EB intersection requires the canonical physical domain.
+      do axis=1,3
+        if(.not.wrap(axis)) cycle
+        candidate(p)%position(axis)=lower(axis)+modulo(candidate(p)%position(axis)-lower(axis),upper(axis)-lower(axis))
+      end do
       call intersect_spray_level_set(phi,lower,upper,candidate(p)%position,candidate(p)%position, &
         hit,fraction,position,normal,cell,valid)
       if(.not.valid) exit
