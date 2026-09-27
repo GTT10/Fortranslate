@@ -4,6 +4,11 @@
 rate data to the selected MPI EB tree spray application. It checks the original
 input and ROI SHA-256 values plus decane YAML/Simple-fit provenance before
 creating a new output directory. Original reference files are preserved there.
+The SI rate file contains all 7,502 upstream knots. External rate files in the
+MPI EB tree application accept up to 16,384 points; inline namelist profiles
+retain their 64-point limit. Restart binds every numerical knot, including
+those outside the current run interval. The event schedule still controls
+which part of the table is injected; this case uses two active intervals.
 
 ```sh
 python3 tools/prepare_jet_reference.py --bundle build/decane-3sp-simple-reference/decane_3sp.json --reference-source build/pelec-pinned-hit-source --output build/decane-jet-connection

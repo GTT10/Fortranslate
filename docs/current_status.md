@@ -16,6 +16,9 @@ decane jet reference comparison remains open
 A short source-rate-driven decane application now completes two injection
 events and three SDC steps; eight parcels and gas fuel close the injected
 mass balance ([connection](validation/decane-jet-connection-20260927.md)).
+External MPI EB tree rate files now accept all 7,502 reference knots, with
+exact numerical restart identity and a two-rank continuation check
+([long profiles](validation/long-spray-rate-profiles-20260927.md)).
 
 The pinned reaction-free NC7H16/O2/N2 mechanism imports with source/license
 checks; selected serial spray and MPI EB tree SDC paths require chemistry OFF
