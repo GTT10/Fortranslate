@@ -480,6 +480,7 @@ function(pelef_add_mechanism_bundle)
       "${PROJECT_SOURCE_DIR}/tools/generate_elementary_mechanism.py"
       "${PROJECT_SOURCE_DIR}/tools/pelephysics_transport_import.py"
       "${PROJECT_SOURCE_DIR}/references/heptane_3sp.json"
+      "${PROJECT_SOURCE_DIR}/references/decane_3sp.json"
       "${PROJECT_SOURCE_DIR}/cmake/CheckMechanismSource.cmake"
       ${source_dependency}
       ${simple_transport_dependency}

@@ -1,6 +1,6 @@
 """Compare the Fortran Simple transport kernel with compiled pinned PelePhysics.
 
-Requires the existing heptane Spray-Evaporation reference and candidate builds.
+Requires a configured pinned Spray-Evaporation or Spray-Jet reference and a candidate build.
 This checks the transport kernel only, not its application integration.
 """
 import argparse
@@ -17,7 +17,7 @@ CPP = r'''
 #include <fstream>
 #include <iomanip>
 int main() {
-  static_assert(NUM_SPECIES == 3, "Expected heptane_3sp");
+  static_assert(NUM_SPECIES == 3, "Expected three-species spray mechanism");
   using namespace pele::physics;
   transport::TransParm<eos::Fuego, transport::SimpleTransport> p;
   egtransetWT(p.wt.data());
@@ -91,6 +91,8 @@ end program
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reference-build', type=Path, required=True)
+    parser.add_argument('--reference-case', choices=['Spray-Evaporation', 'Spray-Jet'],
+                        default='Spray-Evaporation')
     parser.add_argument('--candidate-build', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--bundle', type=Path, help='Use imported/generated Fortran coefficients')
@@ -101,7 +103,9 @@ def main():
     ref, candidate, out = (p.resolve() for p in
                            (args.reference_build, args.candidate_build, args.output))
     out.mkdir(parents=True, exist_ok=False)
-    flags_file = ref/'Exec/RegTests/Spray-Evaporation/CMakeFiles/PeleC-Spray-Evaporation.dir/flags.make'
+    mechanism, fuel = {'Spray-Evaporation': ('heptane_3sp', 'NC7H16'),
+                       'Spray-Jet': ('decane_3sp', 'NC10H22')}[args.reference_case]
+    flags_file = ref/f'Exec/RegTests/{args.reference_case}/CMakeFiles/PeleC-{args.reference_case}.dir/flags.make'
     flags = dict(line.split(' = ', 1) for line in flags_file.read_text().splitlines() if ' = ' in line)
     cache = dict(line.split('=', 1) for line in (ref/'CMakeCache.txt').read_text().splitlines()
                  if line.startswith('CMAKE_HOME_DIRECTORY:'))
@@ -110,7 +114,7 @@ def main():
     physics = source/'Submodules/PelePhysics'
     source_hashes = {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in [physics/'Source/Transport/Simple.H',
-                                  physics/'Mechanisms/heptane_3sp/mechanism.H']}
+                                  physics/f'Mechanisms/{mechanism}/mechanism.H']}
     cpp = CPP
     if args.bulk:
         cpp = cpp.replace('transport(false,true,true,true,false,','transport(true,true,true,true,false,')
@@ -126,8 +130,8 @@ def main():
             raise ValueError('Bundle provenance failed')
         bundle = json.loads(args.bundle.read_text())
         validate(bundle)
-        if bundle['species'] != ['NC7H16','O2','N2'] or 'simple_transport' not in bundle:
-            raise ValueError('Expected heptane bundle with Simple transport fits')
+        if bundle['species'] != [fuel,'O2','N2'] or 'simple_transport' not in bundle:
+            raise ValueError(f'Expected {mechanism} bundle with Simple transport fits')
         (out/'generated.f90').write_text(generate(bundle))
         generated_sources = ['generated.f90']
         use = (f"  use {bundle['module_name']}, only: load_fits => {bundle['transport_loader_name']}_simple, &\n"
@@ -278,7 +282,7 @@ def main():
     report = dict(states=states, relative_errors=errors, maximum_relative_error=max(errors),
                   tolerance=2e-12, commands=commands,
                   reference_identity=identity, source_sha256=source_hashes,
-                  bundle_sha256=bundle_hash,
+                  bundle_sha256=bundle_hash, reference_case=args.reference_case,
                   bulk_viscosity=args.bulk,
                   bulk_stress_and_timestep_checks=args.bulk,
                   face_maximum_relative_error=face_error,

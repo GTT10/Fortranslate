@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/Pele-Suite/PelePhysics.git",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "phase": "gas",
+  "symbol_prefix": "decane_3sp",
+  "species_count": 3,
+  "reaction_count": 0,
+  "files": {
+    "yaml": {
+      "path": "Mechanisms/decane_3sp/mechanism.yaml",
+      "basename": "decane_3sp.yaml",
+      "git_blob": "426fbd5198aae72fb654f4776f8ea3f08ffa9ce9",
+      "sha256": "cd27f0bc24ad9ebd31464022a7ac0fcb54501cb979cbcb6a2cb1c51468f7f9d1"
+    },
+    "license": {
+      "path": "license.txt",
+      "basename": "PelePhysics-license.txt",
+      "sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2"
+    }
+  },
+  "note": "Pinned reaction-free NC10H22/O2/N2 data for Spray-Jet. No temperature-range extension or experimental validation.",
+  "nonreacting": true,
+  "simple_transport_header": {
+    "path": "Mechanisms/decane_3sp/mechanism.H",
+    "basename": "decane_3sp_transport.H",
+    "sha256": "72e593200fba26fefad9fded6e4fee0b4fc4470dd2a9c5d8756252273090f1a6",
+    "git_blob": "4823e4817d60c8d5c96520c01deebf8178567176"
+  }
+}

@@ -41,11 +41,16 @@ def import_simple_transport(header: Path, species: list[str], manifest: dict) ->
 
 def regenerate_simple_transport(bundle: dict, directory: Path) -> dict:
     """Re-read pinned bytes; never trust coefficients copied from bundle JSON."""
-    manifest = json.loads((Path(__file__).resolve().parents[1]/'references/heptane_3sp.json').read_text())
     source = bundle['simple_transport']['source']
-    entry = manifest['simple_transport_header']
-    if source != dict(file=entry['basename'],sha256=entry['sha256'],
-                      git_blob=entry['git_blob'],commit=manifest['commit']):
+    manifest = None
+    for name in ('heptane_3sp', 'decane_3sp'):
+        candidate = json.loads((Path(__file__).resolve().parents[1]/'references'/f'{name}.json').read_text())
+        entry = candidate['simple_transport_header']
+        if source == dict(file=entry['basename'], sha256=entry['sha256'],
+                          git_blob=entry['git_blob'], commit=candidate['commit']):
+            manifest = candidate
+            break
+    if manifest is None:
         raise ValueError('Unsupported Simple transport provenance')
     path = directory/source['file']
     if path.resolve().parent != directory.resolve():
