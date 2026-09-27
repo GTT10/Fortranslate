@@ -16,11 +16,15 @@ native-reactor comparison and failure/reuse checks pass
 SDC now accept an explicit reactor callback, with CVODE source/history and
 rollback checks ([dispatch evidence](validation/sdc-cvode-bridge-20260927.md)).
 Fixed/selected regular gas applications expose `sdc_reactor='cvode'` when built
-with SUNDIALS, with exact matched-composition output checks. Hierarchy selection
-remains open ([application evidence](validation/sdc-cvode-app-20260927.md)).
+with SUNDIALS, with exact matched-composition output checks
+([application evidence](validation/sdc-cvode-app-20260927.md)).
 Serial/MPI AMR common and recursive drivers now forward reactor callbacks;
 focused native-adapter dispatch and rollback checks pass
 ([AMR dispatch evidence](validation/amr-sdc-reactor-20260927.md)).
+Fixed/selected serial/MPI AMR applications now expose CVODE selection, with
+exact common/recursive serial-MPI outputs and changed-rank restart checks
+([AMR application evidence](validation/amr-sdc-cvode-app-20260927.md)).
+Forced CVODE selection in EB/particle SDC remains open.
 
 KHRT now connects reference-count/azimuth children, deterministic samples and
 conservative gas momentum/energy compensation to application input through

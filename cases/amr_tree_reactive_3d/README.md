@@ -452,3 +452,17 @@ PPM checkpoints that stored the unresolved -1 sentinel are incompatible; default
 PCM/PLM context is unchanged, including equivalent explicit zero. See
 [coefficient identity checks](../../docs/validation/nonppm-difmag-input-20260925.md)
 and [PPM application restart evidence](../../docs/validation/difmag-amr-input-20260925.md).
+
+## SDC reactor selection
+
+With `PELEF_ENABLE_SUNDIALS=ON`, fixed and selected serial/MPI tree applications
+accept `sdc_reactor='cvode'` in `&reactive_3d`. It requires
+`time_integrator='sdc'` and `chemistry_enabled=.true.`. The default `native`
+keeps the existing forced reactor. CVODE is used for each cell's forced
+reaction solve in both common and recursive stepping, including the LES
+application wrapper. This selector is independent of the selected bundle's
+split-step chemistry integrator.
+
+The reactor selector is part of the existing full-configuration checkpoint
+identity. Continue with the same selector; changing it rejects the checkpoint.
+Builds without SUNDIALS reject `cvode` during configuration input.
