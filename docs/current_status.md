@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The forced reactor now has a transactional CVODE BDF backend for changing
+species densities and internal-energy sources. Inert analytical, early-time
+native-reactor comparison and failure/reuse checks pass; SDC backend dispatch
+still needs to be connected ([backend evidence](validation/forced-cvode-20260927.md)).
+
 KHRT now connects reference-count/azimuth children, deterministic samples and
 conservative gas momentum/energy compensation to application input through
 `khrt_parcel_factor`. The default -1 retains four symmetric children; [0,1]
