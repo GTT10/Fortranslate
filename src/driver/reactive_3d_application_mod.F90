@@ -177,7 +177,7 @@ contains
     if(present(evaluate_diffusion).and.config%time_integrator/='sdc') error stop 'Additional diffusion requires SDC'
     if((config%sdc_reactor=='cvode').neqv.present(evaluate_reaction)) &
       error stop 'SDC reactor selection does not match supplied backend'
-    if (size(species) < 1 .or. size(reactions) < 1 .or. &
+    if (size(species) < 1 .or. (config%chemistry_enabled.and.size(reactions)<1) .or. &
         size(transport) /= size(species) .or. &
         size(base_mole_fractions) /= size(species)) then
       error stop "Reactive 3D application data have incompatible dimensions"
@@ -203,6 +203,8 @@ contains
     if(any(config%external_forcing/=0)) external_force=config%external_forcing
     faces=resolved_reactive_boundaries_3d(config)
     call read_constant_transport(input_path,constant_coefficients,hit_parameters)
+    if(config%thermo_model=='gamma_law'.and.config%transport_enabled.and..not.allocated(constant_coefficients)) &
+      error stop 'Gamma-law transport requires explicit constant transport'
     if(allocated(constant_coefficients)) then
       if(config%time_integrator/='sdc'.or..not.config%transport_enabled.or.any(faces/='periodic')) &
         error stop 'Constant transport requires periodic SDC with transport enabled'

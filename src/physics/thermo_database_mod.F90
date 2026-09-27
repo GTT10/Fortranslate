@@ -1,5 +1,6 @@
 module thermo_database_mod
   use precision_mod, only: dp
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species, valid_nasa7_species
   implicit none
   private
@@ -9,11 +10,31 @@ module thermo_database_mod
   integer, parameter, public :: gri_h2o_index = 3
   integer, parameter, public :: gri_n2_index = 4
 
+  public :: load_gamma_law_thermo
   public :: load_gri30_thermo_subset
   public :: load_h2o2_elementary_thermo
   public :: load_toy_isomerization_thermo
 
 contains
+  subroutine load_gamma_law_thermo(gamma,species,ok)
+    real(dp), intent(in) :: gamma
+    type(nasa7_species), allocatable, intent(out) :: species(:)
+    logical, intent(out) :: ok
+    ok=.false.
+    if(.not.ieee_is_finite(gamma)) return
+    if(gamma<=1) return
+    allocate(species(1))
+    ! Calorically perfect pseudo-air: the constant NASA7 polynomial is an
+    ! exact representation of cp/R=gamma/(gamma-1), with zero formation energy.
+    species(1)%name='AIR';species(1)%molecular_weight=28.97_dp
+    species(1)%temperature_min=1;species(1)%temperature_mid=1000;species(1)%temperature_max=1e6_dp
+    species(1)%low_coefficients=0
+    species(1)%low_coefficients(1)=gamma/(gamma-1)
+    species(1)%high_coefficients=species(1)%low_coefficients
+    ok=valid_nasa7_species(species(1)).and.species(1)%low_coefficients(1)>1
+    if(.not.ok) deallocate(species)
+  end subroutine
+
 
   subroutine load_gri30_thermo_subset(species, ok)
     type(nasa7_species), allocatable, intent(out) :: species(:)

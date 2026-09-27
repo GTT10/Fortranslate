@@ -5,7 +5,7 @@ program pelef_reactive_3d
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: &
     load_h2o2_elementary_transport, load_h2o2_full_transport
-  use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use thermo_database_mod, only: load_h2o2_elementary_thermo,load_gamma_law_thermo
   use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use h2o2_elementary_mechanism_mod, only: &
     load_h2o2_elementary_mechanism
@@ -36,6 +36,9 @@ program pelef_reactive_3d
   real(dp), allocatable :: mole_fractions(:)
   character(len=1024) :: input_path, message
   logical :: ok
+  real(dp) :: gamma
+  integer :: unit,ios
+  namelist /gamma_law/ gamma
 
   if (command_argument_count() /= 1) then
     write(*, '(a)') "Usage: pelef_reactive_3d <input.nml>"
@@ -44,13 +47,26 @@ program pelef_reactive_3d
   call get_command_argument(1, input_path)
   call read_reactive_3d_configuration(trim(input_path), config, ok, message, &
     allow_pressure_outlet=.true., allow_mach_inlet=.true., allow_characteristic_ppm=.true., &
-    allow_difmag=.true.,allow_external_forcing=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available)
+    allow_difmag=.true.,allow_external_forcing=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available,allow_gamma_law=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
   end if
 
   select case (trim(config%thermo_model))
+  case('gamma_law')
+    gamma=1.4_dp
+    open(newunit=unit,file=trim(input_path),status='old',action='read',iostat=ios)
+    if(ios/=0) error stop 'Cannot open gamma-law input'
+    read(unit,nml=gamma_law,iostat=ios)
+    close(unit)
+    if(ios>0) error stop 'Invalid gamma_law namelist'
+    call load_gamma_law_thermo(gamma,species,ok)
+    if(.not.ok) error stop 'Invalid gamma-law heat-capacity ratio'
+    allocate(reactions(0),transport(1))
+    ! No molecular database: only prescribed, nondiffusing transport is allowed.
+    transport(1)%name='AIR'
+    write(*,'(a,es24.16)') 'Gamma-law ratio: ',gamma
   case ("elementary")
     call load_h2o2_elementary_thermo(species, ok)
     if (.not. ok) error stop "Failed to load elementary thermodynamics"

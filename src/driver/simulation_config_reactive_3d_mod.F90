@@ -479,7 +479,7 @@ contains
 
   subroutine read_reactive_3d_configuration( &
       path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag, &
-      allow_external_forcing,allow_sdc,allow_sdc_cvode)
+      allow_external_forcing,allow_sdc,allow_sdc_cvode,allow_gamma_law)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
@@ -487,6 +487,7 @@ contains
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
     logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing,allow_sdc,allow_sdc_cvode
 
+    logical, optional, intent(in) :: allow_gamma_law
     character(len=16) :: sdc_reactor
     character(len=32) :: time_integrator
     integer :: sdc_iterations
@@ -700,7 +701,7 @@ contains
     config%composition_mole_fractions = composition_mole_fractions
     config%output_file = trim(output_file)
     call validate_reactive_3d_configuration( &
-      config, ok, message, allow_selected=selected_allowed)
+      config, ok, message, allow_selected=selected_allowed,allow_gamma_law=allow_gamma_law)
     if (.not.ok) return
     if(config%time_integrator=='sdc') then
       ok=.false.
@@ -755,19 +756,21 @@ contains
   end subroutine read_reactive_3d_configuration
 
   pure subroutine validate_reactive_3d_configuration( &
-      config, ok, message, allow_selected)
+      config, ok, message, allow_selected,allow_gamma_law)
     type(reactive_3d_config), intent(in) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected
+    logical, intent(in), optional :: allow_selected,allow_gamma_law
 
     real(dp) :: mole_sum
-    logical :: selected_allowed, selected_model
+    logical :: selected_allowed, selected_model,gamma_allowed
     integer :: face
     character(len=32) :: faces(6)
 
     ok = .false.
     message = ""
+    gamma_allowed=.false.
+    if(present(allow_gamma_law)) gamma_allowed=allow_gamma_law
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
@@ -930,7 +933,8 @@ contains
       message = "Invalid reactive 3D hotspot geometry"
     else if (trim(config%thermo_model) /= "elementary" .and. &
              trim(config%thermo_model) /= "full_h2o2" .and. &
-             .not. (selected_model .and. selected_allowed)) then
+             .not. (selected_model .and. selected_allowed).and. &
+             .not. (config%thermo_model=='gamma_law'.and.gamma_allowed)) then
       message = &
         "Reactive 3D thermo_model must be elementary, full_h2o2, or selected"
     else if (trim(config%reconstruction) /= "pcm" .and. &
@@ -952,6 +956,15 @@ contains
     else if (len_trim(config%output_file) == 0) then
       message = "Reactive 3D output_file must not be empty"
     else
+      if(config%thermo_model=='gamma_law') then
+        if(config%chemistry_enabled.or.config%time_integrator/='sdc'.or.config%composition_count/=0) then
+          message='Gamma-law requires nonreacting SDC without named composition';return
+        end if
+        if(config%transport_enabled.and.config%species_diffusion_enabled) then
+          message='Gamma-law requires species diffusion disabled';return
+        end if
+        ok=.true.;return
+      end if
       if (selected_model) then
         call validate_selected_composition_fields( &
           "Reactive 3D", config%composition_count, &
@@ -997,6 +1010,10 @@ contains
     ok = size(mole_fractions) == nspecies
     if (.not. ok) return
     select case (trim(config%thermo_model))
+    case('gamma_law')
+      ok=nspecies==1
+      if(.not.ok) return
+      mole_fractions=1
     case ("elementary")
       if (nspecies /= 7) then
         ok = .false.

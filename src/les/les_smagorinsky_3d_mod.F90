@@ -344,7 +344,7 @@ contains
     if (present(boundary_rate)) boundary_rate=0
     dims=shape(temperature)
     if (any(dims < 2)) return
-    if (size(state,1) /= reactive_nvar(size(species)) .or. size(species) < 2) return
+    if (size(state,1) /= reactive_nvar(size(species)) .or. size(species) < 1) return
     if (any(shape(state(1,:,:,:)) /= dims) .or. any(shape(rhs) /= shape(state))) return
     if (.not. all(ieee_is_finite([spacing,cs,prt,sct]))) return
     if (any(spacing < 1.0e-12_dp) .or. any(spacing > 1.0e9_dp)) return

@@ -1,4 +1,8 @@
 if(PELEF_ENABLE_SPRAY)
+  add_test(NAME application_gamma_law COMMAND ${Python3_EXECUTABLE}
+    "${PROJECT_SOURCE_DIR}/tests/application/check_gamma_law_app.py"
+    --exe $<TARGET_FILE:pelef_reactive_3d> --work "${PROJECT_BINARY_DIR}/gamma-law-app")
+  set_tests_properties(application_gamma_law PROPERTIES TIMEOUT 180 LABELS "les;sdc;application")
   add_executable(test_les_sdc_3d spray/test_les_sdc_3d.F90)
   target_link_libraries(test_les_sdc_3d PRIVATE pelef_spray_runtime)
   add_test(NAME les_sdc_3d COMMAND test_les_sdc_3d)
