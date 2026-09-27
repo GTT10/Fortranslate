@@ -87,3 +87,25 @@ uses a 0.06283185307179586 m domain and converts the 0.5 cm Taylor length to
 0.005 m. Time remains in seconds. The 16³ template has not been qualified as
 a reference trajectory. See [gamma-law checks](../../docs/validation/gamma-law-app-20260927.md)
 and [coordinate conversion checks](../../docs/validation/hit-coordinate-20260927.md).
+
+## Full reference executable preparation
+
+Export the pinned source and recursive dependencies from a populated local
+PeleC checkout. The destination must be new. This leaves that checkout intact:
+
+```sh
+python3 tools/prepare_pelec_reference.py --reference /path/to/PeleC --destination build/pelec-pinned-hit-source
+env -u LD_LIBRARY_PATH -u LIBRARY_PATH GIT_CEILING_DIRECTORIES="$PWD/build" cmake -S build/pelec-pinned-hit-source -B build/pelec-pinned-hit -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_Fortran_COMPILER=/usr/bin/gfortran -DPELE_ENABLE_MPI=OFF -DPELE_ENABLE_PARTICLES=OFF -DPELE_ENABLE_FCOMPARE=OFF -DBUILD_TESTING=OFF
+env -u LD_LIBRARY_PATH -u LIBRARY_PATH cmake --build build/pelec-pinned-hit --target PeleC-HIT --parallel 2
+```
+
+The exported `pelef-reference-provenance.json` records source identities.
+`GIT_CEILING_DIRECTORIES` keeps upstream CMake from accidentally reporting the
+enclosing PeleF repository's commit as the reference identity; its embedded
+Git labels are `unknown` for these archive exports.
+
+[pelec_reference.inp](pelec_reference.inp) prepares a 4³, one-step, hydro-only
+reference run with PPM and two SDC iterations. Supply the pinned velocity file
+in its working directory. It uses CGS units and `1e-8` seconds. This preparation
+does not establish evolved-field parity; the current completed comparison is
+the [initialization kernel check](../../docs/validation/hit-initialization-reference-20260927.md).
