@@ -17,8 +17,11 @@ wall heat, with analytic heat/ledger and rollback checks. Application
 budget/timestep/restart wiring remains open
 ([source integration](validation/eb-wall-heat-source-20260927.md)).
 MPI two-layer donor exchange and composite wall-heat integration now pass a
-cross-rank stencil case and exclude covered coarse cells; recursive execution
-remains unverified ([MPI integration](validation/mpi-eb-wall-heat-20260927.md)).
+cross-rank stencil case and exclude covered coarse cells
+([MPI integration](validation/mpi-eb-wall-heat-20260927.md)).
+Common and recursive SDC evolution now include wall heat in their energy ledger;
+a two-rank cooling case closes total inventory to `1.8e-15` relative
+([time integration](validation/eb-wall-sdc-integrator-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
