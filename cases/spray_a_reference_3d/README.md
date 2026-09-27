@@ -34,7 +34,9 @@ boiling temperature 489 K and critical temperature 658 K.
 
 The default first two active rate-table intervals end at 0.6 µs. `--events N`
 prepares more intervals, but does not reproduce the upstream 3 ms stop time,
-AMR or stochastic parcel sampling. The inventory checker bounds parcel count
-by the injected count; it is for the short connection check before child
-release, not a general breakup-population verifier. Full reference comparison,
-child-release execution and experimental penetration validation remain open.
+AMR or stochastic parcel sampling. For a run with KHRT child release, add `--allow-khrt-children` to the inventory
+check. This requires KHRT preparation metadata and the application's reported
+particle-ID watermark and computational split count. It checks ID bounds and
+fuel inventory while allowing population growth; it does not establish
+breakup-dynamics parity. Full reference comparison and experimental penetration
+validation remain open.

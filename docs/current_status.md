@@ -18,6 +18,9 @@ A 53-species Spray-A adaptation now completes its first two injection events
 with variable liquid properties and KHRT. Fuel accounting and a breakup-off
 intervention pass; full-duration/reference comparison remains open
 ([case and evidence](validation/spray-a-connection-20260927.md)).
+Runtime particle-ID bounds now support checking KHRT population growth.
+A twelve-event extension is running; child release is not yet established
+([audit and live-run record](validation/spray-a-population-audit-20260927.md)).
 
 An extracted Jet failure revealed internal-energy inversion stagnation at
 adjacent representable temperatures near zero energy. The inversion now
