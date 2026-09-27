@@ -2,6 +2,9 @@ program test_rotating_eb_tree_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
+  use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
+  use elementary_kinetics_mod, only: elementary_reaction
+  use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_primitive_to_conserved, &
     reactive_conserved_to_primitive
   use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
@@ -10,23 +13,28 @@ program test_rotating_eb_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
-    average_down_reactive_eb_tree_3d,fill_reactive_eb_tree_halo_3d,compute_mol_eb_tree_hydro_3d
+    average_down_reactive_eb_tree_3d,fill_reactive_eb_tree_halo_3d,compute_mol_eb_tree_hydro_3d, &
+    advance_reactive_eb_tree_sdc_3d,advance_reactive_eb_tree_sdc_subcycle_3d,integrate_reactive_eb_tree_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
+  type(gas_transport_species), allocatable :: transport(:)
+  type(elementary_reaction), allocatable :: reactions(:)
   type(amr_patch_3d) :: boxes(2)
   type(amr_patch_tree_3d) :: topology
-  type(eb_geometry_3d) :: finest,extended(3),g
-  type(eb_reactive_tree_3d) :: tree,saved
-  type(amr_tree_state_3d) :: rates,old_rates
+  type(eb_geometry_3d) :: finest,extended(3),stages(3),g
+  type(eb_reactive_tree_3d) :: tree,saved,source_tree
+  type(amr_tree_state_3d) :: rates,old_rates,predictor
   type(eb_integrated_flux_3d), allocatable :: flux(:),old_flux(:)
   type(rotating_frame_3d) :: frame
-  real(dp), allocatable :: q(:),back(:),root(:,:,:,:),temp(:,:,:),ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),inlet(:,:)
-  real(dp) :: t,c,potential,position(3),lo(3),hi(3),spacing(3),expected_t,error,tin(6),mach(6),pin(6)
-  integer :: nv,i,j,k,node,order,solver,checks,width
+  real(dp), allocatable :: q(:),back(:),root(:,:,:,:),temp(:,:,:),ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),inlet(:,:),before(:),after(:),boundary(:),wall(:),chemical(:),external(:),expected_source(:)
+  real(dp) :: t,c,potential,position(3),lo(3),hi(3),spacing(3),expected_t,error,tin(6),mach(6),pin(6),theta,residual
+  integer :: nv,i,j,k,node,order,solver,checks,width,mode
   logical :: ok
-  character(len=16) :: faces(6)
+  character(len=16) :: faces(6),method
   checks=0
   call load_h2o2_elementary_thermo(species,ok);call require(ok,'thermo')
+  call load_h2o2_elementary_transport(transport,ok);call require(ok,'transport')
+  call load_h2o2_elementary_mechanism(reactions,ok);call require(ok,'reactions')
   nv=reactive_nvar(size(species))
   allocate(q(reactive_nprim(size(species))),back(reactive_nprim(size(species))), &
     root(nv,4,4,4),temp(4,4,4),ghost(nv,-2:7,-2:7,-2:7),gt(-2:7,-2:7,-2:7),vf(-2:7,-2:7,-2:7))
@@ -136,6 +144,66 @@ program test_rotating_eb_tree_3d
   call require(.not.ok,'invalid restriction frame')
   do node=1,3
     call require(all(tree%nodes(node)%state==saved%nodes(node)%state),'restriction rollback')
+  end do
+  frame%axis=3
+  allocate(before(nv),after(nv),boundary(nv),wall(nv),chemical(nv),external(nv),expected_source(nv))
+  do node=1,3
+    g=saved%nodes(node)%geometry
+    spacing=[g%dx,g%dy,g%dz];lo=[g%x_lower,g%y_lower,g%z_lower]-6*spacing
+    hi=[g%x_upper,g%y_upper,g%z_upper]+6*spacing
+    call build_axis_plane_eb_geometry_3d(16,16,16,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+      'z',-10._dp,stages(node),ok);call require(ok,'SDC geometry')
+  end do
+  call integrate_reactive_eb_tree_3d(saved,before,ok);call require(ok,'initial inventory')
+  do mode=1,4
+    tree=saved;method='none'
+    if(mode==2) method='flux_redist'
+    if(mode==4) method='state_redist'
+    if(mode<=2) then
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1e-9_dp,1,.false., &
+        [.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp,tree,stages,faces, &
+        boundary,wall,chemical,external,theta,ok,mol_mode=.true.,mol_lax_friedrichs=mod(mode,2)==0, &
+        redistribution=method,frame=frame,old_predictor=predictor)
+    else
+      call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1e-9_dp,1,.false., &
+        [.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp,tree,stages,faces, &
+        boundary,wall,chemical,external,theta,ok,mol_mode=.true.,mol_lax_friedrichs=mod(mode,2)==0, &
+        redistribution=method,frame=frame)
+    end if
+    call require(ok,'rotating MOL SDC step')
+    if(mode<=2) then
+      source_tree=saved
+      do node=1,3
+        g=saved%nodes(node)%geometry
+        do k=1,4
+        do j=1,4
+        do i=1,4
+          position=[g%x_lower,g%y_lower,g%z_lower]+(real([i,j,k],dp)-.5_dp)*[g%dx,g%dy,g%dz]-frame%axis_point
+          ! Average of old state and the explicit Euler predictor, independently
+          ! inserted into the z-axis centrifugal/Coriolis formula.
+          source_tree%nodes(node)%state(:,i,j,k)=0
+          source_tree%nodes(node)%state(2,i,j,k)=2*frame%angular_speed* &
+            (saved%nodes(node)%state(3,i,j,k)+.5e-9_dp*predictor%fields(node)%values(3,i,j,k))+ &
+            frame%angular_speed**2*position(1)* &
+            (saved%nodes(node)%state(1,i,j,k)+.5e-9_dp*predictor%fields(node)%values(1,i,j,k))
+          source_tree%nodes(node)%state(3,i,j,k)=-2*frame%angular_speed* &
+            (saved%nodes(node)%state(2,i,j,k)+.5e-9_dp*predictor%fields(node)%values(2,i,j,k))+ &
+            frame%angular_speed**2*position(2)* &
+            (saved%nodes(node)%state(1,i,j,k)+.5e-9_dp*predictor%fields(node)%values(1,i,j,k))
+        end do
+        end do
+        end do
+      end do
+      call integrate_reactive_eb_tree_3d(source_tree,expected_source,ok);call require(ok,'analytic source integral')
+      expected_source=1e-9_dp*expected_source
+      call require(maxval(abs(expected_source-external))<1e-15_dp,'old/new trapezoidal rotation source')
+    end if
+    call integrate_reactive_eb_tree_3d(tree,after,ok);call require(ok,'final inventory')
+    residual=maxval(abs(after-before-boundary-wall-chemical-external)/max(1._dp,abs(before)))
+    call require(residual<3e-14_dp,'rotating SDC composite conservation')
+    call require(external(2)<0.and.external(3)<0,'outward rotating momentum source')
+    call require(external(5)==0.and.external(1)==0.and.all(external(6:)==0),'zero rotational energy and mass source')
+    print *, 'SDC mode, composite relative residual:',mode,residual
   end do
   print *, 'PASS: rotating tree transfer and MOL; checks, halo EOS error:',checks,error
 contains

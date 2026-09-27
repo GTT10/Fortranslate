@@ -1,7 +1,8 @@
 module eb_reactive_patch_tree_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
-  use rotating_frame_3d_mod, only: rotating_frame_3d,convert_rotating_energy_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d,convert_rotating_energy_3d, &
+    rotating_potential_3d,rotating_momentum_source_3d
   use precision_mod, only: dp
   use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
@@ -1277,11 +1278,12 @@ contains
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary, &
-      evaluate_reaction,mol_mode,mol_lax_friedrichs,embedded_wall_temperature,embedded_noslip)
+      evaluate_reaction,mol_mode,mol_lax_friedrichs,embedded_wall_temperature,embedded_noslip,frame)
     real(dp), optional, intent(in) :: embedded_wall_temperature
     logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs,embedded_noslip
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: dt,force(3),rtol,atol
@@ -1320,6 +1322,9 @@ contains
     integer :: nv,node,n(3),levels,c
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if(present(evaluate_reaction).and..not.chemistry) return
     routing=.false.
     if(present(route_auxiliary)) routing=route_auxiliary
@@ -1345,7 +1350,7 @@ contains
     if(.not.ieee_is_finite(redist_target)) return
     if(redist_target<=0.or.redist_target>1) return
     candidate=tree
-    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    call average_down_reactive_eb_tree_3d(species,candidate,valid,frame)
     if(.not.valid) return
     starts=candidate;ends=candidate
     allocate(clock_start(levels),clock_dt(levels),counts(levels),source0%fields(size(tree%nodes)))
@@ -1480,14 +1485,14 @@ contains
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
         level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target,source_adapter,step_aux, &
           evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs, &
-          embedded_wall_temperature=embedded_wall_temperature,embedded_noslip=embedded_noslip)
+          embedded_wall_temperature=embedded_wall_temperature,embedded_noslip=embedded_noslip,frame=frame)
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
         level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target, &
           evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs, &
-          embedded_wall_temperature=embedded_wall_temperature,embedded_noslip=embedded_noslip)
+          embedded_wall_temperature=embedded_wall_temperature,embedded_noslip=embedded_noslip,frame=frame)
       end if
       if(.not.accepted) return
       if(method/='none') then
@@ -1547,7 +1552,8 @@ contains
         end do
       end if
       if(method/='none') before_sync=candidate
-      call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,accepted,level,min(level+1,levels-1),boundary_faces)
+      call synchronize_reactive_eb_tree_flux_3d(species,candidate,flux,accepted,level, &
+        min(level+1,levels-1),boundary_faces,frame)
       if(.not.accepted) return
       if(method/='none') then
         correction=source0
@@ -1578,7 +1584,7 @@ contains
         end do
         call recover_transfer(accepted)
         if(.not.accepted) return
-        call average_down_reactive_eb_tree_3d(species,candidate,accepted)
+        call average_down_reactive_eb_tree_3d(species,candidate,accepted,frame)
         if(.not.accepted) return
       end if
       if(routing) then
@@ -1588,7 +1594,7 @@ contains
         end do
         call recover_transfer(accepted)
         if(.not.accepted) return
-        call average_down_reactive_eb_tree_3d(species,candidate,accepted)
+        call average_down_reactive_eb_tree_3d(species,candidate,accepted,frame)
         if(.not.accepted) return
       end if
       good=.true.
@@ -1606,8 +1612,8 @@ contains
         do x=1,d(1)
           if(candidate%nodes(p)%geometry%volume_fraction(x,y,z)<=0) cycle
           if(any(candidate%nodes(p)%state(6:,x,y,z)<0._dp)) return
-          call reactive_conserved_to_primitive(species,candidate%nodes(p)%state(:,x,y,z), &
-            candidate%nodes(p)%temperature(x,y,z),primitive,temperature,speed,accepted)
+          call recover_reactive_eb_cell_3d(species,candidate%nodes(p)%geometry,[x,y,z],candidate%nodes(p)%state(:,x,y,z), &
+            candidate%nodes(p)%temperature(x,y,z),primitive,temperature,speed,accepted,frame)
           if(.not.accepted) return
           candidate%nodes(p)%temperature(x,y,z)=temperature
         end do
@@ -1625,11 +1631,12 @@ contains
       target_depth,ancestor_start,ancestor_end,fractions_start,fractions_end,source_start,source_end, &
       integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer,target_volume_fraction, &
       auxiliary_source,auxiliary_change, &
-      evaluate_reaction,mol_mode,mol_lax_friedrichs,embedded_wall_temperature,embedded_noslip)
+      evaluate_reaction,mol_mode,mol_lax_friedrichs,embedded_wall_temperature,embedded_noslip,frame)
     real(dp), optional, intent(in) :: embedded_wall_temperature
     logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs,embedded_noslip
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: dt,force(3),rtol,atol
@@ -1678,10 +1685,19 @@ contains
     real(dp) :: heat_old,heat_new,impulse_old(3),impulse_new(3)
     real(dp) :: mol_wall_old(size(wall_change)),mol_wall_new(size(wall_change))
     ok=.false.;nv=reactive_nvar(size(species));theta=1
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     mol=.false.
     if(present(mol_mode)) mol=mol_mode
     if(present(mol_lax_friedrichs)) then
       if(mol_lax_friedrichs.and..not.mol) return
+    end if
+    if(present(frame)) then
+      if(.not.mol) return
+      ! Reaction and diffusive operators must propagate the same energy convention
+      ! before combinations with rotation can be enabled.
+      if(chemistry.or.any(transport_flags)) return
     end if
     mol_wall_old=0;mol_wall_new=0
     heat_old=0;heat_new=0;impulse_old=0;impulse_new=0
@@ -1738,7 +1754,7 @@ contains
     end if
     old=tree
     if(selected_depth<0) then
-      call average_down_reactive_eb_tree_3d(species,old,valid)
+      call average_down_reactive_eb_tree_3d(species,old,valid,frame)
       if(.not.valid) return
     end if
     if(mol.or.wall_active) then
@@ -1891,8 +1907,7 @@ contains
       ledger%nodes(node)%state=0
       if(.not.active(node)) cycle
       allocate(wall_rate(nv,n(1),n(2),n(3)))
-      call reactive_eb_slip_wall_source_3d(species,old%nodes(node)%state,old%nodes(node)%temperature, &
-        old%nodes(node)%geometry,wall_rate,valid)
+      call wall_source(old,node,wall_rate,valid)
       if(.not.valid) return
       ledger%nodes(node)%state=dt*wall_rate
       deallocate(wall_rate)
@@ -1910,7 +1925,7 @@ contains
     if(.not.all(ieee_is_finite(wall))) return
     if(selected_depth<0) then
       if(redistribution_method/='none') before_sync=candidate
-      call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces)
+      call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces,frame=frame)
       if(.not.valid) return
       if(redistribution_method/='none') then
         ! Redistribute the reflux increment too: applying the same linear
@@ -1930,7 +1945,7 @@ contains
         end do
         call recover(valid)
         if(.not.valid) return
-        call average_down_reactive_eb_tree_3d(species,candidate,valid)
+        call average_down_reactive_eb_tree_3d(species,candidate,valid,frame)
         if(.not.valid) return
       end if
     end if
@@ -2031,6 +2046,7 @@ contains
       logical, intent(out) :: good
       real(dp), optional, intent(in) :: fractions(:)
       integer :: p,d(3),x,y,z
+      real(dp) :: position(3),rotation_source(3)
       type(amr_tree_state_3d) :: extra
       type(eb_integrated_flux_3d), allocatable :: extra_flux(:)
       good=.false.
@@ -2047,6 +2063,17 @@ contains
           external_rate%fields(p)%values(2:4,x,y,z)=force
           external_rate%fields(p)%values(5,x,y,z)=dot_product(force,state%nodes(p)%state(2:4,x,y,z))/ &
             state%nodes(p)%state(1,x,y,z)
+          if(present(frame)) then
+            associate(g=>state%nodes(p)%geometry)
+            position=[g%x_lower,g%y_lower,g%z_lower]+(real([x,y,z],dp)-.5_dp)*[g%dx,g%dy,g%dz]
+            end associate
+            call rotating_momentum_source_3d(frame,position,state%nodes(p)%state(1,x,y,z), &
+              state%nodes(p)%state(2:4,x,y,z),rotation_source,good)
+            if(.not.good) return
+            good=.false.
+            external_rate%fields(p)%values(2:4,x,y,z)=external_rate%fields(p)%values(2:4,x,y,z)+rotation_source
+            ! Rotating total energy has no rotational source term.
+          end if
         end do
         end do
         end do
@@ -2104,7 +2131,7 @@ contains
       if(mol) then
         call compute_mol_eb_tree_hydro_3d(species,state,mol_geometry,dt,2,extra,extra_flux,good, &
           boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-          target_depth,ancestor_start,ancestor_end,fractions,mol_lax_friedrichs)
+          target_depth,ancestor_start,ancestor_end,fractions,mol_lax_friedrichs,frame)
         if(.not.good) return
         do p=1,size(tree%nodes)
           if(.not.active(p)) cycle
@@ -2119,8 +2146,7 @@ contains
         do p=1,size(tree%nodes)
           extra%fields(p)%values=0
           if(.not.active(p)) cycle
-          call reactive_eb_slip_wall_source_3d(species,state%nodes(p)%state,state%nodes(p)%temperature, &
-            state%nodes(p)%geometry,extra%fields(p)%values,good)
+          call wall_source(state,p,extra%fields(p)%values,good)
           if(.not.good) return
         end do
         if(stage==0) then
@@ -2157,6 +2183,33 @@ contains
       end if
       good=.true.
     end subroutine sources
+    subroutine wall_source(state,p,output,good)
+      type(eb_reactive_tree_3d), intent(in) :: state
+      integer, intent(in) :: p
+      real(dp), intent(out) :: output(:,:,:,:)
+      logical, intent(out) :: good
+      real(dp), allocatable :: potential(:,:,:)
+      real(dp) :: position(3)
+      integer :: x,y,z
+      good=.false.;output=0
+      associate(g=>state%nodes(p)%geometry)
+      if(present(frame)) then
+        allocate(potential(g%nx,g%ny,g%nz),source=0._dp)
+        do z=1,g%nz
+        do y=1,g%ny
+        do x=1,g%nx
+          if(g%volume_fraction(x,y,z)<=0) cycle
+          position=[g%x_lower,g%y_lower,g%z_lower]+(real([x,y,z],dp)-.5_dp)*[g%dx,g%dy,g%dz]
+          call rotating_potential_3d(frame,position,potential(x,y,z),good)
+          if(.not.good) return
+        end do
+        end do
+        end do
+      end if
+      call reactive_eb_slip_wall_source_3d(species,state%nodes(p)%state,state%nodes(p)%temperature, &
+        g,output,good,potential)
+      end associate
+    end subroutine wall_source
     subroutine recover(good)
       logical, intent(out) :: good
       good=.false.
@@ -2167,8 +2220,8 @@ contains
         do j=1,n(2)
         do i=1,n(1)
           if(candidate%nodes(node)%geometry%volume_fraction(i,j,k)<=0) cycle
-          call reactive_conserved_to_primitive(species,candidate%nodes(node)%state(:,i,j,k), &
-            candidate%nodes(node)%temperature(i,j,k),primitive,recovered,speed,valid)
+          call recover_reactive_eb_cell_3d(species,candidate%nodes(node)%geometry,[i,j,k],candidate%nodes(node)%state(:,i,j,k), &
+            candidate%nodes(node)%temperature(i,j,k),primitive,recovered,speed,valid,frame)
           if(.not.valid) return
           candidate%nodes(node)%temperature(i,j,k)=recovered
         end do
@@ -3199,8 +3252,9 @@ contains
   ! Input states have already accepted each node's raw time-integrated flux.
   ! Replace shared transfers from finest to coarsest on exposed cells only,
   ! then average down. Publish corrected states and effective fluxes together.
-  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,minimum_level,maximum_level,boundary_faces)
+  subroutine synchronize_reactive_eb_tree_flux_3d(species,tree,flux,ok,minimum_level,maximum_level,boundary_faces,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_reactive_tree_3d), intent(inout) :: tree
     type(eb_integrated_flux_3d), intent(inout) :: flux(:)
     logical, intent(out) :: ok
@@ -3219,6 +3273,9 @@ contains
     logical, allocatable :: refined(:,:,:)
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if (.not.valid_tree(tree,nv)) return
     faces='outflow'
     if(present(boundary_faces)) faces=boundary_faces
@@ -3295,7 +3352,7 @@ contains
         refined(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))=.true.
       end do
       call reflux_reactive_eb_state_3d(species,tree%nodes(node)%geometry,refined,flux(node),effective(node), &
-        candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid,all_faces=.true.)
+        candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid,all_faces=.true.,frame=frame)
       if (.not.valid) return
       deallocate(refined)
       if (depth==first_level) cycle
@@ -3340,7 +3397,7 @@ contains
       end do
     end do
     end do
-    call average_down_reactive_eb_tree_3d(species,candidate,valid)
+    call average_down_reactive_eb_tree_3d(species,candidate,valid,frame)
     if (.not.valid) return
     tree=candidate;flux=effective;ok=.true.
   contains

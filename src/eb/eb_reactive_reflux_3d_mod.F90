@@ -1,6 +1,8 @@
 module eb_reactive_reflux_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use eb_reactive_transfer_3d_mod, only: recover_reactive_eb_cell_3d
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d
@@ -20,8 +22,9 @@ contains
   ! transfer and correct the already advanced receiver state by the difference.
   ! Owner data is read-only; receiver flux, conserved state and T commit together.
   subroutine reconcile_reactive_eb_peer_flux_3d(species,owner,receiver,receiver_offset,owner_flux, &
-      receiver_flux,state,temperature,ok,periodic_length)
+      receiver_flux,state,temperature,ok,periodic_length,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_geometry_3d), intent(in) :: owner,receiver
     integer, intent(in) :: receiver_offset(3)
     ! Optional domain length on exactly one axis; zero on tangential axes.
@@ -37,6 +40,9 @@ contains
     integer :: n(3),rn(3),nvar,axis,side,first(3),last(3),index(3),cell(3),oface(3),rface(3),i,j,k
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if (.not.owner%is_valid().or..not.receiver%is_valid()) return
     n=[owner%nx,owner%ny,owner%nz];rn=[receiver%nx,receiver%ny,receiver%nz]
     if (any(receiver_offset < -rn).or.any(receiver_offset>n)) return
@@ -97,8 +103,8 @@ contains
                   real(2*side-1,dp)*(receiver_area/volume)*(replacement-face(receiver_flux,axis,rface))
                 if (.not.ieee_is_finite(temperature(cell(1),cell(2),cell(3)))) return
                 if (temperature(cell(1),cell(2),cell(3))<=0._dp) return
-                call reactive_conserved_to_primitive(species,candidate(:,cell(1),cell(2),cell(3)), &
-                  temperature(cell(1),cell(2),cell(3)),primitive,temps(cell(1),cell(2),cell(3)),sound_speed,valid)
+                call recover_reactive_eb_cell_3d(species,receiver,cell,candidate(:,cell(1),cell(2),cell(3)), &
+                  temperature(cell(1),cell(2),cell(3)),primitive,temps(cell(1),cell(2),cell(3)),sound_speed,valid,frame)
                 if (.not.valid) return
               end if
               select case(axis)
@@ -189,8 +195,9 @@ contains
   ! refined and unrefined coarse cells. Fine states are updated/averaged separately.
   ! With all_faces, apply the full flux difference on exposed cells, including
   ! outer faces. The caller then owns the synchronized outer-boundary budget.
-  subroutine reflux_reactive_eb_state_3d(species,geometry,refined,coarse_flux,fine_flux,state,temperature,ok,all_faces)
+  subroutine reflux_reactive_eb_state_3d(species,geometry,refined,coarse_flux,fine_flux,state,temperature,ok,all_faces,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_geometry_3d), intent(in) :: geometry
     logical, intent(in) :: refined(:,:,:)
     type(eb_integrated_flux_3d), intent(in) :: coarse_flux,fine_flux
@@ -202,6 +209,9 @@ contains
     integer :: i,j,k,axis,step,idx(3),neighbor(3),face_idx(3),dims(3),nvar
     logical :: valid,touched,complete
     ok=.false.;complete=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if (present(all_faces)) complete=all_faces
     if (.not.geometry%is_valid()) return
     dims=[geometry%nx,geometry%ny,geometry%nz];nvar=reactive_nvar(size(species))
@@ -239,8 +249,8 @@ contains
           if (.not.ieee_is_finite(temperature(i,j,k))) return
           if (temperature(i,j,k)<=0._dp) return
           candidate(:,i,j,k)=state(:,i,j,k)+correction
-          call reactive_conserved_to_primitive(species,candidate(:,i,j,k),temperature(i,j,k), &
-            primitive,temps(i,j,k),sound_speed,valid)
+          call recover_reactive_eb_cell_3d(species,geometry,[i,j,k],candidate(:,i,j,k),temperature(i,j,k), &
+            primitive,temps(i,j,k),sound_speed,valid,frame)
           if (.not.valid) return
         end do
       end do
