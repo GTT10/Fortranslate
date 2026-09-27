@@ -2,6 +2,10 @@ add_executable(test_eos unit/test_eos.F90)
 target_link_libraries(test_eos PRIVATE pelef_core)
 add_test(NAME unit_eos COMMAND test_eos)
 
+add_executable(test_eb_boundary_gradient_3d unit/test_eb_boundary_gradient_3d.F90)
+target_link_libraries(test_eb_boundary_gradient_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_boundary_gradient_3d COMMAND test_eb_boundary_gradient_3d)
+
 add_executable(test_rusanov unit/test_rusanov.F90)
 target_link_libraries(test_rusanov PRIVATE pelef_core)
 add_test(NAME unit_rusanov COMMAND test_rusanov)
@@ -596,4 +600,3 @@ set_tests_properties(
 
 set(SOD_PELEC_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sod_pelec")
 file(MAKE_DIRECTORY "${SOD_PELEC_WORK_DIRECTORY}")
-

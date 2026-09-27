@@ -9,6 +9,7 @@ add_library(
   src/core/mesh_3d_mod.F90
   src/eb/eb_geometry_2d_mod.F90
   src/eb/eb_geometry_3d_mod.F90
+  src/eb/eb_boundary_gradient_3d_mod.F90
   src/eb/eb_polyhedron_clip_mod.F90
   src/physics/eos_ideal_mod.F90
   src/physics/nasa7_thermo_mod.F90
@@ -180,4 +181,3 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
     )
   endif()
 endif()
-
