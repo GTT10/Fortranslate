@@ -13,7 +13,11 @@ program pelef_amr_tree_reactive_3d
   use simulation_config_reactive_3d_mod, only: &
     reactive_3d_config, read_reactive_3d_configuration, &
     reactive_3d_mole_fractions
+#ifdef PELEF_TREE_LES
+  use les_amr_application_mod, only: run_amr_patch_tree_application_3d=>run_amr_les_application_3d
+#else
   use amr_patch_tree_application_3d_mod, only: run_amr_patch_tree_application_3d
+#endif
   implicit none
 
   type(reactive_3d_config) :: config

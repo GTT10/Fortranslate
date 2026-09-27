@@ -31,12 +31,35 @@ module amr_patch_tree_application_3d_mod
     advance_amr_patch_tree_sdc_subcycle_3d
   use reactive_csv_io_3d_mod, only: reactive_3d_csv_header,format_reactive_3d_csv_row
   use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
+  use amr_patch_tree_split_3d_mod, only: amr_sdc_diffusion_evaluator
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   implicit none
   private
   public :: run_amr_patch_tree_application_3d
+  abstract interface
+    subroutine tree_application_diffusion(tree,u,t,h,faces,inlet,inlet_t,depth,fractions, &
+        coarse_start,coarse_end,rates,flux,diffusivity,ok)
+      import amr_patch_tree_3d,amr_tree_state_3d,amr_tree_flux_3d,dp
+      type(amr_patch_tree_3d), intent(in) :: tree
+      integer, intent(in) :: depth
+      type(amr_tree_state_3d), intent(in) :: u,t
+      real(dp), intent(in) :: h(3),inlet(:,:),inlet_t(:)
+      character(len=*), intent(in) :: faces(6)
+      real(dp), optional, intent(in) :: fractions(:)
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+      type(amr_tree_state_3d), intent(inout) :: rates
+      type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+      real(dp), intent(inout) :: diffusivity
+      logical, intent(out) :: ok
+    end subroutine
+  end interface
 contains
   subroutine run_amr_patch_tree_application_3d(topology_path,config,species,reactions,transport,mole_fractions, &
-      schedule_path,chemistry_integrator,input_path,mechanism_identity)
+      schedule_path,chemistry_integrator,input_path,mechanism_identity,evaluate_diffusion,diffusion_identity)
+    procedure(tree_application_diffusion), optional :: evaluate_diffusion
+    character(len=*), optional, intent(in) :: diffusion_identity
+    type(amr_tree_state_3d) :: diffusion_rates
+    type(amr_tree_flux_3d), allocatable :: diffusion_flux(:)
     character(len=*), intent(in) :: topology_path
     character(len=*), optional, intent(in) :: schedule_path,chemistry_integrator,input_path,mechanism_identity
     type(reactive_3d_config), intent(in) :: config
@@ -77,6 +100,8 @@ contains
       temperature_thresholds,tile_shape,tag_buffer,maximum_nodes
     namelist /amr_tree_timestepping/ subcycling
     sdc=trim(config%time_integrator)=='sdc'
+    if(present(evaluate_diffusion).neqv.present(diffusion_identity)) error stop 'Diffusion callback requires identity'
+    if(present(evaluate_diffusion).and..not.sdc) error stop 'Additional tree diffusion requires SDC'
     subcycling=.false.
     regrid_interval_steps=0;refinement_levels=1;refinement_ratios=2
     temperature_thresholds=1200;tile_shape=4;tag_buffer=1;maximum_nodes=4096;last_tag_step=0
@@ -187,6 +212,7 @@ contains
       call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
         identity,integrator,schedule_identity,context,ok)
       if (.not.ok) error stop 'Cannot build tree checkpoint context'
+      if(present(diffusion_identity)) context=context//'diffusion:'//diffusion_identity//new_line('a')
     end if
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) error stop 'Tree coordinate overflow'
@@ -345,26 +371,21 @@ contains
         if (.not.ok) error stop 'Invalid tree transport timestep'
         dt=min(dt,transport_dt)
       end if
+      if(present(evaluate_diffusion)) then
+        call evaluate_diffusion(tree,state,temperature,root_h,faces,inlet,inlet_t,-1, &
+          rates=diffusion_rates,flux=diffusion_flux,diffusivity=diffusivity,ok=ok)
+        if(.not.ok) error stop 'Invalid additional tree diffusion timestep'
+        if(.not.ieee_is_finite(diffusivity).or.diffusivity<0) error stop 'Invalid additional diffusivity'
+        if(diffusivity>0) dt=min(dt,.1_dp/(diffusivity*sum(1._dp/minval(h,dim=2)**2)))
+      end if
       if(any(config%inflow_mach>=0)) call limit_mach_step()
       do attempt=1,20
         if (time+dt<=time) error stop 'Tree timestep cannot advance time'
         if (sdc) then
-          if (subcycling) then
-          call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
-            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
-            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-            change,source_change,correction,theta,ok,reaction_source=reaction_source, &
-            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
-            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+          if(present(evaluate_diffusion)) then
+            call advance_sdc(evaluate_stage_diffusion)
           else
-          call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
-            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
-            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
-            change,source_change,correction,theta,ok,reaction_source=reaction_source, &
-            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
-            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config))
+            call advance_sdc()
           end if
         else
           call advance_amr_patch_tree_split_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
@@ -444,6 +465,40 @@ contains
     write(*,'(a,i0,a,es24.16)') 'Steps: ',step,' Final time: ',time
     write(*,'(a,es12.4,a,es12.4)') 'Maximum reflux: ',max_correction,' Minimum transport theta: ',min_theta
   contains
+    subroutine advance_sdc(callback)
+      procedure(amr_sdc_diffusion_evaluator), optional :: callback
+          if (subcycling) then
+          call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
+            evaluate_diffusion=callback)
+          else
+          call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,root_h,dt,faces, &
+            config%sdc_iterations,config%chemistry_enabled,[viscosity,conduction,diffusion,barodiffusion], &
+            config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
+            change,source_change,correction,theta,ok,reaction_source=reaction_source, &
+            inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+            wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+            inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
+            evaluate_diffusion=callback)
+          end if
+    end subroutine advance_sdc
+    subroutine evaluate_stage_diffusion(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good)
+      type(amr_tree_state_3d), intent(in) :: u,t
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+      integer, intent(in) :: depth
+      real(dp), optional, intent(in) :: fractions(:)
+      type(amr_tree_state_3d), intent(inout) :: rates
+      type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+      logical, intent(out) :: good
+      real(dp) :: maximum_diffusion
+      call evaluate_diffusion(tree,u,t,root_h,faces,inlet,inlet_t,depth,fractions,coarse_start,coarse_end, &
+        rates,flux,maximum_diffusion,good)
+    end subroutine
     subroutine limit_mach_step()
       type(amr_tree_state_3d) :: packed
       real(dp), allocatable :: ghost(:,:,:,:)

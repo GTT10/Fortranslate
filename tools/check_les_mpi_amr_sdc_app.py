@@ -10,6 +10,7 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--serial', type=Path)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--mpiexec', required=True)
@@ -32,7 +33,10 @@ def main():
     def run(label, content, ranks=2, error=None):
         inp = work / 'input.nml'
         inp.write_text(content)
-        result = subprocess.run([args.mpiexec, '-n', str(ranks), str(args.binary.resolve()), str(inp), str(topology)],
+        command = [str((args.binary if ranks else args.serial).resolve()), str(inp), str(topology)]
+        if ranks:
+            command = [args.mpiexec, '-n', str(ranks), *command]
+        result = subprocess.run(command,
                                 cwd=work, env=env, capture_output=True, text=True, timeout=180)
         log = result.stdout + result.stderr
         (work / (label + '.log')).write_text(log)
@@ -51,15 +55,26 @@ def main():
     assert int(re.search(r'Steps:\s+(\d+)', log).group(1)) > 1, log
     baseline = outputs()
     assert baseline[0] != disabled[0], 'LES must affect the gas state'
+    if args.serial:
+        run('serial_continuous', template + les, 0)
+        assert outputs() == baseline, 'Serial/MPI application outputs differ'
     save = "\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps=1, stop_after_checkpoint=.true. /\n"
     restart = "\n&amr_tree_checkpoint restart_file='tree.chk' /\n"
     log = run('stop', template + les + save)
     assert 'Stopped after checkpoint at step 1' in log, log
     run('restart_4', template + les + restart, 4)
     assert outputs() == baseline, 'Changed-rank continuation differs'
+    if args.serial:
+        run('serial_restart', template + les + restart, 0)
+        assert outputs() == baseline, 'MPI-to-serial continuation differs'
+        run('serial_stop', template + les + save, 0)
+        run('serial_to_mpi', template + les + restart, 4)
+        assert outputs() == baseline, 'Serial-to-MPI continuation differs'
     run('changed_les', template + les.replace('cs=.17', 'cs=.18') + restart, 4,
         'Invalid MPI tree restart checkpoint/context')
     run('removed_les', template + restart, 4, 'Invalid MPI tree restart checkpoint/context')
+    if args.serial:
+        print('PASS: serial/MPI outputs and checkpoint interchange are exact')
     print('PASS: active LES changes state; 2-to-4-rank restart is exact; changed/removed LES rejected')
 
 
