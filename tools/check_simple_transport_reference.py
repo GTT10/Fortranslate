@@ -92,6 +92,7 @@ def main():
     parser.add_argument('--reference-build', type=Path, required=True)
     parser.add_argument('--candidate-build', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--bundle', type=Path, help='Use imported/generated Fortran coefficients')
     args = parser.parse_args()
     ref, candidate, out = (p.resolve() for p in
                            (args.reference_build, args.candidate_build, args.output))
@@ -107,7 +108,38 @@ def main():
                      for path in [physics/'Source/Transport/Simple.H',
                                   physics/'Mechanisms/heptane_3sp/mechanism.H']}
     (out/'reference.cpp').write_text(CPP)
-    (out/'candidate.f90').write_text(FORTRAN)
+    fortran = FORTRAN
+    generated_sources = []
+    bundle_hash = None
+    if args.bundle:
+        from check_mechanism_provenance import check
+        from generate_elementary_mechanism import validate, generate
+        if not check(args.bundle):
+            raise ValueError('Bundle provenance failed')
+        bundle = json.loads(args.bundle.read_text())
+        validate(bundle)
+        if bundle['species'] != ['NC7H16','O2','N2'] or 'simple_transport' not in bundle:
+            raise ValueError('Expected heptane bundle with Simple transport fits')
+        (out/'generated.f90').write_text(generate(bundle))
+        generated_sources = ['generated.f90']
+        use = (f"  use {bundle['module_name']}, only: load_fits => {bundle['transport_loader_name']}_simple, &\n"
+               f"    load_thermo => {bundle['thermo_loader_name']}\n"
+               '  use nasa7_thermo_mod, only: nasa7_species\n')
+        fortran = fortran.replace('  implicit none', use+'  implicit none')
+        fortran = fortran.replace('  integer :: ios,i,j',
+                                 '  type(nasa7_species), allocatable :: species(:)\n'
+                                 '  real(dp) :: coefficients(4,12)\n  integer :: ios,i,j')
+        begin = fortran.index("  open(10,file='fits.dat'")
+        end = fortran.index('  close(10)',begin)+len('  close(10)')
+        fortran = fortran[:begin]+'''  call load_thermo(species,ok)
+  if(.not.ok) error stop 'Generated thermo failed'
+  mw=species%molecular_weight
+  call load_fits(coefficients,ok)
+  if(.not.ok) error stop 'Generated fits failed'
+  fm=coefficients(:,1:3);fl=coefficients(:,4:6);fd=coefficients(:,7:12)
+'''+fortran[end:]
+        bundle_hash = hashlib.sha256(args.bundle.read_bytes()).hexdigest()
+    (out/'candidate.f90').write_text(fortran)
     states = [(340,101325,.25,.17,.58), (400,101325,0,.233,.767),
               (1200,3e6,.4,.3,.3), (300,101325,1,0,0),
               (500,101325,0,1,0), (800,101325,0,0,1)]
@@ -118,7 +150,7 @@ def main():
         ['./reference'],
         ['/usr/bin/gfortran','-g','-fcheck=all','-ffpe-trap=invalid,zero,overflow',
          '-I'+str(candidate/'selected_reactive_1d_runtime_modules'),
-         '-I'+str(candidate/'selected_runtime_modules'),'candidate.f90',
+         '-I'+str(candidate/'selected_runtime_modules'),*generated_sources,'candidate.f90',
          str(candidate/'libpelef_selected_reactive_1d_runtime.a'),
          str(candidate/'libpelef_selected_runtime_core.a'),'-o','candidate'],
         ['./candidate']]
@@ -137,6 +169,7 @@ def main():
     report = dict(states=states, relative_errors=errors, maximum_relative_error=max(errors),
                   tolerance=2e-12, commands=commands,
                   reference_identity=identity, source_sha256=source_hashes,
+                  bundle_sha256=bundle_hash,
                   fits_sha256=hashlib.sha256((out/'fits.dat').read_bytes()).hexdigest())
     (out/'comparison.json').write_text(json.dumps(report,indent=2)+'\n')
     if max(errors)>2e-12:

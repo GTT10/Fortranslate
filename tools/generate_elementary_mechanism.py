@@ -244,8 +244,34 @@ def validate_arrhenius(rate: dict[str, Any], equation: str) -> None:
 
 
 def validate_species_data(data: dict[str, Any], species: list[str]) -> None:
+    if 'simple_transport' in data:
+        simple = data['simple_transport']
+        if not isinstance(simple, dict) or simple.get('model') != 'pelephysics-simple':
+            raise ValueError('Invalid Simple transport model')
+        if simple.get('species') != species:
+            raise ValueError('Simple transport species order mismatch')
+        source = simple.get('source', {})
+        for key, length in [('sha256',64), ('git_blob',40), ('commit',40)]:
+            if not isinstance(source.get(key),str) or not re.fullmatch('[0-9a-f]{'+str(length)+'}',source[key]):
+                raise ValueError('Invalid Simple transport provenance')
+        filename = source.get('file','')
+        if not filename or Path(filename).name != filename or '\\' in filename:
+            raise ValueError('Invalid Simple transport source filename')
+        n = len(species)
+        for key, count in [('viscosity',n),('conductivity',n),('binary_diffusion',n*(n+1)//2)]:
+            rows = simple.get(key)
+            if not isinstance(rows,list) or len(rows)!=count:
+                raise ValueError('Invalid Simple transport coefficient count')
+            for row in rows:
+                if not isinstance(row,list) or len(row)!=4 or any(abs(finite_float(v,key))>1e6 for v in row):
+                    raise ValueError('Invalid Simple transport coefficients')
+        loader = data.get('transport_loader_name','')+'_simple'
+        if len(loader)>MAX_FORTRAN_IDENTIFIER_LENGTH:
+            raise ValueError('Simple transport loader name too long')
     thermo = data.get("thermo")
     transport = data.get("transport")
+    if 'simple_transport' in data and (thermo is None or transport is None):
+        raise ValueError('Simple transport requires thermo and transport records')
     if thermo is None and transport is None:
         return
     if not isinstance(thermo, list) or not isinstance(transport, list):
@@ -767,6 +793,20 @@ def emit_species_data_loaders(lines: list[str], data: dict[str, Any]) -> None:
     lines += [
         f"  end subroutine {transport_loader}",
     ]
+    if 'simple_transport' in data:
+        simple = data['simple_transport']
+        columns = simple['viscosity']+simple['conductivity']+simple['binary_diffusion']
+        lines += ['', f'  subroutine {transport_loader}_simple(coefficients, ok)',
+                  '    real(dp), intent(out) :: coefficients(:,:)',
+                  '    logical, intent(out) :: ok',
+                  '    coefficients = 0.0_dp',
+                  f'    ok = all(shape(coefficients) == [4, {len(columns)}])',
+                  '    if (.not. ok) return']
+        for index, row in enumerate(columns,start=1):
+            lines += [f'    coefficients(:,{index}) = [ &',
+                      '      '+', '.join(fortran_real(float(v)) for v in row[:2])+', &',
+                      '      '+', '.join(fortran_real(float(v)) for v in row[2:])+' ]']
+        lines += [f'  end subroutine {transport_loader}_simple']
 
 
 def emit_parameter_array(
@@ -898,6 +938,8 @@ def generate(data: dict[str, Any]) -> str:
             f"  public :: {data['thermo_loader_name']}",
             f"  public :: {data['transport_loader_name']}",
         ]
+        if 'simple_transport' in data:
+            lines += [f"  public :: {data['transport_loader_name']}_simple"]
     lines += [
         "",
         "contains",
@@ -1101,6 +1143,10 @@ def main() -> int:
     args = parse_args()
     data = json.loads(args.input.read_text(encoding="utf-8"))
     validate(data)
+    if 'simple_transport' in data:
+        from pelephysics_transport_import import regenerate_simple_transport
+        if data['simple_transport'] != regenerate_simple_transport(data,args.input.resolve().parent):
+            raise ValueError('Simple transport coefficients differ from pinned source')
     output = generate(data)
     write_generated(args.output, output)
     return 0

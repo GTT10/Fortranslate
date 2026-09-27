@@ -456,6 +456,15 @@ function(pelef_add_mechanism_bundle)
     set(source_dependency "${source_path}")
   endif()
 
+  set(simple_transport_dependency "")
+  string(JSON simple_transport_type ERROR_VARIABLE simple_transport_error TYPE "${bundle_json}" simple_transport)
+  if(NOT simple_transport_error)
+    # The generator verifies both pinned bytes and their parsed coefficients.
+    string(JSON simple_transport_file GET "${bundle_json}" simple_transport source file)
+    get_filename_component(bundle_parent "${bundle_path}" DIRECTORY)
+    set(simple_transport_dependency "${bundle_parent}/${simple_transport_file}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${simple_transport_dependency}")
+  endif()
   set(bundle_directory "${CMAKE_CURRENT_BINARY_DIR}/${PELEF_BUNDLE_NAME}_bundle")
   set(generated_source "${bundle_directory}/${PELEF_BUNDLE_NAME}_mechanism.F90")
   add_custom_command(
@@ -469,8 +478,11 @@ function(pelef_add_mechanism_bundle)
     DEPENDS
       "${bundle_path}"
       "${PROJECT_SOURCE_DIR}/tools/generate_elementary_mechanism.py"
+      "${PROJECT_SOURCE_DIR}/tools/pelephysics_transport_import.py"
+      "${PROJECT_SOURCE_DIR}/references/heptane_3sp.json"
       "${PROJECT_SOURCE_DIR}/cmake/CheckMechanismSource.cmake"
       ${source_dependency}
+      ${simple_transport_dependency}
     COMMENT "Generating ${PELEF_BUNDLE_NAME} mechanism bundle"
     VERBATIM
   )

@@ -63,9 +63,11 @@ def source_path_for(bundle_path: Path, bundle: dict[str, Any],
 def regenerate(bundle: dict[str, Any], source: Path) -> dict[str, Any]:
     # Optional dependency: byte-only preflight works without Cantera.
     from ingest_cantera_mechanism import build_bundle
-    return build_bundle(source, phase=bundle["source"]["phase"],
+    generated = build_bundle(source, phase=bundle["source"]["phase"],
                         source_file=bundle["source"]["file"],
+                        nonreacting=bundle.get('nonreacting', False),
                         **{key: bundle[key] for key in OPTIONS if key in bundle})
+    return generated
 
 
 def stable_json(value: dict[str, Any]) -> str:
@@ -90,8 +92,16 @@ def check(bundle_path: Path, source_path: Path | None = None,
     print(f"expected: {expected}\nactual:   {digest}")
     if not matches:
         print("FAIL: source bytes do not match bundle provenance", file=sys.stderr)
+    simple = None
+    if 'simple_transport' in bundle:
+        from pelephysics_transport_import import regenerate_simple_transport
+        simple = regenerate_simple_transport(bundle,bundle_path.parent)
+        if simple != bundle['simple_transport']:
+            raise ValueError('Simple transport coefficients differ from pinned source')
     if regenerate_output:
         generated = regenerate(bundle, source)
+        if simple is not None:
+            generated['simple_transport'] = simple
         before, after = stable_json(bundle), stable_json(generated)
         if output is not None:
             output.parent.mkdir(parents=True, exist_ok=True)

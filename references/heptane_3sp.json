@@ -20,5 +20,11 @@
     }
   },
   "note": "Pinned reaction-free NC7H16/O2/N2 data for Spray-Evaporation. Upstream description mentions decane; species identity is NC7H16. No temperature-range extension or experimental validation.",
-  "nonreacting": true
+  "nonreacting": true,
+  "simple_transport_header": {
+    "path": "Mechanisms/heptane_3sp/mechanism.H",
+    "basename": "heptane_3sp_transport.H",
+    "sha256": "aefd60b24205bbfa89b51302ac6205770c4d7ee0613ca6bc15e5efa11fa4299a",
+    "git_blob": "3243c053b52eb7963c01b548b977ce3c0c83c488"
+  }
 }

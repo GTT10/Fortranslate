@@ -46,12 +46,16 @@ def main() -> int:
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--yaml', type=Path, help='Offline, exact pinned YAML bytes')
     parser.add_argument('--license', type=Path, help='Offline, exact upstream license bytes')
+    parser.add_argument('--simple-transport-header', type=Path,
+                        help='Import exact pinned Simple transport fits (heptane-3sp only)')
     args = parser.parse_args()
     if bool(args.yaml) != bool(args.license):
         parser.error('--yaml and --license must be supplied together')
     reference = {'methanol': 'spray_methanol.json', 'dodecane': 'dodecane_lu.json',
                  'heptane-3sp': 'heptane_3sp.json'}[args.fuel]
     manifest = json.loads((ROOT/'references'/reference).read_text())
+    if args.simple_transport_header and 'simple_transport_header' not in manifest:
+        parser.error('Simple transport header import is currently supported for heptane-3sp')
     prefix = manifest['symbol_prefix']
     data = {}
     for key, entry in manifest['files'].items():
@@ -77,6 +81,10 @@ def main() -> int:
                                        if args.fuel == 'methanol' else
                                        'Pinned reaction-free NC7H16/O2/N2 spray reference' if args.fuel == 'heptane-3sp' else
                                        'Pinned Lu n-dodecane: gas chemistry integration, not experimental spray validation'))
+    if args.simple_transport_header:
+        from pelephysics_transport_import import import_simple_transport
+        bundle['simple_transport'] = import_simple_transport(args.simple_transport_header,bundle['species'],manifest)
+        preserve(out/manifest['simple_transport_header']['basename'],args.simple_transport_header.read_bytes())
     validate(bundle)
     if len(bundle['species']) != manifest['species_count'] or len(bundle['reactions']) != manifest['reaction_count']:
         raise ValueError('Unexpected normalized mechanism dimensions')
