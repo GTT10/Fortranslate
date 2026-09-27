@@ -90,6 +90,12 @@ film migration failure ([focused checks](validation/spray-sdc-rebalance-history-
 
 ## Level-bounded particle ownership
 
+EB particle migration and physical/virtual/ghost level ownership now accept
+periodic axes, with canonical coordinate wrapping and matching nodal seam
+validation ([checks](validation/spray-eb-periodic-levels-20260927.md)). Recursive
+stage/source and film-copy periodic integration remains open; the recursive
+application still rejects periodic boundaries.
+
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
 regular/EB MPI migration APIs accept optional `maximum_level` (zero based).
 It selects the finest covering node no deeper than that level, including
