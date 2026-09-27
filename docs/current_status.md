@@ -35,7 +35,9 @@ now have analytic checks and a 60-case compiled-reference comparison
 EOS recovery, wall pressure and single-patch MOL now accept rotating energy.
 A bounded 400 rad/s patch check passes; a 1000 rad/s LF condition exceeds the
 existing absolute conservation gate ([patch evidence](validation/rotating-mol-patch-20260927.md)).
-Tree/time integration and restart remain open; rotating CFD is not yet enabled.
+Serial tree initialization, conserved transfer, halos and MOL spatial rates now
+carry the frame ([tree evidence](validation/rotating-eb-tree-transfer-20260927.md)).
+MPI, time integration and restart remain open; rotating CFD is not yet enabled.
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
 mixture Riemann interface flux are now implemented with focused analytic and
