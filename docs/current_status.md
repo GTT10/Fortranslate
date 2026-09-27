@@ -11,8 +11,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 Periodic 3D transport face/flux and timestep APIs now accept explicit constant
 viscosity and conductivity, with analytical flux and coefficient-scaling checks
-([evidence](validation/constant-transport-20260927.md)). Application/SDC routing
-of these coefficients remains open.
+([evidence](validation/constant-transport-20260927.md)). Periodic regular SDC
+and fixed/selected applications now accept `reactive_constant_transport`, with
+active coefficient, WALE coexistence, conservation and exact fixed/selected
+output checks ([integration](validation/constant-transport-app-20260927.md)).
 
 Primitive conversion now preserves exact forward-EOS endpoint states when
 inverse rounding lands outside the mechanism interval. Strict ranges and

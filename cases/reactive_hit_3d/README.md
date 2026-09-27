@@ -35,3 +35,23 @@ the reference's gamma-law EOS, constant viscosity derived from Taylor Reynolds
 number, forced turbulence, or long-time statistics. The 16³ example is a
 usable input template; focused checks used smaller grids. See
 [implementation evidence](../../docs/validation/hit-input-20260927.md).
+
+## Prescribed constant transport
+
+For periodic SDC with `transport_enabled=.true.`, add:
+
+```fortran
+&reactive_constant_transport
+ enabled=.true., viscosity=1.0e-5, conductivity=0.02
+/
+```
+
+These are dynamic viscosity in Pa s and thermal conductivity in W/(m K).
+Both must be finite and nonnegative. The same values reach old/new SDC fluxes
+and the transport timestep bound, with or without LES. Omit the namelist to
+retain the molecular mixture model. Species diffusion retains its mixture
+model; for the HIT reference's zero species diffusion, set
+`species_diffusion_enabled=.false.,barodiffusion_enabled=.false.` in
+`reactive_3d`. Nonperiodic boundaries, split stepping, or disabled transport
+reject enabled constant transport. Reynolds-based coefficient construction is
+not automatic; supply the converted SI values explicitly.
