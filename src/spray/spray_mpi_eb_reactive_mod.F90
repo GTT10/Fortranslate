@@ -788,7 +788,7 @@ contains
       particle_steps,last_id,ok,reaction_source,difmag,redistribution,target_volume_fraction,gas_particle_change, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,split_created,particle_acceleration, &
       films,film_mass,film_settings,film_steps,film_impacts,model_rejected,gas_acceleration,evaluate_diffusion,evaluate_reaction, &
-      embedded_wall_temperature,embedded_noslip)
+      embedded_wall_temperature,embedded_noslip,mol_mode)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(spray_wall_film), allocatable, optional, intent(inout) :: films(:)
@@ -827,11 +827,11 @@ contains
     real(dp), optional, intent(inout) :: gas_particle_change(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: embedded_wall_temperature
-    logical, optional, intent(in) :: embedded_noslip
+    logical, optional, intent(in) :: embedded_noslip,mol_mode
     real(dp), optional, intent(in) :: wall_temperature(6)
     real(dp), optional, intent(in) :: particle_acceleration(3)
     integer(int64), optional, intent(out) :: split_created
-    type(amr_tree_state_3d) :: gas,temp,old_particle_rate
+    type(amr_tree_state_3d) :: gas,temp,old_particle_rate,new_particle_rate
     type(amr_tree_state_3d), allocatable :: ir
     type(spray_parcel), allocatable :: midpoint(:),final(:)
     real(dp), allocatable :: midpoint_mass(:,:),final_mass(:,:)
@@ -845,7 +845,9 @@ contains
     real(dp) :: old_wall(size(source_change)),new_wall(size(source_change))
     real(dp) :: old_outflow(size(source_change)),new_outflow(size(source_change))
     character(len=32) :: particle_faces(6)
-    logical :: valid,ready
+    logical :: valid,ready,mol
+    mol=.false.
+    if(present(mol_mode)) mol=mol_mode
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     if(present(split_created)) split_created=0
     if(present(model_rejected)) model_rejected=.false.
@@ -893,7 +895,7 @@ contains
       inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
       wall_temperature=wall_temperature,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
       evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-      embedded_noslip=embedded_noslip)
+      embedded_noslip=embedded_noslip,mol_mode=mol_mode)
     if(.not.ready) return
     before_split=final_id
     if(options%maximum_multiplicity>0) then
@@ -968,7 +970,10 @@ contains
       logical :: accepted,all_ok,rejected
       good=.false.
       if(depth/=-1) return
-      if(stage>0.and.stage<iterations) then
+      if(mol.and.stage>1) then
+        rate=new_particle_rate;good=.true.;return
+      end if
+      if(.not.mol.and.stage>0.and.stage<iterations) then
         rate=old_particle_rate;good=.true.;return
       end if
       half_interval=.5_dp*interval
@@ -1052,6 +1057,7 @@ contains
         old_film_steps=film_count
         midpoint_id=watermark;old_steps=steps;old_wall=wall_delta;old_outflow=exterior;old_force=force_delta
       else
+        if(mol) new_particle_rate=change
         call move_alloc(trial,final);call move_alloc(masses,final_mass)
         if(present(films)) then
           call move_alloc(patches,final_films);call move_alloc(patch_mass,final_film_mass)
