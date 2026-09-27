@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Explicit reaction-free mechanism import now supports the pinned NC7H16/O2/N2
+Spray-Evaporation material data, retaining source/license hashes and typed
+zero-reaction generated arrays. Focused importer checks and generated-module
+compilation pass; application integration and reference-temperature alignment
+remain pending ([evidence](validation/nonreacting-spray-import-20260927.md)).
+
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
 checks for four LES closures ([evidence](validation/gamma-law-app-20260927.md)).
