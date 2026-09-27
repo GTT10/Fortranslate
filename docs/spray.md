@@ -51,7 +51,9 @@ The frozen particle halo kernel now supports collision-created films and splash
 with transactional IDs ([impact checks](validation/spray-halo-impact-20260927.md));
 physical-only impact routing and old/intermediate/final particle SDC snapshots are
 also connected ([stage lifecycle](validation/spray-population-impact-20260927.md)).
-Recursive newborn-film placement, thermal ordering and application routing remain open. Uniform particle acceleration now
+Newborn films can now be placed on their generating level's grown boxes and added
+after the old film half kick ([placement and ordering](validation/spray-film-births-20260927.md)).
+The recursive driver still needs to connect this handoff and application routing. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and
