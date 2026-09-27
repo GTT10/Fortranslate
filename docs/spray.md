@@ -25,8 +25,10 @@ particle, matching the pinned reference. Common-SDC snapshots from the preceding
 weighted-deposition implementation are incompatible; see the
 [deposition comparison](validation/spray-cell-source-20260927.md).
 The fitted 3D transport path includes reference bulk viscosity and its timestep
-bound. Its V2 transport checkpoint tag rejects older zero-bulk fitted snapshots
-([verification](validation/simple-bulk-viscosity-20260927.md)).
+bound ([verification](validation/simple-bulk-viscosity-20260927.md)). Its shared
+face helper uses harmonic cell-coefficient averages. The current V3 transport
+checkpoint tag rejects the preceding fitted face models
+([face verification](validation/simple-face-transport-20260927.md)).
 
 The selected serial spray executable also accepts an explicitly nonreacting
 mechanism bundle. Use `--fuel heptane-3sp` with `tools/prepare_spray_reference.py`

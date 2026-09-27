@@ -29,6 +29,9 @@ Fitted Simple transport also supplies bulk viscosity to 3D stress, viscous work
 and timestep limits. Six-state compiled-reference checks pass; the remaining
 axial-momentum difference is `2.7e-6` relative to the reference maximum
 ([bulk-viscosity evidence](validation/simple-bulk-viscosity-20260927.md)).
+Fitted face coefficients now follow the pinned harmonic mean; three nonuniform
+faces agree to `6.2e-16`, without explaining the remaining evaporation residual
+([face checks](validation/simple-face-transport-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
