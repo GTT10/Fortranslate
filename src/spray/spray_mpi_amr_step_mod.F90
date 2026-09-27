@@ -37,7 +37,9 @@ module spray_mpi_amr_step_mod
     real(dp) :: time=0,interval=0
     type(spray_level_population) :: midpoint(3)
     type(amr_tree_state_3d) :: old_source,old_remainder,old_physical_source
-    logical :: exports_physical=.false.
+    logical :: exports_physical=.false.,impacts=.false.
+    type(spray_wall_film), allocatable :: midpoint_films(:)
+    real(dp), allocatable :: midpoint_film_mass(:,:)
     real(dp) :: old_wall(5)=0,force_change(5)=0,acceleration(3)=0
     real(dp), allocatable :: old_boundary(:)
   end type spray_sdc_population_stage
@@ -154,9 +156,17 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,populations,work,time,interval,stage,iterations,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,acceleration,last_id)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,acceleration,last_id, &
+      wall_films,film_mass,film_settings,model_rejected)
     integer(int64), optional, intent(inout) :: last_id
     integer(int64), allocatable :: watermark
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    logical, optional, intent(out) :: model_rejected
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:)
+    integer :: film_flag,film_low,film_high
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -192,6 +202,20 @@ contains
       allocate(watermark);watermark=last_id
     end if
     ok=.false.;accel=0
+    if(present(model_rejected)) model_rejected=.false.
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.film_low/=film_high) return
+    if(film_flag/=0.and.film_flag/=7) return
+    valid=.true.
+    if(present(wall_films)) valid=allocated(wall_films).and.allocated(film_mass).and.present(last_id)
+    if(stage>0) then
+      valid=valid.and.(present(wall_films).eqv.work%impacts)
+      if(present(wall_films)) valid=valid.and.allocated(work%midpoint_films).and.allocated(work%midpoint_film_mass)
+    end if
+    call agree();if(.not.agreed) return
     if(present(acceleration)) accel=acceleration
     times=[time,interval,accel]
     valid=all(ieee_is_finite(times)).and.time>=0.and.interval>0.and.iterations>=1
@@ -235,11 +259,25 @@ contains
     else
       trial=work%midpoint
     end if
+    if(present(wall_films)) then
+      if(stage==0) then
+        patches=wall_films;patch_mass=film_mass
+      else
+        patches=work%midpoint_films;patch_mass=work%midpoint_film_mass
+      end if
+    call advance_mpi_eb_population_stage(comm,species,transport,components,options,tree,owners,geometry, &
+      state,temperature,width,target_level,grow,maximum_parcels,trial,half_interval,drift,faces, &
+      change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
+      ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta,watermark, &
+      patches,patch_mass,film_settings,model_rejected)
+    else
     call advance_mpi_eb_population_stage(comm,species,transport,components,options,tree,owners,geometry, &
       state,temperature,width,target_level,grow,maximum_parcels,trial,half_interval,drift,faces, &
       change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta,watermark)
+    end if
     if(.not.valid) return
     if(stage==iterations) then
       call apply_force()
@@ -255,6 +293,10 @@ contains
     end if
     if(stage==0) then
       candidate%acceleration=accel;candidate%force_change=forced
+      candidate%impacts=present(wall_films)
+      if(present(wall_films)) then
+        candidate%midpoint_films=patches;candidate%midpoint_film_mass=patch_mass
+      end if
       candidate%exports_physical=present(physical_source)
       if(present(physical_source)) candidate%old_physical_source=physical_delta
       candidate%midpoint=trial;candidate%old_wall=wall;candidate%old_boundary=exterior
@@ -278,6 +320,9 @@ contains
     if(stage==iterations) then
       candidate%next_stage=0
       populations=trial
+      if(present(wall_films)) then
+        call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+      end if
     end if
     work=candidate
     if(present(physical_source)) call move_alloc(physical_delta%fields,physical_source%fields)
@@ -342,9 +387,17 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,populations,kick_dt,drift_dt,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,last_id)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,last_id, &
+      wall_films,film_mass,film_settings,model_rejected)
     integer(int64), optional, intent(inout) :: last_id
     integer(int64), allocatable :: watermark
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    logical, optional, intent(out) :: model_rejected
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:)
+    integer :: film_flag,film_low,film_high
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -379,6 +432,19 @@ contains
       allocate(watermark);watermark=last_id
     end if
     ok=.false.
+    if(present(model_rejected)) model_rejected=.false.
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.film_low/=film_high) return
+    if(film_flag/=0.and.film_flag/=7) return
+    if(present(wall_films)) then
+      valid=allocated(wall_films).and.allocated(film_mass).and.present(last_id)
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS.or..not.agreed) return
+      patches=wall_films;patch_mass=film_mass
+    end if
     valid=size(boundary_change)==size(exterior)
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     do population=1,3
@@ -408,11 +474,21 @@ contains
         population_options%khrt_reference_diameter_cubed=0
       end if
       ! Root has no ghosts, but use retained routing for its allocated empty set.
+      ! Pinned SprayParticles.cpp gates splash by isActive and do_move.
+      if(population==1.and.drift_dt>0.and.present(wall_films)) then
+      call advance_mpi_amr_population_halo(comm,species,transport,components,population_options,tree,owners,halo,halo_t, &
+        width,target_level,grow,maximum_parcels,candidate(population)%nodes,candidate(population)%parcels, &
+        candidate(population)%component_mass,lower,spacing,periodic,kick_dt,drift_dt,particle_faces,part,part_leftover, &
+        wall,exterior,valid,volume,nodal_phi,centroids,geometry,maximum_received,population<3.or.target_level==0, &
+        containing_cell=.true.,physical_source=physical_delta,last_id=watermark, &
+        wall_films=patches,film_mass=patch_mass,film_settings=film_settings,model_rejected=model_rejected)
+      else
       call advance_mpi_amr_population_halo(comm,species,transport,components,population_options,tree,owners,halo,halo_t, &
         width,target_level,grow,maximum_parcels,candidate(population)%nodes,candidate(population)%parcels, &
         candidate(population)%component_mass,lower,spacing,periodic,kick_dt,drift_dt,particle_faces,part,part_leftover, &
         wall,exterior,valid,volume,nodal_phi,centroids,geometry,maximum_received,population<3.or.target_level==0, &
         containing_cell=.true.,physical_source=physical_delta,last_id=watermark)
+      end if
       if(.not.valid) return
       if(population==1) then
         if(present(physical_source)) then
@@ -429,6 +505,9 @@ contains
     if(present(physical_source)) call move_alloc(exported%fields,physical_source%fields)
     populations=candidate
     call move_alloc(total%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    if(present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
     if(present(last_id)) last_id=watermark
     wall_change=physical_wall;boundary_change=physical_exterior;ok=.true.
   contains
@@ -567,9 +646,16 @@ contains
   subroutine advance_mpi_amr_population_halo(comm,species,transport,components,options,tree,owners,gas_halo,temperature_halo, &
       width,target_level,grow,maximum_ghosts,nodes,ghosts,component_mass,lower,spacing,periodic,kick_dt,drift_dt,faces, &
       source,remainder,wall_change,boundary_change,ok,fluid_fraction,nodal_phi,centroids,eb_geometry, &
-      maximum_received,keep_physical,containing_cell,physical_source,last_id)
+      maximum_received,keep_physical,containing_cell,physical_source,last_id,wall_films,film_mass,film_settings,model_rejected)
     integer(int64), optional, intent(inout) :: last_id
     integer(int64), allocatable :: watermark
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    logical, optional, intent(out) :: model_rejected
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:)
+    integer :: film_flag,film_low,film_high
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -606,16 +692,37 @@ contains
       allocate(watermark);watermark=last_id
     end if
     ok=.false.
+    if(present(model_rejected)) model_rejected=.false.
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.film_low/=film_high) return
+    if(film_flag/=0.and.film_flag/=7) return
+    if(present(wall_films)) then
+      valid=allocated(wall_films).and.allocated(film_mass).and.present(last_id)
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS.or..not.agreed) return
+      patches=wall_films;patch_mass=film_mass
+    end if
     valid=allocated(ghosts).and.allocated(component_mass).and.allocated(nodes)
     valid=valid.and.size(boundary_change)==size(exterior)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
     if(status/=MPI_SUCCESS.or..not.agreed) return
     if(present(physical_source)) allocate(physical_delta)
     candidate=ghosts;masses=component_mass;locations=nodes
+    if(present(wall_films)) then
+    call kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
+      gas_halo,temperature_halo,width,locations,candidate,masses,lower,spacing,periodic,kick_dt,raw,valid, &
+      fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.false., &
+      eb_geometry,maximum_received,containing_cell,physical_delta,watermark, &
+      patches,patch_mass,film_settings,model_rejected)
+    else
     call kick_mpi_amr_mixture_halo(comm,species,transport,components,options,tree,owners, &
       gas_halo,temperature_halo,width,locations,candidate,masses,lower,spacing,periodic,kick_dt,raw,valid, &
       fluid_fraction,nodal_phi,centroids,drift_dt,faces,wall,exterior,target_level,routed,leftover,.false., &
       eb_geometry,maximum_received,containing_cell,physical_delta,watermark)
+    end if
     if(.not.valid) return
     if(keep_physical) then
       call redistribute_mpi_amr_level_particles(comm,tree,owners,candidate,masses,locations,lower,spacing, &
@@ -628,6 +735,9 @@ contains
     call move_alloc(candidate,ghosts);call move_alloc(masses,component_mass);call move_alloc(locations,nodes)
     call move_alloc(routed%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
     if(present(physical_source)) physical_source=physical_delta
+    if(present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
+    end if
     if(present(last_id)) last_id=watermark
     wall_change=wall;boundary_change=exterior;ok=.true.
   end subroutine advance_mpi_amr_population_halo

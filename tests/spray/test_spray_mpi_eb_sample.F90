@@ -142,7 +142,7 @@ contains
     real(dp) :: impact_total(3),initial_total(3)
     logical :: rejected
     integer :: trial
-    type(spray_sdc_population_stage) :: work,hierarchy_work(2),child_work
+    type(spray_sdc_population_stage) :: work,hierarchy_work(2),child_work,impact_work
     type(spray_level_population), allocatable :: physical(:),virtuals(:),incoming(:)
     type(spray_level_population) :: root_finished
     type(amr_tree_state_3d) :: expected_source,expected_remainder
@@ -567,8 +567,61 @@ contains
           call require(size(impact_films)>0,'halo contact deposits a physical film')
           if(trial==2) call require(size(ghosts)>1.and.impact_id>1,'halo splash creates children and IDs')
         end if
+        reference_films=impact_films;reference_film_mass=impact_mass
+        expected_wall=wall(3);child_id=impact_id
+        deallocate(impact_films,impact_mass)
+        allocate(impact_films(0),impact_mass(1,0))
+        group=before_group
+        do population=1,3
+          if(count==0) cycle
+          group(population)%parcels(1)=spray_parcel(1_int64,[1.5_dp,1.250001_dp,1.5_dp], &
+            [0._dp,-real(merge(1,100,trial==1),dp),0._dp],1e-9_dp,350._dp,100._dp)
+          group(population)%component_mass=1e-9_dp
+        end do
+        expected_group=group;impact_id=1;wall=17;ledger=19
+        ! Force a failure while redistributing the privately created children.
+        call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners,g,gas,temp, &
+          1,1,1,0,group,1e-8_dp,2e-6_dp,faces,group_source,group_remainder,wall,ledger,ok, &
+          phi,centroids,metrics,last_id=impact_id,wall_films=impact_films,film_mass=impact_mass,film_settings=film_options)
+        call require(.not.ok.and.impact_id==1.and.size(impact_films)==0.and.all(wall==17).and.all(ledger==19), &
+          'population redistribution failure retains impact inventory and IDs')
+        do population=1,3
+          call require(size(group(population)%parcels)==count.and. &
+            all(group(population)%component_mass==expected_group(population)%component_mass),'impact population rollback')
+        end do
+        call advance_mpi_eb_population_stage(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners,g,gas,temp, &
+          1,1,1,100,group,1e-8_dp,2e-6_dp,faces,group_source,group_remainder,wall,ledger,ok, &
+          phi,centroids,metrics,last_id=impact_id,wall_films=impact_films,film_mass=impact_mass,film_settings=film_options)
+        call require(ok.and.impact_id==child_id.and.wall(3)==expected_wall,'population impact physical IDs and wall ledger')
+        call require(size(impact_films)==size(reference_films).and.all(impact_mass==reference_film_mass), &
+          'population impacts publish exactly the physical film inventory')
+        do population=2,3
+          call require(size(group(population)%parcels)==count,'copy populations create no splash children')
+          if(count>0) call require(group(population)%parcels(1)%velocity(2)>0,'copy contact retains reflection')
+        end do
+        deallocate(impact_films,impact_mass)
+        allocate(impact_films(0),impact_mass(1,0));group=expected_group;impact_id=1
+        impact_work=spray_sdc_population_stage()
+        do stage=0,2
+          call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners, &
+            g,gas,temp,1,1,1,100,group,impact_work,0._dp,2e-6_dp,stage,2,faces, &
+            group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,last_id=impact_id, &
+            wall_films=impact_films,film_mass=impact_mass,film_settings=film_options)
+          call require(ok.and.impact_id==child_id,'SDC impacts reserve physical IDs only on old drift')
+          if(stage<2) then
+            call require(size(impact_films)==0.and.size(group(1)%parcels)==count, &
+              'SDC defers film and particle publication until final stage')
+            call require(size(impact_work%midpoint_films)==size(reference_films), &
+              'SDC retains old-time impact film snapshot')
+          else
+            call require(size(impact_films)==size(reference_films).and.all(impact_mass==reference_film_mass), &
+              'final SDC stage commits impact films without duplicate deposits')
+          end if
+          call require(wall(3)==expected_wall,'SDC impact wall inventory counted once')
+        end do
         deallocate(impact_films,impact_mass)
       end do
+      deallocate(reference_films,reference_film_mass)
 
       call reactive_conserved_to_primitive(species,cell,900._dp,primitive,t,sound,ok)
       call require(ok,'frozen film reference gas')
