@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+KHRT now has a reference-count/azimuth child constructor with explicit random
+samples and conservative gas momentum/energy compensation. Application routing
+still uses four symmetric children; variable-count MPI allocation, random-state
+identity and vector feedback remain to be connected
+([kernel checks](validation/khrt-reference-children-20260927.md)).
+
 MPI AMR SDC now accepts owner-local diffusion callbacks for common and recursive
 steps, with collective validation and combined-flux synchronization
 ([callback checks](validation/mpi-amr-sdc-diffusion-20260927.md)). The MPI LES
