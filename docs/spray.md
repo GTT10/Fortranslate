@@ -40,8 +40,10 @@ source inventories transactionally
 cache intermediate rates, separate physical ledgers and remove depleted payloads
 together ([stage checks](validation/spray-film-sdc-stage-20260927.md)); film
 physical level placement is also connected
-([level checks](validation/spray-film-levels-20260927.md)). Film copy construction
-and application integration remain open. Uniform particle acceleration now
+([level checks](validation/spray-film-levels-20260927.md)). Virtual and ghost
+film construction now preserves physical payloads and publishes both copy sets
+atomically ([copy checks](validation/spray-film-copies-20260927.md)); recursive
+clock/callback and application integration remain open. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and
