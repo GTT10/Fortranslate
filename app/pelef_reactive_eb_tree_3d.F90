@@ -178,12 +178,16 @@ program pelef_reactive_eb_tree_3d
   integer :: rebalance_interval_steps=0
   real(dp) :: rebalance_minimum_gain=0.1_dp
   logical :: simple_transport_enabled=.false.
+  logical :: viscosity_enabled=.true.,thermal_conduction_enabled=.true.
+  logical :: species_diffusion_enabled=.true.,barodiffusion_enabled=.true.
+  logical :: transport_flags(4)
 #ifdef PELEF_SELECTED_SIMPLE_TRANSPORT
   real(dp) :: simple_coefficients(4,2*selected_nspecies+selected_nspecies*(selected_nspecies+1)/2)
 #endif
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
     maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,simple_transport_enabled,riemann_solver, &
+    viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure,wall_temperature, &
@@ -289,7 +293,8 @@ program pelef_reactive_eb_tree_3d
   if(.not.all(ieee_is_finite(wall_temperature))) error stop 'Invalid tree wall temperature'
   if(any(boundary_faces=='isothermal_wall')) then
     if(any(wall_temperature<=0)) error stop 'Isothermal tree walls require six positive temperatures'
-    if(.not.transport_enabled) error stop 'Isothermal tree walls require transport'
+    if(.not.transport_enabled.or..not.thermal_conduction_enabled) &
+      error stop 'Isothermal tree walls require thermal conduction'
     active_wall_temperature=wall_temperature
   else if(any(wall_temperature/=0)) then
     error stop 'Unused tree wall temperatures'
@@ -390,8 +395,11 @@ program pelef_reactive_eb_tree_3d
   config%regular_density=regular_density;config%cut_density=cut_density;config%initial_pressure=initial_pressure
   config%chemistry_enabled=chemistry_enabled;config%transport_enabled=transport_enabled
   config%chemistry_relative_tolerance=rtol;config%chemistry_absolute_tolerance=atol
-  config%viscosity_enabled=.true.;config%thermal_conduction_enabled=.true.
-  config%species_diffusion_enabled=.true.;config%barodiffusion_enabled=.true.
+  barodiffusion_enabled=barodiffusion_enabled.and.species_diffusion_enabled
+  transport_flags=transport_enabled.and.[viscosity_enabled,thermal_conduction_enabled, &
+    species_diffusion_enabled,barodiffusion_enabled]
+  config%viscosity_enabled=viscosity_enabled;config%thermal_conduction_enabled=thermal_conduction_enabled
+  config%species_diffusion_enabled=species_diffusion_enabled;config%barodiffusion_enabled=barodiffusion_enabled
   config%final_time=final_time;config%maximum_steps=maximum_steps
 #ifdef PELEF_MPI_EB_SPRAY
   call build_configured_eb_geometry_3d(config,finest,ok,nodal_phi)
@@ -540,13 +548,14 @@ program pelef_reactive_eb_tree_3d
     if (automatic_timestep) then
 #ifdef PELEF_MPI_EB_TREE
       call mpi_eb_tree_timestep_3d(species,transport,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
-        hydro_cfl,transport_cfl,transport_enabled,.true.,.true.,.true.,estimated_dt,MPI_COMM_WORLD,ok,subcycling, &
+        hydro_cfl,transport_cfl,transport_enabled, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,estimated_dt,MPI_COMM_WORLD,ok,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature, &
         coupled_subcycling=time_integrator=="sdc")
 #else
       call reactive_eb_tree_timestep_3d(species,transport,tree,hydro_cfl,transport_cfl,transport_enabled, &
-        .true.,.true.,.true.,estimated_dt,ok,subcycling, &
+        viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,estimated_dt,ok,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         boundary_faces=active_faces,inflow_state=inlet_state,wall_temperature=active_wall_temperature, &
         coupled_subcycling=time_integrator=="sdc")
@@ -698,7 +707,8 @@ contains
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
-        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
+        chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
+        species_diffusion_enabled,barodiffusion_enabled,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling, &
         films=films,film_mass=film_mass,film_settings=walls,last_id=last_particle_id,model_rejected=model_rejected, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
@@ -711,7 +721,8 @@ contains
       call advance_mpi_eb_spray_reactive(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,riemann_solver, &
-        chemistry_enabled,transport_enabled,.true.,.true.,.true.,.true.,rtol,atol,particle_steps, &
+        chemistry_enabled,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
+        species_diffusion_enabled,barodiffusion_enabled,rtol,atol,particle_steps, &
         theta,boundary,wall,chemical,ok,chemistry_integrator,subcycling,last_id=last_particle_id, &
         split_created=step_split_created,particle_outflow=particle_outflow, &
         acceleration=acceleration,source_change=step_force, &
@@ -724,7 +735,7 @@ contains
         if(subcycling) then
         call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
           mpi_state,mpi_temperature,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          transport_flags,external_forcing,rtol,atol, &
           extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
@@ -732,7 +743,7 @@ contains
         else
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
           mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          transport_flags,external_forcing,rtol,atol, &
           active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
@@ -740,7 +751,8 @@ contains
         end if
       else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
-        riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,.true.,.true.,.true.,.true., &
+        riemann_solver,dt,chemistry_enabled,rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
+        species_diffusion_enabled,barodiffusion_enabled, &
         mpi_state,mpi_temperature,boundary,wall,chemical,theta,MPI_COMM_WORLD,ok,chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
@@ -752,14 +764,14 @@ contains
       if(time_integrator=='sdc') then
         if(subcycling) then
         call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          transport_flags,external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
           evaluate_reaction=evaluate_reaction)
         else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
-          [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing,rtol,atol, &
+          transport_flags,external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
@@ -767,7 +779,8 @@ contains
         end if
       else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
-        rtol,atol,transport_enabled,.true.,.true.,.true.,.true.,tree,boundary,wall,chemical,theta,ok, &
+        rtol,atol,transport_enabled,viscosity_enabled,thermal_conduction_enabled, &
+        species_diffusion_enabled,barodiffusion_enabled,tree,boundary,wall,chemical,theta,ok, &
         chemistry_integrator,subcycling, &
         inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure, &
         difmag=difmag,extended_geometry=extended_geometry, &
@@ -784,7 +797,7 @@ contains
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        transport_flags,external_forcing, &
         rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
         reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
         target_volume_fraction=state_redist_target_volume_fraction, &
@@ -798,7 +811,7 @@ contains
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        transport_flags,external_forcing, &
         rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
         reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
         target_volume_fraction=state_redist_target_volume_fraction, &
@@ -811,7 +824,7 @@ contains
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        transport_flags,external_forcing, &
         rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
         reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
         target_volume_fraction=state_redist_target_volume_fraction, &
@@ -825,7 +838,7 @@ contains
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
         species,reactions,transport,liquids,particle_options,mpi_state,mpi_temperature,drops,component_mass, &
         domain_lower,(domain_upper-domain_lower)/real(root_shape,dp),dt,sdc_iterations,chemistry_enabled, &
-        [transport_enabled,transport_enabled,transport_enabled,transport_enabled],external_forcing, &
+        transport_flags,external_forcing, &
         rtol,atol,active_faces,boundary,wall,chemical,step_force,theta,particle_steps,last_particle_id,ok, &
         reaction_source=sdc_ir,difmag=difmag,redistribution=redistribution, &
         target_volume_fraction=state_redist_target_volume_fraction, &

@@ -149,8 +149,17 @@ The full-interval diffusion bound is conservatively applied despite split
 half steps. It is not a chemistry accuracy estimate.
 Rejected steps halve their interval up to `maximum_step_retries` (default 12).
 `maximum_steps` bounds accepted steps; reaching it early is an error.
-`chemistry_enabled` and `transport_enabled` are independent. Enabled transport
-uses viscosity, conduction, species diffusion and barodiffusion.
+`chemistry_enabled` and `transport_enabled` are independent. Within enabled
+transport, `viscosity_enabled`, `thermal_conduction_enabled`,
+`species_diffusion_enabled` and `barodiffusion_enabled` select the physical
+operators; all default to true. Barodiffusion is active only with species
+diffusion. These controls apply to serial/MPI gas and MPI spray, split/SDC,
+common/recursive stepping and automatic timestep estimates. Restart checks
+bind the effective settings. Isothermal walls require thermal conduction.
+Viscosity includes its energy work and species diffusion includes enthalpy
+transport. These are physical-operator controls, whereas pinned PeleC's
+`diffuse_*` switches mask output flux components after calculating diffusion;
+partial-disable comparisons need to account for that distinction.
 `chemistry_integrator` accepts explicit/implicit, with `rtol/atol` for reaction.
 `riemann_solver` accepts rusanov/hllc/pelec. Initial conditions use the existing
 fixed-mechanism density-sheet initializer and its defaults.
