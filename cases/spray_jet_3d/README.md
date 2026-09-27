@@ -26,6 +26,18 @@ is two. This creates inputs only. Full-duration execution and reference jet
 parity have not been established. The coarse mesh and deterministic sampling
 adaptations still apply.
 
+After a completed run, check the final time/event count and independently
+reconstruct fuel inventory from gas and per-rank particle CSVs:
+
+```sh
+python3 tools/check_jet_inventory.py --run-dir build/decane-jet-connection --output build/jet-inventory.json
+```
+
+The checker includes signed boundary/wall additions from the budget, so fuel
+leaving the domain is included in the balance. It requires this single-fuel,
+nonreacting, all-fluid, film-free fixture and reports hashes and a fixed
+`1e-8` relative fuel-accounting gate. It is not a jet trajectory parity test.
+
 First prepare the decane bundle as described in the
 [import record](../../docs/validation/decane-spray-import-20260927.md).
 Use a separate selected-mechanism build:
