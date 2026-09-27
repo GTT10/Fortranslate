@@ -25,6 +25,10 @@ difference is `1.4e-11` relative to its reference maximum. Rank-changing restart
 matches continuous output. Gas momentum and stored-temperature differences
 remain, so full spray parity and physical validation are still open
 ([current comparison](validation/spray-cell-source-20260927.md)).
+Fitted Simple transport also supplies bulk viscosity to 3D stress, viscous work
+and timestep limits. Six-state compiled-reference checks pass; the remaining
+axial-momentum difference is `2.7e-6` relative to the reference maximum
+([bulk-viscosity evidence](validation/simple-bulk-viscosity-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
