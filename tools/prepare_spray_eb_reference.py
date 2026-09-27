@@ -75,7 +75,7 @@ def main():
  domain_lower=0,0,0,domain_upper=.1,.1,.1,
  geometry_type='level_set',level_set_file='level_set.dat',
  time_step=1e-7,final_time={fmt(args.final_time)},maximum_steps=100000,maximum_step_retries=12,
- time_integrator='sdc',sdc_iterations=2,automatic_timestep=.true.,hydro_cfl=.3,
+ time_integrator='sdc',mol_mode=.true.,sdc_iterations=2,automatic_timestep=.true.,hydro_cfl=.3,
  chemistry_enabled=.false.,transport_enabled=.true.,simple_transport_enabled=.true.,
  hydro_method='plm_ctu',riemann_solver='pelec',redistribution='state_redist',
  boundary_faces=4*'no_slip_wall',2*'periodic',
@@ -107,7 +107,7 @@ def main():
 {ports}/
 ''')
     adaptations = ['Initial particles represented by five instantaneous events at t=0',
-                   'CTU/SDC instead of upstream method-of-lines integration',
+                   'MOL includes a positive-face slope safeguard beyond the pinned reconstruction',
                    'Single root patch instead of upstream max_grid_size=32 partition',
                    'Time step capped at 100 ns with adaptive CFL and retry controls',
                    'Antoine evaluation restricted to 300-371.6 K; not a fitted validity claim',
@@ -118,7 +118,7 @@ def main():
         adaptations.append('Changed final time for connection check')
     (args.output/'preparation.json').write_text(json.dumps(dict(
         reference=manifest, bundle_sha256=hashlib.sha256(args.bundle.read_bytes()).hexdigest(),
-        cells=n, final_time_s=args.final_time, initial_gas_temperature_K=1500,
+        cells=n, final_time_s=args.final_time, hydrodynamic_update="mol", initial_gas_temperature_K=1500,
         initial_pressure_Pa=1.01325e6, initial_mass_fractions=dict(O2=.233, N2=.767),
         plane_point_m=point, upstream_plane_normal=normal, particles=particles,
         expected_injected_mass_kg=sum(p['mass_kg'] for p in particles),
