@@ -16,7 +16,8 @@ module mpi_eb_tree_full_3d_mod
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d, &
     validate_mpi_eb_tree_geometry_3d
-  use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d
+  use mpi_eb_tree_hydro_3d_mod, only: advance_mpi_eb_tree_hydro_3d,compute_sdc_mpi_eb_tree_hydro_3d, &
+    compute_mol_mpi_eb_tree_hydro_3d
   use mpi_eb_tree_transport_3d_mod, only: advance_mpi_eb_tree_transport_3d,compute_sdc_mpi_eb_tree_transport_3d
   use mpi_eb_tree_subcycle_hydro_3d_mod, only: advance_mpi_eb_tree_subcycle_hydro_3d
   use mpi_eb_tree_subcycle_transport_3d_mod, only: advance_mpi_eb_tree_subcycle_transport_3d
@@ -413,7 +414,7 @@ contains
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
       target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder,evaluate_diffusion, &
-      evaluate_reaction,embedded_wall_temperature,embedded_noslip)
+      evaluate_reaction,embedded_wall_temperature,embedded_noslip,mol_mode)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
@@ -456,17 +457,17 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6),embedded_wall_temperature
-    type(eb_geometry_3d), allocatable :: heat_geometry(:)
-    logical, optional, intent(in) :: embedded_noslip
-    logical :: noslip,wall_active
+    type(eb_geometry_3d), allocatable :: heat_geometry(:),mol_geometry(:)
+    logical, optional, intent(in) :: embedded_noslip,mol_mode
+    logical :: noslip,wall_active,mol
     real(dp), allocatable :: heat_stage,heat_frequency,wall_impulse(:)
     real(dp) :: impulse_old(3),impulse_new(3)
-    real(dp) :: heat_old,heat_new
+    real(dp) :: heat_old,heat_new,mol_wall_old(size(wall_change)),mol_wall_new(size(wall_change))
     type(amr_tree_state_3d) :: old,ot,candidate,ct,e0,e1,d0,d1,rates,hydro,ir,ledger
     type(eb_integrated_flux_3d), allocatable :: f0(:),f1(:),hf(:)
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
-    real(dp) :: controls(14),low(14),high(14),recovered,speed
+    real(dp) :: controls(15),low(15),high(15),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
     integer :: counts(11),mincounts(11),maxcounts(11),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive,has_diffusion
@@ -483,6 +484,10 @@ contains
     if(.not.ready) return
     controls(:11)=[dt,force,rtol,atol,merge(1._dp,0._dp,redistribution_method=='flux_redist')+ &
       merge(2._dp,0._dp,redistribution_method=='state_redist'),redist_target,accel]
+    mol=.false.
+    if(present(mol_mode)) mol=mol_mode
+    controls(15)=merge(1._dp,0._dp,mol)
+    mol_wall_old=0;mol_wall_new=0
     noslip=.false.
     if(present(embedded_noslip)) noslip=embedded_noslip
     wall_active=noslip.or.present(embedded_wall_temperature)
@@ -500,11 +505,13 @@ contains
     valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
     if(present(embedded_wall_temperature)) valid=valid.and.transport_flags(2).and.embedded_wall_temperature>0
     if(noslip) valid=valid.and.transport_flags(1)
+    ! First MOL connection follows the reference nonreacting old/new update.
+    if(mol) valid=valid.and..not.chemistry.and..not.present(predictor_builder)
     call agree(valid,comm,ready)
     if(.not.ready) return
-    call MPI_Allreduce(controls,low,14,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,15,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,14,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,15,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
       merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder)),merge(1,0,present(evaluate_diffusion)), &
@@ -548,6 +555,20 @@ contains
       call validate_mpi_amr_tree_local_3d(tree,owners,ot,1,comm,ready)
       if(.not.ready) return
       if(selected_depth>=tree%level_count()) return
+    end if
+    if(mol) then
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=6)
+      if(.not.ready) return
+      allocate(mol_geometry(size(owners)),stat=ios)
+      call agree(ios==0,comm,ready)
+      if(.not.ready) return
+      do node=1,size(owners)
+        n=tree%nodes(node)%shape
+        call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,mol_geometry(node),valid)
+        if(.not.valid) exit
+      end do
+      call agree(valid,comm,ready)
+      if(.not.ready) return
     end if
     if(wall_active) then
       call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=6)
@@ -618,11 +639,21 @@ contains
     candidate=old;ct=ot;diffusive=any(transport_flags(:3))
     call sources(old,ot,e0,d0,a0,0,f0,transfer0,ready,fractions_start)
     if(.not.ready) return
-    e1=e0;d1=d0;heat_new=heat_old;impulse_new=impulse_old
+    e1=e0;d1=d0;heat_new=heat_old;impulse_new=impulse_old;mol_wall_new=mol_wall_old
     if(present(auxiliary_source)) a1=a0
     call predictor_field(e0,d0,a0,op,ready)
     if(.not.ready) return
-    do it=1,iterations
+    if(mol) then
+      hydro=d0;hf=f0
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        hydro%fields(node)%values=0
+        if(.not.active(node)) cycle
+        hf(node)%x=0;hf(node)%y=0;hf(node)%z=0
+      end do
+      if(present(redistribution_transfer)) hydro_transfer=hydro
+    end if
+    do it=1,merge(1,iterations,mol)
       call combined_rates(.true.)
       if(present(predictor_builder)) then
         if(allocated(predictor_halo)) deallocate(predictor_halo)
@@ -633,6 +664,7 @@ contains
         call agree(valid,comm,ready)
         if(.not.ready) return
       end if
+      if(.not.mol) then
       call compute_sdc_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,old,ot,rates,extended_geometry, &
         dt,hydro,hf,comm,ready,difmag,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start, &
@@ -658,6 +690,7 @@ contains
         end if
         if(.not.ready) return
         hydro=redistributed
+      end if
       end if
       do node=1,size(owners)
         if(owners(node)/=rank.or..not.active(node)) cycle
@@ -722,7 +755,7 @@ contains
       if(.not.valid) exit
       ledger%fields(node)%values=dt*wall_rate
       deallocate(wall_rate)
-      if(diffusive.or.has_diffusion) then
+      if(diffusive.or.has_diffusion.or.mol) then
         hf(node)%x=hf(node)%x+.5_dp*(f0(node)%x+f1(node)%x)
         hf(node)%y=hf(node)%y+.5_dp*(f0(node)%y+f1(node)%y)
         hf(node)%z=hf(node)%z+.5_dp*(f0(node)%z+f1(node)%z)
@@ -732,6 +765,7 @@ contains
     if(.not.ready) return
     call integrate_mpi_eb_tree_3d(tree,owners,geometry,ledger,wall,comm,ready)
     if(.not.ready) return
+    if(mol) wall=.5_dp*(mol_wall_old+mol_wall_new)
     wall(5)=wall(5)+.5_dp*(heat_old+heat_new)
     wall(2:4)=wall(2:4)+.5_dp*(impulse_old+impulse_new)
     call agree(all(ieee_is_finite(wall)),comm,ready)
@@ -980,7 +1014,41 @@ contains
         stage_theta=min(stage_theta,global_theta)
         if(.not.diffusive) call move_alloc(extra_flux,flux)
       end if
-      if(diffusive.or.has_diffusion) then
+      if(mol) then
+        call compute_mol_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,mol_geometry,gas,temp,dt,2, &
+          extra,extra_flux,comm,all_ok,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
+          target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+        if(.not.all_ok) return
+        do p=1,size(owners)
+          if(owners(p)/=rank.or..not.active(p)) cycle
+          transport_rate%fields(p)%values=transport_rate%fields(p)%values+extra%fields(p)%values
+          if(diffusive.or.has_diffusion) then
+            flux(p)%x=flux(p)%x+extra_flux(p)%x
+            flux(p)%y=flux(p)%y+extra_flux(p)%y
+            flux(p)%z=flux(p)%z+extra_flux(p)%z
+          end if
+        end do
+        if(.not.(diffusive.or.has_diffusion)) call move_alloc(extra_flux,flux)
+        do p=1,size(owners)
+          if(owners(p)/=rank) cycle
+          extra%fields(p)%values=0
+          if(.not.active(p)) cycle
+          call reactive_eb_slip_wall_source_3d(species,gas%fields(p)%values,temp%fields(p)%values(1,:,:,:), &
+            geometry(p),extra%fields(p)%values,local_ok)
+          if(.not.local_ok) exit
+        end do
+        call agree(local_ok,comm,all_ok)
+        if(.not.all_ok) return
+        if(stage==0) then
+          call integrate_mpi_eb_tree_3d(tree,owners,geometry,extra,mol_wall_old,comm,all_ok)
+          mol_wall_old=dt*mol_wall_old
+        else
+          call integrate_mpi_eb_tree_3d(tree,owners,geometry,extra,mol_wall_new,comm,all_ok)
+          mol_wall_new=dt*mol_wall_new
+        end if
+        if(.not.all_ok) return
+      end if
+      if(diffusive.or.has_diffusion.or.mol) then
         if(redistribution_method=='state_redist') then
           if(selected_depth>=0) then
             call redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree,owners,geometry,gas,transport_rate,nv,selected_depth,dt, &

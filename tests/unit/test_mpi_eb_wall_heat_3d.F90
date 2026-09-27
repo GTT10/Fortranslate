@@ -38,7 +38,7 @@ program test_mpi_eb_wall_heat_3d
   real(dp), allocatable :: visc_reference(:),visc_exchange(:),visc_source(:,:,:,:)
   real(dp) :: residual
   character(len=16) :: faces(6)
-  integer :: status,rank,ranks,nv,s,node,owners(3),n(3),mode,scheme
+  integer :: status,rank,ranks,nv,s,node,owners(3),n(3),mode,scheme,j
   logical :: ok
   call MPI_Init(status)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
@@ -148,14 +148,14 @@ program test_mpi_eb_wall_heat_3d
     if(mode==1) then
       call integrate_mpi_eb_tree_3d(topology,owners,geometry,local,before,MPI_COMM_WORLD,ok)
       call require(ok,'initial inventory')
-      do scheme=1,2
+      do scheme=1,3
         evolved=local;evolved_t=lt
         boundary=0;wall=0;chemical=0;external=0;theta=1
-        if(scheme==1) then
+        if(scheme/=2) then
           call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             extended_six,1e-7_dp,2,.false.,[.false.,.true.,.false.,.false.],[0._dp,0._dp,0._dp], &
             1e-8_dp,1e-12_dp,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
-            embedded_wall_temperature=400._dp)
+            embedded_wall_temperature=400._dp,mol_mode=scheme==3)
         else
           call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             1e-7_dp,2,.false.,[.false.,.true.,.false.,.false.],[0._dp,0._dp,0._dp], &
@@ -173,14 +173,14 @@ program test_mpi_eb_wall_heat_3d
       end do
       call integrate_mpi_eb_tree_3d(topology,owners,geometry,visc_state,before,MPI_COMM_WORLD,ok)
       call require(ok,'initial viscous inventory')
-      do scheme=1,2
+      do scheme=1,3
         evolved=visc_state;evolved_t=lt
         boundary=0;wall=0;chemical=0;external=0;theta=1
-        if(scheme==1) then
+        if(scheme/=2) then
           call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             extended_six,1e-7_dp,2,.false.,[.true.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
             1e-8_dp,1e-12_dp,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
-            embedded_noslip=.true.)
+            embedded_noslip=.true.,mol_mode=scheme==3)
         else
           call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             1e-7_dp,2,.false.,[.true.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
@@ -197,6 +197,28 @@ program test_mpi_eb_wall_heat_3d
           <1e-5_dp*abs(1e-7_dp*visc_reference(3)),'time-integrated tangential drag ledger')
         if(rank==0) print *, 'Wall scheme, tangential impulse, budget residual:',scheme,wall(3),residual
       end do
+    end if
+    if(mode==1) then
+      evolved=visc_state;evolved_t=lt
+      do node=1,3
+        if(owners(node)/=rank) cycle
+        do j=1,topology%nodes(node)%shape(2)
+          evolved%fields(node)%values(:,:,j,:)=evolved%fields(node)%values(:,:,j,:)* &
+            (1+.01_dp*(geometry(node)%y_lower+(j-.5_dp)*geometry(node)%dy))
+        end do
+      end do
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,before,MPI_COMM_WORLD,ok)
+      call require(ok,'MOL inviscid initial inventory')
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
+        extended_six,1e-7_dp,2,.false.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
+        1e-8_dp,1e-12_dp,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok,mol_mode=.true.)
+      call require(ok,'MOL inviscid nonuniform step')
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
+      call require(ok,'MOL inviscid final inventory')
+      residual=maxval(abs(after-before-boundary-wall-chemical-external)/max(1._dp,abs(before)))
+      call require(residual<1e-12_dp,'MOL inviscid conservation')
+      call require(any(after/=before),'MOL nontrivial update')
+      if(rank==0) print *, 'MOL inviscid nonuniform budget residual:',residual
     end if
     deallocate(local%fields,lt%fields)
   end do
