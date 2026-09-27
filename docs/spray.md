@@ -98,9 +98,9 @@ input ([coupled checks](validation/spray-recursive-periodic-20260927.md)).
 Recursive film placement, virtual/ghost copies, newborn attachment and thermal
 source exchange now also accept periodic axes, including application wall impacts
 ([focused checks](validation/spray-recursive-periodic-film-20260927.md)). Film wall
-coordinates are preserved; surface-validation probes must remain inside the
-closed physical domain. Geometry whose normal probe crosses a periodic seam
-remains unsupported.
+coordinates are preserved. Surface-validation probes now split at periodic
+faces and use wrapped ownership while retaining their unwrapped coordinates
+([seam placement checks](validation/spray-periodic-film-probes-20260927.md)).
 
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
 regular/EB MPI migration APIs accept optional `maximum_level` (zero based).

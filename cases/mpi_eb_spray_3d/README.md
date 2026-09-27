@@ -60,8 +60,9 @@ faces now support recursive particle migration and source exchange
 ([checks](../../docs/validation/spray-recursive-periodic-20260927.md)), including
 wall impacts, film copies and thermal evolution
 ([film checks](../../docs/validation/spray-recursive-periodic-film-20260927.md)).
-Film surface-validation probes must remain inside the closed physical domain;
-wall normals whose probes cross a periodic seam remain unsupported.
+Film surface-validation probes can cross periodic faces; wall coordinates remain
+inside the closed physical domain and are preserved
+([placement checks](../../docs/validation/spray-periodic-film-probes-20260927.md)).
 The default `wall_impacts=.false.` retains specular particle/EB reflection.
 
 Physical particle exchange is synchronized conservatively after each outer step.
