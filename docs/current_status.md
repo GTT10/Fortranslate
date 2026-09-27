@@ -16,6 +16,10 @@ as an old/new source family ([checks](validation/sdc-transport-20260926.md)).
 Regular SDC also accepts additional source callbacks together with molecular
 transport, preserving transport boundary inventories and exported fluxes
 ([focused checks](validation/sdc-callback-transport-20260927.md)).
+The opt-in LES runtime now supplies a regular SDC wrapper for Smagorinsky,
+WALE, Vreman and Dynamic sources alongside molecular transport and forcing
+([library checks](validation/les-sdc-20260927.md)); application and AMR routing
+remain open.
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
