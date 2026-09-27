@@ -47,6 +47,9 @@ An 8³ short case now completes with five parcels after fixing reflected-wall
 source donor positions; full-duration/reference parity remains open
 ([case](../cases/spray_eb_reference_3d/README.md),
 [repair and evidence](validation/spray-eb-source-halo-20260927.md)).
+The preparer now selects MOL as in the pinned input. Its 8³, 200 ns two-rank
+case passes with wall heat, no-slip traction and five particles
+([MOL connection](validation/spray-eb-mol-connection-20260927.md)).
 
 A 3D embedded-wall quadratic gradient and scalar heat-flux kernel now follows
 the pinned type-0 stencil. Its coefficients agree with a compiled reference in

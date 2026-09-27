@@ -26,9 +26,11 @@ The ASCII schema comes from pinned PelePhysics `SprayFuelData.H` and
 `SpraySetup.cpp`: xyz then velocity, temperature, diameter, composition,
 number density, initial count, two breakup variables, and film height.
 
-Important unresolved differences: this application uses CTU/SDC, while the
-upstream input uses method-of-lines integration. It uses a single root patch
-and a 100 ns upper timestep. The Antoine evaluation range is restricted to
+The generated input now selects `mol_mode=.true.` in the coupled integrator,
+matching the upstream choice of method-of-lines integration. The Fortran MOL
+reconstruction adds a positive-face slope safeguard beyond the pinned formulas.
+Other unresolved differences include a single root patch and a 100 ns upper
+timestep. The Antoine evaluation range is restricted to
 300–371.6 K. Particle contacts use the current specular path; full wall-impact
 reference fidelity is not established. This is not full Spray-EB parity.
 
@@ -36,3 +38,7 @@ The 8³, 200 ns connection now completes with five particles after repairing
 physical-wall source donor positions. The earlier failed particle and gas-only
 artifacts remain preserved. See [repair and evidence](../../docs/validation/spray-eb-source-halo-20260927.md).
 The full 64³ duration and reference-solver comparison remain unverified.
+
+The updated 8³, 200 ns MOL connection also completes on two MPI ranks with
+five particles, embedded wall heat and no-slip traction. See
+[MOL connection evidence](../../docs/validation/spray-eb-mol-connection-20260927.md).
