@@ -22,6 +22,9 @@ module sundials_forced_reactor_mod
     type(nasa7_species), allocatable :: species(:)
     type(elementary_reaction), allocatable :: reactions(:)
     real(dp), allocatable :: source(:)
+    integer, allocatable :: independent(:)
+    integer :: dependent=0
+    real(dp) :: density=0,density_source=0
     real(dp) :: energy=0,energy_source=0,guess=0
   end type
   type(forcing_context), save :: registry(64)
@@ -40,7 +43,7 @@ contains
     logical, intent(out) :: ok
     integer, optional, intent(in) :: maximum_steps
     real(c_double), allocatable, target :: state(:),constraints(:)
-    real(dp) :: rates(size(species)),recovered
+    real(dp) :: rates(size(species)),recovered,full_state(size(species)),final_density,final_temperature
     real(c_double) :: returned(1)
     integer(c_long) :: steps(1)
     integer(c_int), target :: slot
@@ -61,6 +64,15 @@ contains
     if(duration==0) then
       ok=.true.;return
     endif
+    final_density=sum(species_density)+duration*sum(external_species)
+    if(.not.ieee_is_finite(final_density).or.final_density<=0) return
+    if(size(species)==1) then
+      full_state=final_density
+      call forced_reactor_rhs(species,reactions,initial_energy_density,duration,full_state,external_species, &
+        external_energy,recovered,rates,final_temperature,valid)
+      if(.not.valid) return
+      species_density=full_state;temperature=final_temperature;completed_steps=1;ok=.true.;return
+    end if
     slot=0
     do i=1,size(registry)
       if(registry(i)%busy) cycle
@@ -70,7 +82,11 @@ contains
     registry(slot)%busy=.true.;registry(slot)%species=species;registry(slot)%reactions=reactions
     registry(slot)%source=external_species;registry(slot)%energy=initial_energy_density
     registry(slot)%energy_source=external_energy;registry(slot)%guess=recovered
-    n=size(species);allocate(state(n),constraints(n));state=species_density;constraints=1
+    registry(slot)%density=sum(species_density);registry(slot)%density_source=sum(external_species)
+    registry(slot)%dependent=maxloc(species_density,dim=1)
+    registry(slot)%independent=pack([(i,i=1,size(species))],[(i/=registry(slot)%dependent,i=1,size(species))])
+    n=size(species)-1;allocate(state(n),constraints(n))
+    state=species_density(registry(slot)%independent);constraints=1
     sunctx=c_null_ptr;memory=c_null_ptr;nullify(vector,limits,matrix,solver);accepted=.false.
     solve: block
       status=FSUNContext_Create(SUN_COMM_NULL,sunctx)
@@ -94,7 +110,8 @@ contains
       if(status/=CV_SUCCESS) exit solve
       status=FCVodeSetLinearSolver(memory,solver,matrix)
       if(status/=CV_SUCCESS) exit solve
-      ! CVODE forms a numerical Jacobian of the complete forced density RHS.
+      ! Evolve independent densities; recover the largest initial species from
+      ! the analytic total-density source balance, as in the fixed-density backend.
       status=FCVodeSetMaxNumSteps(memory,int(limit,c_long))
       if(status/=CV_SUCCESS) exit solve
       status=FCVodeSetMaxStep(memory,real(duration,c_double))
@@ -106,7 +123,13 @@ contains
       if(abs(real(returned(1),dp)-duration)>100*epsilon(1._dp)*duration) exit solve
       status=FCVodeGetNumSteps(memory,steps)
       if(status/=CV_SUCCESS.or.steps(1)>int(limit,c_long)) exit solve
-      call forced_reactor_rhs(species,reactions,initial_energy_density,duration,real(state,dp),external_species, &
+      ! Constraint-satisfying solves can return signed roundoff for absent
+      ! trace species. Repair only machine-scale endpoint noise, independently
+      ! of user tolerances; reconstruction retains the analytic total mass.
+      if(any(state < -16*epsilon(1._dp)*final_density)) exit solve
+      state=max(state,0._c_double)
+      call reconstruct_density(registry(slot),duration,state,full_state)
+      call forced_reactor_rhs(species,reactions,initial_energy_density,duration,full_state,external_species, &
         external_energy,registry(slot)%guess,rates,recovered,valid)
       if(.not.valid) exit solve
       accepted=.true.
@@ -123,10 +146,10 @@ contains
       cleanup=FSUNContext_Free(sunctx)
       if(cleanup/=0) accepted=.false.
     endif
-    deallocate(registry(slot)%species,registry(slot)%reactions,registry(slot)%source)
+    deallocate(registry(slot)%species,registry(slot)%reactions,registry(slot)%source,registry(slot)%independent)
     registry(slot)%busy=.false.
     if(.not.accepted) return
-    species_density=real(state,dp);temperature=recovered;completed_steps=int(steps(1));ok=.true.
+    species_density=full_state;temperature=recovered;completed_steps=int(steps(1));ok=.true.
   end subroutine
 
   integer(c_int) function forced_cvode_rhs(time,y,dy,user_data) result(status) bind(C)
@@ -136,6 +159,7 @@ contains
     integer(c_int), pointer :: slot
     real(c_double), pointer :: state(:),rhs(:)
     real(dp) :: recovered
+    real(dp), allocatable :: full_state(:),rates(:)
     logical :: valid
     status=-1
     if(.not.c_associated(user_data)) return
@@ -144,11 +168,26 @@ contains
     if(.not.registry(slot)%busy) return
     state=>FN_VGetArrayPointer(y);rhs=>FN_VGetArrayPointer(dy)
     if(.not.associated(state).or..not.associated(rhs)) return
+    allocate(full_state(size(registry(slot)%species)),rates(size(registry(slot)%species)))
+    if(.not.all(ieee_is_finite(state))) return
+    ! Newton trial coordinates may be negative before CVODE enforces its
+    ! solution constraints. Extend the RHS as in the constant-volume backend;
+    ! the accepted endpoint still passes strict density/thermodynamic checks.
+    call reconstruct_density(registry(slot),real(time,dp),max(state,0._c_double),full_state)
     call forced_reactor_rhs(registry(slot)%species,registry(slot)%reactions,registry(slot)%energy, &
-      real(time,dp),real(state,dp),registry(slot)%source,registry(slot)%energy_source, &
-      registry(slot)%guess,rhs,recovered,valid)
+      real(time,dp),full_state,registry(slot)%source,registry(slot)%energy_source, &
+      registry(slot)%guess,rates,recovered,valid)
     status=1
     if(.not.valid) return
+    rhs=rates(registry(slot)%independent)
     registry(slot)%guess=recovered;status=0
   end function
+  subroutine reconstruct_density(context,time,reduced,full_state)
+    type(forcing_context), intent(in) :: context
+    real(dp), intent(in) :: time
+    real(c_double), intent(in) :: reduced(:)
+    real(dp), intent(out) :: full_state(:)
+    full_state(context%independent)=real(reduced,dp)
+    full_state(context%dependent)=context%density+time*context%density_source-sum(real(reduced,dp))
+  end subroutine
 end module

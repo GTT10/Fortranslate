@@ -42,6 +42,13 @@ program test_sundials_forced_reactor
   call mixture_mass_properties(species,rho_y/sum(rho_y),temperature,mw,r,cp,cv,gamma,h,e,s,ok)
   call require(ok.and.abs(sum(rho_y)*e-energy-duration*energy_source)<1e-8_dp*max(1._dp,abs(energy)), &
     'reacting total internal energy source')
+  ! Loose integration accuracy must not relax the exact total-density identity.
+  rho_y=initial;temperature=1000
+  call advance_forced_reactor_cvode(species,reactions,energy,source,energy_source,duration, &
+    2e-7_dp,1e-12_dp,rho_y,temperature,steps,ok)
+  call require(ok,'active forced CVODE at application tolerances')
+  call require(abs(sum(rho_y)-(sum(initial)+duration*sum(source)))<4*epsilon(1._dp), &
+    'analytic total density independent of integration tolerance')
   ! The native low-order solver is used only over an early, resolved interval.
   duration=1e-10_dp;rho_y=initial;temperature=1000
   call advance_forced_reactor_cvode(species,reactions,energy,source,energy_source,duration, &
@@ -61,6 +68,19 @@ program test_sundials_forced_reactor
   call advance_forced_reactor_cvode(species,inert,energy,source,energy_source,1e-4_dp, &
     1e-10_dp,1e-13_dp,rho_y,temperature,steps,ok)
   call require(ok,'context released after failed solve')
+  rho_y=[1._dp,0._dp];temperature=1000
+  call mixture_mass_properties(species,rho_y,temperature,mw,r,cp,cv,gamma,h,e,s,ok)
+  call require(ok,'zero-species fixture energy')
+  call advance_forced_reactor_cvode(species,reactions,e,[0._dp,0._dp],0._dp,1e-7_dp, &
+    2e-7_dp,1e-12_dp,rho_y,temperature,steps,ok)
+  call require(ok.and.all(rho_y>=0).and.abs(sum(rho_y)-1)<4*epsilon(1._dp), &
+    'absent species constrained endpoint and exact mass')
+  call mixture_mass_properties(species(:1),[1._dp],1000._dp,mw,r,cp,cv,gamma,h,e,s,ok)
+  call require(ok,'single-species thermodynamics')
+  rho_y(1)=.8_dp;temperature=1000
+  call advance_forced_reactor_cvode(species(:1),inert,.8_dp*e,[.1_dp],1e6_dp,1e-4_dp, &
+    1e-10_dp,1e-13_dp,rho_y(:1),temperature,steps,ok)
+  call require(ok.and.abs(rho_y(1)-.80001_dp)<epsilon(1._dp),'single-species analytic density')
 contains
   subroutine require(condition,message)
     logical, intent(in) :: condition
