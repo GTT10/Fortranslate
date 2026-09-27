@@ -418,11 +418,12 @@ contains
       owner_rank=-1
       if(present(found_node)) found_node=0
       if(present(fluid_probe)) fluid_probe=0
+      if(any(film%position<lower).or.any(film%position>upper)) return
       if (present(nodal_phi)) then
         probe=film%position+probe_offset*film%normal
         point=0;normal=0;fraction=0;cell=0;hit=.false.
-        call intersect_spray_level_set(nodal_phi,lower,upper,probe,film%position-probe_offset*film%normal, &
-          hit,fraction,point,normal,cell,good)
+        call intersect_film_probe(nodal_phi,lower,upper,probe,film%position-probe_offset*film%normal, &
+          wrap,hit,fraction,point,normal,cell,good)
         if (.not.good.or..not.hit) return
         if (norm2(point-film%position)>.01_dp*probe_offset) return
         if (dot_product(normal,film%normal)<1-1e-10_dp) return
@@ -444,7 +445,7 @@ contains
       owner_rank=-1
       if(present(found_node)) found_node=0
       if (.not.all(ieee_is_finite(position))) return
-      if (any(position<lower).or.any(position>upper).or.any(abs(position)>1.e9_dp)) return
+      if (any((position<lower.or.position>upper).and..not.wrap).or.any(abs(position)>1.e9_dp)) return
       if(selected_level==0) then
         owner_rank=node_owners(1)
         if(present(found_node)) found_node=1
@@ -481,4 +482,58 @@ contains
       if (ierr/=MPI_SUCCESS) agreed=.false.
     end subroutine
   end subroutine
+  ! Split the short normal probe at periodic faces. Each piece uses the same
+  ! tetrahedral intersection as interior films; wall coordinates stay unwrapped.
+  subroutine intersect_film_probe(phi,lower,upper,start,finish,wrap,hit,fraction,point,normal,cell,ok)
+    real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),start(3),finish(3)
+    logical, intent(in) :: wrap(3)
+    logical, intent(out) :: hit,ok
+    real(dp), intent(out) :: fraction,point(3),normal(3)
+    integer, intent(out) :: cell(3)
+    real(dp) :: a(3),b(3),end(3),delta(3),length(3),crossing(3),alpha,shift,offset(3),local_fraction
+    integer :: axis,segment
+    ok=.false.;hit=.false.;fraction=0;point=0;normal=0;cell=0
+    if(.not.any(wrap)) then
+      call intersect_spray_level_set(phi,lower,upper,start,finish,hit,fraction,point,normal,cell,ok)
+      return
+    end if
+    length=upper-lower
+    if(any(abs(finish-start)>length)) return
+    if(any((start<lower.or.start>upper.or.finish<lower.or.finish>upper).and..not.wrap)) return
+    a=start
+    do axis=1,3
+      if(wrap(axis)) a(axis)=lower(axis)+modulo(start(axis)-lower(axis),length(axis))
+    end do
+    offset=start-a;b=finish-offset
+    ! A probe shorter than one domain length crosses at most three faces.
+    do segment=1,4
+      delta=b-a;crossing=2;alpha=1
+      do axis=1,3
+        if(.not.wrap(axis)) cycle
+        if(b(axis)>upper(axis).and.delta(axis)>0) crossing(axis)=(upper(axis)-a(axis))/delta(axis)
+        if(b(axis)<lower(axis).and.delta(axis)<0) crossing(axis)=(lower(axis)-a(axis))/delta(axis)
+        alpha=min(alpha,crossing(axis))
+      end do
+      end=max(lower,min(upper,a+alpha*delta))
+      call intersect_spray_level_set(phi,lower,upper,a,end,hit,local_fraction,point,normal,cell,ok)
+      if(.not.ok) return
+      if(hit) then
+        point=point+offset
+        axis=maxloc(abs(finish-start),dim=1)
+        if(finish(axis)/=start(axis)) fraction=(point(axis)-start(axis))/(finish(axis)-start(axis))
+        return
+      end if
+      if(alpha==1) then
+        fraction=1;point=finish
+        return
+      end if
+      a=end
+      do axis=1,3
+        if(crossing(axis)/=alpha) cycle
+        shift=sign(length(axis),delta(axis))
+        a(axis)=a(axis)-shift;b(axis)=b(axis)-shift;offset(axis)=offset(axis)+shift
+      end do
+    end do
+    ok=.false.
+  end subroutine intersect_film_probe
 end module

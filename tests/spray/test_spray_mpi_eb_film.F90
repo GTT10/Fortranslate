@@ -21,7 +21,7 @@ program test_spray_mpi_eb_film
   real(dp), allocatable :: probes(:,:)
   real(dp) :: probe_offset
   integer :: level,c
-  integer :: i
+  integer :: i,j
   integer :: rank,nranks,ierr,p,id,owners(4),bad_owners(4),expected_count
   logical :: ok
   call MPI_Init(ierr)
@@ -237,6 +237,37 @@ program test_spray_mpi_eb_film
     call require(size(physical(level)%films)==0.and.size(physical(level)%nodes)==0.and. &
       size(physical(level)%component_mass,2)==0.and.size(physical(level)%probes,2)==0,'empty film level arrays')
   end do
+  ! The periodic x seam cuts an oblique surface with the same slope on both
+  ! sides. At x=4 the fluid probe is exterior; at x=0 the solid probe is exterior.
+  do j=0,16
+    do i=0,16
+      phi(i,j,:)=.25_dp*real(j,dp)-2+ &
+        merge(.25_dp*real(i,dp),2-.25_dp*real(i,dp),i<=4)
+      if(i>=12) phi(i,j,:)=.25_dp*real(j,dp)-2+.25_dp*real(i,dp)-4
+    end do
+  end do
+  deallocate(films,masses);allocate(films(merge(2,0,rank==nranks-1)),masses(2,merge(2,0,rank==nranks-1)))
+  do p=1,size(films)
+    films(p)=make_film(1)
+    films(p)%position=[4._dp*real(p-1,dp),2._dp,.25_dp]
+    films(p)%normal=[1._dp,1._dp,0._dp]/sqrt(2._dp)
+    masses(:,p)=films(p)%mass*[.25_dp,.75_dp]
+  end do
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,100,ok,phi, &
+    nodes=nodes,probes=probes,periodic=[.true.,.false.,.false.])
+  call require(ok,'oblique periodic seam probes migrate')
+  do p=1,size(films)
+    call require(films(p)%position(1)==0.or.films(p)%position(1)==4,'wall seam coordinate preserved')
+    call require(probes(1,p)>films(p)%position(1),'unwrapped normal probe preserved')
+    call require(nodes(p)==2,'periodic probe assigned to left patch')
+  end do
+  call initialize_mpi_eb_film_levels(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,100,phi,physical,ok, &
+    [.true.,.false.,.false.])
+  call require(ok,'oblique periodic film hierarchy')
+  call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,0,2,100,phi,virtuals,ghosts,ok, &
+    [.true.,.false.,.false.])
+  call require(ok,'oblique periodic film copies')
+  call require(size(virtuals%films)==merge(2,0,rank==owners(1)),'both seam films reach root virtual population')
   if (rank==0) print *, 'PASS: MPI EB fluid-side stationary film migration'
   call MPI_Finalize(ierr)
 contains
