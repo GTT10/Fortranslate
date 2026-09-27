@@ -1,5 +1,6 @@
 module reactive_3d_application_mod
   use precision_mod, only: dp
+  use reactive_hit_3d_mod, only: initialize_reactive_hit_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use constant_volume_reactor_mod, only: forced_reactor_integrator
   use constants_mod, only: pelef_version
@@ -147,6 +148,8 @@ contains
       species, config, x, y, z, state, temperature, base_density, &
       mass_fractions, ok, base_mole_fractions)
     if (.not. ok) error stop "Failed to initialize reactive 3D problem"
+    call initialize_reactive_hit_3d(input_path,config,species,x,y,z,state,temperature,ok)
+    if(.not.ok) error stop 'Invalid HIT velocity input'
     call reactive_integrals_3d( &
       state, config%nx, config%ny, config%nz, dx, dy, dz, &
       initial_totals, ok)

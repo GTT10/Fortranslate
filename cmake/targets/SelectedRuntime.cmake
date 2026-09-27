@@ -404,6 +404,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/transport/reactive_transport_3d_mod.F90
     src/reactive/reactive_3d_mod.F90
     src/problems/reactive_entropy_wave_3d_problem_mod.F90
+  src/problems/reactive_hit_3d_mod.F90
     src/io/reactive_csv_io_3d_mod.F90
     src/driver/reactive_3d_application_mod.F90
   )

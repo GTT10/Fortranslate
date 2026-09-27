@@ -137,6 +137,7 @@ add_library(
   src/problems/isentropic_vortex_problem_mod.F90
   src/problems/entropy_wave_3d_problem_mod.F90
   src/problems/reactive_entropy_wave_3d_problem_mod.F90
+  src/problems/reactive_hit_3d_mod.F90
   src/problems/multispec_sod_problem_mod.F90
   src/io/csv_io_mod.F90
   src/io/csv_io_2d_mod.F90

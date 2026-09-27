@@ -33,6 +33,11 @@ if(PELEF_ENABLE_SUNDIALS)
     file(SHA256 "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json" sdc_cvode_h2o2_sha)
     if(sdc_cvode_bundle_sha STREQUAL sdc_cvode_h2o2_sha)
       if(PELEF_ENABLE_SPRAY)
+        add_test(NAME application_hit_input COMMAND ${Python3_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tests/application/check_hit_input_app.py"
+          --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>
+          --work "${PROJECT_BINARY_DIR}/hit-input-app")
+        set_tests_properties(application_hit_input PROPERTIES TIMEOUT 180 LABELS "les;application;hit")
         add_test(NAME application_les_regular COMMAND ${Python3_EXECUTABLE}
           "${PROJECT_SOURCE_DIR}/tests/application/check_les_regular_app.py"
           --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>
