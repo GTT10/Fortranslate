@@ -19,6 +19,9 @@ output checks ([integration](validation/constant-transport-app-20260927.md)).
 Taylor length/Reynolds/Prandtl parameters, with independent coefficient and
 explicit-input equivalence checks
 ([scaling evidence](validation/hit-transport-scales-20260927.md)).
+With species diffusion disabled, prescribed transport no longer evaluates
+unused molecular coefficients; thermodynamic validation remains active
+([dependency checks](validation/constant-transport-independent-20260927.md)).
 
 Primitive conversion now preserves exact forward-EOS endpoint states when
 inverse rounding lands outside the mechanism interval. Strict ranges and
