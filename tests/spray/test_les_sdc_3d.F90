@@ -12,6 +12,7 @@ program test_les_sdc_3d
   real(dp) :: initial(12,4,4,4),it(4,4,4),u(12,4,4,4),t(4,4,4),reference(12,4,4,4),rt(4,4,4)
   real(dp) :: q(12),sound,h(3),dt,boundary(12),source(12),diffusion,before(12),after(12),scale(12)
   real(dp) :: ref_boundary(12),ref_source(12),wall_t(6),maximum
+  real(dp) :: fx(12,0:4,4,4),fy(12,4,0:4,4),fz(12,4,4,0:4),expected(12,4,4,4)
   integer :: i,j,k,c,mode,b
   character(len=16) :: faces(6),models(4)
   logical :: ok
@@ -58,13 +59,32 @@ program test_les_sdc_3d
       scale(2:4)=max(scale(2:4),sqrt(before(1)*before(5)))
       maximum=max(maximum,maxval(abs(after-before-boundary-source)/scale))
       call require(all(abs(after-before-boundary-source)<=3e-12_dp*scale),'gas LES boundary force inventory')
+      u=initial;t=it
+      call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+        model=trim(models(mode)),transport=transport,boundary_faces=faces,wall_temperature=wall_t, &
+        flux_x=fx,flux_y=fy,flux_z=fz)
+      call require(ok,'combined LES SDC face flux export')
+      do k=1,4
+      do j=1,4
+      do i=1,4
+        expected(:,i,j,k)=initial(:,i,j,k)-dt*((fx(:,i,j,k)-fx(:,i-1,j,k))/h(1)+ &
+          (fy(:,i,j,k)-fy(:,i,j-1,k))/h(2)+(fz(:,i,j,k)-fz(:,i,j,k-1))/h(3))
+      end do
+      end do
+      end do
+      call require(maxval(abs(u-expected)/max(1._dp,abs(expected)))<1e-12_dp, &
+        'combined face divergence reconstructs every LES SDC cell')
     end do
   end do
-  u=initial;t=it;boundary=42;source=43;diffusion=44
+  u=initial;t=it;boundary=42;source=43;diffusion=44;fx=45;fy=46;fz=47
   call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
-    model='dynamic',test_ratio=-1,transport=transport)
+    model='dynamic',test_ratio=-1,transport=transport,flux_x=fx,flux_y=fy,flux_z=fz)
   call require(.not.ok.and.all(u==initial).and.all(t==it),'invalid dynamic filter rolls back state')
   call require(all(boundary==42).and.all(source==43).and.diffusion==44,'failure preserves diagnostics')
+  call require(all(fx==45).and.all(fy==46).and.all(fz==47),'failed LES evaluation preserves flux outputs')
+  call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+    flux_x=fx(:,1:,:,:),flux_y=fy,flux_z=fz)
+  call require(.not.ok.and.all(u==initial).and.all(fx==45),'malformed LES face shape rejects atomically')
   print *, 'PASS: LES SDC four closures, transport, boundaries; residual ',maximum
 contains
   subroutine require(condition,label)

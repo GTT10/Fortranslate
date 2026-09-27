@@ -17,7 +17,12 @@ contains
       boundary_change,source_change,maximum_diffusivity,ok,model,ci,external_force,transport,transport_flags, &
       reactions,reaction_source,chemistry_relative_tolerance,chemistry_absolute_tolerance,difmag,boundary_faces, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,outlet_pressure,wall_temperature,wall_velocity, &
-      test_filter,test_ratio,grid_ratio,harmonic_mean)
+      test_filter,test_ratio,grid_ratio,harmonic_mean,flux_x,flux_y,flux_z)
+    ! Time-averaged full-face flux density, including hydro, transport and LES.
+    real(dp), optional, intent(inout) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
+    real(dp), allocatable :: x(:,:,:,:),y(:,:,:,:),z(:,:,:,:),lx(:,:,:,:),ly(:,:,:,:),lz(:,:,:,:)
+    real(dp), allocatable :: old_x(:,:,:,:),old_y(:,:,:,:),old_z(:,:,:,:)
+    integer :: n(3),nv
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time,cs,prt,sct
@@ -61,6 +66,15 @@ contains
     case default
       return
     end select
+    n=shape(temperature);nv=size(state,1)
+    if((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    if(present(flux_x)) then
+      if(any(shape(flux_x)/=[nv,n(1)+1,n(2),n(3)])) return
+      if(any(shape(flux_y)/=[nv,n(1),n(2)+1,n(3)])) return
+      if(any(shape(flux_z)/=[nv,n(1),n(2),n(3)+1])) return
+      allocate(x,mold=flux_x);allocate(y,mold=flux_y);allocate(z,mold=flux_z)
+      allocate(lx,mold=x);allocate(ly,mold=y);allocate(lz,mold=z)
+    end if
     candidate=state;ct=temperature
     if(present(reaction_source)) then
       if(.not.present(reactions)) return
@@ -72,11 +86,16 @@ contains
       chemistry_relative_tolerance=chemistry_relative_tolerance,chemistry_absolute_tolerance=chemistry_absolute_tolerance, &
       boundary_faces=boundary_faces,boundary_change=boundary,outlet_pressure=outlet_pressure, &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
-      wall_temperature=wall_temperature,wall_velocity=wall_velocity)
+      wall_temperature=wall_temperature,wall_velocity=wall_velocity,flux_x=x,flux_y=y,flux_z=z)
     if(.not.valid) return
     les_boundary=.5_dp*dt*(old_rate+new_rate)
     boundary=boundary+les_boundary;source=source-les_boundary
     if(.not.all(ieee_is_finite([boundary,source,diffusion]))) return
+    if(present(flux_x)) then
+      x=x+.5_dp*(old_x+lx);y=y+.5_dp*(old_y+ly);z=z+.5_dp*(old_z+lz)
+      if(.not.all(ieee_is_finite(x)).or..not.all(ieee_is_finite(y)).or..not.all(ieee_is_finite(z))) return
+      flux_x=x;flux_y=y;flux_z=z
+    end if
     state=candidate;temperature=ct
     if(present(reaction_source)) reaction_source=ir
     boundary_change=boundary;source_change=source;maximum_diffusivity=diffusion;ok=.true.
@@ -94,16 +113,23 @@ contains
         call compute_dynamic_les_boundary_rhs_3d(species,u,t,spacing,filter,ratio,rates(:,:,:,:,2),viscosity,good, &
           grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,boundary_faces=boundary_faces,boundary_rate=rate, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
-          wall_velocity=wall_velocity,outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          wall_velocity=wall_velocity,outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
+          flux_x=lx,flux_y=ly,flux_z=lz)
       else
         call compute_les_rhs_3d(species,u,t,spacing,cs,prt,sct,rates(:,:,:,:,2),viscosity,good, &
           boundary_faces=boundary_faces,boundary_rate=rate,model=closure,ci=isotropic, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
-          wall_velocity=wall_velocity,outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          wall_velocity=wall_velocity,outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
+          fx=lx,fy=ly,fz=lz)
       end if
       if(.not.good) return
       calls=calls+1
-      if(calls==1) old_rate=rate
+      if(calls==1) then
+        old_rate=rate
+        if(present(flux_x)) then
+          allocate(old_x,source=lx);allocate(old_y,source=ly);allocate(old_z,source=lz)
+        end if
+      end if
       new_rate=rate;diffusion=max(diffusion,viscosity)
     end subroutine evaluate
   end subroutine advance_les_sdc_3d

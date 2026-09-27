@@ -140,8 +140,10 @@ contains
 
   subroutine compute_les_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
       boundary_faces,boundary_rate,inflow_state,inflow_temperature,wall_temperature,wall_velocity,model,ci,outlet_pressure, &
-      inflow_mach,inflow_pressure)
+      inflow_mach,inflow_pressure,fx,fy,fz)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp), optional, intent(inout) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
+    real(dp), allocatable :: x(:,:,:,:),y(:,:,:,:),z(:,:,:,:)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
     type(nasa7_species), intent(in) :: species(:)
@@ -156,6 +158,15 @@ contains
     real(dp) :: rate(size(state,1))
     integer :: n(3),dims(3),f
     ok=.false.; rhs=0; maximum_diffusivity=0; faces='periodic'
+    n=shape(temperature)
+    if((present(fx).neqv.present(fy)).or.(present(fx).neqv.present(fz))) return
+    if(present(fx)) then
+      if(any(shape(fx)/=[size(state,1),n(1)+1,n(2),n(3)])) return
+      if(any(shape(fy)/=[size(state,1),n(1),n(2)+1,n(3)])) return
+      if(any(shape(fz)/=[size(state,1),n(1),n(2),n(3)+1])) return
+      allocate(x(size(state,1),0:n(1),n(2),n(3)),y(size(state,1),n(1),0:n(2),n(3)))
+      allocate(z(size(state,1),n(1),n(2),0:n(3)))
+    end if
     if (present(boundary_rate)) then
       boundary_rate=0
       if (size(boundary_rate)/=size(state,1)) return
@@ -197,7 +208,11 @@ contains
       end do
     end if
     if (all(faces=='periodic')) then
-      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok,model=model,ci=ci)
+      call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
+        model=model,ci=ci,fx=x,fy=y,fz=z)
+      if(ok.and.present(fx)) then
+        fx=x;fy=y;fz=z
+      end if
       return
     end if
     n=shape(temperature); dims=n+4
@@ -216,10 +231,13 @@ contains
     call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,ok)
     if (.not.ok) return
     call compute_les_face_rhs_3d(species,ghost,gt,spacing,cs,prt,sct,grhs,maximum_diffusivity,ok,n,rate, &
-      faces,wall_temperature,model=model,ci=ci)
+      faces,wall_temperature,model=model,ci=ci,fx=x,fy=y,fz=z)
     if (.not.ok) return
     rhs=grhs(:,3:n(1)+2,3:n(2)+2,3:n(3)+2)
     if (present(boundary_rate)) boundary_rate=rate
+    if(present(fx)) then
+      fx=x;fy=y;fz=z
+    end if
   end subroutine
 
   ! Two supplied halo layers on every face; return only the active-cell RHS.
@@ -420,6 +438,7 @@ contains
             flux(5)=-dot_product(uface,tau(:,a))+heat_flux+dot_product(hav,jflux)
             flux(6:)=jflux
             if (present(fx)) then
+              if(present(active_cells)) then
               select case(a)
               case(1)
                 fx(:,i-2,j-2,k-2)=flux
@@ -428,6 +447,16 @@ contains
               case(3)
                 fz(:,i-2,j-2,k-2)=flux
               end select
+              else
+                select case(a)
+                case(1)
+                  fx(:,i,j,k)=flux
+                case(2)
+                  fy(:,i,j,k)=flux
+                case(3)
+                  fz(:,i,j,k)=flux
+                end select
+              end if
             end if
             if (present(active_cells)) then
               if (l(a)==2.and.include_face(2*a-1)) rate=rate+flux*cellvolume/spacing(a)
@@ -451,6 +480,11 @@ contains
         end do
       end do
     end do
+    if(present(fx).and..not.present(active_cells)) then
+      fx(:,0,:,:)=fx(:,size(rhs,2),:,:)
+      fy(:,:,0,:)=fy(:,:,size(rhs,3),:)
+      fz(:,:,:,0)=fz(:,:,:,size(rhs,4))
+    end if
     if (present(boundary_rate)) boundary_rate=rate
     ok=all(ieee_is_finite(rhs)) .and. ieee_is_finite(maximum_diffusivity) .and. cellvolume > 0.0_dp
     if (.not. ok) then

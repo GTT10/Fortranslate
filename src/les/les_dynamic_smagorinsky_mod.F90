@@ -76,7 +76,8 @@ contains
   subroutine compute_dynamic_les_boundary_rhs_3d(species,state,temperature,spacing,test_model,test_ratio, &
       rhs,maximum_diffusivity,ok,grid_ratio,harmonic_mean,boundary_faces,boundary_rate, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure)
+      inflow_mach,inflow_pressure,flux_x,flux_y,flux_z)
+    real(dp), optional, intent(inout) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -117,10 +118,18 @@ contains
       if (any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
       if (any(outlet_pressure>0.and.faces/='outflow')) return
     end if
+    if((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    if(present(flux_x)) then
+      if(any(shape(flux_x)/=[nv,n(1)+1,n(2),n(3)])) return
+      if(any(shape(flux_y)/=[nv,n(1),n(2)+1,n(3)])) return
+      if(any(shape(flux_z)/=[nv,n(1),n(2),n(3)+1])) return
+    end if
+    if(present(flux_x).or.any(faces/='periodic')) &
+      allocate(fx(nv,n(1)+1,n(2),n(3)),fy(nv,n(1),n(2)+1,n(3)),fz(nv,n(1),n(2),n(3)+1))
     allocate(candidate,mold=rhs)
     if (all(faces=='periodic')) then
       call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,candidate,valid, &
-        grid_ratio,maximum_diffusivity=diffusion,harmonic_mean=harmonic_mean)
+        grid_ratio,maximum_diffusivity=diffusion,harmonic_mean=harmonic_mean,fx=fx,fy=fy,fz=fz)
     else
       call les_filter_weights(test_model,test_ratio,weights,valid)
       if (.not.valid) return
@@ -128,7 +137,6 @@ contains
       if (width>128.or.any(n>huge(1)-2*width)) return
       allocate(ghost(nv,n(1)+2*width,n(2)+2*width,n(3)+2*width))
       allocate(gt(n(1)+2*width,n(2)+2*width,n(3)+2*width))
-      allocate(fx(nv,n(1)+1,n(2),n(3)),fy(nv,n(1),n(2)+1,n(3)),fz(nv,n(1),n(2),n(3)+1))
       if (present(inflow_mach)) then
         call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,faces,inflow_mach,ghost,gt,valid, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
@@ -168,6 +176,9 @@ contains
     if (.not.valid.or..not.all(ieee_is_finite(rate))) return
     rhs=candidate;maximum_diffusivity=diffusion
     if (present(boundary_rate)) boundary_rate=rate
+    if(present(flux_x)) then
+      flux_x=fx;flux_y=fy;flux_z=fz
+    end if
     ok=.true.
   end subroutine
 
