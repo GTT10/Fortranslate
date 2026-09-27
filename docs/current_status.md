@@ -14,7 +14,10 @@ steps, with collective validation and combined-flux synchronization
 ([callback checks](validation/mpi-amr-sdc-diffusion-20260927.md)). The MPI LES
 RHS and common/recursive SDC wrapper now connect all four closures, with
 owner-local stage evaluation and temporal parent donors
-([MPI LES checks](validation/les-mpi-amr-sdc-20260927.md)). Application routing remains open.
+([MPI LES checks](validation/les-mpi-amr-sdc-20260927.md)). The opt-in MPI gas
+application now accepts `amr_tree_les`, limits the timestep and preserves LES
+settings in checkpoint identity ([application checks](validation/les-mpi-amr-app-20260927.md)).
+Serial gas and particle-SDC application routing remain open.
 
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`

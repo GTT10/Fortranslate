@@ -19,6 +19,27 @@ each direction. The application is also registered for installation.
 
 ## SDC
 
+With `PELEF_ENABLE_SPRAY=ON`, the MPI fixed and selected frontends also route
+LES into SDC. Add this group to the flow input:
+
+```fortran
+&amr_tree_les
+  enabled=.true., model='smagorinsky', cs=.17, prt=.7, sct=.7, ci=0
+/
+```
+
+Models are `smagorinsky`, `wale`, `vreman` and `dynamic`. Dynamic-only controls
+are `test_model='box'`, `test_ratio=2`, `grid_ratio=1`, and
+`harmonic_mean=.false.`. LES requires `time_integrator='sdc'` and supports the
+existing common/recursive setting. A conservative diffusion limit of 0.1 uses
+the current finest cell width, including in recursive mode. LES settings are
+part of checkpoint identity; changing or removing enabled LES rejects restart.
+Omitting the group leaves LES disabled. The selected route is wired but the
+[focused application check](../../docs/validation/les-mpi-amr-app-20260927.md)
+was run only for the fixed mechanism. Serial gas and particle-SDC routing are
+separate work.
+
+
 Serial and MPI fixed/selected frontends accept `time_integrator='sdc'` with
 `characteristic_ppm` and the `pelec` Riemann solver. Run `sdc.nml` with `sdc.dat`
 for a small two-level reacting example with transport and external forcing.
