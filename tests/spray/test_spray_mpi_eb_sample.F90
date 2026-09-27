@@ -5,7 +5,7 @@ program test_spray_mpi_eb_sample
     advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
     advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage,advance_mpi_eb_recursive_population_stage
   use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage,spray_sdc_film_stage, &
-    advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level
+    advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level,append_mpi_eb_film_births
   use spray_mpi_amr_film_mod, only: spray_level_film_population,initialize_mpi_eb_film_levels
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,advance_mixture_wall_film_frozen
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
@@ -122,7 +122,7 @@ contains
     type(spray_options) :: options,child_options
     type(spray_wall_options) :: film_options
     type(spray_level_film_population) :: film_groups(3),old_film_groups(3)
-    type(spray_sdc_film_stage) :: film_work,depletion_work,film_clocks(2)
+    type(spray_sdc_film_stage) :: film_work,depletion_work,film_clocks(2),birth_work
     type(spray_level_film_population), allocatable :: film_physical(:),film_virtuals(:),film_ghosts(:)
     type(spray_level_film_population) :: root_finished_film
     type(amr_tree_state_3d) :: expected_film_source,expected_film_remainder,expected_physical_film
@@ -751,6 +751,43 @@ contains
         'final film stage commits both physical wall half steps once')
       do population=1,3
         call require(all(film_groups(population)%component_mass==reference_film_mass),'film final half-step state')
+      end do
+      ! New deposits skip the old half kick and join only physical final exchange.
+      film_groups=old_film_groups
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,birth_work,zero,spacing,periodic,0._dp,2e-10_dp,0,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      call require(ok,'birth fixture old film stage')
+      expected_film_source=group_source
+      call append_mpi_eb_film_births(MPI_COMM_WORLD,tree,owners,zero,spacing,1,0,phi,films,film_mass,birth_work,ok)
+      call require(.not.ok.and..not.birth_work%births_attached.and.size(birth_work%midpoint(1)%films)==2*count, &
+        'birth placement capacity failure retains old midpoint')
+      call append_mpi_eb_film_births(MPI_COMM_WORLD,tree,owners,zero,spacing,1,100,phi,films,film_mass,birth_work,ok)
+      call require(ok.and.size(birth_work%midpoint(1)%films)==4*count,'births join physical midpoint')
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(birth_work%old_source%fields(p)%values==expected_film_source%fields(p)%values), &
+          'newborn films do not rewrite old source')
+      end do
+      if(count>0) call require(all(birth_work%midpoint(1)%component_mass(:,3:4)==film_mass), &
+        'birth payload bypasses old thermal half kick')
+      call append_mpi_eb_film_births(MPI_COMM_WORLD,tree,owners,zero,spacing,1,100,phi,films,film_mass,birth_work,ok)
+      call require(.not.ok.and.size(birth_work%midpoint(1)%films)==4*count,'duplicate birth attachment rejects')
+      reference_films=films;reference_film_mass=film_mass
+      call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_nodes,probes,reference_films,reference_film_mass,zero,spacing,periodic,1e-10_dp, &
+        film_volume,phi,centroids,expected_film_source,expected_film_remainder,expected_film_wall,ok)
+      call require(ok,'newborn single half-step reference')
+      do stage=1,2
+        call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+          film_halo,film_halo_t,1,1,film_groups,birth_work,zero,spacing,periodic,0._dp,2e-10_dp,stage,2, &
+          film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+        call require(ok,'newborn final film stages')
+      end do
+      if(count>0) call require(all(film_groups(1)%component_mass(:,3:4)==reference_film_mass), &
+        'newborn receives exactly one thermal half kick')
+      do population=2,3
+        call require(size(film_groups(population)%films)==2*count,'newborn does not enter preexisting film copies')
       end do
       ! Depletion removes film payloads, nodes and probes together before the new half step.
       film_groups=old_film_groups;film_options%minimum_height=1e-3_dp

@@ -15,7 +15,7 @@ program test_spray_mpi_eb_film
   real(dp) :: zero(3)=0._dp,spacing(3)=1._dp,total(2),initial(2)
   real(dp) :: phi(0:16,0:16,0:16)
   type(spray_level_film_population), allocatable :: physical(:),kept(:)
-  type(spray_level_film_population) :: virtuals,ghosts,old_virtuals,old_ghosts
+  type(spray_level_film_population) :: virtuals,ghosts,old_virtuals,old_ghosts,placed,old_placed
   integer :: grow
   integer, allocatable :: nodes(:)
   real(dp), allocatable :: probes(:,:)
@@ -165,6 +165,41 @@ program test_spray_mpi_eb_film
       all(ghosts%component_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'ghost film exact payload')
     call require(all(ghosts%probes(:,p)==expected%position+probe_offset*expected%normal),'ghost film fluid probe')
   end do
+  ! Preserve all films on one logical level, including deposits in its grow box.
+  placed%films=films;placed%component_mass=masses
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,100,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes,logical_level=2,grow=9)
+  call require(ok.and.size(placed%films)==merge(3*nranks,0,rank==nranks-1),'logical film migration keeps grown deposits')
+  call require(all(placed%nodes==4),'logical film migration uses selected node')
+  do p=1,size(placed%films)
+    id=nint(placed%films(p)%temperature)-300;expected=make_film(id)
+    call require(all(placed%films(p)%position==expected%position).and. &
+      all(placed%component_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'logical film migration exact payload')
+    call require(all(placed%probes(:,p)==expected%position+probe_offset*expected%normal),'logical film migration probe')
+  end do
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,100,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes,logical_level=0,grow=0)
+  call require(ok.and.size(placed%films)==merge(3*nranks,0,rank==0).and.all(placed%nodes==1),'logical root film placement')
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,100,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes,logical_level=2,grow=9)
+  call require(ok,'logical film placement returns to grown child')
+  old_placed=placed
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,100,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes,logical_level=2,grow=0)
+  call require(.not.ok.and.all(placed%component_mass==old_placed%component_mass).and.all(placed%nodes==old_placed%nodes), &
+    'logical film migration rejects outside grow without loss')
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,nranks,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes,logical_level=2,grow=9)
+  call require(.not.ok.and.all(placed%component_mass==old_placed%component_mass),'logical film capacity rollback')
+  grow=9
+  if(rank==0) grow=8
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,100,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes,logical_level=2,grow=grow)
+  call require(.not.ok.and.all(placed%probes==old_placed%probes),'logical film growth disagreement rejects')
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,placed%films,placed%component_mass,zero,spacing,100,ok,phi, &
+    nodes=placed%nodes,probes=placed%probes)
+  call require(ok.and.size(placed%films)==size(films),'synchronization returns logical films to finest ownership')
+  call require(all(placed%component_mass==masses),'logical migration round trip component inventory')
   old_virtuals=virtuals;old_ghosts=ghosts
   ! Virtual receive fits; the larger grown child box receives twice as many ghosts.
   call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,1,9,nranks,phi,virtuals,ghosts,ok)

@@ -217,10 +217,12 @@ contains
 
   ! Stationary films use the finest containing cell, with closed physical bounds.
   ! Optional maximum_level caps ownership without changing the wall geometry.
+  ! Paired logical_level/grow instead selects that level's valid or grown box;
+  ! films outside all such boxes reject, and physical bounds remain enforced.
   ! Preserve exact wall coordinates and every film/component field. Films have
   ! no global ID; receive order is source rank followed by original local order.
   subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok, &
-      nodal_phi,maximum_level,nodes,probes)
+      nodal_phi,maximum_level,nodes,probes,logical_level,grow)
     integer, allocatable, optional, intent(inout) :: nodes(:)
     real(dp), allocatable, optional, intent(inout) :: probes(:,:)
     integer, allocatable :: next_nodes(:)
@@ -232,7 +234,7 @@ contains
     real(dp), intent(in) :: lower(3),spacing(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: node_owners(:),maximum_films
-    integer, optional, intent(in) :: maximum_level
+    integer, optional, intent(in) :: maximum_level,logical_level,grow
     logical, intent(out) :: ok
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
@@ -241,7 +243,7 @@ contains
     real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
     integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
     real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
-    integer :: config(5),lowconfig(5),highconfig(5),top_level,nranks,ierr,nc,np,p,r,q,nreceived,width
+    integer :: config(7),lowconfig(7),highconfig(7),top_level,selected_level,extent,nranks,ierr,nc,np,p,r,q,nreceived,width
     logical :: valid,agreed
     integer :: dims(3),reference_dims(3)
     real(dp), allocatable :: reference_phi(:,:,:)
@@ -250,6 +252,8 @@ contains
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(films).and.allocated(component_mass).and.(present(nodes).eqv.present(probes))
+    valid=valid.and.(present(logical_level).eqv.present(grow))
+    valid=valid.and..not.(present(logical_level).and.present(maximum_level))
     if (allocated(component_mass)) nc=size(component_mass,1)
     call agree()
     if (.not.agreed) return
@@ -265,12 +269,18 @@ contains
     if (.not.agreed) return
     top_level=maxval(tree%nodes%level)
     if(present(maximum_level)) top_level=maximum_level
+    selected_level=-1;extent=0
+    if(present(logical_level)) then
+      selected_level=logical_level;extent=grow
+    end if
     valid=top_level>=0.and.top_level<=maxval(tree%nodes%level)
+    if(present(logical_level)) valid=valid.and.selected_level>=0.and.selected_level<=top_level.and.extent>=0.and.extent<=1000000
     call agree();if(.not.agreed) return
-    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level,merge(1,0,present(nodes))];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lowconfig,5,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level,merge(1,0,present(nodes)),selected_level,extent]
+    bounds=[lower,spacing]
+    call MPI_Allreduce(config,lowconfig,7,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,highconfig,5,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,highconfig,7,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -417,10 +427,28 @@ contains
       real(dp) :: fraction(3)
       integer(int64) :: cell(3)
       integer :: peer,level,best
+      integer, allocatable :: location(:,:)
+      logical :: located
       owner_rank=-1
       if(present(found_node)) found_node=0
       if (.not.all(ieee_is_finite(position))) return
       if (any(position<lower).or.any(position>upper).or.any(abs(position)>1.e9_dp)) return
+      if(selected_level==0) then
+        owner_rank=node_owners(1)
+        if(present(found_node)) found_node=1
+        return
+      else if(selected_level>0) then
+        ! Keep the generating logical level until synchronization, including
+        ! deposits in its grown region. A miss rejects rather than losing film.
+        call locate_amr_tree_ghost_cells(tree,reshape(position,[3,1]),lower,spacing, &
+          [.false.,.false.,.false.],selected_level,extent,location,located)
+        if(.not.located) return
+        peer=location(1,1)
+        if(peer==0) return
+        owner_rank=node_owners(peer)
+        if(present(found_node)) found_node=peer
+        return
+      end if
       fraction=(position-lower)/(spacing*real(tree%nodes(1)%shape,dp));best=-1
       do peer=1,size(tree%nodes)
         level=tree%nodes(peer)%level+1

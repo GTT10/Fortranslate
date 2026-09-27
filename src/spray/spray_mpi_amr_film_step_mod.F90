@@ -22,15 +22,49 @@ module spray_mpi_amr_film_step_mod
   implicit none
   private
   public :: advance_mpi_amr_film_coupling,kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage
-  public :: advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level
+  public :: advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level,append_mpi_eb_film_births
   type, public :: spray_sdc_film_stage
     integer :: next_stage=0,iterations=0,depth=-1
     real(dp) :: time=0,interval=0,old_wall(5)=0
-    logical :: exports_physical=.false.
+    logical :: exports_physical=.false.,births_attached=.false.
     type(spray_level_film_population) :: midpoint(3)
     type(amr_tree_state_3d) :: old_source,old_remainder,old_physical_source
   end type spray_sdc_film_stage
 contains
+  ! Deposits created after the old particle exchange receive only the final
+  ! film half kick. Keep existing midpoint films, rates and copies unchanged.
+  subroutine append_mpi_eb_film_births(comm,tree,owners,lower,spacing,grow,maximum_films,phi,films,mass,work,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),grow,maximum_films
+    real(dp), intent(in) :: lower(3),spacing(3),phi(0:,0:,0:)
+    type(spray_wall_film), intent(in) :: films(:)
+    real(dp), intent(in) :: mass(:,:)
+    type(spray_sdc_film_stage), intent(inout) :: work
+    logical, intent(out) :: ok
+    type(spray_level_film_population) :: candidate
+    integer :: nc,nold,nnew,status
+    logical :: valid,agreed
+    ok=.false.;nc=size(mass,1);nnew=size(films)
+    valid=work%next_stage==1.and.work%iterations>=1.and..not.work%births_attached
+    valid=valid.and.allocated(work%midpoint(1)%films).and.allocated(work%midpoint(1)%component_mass)
+    valid=valid.and.nc>=1.and.nc<=16.and.size(mass,2)==nnew.and.nnew<=1000000
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    nold=size(work%midpoint(1)%films)
+    valid=all(shape(work%midpoint(1)%component_mass)==[nc,nold]).and.nold<=1000000-nnew
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    allocate(candidate%films(nold+nnew),candidate%component_mass(nc,nold+nnew))
+    candidate%films(:nold)=work%midpoint(1)%films;candidate%films(nold+1:)=films
+    candidate%component_mass(:,:nold)=work%midpoint(1)%component_mass
+    candidate%component_mass(:,nold+1:)=mass
+    call migrate_mpi_amr_wall_films(comm,tree,owners,candidate%films,candidate%component_mass,lower,spacing, &
+      maximum_films,valid,phi,nodes=candidate%nodes,probes=candidate%probes,logical_level=work%depth,grow=grow)
+    if(.not.valid) return
+    work%midpoint(1)=candidate;work%births_attached=.true.;ok=.true.
+  end subroutine append_mpi_eb_film_births
+
   ! Invoke after descendant gas synchronization. Stationary films need no drift
   ! redistribution; virtuals expire each interval, incoming ghosts at the last cycle.
   subroutine finish_mpi_eb_film_level(comm,depth,time,interval,iteration,ncycle,virtuals,ghosts,work,ok)
@@ -280,6 +314,7 @@ contains
       call to_rate(exported);if(.not.agreed) return
     end if
     if(stage==0) then
+      candidate%births_attached=.false.
       candidate%time=time;candidate%interval=interval;candidate%depth=target_level;candidate%iterations=iterations
       candidate%midpoint=trial;candidate%old_source=total;candidate%old_remainder=leftover;candidate%old_wall=physical_wall
       candidate%exports_physical=present(physical_source)
