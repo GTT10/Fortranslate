@@ -24,7 +24,8 @@ module spray_mpi_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
   use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup,advance_khrt_shedding, &
-    construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state
+    construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state, &
+    khrt_reference_child_count,construct_reference_khrt_children,khrt_reference_uniforms
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces,apply_parcel_boundaries
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options,valid_wall_film, &
     valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange, &
@@ -1684,7 +1685,7 @@ contains
   ! gas_energy(p) is the gas energy increment at original parent p (not a rate).
   ! The caller must deposit it transactionally with these candidates.
   subroutine advance_mpi_khrt_shedding(comm,components,options,parcels,component_mass,gas_density, &
-      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible)
+      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible,reference_factor,gas_momentum)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: options
@@ -1694,18 +1695,31 @@ contains
     integer(int64), intent(inout) :: last_id
     logical, intent(out) :: ok
     logical, optional, intent(in) :: eligible(:)
+    real(dp), optional, intent(in) :: reference_factor
+    real(dp), allocatable, optional, intent(inout) :: gas_momentum(:,:)
+    real(dp), allocatable :: momentum(:,:),uniforms(:)
+    real(dp) :: exchange(4)
+    integer, allocatable :: child_counts(:)
     type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
     type(spray_khrt_release), allocatable :: releases(:)
     type(spray_khrt_shedding_state) :: pending
     type(spray_liquid) :: effective
     real(dp), allocatable :: masses(:,:),fractions(:,:),energy(:),result_mass(:,:)
-    real(dp) :: rho,cp,e,axis(3),bounds(1),low(1),high(1)
+    real(dp) :: rho,cp,e,axis(3),bounds(3),low(3),high(3)
     integer :: np,nc,p,n,number,cursor,ierr
     integer(int64) :: next_id,first_id
     logical :: valid,agreed
     ok=.false.
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
+    valid=valid.and.(present(reference_factor).eqv.present(gas_momentum))
+    if(present(reference_factor)) then
+      if(ieee_is_finite(reference_factor)) then
+        valid=valid.and.reference_factor>=0.and.reference_factor<=1
+      else
+        valid=.false.
+      endif
+    endif
     call agree()
     if (.not.agreed) return
     np=size(parcels);nc=size(components)
@@ -1715,13 +1729,15 @@ contains
     if(present(eligible)) valid=valid.and.size(eligible)==np
     call agree()
     if (.not.agreed) return
-    bounds=[dt]
-    call MPI_Allreduce(bounds,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    bounds=[dt,0._dp,0._dp]
+    if(present(reference_factor)) bounds(2:3)=[1._dp,reference_factor]
+    call MPI_Allreduce(bounds,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(bounds,high,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(bounds,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
     candidate=parcels;masses=component_mass
-    allocate(releases(np),fractions(nc,np),energy(np));energy=0;fractions=0;number=0
+    allocate(releases(np),fractions(nc,np),energy(np),momentum(3,np),child_counts(np))
+    energy=0;fractions=0;number=0;momentum=0;child_counts=0
     do p=1,np
       valid=valid_component_inventory(candidate(p),masses(:,p)).and.candidate(p)%id<=last_id
       if (p>1) valid=valid.and.candidate(p)%id>candidate(p-1)%id
@@ -1746,7 +1762,13 @@ contains
       if (.not.valid) exit
       candidate(p)%khrt_initial_count=pending%initial_count;candidate(p)%khrt_shed_volume=pending%shed_volume
       masses(:,p)=candidate(p)%mass*fractions(:,p)
-      if (releases(p)%mass>0) number=number+4
+      if (releases(p)%mass>0) then
+        child_counts(p)=4
+        if(present(reference_factor)) call khrt_reference_child_count(releases(p)%multiplicity, &
+          reference_factor,options%maximum_parcels-np-number,child_counts(p),valid)
+        if(.not.valid) exit
+        number=number+child_counts(p)
+      endif
     end do
     valid=valid.and.number<=options%maximum_parcels-np
     call agree()
@@ -1760,19 +1782,32 @@ contains
       if (releases(p)%mass<=0) cycle
       axis=candidate(p)%velocity
       if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
-      call construct_khrt_children(candidate(p),releases(p),axis,first_id+int(cursor-np,int64),children,energy(p),valid)
+      if(present(reference_factor)) then
+        if(allocated(uniforms)) deallocate(uniforms)
+        allocate(uniforms(child_counts(p)))
+        call khrt_reference_uniforms(candidate(p)%id,last_id,uniforms)
+        call construct_reference_khrt_children(candidate(p),releases(p),axis,reference_factor,uniforms, &
+          first_id+int(cursor-np,int64),children,exchange,valid)
+        if(valid) then
+          momentum(:,p)=exchange(:3);energy(p)=exchange(4)
+        endif
+      else
+        call construct_khrt_children(candidate(p),releases(p),axis, &
+          first_id+int(cursor-np,int64),children,energy(p),valid)
+      endif
       if (.not.valid) exit
-      result(cursor+1:cursor+4)=children
-      do n=1,4
+      result(cursor+1:cursor+child_counts(p))=children
+      do n=1,child_counts(p)
         result_mass(:,cursor+n)=children(n)%mass*fractions(:,p)
       end do
-      cursor=cursor+4
+      cursor=cursor+child_counts(p)
     end do
     call agree()
     if (.not.agreed) return
     call assign_parent_child_ids(comm,result,np,last_id,valid)
     if (.not.valid) return
     call move_alloc(result,parcels);call move_alloc(result_mass,component_mass);call move_alloc(energy,gas_energy)
+    if(present(gas_momentum)) call move_alloc(momentum,gas_momentum)
     last_id=next_id;ok=.true.
   contains
     subroutine agree()

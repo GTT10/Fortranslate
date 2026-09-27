@@ -18,6 +18,7 @@ program test_spray_mpi
   use spray_parcel_mod
   use spray_mpi_checkpoint_mod, only: mpi_spray_checkpoint
   use spray_mpi_mod
+  use spray_breakup_mod, only: advance_mixture_khrt_shedding
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,mixture_impact_at_planar_wall
   use spray_partition_mod, only: spray_cartesian_block
   use spray_coupling_3d_mod, only: particle_boundary_stencil,mixture_system_totals
@@ -252,6 +253,7 @@ program test_spray_mpi
     'negative species rolls back all owners')
   call load_h2o2_full_transport(transport,ok);call require(ok,'coupling transport')
   call check_kh_release()
+  call check_reference_kh_release()
   call check_film_coupling()
   call check_wall_impacts()
   call check_wall_crossing()
@@ -1239,6 +1241,77 @@ contains
     total=sum(cm,dim=2)
     call MPI_Allreduce(MPI_IN_PLACE,total,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(all(abs(total-initial)<2e-12_dp*initial),'film component inventory preserved')
+  end subroutine
+
+  subroutine check_reference_kh_release()
+    type(spray_parcel), allocatable :: drops(:),serial(:),original(:)
+    real(dp), allocatable :: cm(:,:),scm(:,:),original_cm(:,:),energy(:),momentum(:,:),se(:),sm(:,:)
+    real(dp), allocatable :: density(:),velocity(:,:),reynolds(:),sd(:),sv(:,:),sr(:)
+    type(spray_options) :: settings
+    real(dp) :: initial(15),final(15),y(2)
+    integer :: np,p,j,source
+    integer(int64) :: mark,serial_mark
+    np=merge(1,0,rank<nranks-1)
+    allocate(serial(nranks-1),scm(2,nranks-1),sd(nranks-1),sv(3,nranks-1),sr(nranks-1))
+    y=[.25_dp,.75_dp]
+    do p=1,nranks-1
+      serial(p)=spray_parcel(int(p,int64),[.25_dp,.25_dp,.25_dp], &
+        [1._dp,2._dp,3._dp],1e-9_dp,330._dp,100._dp*p*p)
+      scm(:,p)=serial(p)%mass*y
+    enddo
+    allocate(drops(np),cm(2,np),density(np),velocity(3,np),reynolds(np),energy(1),momentum(3,1))
+    energy=123;momentum=456;source=nranks-1-rank
+    if(np>0) then
+      drops(1)=serial(source);cm(:,1)=scm(:,source)
+    endif
+    original=drops;original_cm=cm
+    density=10;velocity=0;velocity(1,:)=300;reynolds=2000
+    sd=10;sv=0;sv(1,:)=300;sr=2000
+    settings%breakup_model='khrt';settings%khrt_children=.true.
+    settings%surface_tension=.072_dp;settings%liquid_viscosity=.001_dp
+    settings%khrt_reference_diameter_cubed=1e-25_dp;settings%maximum_parcels=10000
+    mark=int(nranks,int64);serial_mark=mark
+    ! The idle rank must participate in policy agreement and rejection.
+    if(rank==nranks-1) then
+      call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+        1e-6_dp,mark,energy,ok)
+    else
+      call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+        1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum)
+    endif
+    call require(.not.ok.and.mark==nranks.and.all(energy==123).and.all(momentum==456), &
+      'reference KH collective policy rejection')
+    settings%maximum_parcels=1
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum)
+    call require(.not.ok.and.mark==nranks.and.all(energy==123).and.all(momentum==456), &
+      'reference KH capacity rollback includes vector feedback')
+    call require(all(drops%mass==original%mass).and.all(cm==original_cm),'reference KH parent rollback')
+    settings%maximum_parcels=10000
+    call advance_mixture_khrt_shedding(liquids,settings,serial,scm,sd,sv,sr,1e-6_dp,serial_mark,se,ok, &
+      reference_factor=.8_dp,gas_momentum=sm)
+    call require(ok.and.size(serial)>nranks-1,'reference KH serial baseline creates children')
+    if(rank==0) print *, 'Reference KH child count:',size(serial)-(nranks-1)
+    call mixture_system_totals(field,[1._dp,1._dp,1._dp],drops,liquids,cm,initial,ok)
+    call require(ok,'reference KH initial inventory')
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum)
+    call require(ok.and.mark==serial_mark,'reference KH MPI watermark agrees with serial')
+    call require(size(momentum,2)==np.and.size(energy)==np,'reference KH feedback parent shape')
+    do p=1,size(drops)
+      j=findloc(serial%id,drops(p)%id,dim=1)
+      call require(j>0,'reference KH child ID exists in serial')
+      call require(all(drops(p)%velocity==serial(j)%velocity).and.drops(p)%mass==serial(j)%mass.and. &
+        drops(p)%multiplicity==serial(j)%multiplicity.and.all(cm(:,p)==scm(:,j)), &
+        'reference KH MPI children exactly match serial')
+    enddo
+    if(np>0) call require(energy(1)==se(source).and.all(momentum(:,1)==sm(:,source)), &
+      'reference KH feedback exactly matches serial')
+    call mixture_system_totals(field,[1._dp,1._dp,1._dp],drops,liquids,cm,final,ok)
+    call require(ok,'reference KH final inventory')
+    final(2:4)=final(2:4)+sum(momentum,dim=2);final(5)=final(5)+sum(energy)
+    call require(all(abs(final-initial)<2e-12_dp*max(1e-12_dp,abs(initial))), &
+      'reference KH mass momentum energy species conservation')
   end subroutine
 
   subroutine check_kh_release()
