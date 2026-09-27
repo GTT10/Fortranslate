@@ -3,6 +3,12 @@ if(PELEF_ENABLE_SPRAY)
   target_link_libraries(test_les_sdc_3d PRIVATE pelef_spray_runtime)
   add_test(NAME les_sdc_3d COMMAND test_les_sdc_3d)
   set_tests_properties(les_sdc_3d PROPERTIES LABELS "les;sdc" TIMEOUT 180)
+  if(PELEF_ENABLE_SUNDIALS)
+    add_executable(test_les_sdc_cvode_3d spray/test_les_sdc_cvode_3d.F90)
+    target_link_libraries(test_les_sdc_cvode_3d PRIVATE pelef_spray_runtime)
+    add_test(NAME les_sdc_cvode_3d COMMAND test_les_sdc_cvode_3d)
+    set_tests_properties(les_sdc_cvode_3d PROPERTIES LABELS "les;sdc;cvode" TIMEOUT 180)
+  endif()
   add_test(NAME spray_eb_difmag_application COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/application/check_eb_spray.py"
     --exe "$<TARGET_FILE:pelef_eb_spray_3d>" --source "${PROJECT_SOURCE_DIR}"

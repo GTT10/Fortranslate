@@ -1,5 +1,6 @@
 module les_sdc_3d_mod
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -19,7 +20,9 @@ contains
       boundary_change,source_change,maximum_diffusivity,ok,model,ci,external_force,transport,transport_flags, &
       reactions,reaction_source,chemistry_relative_tolerance,chemistry_absolute_tolerance,difmag,boundary_faces, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,outlet_pressure,wall_temperature,wall_velocity, &
-      test_filter,test_ratio,grid_ratio,harmonic_mean,flux_x,flux_y,flux_z,fill_halos,fill_source_halos,new_source_estimate)
+      test_filter,test_ratio,grid_ratio,harmonic_mean,flux_x,flux_y,flux_z,fill_halos,fill_source_halos,new_source_estimate, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(reactive_sdc_halo_filler), optional :: fill_halos
     procedure(reactive_sdc_source_halo_filler), optional :: fill_source_halos
     ! Families are force, LES, and optional molecular transport. For external
@@ -100,7 +103,7 @@ contains
       boundary_faces=boundary_faces,boundary_change=boundary,outlet_pressure=outlet_pressure, &
       inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
       wall_temperature=wall_temperature,wall_velocity=wall_velocity,flux_x=x,flux_y=y,flux_z=z, &
-      fill_halos=fill_halos,fill_source_halos=fill_source_halos,new_source_estimate=estimate)
+      fill_halos=fill_halos,fill_source_halos=fill_source_halos,new_source_estimate=estimate,evaluate_reaction=evaluate_reaction)
     if(.not.valid) return
     les_boundary=.5_dp*dt*(old_rate+new_rate)
     boundary=boundary+les_boundary;source=source-les_boundary
