@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The pinned 53-species n-dodecane bundle now imports Simple transport fits.
+All 6,148 coefficients match compiled upstream output; four transport states
+agree within `1.73e-15` relative. This prepares the transport dependency for
+Spray-A-Wbreakup; case execution remains open
+([import evidence](validation/dodecane-simple-import-20260927.md)).
+
 An extracted Jet failure revealed internal-energy inversion stagnation at
 adjacent representable temperatures near zero energy. The inversion now
 terminates on that resolved bracket; focused thermodynamic checks and a bounded
