@@ -20,6 +20,7 @@ program test_spray_mpi_eb_reactive
   use transport_database_mod, only: load_h2o2_full_transport
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_eb_tree_halo_3d_mod, only: fill_sdc_mpi_eb_tree_source_halo_3d
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   implicit none
   type(gas_transport_species), allocatable :: transport(:)
   type(elementary_reaction), allocatable :: reactions(:)
@@ -41,6 +42,10 @@ program test_spray_mpi_eb_reactive
   type(spray_options) :: options
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:),before(:),after(:),ledger(:)
+  type(spray_wall_film), allocatable :: films(:),saved_films(:)
+  type(spray_wall_options), allocatable :: film_settings
+  real(dp), allocatable :: film_mass(:,:),saved_film_mass(:,:)
+  integer :: film_steps
   integer :: steps,p
   real(dp) :: rho,cp,e,amount
   type(amr_patch_3d) :: patch(1)
@@ -124,7 +129,7 @@ program test_spray_mpi_eb_reactive
     if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive'.or. &
       test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering'.or. &
       test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt'.or. &
-      test_mode=='sdc-recursive-children') then
+      test_mode=='sdc-recursive-children'.or.test_mode=='sdc-recursive-film') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -333,24 +338,63 @@ contains
       options%drag=.false.;options%heat=.false.;options%evaporation=.false.
       if(rank==final_owner) drops(1)%velocity=[1000._dp,10._dp,5._dp]
     end if
+    if(test_mode=='sdc-recursive-film') then
+      attempts=3
+      allocate(film_settings,films(merge(1,0,rank==0.or.rank==nranks-1)))
+      allocate(film_mass(2,size(films)))
+      film_settings%enabled=.true.;film_settings%evolve=.true.;film_settings%temperature=400
+      film_settings%liquid_conductivity=.6_dp;film_settings%minimum_height=1e-15_dp
+      if(size(films)>0) then
+        films(1)=spray_wall_film([merge(.0025_dp,.0015_dp,rank==0),.00125_dp,.0015_dp], &
+          [0._dp,1._dp,0._dp],1e-10_dp,350._dp,1e-4_dp,1e-5_dp,merge(1,2,rank==0))
+        film_mass(:,1)=[.6_dp,.4_dp]*films(1)%mass
+      end if
+      saved_films=films;saved_film_mass=film_mass
+    end if
     saved_drops=drops;saved_mass=masses
     call inventory(before)
     call inventory(gas_before,.false.)
     do attempt=1,attempts
       if(breakup_test) options%maximum_parcels=merge(1,10000,attempt==2)
+      if(allocated(film_settings)) then
+        film_settings%port_conductivity_models(2)=''
+        film_settings%port_conductivity_coefficients(:,2)=0
+        film_settings%port_conductivity_temperature_ranges(:,2)=0
+        if(attempt==2) then
+          film_settings%port_conductivity_models(2)='polynomial'
+          film_settings%port_conductivity_coefficients(1,2)=.6_dp
+          film_settings%port_conductivity_temperature_ranges(:,2)=[300._dp,340._dp]
+        end if
+      end if
       coefficient=merge(-1._dp,.1_dp,attempt==1)
       boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37;counts=41
+      if(allocated(film_settings)) then
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
+        species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
+        1e-8_dp,2,.true.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
+        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,difmag=coefficient, &
+        gas_particle_change=exchange,level_steps=counts, &
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature,split_created=created, &
+        films=films,film_mass=film_mass,film_settings=film_settings,film_steps=film_steps)
+      else
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
         species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
         1e-8_dp,2,.true.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
         boundary,ledger,chemical,forcing,theta,steps,last_id,ok,difmag=coefficient, &
         gas_particle_change=exchange,level_steps=counts, &
         inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_temperature,split_created=created)
+      end if
       if(attempt<attempts) then
         call require(.not.ok.and.steps==0.and.last_id==1,'recursive early or late rejection retains ID')
         call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &
           all(exchange==37).and.created==0.and.theta==31.and.all(counts==41),'recursive whole-step ledger rollback')
         call require(size(drops)==size(saved_drops).and.all(masses==saved_mass),'recursive population rollback')
+        if(allocated(films)) then
+          call require(film_steps==0.and.size(films)==size(saved_films).and.all(film_mass==saved_film_mass), &
+            'recursive film inventory rollback')
+          call require(all(films%mass==saved_films%mass).and.all(films%temperature==saved_films%temperature), &
+            'recursive film thermal rollback')
+        end if
         do node=1,2
           if(owners(node)/=rank) cycle
           call require(all(field%fields(node)%values==saved%fields(node)%values),'recursive gas rollback')
@@ -360,6 +404,11 @@ contains
         call require(ok.and.steps==6.and.all(counts==[1_int64,2_int64]),'coupled recursive gas particle intervals')
       end if
     end do
+    if(allocated(films)) then
+      call require(film_steps==6.and.size(films)==size(saved_films),'recursive physical film collection and stages')
+      if(size(films)>0) call require(films(1)%mass<saved_films(1)%mass.and. &
+        films(1)%temperature>saved_films(1)%temperature,'recursive films evaporate and heat on both levels')
+    end if
     final_count=1
     if(children_test) then
       final_count=size(drops)
@@ -645,6 +694,16 @@ contains
         result(5+liquids(i)%vapor_index)=result(5+liquids(i)%vapor_index)+masses(i,p)*drops(p)%multiplicity
       end do
     end do
+    if(allocated(films)) then
+      do p=1,size(films)
+        call liquid_mixture_properties(liquids,film_mass(:,p)/films(p)%mass,films(p)%temperature,rho,cp,e,ok)
+        call require(ok,'film liquid properties')
+        result(1)=result(1)+films(p)%mass;result(5)=result(5)+films(p)%mass*e
+        do i=1,2
+          result(5+liquids(i)%vapor_index)=result(5+liquids(i)%vapor_index)+film_mass(i,p)
+        end do
+      end do
+    end if
     end if
     call MPI_Allreduce(MPI_IN_PLACE,result,nv,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   end subroutine
