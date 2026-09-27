@@ -809,7 +809,6 @@ contains
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
     if(time_integrator=='sdc'.and.subcycling) then
-      if(particle_options%khrt_children) error stop 'Recursive spray SDC KHRT children are not implemented'
       if(wall_impacts.or.walls%evolve) error stop 'Recursive spray SDC wall films are not implemented'
       if(any(boundary_faces=='periodic')) error stop 'Recursive spray SDC periodic migration is not implemented'
     end if

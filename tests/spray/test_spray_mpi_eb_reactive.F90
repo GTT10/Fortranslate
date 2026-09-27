@@ -123,7 +123,8 @@ program test_spray_mpi_eb_reactive
   if(index(test_mode,'sdc')==1) then
     if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive'.or. &
       test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering'.or. &
-      test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt') then
+      test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt'.or. &
+      test_mode=='sdc-recursive-children') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -304,7 +305,7 @@ contains
   subroutine check_recursive_spray()
     integer(int64) :: counts(2)
     integer :: attempt,final_owner,attempts,final_count
-    logical :: breakup_test
+    logical :: breakup_test,children_test
     real(dp) :: coefficient,gas_before(nv),gas_after(nv),particle_change(nv)
     if(rank==nranks-1) drops(1)%position=[.0012_dp,.0025_dp,.0015_dp]
     final_owner=nranks-1
@@ -317,13 +318,20 @@ contains
         drops(1)%position(1)=.00200001_dp;drops(1)%velocity(1)=-20._dp
       end if
     end if
-    breakup_test=test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt'
+    children_test=test_mode=='sdc-recursive-children'
+    breakup_test=children_test.or.test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt'
     attempts=2
     if(breakup_test) then
       attempts=3;options%breakup_model='etab';options%surface_tension=.072_dp
       options%liquid_viscosity=.001_dp;options%maximum_multiplicity=50
       if(test_mode=='sdc-recursive-khrt') options%breakup_model='khrt'
       if(rank==final_owner) drops(1)%deformation=1.1_dp
+    end if
+    if(children_test) then
+      options%breakup_model='khrt';options%khrt_children=.true.;options%maximum_multiplicity=0
+      options%khrt_reference_diameter_cubed=1e-25_dp
+      options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+      if(rank==final_owner) drops(1)%velocity=[1000._dp,10._dp,5._dp]
     end if
     saved_drops=drops;saved_mass=masses
     call inventory(before)
@@ -353,7 +361,20 @@ contains
       end if
     end do
     final_count=1
-    if(breakup_test) then
+    if(children_test) then
+      final_count=size(drops)
+      call MPI_Allreduce(MPI_IN_PLACE,final_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(last_id>1.and.final_count>1.and.created==0,'recursive KHRT shedding IDs, separate from splitting')
+      call require(exchange(5)<0.and.all(exchange(:4)==0).and.all(exchange(6:)==0), &
+        'recursive child transverse energy debited from gas only')
+      if(rank==0) print *, 'Recursive KHRT live count / watermark / gas energy: ',final_count,last_id,exchange(5)
+      if(rank==final_owner) then
+        call require(maxval(drops%id)==last_id,'recursive child watermark')
+        do p=2,size(drops)
+          call require(drops(p)%id>drops(p-1)%id,'recursive child IDs unique and sorted')
+        end do
+      end if
+    else if(breakup_test) then
       final_count=int(last_id)
       call require(created==last_id-1.and.created>=1,'recursive computational split IDs')
       if(rank==final_owner) then
@@ -365,7 +386,7 @@ contains
     call inventory(after)
     call inventory(gas_after,.false.)
     particle_change=(after-gas_after)-(before-gas_before)
-    call require(last_id==int(final_count,int64).and.size(drops)==merge(final_count,0,rank==final_owner), &
+    call require((children_test.or.last_id==int(final_count,int64)).and.size(drops)==merge(final_count,0,rank==final_owner), &
       'recursive physical collection')
     if(rank==final_owner.and.test_mode=='sdc-recursive-crossing') &
       call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
@@ -379,12 +400,12 @@ contains
     end if
     call require(all(abs(after-before-ledger-boundary-chemical-forcing)<= &
       3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'recursive composite gas particle inventory')
-    call require(last_id==int(final_count,int64).and.size(drops)==merge(final_count,0,rank==final_owner), &
+    call require((children_test.or.last_id==int(final_count,int64)).and.size(drops)==merge(final_count,0,rank==final_owner), &
       'recursive physical collection')
     call require(any(exchange/=0),'recursive particle feedback reaches gas')
     if(rank==final_owner) then
       if(test_mode=='sdc-recursive-crossing') call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
-      call require(all(drops%temperature>350._dp).and.all(drops%mass<1e-12_dp), &
+      if(.not.children_test) call require(all(drops%temperature>350._dp).and.all(drops%mass<1e-12_dp), &
         'recursive heating and evaporation')
     end if
     if(rank==0) print *, 'Recursive coupled residual: ', &
