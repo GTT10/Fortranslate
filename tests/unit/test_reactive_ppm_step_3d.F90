@@ -45,10 +45,24 @@ contains
     sources(:,:,:,:,1)=12._dp*state;sources(:,:,:,:,2)=-2._dp*state
     valid=.true.
   end subroutine sdc_test_sources
+  subroutine sdc_transport_sources(state,temp,time,sources,valid)
+    use reactive_3d_mod, only: compute_reactive_external_source_3d
+    real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
+    real(dp), intent(out) :: sources(:,:,:,:,:)
+    logical, intent(out) :: valid
+    sdc_calls=sdc_calls+1;sources=0;valid=.false.
+    if(sdc_failure.and.time>0) return
+    if(size(sources,5)/=2.or.any(temp<=0)) return
+    call compute_reactive_external_source_3d(state,[10._dp,-20._dp,30._dp],sources(:,:,:,:,1),valid)
+    if(.not.valid) return
+    sources(:,:,:,:,2)=.75_dp*sources(:,:,:,:,1)
+    sources(:,:,:,:,1)=.25_dp*sources(:,:,:,:,1)
+  end subroutine sdc_transport_sources
 end module sdc_test_source_mod
 
 program test_reactive_ppm_step_3d
   use sdc_test_source_mod, only: sdc_test_sources,sdc_failure,sdc_calls
+  use sdc_test_source_mod, only: sdc_transport_sources
   use sdc_test_source_mod, only: sdc_test_halos,sdc_test_source_halos,halo_calls,source_halo_calls
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -94,6 +108,7 @@ program test_reactive_ppm_step_3d
   call check_sdc_outflow()
   call check_sdc_flux_export()
   call check_sdc_halos()
+  call check_sdc_callback_transport()
   call check_sdc_assembly()
   call check_source_step()
   saved=u;st=t
@@ -153,6 +168,42 @@ program test_reactive_ppm_step_3d
   end do
   print *, 'test_reactive_ppm_step_3d: PASS'
 contains
+  subroutine check_sdc_callback_transport()
+    real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4),et(4,4,4)
+    real(dp) :: change(nv),reference_change(nv),boundary(nv),reference_boundary(nv)
+    real(dp) :: fx(nv,0:4,4,4),fy(nv,4,0:4,4),fz(nv,4,4,0:4)
+    real(dp) :: rx(nv,0:4,4,4),ry(nv,4,0:4,4),rz(nv,4,4,0:4)
+    real(dp) :: estimate(nv,4,4,4,3)
+    character(len=8) :: bc(6)
+    integer :: mode
+    do mode=1,2
+      bc='periodic'
+      if(mode==2) bc(1:2)='outflow'
+      expected=u;et=t
+      call advance_reactive_sdc_3d(species,expected,et,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+        2,2,ok=ok,external_force=[10._dp,-20._dp,30._dp],transport=transport,boundary_faces=bc, &
+        source_change=reference_change,boundary_change=reference_boundary,flux_x=rx,flux_y=ry,flux_z=rz)
+      call require(ok,'builtin force plus transport reference')
+      state=u;temp=t;sdc_calls=0
+      call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+        2,3,sdc_transport_sources,ok,transport=transport,boundary_faces=bc, &
+        source_change=change,boundary_change=boundary,flux_x=fx,flux_y=fy,flux_z=fz)
+      call require(ok.and.sdc_calls==3,'callback receives two families alongside final transport family')
+      call require(maxval(abs(state-expected)/max(1._dp,abs(expected)))<3e-14_dp.and. &
+        maxval(abs(temp-et)/et)<3e-14_dp,'callback transport state matches builtin force')
+      call require(all(abs(change-reference_change)<=1e-12_dp*max(1._dp,abs(reference_change))).and. &
+        all(abs(boundary-reference_boundary)<=1e-12_dp*max(1._dp,abs(reference_boundary))), &
+        'callback transport source and boundary inventories')
+      call require(all(abs(fx-rx)<=1e-12_dp*max(1._dp,abs(rx))).and. &
+        all(abs(fy-ry)<=1e-12_dp*max(1._dp,abs(ry))).and. &
+        all(abs(fz-rz)<=1e-12_dp*max(1._dp,abs(rz))),'callback retains full hydro transport flux export')
+    end do
+    state=u;temp=t;estimate=0;sdc_failure=.true.
+    call advance_reactive_sdc_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],dt,0._dp, &
+      2,3,sdc_transport_sources,ok,transport=transport,new_source_estimate=estimate)
+    call require(.not.ok.and.all(state==u).and.all(temp==t).and.all(estimate==0),'callback transport late rollback')
+    sdc_failure=.false.
+  end subroutine check_sdc_callback_transport
 
   subroutine check_sdc_halos()
     real(dp) :: state(nv,4,4,4),temp(4,4,4),expected(nv,4,4,4),et(4,4,4)

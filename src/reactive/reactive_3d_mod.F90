@@ -87,6 +87,7 @@ contains
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
     real(dp), intent(in) :: spacing(3),dt,time
+    ! source_count includes one final molecular-transport family when supplied.
     integer, intent(in) :: iterations,source_count
     procedure(reactive_sdc_source_evaluator), optional :: evaluate_sources
     procedure(reactive_sdc_halo_filler), optional :: fill_halos
@@ -169,7 +170,8 @@ contains
     if(present(transport_flags)) flags=transport_flags
     if(present(minimum_transport_theta)) minimum_transport_theta=1
     if(present(transport)) then
-      if(present(evaluate_sources).or.size(transport)/=size(species)) return
+      if(size(transport)/=size(species)) return
+      if(present(evaluate_sources).and.source_count<2) return
       if(all(faces=='periodic').and..not.present(fill_halos)) then
         allocate(tx,mold=state);allocate(ty,mold=state);allocate(tz,mold=state)
       else
@@ -210,11 +212,7 @@ contains
     end if
     call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
     if(.not.valid) return
-    if(present(evaluate_sources)) then
-      call evaluate_sources(state,ct,time,old_sources,valid)
-    else
-      call builtin_sources(state,ct,time,old_sources,valid)
-    end if
+    call builtin_sources(state,ct,time,old_sources,valid)
     if(.not.valid) return
     new_sources=old_sources
     if(present(new_source_estimate)) new_sources=new_source_estimate
@@ -270,11 +268,7 @@ contains
       if(.not.valid) return
       call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
       if(.not.valid) return
-      if(present(evaluate_sources)) then
-        call evaluate_sources(candidate,ct,time+dt,new_sources,valid)
-      else
-        call builtin_sources(candidate,ct,time+dt,new_sources,valid)
-      end if
+      call builtin_sources(candidate,ct,time+dt,new_sources,valid)
       if(.not.valid) return
       new_transport_rate=transport_rate
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
@@ -340,13 +334,19 @@ contains
       integer :: ii,jj,kk
       real(dp), allocatable :: tg(:,:,:,:),tgt(:,:,:)
       rates=0
-      call compute_reactive_external_source_3d(u,external_force,rates(:,:,:,:,1),good)
+      ! With molecular transport, reserve the last family for its flux divergence.
+      ! The callback owns all preceding families; it never receives that slot.
+      if(present(evaluate_sources)) then
+        call evaluate_sources(u,t,stage_time,rates(:,:,:,:,:source_count-merge(1,0,present(transport))),good)
+      else
+        call compute_reactive_external_source_3d(u,external_force,rates(:,:,:,:,1),good)
+      end if
       if(.not.good.or..not.present(transport)) return
       if(all(faces=='periodic').and..not.present(fill_halos)) then
         call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
           spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good)
         if(.not.good) return
-        call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,2),good)
+        call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,source_count),good)
       else
         if(present(fill_halos)) then
           allocate(tg(nv,n(1)+4,n(2)+4,n(3)+4),tgt(n(1)+4,n(2)+4,n(3)+4))
@@ -364,7 +364,7 @@ contains
         do kk=1,n(3)
         do jj=1,n(2)
         do ii=1,n(1)
-          rates(:,ii,jj,kk,2)=-(tx(:,ii,jj,kk)-tx(:,ii-1,jj,kk))/spacing(1)- &
+          rates(:,ii,jj,kk,source_count)=-(tx(:,ii,jj,kk)-tx(:,ii-1,jj,kk))/spacing(1)- &
             (ty(:,ii,jj,kk)-ty(:,ii,jj-1,kk))/spacing(2)-(tz(:,ii,jj,kk)-tz(:,ii,jj,kk-1))/spacing(3)
         end do
         end do
