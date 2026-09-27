@@ -37,14 +37,16 @@ module reactive_3d_application_mod
     end subroutine
   end interface
 contains
-  subroutine read_constant_transport(input_path,coefficients)
+  subroutine read_constant_transport(input_path,coefficients,hit_parameters)
     character(len=*), intent(in) :: input_path
-    real(dp), allocatable, intent(out) :: coefficients(:)
-    real(dp) :: viscosity,conductivity
+    real(dp), allocatable, intent(out) :: coefficients(:),hit_parameters(:)
+    real(dp) :: viscosity,conductivity,lambda0,reynolds_lambda0,prandtl
+    character(len=16) :: mode
     logical :: enabled
     integer :: unit,ios
-    namelist /reactive_constant_transport/ enabled,viscosity,conductivity
+    namelist /reactive_constant_transport/ enabled,viscosity,conductivity,mode,lambda0,reynolds_lambda0,prandtl
     enabled=.false.;viscosity=0;conductivity=0
+    mode='specified';lambda0=.5_dp;reynolds_lambda0=100;prandtl=.71_dp
     open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
     if(ios/=0) error stop 'Cannot open constant transport input'
     read(unit,nml=reactive_constant_transport,iostat=ios)
@@ -53,7 +55,49 @@ contains
     if(.not.enabled) return
     if(.not.all(ieee_is_finite([viscosity,conductivity]))) error stop 'Nonfinite constant transport coefficient'
     if(min(viscosity,conductivity)<0) error stop 'Negative constant transport coefficient'
-    coefficients=[viscosity,conductivity]
+    select case(mode)
+    case('specified')
+      coefficients=[viscosity,conductivity]
+    case('hit')
+      if(viscosity/=0.or.conductivity/=0) error stop 'HIT mode cannot also specify transport coefficients'
+      if(.not.all(ieee_is_finite([lambda0,reynolds_lambda0,prandtl]))) error stop 'Nonfinite HIT transport parameter'
+      if(min(lambda0,reynolds_lambda0,prandtl)<=0) error stop 'HIT transport parameters must be positive'
+      hit_parameters=[lambda0,reynolds_lambda0,prandtl];coefficients=[0._dp,0._dp]
+    case default
+      error stop 'Unknown constant transport mode'
+    end select
+  end subroutine
+
+  subroutine resolve_hit_transport(properties,parameters,coefficients)
+    real(dp), intent(in) :: properties(3),parameters(3)
+    real(dp), intent(out) :: coefficients(2)
+    real(dp) :: value
+    if(.not.all(ieee_is_finite(properties)).or.any(properties<=0)) &
+      error stop 'HIT transport requires positive initialized HIT scales'
+    call multiply(properties(1),properties(2),value)
+    call multiply(value,parameters(1),coefficients(1))
+    call divide(coefficients(1),parameters(2),value)
+    coefficients(1)=value
+    call multiply(value,properties(3),coefficients(2))
+    call divide(coefficients(2),parameters(3),value)
+    coefficients(2)=value
+  contains
+    subroutine multiply(a,b,result)
+      real(dp), intent(in) :: a,b
+      real(dp), intent(out) :: result
+      if(b>1) then
+        if(a>huge(1._dp)/b) error stop 'HIT transport coefficient overflow'
+      end if
+      result=a*b
+    end subroutine
+    subroutine divide(a,b,result)
+      real(dp), intent(in) :: a,b
+      real(dp), intent(out) :: result
+      if(b<1) then
+        if(a>huge(1._dp)*b) error stop 'HIT transport coefficient overflow'
+      end if
+      result=a/b
+    end subroutine
   end subroutine
 
   subroutine read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean)
@@ -78,7 +122,8 @@ contains
       reactions, transport, base_mole_fractions, chemistry_integrator,evaluate_reaction,evaluate_diffusion)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(application_diffusion), optional :: evaluate_diffusion
-    real(dp), allocatable :: constant_coefficients(:)
+    real(dp), allocatable :: constant_coefficients(:),hit_parameters(:)
+    real(dp) :: hit_properties(3)
     real(dp), allocatable :: sdc_force(:),diffusion_rates(:,:,:,:),old_boundary_rate(:),new_boundary_rate(:)
     real(dp) :: extra_diffusivity
     integer :: source_calls
@@ -157,11 +202,10 @@ contains
     allocate(source_totals(nvar),step_source_change(nvar));source_totals=0
     if(any(config%external_forcing/=0)) external_force=config%external_forcing
     faces=resolved_reactive_boundaries_3d(config)
-    call read_constant_transport(input_path,constant_coefficients)
+    call read_constant_transport(input_path,constant_coefficients,hit_parameters)
     if(allocated(constant_coefficients)) then
       if(config%time_integrator/='sdc'.or..not.config%transport_enabled.or.any(faces/='periodic')) &
         error stop 'Constant transport requires periodic SDC with transport enabled'
-      write(*,'(a,2es24.16)') 'Constant viscosity/conductivity: ',constant_coefficients
     end if
     allocate(mass_fractions(size(species)))
     allocate(primitive(reactive_nprim(size(species))))
@@ -174,8 +218,14 @@ contains
       species, config, x, y, z, state, temperature, base_density, &
       mass_fractions, ok, base_mole_fractions)
     if (.not. ok) error stop "Failed to initialize reactive 3D problem"
-    call initialize_reactive_hit_3d(input_path,config,species,x,y,z,state,temperature,ok)
+    call initialize_reactive_hit_3d(input_path,config,species,x,y,z,state,temperature,ok,hit_properties)
     if(.not.ok) error stop 'Invalid HIT velocity input'
+    if(allocated(hit_parameters)) then
+      call resolve_hit_transport(hit_properties,hit_parameters,constant_coefficients)
+      write(*,'(a,3es24.16)') 'HIT density/urms/cp: ',hit_properties
+    end if
+    if(allocated(constant_coefficients)) &
+      write(*,'(a,2es24.16)') 'Constant viscosity/conductivity: ',constant_coefficients
     call reactive_integrals_3d( &
       state, config%nx, config%ny, config%nz, dx, dy, dz, &
       initial_totals, ok)

@@ -3,6 +3,7 @@ module reactive_hit_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64,iostat_end
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
+  use mixture_thermo_mod, only: mixture_mass_properties
   use reactive_1d_mod, only: reactive_conserved_to_primitive
   use simulation_config_reactive_3d_mod, only: reactive_3d_config,resolved_reactive_boundaries_3d
   implicit none
@@ -11,20 +12,23 @@ module reactive_hit_3d_mod
 contains
   ! Optional pinned HIT input: x-fast records x,y,z,u,v,w. Velocities are
   ! normalized by uin_norm and scaled by Mach*sound_speed/sqrt(3).
-  subroutine initialize_reactive_hit_3d(input_path,config,species,x,y,z,state,temperature,ok)
+  subroutine initialize_reactive_hit_3d(input_path,config,species,x,y,z,state,temperature,ok,reference_properties)
     character(len=*), intent(in) :: input_path
     type(reactive_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: x(:),y(:),z(:),temperature(:,:,:)
     real(dp), intent(inout) :: state(:,:,:,:)
+    real(dp), optional, intent(out) :: reference_properties(3) ! density, urms, cp
     logical, intent(out) :: ok
     character(len=1024) :: input_file,line
     logical :: binfmt,valid
     integer :: inres,unit,ios,i,j,k,c,a,b,d,lo(3),hi(3),donor(3),left,right,mid
     integer(int64) :: bytes
+    real(dp) :: mw,gas_r,cp,cv,gamma,enthalpy,energy,entropy
     real(dp) :: mach_t0,uin_norm,sound,temp,scale,length,position(3),fraction(3),weight,velocity(3),rho
     real(dp), allocatable :: data(:,:,:,:),knots(:),width(:),candidate(:,:,:,:),primitive(:)
     namelist /reactive_hit/ input_file,inres,binfmt,mach_t0,uin_norm
+    if(present(reference_properties)) reference_properties=0
     ok=.false.;input_file='';inres=0;binfmt=.false.;mach_t0=.1_dp;uin_norm=1
     open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
     if(ios/=0) return
@@ -95,6 +99,10 @@ contains
     allocate(primitive(size(state,1)))
     call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1),primitive,temp,sound,valid)
     if(.not.valid) return
+    if(present(reference_properties)) then
+      call mixture_mass_properties(species,primitive(6:),temp,mw,gas_r,cp,cv,gamma,enthalpy,energy,entropy,valid)
+      if(.not.valid) return
+    end if
     scale=mach_t0*sound/(sqrt(3._dp)*uin_norm)
     candidate=state
     do k=1,size(z)
@@ -137,6 +145,7 @@ contains
     end do
     if(.not.all(ieee_is_finite(candidate))) return
     state=candidate;ok=.true.
+    if(present(reference_properties)) reference_properties=[primitive(1),mach_t0*sound/sqrt(3._dp),cp]
     write(*,'(a,a)') 'HIT velocity input: ',trim(input_file)
     write(*,'(a,es24.16)') 'HIT velocity scale: ',scale
   end subroutine
