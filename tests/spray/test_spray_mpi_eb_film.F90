@@ -4,7 +4,8 @@ program test_spray_mpi_eb_film
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_wall_impact_mod, only: spray_wall_film
-  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels,spray_level_film_population
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels,spray_level_film_population, &
+    refresh_mpi_eb_film_copies
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -14,6 +15,8 @@ program test_spray_mpi_eb_film
   real(dp) :: zero(3)=0._dp,spacing(3)=1._dp,total(2),initial(2)
   real(dp) :: phi(0:16,0:16,0:16)
   type(spray_level_film_population), allocatable :: physical(:),kept(:)
+  type(spray_level_film_population) :: virtuals,ghosts,old_virtuals,old_ghosts
+  integer :: grow
   integer, allocatable :: nodes(:)
   real(dp), allocatable :: probes(:,:)
   real(dp) :: probe_offset
@@ -139,6 +142,44 @@ program test_spray_mpi_eb_film
     end do
   end do
   call payload()
+  call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,0,1,100,phi,virtuals,ghosts,ok)
+  call require(ok,'root film copies')
+  call require(size(virtuals%films)==merge(3*nranks,0,rank==0).and.size(ghosts%films)==0, &
+    'root virtuals contain all descendants; empty root physical population makes no ghosts')
+  call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,1,5,100,phi,virtuals,ghosts,ok)
+  call require(ok,'intermediate film copies')
+  call require(size(virtuals%films)==merge(nranks,0,rank==0),'nested films become parent virtuals')
+  call require(size(ghosts%films)==merge(nranks,0,rank==nranks-1),'grown child box receives nearby parent films')
+  do p=1,size(virtuals%films)
+    id=nint(virtuals%films(p)%temperature)-300;expected=make_film(id)
+    call require(mod(id-1,3)==0.and.virtuals%nodes(p)==2,'virtual film lineage and target node')
+    call require(all(virtuals%films(p)%position==expected%position).and. &
+      virtuals%films(p)%material_id==expected%material_id.and. &
+      all(virtuals%component_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'virtual film exact payload')
+  end do
+  do p=1,size(ghosts%films)
+    id=nint(ghosts%films(p)%temperature)-300;expected=make_film(id)
+    call require(mod(id-1,3)==2.and.ghosts%nodes(p)==4,'ghost film lineage and target node')
+    call require(all(ghosts%films(p)%position==expected%position).and. &
+      ghosts%films(p)%material_id==expected%material_id.and. &
+      all(ghosts%component_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'ghost film exact payload')
+    call require(all(ghosts%probes(:,p)==expected%position+probe_offset*expected%normal),'ghost film fluid probe')
+  end do
+  old_virtuals=virtuals;old_ghosts=ghosts
+  ! Virtual receive fits; the larger grown child box receives twice as many ghosts.
+  call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,1,9,nranks,phi,virtuals,ghosts,ok)
+  call require(.not.ok,'late ghost film receive-capacity rejection')
+  call copies_unchanged()
+  grow=5
+  if(rank==0) grow=4
+  call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,1,grow,100,phi,virtuals,ghosts,ok)
+  call require(.not.ok,'rank-disagreed film copy extent rejects');call copies_unchanged()
+  do level=1,3
+    call require(all(physical(level)%component_mass==kept(level)%component_mass).and. &
+      all(physical(level)%probes==kept(level)%probes),'film copies do not change physical payloads')
+  end do
+  call refresh_mpi_eb_film_copies(MPI_COMM_WORLD,tree,owners,physical,zero,spacing,2,1,100,phi,virtuals,ghosts,ok)
+  call require(ok.and.size(virtuals%films)==0.and.size(ghosts%films)==0,'finest level has no outgoing film copies')
   owners=modulo(owners+1,nranks)
   call migrate(100)
   call require(ok,'changed gas owners');call payload()
@@ -175,6 +216,21 @@ contains
       film%position=[1._dp,3._dp,.25_dp];film%normal=[-1._dp,0._dp,0._dp]
     end if
   end function
+  subroutine copies_unchanged()
+    integer :: p
+    call require(all(virtuals%component_mass==old_virtuals%component_mass).and. &
+      all(virtuals%nodes==old_virtuals%nodes).and.all(virtuals%probes==old_virtuals%probes),'virtual copy rollback')
+    call require(all(ghosts%component_mass==old_ghosts%component_mass).and. &
+      all(ghosts%nodes==old_ghosts%nodes).and.all(ghosts%probes==old_ghosts%probes),'ghost copy rollback')
+    do p=1,size(virtuals%films)
+      call require(all(virtuals%films(p)%position==old_virtuals%films(p)%position).and. &
+        virtuals%films(p)%temperature==old_virtuals%films(p)%temperature,'virtual film rollback')
+    end do
+    do p=1,size(ghosts%films)
+      call require(all(ghosts%films(p)%position==old_ghosts%films(p)%position).and. &
+        ghosts%films(p)%temperature==old_ghosts%films(p)%temperature,'ghost film rollback')
+    end do
+  end subroutine copies_unchanged
   subroutine unchanged()
     call require(size(films)==size(saved).and.all(masses==saved_mass),'component/count rollback')
     call payload()

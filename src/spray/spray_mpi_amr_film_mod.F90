@@ -7,15 +7,172 @@ module spray_mpi_amr_film_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_integer_layout_3d
   use spray_eb_intersection_mod, only: intersect_spray_level_set
   use spray_eb_tree_stencil_mod, only: compatible_eb_nodal_lattice
+  use spray_amr_tree_partition_mod, only: locate_amr_tree_ghost_cells
   implicit none
   private
-  public :: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels
+  public :: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels,refresh_mpi_eb_film_copies
   type, public :: spray_level_film_population
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: component_mass(:,:),probes(:,:)
     integer, allocatable :: nodes(:)
   end type spray_level_film_population
 contains
+  ! Rebuild a level's virtual films and the next level's incoming ghost films.
+  ! Selection follows logical physical levels; neither output changes the input.
+  subroutine refresh_mpi_eb_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow,maximum_films, &
+      nodal_phi,virtuals,next_ghosts,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,grow,maximum_films
+    type(spray_level_film_population), intent(in) :: physical(:)
+    real(dp), intent(in) :: lower(3),spacing(3),nodal_phi(0:,0:,0:)
+    type(spray_level_film_population), intent(inout) :: virtuals,next_ghosts
+    logical, intent(out) :: ok
+    type(spray_level_film_population) :: coarse_copy,fine_copy
+    integer, allocatable :: locations(:,:)
+    integer :: level,levels,nc,p,n,cursor,rank,nranks,status,flags(5),low(5),high(5)
+    integer(int64) :: count_all
+    real(dp) :: probe_offset,upper(3)
+    logical :: valid,agreed
+    ok=.false.;valid=tree%is_valid()
+    call agree();if(.not.agreed) return
+    levels=tree%level_count()
+    valid=size(physical)==levels.and.target_level>=0.and.target_level<levels.and.grow>=0.and.grow<=1000000
+    valid=valid.and.maximum_films>=0.and.maximum_films<=1000000.and.size(owners)==size(tree%nodes)
+    call agree();if(.not.agreed) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,status)
+    if(status/=MPI_SUCCESS) return
+    flags=[levels,target_level,grow,maximum_films,size(owners)]
+    call MPI_Allreduce(flags,low,5,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,5,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    nc=0;count_all=0
+    do level=1,levels
+      associate(group=>physical(level))
+        valid=allocated(group%films).and.allocated(group%component_mass).and. &
+          allocated(group%nodes).and.allocated(group%probes)
+        if(.not.valid) exit
+        if(level==1) nc=size(group%component_mass,1)
+        n=size(group%films);count_all=count_all+int(n,int64)
+        valid=nc>=1.and.nc<=16.and.all(shape(group%component_mass)==[nc,n]).and. &
+          all(shape(group%probes)==[3,n]).and.size(group%nodes)==n
+        if(.not.valid) exit
+        valid=all(group%nodes>=1).and.all(group%nodes<=size(owners)).and.all(ieee_is_finite(group%probes))
+        if(.not.valid) exit
+        do p=1,n
+          valid=valid_wall_component_inventory(group%films(p),group%component_mass(:,p)).and. &
+            tree%nodes(group%nodes(p))%level==level-1.and.owners(group%nodes(p))==rank
+          if(.not.valid) exit
+        end do
+      end associate
+      if(.not.valid) exit
+    end do
+    valid=valid.and.count_all<=1000000
+    call agree();if(.not.agreed) return
+    n=0
+    do level=target_level+2,levels
+      n=n+size(physical(level)%films)
+    end do
+    allocate(coarse_copy%films(n),coarse_copy%component_mass(nc,n));cursor=0
+    do level=target_level+2,levels
+      n=size(physical(level)%films)
+      coarse_copy%films(cursor+1:cursor+n)=physical(level)%films
+      coarse_copy%component_mass(:,cursor+1:cursor+n)=physical(level)%component_mass
+      cursor=cursor+n
+    end do
+    ! This collective validates replicated topology/geometry before ghost routing.
+    call migrate_mpi_amr_wall_films(comm,tree,owners,coarse_copy%films,coarse_copy%component_mass,lower,spacing, &
+      maximum_films,valid,nodal_phi,maximum_level=target_level,nodes=coarse_copy%nodes,probes=coarse_copy%probes)
+    if(.not.valid) return
+    upper=lower+spacing*real(tree%nodes(1)%shape,dp)
+    probe_offset=max(1e-8_dp*minval((upper-lower)/real(shape(nodal_phi)-1,dp)), &
+      128*epsilon(1._dp)*maxval(abs([lower,upper])))
+    valid=.true.
+    do level=1,levels
+      do p=1,size(physical(level)%films)
+        valid=valid.and.all(physical(level)%probes(:,p)== &
+          physical(level)%films(p)%position+probe_offset*physical(level)%films(p)%normal)
+      end do
+    end do
+    call agree();if(.not.agreed) return
+    if(target_level+1<levels) then
+      call locate_amr_tree_ghost_cells(tree,physical(target_level+1)%probes,lower,spacing, &
+        [.false.,.false.,.false.],target_level+1,grow,locations,valid)
+      call agree();if(.not.agreed) return
+      call route_copies(physical(target_level+1),locations(1,:),fine_copy)
+      if(.not.agreed) return
+    else
+      allocate(fine_copy%films(0),fine_copy%component_mass(nc,0),fine_copy%nodes(0),fine_copy%probes(3,0))
+    end if
+    virtuals=coarse_copy;next_ghosts=fine_copy;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+    ! Input hierarchy and replicated metadata have already been validated.
+    subroutine route_copies(input,destinations,output)
+      type(spray_level_film_population), intent(in) :: input
+      integer, intent(in) :: destinations(:)
+      type(spray_level_film_population), intent(out) :: output
+      integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),next(:),sent_meta(:,:),received_meta(:,:)
+      real(dp), allocatable :: sent(:,:),received(:,:)
+      integer :: p,r,q,width,received_count
+      allocate(counts(nranks),offsets(nranks),incoming(nranks),starts(nranks),next(nranks));counts=0
+      do p=1,size(destinations)
+        if(destinations(p)==0) cycle
+        r=owners(destinations(p))+1;counts(r)=counts(r)+1
+      end do
+      call MPI_Alltoall(counts,1,MPI_INTEGER,incoming,1,MPI_INTEGER,comm,status)
+      if(status/=MPI_SUCCESS) then
+        agreed=.false.;return
+      end if
+      valid=sum(int(incoming,int64))<=maximum_films
+      call agree();if(.not.agreed) return
+      offsets(1)=0;starts(1)=0
+      do r=2,nranks
+        offsets(r)=offsets(r-1)+counts(r-1);starts(r)=starts(r-1)+incoming(r-1)
+      end do
+      next=offsets;received_count=sum(incoming);width=13+nc
+      allocate(sent(width,sum(counts)),received(width,received_count), &
+        sent_meta(2,sum(counts)),received_meta(2,received_count))
+      do p=1,size(destinations)
+        if(destinations(p)==0) cycle
+        r=owners(destinations(p))+1;next(r)=next(r)+1;q=next(r)
+        associate(f=>input%films(p))
+          sent(:,q)=[f%position,f%normal,f%mass,f%temperature,f%diameter,f%height, &
+            input%probes(:,p),input%component_mass(:,p)]
+          sent_meta(:,q)=[f%material_id,destinations(p)]
+        end associate
+      end do
+      call MPI_Alltoallv(sent,width*counts,width*offsets,MPI_DOUBLE_PRECISION,received,width*incoming, &
+        width*starts,MPI_DOUBLE_PRECISION,comm,status)
+      if(status/=MPI_SUCCESS) then
+        agreed=.false.;return
+      end if
+      call MPI_Alltoallv(sent_meta,2*counts,2*offsets,MPI_INTEGER,received_meta,2*incoming,2*starts,MPI_INTEGER,comm,status)
+      if(status/=MPI_SUCCESS) then
+        agreed=.false.;return
+      end if
+      allocate(output%films(received_count),output%component_mass(nc,received_count), &
+        output%probes(3,received_count),output%nodes(received_count))
+      valid=.true.
+      do p=1,received_count
+        output%films(p)=spray_wall_film(received(1:3,p),received(4:6,p),received(7,p),received(8,p), &
+          received(9,p),received(10,p),received_meta(1,p))
+        output%probes(:,p)=received(11:13,p);output%component_mass(:,p)=received(14:,p)
+        output%nodes(p)=received_meta(2,p)
+        valid=valid_wall_component_inventory(output%films(p),output%component_mass(:,p)).and. &
+          owners(output%nodes(p))==rank.and.tree%nodes(output%nodes(p))%level==target_level+1
+        if(.not.valid) exit
+      end do
+      call agree()
+    end subroutine route_copies
+  end subroutine refresh_mpi_eb_film_copies
+
   ! Build physical level populations without modifying the flat input films.
   subroutine initialize_mpi_eb_film_levels(comm,tree,owners,films,component_mass,lower,spacing,maximum_films, &
       nodal_phi,physical,ok)
