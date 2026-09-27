@@ -53,7 +53,9 @@ physical-only impact routing and old/intermediate/final particle SDC snapshots a
 also connected ([stage lifecycle](validation/spray-population-impact-20260927.md)).
 Newborn films can now be placed on their generating level's grown boxes and added
 after the old film half kick ([placement and ordering](validation/spray-film-births-20260927.md)).
-The recursive driver still needs to connect this handoff and application routing. Uniform particle acceleration now
+The recursive driver now connects this handoff, splash IDs, thermal evolution and
+combined conservation ([coupled impact checks](validation/spray-recursive-impact-20260927.md)).
+Application routing remains open. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and
