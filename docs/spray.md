@@ -13,7 +13,9 @@ callback. `compute_mpi_regular_eb_les_sdc_3d` supplies Smagorinsky, WALE, Vreman
 or Dynamic rates and integrated face fluxes on fully regular geometry; it
 rejects cut/covered cells. Four-rank mixed-parcel checks cover conservation and
 transactional rejection ([evidence](validation/les-particle-sdc-20260927.md)).
-Application input routing remains open.
+The MPI EB spray application accepts optional `eb_spray_les` controls for this
+fully regular geometry route, limits the timestep and binds enabled settings to
+checkpoint identity ([application evidence](validation/les-particle-app-20260927.md)).
 
 ## Particle source export for SDC integration
 

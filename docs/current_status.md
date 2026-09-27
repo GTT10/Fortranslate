@@ -24,8 +24,10 @@ MPI EB SDC now accepts additional diffusion rates and integrated face fluxes
 for common and recursive steps ([callback checks](validation/eb-sdc-diffusion-callback-20260927.md)).
 A regular-geometry LES adapter now reaches common/recursive MPI particle SDC;
 all four closures have focused mixed-parcel conservation/rollback checks
-([particle LES checks](validation/les-particle-sdc-20260927.md)). Particle application
-input routing remains open; non-regular geometry is rejected by the adapter.
+([particle LES checks](validation/les-particle-sdc-20260927.md)). The particle
+application now accepts `eb_spray_les`, applies a diffusion timestep bound and
+binds LES settings to restart identity ([application checks](validation/les-particle-app-20260927.md));
+non-regular geometry is rejected by the adapter.
 
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`

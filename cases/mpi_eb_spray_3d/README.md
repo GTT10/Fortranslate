@@ -537,3 +537,27 @@ uses the controls above; film-bearing two-to-four-rank continuation now has
 [focused evidence](../../docs/validation/spray-recursive-film-restart-20260927.md).
 The normal split integrator remains
 the default. This experimental path is not physical spray validation.
+
+## LES with particle SDC
+
+For fully regular nodal geometry, add this group to `spray.nml`:
+
+```fortran
+&eb_spray_les
+ les_enabled=.true.,les_model='smagorinsky',les_cs=.17,
+ les_prt=.7,les_sct=.7,les_ci=0,les_cfl=.1
+/
+```
+
+Use `time_integrator='sdc'`, `hydro_method='plm_ctu'`, `riemann_solver='pelec'`
+and explicit boundary faces in `tree.nml`. Common and recursive stepping are
+supported. The shipped planar cut-cell fixture must be replaced by fully fluid
+geometry (for example, positive values at every node); LES rejects cut/covered
+cells. `les_cfl` must be positive and at most 0.2.
+
+Models are `smagorinsky`, `wale`, `vreman`, and `dynamic`. Dynamic-only options
+are `les_test_model='box'`, `les_test_ratio=2`, `les_grid_ratio=1`, and
+`les_harmonic_mean=.false.`. Omitting the group disables LES. Enabled settings
+are part of checkpoint identity; changing/removing them rejects restart.
+See [application checks](../../docs/validation/les-particle-app-20260927.md)
+for the fixed-mechanism evidence and its limits.
