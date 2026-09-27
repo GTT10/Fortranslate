@@ -24,7 +24,7 @@ contains
   ! Caller supplies ng valid donor cells on every side, all at the patch spacing.
   ! The periodic workspace seam is outside the complete filter/gradient stencil.
   subroutine compute_dynamic_les_rhs_ghosted_3d(species,state,temperature,spacing,test_model,test_ratio,ng, &
-      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity,boundary_faces,wall_temperature)
+      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity,boundary_faces,wall_temperature,pinned_heat_flux)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -33,6 +33,7 @@ contains
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     logical, optional, intent(in) :: harmonic_mean
+    logical, optional, intent(in) :: pinned_heat_flux
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: wall_temperature(:)
     real(dp), optional, intent(inout) :: maximum_diffusivity
@@ -59,7 +60,7 @@ contains
       grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z,maximum_diffusivity=diffusion, &
       boundary_faces=boundary_faces,wall_temperature=wall_temperature,wall_bounds=reshape([ng+1,ng+n(1), &
       ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]), &
-      diffusion_bounds=reshape([ng+1,ng+n(1),ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]))
+      diffusion_bounds=reshape([ng+1,ng+n(1),ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]),pinned_heat_flux=pinned_heat_flux)
     if(.not.valid) return
     lo=ng+1;hi=ng+n
     rhs=full_rhs(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
@@ -76,7 +77,7 @@ contains
   subroutine compute_dynamic_les_boundary_rhs_3d(species,state,temperature,spacing,test_model,test_ratio, &
       rhs,maximum_diffusivity,ok,grid_ratio,harmonic_mean,boundary_faces,boundary_rate, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,flux_x,flux_y,flux_z)
+      inflow_mach,inflow_pressure,flux_x,flux_y,flux_z,pinned_heat_flux)
     real(dp), optional, intent(inout) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
@@ -86,6 +87,7 @@ contains
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     logical, optional, intent(in) :: harmonic_mean
+    logical, optional, intent(in) :: pinned_heat_flux
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(inout) :: boundary_rate(:)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
@@ -129,7 +131,7 @@ contains
     allocate(candidate,mold=rhs)
     if (all(faces=='periodic')) then
       call compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,candidate,valid, &
-        grid_ratio,maximum_diffusivity=diffusion,harmonic_mean=harmonic_mean,fx=fx,fy=fy,fz=fz)
+        grid_ratio,maximum_diffusivity=diffusion,harmonic_mean=harmonic_mean,fx=fx,fy=fy,fz=fz,pinned_heat_flux=pinned_heat_flux)
     else
       call les_filter_weights(test_model,test_ratio,weights,valid)
       if (.not.valid) return
@@ -149,7 +151,7 @@ contains
       call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,valid,ghost_width=width)
       if (.not.valid) return
       call compute_dynamic_les_rhs_ghosted_3d(species,ghost,gt,spacing,test_model,test_ratio,width, &
-        candidate,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusion,faces,wall_temperature)
+        candidate,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusion,faces,wall_temperature,pinned_heat_flux)
       if (.not.valid) return
       if (faces(1)/='periodic') then
         do k=1,n(3)
@@ -253,7 +255,7 @@ contains
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
       grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean,fx,fy,fz, &
-      boundary_faces,wall_temperature,wall_bounds,diffusion_bounds)
+      boundary_faces,wall_temperature,wall_bounds,diffusion_bounds,pinned_heat_flux)
     integer, optional, intent(in) :: diffusion_bounds(2,3)
     logical :: estimate_face
     type(nasa7_species), intent(in) :: species(:)
@@ -262,6 +264,7 @@ contains
     integer, intent(in) :: test_ratio
     real(dp), intent(inout) :: rhs(:,:,:,:)
     logical, optional, intent(in) :: harmonic_mean
+    logical, optional, intent(in) :: pinned_heat_flux
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
     real(dp), optional, intent(out) :: maximum_diffusivity
@@ -408,6 +411,11 @@ contains
               min(q(1,i,j,k),q(1,neighbor(1),neighbor(2),neighbor(3))))
             sigma=c(1)*stress(:,d);sigma(d)=sigma(d)-c(2)*a/3
             heat=-cp*c(3)*ft(d)
+            ! Opt-in reproduction of pinned PeleC LES.cpp: component 0 is
+            ! interpolated for every face direction. Default uses the normal component.
+            if(present(pinned_heat_flux)) then
+              if(pinned_heat_flux) heat=-cp*c(3)*ft(1)
+            end if
             wall_face=0
             if(present(boundary_faces)) then
               if(cell(d)==wall_bounds(1,d)-1) wall_face=2*d-1

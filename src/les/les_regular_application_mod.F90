@@ -22,11 +22,12 @@ contains
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: base_mole_fractions(:)
-    logical :: enabled,harmonic_mean
+    logical :: enabled,harmonic_mean,pinned_heat_flux
     real(dp) :: cs,prt,sct,ci,pressure(6)
     character(len=32) :: model,test_model
     integer :: test_ratio,grid_ratio
-    call read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean)
+    call read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio, &
+      harmonic_mean,pinned_heat_flux)
     if(.not.enabled) then
       call run_reactive_3d_application(input_path,application_label,bundle_sha256,config,species,reactions, &
         transport,base_mole_fractions,chemistry_integrator,evaluate_reaction)
@@ -55,7 +56,7 @@ contains
           grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,boundary_faces=faces,boundary_rate=boundary_rate, &
           inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
           wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
-          inflow_mach=config%inflow_mach,inflow_pressure=pressure)
+          inflow_mach=config%inflow_mach,inflow_pressure=pressure,pinned_heat_flux=pinned_heat_flux)
       else
         call compute_les_rhs_3d(species,u,t,h,cs,prt,sct,rates,diffusivity,ok, &
           boundary_faces=faces,boundary_rate=boundary_rate,model=model,ci=ci, &

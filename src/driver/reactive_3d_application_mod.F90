@@ -100,21 +100,26 @@ contains
     end subroutine
   end subroutine
 
-  subroutine read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean)
+  subroutine read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio, &
+      harmonic_mean,reference_heat_flux)
     character(len=*), intent(in) :: input_path
     logical, intent(out) :: enabled,harmonic_mean
+    logical, optional, intent(out) :: reference_heat_flux
+    logical :: pinned_heat_flux
     real(dp), intent(out) :: cs,prt,sct,ci
     character(len=*), intent(out) :: model,test_model
     integer, intent(out) :: test_ratio,grid_ratio
     integer :: unit,ios
-    namelist /reactive_les/ enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean
-    enabled=.false.;cs=.17_dp;prt=.7_dp;sct=.7_dp;ci=0
+    namelist /reactive_les/ enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean,pinned_heat_flux
+    enabled=.false.;cs=.17_dp;prt=.7_dp;sct=.7_dp;ci=0;pinned_heat_flux=.false.
     model='smagorinsky';test_model='box';test_ratio=2;grid_ratio=1;harmonic_mean=.false.
     open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
     if(ios/=0) error stop 'Cannot open LES input'
     read(unit,nml=reactive_les,iostat=ios)
     close(unit)
     if(ios>0) error stop 'Invalid reactive_les namelist'
+    if(pinned_heat_flux.and.model/='dynamic') error stop 'Pinned heat flux requires dynamic LES'
+    if(present(reference_heat_flux)) reference_heat_flux=pinned_heat_flux
   end subroutine
 
   subroutine run_reactive_3d_application( &

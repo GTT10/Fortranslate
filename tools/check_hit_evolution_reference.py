@@ -17,7 +17,10 @@ def main():
         parser.add_argument('--' + key, type=Path, required=True)
     parser.add_argument('--transport', action='store_true', help='Enable matched constant viscosity and conductivity')
     parser.add_argument('--les', choices=('smagorinsky', 'wale', 'vreman', 'dynamic'))
+    parser.add_argument('--pinned-heat-flux', action='store_true', help='Reproduce pinned dynamic heat-component selection')
     args = parser.parse_args()
+    if args.pinned_heat_flux and args.les != 'dynamic':
+        parser.error('--pinned-heat-flux requires --les dynamic')
     source = Path(__file__).resolve().parents[1]
     for key in ('pelec', 'fortran', 'exporter', 'velocity'):
         setattr(args, key, getattr(args, key).resolve(strict=True))
@@ -45,6 +48,8 @@ def main():
                          'pelec.Cs = .5\npelec.Cw = .5\npelec.CI = .09\npelec.PrT = .7\n')
         with (work / 'hydro_reference.nml').open('a') as stream:
             controls = "ci=0,test_model='box3opt',test_ratio=2,grid_ratio=1,harmonic_mean=.true." if args.les == 'dynamic' else 'ci=.09'
+            if args.pinned_heat_flux:
+                controls += ",pinned_heat_flux=.true."
             stream.write(f"\n&reactive_les enabled=.true.,model='{args.les}',cs=.5,prt=.7,{controls} /\n")
     env = dict(os.environ)
     for key in ('LD_LIBRARY_PATH', 'LIBRARY_PATH', 'DISPLAY'):
@@ -85,7 +90,7 @@ def main():
                           for a, b in zip(actual, reference))
         updates[key] = max(factor*abs(float(b[name])-float(c[name]))/scale
                            for b, c in zip(reference, initial))
-    report = dict(transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
+    report = dict(pinned_heat_flux=args.pinned_heat_flux, transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
                   absolute_normalized_gate=1e-10, velocity_sha256=velocity_hash,
                   binaries={key: hashlib.sha256(getattr(args, key).read_bytes()).hexdigest()
                             for key in ('pelec', 'fortran', 'exporter')})
