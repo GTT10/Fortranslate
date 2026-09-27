@@ -25,6 +25,9 @@ subsequent AMR synchronization ([reconstruction checks](validation/les-sdc-flux-
 It also accepts caller-supplied stage halos and externally retained source
 estimates for coordinated patch iterations
 ([halo checks](validation/les-sdc-halos-20260927.md)).
+Serial AMR common-step SDC now connects all four LES closures to stage sources
+and combined-flux reflux ([AMR checks](validation/les-amr-sdc-20260927.md)).
+Recursive LES SDC, MPI and application routing remain open.
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
