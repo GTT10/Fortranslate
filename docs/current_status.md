@@ -31,9 +31,12 @@ and tangential shear, matching the compiled pinned function to `1.44e-14` in
 24 cases
 ([traction kernel](validation/eb-wall-viscous-kernel-20260927.md)).
 Stationary viscous traction now supplies gas momentum sources and a composite
-MPI force ledger; cross-owner and covered-coarse exclusion checks pass. Traction
-time integration and application controls remain open
+MPI force ledger; cross-owner and covered-coarse exclusion checks pass
 ([force source](validation/eb-wall-viscous-source-20260927.md)).
+Common and recursive MPI SDC now integrate this force with wall impulse and
+zero stationary-wall mechanical energy. A two-rank adiabatic drag fixture closes
+inventory to `3.1e-17` relative; application no-slip controls remain open
+([traction time integration](validation/eb-wall-viscous-integrator-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
