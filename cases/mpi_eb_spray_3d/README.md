@@ -48,14 +48,15 @@ and molecular transport. Gas force density uses `external_forcing`;
 `acceleration` in `/eb_spray/` accelerates both gas and particles. Particle
 half kicks bracket each level interval, with physical-particle momentum and work
 reported in the `force` budget column
-([checks](../../docs/validation/spray-recursive-acceleration-20260927.md)). Keep
-`wall_impacts=.false.` and `walls%evolve=.false.` in `/eb_spray/`; films reject
-at input. ETAB and KHRT diameter evolution and `maximum_multiplicity` splitting
+([checks](../../docs/validation/spray-recursive-acceleration-20260927.md)).
+`wall_impacts=.true.` now enables EB deposition/splash, and `walls%evolve=.true.`
+enables stationary film heat/evaporation with the existing `walls` controls
+([application checks](../../docs/validation/spray-recursive-impact-app-20260927.md)). ETAB and KHRT diameter evolution and `maximum_multiplicity` splitting
 are supported ([breakup checks](../../docs/validation/spray-recursive-breakup-20260927.md)).
 `khrt_children=.true.` with a positive `khrt_reference_diameter_cubed` also enables
 physical shedding children in the old-time stage; copies do not create children
 ([checks](../../docs/validation/spray-recursive-children-20260927.md)). Periodic migration also rejects.
-Reflecting particle/EB walls are distinct from the unsupported film-impact model.
+The default `wall_impacts=.false.` retains specular particle/EB reflection.
 
 Physical particle exchange is synchronized conservatively after each outer step.
 This is a PeleF extension to the pinned source-transfer algorithm. See the
@@ -522,5 +523,6 @@ alongside parcel state, IDs and injection progress. Common-step SDC currently
 requires `subcycling=.false.`. `wall_impacts=.true.` now connects EB
 deposition/splash and film evolution using the existing `walls` controls; film
 state and splash IDs are retained across restart. Recursive film/splash scheduling
-remains unimplemented; recursive drag/heating/evaporation uses the controls above. The normal split integrator remains
+uses the controls above; its film-bearing restart is not yet independently checked.
+The normal split integrator remains
 the default. This experimental path is not physical spray validation.

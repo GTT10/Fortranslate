@@ -55,7 +55,9 @@ Newborn films can now be placed on their generating level's grown boxes and adde
 after the old film half kick ([placement and ordering](validation/spray-film-births-20260927.md)).
 The recursive driver now connects this handoff, splash IDs, thermal evolution and
 combined conservation ([coupled impact checks](validation/spray-recursive-impact-20260927.md)).
-Application routing remains open. Uniform particle acceleration now
+Application input now enables the recursive impact/film path with `wall_impacts`
+and `walls%evolve` ([application checks](validation/spray-recursive-impact-app-20260927.md)).
+Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and
