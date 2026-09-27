@@ -18,6 +18,9 @@ rollback checks ([dispatch evidence](validation/sdc-cvode-bridge-20260927.md)).
 Fixed/selected regular gas applications expose `sdc_reactor='cvode'` when built
 with SUNDIALS, with exact matched-composition output checks. Hierarchy selection
 remains open ([application evidence](validation/sdc-cvode-app-20260927.md)).
+Serial/MPI AMR common and recursive drivers now forward reactor callbacks;
+focused native-adapter dispatch and rollback checks pass
+([AMR dispatch evidence](validation/amr-sdc-reactor-20260927.md)).
 
 KHRT now connects reference-count/azimuth children, deterministic samples and
 conservative gas momentum/energy compensation to application input through
