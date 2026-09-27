@@ -25,7 +25,8 @@ contains
   ! Particle and optional film payload. Caller binds context to gas generation/model.
   ! A closed .pending file is linked to an immutable final path. Reads are atomic.
   subroutine mpi_eb_particle_checkpoint(comm,writing,path,context,tree,owners,phi,lower,spacing,capacity, &
-      parcels,components,time,steps,event,last_id,injected,ok,wall_films,film_mass,maximum_films)
+      parcels,components,time,steps,event,last_id,injected,ok,wall_films,film_mass,maximum_films,periodic)
+    logical, optional, intent(in) :: periodic(3)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
     character(len=*), intent(in) :: path,context
@@ -98,7 +99,7 @@ contains
       valid=valid.and.time>=0.and.steps>=0.and.event>=1.and.last_id>=0
       call agree();if(.not.agreed) return
       drops=parcels;masses=components
-      call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing,capacity,valid,masses)
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing,capacity,valid,masses,periodic=periodic)
       if(.not.valid) return
       allocate(counts(nranks),offsets(nranks))
       counts=0;counts(1)=size(drops);offsets=counts(1);offsets(1)=0
@@ -107,7 +108,8 @@ contains
       if(present(wall_films)) then
         patches=wall_films;patch_mass=film_mass
         ! Retain the physical tree but assign every node to the archive writer.
-        call migrate_mpi_amr_wall_films(comm,tree,0*owners,patches,patch_mass,lower,spacing,maximum_films,valid,phi)
+        call migrate_mpi_amr_wall_films(comm,tree,0*owners,patches,patch_mass,lower,spacing,maximum_films,valid,phi, &
+          periodic=periodic)
         if(.not.valid) return
       end if
       if(rank==0) then
@@ -162,10 +164,11 @@ contains
     call agree();if(.not.agreed) return
     call broadcast_metadata()
     call agree();if(.not.agreed) return
-    call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing,capacity,valid,masses)
+    call migrate_eb_tree_spray_parcels(comm,tree,owners,phi,drops,lower,spacing,capacity,valid,masses,periodic=periodic)
     if(.not.valid) return
     if(present(wall_films)) then
-      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,maximum_films,valid,phi)
+      call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing,maximum_films,valid,phi, &
+          periodic=periodic)
       if(.not.valid) return
     end if
     call move_alloc(drops,parcels);call move_alloc(masses,components)

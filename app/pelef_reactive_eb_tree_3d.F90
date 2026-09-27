@@ -675,7 +675,7 @@ program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_SPRAY
       call rebalance_mpi_amr_spray(MPI_COMM_WORLD,topology,mpi_owners,nv,mpi_state,mpi_temperature, &
         drops,component_mass,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
-        [.false.,.false.,.false.],measured_cost,rebalance_minimum_gain,particle_options%maximum_parcels, &
+        boundary_faces([1,3,5])=='periodic',measured_cost,rebalance_minimum_gain,particle_options%maximum_parcels, &
         redistributed,ok,wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,nodal_phi=nodal_phi, &
         reaction_source=sdc_ir)
       if(ok.and.allocated(sdc_ir)) record%reaction_source=sdc_ir
@@ -1207,12 +1207,12 @@ contains
     call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,checkpoint_tree,checkpoint_owners, &
       nodal_phi,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
       min(125000,particle_options%maximum_parcels),particles,components,saved_time,saved_steps,saved_event, &
-      watermark,source,valid,patches,patch_mass,walls%maximum_films)
+      watermark,source,valid,patches,patch_mass,walls%maximum_films,periodic=boundary_faces([1,3,5])=='periodic')
     else
     call mpi_eb_particle_checkpoint(MPI_COMM_WORLD,writing,path//'.particles',bound_context,checkpoint_tree,checkpoint_owners, &
       nodal_phi,domain_lower,(domain_upper-domain_lower)/real(root_shape,dp), &
       min(125000,particle_options%maximum_parcels),particles,components,saved_time,saved_steps,saved_event, &
-      watermark,source,valid)
+      watermark,source,valid,periodic=boundary_faces([1,3,5])=='periodic')
     end if
     if(.not.valid) error stop 'Particle snapshot failed'
     if(writing) then
@@ -1405,7 +1405,7 @@ contains
       call remap_mpi_eb_spray(MPI_COMM_WORLD,species,topology,mpi_owners,mpi_geometry,mpi_state,mpi_temperature, &
         drops,component_mass,layouts(stage),next_owners,geometry_levels(level),nodal_phi,domain_lower, &
         (domain_upper-domain_lower)/real(root_shape,dp),particle_options%maximum_parcels,valid, &
-        films,film_mass,walls%maximum_films,sdc_ir)
+        films,film_mass,walls%maximum_films,sdc_ir,periodic=boundary_faces([1,3,5])=='periodic')
       if(valid.and.allocated(sdc_ir)) record%reaction_source=sdc_ir
 #else
       call remap_mpi_eb_tree_3d(species,topology,layouts(stage),mpi_owners,next_owners,geometry_levels(level), &

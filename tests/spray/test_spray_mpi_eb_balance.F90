@@ -27,7 +27,8 @@ program test_spray_mpi_eb_balance
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:),before(:),after(:),ledger(:)
   real(dp) :: costs(2)
-  logical :: changed
+  logical :: changed,periodic(3)
+  character(len=16) :: mode
   integer :: capacity
   integer :: steps,p
   real(dp) :: rho,cp,e,amount
@@ -41,6 +42,9 @@ program test_spray_mpi_eb_balance
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=.001_dp,t,sound,r,volume
   integer :: rank,nranks,ierr,owners(2),dims(3),node,i,j,k,nv,nitrogen
   logical :: ok
+  call get_command_argument(1,mode)
+  periodic=.false.
+  if(mode=='periodic') periodic=[.true.,.false.,.true.]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -198,7 +202,7 @@ contains
   end subroutine
   subroutine rebalance()
     call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,field,temp,drops,masses,zero,spacing, &
-      [.false.,.false.,.false.],costs,0._dp,capacity,changed,ok, &
+      periodic,costs,0._dp,capacity,changed,ok, &
       wall_films=films,film_mass=film_mass,maximum_films=film_capacity,nodal_phi=phi,reaction_source=history)
   end subroutine
   subroutine require(condition,label)

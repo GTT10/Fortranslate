@@ -20,6 +20,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--periodic', action='store_true')
+    parser.add_argument('--regrid', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='impact_', dir=args.work.resolve()))
@@ -46,6 +47,9 @@ def main():
         if args.periodic:
             text = text.replace("boundary_faces=6*'outflow'",
                                 "boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic'")
+        if args.regrid:
+            controls += ('regrid_count=1,regrid_times(1)=1.e-8,regrid_child_count(1)=1,'
+                         'regrid_lower(:,1,1)=3,1,1,regrid_upper(:,1,1)=4,4,4,')
         tree.write_text(text.replace("&eb_tree", "&eb_tree\n" + controls, 1))
         (directory / 'spray.nml').write_text("""&eb_spray
  nc=1,number=1,vapor_names(1)='H2O',fractions(1)=1.,
@@ -67,6 +71,8 @@ def main():
             subprocess.run([str(args.mpiexec.resolve()), '-n', str(ranks), str(args.exe.resolve()),
                             'tree.nml', 'spray.nml'], cwd=directory, env=env, stdout=log,
                            stderr=subprocess.STDOUT, timeout=120, check=True)
+        if args.regrid and label != 'continued':
+            assert 'Regrid stage: 1 nodes: 2' in (directory / 'run.log').read_text()
         if label == 'stopped':
             checkpoint_bytes = {suffix: Path(str(archive) + suffix).read_bytes()
                                 for suffix in ('', '.gas', '.particles')}
@@ -123,7 +129,7 @@ def main():
                 assert abs(x - y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
         assert 'Completed steps: 2' in (work / 'continued' / 'run.log').read_text()
     print(f'PASS: recursive EB splash, films, inventories, rank comparison; '
-          f'restart={args.restart}; periodic={args.periodic}; {work}')
+          f'restart={args.restart}; periodic={args.periodic}; regrid={args.regrid}; {work}')
 
 
 if __name__ == '__main__':

@@ -578,6 +578,10 @@ if(PELEF_ENABLE_SPRAY)
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_balance> ${MPIEXEC_POSTFLAGS})
       set_tests_properties(spray_mpi_eb_balance_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
+      add_test(NAME spray_mpi_eb_periodic_balance_${ranks}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_spray_mpi_eb_balance> ${MPIEXEC_POSTFLAGS} periodic)
+      set_tests_properties(spray_mpi_eb_periodic_balance_${ranks} PROPERTIES LABELS "spray;mpi;eb" TIMEOUT 60 PROCESSORS ${ranks})
       add_test(NAME spray_mpi_eb_remap_${ranks}
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
           $<TARGET_FILE:test_spray_mpi_eb_remap> ${MPIEXEC_POSTFLAGS})
@@ -1090,6 +1094,13 @@ if(TARGET test_spray_mpi_eb_reactive)
 endif()
 
 if(TARGET pelef_mpi_eb_spray_3d)
+  add_test(NAME spray_mpi_eb_sdc_recursive_periodic_film_restart_regrid
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_recursive_eb_spray_impacts.py"
+      --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/spray-sdc-recursive-periodic-film-restart-regrid"
+      --periodic --restart --regrid)
+  set_tests_properties(spray_mpi_eb_sdc_recursive_periodic_film_restart_regrid
+    PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "spray;mpi;eb;sdc;restart")
   add_test(NAME spray_mpi_eb_sdc_recursive_impact_restart
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_recursive_eb_spray_impacts.py"
       --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"

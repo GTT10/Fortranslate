@@ -46,7 +46,6 @@ contains
     valid=valid.and.(present(wall_films).eqv.present(maximum_films))
     if (present(wall_films)) valid=valid.and.allocated(wall_films)
     if (present(film_mass)) valid=valid.and.allocated(film_mass)
-    if(present(nodal_phi)) valid=valid.and..not.any(periodic)
     call agree();if (.not.agreed) return
     film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(nodal_phi))+4*merge(1,0,present(reaction_source))
     call MPI_Allreduce(film_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
@@ -82,14 +81,16 @@ contains
     end if
     drops=parcels;masses=component_mass
     if(present(nodal_phi)) then
-      call migrate_eb_tree_spray_parcels(comm,tree,assigned,nodal_phi,drops,lower,spacing,maximum_parcels,valid,masses)
+      call migrate_eb_tree_spray_parcels(comm,tree,assigned,nodal_phi,drops,lower,spacing, &
+        maximum_parcels,valid,masses,periodic=periodic)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,assigned,drops,lower,spacing,periodic,maximum_parcels,valid,masses)
     end if
     if (.not.valid) return
     if (present(wall_films)) then
       patches=wall_films;patch_mass=film_mass
-      call migrate_mpi_amr_wall_films(comm,tree,assigned,patches,patch_mass,lower,spacing,maximum_films,valid,nodal_phi)
+      call migrate_mpi_amr_wall_films(comm,tree,assigned,patches,patch_mass,lower,spacing,maximum_films,valid,nodal_phi, &
+        periodic=periodic)
       if (.not.valid) return
     end if
     if(.not.moved) then
