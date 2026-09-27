@@ -160,7 +160,7 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:),inlet_state(:,:),inlet_primitive(:)
   real(dp) :: wall_temperature(6)=0,embedded_wall_temperature=0
-  logical :: embedded_noslip=.false.
+  logical :: embedded_noslip=.false.,mol_mode=.false.
   real(dp), allocatable :: active_embedded_temperature
 #ifdef PELEF_MPI_EB_TREE
   type(eb_geometry_3d), allocatable :: heat_geometry(:)
@@ -202,7 +202,7 @@ program pelef_reactive_eb_tree_3d
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure,wall_temperature,embedded_wall_temperature,embedded_noslip, &
-    time_integrator,sdc_iterations,sdc_reactor,external_forcing,redistribution,state_redist_target_volume_fraction, &
+    time_integrator,sdc_iterations,sdc_reactor,mol_mode,external_forcing,redistribution,state_redist_target_volume_fraction, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
     regrid_parent,regrid_ratio,regrid_lower,regrid_upper,temperature_adaptive,tag_depth,tag_ratios, &
@@ -255,6 +255,15 @@ program pelef_reactive_eb_tree_3d
   close(unit,iostat=status)
   if (ios/=0.or.status/=0) error stop 'Invalid eb_tree input'
   if(time_integrator/='split'.and.time_integrator/='sdc') error stop 'Invalid time integrator'
+  if(mol_mode) then
+#ifndef PELEF_MPI_EB_TREE
+    error stop 'MOL requires the MPI tree application'
+#endif
+#ifdef PELEF_MPI_EB_SPRAY
+    error stop 'Particle MOL staging is not connected'
+#endif
+    if(time_integrator/='sdc') error stop 'MOL requires the coupled time integrator'
+  end if
   if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
   if(sdc_reactor/='native'.and.sdc_reactor/='cvode') error stop 'Unknown EB tree SDC reactor'
   if(sdc_reactor=='cvode') then
@@ -733,6 +742,7 @@ program pelef_reactive_eb_tree_3d
 #endif
   write(*,'(a,i0,a,es24.16)') 'Completed steps: ',record%steps,' time: ',record%time
   if(time_integrator=='sdc') write(*,'(a)') 'SDC reactor: '//trim(sdc_reactor)
+  if(mol_mode) write(*,'(a)') 'Hydrodynamic update: MOL'
   write(*,'(a,es24.16)') 'Composite inventory error: ',error
   write(*,'(a,es24.16)') 'Minimum accepted interval: ',record%minimum_dt
 #ifdef PELEF_MPI_EB_TREE
@@ -793,7 +803,7 @@ contains
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=active_embedded_temperature, &
-          embedded_noslip=embedded_noslip)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
         else
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
           mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
@@ -802,7 +812,7 @@ contains
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=active_embedded_temperature, &
-          embedded_noslip=embedded_noslip)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
         end if
       else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -2002,6 +2012,13 @@ contains
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if(magic=='PELEF_EB_TREE_MOL_V1') then
+        if(.not.mol_mode) error stop 'Restart MOL mode mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if(ios/=0) error stop 'Missing MOL application header'
+      else if(mol_mode) then
+        error stop 'Restart MOL mode mismatch'
+      end if
       if(magic=='PELEF_EB_TREE_EMBEDDED_NOSLIP_V1') then
         if(.not.embedded_noslip) error stop 'Restart embedded no-slip mismatch'
         read(stream,'(a)',iostat=ios) magic
@@ -2093,6 +2110,10 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if(mol_mode) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_MOL_V1'
+        if(ios/=0) error stop 'Cannot write MOL context'
+      end if
       if(embedded_noslip) then
         write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_EMBEDDED_NOSLIP_V1'
         if(ios/=0) error stop 'Cannot write embedded no-slip context'
