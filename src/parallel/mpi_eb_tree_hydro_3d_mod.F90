@@ -413,7 +413,7 @@ contains
   ! Extended metrics contain three cells on each side; publication is collective.
   subroutine compute_mol_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,extended_geometry,state,temperature, &
       dt,order,hydro_rate,flux,comm,ok,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction)
+      target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction,lax_friedrichs)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),order
@@ -424,6 +424,7 @@ contains
     type(eb_integrated_flux_3d), allocatable, intent(inout) :: flux(:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: lax_friedrichs
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     integer, optional, intent(in) :: target_depth
@@ -433,7 +434,7 @@ contains
     type(eb_integrated_flux_3d), allocatable :: candidate_flux(:)
     type(eb_geometry_3d) :: center
     real(dp) :: low,high,stamp,boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
-    integer :: nv,rank,status,node,n(3),ios,depth,controls(2),minimum(2),maximum(2)
+    integer :: nv,rank,status,node,n(3),ios,depth,controls(3),minimum(3),maximum(3)
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species));depth=-1
     if(present(target_depth)) depth=target_depth
@@ -443,10 +444,11 @@ contains
       present(temperature_end).or.present(ancestor_fraction)) valid=valid.and.depth>=0
     call agree(valid,ready)
     if(.not.ready) return
-    controls=[order,depth]
-    call MPI_Allreduce(controls,minimum,2,MPI_INTEGER,MPI_MIN,comm,status)
+    controls=[order,depth,0]
+    if(present(lax_friedrichs)) controls(3)=merge(1,0,lax_friedrichs)
+    call MPI_Allreduce(controls,minimum,3,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,maximum,2,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,maximum,3,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(minimum/=maximum)) return
     call MPI_Allreduce(dt,low,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -491,7 +493,7 @@ contains
       if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
       stamp=tree_work_start()
       call compute_mol_eb_hydro_3d(species,extended_geometry(node),ghost%fields(node)%values, &
-        gt%fields(node)%values(1,:,:,:),dt,order,rates%fields(node)%values,candidate_flux(node),boundary,wall,valid)
+        gt%fields(node)%values(1,:,:,:),dt,order,rates%fields(node)%values,candidate_flux(node),boundary,wall,valid,lax_friedrichs)
       call tree_work_stop(node,stamp)
       if(.not.valid) exit
     end do

@@ -414,7 +414,7 @@ contains
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
       target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder,evaluate_diffusion, &
-      evaluate_reaction,embedded_wall_temperature,embedded_noslip,mol_mode)
+      evaluate_reaction,embedded_wall_temperature,embedded_noslip,mol_mode,mol_lax_friedrichs)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
@@ -458,7 +458,7 @@ contains
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6),embedded_wall_temperature
     type(eb_geometry_3d), allocatable :: heat_geometry(:),mol_geometry(:)
-    logical, optional, intent(in) :: embedded_noslip,mol_mode
+    logical, optional, intent(in) :: embedded_noslip,mol_mode,mol_lax_friedrichs
     logical :: noslip,wall_active,mol
     real(dp), allocatable :: heat_stage,heat_frequency,wall_impulse(:)
     real(dp) :: impulse_old(3),impulse_new(3)
@@ -467,7 +467,7 @@ contains
     type(eb_integrated_flux_3d), allocatable :: f0(:),f1(:),hf(:)
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
-    real(dp) :: controls(15),low(15),high(15),recovered,speed
+    real(dp) :: controls(16),low(16),high(16),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
     integer :: counts(11),mincounts(11),maxcounts(11),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive,has_diffusion
@@ -487,6 +487,8 @@ contains
     mol=.false.
     if(present(mol_mode)) mol=mol_mode
     controls(15)=merge(1._dp,0._dp,mol)
+    controls(16)=0
+    if(present(mol_lax_friedrichs)) controls(16)=merge(1._dp,0._dp,mol_lax_friedrichs)
     mol_wall_old=0;mol_wall_new=0
     noslip=.false.
     if(present(embedded_noslip)) noslip=embedded_noslip
@@ -496,6 +498,7 @@ contains
     if(present(embedded_wall_temperature)) controls(12:13)=[1._dp,embedded_wall_temperature]
     heat_old=0;heat_new=0;impulse_old=0;impulse_new=0
     valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0.and.iterations>=1
+    valid=valid.and.(controls(16)==0.or.mol)
     valid=valid.and.redist_target>0.and.redist_target<=1.and.all(abs(accel)<=1e6_dp)
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     valid=valid.and..not.(transport_flags(4).and..not.transport_flags(3))
@@ -509,9 +512,9 @@ contains
     if(mol) valid=valid.and..not.present(predictor_builder)
     call agree(valid,comm,ready)
     if(.not.ready) return
-    call MPI_Allreduce(controls,low,15,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,16,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,15,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,16,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
       merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder)),merge(1,0,present(evaluate_diffusion)), &
@@ -1021,7 +1024,7 @@ contains
       if(mol) then
         call compute_mol_mpi_eb_tree_hydro_3d(species,tree,owners,geometry,mol_geometry,gas,temp,dt,2, &
           extra,extra_flux,comm,all_ok,boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-          target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+          target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions,mol_lax_friedrichs)
         if(.not.all_ok) return
         do p=1,size(owners)
           if(owners(p)/=rank.or..not.active(p)) cycle
@@ -1109,7 +1112,7 @@ contains
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source, &
       predictor_builder,post_level,evaluate_diffusion, &
-      evaluate_reaction,embedded_wall_temperature,embedded_noslip,mol_mode)
+      evaluate_reaction,embedded_wall_temperature,embedded_noslip,mol_mode,mol_lax_friedrichs)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
@@ -1130,7 +1133,7 @@ contains
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6),gas_acceleration(3),embedded_wall_temperature
-    logical, optional, intent(in) :: embedded_noslip,mol_mode
+    logical, optional, intent(in) :: embedded_noslip,mol_mode,mol_lax_friedrichs
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
@@ -1408,7 +1411,7 @@ contains
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
         evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
@@ -1417,7 +1420,7 @@ contains
         redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
         evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
       end if
       else
       if(has_auxiliary) then
@@ -1427,7 +1430,7 @@ contains
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
@@ -1435,7 +1438,7 @@ contains
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
       end if
       end if
       if(.not.accepted) return

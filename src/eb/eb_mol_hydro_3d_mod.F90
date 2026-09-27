@@ -16,7 +16,7 @@ contains
   ! side. Return central spatial rates and dt-integrated intensive face fluxes.
   ! Caller supplies physical boundary ghosts and performs redistribution.
   subroutine compute_mol_eb_hydro_3d(species,geometry,state,temperature,dt,order, &
-      hydro_rate,integrated_flux,boundary_change,wall_change,ok)
+      hydro_rate,integrated_flux,boundary_change,wall_change,ok,lax_friedrichs)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
@@ -24,6 +24,7 @@ contains
     real(dp), intent(inout) :: hydro_rate(:,:,:,:),boundary_change(:),wall_change(:)
     type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: lax_friedrichs
     type(eb_geometry_3d) :: margin,physical
     type(eb_integrated_flux_3d) :: raw,flux
     real(dp), allocatable :: primitive(:,:,:,:),sound(:,:,:),rates(:,:,:,:),walls(:,:,:,:)
@@ -77,7 +78,7 @@ contains
           peer=cell;peer(axis)=peer(axis)+s
           stencil(:,s)=primitive(:,peer(1),peer(2),peer(3))
         end do
-        call mol_riemann_flux_3d(species,stencil,cs,axis,connected,order,f,valid)
+        call mol_riemann_flux_3d(species,stencil,cs,axis,connected,order,f,valid,lax_friedrichs)
         if(.not.valid) return
         select case(axis)
         case(1);raw%x(:,i,j,k)=f
