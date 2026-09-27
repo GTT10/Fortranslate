@@ -521,7 +521,9 @@ contains
       left_temperature, right_temperature, spacing, normal, gradient, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux, &
-      species_energy, ok)
+      species_energy, ok,constant_coefficients)
+    ! Optional [dynamic viscosity, thermal conductivity] in SI units.
+    real(dp), optional, intent(in) :: constant_coefficients(2)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: left_primitive(:), right_primitive(:)
@@ -546,6 +548,10 @@ contains
     flux = 0.0_dp
     species_energy = 0.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.all(ieee_is_finite(constant_coefficients))) return
+      if(any(constant_coefficients<0)) return
+    end if
     nspecies = size(species)
     if (.not. all(ieee_is_finite(left_primitive)) .or. &
         .not. all(ieee_is_finite(right_primitive)) .or. &
@@ -570,6 +576,9 @@ contains
     if (.not. local_ok) then
       call reset_transport_face_outputs_3d(flux, species_energy)
       return
+    end if
+    if(present(constant_coefficients)) then
+      viscosity=constant_coefficients(1);conductivity=constant_coefficients(2)
     end if
     if (.not. ieee_is_finite(viscosity) .or. &
         .not. ieee_is_finite(conductivity) .or. &
@@ -730,7 +739,9 @@ contains
       left_temperature, right_temperature, spacing, normal, gradient, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux, &
-      species_energy, ok)
+      species_energy, ok,constant_coefficients)
+    ! Optional [dynamic viscosity, thermal conductivity] in SI units.
+    real(dp), optional, intent(in) :: constant_coefficients(2)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: left_primitive(:), right_primitive(:)
@@ -747,14 +758,16 @@ contains
       left_temperature, right_temperature, spacing, normal, gradient, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux, &
-      species_energy, ok)
+      species_energy, ok,constant_coefficients)
   end subroutine reactive_transport_face_flux_3d
 
   subroutine reactive_transport_fluxes_3d( &
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      flux_x, flux_y, flux_z, minimum_theta, ok)
+      flux_x, flux_y, flux_z, minimum_theta, ok,constant_coefficients)
+    ! Optional [dynamic viscosity, thermal conductivity] in SI units.
+    real(dp), optional, intent(in) :: constant_coefficients(2)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -786,6 +799,10 @@ contains
     flux_z = 0.0_dp
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.all(ieee_is_finite(constant_coefficients))) return
+      if(any(constant_coefficients<0)) return
+    end if
     nvar = reactive_nvar(size(species))
     nprim = reactive_nprim(size(species))
     if (.not. all(ieee_is_finite([dx, dy, dz, dt]))) return
@@ -848,7 +865,7 @@ contains
             checked_temperature(next_i, j, k), dx, 1, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_x(:, i, j, k), species_energy_x(i, j, k), local_ok)
+            flux_x(:, i, j, k), species_energy_x(i, j, k), local_ok,constant_coefficients)
           if (.not. local_ok) then
             call reset_transport_flux_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta)
@@ -870,7 +887,7 @@ contains
             checked_temperature(i, next_j, k), dy, 2, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_y(:, i, j, k), species_energy_y(i, j, k), local_ok)
+            flux_y(:, i, j, k), species_energy_y(i, j, k), local_ok,constant_coefficients)
           if (.not. local_ok) then
             call reset_transport_flux_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta)
@@ -892,7 +909,7 @@ contains
             checked_temperature(i, j, next_k), dz, 3, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_z(:, i, j, k), species_energy_z(i, j, k), local_ok)
+            flux_z(:, i, j, k), species_energy_z(i, j, k), local_ok,constant_coefficients)
           if (.not. local_ok) then
             call reset_transport_flux_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta)
@@ -1576,7 +1593,8 @@ contains
   subroutine reactive_transport_timestep_3d( &
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, &
       transport_cfl, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, dt, maximum_diffusivity, ok)
+      species_diffusion_enabled, dt, maximum_diffusivity, ok,constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(2)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -1601,6 +1619,10 @@ contains
     dt = 0.0_dp
     maximum_diffusivity = 0.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.all(ieee_is_finite(constant_coefficients))) return
+      if(any(constant_coefficients<0)) return
+    end if
     nspecies = size(species)
     nvar = reactive_nvar(nspecies)
     if (.not. all(ieee_is_finite([dx, dy, dz, transport_cfl]))) return
@@ -1647,6 +1669,9 @@ contains
             call reset_transport_timestep_outputs_3d( &
               dt, maximum_diffusivity)
             return
+          end if
+          if(present(constant_coefficients)) then
+            viscosity=constant_coefficients(1);conductivity=constant_coefficients(2)
           end if
           if (.not. ieee_is_finite(viscosity) .or. &
               .not. ieee_is_finite(conductivity) .or. &

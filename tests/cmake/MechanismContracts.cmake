@@ -1,3 +1,7 @@
+add_executable(test_constant_transport_3d unit/test_constant_transport_3d.F90)
+target_link_libraries(test_constant_transport_3d PRIVATE pelef_core)
+add_test(NAME unit_constant_transport_3d COMMAND test_constant_transport_3d)
+
 add_executable(test_reactive_general_eos unit/test_reactive_general_eos.F90)
 target_link_libraries(test_reactive_general_eos PRIVATE pelef_core)
 add_test(NAME unit_reactive_general_eos COMMAND test_reactive_general_eos)
