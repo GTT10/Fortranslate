@@ -24,7 +24,10 @@ focused native-adapter dispatch and rollback checks pass
 Fixed/selected serial/MPI AMR applications now expose CVODE selection, with
 exact common/recursive serial-MPI outputs and changed-rank restart checks
 ([AMR application evidence](validation/amr-sdc-cvode-app-20260927.md)).
-Forced CVODE selection in EB/particle SDC remains open.
+Single-grid and serial/MPI EB common/recursive SDC now forward reactor
+callbacks, with cut-cell native-adapter dispatch and rollback checks
+([EB dispatch evidence](validation/eb-sdc-reactor-20260927.md)).
+Forced CVODE selection in EB applications and particle SDC remains open.
 
 KHRT now connects reference-count/azimuth children, deterministic samples and
 conservative gas momentum/energy compensation to application input through
