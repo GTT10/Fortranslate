@@ -113,12 +113,13 @@ contains
     type(amr_tree_state_3d) :: gas,temp,ending,metrics,centroids,source,remainder,old_source
     type(gas_transport_species), allocatable :: transport(:)
     type(spray_liquid) :: liquid(1)
-    type(spray_options) :: options
+    type(spray_options) :: options,child_options
     type(spray_parcel), allocatable :: ghosts(:)
     type(spray_parcel) :: reference
     type(spray_level_population) :: group(3),before_group(3),expected_group(3)
-    real(dp) :: accel(3),dv(3),expected_force(5),old_force(5),parcel_weight
-    type(spray_sdc_population_stage) :: work,hierarchy_work(2)
+    real(dp) :: accel(3),dv(3),expected_force(5),old_force(5),parcel_weight,birth_position(3)
+    integer(int64) :: child_id
+    type(spray_sdc_population_stage) :: work,hierarchy_work(2),child_work
     type(spray_level_population), allocatable :: physical(:),virtuals(:),incoming(:)
     type(spray_level_population) :: root_finished
     type(amr_tree_state_3d) :: expected_source,expected_remainder
@@ -436,6 +437,50 @@ contains
         1,1,1,100,physical,virtuals,incoming,hierarchy_work,2e-8_dp,1e-8_dp,0,2,faces, &
         group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction)
       call require(.not.ok.and.all(wall==17).and.all(ledger==19),'child cannot advance beyond parent interval')
+      ! Pinned SpraySB.cpp places each child at release location + full dt *
+      ! its own velocity, although allocation occurs after the parent loop.
+      child_options=options;child_options%breakup_model='khrt';child_options%khrt_children=.true.
+      child_options%khrt_reference_diameter_cubed=1e-25_dp
+      child_options%surface_tension=.072_dp;child_options%liquid_viscosity=.001_dp
+      child_options%drag=.false.;child_options%heat=.false.;child_options%evaporation=.false.
+      group=before_group;child_id=1;fraction=.25_dp
+      birth_position=[1.75_dp,2.25_dp,2.25_dp]
+      do population=1,3
+        if(count==0) cycle
+        group(population)%parcels(1)=spray_parcel(1_int64,birth_position, &
+          [1000._dp,10._dp,5._dp],1e-12_dp,350._dp,100._dp)
+        group(population)%component_mass=1e-12_dp;group(population)%nodes=query_nodes
+      end do
+      call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners,g,gas,temp, &
+        1,1,1,100,group,child_work,0._dp,2e-8_dp,0,2,faces,group_source,group_remainder,wall,ledger,ok, &
+        phi,centroids,metrics,gas,ending,temp,temp,fraction,physical_source=physical_source,last_id=child_id)
+      call require(ok.and.child_id==5,'old physical stage reserves exactly four child IDs')
+      call require(size(group(1)%parcels)==count,'old stage keeps physical publication deferred')
+      do population=2,3
+        call require(size(child_work%midpoint(population)%parcels)==count,'copies create no shedding children')
+      end do
+      do p=1,size(child_work%midpoint(1)%parcels)
+        if(child_work%midpoint(1)%parcels(p)%id==1) cycle
+        call require(all(child_work%midpoint(1)%parcels(p)%position==birth_position+ &
+          2e-8_dp*child_work%midpoint(1)%parcels(p)%velocity), &
+          'child starts at release position plus its own full-step displacement')
+      end do
+      expected_group=child_work%midpoint
+      do stage=1,2
+        call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners, &
+          g,gas,temp,1,1,1,100,group,child_work,0._dp,2e-8_dp,stage,2,faces, &
+          group_source,group_remainder,wall,ledger,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction, &
+          physical_source=physical_source,last_id=child_id)
+        call require(ok.and.child_id==5,'intermediate and new-time stages allocate no child IDs')
+      end do
+      do population=1,3
+        call require(size(group(population)%parcels)==size(expected_group(population)%parcels), &
+          'final particle populations contain no extra children')
+        do p=1,size(group(population)%parcels)
+          call require(all(group(population)%parcels(p)%position==expected_group(population)%parcels(p)%position), &
+            'new-time half kick does not drift children twice')
+        end do
+      end do
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,query_nodes,ghosts,mass,1e-8_dp,0._dp,faces,source,remainder,wall,ledger,ok,phi,centroids,metrics, &
