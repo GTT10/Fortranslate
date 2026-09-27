@@ -27,8 +27,10 @@ retained, including extrapolation below the first center and wrapped upper
 neighbors. Input velocities are scaled by
 `mach_t0 * sound_speed / (sqrt(3) * uin_norm)` and added to the configured
 mean velocity. Density, temperature and species retain their uniform initial
-values; total energy includes the updated kinetic energy. Input coordinates
-and application coordinates must use the same length units (PeleF uses SI).
+values; total energy includes the updated kinetic energy. `coordinate_scale`
+multiplies the file's coordinates before interpolation (default 1). Set it to
+`.01` for centimetre input and supply the application domain in metres.
+It must be finite and positive; it does not multiply velocity samples.
 
 This example uses NASA7 nitrogen and molecular transport. It does not reproduce
 the reference's gamma-law EOS, forced turbulence, or long-time statistics.
@@ -80,8 +82,8 @@ This model requires nonreacting SDC and no named composition. Transport, when
 enabled, must use explicit constant transport with species diffusion disabled.
 The selected-mechanism executable retains its own mechanism.
 
-The example preserves numeric 2π coordinate and 0.5 Taylor-length values in
-PeleF's SI units; it is not a centimetre-to-metre conversion of a PeleC run.
-External physical comparisons require consistent conversion of the velocity
-file coordinates, domain, Taylor length and time. The 16³ template has not been
-qualified as a reference trajectory. See [gamma-law checks](../../docs/validation/gamma-law-app-20260927.md).
+The example converts the reference's 2π cm cube through `coordinate_scale=.01`,
+uses a 0.06283185307179586 m domain and converts the 0.5 cm Taylor length to
+0.005 m. Time remains in seconds. The 16³ template has not been qualified as
+a reference trajectory. See [gamma-law checks](../../docs/validation/gamma-law-app-20260927.md)
+and [coordinate conversion checks](../../docs/validation/hit-coordinate-20260927.md).

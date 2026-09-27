@@ -79,6 +79,15 @@ output_file='gamma.csv'
                 maximum = max(maximum, error)
                 assert error < 3e-13, row
                 assert float(row['Y_AIR']) == 1
+    cgs_velocity = work / 'velocity_cm.csv'
+    cgs_velocity.write_text('# x,y,z,u,v,w\n' + '\n'.join(
+        f'{100*x},{100*y},{100*z},{y},{z},{x}'
+        for z in (.25, .75) for y in (.25, .75) for x in (.25, .75)) + '\n')
+    converted, _ = run('coordinate_conversion', base.replace(str(velocity), str(cgs_velocity)).replace(
+        'inres=2,mach_t0', 'inres=2,coordinate_scale=.01,mach_t0'))
+    assert converted.read_bytes() == (work / '1.4/gamma.csv').read_bytes()
+    run('invalid_coordinate_scale', base.replace('inres=2,mach_t0', 'inres=2,coordinate_scale=0,mach_t0'),
+        'Invalid HIT velocity input')
     default, _ = run('default', base)
     assert default.read_bytes() == (work / '1.4/gamma.csv').read_bytes()
     run('invalid_gamma', base + '&gamma_law gamma=1 /\n', 'Invalid gamma-law heat-capacity ratio')

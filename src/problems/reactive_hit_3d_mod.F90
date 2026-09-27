@@ -25,11 +25,11 @@ contains
     integer :: inres,unit,ios,i,j,k,c,a,b,d,lo(3),hi(3),donor(3),left,right,mid
     integer(int64) :: bytes
     real(dp) :: mw,gas_r,cp,cv,gamma,enthalpy,energy,entropy
-    real(dp) :: mach_t0,uin_norm,sound,temp,scale,length,position(3),fraction(3),weight,velocity(3),rho
+    real(dp) :: coordinate_scale,mach_t0,uin_norm,sound,temp,scale,length,position(3),fraction(3),weight,velocity(3),rho
     real(dp), allocatable :: data(:,:,:,:),knots(:),width(:),candidate(:,:,:,:),primitive(:)
-    namelist /reactive_hit/ input_file,inres,binfmt,mach_t0,uin_norm
+    namelist /reactive_hit/ input_file,inres,binfmt,mach_t0,uin_norm,coordinate_scale
     if(present(reference_properties)) reference_properties=0
-    ok=.false.;input_file='';inres=0;binfmt=.false.;mach_t0=.1_dp;uin_norm=1
+    ok=.false.;input_file='';inres=0;binfmt=.false.;mach_t0=.1_dp;uin_norm=1;coordinate_scale=1
     open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
     if(ios/=0) return
     read(unit,nml=reactive_hit,iostat=ios)
@@ -44,6 +44,8 @@ contains
     if(real(inres,dp)**3>real(huge(1)/6,dp)) return
     if(.not.all(ieee_is_finite([mach_t0,uin_norm]))) return
     if(mach_t0<0.or.uin_norm<=0) return
+    if(.not.ieee_is_finite(coordinate_scale)) return
+    if(coordinate_scale<=0) return
     allocate(data(6,inres,inres,inres),knots(inres),width(inres),stat=ios)
     if(ios/=0) return
     if(binfmt) then
@@ -85,6 +87,10 @@ contains
       if(ios/=0) return
     end if
     if(.not.all(ieee_is_finite(data))) return
+    if(coordinate_scale>1) then
+      if(maxval(abs(data(:3,:,:,:)))>huge(1._dp)/coordinate_scale) return
+    end if
+    data(:3,:,:,:)=coordinate_scale*data(:3,:,:,:)
     knots=data(1,:,1,1);width(2:)=knots(2:)-knots(:inres-1);width(1)=width(2)
     if(any(width<=0).or.knots(1)<0) return
     length=knots(inres)+.5_dp*width(inres)

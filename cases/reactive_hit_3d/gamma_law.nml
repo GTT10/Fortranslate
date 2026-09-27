@@ -1,6 +1,6 @@
 &reactive_3d
  nx=16,ny=16,nz=16
- x_upper=6.283185307179586,y_upper=6.283185307179586,z_upper=6.283185307179586
+ x_upper=0.06283185307179586,y_upper=0.06283185307179586,z_upper=0.06283185307179586
  final_time=1e-6,maximum_steps=100,time_integrator='sdc',sdc_iterations=2
  problem='uniform_reactor',thermo_model='gamma_law'
  reconstruction='characteristic_ppm',riemann_solver='pelec',boundary_condition='periodic'
@@ -14,10 +14,10 @@
  gamma=1.4
 /
 &reactive_hit
- input_file='hit_ic_4_32.dat',inres=32,binfmt=.false.,mach_t0=.1,uin_norm=1
+ input_file='hit_ic_4_32.dat',inres=32,coordinate_scale=.01,binfmt=.false.,mach_t0=.1,uin_norm=1
 /
 &reactive_constant_transport
- enabled=.true.,mode='hit',lambda0=.5,reynolds_lambda0=100,prandtl=.71
+ enabled=.true.,mode='hit',lambda0=.005,reynolds_lambda0=100,prandtl=.71
 /
 &reactive_les
  enabled=.true.,model='wale',cs=.5,prt=.7,sct=.7,ci=.09
