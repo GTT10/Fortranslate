@@ -197,6 +197,7 @@ program test_eb_reactive_wall_flux_3d
     "failed wall source transaction")
 
   call check_centroid_interpolation()
+  call check_mol_centroid_stencil()
   write(*, '(a)') "test_eb_reactive_wall_flux_3d: PASS"
 
 contains
@@ -279,6 +280,37 @@ contains
       end if
     end do
   end subroutine check_centroid_interpolation
+
+  subroutine check_mol_centroid_stencil()
+    type(eb_geometry_3d) :: g
+    real(dp) :: phi(0:6,0:6,0:6),x(1,0:6,6,6),y(1,6,0:6,6),z(1,6,6,0:6)
+    real(dp) :: fx(1,0:4,4,4),fy(1,4,0:4,4),fz(1,4,4,0:4),saved(1,4,0:4,4)
+    integer :: i,j,k
+    logical :: valid
+    do k=0,6
+    do j=0,6
+    do i=0,6
+      phi(i,j,k)=real(i,dp)-1.4_dp
+    end do
+    end do
+    end do
+    call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[6._dp,6._dp,6._dp],g,valid)
+    call require(valid,'MOL face stencil plane')
+    x=0;y=0;z=0
+    y(1,2,3,3)=2;y(1,3,3,3)=7
+    z(1,2,3,3)=3;z(1,3,3,3)=8
+    call interpolate_reactive_eb_centroid_fluxes_3d(g,x,y,z,fx,fy,fz,valid,mol_stencil=.true.)
+    call require(valid.and.abs(fy(1,1,2,2)-3._dp)<1e-14_dp.and.abs(fz(1,1,2,2)-4._dp)<1e-14_dp, &
+      'MOL pinned bilinear face weights before aperture multiplication')
+    ! A large finite donor makes the pinned small-coefficient cutoff observable.
+    g%y_face_centroid_x(2,3,3)=1e-15_dp
+    y=0;y(1,2,3,3)=2;y(1,3,3,3)=7e14_dp
+    call interpolate_reactive_eb_centroid_fluxes_3d(g,x,y,z,fx,fy,fz,valid,mol_stencil=.true.)
+    call require(valid.and.fy(1,1,2,2)==2*(1-1e-15_dp),'MOL aperture-weighted cutoff')
+    saved=fy;y(1,2,3,3)=ieee_value(0._dp,ieee_quiet_nan)
+    call interpolate_reactive_eb_centroid_fluxes_3d(g,x,y,z,fx,fy,fz,valid,mol_stencil=.true.)
+    call require(.not.valid.and.all(fy==saved),'MOL face stencil rollback')
+  end subroutine check_mol_centroid_stencil
 
   subroutine verify_plane_balance(axis, momentum_component)
     character(len=*), intent(in) :: axis

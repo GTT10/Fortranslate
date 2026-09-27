@@ -91,7 +91,7 @@ contains
     end do
     allocate(flux%x(nv,0:out(1),out(2),out(3)),flux%y(nv,out(1),0:out(2),out(3)), &
       flux%z(nv,out(1),out(2),0:out(3)),rates(nv,out(1),out(2),out(3)),walls(nv,out(1),out(2),out(3)))
-    call interpolate_reactive_eb_centroid_fluxes_3d(margin,raw%x,raw%y,raw%z,flux%x,flux%y,flux%z,valid)
+    call interpolate_reactive_eb_centroid_fluxes_3d(margin,raw%x,raw%y,raw%z,flux%x,flux%y,flux%z,valid,mol_stencil=.true.)
     if(.not.valid) return
     call reactive_eb_flux_divergence_3d(species,state(:,4:n(1)-3,4:n(2)-3,4:n(3)-3), &
       temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3),physical,flux%x,flux%y,flux%z,rates,valid)

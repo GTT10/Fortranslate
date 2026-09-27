@@ -23,15 +23,18 @@ contains
   ! cells 2:N-1, reindexed from one. Reference pc_ext_flx_eb weights only
   ! the regular face area, so interpolate intensive flux here and retain the
   ! existing divergence API's single aperture multiplication.
-  subroutine interpolate_reactive_eb_centroid_fluxes_3d(geometry,x,y,z,fx,fy,fz,ok)
+  subroutine interpolate_reactive_eb_centroid_fluxes_3d(geometry,x,y,z,fx,fy,fz,ok,mol_stencil)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: x(:,0:,:,:),y(:,:,0:,:),z(:,:,:,0:)
     real(dp), intent(inout) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: mol_stencil
     real(dp), allocatable :: cx(:,:,:,:),cy(:,:,:,:),cz(:,:,:,:)
     real(dp) :: offset(2),fraction(2),weight,value(size(x,1)),ap
     integer :: n(3),nv,axis,b,c,i,j,k,lo(3),hi(3),index(3),owner(3),face(3),donor(3),shift(2),s,t
-    logical :: valid
+    logical :: valid,mol
+    mol=.false.
+    if(present(mol_stencil)) mol=mol_stencil
     ok=.false.;nv=size(x,1);n=[geometry%nx,geometry%ny,geometry%nz]
     if(.not.geometry%is_valid().or.any(n<3).or.nv<1) return
     if(any(shape(x)/=[nv,n(1)+1,n(2),n(3)]).or.any(shape(y)/=[nv,n(1),n(2)+1,n(3)]).or. &
@@ -56,6 +59,10 @@ contains
         end select
         fraction=0;shift=int(sign(1._dp,offset))
         if(ap<1) then
+          if(mol) then
+            ! EB.cpp pc_fill_flux_interp_stencil has no CTU connectivity mask.
+            fraction=abs(offset)
+          else
           ! Reference connectivity comes from the cell on the positive side
           ! of this face, including the upper output boundary's halo cell.
           owner=index;owner(axis)=index(axis)+1
@@ -65,12 +72,17 @@ contains
           face=owner
           if(shift(2)<0) face(c)=face(c)-1
           if(area(c,face)>0) fraction(2)=abs(offset(2))
+          end if
         end if
         value=0
         do t=0,1
         do s=0,1
           weight=merge(fraction(1),1-fraction(1),s==1)*merge(fraction(2),1-fraction(2),t==1)
           if(weight==0) cycle
+          ! pc_apply_face_stencil omits aperture-weighted coefficients <= 1e-14.
+          if(mol.and.ap<1) then
+            if(abs(ap*weight)<=1e-14_dp) cycle
+          end if
           donor=index;donor(b)=donor(b)+s*shift(1);donor(c)=donor(c)+t*shift(2)
           call add_weighted_flux(axis,donor,weight,value,valid)
           if(.not.valid) return
@@ -103,7 +115,7 @@ contains
       logical, intent(out) :: success
       real(dp) :: flux(nv),a
       success=.true.;a=area(direction,idx)
-      if(a==0) return
+      if(a==0.and..not.mol) return
       select case(direction)
       case(1);flux=x(:,idx(1),idx(2),idx(3))
       case(2);flux=y(:,idx(1),idx(2),idx(3))
