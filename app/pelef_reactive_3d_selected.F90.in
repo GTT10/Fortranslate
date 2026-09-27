@@ -10,7 +10,11 @@ program pelef_reactive_3d_selected
     resolve_reactive_3d_selected_composition
   use simulation_config_selected_reactor_mod, only: &
     selected_reactor_paths_alias_lexically
+#ifdef PELEF_REGULAR_LES
+  use les_regular_application_mod, only: run_reactive_3d_application=>run_regular_les_application_3d
+#else
   use reactive_3d_application_mod, only: run_reactive_3d_application
+#endif
   use @PELEF_BUNDLE_MODULE_NAME@, only: &
     pelef_selected_species_count => @PELEF_BUNDLE_NSPECIES_SYMBOL@, &
     pelef_selected_reaction_count => @PELEF_BUNDLE_NREACTIONS_SYMBOL@, &

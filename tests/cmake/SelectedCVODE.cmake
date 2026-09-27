@@ -32,6 +32,13 @@ if(PELEF_ENABLE_SUNDIALS)
     file(SHA256 "${PELEF_MECHANISM_BUNDLE}" sdc_cvode_bundle_sha)
     file(SHA256 "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json" sdc_cvode_h2o2_sha)
     if(sdc_cvode_bundle_sha STREQUAL sdc_cvode_h2o2_sha)
+      if(PELEF_ENABLE_SPRAY)
+        add_test(NAME application_les_regular COMMAND ${Python3_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tests/application/check_les_regular_app.py"
+          --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>
+          --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/les-regular-app")
+        set_tests_properties(application_les_regular PROPERTIES TIMEOUT 300 LABELS "les;sdc;application")
+      endif()
       add_test(NAME application_sdc_cvode COMMAND ${Python3_EXECUTABLE}
         "${PROJECT_SOURCE_DIR}/tests/application/check_sdc_cvode_app.py"
         --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>

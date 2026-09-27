@@ -13,7 +13,11 @@ program pelef_reactive_3d
   use simulation_config_reactive_3d_mod, only: &
     reactive_3d_config, read_reactive_3d_configuration, &
     reactive_3d_mole_fractions
+#ifdef PELEF_REGULAR_LES
+  use les_regular_application_mod, only: run_reactive_3d_application=>run_regular_les_application_3d
+#else
   use reactive_3d_application_mod, only: run_reactive_3d_application
+#endif
   use constant_volume_reactor_mod, only: forced_reactor_integrator
 #ifdef PELEF_SDC_CVODE
   use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode

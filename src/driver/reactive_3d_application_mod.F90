@@ -1,5 +1,6 @@
 module reactive_3d_application_mod
   use precision_mod, only: dp
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use constant_volume_reactor_mod, only: forced_reactor_integrator
   use constants_mod, only: pelef_version
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
@@ -17,20 +18,53 @@ module reactive_3d_application_mod
     initialize_reactive_problem_3d, reactive_entropy_wave_density_3d
   use reactive_3d_mod, only: &
     compute_reactive_cfl_timestep_3d, advance_reactive_full_3d,advance_reactive_sdc_3d, &
-    reactive_integrals_3d, reactive_extrema_3d
+    reactive_integrals_3d, reactive_extrema_3d,compute_reactive_external_source_3d,reactive_sdc_source_evaluator
   use reactive_transport_3d_mod, only: reactive_transport_timestep_3d, reactive_isothermal_timestep_3d
   use reactive_csv_io_3d_mod, only: write_reactive_3d_csv
   implicit none
   private
 
-  public :: run_reactive_3d_application
+  public :: run_reactive_3d_application,read_regular_les_controls
 
+  abstract interface
+    subroutine application_diffusion(u,t,h,faces,inlet,inlet_t,rates,boundary_rate,diffusivity,ok)
+      import dp
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),h(3),inlet(:,:),inlet_t(:)
+      character(len=*), intent(in) :: faces(6)
+      real(dp), intent(out) :: rates(:,:,:,:),boundary_rate(:),diffusivity
+      logical, intent(out) :: ok
+    end subroutine
+  end interface
 contains
+  subroutine read_regular_les_controls(input_path,enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean)
+    character(len=*), intent(in) :: input_path
+    logical, intent(out) :: enabled,harmonic_mean
+    real(dp), intent(out) :: cs,prt,sct,ci
+    character(len=*), intent(out) :: model,test_model
+    integer, intent(out) :: test_ratio,grid_ratio
+    integer :: unit,ios
+    namelist /reactive_les/ enabled,cs,prt,sct,ci,model,test_model,test_ratio,grid_ratio,harmonic_mean
+    enabled=.false.;cs=.17_dp;prt=.7_dp;sct=.7_dp;ci=0
+    model='smagorinsky';test_model='box';test_ratio=2;grid_ratio=1;harmonic_mean=.false.
+    open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
+    if(ios/=0) error stop 'Cannot open LES input'
+    read(unit,nml=reactive_les,iostat=ios)
+    close(unit)
+    if(ios>0) error stop 'Invalid reactive_les namelist'
+  end subroutine
 
   subroutine run_reactive_3d_application( &
       input_path, application_label, bundle_sha256, config, species, &
-      reactions, transport, base_mole_fractions, chemistry_integrator,evaluate_reaction)
+      reactions, transport, base_mole_fractions, chemistry_integrator,evaluate_reaction,evaluate_diffusion)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
+    procedure(application_diffusion), optional :: evaluate_diffusion
+    real(dp), allocatable :: sdc_force(:),diffusion_rates(:,:,:,:),old_boundary_rate(:),new_boundary_rate(:)
+    real(dp) :: extra_diffusivity
+    integer :: source_calls
+    logical :: les_enabled,les_harmonic
+    real(dp) :: les_cs,les_prt,les_sct,les_ci
+    integer :: les_test_ratio,les_grid_ratio
+    character(len=32) :: les_model,les_filter
     character(len=*), intent(in) :: input_path, application_label
     character(len=*), intent(in) :: bundle_sha256
     type(reactive_3d_config), intent(in) :: config
@@ -69,6 +103,12 @@ contains
     logical :: ok, cell_ok
     integer :: step, i, j, k, nvar, face
 
+    if(.not.present(evaluate_diffusion)) then
+      call read_regular_les_controls(input_path,les_enabled,les_cs,les_prt,les_sct,les_ci, &
+        les_model,les_filter,les_test_ratio,les_grid_ratio,les_harmonic)
+      if(les_enabled) error stop 'Regular LES backend is unavailable'
+    end if
+    if(present(evaluate_diffusion).and.config%time_integrator/='sdc') error stop 'Additional diffusion requires SDC'
     if((config%sdc_reactor=='cvode').neqv.present(evaluate_reaction)) &
       error stop 'SDC reactor selection does not match supplied backend'
     if (size(species) < 1 .or. size(reactions) < 1 .or. &
@@ -85,6 +125,12 @@ contains
     if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
       sdc_reactions=reactions
       allocate(sdc_reaction_source(nvar-4,config%nx,config%ny,config%nz));sdc_reaction_source=0
+    end if
+    if(present(evaluate_diffusion)) then
+      allocate(diffusion_rates, mold=state)
+      allocate(old_boundary_rate(nvar),new_boundary_rate(nvar))
+    else
+      sdc_force=config%external_forcing
     end if
     boundary_totals=0.0_dp
     allocate(source_totals(nvar),step_source_change(nvar));source_totals=0
@@ -255,22 +301,22 @@ contains
         maximum_diffusivity = max( &
           maximum_diffusivity, step_maximum_diffusivity, inlet_diffusivity)
       end if
+      if(present(evaluate_diffusion)) then
+        call evaluate_diffusion(state,temperature,[dx,dy,dz],faces,inflow_state,inflow_t, &
+          diffusion_rates,new_boundary_rate,extra_diffusivity,ok)
+        if(.not.ok) error stop 'Failed to compute additional diffusion timestep'
+        if(.not.ieee_is_finite(extra_diffusivity).or.extra_diffusivity<0) error stop 'Invalid additional diffusivity'
+        if(extra_diffusivity>0) dt=min(dt,.1_dp/(extra_diffusivity*sum(1._dp/[dx,dy,dz]**2)))
+        maximum_diffusivity=max(maximum_diffusivity,extra_diffusivity)
+      end if
       dt = min(dt, config%final_time - time)
       if(config%time_integrator=='sdc') then
-        step_boundary_change=0;step_transport_theta=1
-        call advance_reactive_sdc_3d(species,state,temperature,[dx,dy,dz],dt,time, &
-          config%sdc_iterations,merge(2,1,config%transport_enabled),ok=ok,difmag=difmag, &
-          external_force=config%external_forcing, &
-          source_change=step_source_change,transport=sdc_transport, &
-          transport_flags=[config%viscosity_enabled,config%thermal_conduction_enabled, &
-            config%species_diffusion_enabled,config%barodiffusion_enabled],minimum_transport_theta=step_transport_theta, &
-          reactions=sdc_reactions,reaction_source=sdc_reaction_source, &
-          chemistry_relative_tolerance=config%chemistry_relative_tolerance, &
-          chemistry_absolute_tolerance=config%chemistry_absolute_tolerance, &
-          boundary_faces=faces,boundary_change=step_boundary_change,outlet_pressure=config%outlet_pressure, &
-          inflow_state=inflow_state,inflow_temperature=inflow_t,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
-          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity, &
-          evaluate_reaction=evaluate_reaction)
+        step_boundary_change=0;step_transport_theta=1;source_calls=0
+        if(present(evaluate_diffusion)) then
+          call perform_sdc(evaluate_sources)
+        else
+          call perform_sdc()
+        end if
       else
       call advance_reactive_full_3d( &
         species, reactions, transport, state, temperature, &
@@ -289,6 +335,10 @@ contains
       end if
       if (.not. ok) then
         error stop "Reactive 3D update rejected its candidate"
+      end if
+      if(present(evaluate_diffusion)) then
+        step_boundary_change=step_boundary_change+.5_dp*dt*(old_boundary_rate+new_boundary_rate)
+        step_source_change=step_source_change-.5_dp*dt*(old_boundary_rate+new_boundary_rate)
       end if
       source_totals=source_totals+step_source_change
       boundary_totals = boundary_totals + step_boundary_change
@@ -395,6 +445,41 @@ contains
     write(*, '(a,es24.16)') &
       "Energy change: ", final_totals(iet) - initial_totals(iet)
     write(*, '(a,1x,a)') "Output:", trim(config%output_file)
+  contains
+    subroutine perform_sdc(source_callback)
+      procedure(reactive_sdc_source_evaluator), optional :: source_callback
+        call advance_reactive_sdc_3d(species,state,temperature,[dx,dy,dz],dt,time, &
+          config%sdc_iterations,merge(2,1,config%transport_enabled)+merge(1,0,present(evaluate_diffusion)), &
+          evaluate_sources=source_callback,ok=ok,difmag=difmag,external_force=sdc_force, &
+          source_change=step_source_change,transport=sdc_transport, &
+          transport_flags=[config%viscosity_enabled,config%thermal_conduction_enabled, &
+            config%species_diffusion_enabled,config%barodiffusion_enabled],minimum_transport_theta=step_transport_theta, &
+          reactions=sdc_reactions,reaction_source=sdc_reaction_source, &
+          chemistry_relative_tolerance=config%chemistry_relative_tolerance, &
+          chemistry_absolute_tolerance=config%chemistry_absolute_tolerance, &
+          boundary_faces=faces,boundary_change=step_boundary_change,outlet_pressure=config%outlet_pressure, &
+          inflow_state=inflow_state,inflow_temperature=inflow_t,inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
+          wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity, &
+          evaluate_reaction=evaluate_reaction)
+    end subroutine
+    subroutine evaluate_sources(u,t,stage_time,rates,good)
+      real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),stage_time
+      real(dp), intent(out) :: rates(:,:,:,:,:)
+      logical, intent(out) :: good
+      good=.false.;rates=0
+      if(.not.ieee_is_finite(stage_time).or.size(rates,5)/=2) return
+      call compute_reactive_external_source_3d(u,config%external_forcing,rates(:,:,:,:,1),good)
+      if(.not.good) return
+      call evaluate_diffusion(u,t,[dx,dy,dz],faces,inflow_state,inflow_t,rates(:,:,:,:,2), &
+        new_boundary_rate,extra_diffusivity,good)
+      if(.not.good) return
+      if(.not.all(ieee_is_finite(new_boundary_rate)).or..not.ieee_is_finite(extra_diffusivity)) then
+        good=.false.;return
+      end if
+      source_calls=source_calls+1
+      if(source_calls==1) old_boundary_rate=new_boundary_rate
+      maximum_diffusivity=max(maximum_diffusivity,extra_diffusivity)
+    end subroutine
   end subroutine run_reactive_3d_application
 
 end module reactive_3d_application_mod
