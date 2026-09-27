@@ -100,6 +100,21 @@ contains
     end subroutine
   end subroutine
 
+  subroutine read_linear_forcing(input_path,coefficient,momentum_offset)
+    character(len=*), intent(in) :: input_path
+    real(dp), intent(out) :: coefficient,momentum_offset(3)
+    integer :: unit,ios
+    namelist /reactive_linear_forcing/ coefficient,momentum_offset
+    coefficient=0;momentum_offset=0
+    open(newunit=unit,file=input_path,status='old',action='read',iostat=ios)
+    if(ios/=0) error stop 'Cannot open linear forcing input'
+    read(unit,nml=reactive_linear_forcing,iostat=ios)
+    close(unit)
+    if(ios>0) error stop 'Invalid reactive_linear_forcing namelist'
+    if(.not.all(ieee_is_finite([coefficient,momentum_offset]))) error stop 'Invalid linear forcing parameters'
+    if(maxval(abs([coefficient,momentum_offset]))>1e30_dp) error stop 'Oversized linear forcing parameters'
+  end subroutine
+
   subroutine read_regular_timestep_limit(input_path,maximum_dt)
     character(len=*), intent(in) :: input_path
     real(dp), intent(out) :: maximum_dt
@@ -145,7 +160,7 @@ contains
     real(dp), allocatable :: constant_coefficients(:),hit_parameters(:)
     real(dp) :: hit_properties(3)
     real(dp), allocatable :: sdc_force(:),diffusion_rates(:,:,:,:),old_boundary_rate(:),new_boundary_rate(:)
-    real(dp) :: extra_diffusivity,maximum_dt
+    real(dp) :: extra_diffusivity,maximum_dt,linear_coefficient,momentum_offset(3)
     integer :: source_calls
     logical :: les_enabled,les_harmonic
     real(dp) :: les_cs,les_prt,les_sct,les_ci
@@ -190,6 +205,8 @@ contains
     integer :: step, i, j, k, nvar, face
 
     call read_regular_timestep_limit(input_path,maximum_dt)
+    call read_linear_forcing(input_path,linear_coefficient,momentum_offset)
+    if(linear_coefficient/=0.and.config%time_integrator/='sdc') error stop 'Linear forcing requires SDC'
     if(.not.present(evaluate_diffusion)) then
       call read_regular_les_controls(input_path,les_enabled,les_cs,les_prt,les_sct,les_ci, &
         les_model,les_filter,les_test_ratio,les_grid_ratio,les_harmonic)
@@ -216,7 +233,7 @@ contains
     if(present(evaluate_diffusion)) then
       allocate(diffusion_rates, mold=state)
       allocate(old_boundary_rate(nvar),new_boundary_rate(nvar))
-    else
+    else if(linear_coefficient==0) then
       sdc_force=config%external_forcing
     end if
     boundary_totals=0.0_dp
@@ -415,7 +432,7 @@ contains
       if(time+dt<=time) error stop 'Maximum timestep cannot advance time'
       if(config%time_integrator=='sdc') then
         step_boundary_change=0;step_transport_theta=1;source_calls=0
-        if(present(evaluate_diffusion)) then
+        if(present(evaluate_diffusion).or.linear_coefficient/=0) then
           call perform_sdc(evaluate_sources)
         else
           call perform_sdc()
@@ -569,10 +586,25 @@ contains
       real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),stage_time
       real(dp), intent(out) :: rates(:,:,:,:,:)
       logical, intent(out) :: good
+      integer :: direction
       good=.false.;rates=0
-      if(.not.ieee_is_finite(stage_time).or.size(rates,5)/=2) return
+      if(.not.ieee_is_finite(stage_time).or.size(rates,5)/=1+merge(1,0,present(evaluate_diffusion))) return
       call compute_reactive_external_source_3d(u,config%external_forcing,rates(:,:,:,:,1),good)
       if(.not.good) return
+      if(linear_coefficient/=0) then
+        good=.false.
+        if(.not.all(ieee_is_finite(u(1:4,:,:,:)))) return
+        if(any(u(1,:,:,:)<=0).or.maxval(abs(u(1:4,:,:,:)))>1e30_dp) return
+        ! Pinned Forcing.cpp uses rho*(momentum-offset), not rho*(velocity-offset).
+        ! It supplies momentum only; do not invent an accompanying energy source.
+        do direction=1,3
+          rates(direction+1,:,:,:,1)=rates(direction+1,:,:,:,1)+ &
+            linear_coefficient*u(1,:,:,:)*(u(direction+1,:,:,:)-momentum_offset(direction))
+        end do
+        good=all(ieee_is_finite(rates))
+        if(.not.good) return
+      end if
+      if(.not.present(evaluate_diffusion)) return
       call evaluate_diffusion(u,t,[dx,dy,dz],faces,inflow_state,inflow_t,rates(:,:,:,:,2), &
         new_boundary_rate,extra_diffusivity,good)
       if(.not.good) return

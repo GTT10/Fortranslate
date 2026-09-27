@@ -19,7 +19,10 @@ def main():
     parser.add_argument('--les', choices=('smagorinsky', 'wale', 'vreman', 'dynamic'))
     parser.add_argument('--pinned-heat-flux', action='store_true', help='Reproduce pinned dynamic heat-component selection')
     parser.add_argument('--steps', type=int, default=1)
+    parser.add_argument('--linear-forcing', type=float, default=0, help='SI coefficient in m^3/(kg s)')
     args = parser.parse_args()
+    if not math.isfinite(args.linear_forcing) or abs(args.linear_forcing) > 1e30:
+        parser.error('invalid linear forcing coefficient')
     if not 1 <= args.steps <= 10000:
         parser.error('--steps must be between 1 and 10000')
     final_time = args.steps * 1e-8
@@ -42,6 +45,11 @@ def main():
     fortran_input = work / 'hydro_reference.nml'
     fortran_input.write_text(fortran_input.read_text().replace('final_time=1e-8,maximum_steps=1',
         f'final_time={final_time:.17g},maximum_steps={args.steps}') + '\n&reactive_timestep maximum_dt=1e-8 /\n')
+    if args.linear_forcing:
+        with reference_input.open('a') as stream:
+            stream.write(f'\npelec.add_forcing_src = 1\npelec.forcing_force = {args.linear_forcing*1000:.17g}\n')
+        with fortran_input.open('a') as stream:
+            stream.write(f'\n&reactive_linear_forcing coefficient={args.linear_forcing:.17g} /\n')
     if args.transport:
         reference_input = work / 'pelec_reference.inp'
         reference_input.write_text(reference_input.read_text().replace(
@@ -101,7 +109,7 @@ def main():
                           for a, b in zip(actual, reference))
         updates[key] = max(factor*abs(float(b[name])-float(c[name]))/scale
                            for b, c in zip(reference, initial))
-    report = dict(steps=args.steps, final_time=final_time, pinned_heat_flux=args.pinned_heat_flux, transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
+    report = dict(linear_forcing=args.linear_forcing, steps=args.steps, final_time=final_time, pinned_heat_flux=args.pinned_heat_flux, transport_enabled=args.transport, les=args.les, normalized_errors=errors, normalized_reference_updates=updates,
                   absolute_normalized_gate=1e-10, velocity_sha256=velocity_hash,
                   binaries={key: hashlib.sha256(getattr(args, key).read_bytes()).hexdigest()
                             for key in ('pelec', 'fortran', 'exporter')})
