@@ -63,7 +63,9 @@ contains
     call MPI_Allreduce(film_flag,hi,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.lo/=hi) return
     if(film_flag/=0.and.film_flag/=7) return
-    allocate(character(len=131072)::line)
+    valid=len(context)<=16008192
+    call agree();if(.not.agreed) return
+    allocate(character(len=max(131072,len(context)+1))::line)
     call MPI_Comm_rank(comm,rank,ierr)
     if(ierr/=MPI_SUCCESS) return
     call MPI_Comm_size(comm,nranks,ierr)

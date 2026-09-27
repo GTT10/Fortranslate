@@ -22,7 +22,8 @@ program pelef_reactive_eb_tree_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
-  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
+  use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_rate_profile, &
+    spray_rate_profile
   use spray_mpi_eb_remap_mod, only: remap_mpi_eb_spray
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
@@ -887,6 +888,8 @@ contains
     real(dp) :: mixture_antoine_coefficients(4,16)=0,mixture_antoine_temperature_ranges(2,16)=0
     real(dp) :: mixture_molecular_weights(16)=0
     real(dp) :: mixture_critical_temperatures(16)=0,mixture_normal_boiling_temperatures(16)=0
+    type(spray_rate_profile) :: rate_profiles(16)
+    character(len=:), allocatable :: profile_context
     character(len=4096) :: context_line
     character(len=1024) :: profile_files(16)
     namelist /eb_spray_rate_files/ profile_files
@@ -949,9 +952,20 @@ contains
       if(len_trim(profile_files(port))==0) cycle
       if(port_profile_points(port)/=0.or.any(port_profile_times(:,port)/=0).or. &
         any(port_profile_rates(:,port)/=0)) error stop 'Rate file conflicts with inline profile'
-      call read_spray_injection_profile(trim(profile_files(port)),port_profile_times(:,port), &
-        port_profile_rates(:,port),port_profile_points(port),ok)
+      call read_spray_rate_profile(trim(profile_files(port)),rate_profiles(port),ok)
       if(.not.ok) error stop 'Invalid EB spray rate file'
+      port_profile_points(port)=size(rate_profiles(port)%times)
+      if(port_profile_points(port)<=64) then
+        port_profile_times(:port_profile_points(port),port)=rate_profiles(port)%times
+        port_profile_rates(:port_profile_points(port),port)=rate_profiles(port)%rates
+      end if
+    end do
+    do port=1,port_count
+      if(allocated(rate_profiles(port)%times)) cycle
+      q=port_profile_points(port)
+      if(q/=0.and.(q<2.or.q>64)) error stop 'Invalid inline port profile size'
+      rate_profiles(port)%times=port_profile_times(:q,port)
+      rate_profiles(port)%rates=port_profile_rates(:q,port)
     end do
     if(nc<1.or.nc>16.or.number<1.or.number>125000) error stop 'Invalid MPI EB spray dimensions'
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
@@ -1060,16 +1074,16 @@ contains
     event_factors=injection_scales;event_velocity_scales=1
     do port=1,port_count
       q=port_profile_points(port)
-      if(q/=0.and.(q<2.or.q>64)) error stop 'Invalid port profile size'
+      if(q/=0.and.q<2) error stop 'Invalid port profile size'
       if(q==0) cycle
-      call integrate_spray_injection_profile(port_profile_times(:q,port),port_profile_rates(:q,port), &
-        port_profile_times(1,port),port_profile_times(q,port),profile_mass,ok)
+      call integrate_spray_injection_profile(rate_profiles(port)%times,rate_profiles(port)%rates, &
+        rate_profiles(port)%times(1),rate_profiles(port)%times(q),profile_mass,ok)
       if(.not.ok) error stop 'Invalid port rate profile'
     end do
     do c=1,injection_events
       port=event_ports(c);q=port_profile_points(port)
       if(q==0) cycle
-      call integrate_spray_injection_profile(port_profile_times(:q,port),port_profile_rates(:q,port), &
+      call integrate_spray_injection_profile(rate_profiles(port)%times,rate_profiles(port)%rates, &
         injection_times(c),injection_end_times(c),profile_mass,ok)
       if(.not.ok) error stop 'Invalid injection integration interval'
       profile_mass=profile_mass*injection_scales(c)
@@ -1112,6 +1126,20 @@ contains
         spray_context=spray_context//trim(context_line)//'|'
       end do
       close(stream)
+      do port=1,port_count
+        q=port_profile_points(port)
+        if(q<=64) cycle
+        allocate(character(len=56*q)::profile_context)
+        do c=1,q
+          write(profile_context(56*(c-1)+1:56*c),'(2(es27.18e3,1x))') &
+            rate_profiles(port)%times(c),rate_profiles(port)%rates(c)
+        end do
+        write(context_line,'(a,i0,a,i0,a)') 'LONG_RATE_V1:',port,':',q,':'
+        if(len(spray_context)+len_trim(context_line)+len(profile_context)+1>16000000) &
+          error stop 'Spray context capacity exceeded'
+        spray_context=spray_context//trim(context_line)//profile_context//'|'
+        deallocate(profile_context)
+      end do
     end if
   end subroutine
 
@@ -1234,7 +1262,7 @@ contains
     character(len=256) :: token,step_label
     character(len=:), allocatable :: path,bound_context,line
     logical :: valid,agreed,exists
-    allocate(character(len=131072)::line)
+    allocate(character(len=max(131072,len(spray_context)+8192))::line)
     candidate=mpi_state;ct=mpi_temperature;coupled=record;gas_record=record
     checkpoint_tree=topology;checkpoint_geometry=mpi_geometry;checkpoint_owners=mpi_owners
     particles=drops;components=component_mass;patches=films;patch_mass=film_mass

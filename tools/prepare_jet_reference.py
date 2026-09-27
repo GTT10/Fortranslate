@@ -53,8 +53,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     for name, data in source.items():
         (args.output/('upstream-'+name)).write_bytes(data)
-    (args.output/'rate.dat').write_text('# seconds kg/s; first four exact upstream knots\n'+
-        ''.join(f'{fmt(t)} {fmt(m)}\n' for t, m in selected))
+    (args.output/'rate.dat').write_text('# seconds kg/s; all exact upstream knots\n'+
+        ''.join(f'{fmt(t)} {fmt(m)}\n' for t, m in points))
     (args.output/'level_set.dat').write_text('4 8 4\n'+'1.0\n'*(5*9*5))
     (args.output/'tree.nml').write_text(f'''&eb_tree
  root_shape=4,8,4,child_count=0,
@@ -95,7 +95,7 @@ def main():
         initial_gas_temperature_K=440, initial_pressure_Pa=6e6,
         event_masses_kg=masses, expected_injected_mass_kg=math.fsum(masses),
         event_speeds_m_s=[m/(dt*640*math.pi*(4.5e-5)**2*.89) for m in masses],
-        expected_parcels=8, final_time_s=selected[-1][0],
+        rate_points=len(points), expected_parcels=8, final_time_s=selected[-1][0],
         adaptations=['4x8x4 all-fluid mesh without AMR', 'first two active rate intervals only',
                      'fuel reference temperature 300 K instead of out-of-range 298.15 K',
                      'nozzle center moved 1e-8 m inside lower-y boundary',
