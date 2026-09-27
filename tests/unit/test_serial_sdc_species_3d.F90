@@ -52,14 +52,14 @@ program test_serial_sdc_species_3d
   call initialize_reactive_eb_tree_3d(species,topology,geometry,root,temperature,saved,ok)
   call require(ok,'initialization')
   faces='periodic'
-  do mode=1,2
+  do mode=1,4
     state=saved;b=17;w=19;ch=23;force=29;aux=31;theta=37;calls=0
-    source_sign=real(2*mode-3,dp)
+    source_sign=real(2*mod(mode-1,2)-1,dp)
     call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1e-10_dp,1,.false., &
       [.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp, &
-      state,extended,faces,b,w,ch,force,theta,ok,auxiliary_source=source,auxiliary_change=aux)
+      state,extended,faces,b,w,ch,force,theta,ok,auxiliary_source=source,auxiliary_change=aux,mol_mode=mode>2)
     call require(calls==2,'both source stages reached')
-    if(mode==1) then
+    if(mod(mode,2)==1) then
       call require(.not.ok,'negative accepted species rejected')
       call require(all(state%nodes(1)%state==saved%nodes(1)%state),'state rollback')
       call require(all(state%nodes(1)%temperature==saved%nodes(1)%temperature),'temperature rollback')

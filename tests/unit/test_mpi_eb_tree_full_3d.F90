@@ -115,7 +115,7 @@ program test_mpi_eb_tree_full_3d
   call require(ok,'initial inventory')
   saved=tree
   call check_sdc_loop()
-  if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
+  if(test_mode=="mol".or.test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
      test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source".or. &
      test_mode=="aux_recursive".or.test_mode=="aux_route".or.test_mode=="diffusion".or.test_mode=="reactor") then
     deallocate(u,t)
@@ -229,6 +229,10 @@ contains
     call require(good,'SDC extended finest')
     call build_eb_tree_extended_geometry_3d(topology,geometry,extended_finest,extended,good)
     call require(good,'SDC extended geometry')
+    if(test_mode=="mol") then
+      call check_mol_parity(initial,geometry,extended,faces,force)
+      return
+    end if
     if(test_mode=="aux_source") then
       call check_auxiliary_sources(initial,geometry,extended,faces,force)
       return
@@ -714,6 +718,72 @@ contains
     end do
     good=.not.(source_failure==1.and.mpi_source_calls==21.and.rank==nranks-1)
   end subroutine
+  subroutine check_mol_parity(initial,geometry,extended,faces,force)
+    type(eb_reactive_tree_3d), intent(in) :: initial
+    type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)
+    character(len=*), intent(in) :: faces(6)
+    real(dp), intent(in) :: force(3)
+    type(eb_reactive_tree_3d) :: reference
+    type(amr_tree_state_3d) :: local,lt
+    integer :: owners(count),p,variant
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter,error
+    real(dp) :: initial_inventory(nv),final_inventory(nv)
+    logical :: good,reacting,lf,flags(4)
+    character(len=16) :: method
+    call integrate_reactive_eb_tree_3d(initial,initial_inventory,good)
+    call require(good,'MOL initial inventory')
+    do variant=1,4
+      reacting=mod(variant,2)==0;lf=variant==2.or.variant==3
+      flags=variant>1;method='none'
+      if(variant==3) method='flux_redist'
+      if(variant==4) method='state_redist'
+      reference=initial
+      if(variant<=2) then
+        call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1.e-10_dp,2,reacting,flags,force, &
+          2.e-7_dp,1.e-12_dp,reference,extended,faces,sb,sw,sch,sext,slimiter,good, &
+          redistribution=method,mol_mode=.true.,mol_lax_friedrichs=lf)
+      else
+        call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,reacting,flags,force, &
+          2.e-7_dp,1.e-12_dp,reference,extended,faces,sb,sw,sch,sext,slimiter,good, &
+          redistribution=method,mol_mode=.true.,mol_lax_friedrichs=lf)
+      end if
+      call require(good,'serial MOL evolution')
+      owners=[(mod(p-1,nranks),p=1,count)]
+      allocate(local%fields(count),lt%fields(count))
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        local%fields(p)%values=initial%nodes(p)%state
+        allocate(lt%fields(p)%values(1,4,4,4))
+        lt%fields(p)%values(1,:,:,:)=initial%nodes(p)%temperature
+      end do
+      if(variant<=2) then
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+          1.e-10_dp,2,reacting,flags,force,2.e-7_dp,1.e-12_dp,faces,b,w,ch,ext,limiter,MPI_COMM_WORLD,good, &
+          redistribution=method,mol_mode=.true.,mol_lax_friedrichs=lf)
+      else
+        call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
+          1.e-10_dp,2,reacting,flags,force,2.e-7_dp,1.e-12_dp,extended,faces,b,w,ch,ext,limiter,MPI_COMM_WORLD,good, &
+          redistribution=method,mol_mode=.true.,mol_lax_friedrichs=lf)
+      end if
+      call require(good,'MPI MOL evolution')
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        call require(all(local%fields(p)%values==reference%nodes(p)%state),'exact serial MPI MOL state')
+        call require(all(lt%fields(p)%values(1,:,:,:)==reference%nodes(p)%temperature),'exact serial MPI MOL temperature')
+      end do
+      call require(limiter==slimiter,'exact MOL limiter')
+      error=max(maxval(abs(b-sb)/max(1._dp,abs(sb))),maxval(abs(w-sw)/max(1._dp,abs(sw))), &
+        maxval(abs(ch-sch)/max(1._dp,abs(sch))),maxval(abs(ext-sext)/max(1._dp,abs(sext))))
+      call require(error<2.e-12_dp,'serial MPI MOL ledgers')
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,local,final_inventory,MPI_COMM_WORLD,good)
+      call require(good,'MOL final inventory')
+      error=maxval(abs(final_inventory-initial_inventory-b-w-ch-ext)/max(1._dp,abs(initial_inventory)))
+      if(rank==0) print *, 'MOL variant, composite residual: ',variant,error
+      call require(error<3.e-14_dp,'MOL composite closure')
+      deallocate(local%fields,lt%fields)
+    end do
+  end subroutine check_mol_parity
+
   subroutine check_sdc_recursive(initial,geometry,extended,faces,force)
     type(eb_reactive_tree_3d), intent(in) :: initial
     type(eb_geometry_3d), intent(in) :: geometry(:),extended(:)

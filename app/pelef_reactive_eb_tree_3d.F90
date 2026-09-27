@@ -258,9 +258,6 @@ program pelef_reactive_eb_tree_3d
   if(time_integrator/='split'.and.time_integrator/='sdc') error stop 'Invalid time integrator'
   if(mol_lax_friedrichs.and..not.mol_mode) error stop 'MOL LF flux requires MOL mode'
   if(mol_mode) then
-#ifndef PELEF_MPI_EB_TREE
-    error stop 'MOL requires the MPI tree application'
-#endif
     if(time_integrator/='sdc') error stop 'MOL requires the coupled time integrator'
   end if
   if(sdc_iterations<1.or..not.all(ieee_is_finite(external_forcing))) error stop 'Invalid SDC controls'
@@ -837,14 +834,14 @@ contains
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
         else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
           transport_flags,external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
         end if
       else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
