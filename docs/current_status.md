@@ -28,6 +28,9 @@ all four closures have focused mixed-parcel conservation/rollback checks
 application now accepts `eb_spray_les`, applies a diffusion timestep bound and
 binds LES settings to restart identity ([application checks](validation/les-particle-app-20260927.md));
 non-regular geometry is rejected by the adapter.
+The selected H2O2 gas and particle applications also have focused common and
+recursive LES checks, including serial/MPI gas interchange and changed-rank
+particle restart ([selected integration](validation/les-selected-integration-20260927.md)).
 
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
