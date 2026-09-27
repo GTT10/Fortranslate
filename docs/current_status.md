@@ -12,7 +12,9 @@ Older milestone prose remains historical detail, not a current global status.
 MPI AMR SDC now accepts owner-local diffusion callbacks for common and recursive
 steps, with collective validation and combined-flux synchronization
 ([callback checks](validation/mpi-amr-sdc-diffusion-20260927.md)). The MPI LES
-RHS and LES wrapper remain to be connected.
+RHS and common/recursive SDC wrapper now connect all four closures, with
+owner-local stage evaluation and temporal parent donors
+([MPI LES checks](validation/les-mpi-amr-sdc-20260927.md)). Application routing remains open.
 
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
@@ -23,8 +25,7 @@ transport, preserving transport boundary inventories and exported fluxes
 ([focused checks](validation/sdc-callback-transport-20260927.md)).
 The opt-in LES runtime now supplies a regular SDC wrapper for Smagorinsky,
 WALE, Vreman and Dynamic sources alongside molecular transport and forcing
-([library checks](validation/les-sdc-20260927.md)); application and AMR routing
-remain open.
+([library checks](validation/les-sdc-20260927.md)); application routing remains open.
 Regular LES SDC now exports combined hydro/transport/LES full-face fluxes for
 subsequent AMR synchronization ([reconstruction checks](validation/les-sdc-flux-20260927.md)).
 It also accepts caller-supplied stage halos and externally retained source
@@ -34,8 +35,7 @@ Serial AMR common-step SDC now connects all four LES closures to stage sources
 and combined-flux reflux ([AMR checks](validation/les-amr-sdc-20260927.md)).
 Serial recursive LES SDC now forwards parent temporal donors and combines
 substep fluxes at synchronization
-([recursive checks](validation/les-amr-sdc-recursive-20260927.md)). MPI and
-application routing remain open.
+([recursive checks](validation/les-amr-sdc-recursive-20260927.md)).
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
