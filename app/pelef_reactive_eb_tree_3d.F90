@@ -1,6 +1,7 @@
 program pelef_reactive_eb_tree_3d
 #ifdef PELEF_MPI_EB_TREE
   use mpi_f08
+  use mpi_eb_wall_heat_3d_mod, only: compute_mpi_eb_wall_heat_3d
   use mpi_eb_tree_initialize_3d_mod, only: initialize_mpi_eb_tree_3d
   use mpi_eb_tree_checkpoint_read_3d_mod, only: read_mpi_eb_tree_checkpoint_3d
   use mpi_eb_tree_checkpoint_3d_mod, only: write_mpi_eb_tree_checkpoint_3d
@@ -67,7 +68,7 @@ program pelef_reactive_eb_tree_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d,amr_tree_integer_layout_3d,amr_tree_state_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config,build_configured_eb_geometry_3d
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
@@ -158,7 +159,13 @@ program pelef_reactive_eb_tree_3d
   type(amr_tree_state_3d), allocatable :: sdc_ir
   real(dp) :: inflow_mach(6)=-1._dp,inflow_temperature(6)=0._dp,inflow_pressure(6)=0._dp
   real(dp), allocatable :: active_mach(:),active_temperature(:),active_pressure(:),inlet_state(:,:),inlet_primitive(:)
-  real(dp) :: wall_temperature(6)=0
+  real(dp) :: wall_temperature(6)=0,embedded_wall_temperature=0
+  real(dp), allocatable :: active_embedded_temperature
+#ifdef PELEF_MPI_EB_TREE
+  type(eb_geometry_3d), allocatable :: heat_geometry(:)
+  type(amr_tree_state_3d) :: heat_rates
+  real(dp) :: heat_power,heat_frequency
+#endif
   real(dp), allocatable :: active_wall_temperature(:)
   character(len=16) :: boundary_faces(6)='legacy'
   character(len=16), allocatable :: active_faces(:)
@@ -192,7 +199,7 @@ program pelef_reactive_eb_tree_3d
     viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,barodiffusion_enabled, &
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
-    regular_density,cut_density,initial_pressure,wall_temperature, &
+    regular_density,cut_density,initial_pressure,wall_temperature,embedded_wall_temperature, &
     time_integrator,sdc_iterations,sdc_reactor,external_forcing,redistribution,state_redist_target_volume_fraction, &
     automatic_timestep,subcycling,hydro_cfl,transport_cfl,chemistry_integrator,output_file,checkpoint_file,restart_file, &
     checkpoint_interval_steps,stop_after_checkpoint,regrid_count,regrid_times,regrid_child_count, &
@@ -267,6 +274,17 @@ program pelef_reactive_eb_tree_3d
     if(any(boundary_faces=='legacy')) error stop 'EB tree SDC requires explicit boundary faces'
   else
     if(any(external_forcing/=0)) error stop 'External forcing requires SDC'
+  end if
+  if(.not.ieee_is_finite(embedded_wall_temperature).or.embedded_wall_temperature<0) &
+    error stop 'Invalid embedded wall temperature'
+  if(embedded_wall_temperature>0) then
+#ifndef PELEF_MPI_EB_TREE
+    error stop 'Embedded wall heating requires the MPI tree application'
+#else
+    if(time_integrator/='sdc'.or..not.transport_enabled.or..not.thermal_conduction_enabled) &
+      error stop 'Embedded wall heating requires SDC and thermal conduction'
+    allocate(active_embedded_temperature,source=embedded_wall_temperature)
+#endif
   end if
   if(.not.all(ieee_is_finite([regular_density,cut_density,initial_pressure]))) error stop 'Invalid initial state'
   if(min(regular_density,cut_density,initial_pressure)<=0) error stop 'Nonpositive initial state'
@@ -565,6 +583,16 @@ program pelef_reactive_eb_tree_3d
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
     end if
+#ifdef PELEF_MPI_EB_TREE
+    if(allocated(active_embedded_temperature)) then
+      call compute_mpi_eb_wall_heat_3d(species,transport,topology,mpi_owners,mpi_geometry,heat_geometry, &
+        mpi_state,mpi_temperature,embedded_wall_temperature,heat_rates,heat_power,heat_frequency,MPI_COMM_WORLD,ok, &
+        boundary_faces=active_faces,inflow_state=inlet_state,inflow_mach=active_mach, &
+        inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+      if(.not.ok) error stop 'Embedded wall timestep estimate failed'
+      if(heat_frequency>0) dt=min(dt,transport_cfl/heat_frequency)
+    end if
+#endif
 #ifdef PELEF_MPI_EB_SPRAY
     if(les_enabled) then
       call les_source(mpi_state,mpi_temperature,dt,-1,les_rates,les_flux,les_theta,MPI_COMM_WORLD,ok)
@@ -741,7 +769,7 @@ contains
           extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,embedded_wall_temperature=active_embedded_temperature)
         else
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
           mpi_state,mpi_temperature,extended_geometry,dt,sdc_iterations,chemistry_enabled, &
@@ -749,7 +777,7 @@ contains
           active_faces,boundary,wall,chemical,step_force,theta,MPI_COMM_WORLD,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,embedded_wall_temperature=active_embedded_temperature)
         end if
       else
       call advance_mpi_eb_tree_full_3d(species,reactions,transport,topology,mpi_owners,mpi_geometry, &
@@ -807,7 +835,8 @@ contains
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
         films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
-        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction, &
+        embedded_wall_temperature=active_embedded_temperature)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -820,7 +849,8 @@ contains
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         particle_acceleration=acceleration,gas_acceleration=acceleration,split_created=step_split_created, &
-        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction, &
+        embedded_wall_temperature=active_embedded_temperature)
       end if
       else if(wall_impacts) then
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -834,7 +864,8 @@ contains
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
         films=films,film_mass=film_mass,film_settings=walls,film_impacts=.true.,model_rejected=model_rejected, &
-        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction, &
+        embedded_wall_temperature=active_embedded_temperature)
       if(model_rejected) error stop 'EB wall impact outside admissible empirical model range'
       else
       call advance_mpi_eb_spray_sdc(MPI_COMM_WORLD,topology,mpi_owners,mpi_geometry,extended_geometry,nodal_phi, &
@@ -847,7 +878,8 @@ contains
         inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature, &
         inflow_pressure=active_pressure,wall_temperature=active_wall_temperature, &
         split_created=step_split_created,particle_acceleration=acceleration,gas_acceleration=acceleration, &
-        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction)
+        evaluate_diffusion=evaluator,evaluate_reaction=evaluate_reaction, &
+        embedded_wall_temperature=active_embedded_temperature)
       end if
   end subroutine advance_particle_sdc
   subroutine les_source(state,temperature,interval,depth,rate,flux,limiter,comm,good, &
@@ -1658,6 +1690,16 @@ contains
     call build_eb_tree_extended_geometry_3d(topology,physical,extended_levels(topology%level_count()), &
       extended_geometry,valid)
     if(.not.valid) error stop 'Cannot build CTU patch geometry cache'
+#ifdef PELEF_MPI_EB_TREE
+    if(allocated(active_embedded_temperature)) then
+      if(allocated(heat_geometry)) deallocate(heat_geometry)
+      allocate(heat_geometry(size(topology%nodes)))
+      do p=1,size(topology%nodes)
+        call extract_eb_geometry_3d(extended_geometry(p),[5,5,5],topology%nodes(p)%shape+8,heat_geometry(p),valid)
+        if(.not.valid) error stop 'Cannot build embedded heat geometry cache'
+      end do
+    end if
+#endif
     call move_alloc(descriptors,cached_descriptors)
   end subroutine refresh_ctu_geometry
   function descriptor_for(layout,index) result(descriptor)
@@ -1930,11 +1972,22 @@ contains
     character(len=16) :: stored_faces(6)
     integer :: stored_counts(6),stored_nspecies
     real(dp) :: stored_composition(size(species),6)
-    real(dp) :: stored_prescribed(30),stored_wall_temperature(6)
+    real(dp) :: stored_prescribed(30),stored_wall_temperature(6),stored_embedded_temperature
     real(dp) :: interval,stored_hydro_cfl,stored_transport_cfl,stored_inlet(18)
     if (reading) then
       read(stream,'(a)',iostat=ios) magic
       if (ios/=0) error stop 'Missing tree application header'
+      if(magic=='PELEF_EB_TREE_EMBEDDED_HEAT_V1') then
+        if(.not.allocated(active_embedded_temperature)) error stop 'Restart embedded wall temperature mismatch'
+        read(stream,*,iostat=ios) stored_embedded_temperature
+        if(ios/=0) error stop 'Missing restart embedded wall temperature'
+        if(.not.ieee_is_finite(stored_embedded_temperature)) error stop 'Invalid restart embedded wall temperature'
+        if(stored_embedded_temperature/=embedded_wall_temperature) error stop 'Restart embedded wall temperature mismatch'
+        read(stream,'(a)',iostat=ios) magic
+        if(ios/=0) error stop 'Missing embedded heat application header'
+      else if(allocated(active_embedded_temperature)) then
+        error stop 'Restart embedded wall temperature mismatch'
+      end if
       if(magic=='PELEF_EB_TREE_ISOTHERMAL_V1') then
         if(.not.allocated(active_wall_temperature)) error stop 'Restart wall temperature mismatch'
         read(stream,*,iostat=ios) stored_wall_temperature
@@ -2008,6 +2061,11 @@ contains
         if (stored_hydro_cfl/=hydro_cfl.or.stored_transport_cfl/=transport_cfl) error stop 'Restart CFL mismatch'
       end if
     else
+      if(allocated(active_embedded_temperature)) then
+        write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_EMBEDDED_HEAT_V1'
+        if(ios==0) write(stream,'(es27.18e3)',iostat=ios) embedded_wall_temperature
+        if(ios/=0) error stop 'Cannot write embedded wall temperature context'
+      end if
       if(allocated(active_wall_temperature)) then
         write(stream,'(a)',iostat=ios) 'PELEF_EB_TREE_ISOTHERMAL_V1'
         if(ios==0) write(stream,'(6(es27.18e3,1x))',iostat=ios) wall_temperature

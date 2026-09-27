@@ -630,6 +630,8 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/eb/eb_reactive_two_level_3d_mod.F90
     src/eb/eb_reactive_patch_tree_3d_mod.F90
     src/io/eb_reactive_tree_checkpoint_3d_mod.F90
+    src/eb/eb_boundary_gradient_3d_mod.F90
+    src/eb/eb_wall_heat_source_3d_mod.F90
     src/eb/eb_reactive_transport_3d_mod.F90
     src/io/reactive_eb_3d_checkpoint_mod.F90
     src/driver/reactive_eb_3d_driver_mod.F90
@@ -680,6 +682,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       src/parallel/mpi_eb_tree_flux_3d_mod.F90
       src/parallel/mpi_eb_tree_hydro_3d_mod.F90
       src/parallel/mpi_eb_tree_subcycle_hydro_3d_mod.F90
+      src/parallel/mpi_eb_wall_heat_3d_mod.F90
       src/parallel/mpi_eb_tree_transport_3d_mod.F90
       src/parallel/mpi_eb_tree_subcycle_transport_3d_mod.F90
       src/parallel/mpi_eb_tree_full_3d_mod.F90

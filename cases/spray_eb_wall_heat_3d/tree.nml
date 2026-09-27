@@ -1,0 +1,13 @@
+&eb_tree
+ root_shape=4,4,4,child_count=0,
+ domain_lower=0,0,0,domain_upper=.004,.004,.004,
+ geometry_type='level_set',level_set_file='level_set.dat',
+ time_step=1e-7,final_time=2e-7,maximum_steps=2,maximum_step_retries=0,
+ time_integrator='sdc',sdc_iterations=2,subcycling=.false.,automatic_timestep=.false.,
+ chemistry_enabled=.false.,transport_enabled=.true.,
+ simple_transport_enabled=.true.,
+ hydro_method='plm_ctu',riemann_solver='pelec',boundary_faces=6*'outflow',
+ composition_count=2,composition_species='N2','O2',composition_mole_fractions=.79,.21,
+ regular_density=0.8789777620797411,cut_density=0.8789777620797411,initial_pressure=101325,
+ output_file='fortran.csv',embedded_wall_temperature=450,
+/
