@@ -1067,6 +1067,32 @@ if(TARGET pelef_mpi_spray_3d)
     set_tests_properties(spray_mpi_plm_difmag_restart PROPERTIES LABELS "spray;mpi" TIMEOUT 200 PROCESSORS 4)
 endif()
 
+if(PELEF_MECHANISM_BUNDLE AND TARGET pelef_selected_spray_tree_runtime AND PELEF_ENABLE_MPI)
+  file(SHA256 "${PELEF_MECHANISM_BUNDLE}" les_selected_bundle_sha)
+  file(SHA256 "${PROJECT_SOURCE_DIR}/mechanisms/h2o2_full.json" les_h2o2_bundle_sha)
+  if(les_selected_bundle_sha STREQUAL les_h2o2_bundle_sha)
+    foreach(les_mode common recursive)
+      set(les_selected_options --selected)
+      if(les_mode STREQUAL "recursive")
+        list(APPEND les_selected_options --recursive)
+      endif()
+      add_test(NAME les_selected_gas_app_${les_mode}
+        COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/check_les_mpi_amr_sdc_app.py"
+          --binary $<TARGET_FILE:pelef_mpi_amr_tree_reactive_3d_selected>
+          --serial $<TARGET_FILE:pelef_amr_tree_reactive_3d_selected>
+          --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/les-selected-gas-${les_mode}"
+          --mpiexec "${MPIEXEC_EXECUTABLE}" ${les_selected_options})
+      add_test(NAME les_selected_particle_app_${les_mode}
+        COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/application/check_les_particle_sdc_app.py"
+          --exe $<TARGET_FILE:pelef_mpi_reactive_eb_tree_3d_selected_spray>
+          --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/les-selected-particle-${les_mode}"
+          --mpiexec "${MPIEXEC_EXECUTABLE}" ${les_selected_options})
+      set_tests_properties(les_selected_gas_app_${les_mode} les_selected_particle_app_${les_mode}
+        PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "les;spray;mpi;sdc;selected")
+    endforeach()
+  endif()
+endif()
+
 if(TARGET test_spray_mpi_eb_reactive)
   foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle ctu-periodic ctu-periodic-subcycle ctu-wall ctu-wall-subcycle
       ctu-isothermal ctu-isothermal-subcycle)

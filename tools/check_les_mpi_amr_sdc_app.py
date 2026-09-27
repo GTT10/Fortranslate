@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--mpiexec', required=True)
     parser.add_argument('--recursive', action='store_true')
+    parser.add_argument('--selected', action='store_true', help='Use selected H2O2 composition input')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -23,6 +24,10 @@ def main():
     template = template.replace("riemann_solver='hllc'", "riemann_solver='pelec'")
     template = template.replace('final_time=1.0e-9, cfl=0.2', 'final_time=3.0e-10, cfl=0.0002')
     template = template.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.')
+    if args.selected:
+        template = template.replace("thermo_model='elementary'", "thermo_model='selected', "
+                                    "composition_count=3, composition_species='H2','O2','N2', "
+                                    "composition_mole_fractions=2.,1.,3.76")
     if args.recursive:
         template += '\n&amr_tree_timestepping subcycling=.true. /\n'
     topology = work / 'tree.dat'

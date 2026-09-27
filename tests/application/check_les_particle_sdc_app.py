@@ -19,6 +19,7 @@ def main():
     for name in ('exe', 'mpiexec', 'source', 'work'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--recursive', action='store_true')
+    parser.add_argument('--selected', action='store_true', help='Use selected H2O2 composition input')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='les_', dir=args.work.resolve()))
@@ -27,6 +28,9 @@ def main():
     template = (args.source / 'cases/mpi_eb_spray_3d/tree.nml').read_text()
     template = template.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
     template = template.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.')
+    if args.selected:
+        template = template.replace('&eb_tree', "&eb_tree\n composition_count=1, "
+                                    "composition_species(1)='N2', composition_mole_fractions(1)=1.,", 1)
     template = template.replace("output_file='result.csv'", "output_file='result.csv',time_integrator='sdc',"
                                 "sdc_iterations=2,boundary_faces=6*'outflow'")
     if args.recursive:
