@@ -32,9 +32,7 @@ and a 100 ns upper timestep. The Antoine evaluation range is restricted to
 300–371.6 K. Particle contacts use the current specular path; full wall-impact
 reference fidelity is not established. This is not full Spray-EB parity.
 
-**Current execution limitation:** the 8³, 200 ns connection attempt exhausts
-its step retries. The matching gas-only case also fails, so the blocker is
-not specific to particles. No successful evolution or full 64³ run is claimed.
-The failed artifacts are preserved in `build/spray-eb-connection` and
-`build/spray-eb-gas-diagnostic`; the next implementation task is to locate the
-rejected gas stage for this inclined wall and physical-boundary combination.
+The 8³, 200 ns connection now completes with five particles after repairing
+physical-wall source donor positions. The earlier failed particle and gas-only
+artifacts remain preserved. See [repair and evidence](../../docs/validation/spray-eb-source-halo-20260927.md).
+The full 64³ duration and reference-solver comparison remain unverified.
