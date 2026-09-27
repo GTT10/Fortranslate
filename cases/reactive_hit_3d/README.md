@@ -129,6 +129,11 @@ Add `--transport` for constant viscosity/conductivity and `--les wale` for
 WALE (also accepted: `smagorinsky`, `vreman`, `dynamic`). Dynamic uses the pinned
 optimized three-point test filter and harmonic face interpolation; see its
 [separate residual and limits](../../docs/validation/hit-dynamic-reference-20260927.md).
+For exact fixed-reference heat-component semantics, add `--pinned-heat-flux`
+with `--les dynamic`. This sets `pinned_heat_flux=.true.` in `reactive_les`:
+the x component feeds all directional faces, matching that pinned source.
+The default uses the face-normal component. See the
+[source finding and comparison](../../docs/validation/hit-dynamic-heat-component-20260927.md).
 Hydro, transport and
 transport/WALE one-step comparisons have now passed against the full pinned
 executable; see the [bounded results](../../docs/validation/hit-full-reference-20260927.md).
