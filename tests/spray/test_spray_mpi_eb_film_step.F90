@@ -41,7 +41,9 @@ program test_spray_mpi_eb_film_step
   integer :: nv,node,n(3),i,j,k,p,water,nitrogen,steps
   integer :: rank,nranks,ierr,owners(3),q
   logical :: ok
+  character(len=16) :: mode
   integer(int64) :: last_id
+  call get_command_argument(1,mode)
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -125,10 +127,12 @@ program test_spray_mpi_eb_film_step
       1e-9_dp,330._dp,.001_dp,1e-6_dp,p)
     if (p==2) then
       drops(p)%position(1)=.0035_dp
+      if(mode=='periodic') drops(p)%position(1)=.004_dp
     end if
     masses(:,p)=drops(p)%mass*[.25_dp,.75_dp]
   end do
   faces='slip_wall'
+  if(mode=='periodic') faces([1,2,5,6])='periodic'
   walls%enabled(1:2)=.true.;walls%evolve=.true.;walls%temperature=400
   walls%liquid_conductivity=.6_dp;walls%minimum_height=1e-10_dp
   allocate(boundary(nv));boundary=123
@@ -172,6 +176,10 @@ program test_spray_mpi_eb_film_step
   do p=1,size(drops)
     call require(drops(p)%temperature>330,'film heats')
     call require(drops(p)%position(2)==.000375_dp,'exact wall positions retained')
+    if(mode=='periodic'.and.drops(p)%material_id==2) then
+      call require(drops(p)%position(1)==.004_dp,'periodic upper endpoint retained')
+      call require(rank==owners(3),'periodic seam film follows wrapped finest owner')
+    end if
   end do
   do node=1,3
     if(owners(node)/=rank) cycle

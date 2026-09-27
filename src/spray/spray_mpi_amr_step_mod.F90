@@ -1315,7 +1315,7 @@ contains
     if (present(wall_films)) then
       patches=wall_films;patch_mass=film_mass
       call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
-        film_settings%maximum_films,valid,nodal_phi,maximum_level)
+        film_settings%maximum_films,valid,nodal_phi,maximum_level,periodic=periodic)
       if (.not.valid) return
       do n=1,nc
         mw(n)=species(components(n)%vapor_index)%molecular_weight
@@ -1619,7 +1619,7 @@ contains
     end do
     if(present(eb_geometry)) then
       call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,survivors,lower,spacing, &
-        options%maximum_parcels,valid,kept_mass,maximum_level=maximum_level)
+        options%maximum_parcels,valid,kept_mass,maximum_level=maximum_level,periodic=periodic)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,survivors,lower,spacing,periodic, &
         options%maximum_parcels,valid,kept_mass,maximum_level=maximum_level)
@@ -1627,7 +1627,7 @@ contains
     if (.not.valid) return
     if (present(wall_films)) then
       call migrate_mpi_amr_wall_films(comm,tree,owners,patches,patch_mass,lower,spacing, &
-        film_settings%maximum_films,valid,nodal_phi,maximum_level)
+        film_settings%maximum_films,valid,nodal_phi,maximum_level,periodic=periodic)
       if (.not.valid) return
     end if
     call MPI_Allreduce(ledger,global_ledger,size(ledger),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)

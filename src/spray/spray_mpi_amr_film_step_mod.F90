@@ -604,7 +604,7 @@ contains
     gas=state;temp=temperature;patches=films;masses=film_mass
     ! Validate the tree and closed film positions before any stencil lookup.
     call migrate_mpi_amr_wall_films(comm,tree,owners,patches,masses,lower,spacing,wall_options%maximum_films,valid, &
-      nodal_phi,maximum_level)
+      nodal_phi,maximum_level,periodic=periodic)
     if (.not.valid) return
     np=size(patches)
     valid=np<=125000
@@ -744,7 +744,7 @@ contains
       kept_mass(c,:)=pack(masses(c,:),patches%mass>0)
     end do
     call migrate_mpi_amr_wall_films(comm,tree,owners,kept,kept_mass,lower,spacing,wall_options%maximum_films,valid, &
-      nodal_phi,maximum_level)
+      nodal_phi,maximum_level,periodic=periodic)
     if (.not.valid) return
     call MPI_Allreduce(ledger,global_ledger,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
