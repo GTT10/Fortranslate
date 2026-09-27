@@ -30,7 +30,10 @@ outer synchronization, with collective ID allocation and rollback
 ([breakup checks](validation/spray-recursive-breakup-20260927.md)). KHRT
 shedding children now run on old-time physical stages, with their transverse
 energy charged to the gas and IDs committed with the accepted recursive step
-([child checks](validation/spray-recursive-children-20260927.md)). Films remain open. Uniform particle acceleration now
+([child checks](validation/spray-recursive-children-20260927.md)). The interior
+child placement formula now has a direct pinned-source and 2/4-rank stage check
+([placement audit](validation/spray-child-placement-20260927.md)); child count
+and angular-distribution parity remain open. Films remain open. Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger
 ([acceleration checks](validation/spray-recursive-acceleration-20260927.md)). End-of-level virtual cleanup, final-subcycle ghost cleanup and

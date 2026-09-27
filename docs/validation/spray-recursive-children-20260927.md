@@ -34,7 +34,10 @@ This reuses PeleF's common-step KHRT release/drift convention. It is not a claim
 of exact parity with pinned PelePhysics
 `6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b`: upstream child construction occurs
 after the tile's particle-update loop, and detailed child-placement/time-order
-parity remains to be established. This check does not qualify the physical
+parity remains to be established. A subsequent
+[placement audit](spray-child-placement-20260927.md) resolves the interior
+position formula and confirms that copies and new-time stages create no children;
+other reference differences remain. This check does not qualify the physical
 breakup model or its empirical constants.
 
 ## Independently completed checks
