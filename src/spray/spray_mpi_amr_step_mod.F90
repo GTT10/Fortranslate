@@ -51,7 +51,12 @@ contains
       time,interval,stage,iterations,faces, &
       source,remainder,wall_change,boundary_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,acceleration,last_id)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_source,acceleration,last_id, &
+      wall_films,film_mass,film_settings,model_rejected)
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    logical, optional, intent(out) :: model_rejected
     integer(int64), optional, intent(inout) :: last_id
     integer(int64), allocatable :: watermark
     type(MPI_Comm), intent(in) :: comm
@@ -88,6 +93,7 @@ contains
     if(present(last_id)) then
       allocate(watermark);watermark=last_id
     end if
+    if(present(model_rejected)) model_rejected=.false.
     ok=.false.;valid=tree%is_valid()
     call agree();if(.not.agreed) return
     levels=tree%level_count();level=target_level+1
@@ -134,7 +140,8 @@ contains
       state,temperature,width,target_level,grow,maximum_parcels,group,candidate,time,interval,stage,iterations,faces, &
       change,leftover,wall,exterior,valid,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta,acceleration,watermark)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,maximum_received,physical_delta,acceleration,watermark, &
+      wall_films,film_mass,film_settings,model_rejected)
     if(.not.valid) return
     physical(level)=group(1);virtuals(level)=group(2);ghosts(level)=group(3);work(level)=candidate
     if(stage==0.and.level<levels) ghosts(level+1)=next_ghost

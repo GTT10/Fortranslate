@@ -20,7 +20,7 @@ module spray_mpi_eb_reactive_mod
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_mpi_amr_film_mod, only: spray_level_film_population,initialize_mpi_eb_film_levels,migrate_mpi_amr_wall_films
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling,spray_sdc_film_stage, &
-    advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level
+    advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level,append_mpi_eb_film_births
   use spray_mpi_mod, only: split_mpi_spray_parcels
   use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d, &
     integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d
@@ -37,7 +37,7 @@ contains
       chemical_change,source_change,minimum_theta,particle_steps,last_id,ok,reaction_source,difmag, &
       redistribution,target_volume_fraction,gas_particle_change,level_steps,gas_acceleration, &
       inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,particle_acceleration,split_created, &
-      films,film_mass,film_settings,film_steps)
+      films,film_mass,film_settings,film_steps,film_impacts,model_rejected)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),iterations
@@ -69,6 +69,9 @@ contains
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
     type(spray_wall_options), optional, intent(in) :: film_settings
     integer, optional, intent(out) :: film_steps
+    logical, optional, intent(in) :: film_impacts
+    logical, optional, intent(out) :: model_rejected
+    logical :: impacts,rejected
     type(spray_level_film_population), allocatable :: film_physical(:),film_virtuals(:),film_ghosts(:)
     type(spray_sdc_film_stage), allocatable :: film_work(:)
     type(spray_wall_film), allocatable :: final_films(:)
@@ -89,14 +92,18 @@ contains
     integer :: nv,levels,rank,status,node,n(3),i,j,k,p,ios
     logical :: valid,agreed
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    impacts=.false.
+    if(present(film_impacts)) impacts=film_impacts
+    if(present(model_rejected)) model_rejected=.false.
     if(present(split_created)) split_created=0
     if(present(film_steps)) film_steps=0
-    film_flag=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    film_flag=merge(1,0,present(films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))+ &
+      8*merge(1,0,impacts)
     call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.film_low/=film_high) return
-    if(film_flag/=0.and.film_flag/=7) return
+    if(film_flag/=0.and.film_flag/=7.and.film_flag/=15) return
     valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid().and.valid_spray_options(options)
     if(present(films)) valid=valid.and.allocated(films).and.allocated(film_mass)
     valid=valid.and.all(boundary_faces=='outflow'.or. &
@@ -361,13 +368,30 @@ contains
       logical, intent(out) :: good
       type(amr_tree_state_3d) :: remainder,physical_rate,film_rate,film_remainder,film_actual
       real(dp) :: wall_delta(5),film_wall_delta(5),outside(nv),wall_full(nv),force_full(nv)
-      integer :: p
+      type(spray_wall_film), allocatable :: impact_films(:)
+      real(dp), allocatable :: impact_mass(:,:)
+      integer :: p,old_films
+      if(impacts) then
+        ! The particle snapshot is for impact thickness and appended deposits;
+        ! it must never replace the independently evolved film hierarchy.
+        impact_films=film_physical(depth+1)%films;impact_mass=film_physical(depth+1)%component_mass
+        old_films=size(impact_films)
+      call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
+        stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
+        boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
+        ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
+        inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate, &
+        acceleration=particle_acceleration,last_id=watermark,wall_films=impact_films,film_mass=impact_mass, &
+        film_settings=film_settings,model_rejected=rejected)
+        if(rejected.and.present(model_rejected)) model_rejected=.true.
+      else
       call advance_mpi_eb_recursive_population_stage(source_comm,species,transport,liquids,options,tree,owners,geometry, &
         stage_gas,stage_temp,3,depth,2,options%maximum_parcels,physical,virtuals,ghosts,work,time,interval,stage,iterations, &
         boundary_faces,rate,remainder,wall_delta,outside,good,phi,centroids,metrics, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
         inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=physical_rate, &
         acceleration=particle_acceleration,last_id=watermark)
+      end if
       if(.not.good) return
       if(present(films)) then
         call advance_mpi_eb_recursive_film_stage(source_comm,species,transport,liquids,options,film_settings, &
@@ -377,6 +401,14 @@ contains
           ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
           inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source=film_actual)
         if(.not.good) return
+        if(impacts.and.stage==0) then
+          ! The impact kernel preserves the old prefix and appends births.
+          ! They miss the old film kick and join only the final half kick.
+          call append_mpi_eb_film_births(source_comm,tree,owners,lower,spacing,2,film_settings%maximum_films,phi, &
+            work(depth+1)%midpoint_films(old_films+1:),work(depth+1)%midpoint_film_mass(:,old_films+1:), &
+            film_work(depth+1),good)
+          if(.not.good) return
+        end if
         do p=1,size(owners)
           if(owners(p)/=rank) cycle
           call add_source_rate(rate%fields(p)%values,film_rate%fields(p)%values,1._dp,valid)

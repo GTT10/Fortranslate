@@ -129,7 +129,7 @@ program test_spray_mpi_eb_reactive
     if(test_mode=='sdc'.or.test_mode=='sdc-force'.or.test_mode=='sdc-recursive'.or. &
       test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering'.or. &
       test_mode=='sdc-recursive-breakup'.or.test_mode=='sdc-recursive-khrt'.or. &
-      test_mode=='sdc-recursive-children'.or.test_mode=='sdc-recursive-film') then
+      test_mode=='sdc-recursive-children'.or.test_mode=='sdc-recursive-film'.or.test_mode=='sdc-recursive-impact') then
       allocate(labels(6));labels='outflow'
     end if
   end if
@@ -169,7 +169,11 @@ program test_spray_mpi_eb_reactive
   if(test_mode=='sdc-force') accel=[1000._dp,-2000._dp,3000._dp]
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   if(index(test_mode,'sdc-recursive')==1) then
-    call check_recursive_spray()
+    if(test_mode=='sdc-recursive-impact') then
+      call check_recursive_impact()
+    else
+      call check_recursive_spray()
+    end if
     if(test_mode=='sdc-recursive') call check_post_level_callback()
     call MPI_Finalize(ierr)
     stop
@@ -307,6 +311,65 @@ contains
     end if
     accepted=.not.(fail_post.and.depth==0.and.callback_rank==0)
   end subroutine check_post_context
+  subroutine check_recursive_impact()
+    integer :: attempt,live,film_count
+    integer(int64) :: counts(2)
+    logical :: rejected
+    options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    if(rank==nranks-1) then
+      drops(1)=spray_parcel(1_int64,[.0012_dp,.001250001_dp,.0015_dp], &
+        [0._dp,-100._dp,0._dp],1e-9_dp,350._dp,1._dp)
+      masses(:,1)=[.25_dp,.75_dp]*drops(1)%mass
+    end if
+    allocate(film_settings,films(merge(1,0,rank==0.or.rank==nranks-1)))
+    allocate(film_mass(2,size(films)))
+    film_settings%enabled=.true.;film_settings%evolve=.true.;film_settings%temperature=350
+    film_settings%liquid_conductivity=.6_dp;film_settings%minimum_height=1e-15_dp
+    if(size(films)>0) then
+      films(1)=spray_wall_film([merge(.0025_dp,.0015_dp,rank==0),.00125_dp,.0015_dp], &
+        [0._dp,1._dp,0._dp],1e-10_dp,350._dp,1e-4_dp,1e-5_dp,1)
+      film_mass(:,1)=[.6_dp,.4_dp]*films(1)%mass
+    end if
+    saved_drops=drops;saved_mass=masses;saved_films=films;saved_film_mass=film_mass
+    call inventory(before)
+    do attempt=1,2
+      options%maximum_parcels=merge(1,10000,attempt==1)
+      boundary=17;ledger=19;chemical=23;forcing=29;theta=31;exchange=37;counts=41
+      call advance_mpi_eb_spray_sdc_subcycle(MPI_COMM_WORLD,tree,owners,g,extended,phi, &
+        species,reactions,transport,liquids,options,field,temp,drops,masses,zero,spacing, &
+        1e-8_dp,2,.true.,[.true.,.true.,.true.,.true.],zero,2e-7_dp,1e-12_dp,labels, &
+        boundary,ledger,chemical,forcing,theta,steps,last_id,ok,gas_particle_change=exchange,level_steps=counts, &
+        films=films,film_mass=film_mass,film_settings=film_settings,film_steps=film_steps,film_impacts=.true., &
+        model_rejected=rejected)
+      if(attempt==1) then
+        call require(.not.ok.and..not.rejected.and.steps==0.and.film_steps==0.and.last_id==1, &
+          'recursive splash capacity failure rolls back IDs and clocks')
+        call require(size(drops)==size(saved_drops).and.all(masses==saved_mass).and. &
+          size(films)==size(saved_films).and.all(film_mass==saved_film_mass),'recursive impact inventory rollback')
+        call require(all(films%temperature==saved_films%temperature).and.all(films%mass==saved_films%mass), &
+          'recursive impact film thermal rollback')
+        call require(all(boundary==17).and.all(ledger==19).and.all(chemical==23).and.all(forcing==29).and. &
+          theta==31.and.all(exchange==37).and.all(counts==41),'recursive impact ledger rollback')
+        do node=1,2
+          if(owners(node)/=rank) cycle
+          call require(all(field%fields(node)%values==saved%fields(node)%values).and. &
+            all(temp%fields(node)%values==saved_t%fields(node)%values),'recursive impact gas rollback')
+        end do
+      else
+        call require(ok.and..not.rejected.and.steps==6.and.film_steps==6.and.all(counts==[1_int64,2_int64]), &
+          'recursive impact thermal coupled interval')
+      end if
+    end do
+    live=size(drops);film_count=size(films)
+    call MPI_Allreduce(MPI_IN_PLACE,live,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,film_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(live>1.and.last_id>1.and.film_count>2,'recursive splash children and newborn films')
+    call inventory(after)
+    if(rank==0) print *, 'Recursive impact residual / particles / films: ', &
+      maxval(abs(after-before-ledger-boundary-chemical-forcing)/max(abs(before),abs(after),1e-30_dp)),live,film_count
+    call require(all(abs(after-before-ledger-boundary-chemical-forcing)<= &
+      3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'recursive gas particle film wall conservation')
+  end subroutine check_recursive_impact
   subroutine check_recursive_spray()
     integer(int64) :: counts(2)
     integer :: attempt,final_owner,attempts,final_count
