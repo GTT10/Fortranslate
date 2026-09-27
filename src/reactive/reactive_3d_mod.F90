@@ -390,13 +390,14 @@ contains
   ! React.cpp cell update, exposed separately for hierarchy stage coordination.
   ! Nonreacting rates include hydro and averaged external/transport sources.
   subroutine react_sdc_state_3d(species,reactions,old_state,old_temperature,nonreacting_rates,dt,rtol,atol, &
-      state,temperature,reaction_source,ok,evaluate_reaction)
+      state,temperature,reaction_source,ok,evaluate_reaction,rotating_potential)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: old_state(:,:,:,:),old_temperature(:,:,:),nonreacting_rates(:,:,:,:),dt,rtol,atol
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),reaction_source(:,:,:,:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential(:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),ir(:,:,:,:)
     real(dp) :: rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
     integer :: n(3),nv,i,j,k,steps
@@ -408,8 +409,12 @@ contains
     if(any(shape(reaction_source)/=[nv-4,n])) return
     if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
     if(.not.all(ieee_is_finite(nonreacting_rates))) return
+    if(present(rotating_potential)) then
+      if(any(shape(rotating_potential)/=n)) return
+      if(.not.all(ieee_is_finite(rotating_potential)).or.any(rotating_potential<0)) return
+    end if
     allocate(ct,mold=old_temperature);allocate(recovered,mold=old_temperature)
-    call recover_reactive_temperatures_3d(species,old_state,old_temperature,n(1),n(2),n(3),ct,valid)
+    call recover_reactive_temperatures_3d(species,old_state,old_temperature,n(1),n(2),n(3),ct,valid,rotating_potential)
     if(.not.valid) return
     candidate=old_state+dt*nonreacting_rates
     if(.not.all(ieee_is_finite(candidate)).or.any(candidate(1,:,:,:)<=0)) return
@@ -419,6 +424,11 @@ contains
     do i=1,n(1)
       rhoe_old=old_state(5,i,j,k)-.5_dp*sum(old_state(2:4,i,j,k)**2)/old_state(1,i,j,k)
       rhoe_new=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+      if(present(rotating_potential)) then
+        rhoe_old=rhoe_old+old_state(1,i,j,k)*rotating_potential(i,j,k)
+        rhoe_new=rhoe_new+candidate(1,i,j,k)*rotating_potential(i,j,k)
+      end if
+      if(.not.all(ieee_is_finite([rhoe_old,rhoe_new]))) return
       rhoy=old_state(6:,i,j,k);react_t=old_temperature(i,j,k)
       if(present(evaluate_reaction)) then
         call evaluate_reaction(species,reactions,rhoe_old,nonreacting_rates(6:,i,j,k), &
@@ -431,6 +441,8 @@ contains
       nonreact_energy=candidate(5,i,j,k)
       candidate(1,i,j,k)=sum(rhoy);candidate(6:,i,j,k)=rhoy
       candidate(5,i,j,k)=rhoe_new+.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+      if(present(rotating_potential)) candidate(5,i,j,k)= &
+        candidate(5,i,j,k)-candidate(1,i,j,k)*rotating_potential(i,j,k)
       ir(:nv-5,i,j,k)=(rhoy-old_state(6:,i,j,k))/dt-nonreacting_rates(6:,i,j,k)
       ir(nv-4,i,j,k)=(candidate(5,i,j,k)-nonreact_energy)/dt
       ct(i,j,k)=react_t
@@ -438,7 +450,7 @@ contains
     end do
     end do
     if(.not.all(ieee_is_finite(ir))) return
-    call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
+    call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid,rotating_potential)
     if(.not.valid) return
     state=candidate;temperature=recovered;reaction_source=ir;ok=.true.
   end subroutine react_sdc_state_3d
@@ -2998,12 +3010,14 @@ contains
   end subroutine advance_reactive_boundary_hydro_3d
 
   subroutine recover_reactive_temperatures_3d( &
-      species, state, temperature_guess, nx, ny, nz, temperature, ok)
+      species, state, temperature_guess, nx, ny, nz, temperature, ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature_guess(:, :, :)
     integer, intent(in) :: nx, ny, nz
     real(dp), intent(out) :: temperature(:, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential(:,:,:)
+    real(dp), allocatable :: potential_cell
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: sound_speed
@@ -3018,13 +3032,19 @@ contains
     if (size(temperature, 1) /= nx .or. size(temperature, 2) /= ny .or. &
         size(temperature, 3) /= nz) return
 
+    if(present(rotating_potential)) then
+      if(any(shape(rotating_potential)/=[nx,ny,nz])) return
+      if(.not.all(ieee_is_finite(rotating_potential)).or.any(rotating_potential<0)) return
+      allocate(potential_cell)
+    end if
     allocate(primitive(reactive_nprim(size(species))))
     do k = 1, nz
       do j = 1, ny
         do i = 1, nx
+          if(allocated(potential_cell)) potential_cell=rotating_potential(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature_guess(i, j, k), &
-            primitive, temperature(i, j, k), sound_speed, cell_ok)
+            primitive, temperature(i, j, k), sound_speed, cell_ok,potential_cell)
           if (.not. cell_ok) then
             temperature = 0.0_dp
             return

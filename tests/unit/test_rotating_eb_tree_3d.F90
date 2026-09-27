@@ -155,17 +155,17 @@ program test_rotating_eb_tree_3d
       'z',-10._dp,stages(node),ok);call require(ok,'SDC geometry')
   end do
   call integrate_reactive_eb_tree_3d(saved,before,ok);call require(ok,'initial inventory')
-  do mode=1,4
+  do mode=1,6
     tree=saved;method='none'
     if(mode==2) method='flux_redist'
     if(mode==4) method='state_redist'
-    if(mode<=2) then
-      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1e-9_dp,1,.false., &
+    if(mode<=2.or.mode==5) then
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1e-9_dp,merge(2,1,mode>=5),mode>=5, &
         [.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp,tree,stages,faces, &
         boundary,wall,chemical,external,theta,ok,mol_mode=.true.,mol_lax_friedrichs=mod(mode,2)==0, &
         redistribution=method,frame=frame,old_predictor=predictor)
     else
-      call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1e-9_dp,1,.false., &
+      call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1e-9_dp,merge(2,1,mode>=5),mode>=5, &
         [.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp,tree,stages,faces, &
         boundary,wall,chemical,external,theta,ok,mol_mode=.true.,mol_lax_friedrichs=mod(mode,2)==0, &
         redistribution=method,frame=frame)

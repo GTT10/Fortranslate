@@ -1695,9 +1695,8 @@ contains
     end if
     if(present(frame)) then
       if(.not.mol) return
-      ! Reaction and diffusive operators must propagate the same energy convention
-      ! before combinations with rotation can be enabled.
-      if(chemistry.or.any(transport_flags)) return
+      ! Diffusive operators still need the same rotating energy convention.
+      if(any(transport_flags)) return
     end if
     mol_wall_old=0;mol_wall_new=0
     heat_old=0;heat_new=0;impulse_old=0;impulse_new=0
@@ -1865,7 +1864,7 @@ contains
       end do
       if(chemistry) then
         call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid,target_depth, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,frame=frame)
         if(.not.valid) return
         do node=1,size(tree%nodes)
           if(.not.active(node)) cycle
@@ -3935,7 +3934,10 @@ contains
   ! including refined parents. Reflux and restriction belong to the time driver.
   subroutine react_sdc_eb_tree_3d(species,reactions,old_tree,nonreacting_rates,dt,rtol,atol, &
       state,temperature,reaction_source,ok,target_depth, &
-      evaluate_reaction)
+      evaluate_reaction,frame)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), allocatable :: potential(:,:,:)
+    real(dp) :: position(3)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -3949,6 +3951,10 @@ contains
     integer :: nv,node,n(3),depth,i,j,k
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species));depth=-1
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+      allocate(potential(1,1,1))
+    end if
     if(.not.valid_tree(old_tree,nv).or.size(reactions)<1) return
     if(.not.field_shape(nonreacting_rates,nv).or..not.field_shape(reaction_source,nv-4)) return
     if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
@@ -3976,11 +3982,18 @@ contains
       do j=1,n(2)
       do i=1,n(1)
         if(old_tree%nodes(node)%geometry%volume_fraction(i,j,k)<=0) cycle
+        if(present(frame)) then
+          associate(g=>old_tree%nodes(node)%geometry)
+          position=[g%x_lower,g%y_lower,g%z_lower]+(real([i,j,k],dp)-.5_dp)*[g%dx,g%dy,g%dz]
+          end associate
+          call rotating_potential_3d(frame,position,potential(1,1,1),valid)
+          if(.not.valid) return
+        end if
         call react_sdc_state_3d(species,reactions,old_tree%nodes(node)%state(:,i:i,j:j,k:k), &
           old_tree%nodes(node)%temperature(i:i,j:j,k:k),nonreacting_rates%fields(node)%values(:,i:i,j:j,k:k), &
           dt,rtol,atol,candidate%fields(node)%values(:,i:i,j:j,k:k),temps%fields(node)%values(1,i:i,j:j,k:k), &
           sources%fields(node)%values(:,i:i,j:j,k:k),valid, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,rotating_potential=potential)
         if(.not.valid) return
       end do
       end do
