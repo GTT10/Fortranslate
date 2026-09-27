@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+MPI AMR SDC now accepts owner-local diffusion callbacks for common and recursive
+steps, with collective validation and combined-flux synchronization
+([callback checks](validation/mpi-amr-sdc-diffusion-20260927.md)). The MPI LES
+RHS and LES wrapper remain to be connected.
+
 Regular fixed/selected gas input now selects periodic SDC with
 external forcing through `time_integrator='sdc'`
 ([checks](validation/sdc-app-20260926.md)). Molecular transport now participates
