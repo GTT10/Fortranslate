@@ -14,6 +14,7 @@ def main():
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--reference-source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--events', type=int, default=2, help='Number of active ROI intervals to prepare')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root/'references/spray_jet_case.json').read_text())
@@ -42,11 +43,13 @@ def main():
     # First positive knot is the pinned SprayJet::readROI start time.
     if points[0] != (0., 0.) or points[1][1] <= 0:
         raise ValueError('Unexpected injection start')
-    selected = points[:4]
-    dt = selected[1][0]
-    if any(abs(t-i*dt) > 1e-20 for i, (t, _) in enumerate(selected)):
-        raise ValueError('Initial rate knots are not uniform')
-    masses = [.5*(b[0]-a[0])*(a[1]+b[1]) for a, b in zip(selected[1:], selected[2:])]
+    intervals = [(a, b) for a, b in zip(points[1:], points[2:]) if a[1] > 0 or b[1] > 0]
+    if not 1 <= args.events <= len(intervals):
+        raise ValueError(f'Event count must be between 1 and {len(intervals)}')
+    intervals = intervals[:args.events]
+    dt = points[1][0]
+    end_time = intervals[-1][1][0]
+    masses = [.5*(b[0]-a[0])*(a[1]+b[1]) for a, b in intervals]
     mw = next(s['molecular_weight'] for s in bundle['thermo'] if s['name'] == 'N2')
     density = 6e6*mw/(8314.46261815324*440)
     fmt = lambda v: format(v, '.17g')
@@ -55,12 +58,14 @@ def main():
         (args.output/('upstream-'+name)).write_bytes(data)
     (args.output/'rate.dat').write_text('# seconds kg/s; all exact upstream knots\n'+
         ''.join(f'{fmt(t)} {fmt(m)}\n' for t, m in points))
+    (args.output/'events.dat').write_text('# begin_s end_s port scale\n'+
+        ''.join(f'{fmt(a[0])} {fmt(b[0])} 1 1\n' for a, b in intervals))
     (args.output/'level_set.dat').write_text('4 8 4\n'+'1.0\n'*(5*9*5))
     (args.output/'tree.nml').write_text(f'''&eb_tree
  root_shape=4,8,4,child_count=0,
  domain_lower=-.006,0,-.006,domain_upper=.006,.084,.006,
  geometry_type='level_set',level_set_file='level_set.dat',
- time_step={fmt(dt)},final_time={fmt(selected[-1][0])},maximum_steps=3,maximum_step_retries=0,
+ time_step={fmt(dt)},final_time={fmt(end_time)},maximum_steps={2*args.events+2},maximum_step_retries=0,
  time_integrator='sdc',sdc_iterations=2,subcycling=.false.,automatic_timestep=.false.,
  chemistry_enabled=.false.,transport_enabled=.true.,simple_transport_enabled=.true.,
  hydro_method='plm_ctu',riemann_solver='pelec',
@@ -83,20 +88,22 @@ def main():
  speed=1,half_angle={fmt(math.radians(10.5))},diameter=4.5e-6,liquid_temperature=363,
  port_radii(1)=4.5e-5,port_nozzles(1)%profile='solid',
  port_velocity_from_rate(1)=.true.,port_discharge_coefficients(1)=.89,
- injection_events=2,injection_times(1:2)={fmt(selected[1][0])},{fmt(selected[2][0])},
- injection_end_times(1:2)={fmt(selected[2][0])},{fmt(selected[3][0])}
+
 /
 &eb_spray_rate_files
  profile_files(1)='rate.dat'
+/
+&eb_spray_events_file
+ event_file='events.dat'
 /
 ''')
     (args.output/'preparation.json').write_text(json.dumps(dict(
         reference=manifest, bundle_sha256=hashlib.sha256(args.bundle.read_bytes()).hexdigest(),
         initial_gas_temperature_K=440, initial_pressure_Pa=6e6,
         event_masses_kg=masses, expected_injected_mass_kg=math.fsum(masses),
-        event_speeds_m_s=[m/(dt*640*math.pi*(4.5e-5)**2*.89) for m in masses],
-        rate_points=len(points), expected_parcels=8, final_time_s=selected[-1][0],
-        adaptations=['4x8x4 all-fluid mesh without AMR', 'first two active rate intervals only',
+        event_speeds_m_s=[m/((b[0]-a[0])*640*math.pi*(4.5e-5)**2*.89) for m, (a, b) in zip(masses, intervals)],
+        rate_points=len(points), injection_events=args.events, expected_parcels=4*args.events, final_time_s=end_time,
+        adaptations=['4x8x4 all-fluid mesh without AMR', f'first {args.events} active rate intervals',
                      'fuel reference temperature 300 K instead of out-of-range 298.15 K',
                      'nozzle center moved 1e-8 m inside lower-y boundary',
                      'four deterministic parcels per event instead of stochastic sampling',

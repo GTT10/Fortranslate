@@ -23,7 +23,7 @@ program pelef_reactive_eb_tree_3d
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use spray_mpi_eb_particle_checkpoint_mod, only: mpi_eb_particle_checkpoint
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_rate_profile, &
-    spray_rate_profile
+    spray_rate_profile,spray_event_schedule,read_spray_event_schedule
   use spray_mpi_eb_remap_mod, only: remap_mpi_eb_spray
   use spray_mpi_amr_balance_mod, only: rebalance_mpi_amr_spray
   use spray_parcel_mod
@@ -103,8 +103,9 @@ program pelef_reactive_eb_tree_3d
   integer :: port_count=1,event_ports(1024)=1
   integer :: injection_events=1,next_injection=1
   integer(int64) :: last_particle_id=0,split_created_total=0,step_split_created=0
-  real(dp) :: injection_times(1024)=0,injection_scales(1024)=1,event_factors(1024)=1
-  real(dp) :: event_velocity_scales(1024)=1
+  real(dp) :: injection_times(1024)=0,injection_scales(1024)=1
+  type(spray_event_schedule) :: event_schedule
+  real(dp), allocatable :: event_factors(:),event_velocity_scales(:)
   type(spray_liquid), allocatable :: liquids(:)
   type(spray_options) :: particle_options
   type(spray_wall_options) :: walls
@@ -544,7 +545,7 @@ program pelef_reactive_eb_tree_3d
     call refresh_ctu_geometry()
     dt=min(time_step,final_time-record%time)
 #ifdef PELEF_MPI_EB_SPRAY
-    if(next_injection<=injection_events) dt=min(dt,injection_times(next_injection)-record%time)
+    if(next_injection<=injection_events) dt=min(dt,event_schedule%times(next_injection)-record%time)
 #endif
     if (automatic_timestep) then
 #ifdef PELEF_MPI_EB_TREE
@@ -892,6 +893,8 @@ contains
     character(len=:), allocatable :: profile_context
     character(len=4096) :: context_line
     character(len=1024) :: profile_files(16)
+    character(len=1024) :: event_file
+    namelist /eb_spray_events_file/ event_file
     namelist /eb_spray_rate_files/ profile_files
     namelist /eb_spray_les/ les_enabled,les_model,les_cs,les_prt,les_sct,les_ci,les_cfl, &
       les_test_model,les_test_ratio,les_grid_ratio,les_harmonic_mean
@@ -926,6 +929,10 @@ contains
     if(code/=0) error stop 'Invalid MPI EB spray input'
     if(allocated(active_faces).and..not.particle_outflow) &
       error stop 'Explicit MPI EB spray boundaries require particle_outflow'
+    event_file=''
+    rewind(stream)
+    read(stream,nml=eb_spray_events_file,iostat=code)
+    if(code>0) error stop 'Invalid EB spray event file input'
     profile_files=''
     rewind(stream)
     read(stream,nml=eb_spray_rate_files,iostat=code)
@@ -984,14 +991,26 @@ contains
     else if(walls%evolve) then
       error stop 'EB film evolution requires wall impacts'
     end if
-    if(injection_events<1.or.injection_events>1024) error stop 'Invalid injection event count'
-    if(.not.all(ieee_is_finite(injection_times)).or..not.all(ieee_is_finite(injection_scales))) &
-      error stop 'Nonfinite injection schedule'
-    if(any(injection_times<0).or.any(injection_times>1e6_dp).or.any(injection_scales<0).or. &
-      any(injection_scales>1e6_dp)) error stop 'Invalid injection schedule'
-    do q=2,injection_events
-      if(injection_times(q)<injection_times(q-1)) error stop 'Injection times must be nondecreasing'
-    end do
+    if(len_trim(event_file)>0) then
+      if(injection_events/=1.or.any(injection_times/=0).or.any(injection_scales/=1).or. &
+          any(event_ports/=1).or.any(injection_end_times/=-1)) error stop 'Event file conflicts with inline schedule'
+      call read_spray_event_schedule(trim(event_file),event_schedule,ok)
+      if(.not.ok) error stop 'Invalid EB spray event file'
+      injection_events=size(event_schedule%times)
+    else
+      if(injection_events<1.or.injection_events>1024) error stop 'Invalid injection event count'
+      if(.not.all(ieee_is_finite(injection_times)).or..not.all(ieee_is_finite(injection_scales))) &
+        error stop 'Nonfinite injection schedule'
+      if(any(injection_times<0).or.any(injection_times>1e6_dp).or.any(injection_scales<0).or. &
+        any(injection_scales>1e6_dp)) error stop 'Invalid injection schedule'
+      do q=2,injection_events
+        if(injection_times(q)<injection_times(q-1)) error stop 'Injection times must be nondecreasing'
+      end do
+      event_schedule%times=injection_times(:injection_events)
+      event_schedule%ends=injection_end_times(:injection_events)
+      event_schedule%ports=event_ports(:injection_events)
+      event_schedule%scales=injection_scales(:injection_events)
+    end if
     if(any(mixture_density_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
     if(any(mixture_cp_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
     if(any(mixture_vapor_pressure_models(nc+1:)/='clausius')) error stop 'Unused mixture property entries'
@@ -1024,7 +1043,7 @@ contains
       if(.not.valid_spray_liquid(liquids(c))) error stop 'Invalid mixture component property model'
     end do
     if(port_count<1.or.port_count>16) error stop 'Invalid injection port count'
-    if(any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
+    if(any(event_schedule%ports<1).or.any(event_schedule%ports>port_count)) &
       error stop 'Invalid injection event port'
     allocate(injection_ports(port_count))
     do port=1,port_count
@@ -1071,7 +1090,8 @@ contains
       injection_ports(port)%fractions=port_fractions(:nc,port)
       injection_ports(port)%parcels%material_id=port
     end do
-    event_factors=injection_scales;event_velocity_scales=1
+    event_factors=event_schedule%scales
+    allocate(event_velocity_scales(injection_events));event_velocity_scales=1
     do port=1,port_count
       q=port_profile_points(port)
       if(q/=0.and.q<2) error stop 'Invalid port profile size'
@@ -1081,12 +1101,12 @@ contains
       if(.not.ok) error stop 'Invalid port rate profile'
     end do
     do c=1,injection_events
-      port=event_ports(c);q=port_profile_points(port)
+      port=event_schedule%ports(c);q=port_profile_points(port)
       if(q==0) cycle
       call integrate_spray_injection_profile(rate_profiles(port)%times,rate_profiles(port)%rates, &
-        injection_times(c),injection_end_times(c),profile_mass,ok)
+        event_schedule%times(c),event_schedule%ends(c),profile_mass,ok)
       if(.not.ok) error stop 'Invalid injection integration interval'
-      profile_mass=profile_mass*injection_scales(c)
+      profile_mass=profile_mass*event_schedule%scales(c)
       if(profile_mass>1e6_dp.or.profile_mass>1e6_dp*port_masses(port)) error stop 'Integrated injection exceeds bounds'
       event_factors(c)=profile_mass/port_masses(port)
       if(port_velocity_from_rate(port)) then
@@ -1094,7 +1114,7 @@ contains
         if(profile_mass>0) then
           call liquid_mixture_properties(liquids,port_fractions(:nc,port),port_temperatures(port),rho,cp,e,ok)
           if(.not.ok) error stop 'Invalid rate-driven mixture density'
-          denominator=(injection_end_times(c)-injection_times(c))*rho*acos(-1._dp)* &
+          denominator=(event_schedule%ends(c)-event_schedule%times(c))*rho*acos(-1._dp)* &
             port_radii(port)**2*port_discharge_coefficients(port)
           if(denominator<=0) error stop 'Invalid rate-driven injection interval'
           if(profile_mass>1e7_dp*denominator) error stop 'Rate-driven injection speed exceeds bounds'
@@ -1140,6 +1160,16 @@ contains
         spray_context=spray_context//trim(context_line)//profile_context//'|'
         deallocate(profile_context)
       end do
+      if(len_trim(event_file)>0) then
+        allocate(character(len=96*injection_events)::profile_context)
+        do c=1,injection_events
+          write(profile_context(96*(c-1)+1:96*c),'(2(es27.18e3,1x),i11,1x,es27.18e3,1x)') &
+            event_schedule%times(c),event_schedule%ends(c),event_schedule%ports(c),event_schedule%scales(c)
+        end do
+        if(len(spray_context)+len(profile_context)+16>16000000) error stop 'Spray context capacity exceeded'
+        spray_context=spray_context//'EVENT_FILE_V1:'//profile_context//'|'
+        deallocate(profile_context)
+      end if
     end if
   end subroutine
 
@@ -1151,11 +1181,11 @@ contains
     type(spray_liquid) :: effective
     integer :: q,c,number,old_count,local_count,global_count
     do while(next_injection<=injection_events)
-      if(injection_times(next_injection)>record%time) exit
+      if(event_schedule%times(next_injection)>record%time) exit
       scale=event_factors(next_injection)
       if(scale>0) then
-        associate(injection_template=>injection_ports(event_ports(next_injection))%parcels, &
-          injection_fractions=>injection_ports(event_ports(next_injection))%fractions)
+        associate(injection_template=>injection_ports(event_schedule%ports(next_injection))%parcels, &
+          injection_fractions=>injection_ports(event_schedule%ports(next_injection))%fractions)
         number=size(injection_template);local_count=size(drops)
         call MPI_Allreduce(local_count,global_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,mpi_ierr)
         if(mpi_ierr/=MPI_SUCCESS) error stop 'Injection population reduction failed'
@@ -1393,13 +1423,13 @@ contains
       if(restart_layout_stage/=count(regrid_times(:regrid_count)<=saved_time)) error stop 'Restart regrid stage mismatch'
       if(saved_time>final_time.or.saved_steps>maximum_steps) error stop 'Restart beyond requested limits'
       if(saved_event<1.or.saved_event>injection_events+1) error stop 'Invalid restart event'
-      if(any(injection_times(:saved_event-1)>saved_time)) error stop 'Processed future injection'
+      if(any(event_schedule%times(:saved_event-1)>saved_time)) error stop 'Processed future injection'
       if(saved_event<=injection_events) then
-        if(injection_times(saved_event)<saved_time) error stop 'Missed restart injection'
+        if(event_schedule%times(saved_event)<saved_time) error stop 'Missed restart injection'
       end if
       expected_ids=0
       do p=1,saved_event-1
-        if(event_factors(p)>0) expected_ids=expected_ids+size(injection_ports(event_ports(p))%parcels)
+        if(event_factors(p)>0) expected_ids=expected_ids+size(injection_ports(event_schedule%ports(p))%parcels)
       end do
       if(watermark<expected_ids) error stop 'Invalid restart ID watermark'
       if(expected_splits<0.or.expected_splits>watermark-expected_ids) error stop 'Invalid restart split ID count'

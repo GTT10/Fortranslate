@@ -8,8 +8,65 @@ module spray_injection_profile_mod
   type, public :: spray_rate_profile
     real(dp), allocatable :: times(:),rates(:)
   end type
+  integer, parameter, public :: spray_schedule_max_events=65536
+  type, public :: spray_event_schedule
+    real(dp), allocatable :: times(:),ends(:),scales(:)
+    integer, allocatable :: ports(:)
+  end type
+  public :: read_spray_event_schedule
   public :: integrate_spray_injection_profile,read_spray_injection_profile,read_spray_rate_profile
 contains
+  ! Four SI columns: begin, end, integer port, scale. Publish only a complete table.
+  subroutine read_spray_event_schedule(path,schedule,ok)
+    character(len=*), intent(in) :: path
+    type(spray_event_schedule), intent(inout) :: schedule
+    logical, intent(out) :: ok
+    type(spray_event_schedule) :: candidate
+    character(len=4096) :: line
+    integer :: unit,ios,n,i,words,cut
+    logical :: in_word
+    ok=.false.;n=0
+    allocate(candidate%times(spray_schedule_max_events),candidate%ends(spray_schedule_max_events), &
+      candidate%scales(spray_schedule_max_events),candidate%ports(spray_schedule_max_events))
+    open(newunit=unit,file=path,status='old',action='read',iostat=ios)
+    if(ios/=0) return
+    do
+      read(unit,'(a)',advance='no',iostat=ios) line
+      if(ios==iostat_end) exit
+      if(ios/=iostat_eor) go to 910
+      cut=scan(line,'#!')
+      if(cut>0) line(cut:)=' '
+      words=0;in_word=.false.
+      do i=1,len_trim(line)
+        if(line(i:i)==' '.or.line(i:i)==achar(9)) then
+          in_word=.false.
+        else
+          if(scan('0123456789+-.eEdD',line(i:i))==0) go to 910
+          if(.not.in_word) words=words+1
+          in_word=.true.
+        end if
+      end do
+      if(words==0) cycle
+      if(words/=4.or.n==spray_schedule_max_events) go to 910
+      n=n+1
+      read(line,*,iostat=ios) candidate%times(n),candidate%ends(n),candidate%ports(n),candidate%scales(n)
+      if(ios/=0) go to 910
+      if(.not.all(ieee_is_finite([candidate%times(n),candidate%ends(n),candidate%scales(n)]))) go to 910
+      if(candidate%times(n)<0.or.candidate%ends(n)<candidate%times(n).or.candidate%ends(n)>1e6_dp) go to 910
+      if(candidate%scales(n)<0.or.candidate%scales(n)>1e6_dp) go to 910
+      if(candidate%ports(n)<1.or.candidate%ports(n)>16) go to 910
+      if(n>1) then
+        if(candidate%times(n)<candidate%times(n-1)) go to 910
+      end if
+    end do
+    close(unit,iostat=ios)
+    if(ios/=0.or.n<1) return
+    schedule%times=candidate%times(:n);schedule%ends=candidate%ends(:n)
+    schedule%ports=candidate%ports(:n);schedule%scales=candidate%scales(:n)
+    ok=.true.
+    return
+910 close(unit)
+  end subroutine
   ! Two whitespace-separated SI columns; blank lines and #/! comments are allowed.
   ! Publish a zero-padded table only after parsing and validating every record.
   subroutine read_spray_injection_profile(path,times,rates,count,ok)
