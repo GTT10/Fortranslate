@@ -57,7 +57,9 @@ Serial tree/halo recovery, conservative PCM/restriction and inlet energy adapter
 are connected ([transfer evidence](validation/rotating-eb-tree-transfer-20260927.md)).
 Serial inviscid, nonreacting old/new sources, time integration and reflux recovery
 are connected ([SDC evidence](validation/rotating-sdc-20260927.md)).
-Complete the fixed-reference 3D MOL path through reaction/transport energy
+Forced chemistry now carries rotating energy and density forcing
+([reaction evidence](validation/rotating-reaction-20260927.md)).
+Complete the fixed-reference 3D MOL path through transport energy
 conventions, MPI owner-local transfer/stepping, conservative remapping, timestep selection,
 boundary/initial states, budgets and checkpoint identity. Frame axis, origin
 and angular speed must agree across ranks and restarts. Coupled-physics time integration

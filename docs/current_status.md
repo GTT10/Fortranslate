@@ -39,7 +39,9 @@ Serial tree initialization, conserved transfer, halos and MOL spatial rates now
 carry the frame ([tree evidence](validation/rotating-eb-tree-transfer-20260927.md)).
 Serial inviscid, nonreacting MOL now integrates rotation on common or recursive
 time steps with bounded composite conservation checks
-([SDC evidence](validation/rotating-sdc-20260927.md)). Reaction/transport, MPI and
+([SDC evidence](validation/rotating-sdc-20260927.md)). Forced chemistry now carries
+the rotating energy convention, including density forcing
+([reaction evidence](validation/rotating-reaction-20260927.md)). Transport, MPI and
 application/restart integration remain open; rotating CFD input is not yet enabled.
 
 MOL-specific characteristic slopes, primitive face reconstruction and the
