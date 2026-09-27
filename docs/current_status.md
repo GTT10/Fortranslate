@@ -15,11 +15,15 @@ failure checks ([reconstruction](validation/mol-reconstruction-20260927.md),
 [interface flux](validation/mol-riemann-20260927.md)).
 Prepared EB patches now assemble centroid-corrected MOL spatial rates and
 boundary/wall ledgers with stationary balance and conservation checks.
-Time/application integration remains open
+Application integration remains open
 ([spatial rate](validation/eb-mol-spatial-rate-20260927.md)).
 Owner-local MPI MOL rates and fluxes now match serial evaluation in a nested
 wall fixture, including empty-rank ownership and collective rollback
 ([MPI spatial evaluation](validation/mpi-eb-mol-rate-20260927.md)).
+Nonreacting common MPI steps now combine old/new MOL rates, transport and wall
+exchange with trapezoidal weights. Focused heat, viscosity and nonuniform
+inviscid cases conserve inventory; reacting, recursive and particle/application
+MOL connections remain open ([time update](validation/mpi-mol-time-20260927.md)).
 
 The pinned Spray-EB plane and five initial physical droplets now have an
 auditable SI input preparer preserving the default 64³ grid and final time.
