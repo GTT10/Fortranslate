@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+MOL-specific characteristic slopes and primitive face reconstruction are now
+implemented with focused analytic and failure checks. MOL flux assembly and
+time/application integration remain open
+([reconstruction evidence](validation/mol-reconstruction-20260927.md)).
+
 The pinned Spray-EB plane and five initial physical droplets now have an
 auditable SI input preparer preserving the default 64³ grid and final time.
 An 8³ short case now completes with five parcels after fixing reflected-wall
