@@ -8,7 +8,7 @@ module reactive_1d_mod
   use mixture_thermo_mod, only: &
     valid_mixture_composition, mixture_mass_properties, &
     mixture_specific_gas_constant, mixture_pressure, mixture_density, &
-    mixture_sound_speed, temperature_from_internal_energy, &
+    mixture_sound_speed, temperature_from_internal_energy, mixture_temperature_bounds, &
     mass_fractions_from_mole_fractions, mole_fractions_from_mass_fractions
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
@@ -179,6 +179,7 @@ contains
     real(dp) :: rho, u, v, w, pressure, r_mix
     real(dp) :: molecular_weight, cp, cv, gamma, enthalpy, energy, entropy
     real(dp) :: denominator, candidate_temperature, candidate_sound_speed
+    real(dp) :: temperature_lower,temperature_upper,endpoint,endpoint_density
     real(dp) :: sound_speed_squared, sound_speed_ratio, kinetic
     real(dp) :: u_squared, v_squared, w_squared, velocity_sum
     real(dp) :: velocity_sum_with_w, energy_with_kinetic
@@ -219,7 +220,22 @@ contains
     call mixture_mass_properties( &
       species, y, candidate_temperature, molecular_weight, r_mix, cp, cv, &
       gamma, enthalpy, energy, entropy, local_ok)
-    if (.not. local_ok) return
+    if(.not.local_ok) then
+      call mixture_temperature_bounds(species,temperature_lower,temperature_upper,local_ok)
+      if(.not.local_ok) return
+      if(candidate_temperature>=temperature_lower.and.candidate_temperature<=temperature_upper) return
+      ! Division can invert an exactly representable forward-EOS endpoint to
+      ! one ULP outside its interval. Accept only the identical density obtained
+      ! from that endpoint, without widening the thermodynamic validity range.
+      endpoint=merge(temperature_lower,temperature_upper,candidate_temperature<temperature_lower)
+      endpoint_density=mixture_density(species,y,pressure,endpoint,local_ok)
+      if(.not.local_ok) return
+      if(endpoint_density/=rho) return
+      candidate_temperature=endpoint
+      call mixture_mass_properties( &
+        species,y,candidate_temperature,molecular_weight,r_mix,cp,cv,gamma,enthalpy,energy,entropy,local_ok)
+      if(.not.local_ok) return
+    end if
     if (.not. all(ieee_is_finite([ &
         molecular_weight, r_mix, cp, cv, gamma, enthalpy, energy, entropy]))) return
     call reactive_checked_multiply(gamma, pressure, sound_speed_squared, local_ok)

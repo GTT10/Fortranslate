@@ -4,8 +4,10 @@ program test_reactive_general_eos
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
+  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions,mixture_density,mixture_temperature_bounds, &
+    mixture_specific_gas_constant
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, &
@@ -96,9 +98,44 @@ program test_reactive_general_eos
   if (tolerance > 2.0e-13_dp) error stop "Conserved species closure failed"
   call check_transform_failure_contract(species, q, conserved, temperature)
   call check_2d_timestep_failure_contract(species, conserved, temperature)
+  call check_temperature_endpoints()
   write(*, '(a)') "test_reactive_general_eos: PASS"
 
 contains
+
+  subroutine check_temperature_endpoints()
+    type(nasa7_species), allocatable :: sp(:)
+    real(dp), allocatable :: primitive(:),state(:),fractions(:)
+    real(dp) :: lower,upper,target,actual,sound,r,raw,pressure(3)
+    integer :: side,p,c
+    logical :: valid
+    call load_h2o2_full_thermo(sp,valid);call require(valid,'endpoint thermo')
+    allocate(primitive(5+size(sp)),state(5+size(sp)),fractions(size(sp)))
+    fractions=0
+    do c=1,size(sp)
+      if(sp(c)%name=='N2') fractions(c)=1
+    end do
+    call mixture_temperature_bounds(sp,lower,upper,valid);call require(valid,'endpoint bounds')
+    r=mixture_specific_gas_constant(sp,fractions,valid);call require(valid,'endpoint gas constant')
+    pressure=[101325._dp,300000._dp,1e6_dp]
+    do side=1,2
+      target=merge(lower,upper,side==1)
+      do p=1,size(pressure)
+        primitive=0;primitive(2:4)=[3._dp,2._dp,1._dp];primitive(5)=pressure(p);primitive(6:)=fractions
+        primitive(1)=mixture_density(sp,fractions,pressure(p),target,valid)
+        call require(valid,'endpoint density')
+        raw=pressure(p)/(primitive(1)*r)
+        print *, 'Endpoint, direct inverse temperature:',target,raw
+        call reactive_primitive_to_conserved(sp,primitive,state,actual,sound,valid)
+        call require(valid,'exact forward EOS endpoint must convert')
+        call require(abs(actual-target)<=2*spacing(target),'endpoint temperature roundoff')
+        call require(state(1)==primitive(1).and.all(state(6:)==primitive(1)*fractions),'endpoint density unchanged')
+        ! A distinct density outside the EOS image of the endpoint must reject.
+        primitive(1)=primitive(1)+merge(32._dp,-32._dp,side==1)*spacing(primitive(1))
+        call require_primitive_rejected(sp,primitive,'out-of-range temperature remains rejected')
+      end do
+    end do
+  end subroutine
 
   subroutine assert_close(actual, expected, relative_tolerance, label)
     real(dp), intent(in) :: actual, expected, relative_tolerance
