@@ -9,6 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The pinned Spray-EB plane and five initial physical droplets now have an
+auditable SI input preparer preserving the default 64³ grid and final time.
+An 8³ short attempt fails at the gas-step retry limit, including without
+particles; successful inclined-wall evolution remains open
+([case and limitation](../cases/spray_eb_reference_3d/README.md)).
+
 A 3D embedded-wall quadratic gradient and scalar heat-flux kernel now follows
 the pinned type-0 stencil. Its coefficients agree with a compiled reference in
 24 orientations ([kernel evidence](validation/eb-boundary-gradient-20260927.md)).
