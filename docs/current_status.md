@@ -9,6 +9,11 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+The pinned reaction-free NC10H22/O2/N2 mechanism for Spray-Jet now imports
+with Simple transport fits. Six-state compiled coefficient checks pass; a
+decane jet application comparison remains open
+([import evidence](validation/decane-spray-import-20260927.md)).
+
 The pinned reaction-free NC7H16/O2/N2 mechanism imports with source/license
 checks; selected serial spray and MPI EB tree SDC paths require chemistry OFF
 and temperatures inside the source range

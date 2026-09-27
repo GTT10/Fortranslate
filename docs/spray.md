@@ -8,6 +8,13 @@ AMR/EB/MPI applications or claim those features are connected to particles.
 
 ## LES in particle SDC
 
+The Spray-Jet gas mechanism is available with
+`prepare_spray_reference.py --fuel decane-3sp`. Supply the pinned decane
+`mechanism.H` through `--simple-transport-header` to include Simple fits.
+Source/license checks, generation and compiled coefficient comparisons pass;
+the full jet case remains to be connected
+([decane import](validation/decane-spray-import-20260927.md)).
+
 For the selected EB tree heptane reference, `prepare_spray_reference.py`
 accepts `--simple-transport-header` with the exact pinned heptane_3sp
 `mechanism.H`. It verifies and imports Simple transport coefficients into a
