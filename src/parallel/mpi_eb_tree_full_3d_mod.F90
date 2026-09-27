@@ -1109,7 +1109,7 @@ contains
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source, &
       predictor_builder,post_level,evaluate_diffusion, &
-      evaluate_reaction,embedded_wall_temperature,embedded_noslip)
+      evaluate_reaction,embedded_wall_temperature,embedded_noslip,mol_mode)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
@@ -1130,7 +1130,7 @@ contains
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     real(dp), optional, intent(in) :: wall_temperature(6),gas_acceleration(3),embedded_wall_temperature
-    logical, optional, intent(in) :: embedded_noslip
+    logical, optional, intent(in) :: embedded_noslip,mol_mode
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
@@ -1408,7 +1408,7 @@ contains
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
         evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
@@ -1417,7 +1417,7 @@ contains
         redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
         evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
       end if
       else
       if(has_auxiliary) then
@@ -1427,7 +1427,7 @@ contains
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
@@ -1435,7 +1435,7 @@ contains
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
           evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature, &
-          embedded_noslip=embedded_noslip)
+          embedded_noslip=embedded_noslip,mol_mode=mol_mode)
       end if
       end if
       if(.not.accepted) return

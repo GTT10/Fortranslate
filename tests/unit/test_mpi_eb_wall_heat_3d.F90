@@ -148,10 +148,10 @@ program test_mpi_eb_wall_heat_3d
     if(mode==1) then
       call integrate_mpi_eb_tree_3d(topology,owners,geometry,local,before,MPI_COMM_WORLD,ok)
       call require(ok,'initial inventory')
-      do scheme=1,3
+      do scheme=1,4
         evolved=local;evolved_t=lt
         boundary=0;wall=0;chemical=0;external=0;theta=1
-        if(scheme/=2) then
+        if(mod(scheme,2)==1) then
           call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             extended_six,1e-7_dp,2,.false.,[.false.,.true.,.false.,.false.],[0._dp,0._dp,0._dp], &
             1e-8_dp,1e-12_dp,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
@@ -160,7 +160,7 @@ program test_mpi_eb_wall_heat_3d
           call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             1e-7_dp,2,.false.,[.false.,.true.,.false.,.false.],[0._dp,0._dp,0._dp], &
             1e-8_dp,1e-12_dp,extended_six,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
-            embedded_wall_temperature=400._dp)
+            embedded_wall_temperature=400._dp,mol_mode=scheme==4)
         end if
         call require(ok,'evolved isothermal wall')
         call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
@@ -173,10 +173,10 @@ program test_mpi_eb_wall_heat_3d
       end do
       call integrate_mpi_eb_tree_3d(topology,owners,geometry,visc_state,before,MPI_COMM_WORLD,ok)
       call require(ok,'initial viscous inventory')
-      do scheme=1,3
+      do scheme=1,4
         evolved=visc_state;evolved_t=lt
         boundary=0;wall=0;chemical=0;external=0;theta=1
-        if(scheme/=2) then
+        if(mod(scheme,2)==1) then
           call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             extended_six,1e-7_dp,2,.false.,[.true.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
             1e-8_dp,1e-12_dp,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
@@ -185,7 +185,7 @@ program test_mpi_eb_wall_heat_3d
           call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
             1e-7_dp,2,.false.,[.true.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
             1e-8_dp,1e-12_dp,extended_six,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
-            embedded_noslip=.true.)
+            embedded_noslip=.true.,mol_mode=scheme==4)
         end if
         call require(ok,'evolved adiabatic stationary wall')
         call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
@@ -219,6 +219,17 @@ program test_mpi_eb_wall_heat_3d
       call require(residual<1e-12_dp,'MOL inviscid conservation')
       call require(any(after/=before),'MOL nontrivial update')
       if(rank==0) print *, 'MOL inviscid nonuniform budget residual:',residual
+      before=after
+      call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,evolved,evolved_t, &
+        1e-7_dp,2,.false.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp], &
+        1e-8_dp,1e-12_dp,extended_six,faces,boundary,wall,chemical,external,theta,MPI_COMM_WORLD,ok, &
+        redistribution='state_redist',mol_mode=.true.)
+      call require(ok,'recursive redistributed MOL step')
+      call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
+      call require(ok,'recursive MOL final inventory')
+      residual=maxval(abs(after-before-boundary-wall-chemical-external)/max(1._dp,abs(before)))
+      call require(residual<1e-12_dp,'recursive redistributed MOL conservation')
+      if(rank==0) print *, 'Recursive redistributed MOL budget residual:',residual
     end if
     deallocate(local%fields,lt%fields)
   end do
