@@ -10,7 +10,8 @@ program test_mpi_eb_wall_heat_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,extract_eb_geometry_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
-    build_eb_tree_extended_geometry_3d
+    build_eb_tree_extended_geometry_3d,compute_eb_tree_wall_transport_3d, &
+    advance_reactive_eb_tree_sdc_3d,advance_reactive_eb_tree_sdc_subcycle_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   use eb_wall_heat_source_3d_mod, only: compute_eb_wall_heat_source_3d,compute_eb_wall_transport_source_3d
   use mpi_eb_wall_heat_3d_mod, only: compute_mpi_eb_wall_heat_3d,compute_mpi_eb_wall_transport_3d
@@ -24,19 +25,20 @@ program test_mpi_eb_wall_heat_3d
   type(elementary_reaction), allocatable :: reactions(:)
   type(amr_patch_3d) :: boxes(2)
   type(amr_patch_tree_3d) :: topology
-  type(eb_reactive_tree_3d) :: serial
+  type(eb_reactive_tree_3d) :: serial,visc_serial,serial_result
   type(eb_geometry_3d) :: padded,finest,geometry(3),padded_six
   type(eb_geometry_3d), allocatable :: extended(:),extended_six(:)
   type(amr_tree_state_3d) :: local,lt,rate,stage,baseline
   type(amr_tree_state_3d) :: evolved,evolved_t
-  type(amr_tree_state_3d) :: visc_state,visc_rate
+  type(amr_tree_state_3d) :: visc_state,visc_rate,serial_rate,saved_rate
   type(eb_integrated_flux_3d), allocatable :: flux(:)
   real(dp), allocatable :: q(:),y(:),u(:),root(:,:,:,:),rt(:,:,:),wide(:,:,:,:),wt(:,:,:),heat(:,:,:)
   real(dp) :: mw,rgas,cp,cv,gamma,enthalpy,energy,entropy,t,sound,expected,ref_frequency,power,frequency
   real(dp) :: theta,wall_energy,stage_frequency,control
   real(dp), allocatable :: before(:),after(:),boundary(:),wall(:),chemical(:),external(:)
   real(dp), allocatable :: visc_reference(:),visc_exchange(:),visc_source(:,:,:,:)
-  real(dp) :: residual
+  real(dp) :: residual,serial_frequency
+  real(dp), allocatable :: serial_exchange(:)
   character(len=16) :: faces(6)
   integer :: status,rank,ranks,nv,s,node,owners(3),n(3),mode,scheme,j
   logical :: ok
@@ -47,7 +49,7 @@ program test_mpi_eb_wall_heat_3d
   call load_h2o2_elementary_transport(transport,ok);call require(ok,'transport')
   nv=reactive_nvar(size(species))
   allocate(reactions(0),before(nv),after(nv),boundary(nv),wall(nv),chemical(nv),external(nv))
-  allocate(visc_reference(nv),visc_exchange(nv),visc_source(nv,8,8,8))
+  allocate(visc_reference(nv),visc_exchange(nv),visc_source(nv,8,8,8),serial_exchange(nv))
   faces='outflow'
   allocate(q(reactive_nprim(size(species))),y(size(species)),u(nv),root(nv,4,4,4),rt(4,4,4))
   y=0
@@ -94,6 +96,24 @@ program test_mpi_eb_wall_heat_3d
     .false.,.true.,0._dp,visc_source,visc_reference,ref_frequency,ok)
   call require(ok.and.visc_reference(3)<0,'whole fine stationary-wall drag')
   call require(visc_reference(1)==0.and.all(visc_reference(5:)==0),'stationary wall zero mass and energy')
+  visc_serial=serial
+  do node=1,3
+    visc_serial%nodes(node)%state(3,:,:,:)=visc_serial%nodes(node)%state(3,:,:,:)+2*visc_serial%nodes(node)%state(1,:,:,:)
+    visc_serial%nodes(node)%state(5,:,:,:)=visc_serial%nodes(node)%state(5,:,:,:)+2*visc_serial%nodes(node)%state(1,:,:,:)
+  end do
+  call compute_eb_tree_wall_transport_3d(species,transport,serial,extended,.true.,.false.,400._dp, &
+    serial_rate,serial_exchange,serial_frequency,ok)
+  call require(ok,'serial composite wall source')
+  saved_rate=serial_rate;serial_exchange=123;serial_frequency=456
+  call compute_eb_tree_wall_transport_3d(species,transport,serial,extended,.true.,.false.,-1._dp, &
+    serial_rate,serial_exchange,serial_frequency,ok)
+  call require(.not.ok.and.all(serial_exchange==123).and.serial_frequency==456,'serial source ledger rollback')
+  do node=1,3
+    call require(all(serial_rate%fields(node)%values==saved_rate%fields(node)%values),'serial source rate rollback')
+  end do
+  call compute_eb_tree_wall_transport_3d(species,transport,serial,extended,.true.,.false.,400._dp, &
+    serial_rate,serial_exchange,serial_frequency,ok)
+  call require(ok,'serial source after rejection')
   do mode=1,2
     owners=[0,0,mod(1,ranks)]
     if(mode==2) owners=0
@@ -109,7 +129,12 @@ program test_mpi_eb_wall_heat_3d
       rate,power,frequency,MPI_COMM_WORLD,ok)
     call require(ok,'distributed heat')
     call require(abs(power-expected)<1e-12_dp*abs(expected),'composite heat excludes covered coarse wall')
-    call require(frequency>0,'frequency')
+    call require(frequency>0.and.frequency==serial_frequency,'exact serial MPI wall frequency')
+    call require(abs(power-serial_exchange(5))<1e-12_dp*abs(power),'serial MPI composite heat')
+    do node=1,3
+      if(owners(node)/=rank) cycle
+      call require(all(rate%fields(node)%values==serial_rate%fields(node)%values),'exact serial MPI wall rates')
+    end do
     visc_state=local
     do node=1,3
       if(owners(node)/=rank) cycle
@@ -163,6 +188,7 @@ program test_mpi_eb_wall_heat_3d
             embedded_wall_temperature=400._dp,mol_mode=scheme==4)
         end if
         call require(ok,'evolved isothermal wall')
+        call compare_serial_wall(.true.,scheme)
         call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
         call require(ok,'final inventory')
         residual=maxval(abs(after-before-boundary-wall-chemical-external)/max(1._dp,abs(before)))
@@ -188,6 +214,7 @@ program test_mpi_eb_wall_heat_3d
             embedded_noslip=.true.,mol_mode=scheme==4)
         end if
         call require(ok,'evolved adiabatic stationary wall')
+        call compare_serial_wall(.false.,scheme)
         call integrate_mpi_eb_tree_3d(topology,owners,geometry,evolved,after,MPI_COMM_WORLD,ok)
         call require(ok,'final viscous inventory')
         residual=maxval(abs(after-before-boundary-wall-chemical-external)/max(1._dp,abs(before)))
@@ -236,6 +263,40 @@ program test_mpi_eb_wall_heat_3d
   if(rank==0) print *, 'PASS: cross-owner donors, composite wall heat, SDC source and collective rejection',expected
   call MPI_Finalize(status)
 contains
+  subroutine compare_serial_wall(heating,scheme)
+    logical, intent(in) :: heating
+    integer, intent(in) :: scheme
+    real(dp), allocatable :: target_temperature
+    real(dp) :: b(nv),w(nv),ch(nv),ext(nv),limiter,error
+    logical :: good,flags(4)
+    integer :: p
+    flags=[.not.heating,heating,.false.,.false.]
+    if(heating) then
+      serial_result=serial
+      allocate(target_temperature,source=400._dp)
+    else
+      serial_result=visc_serial
+    end if
+    if(mod(scheme,2)==1) then
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,1e-7_dp,2,.false.,flags, &
+        [0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp,serial_result,extended_six,faces,b,w,ch,ext,limiter,good, &
+        embedded_wall_temperature=target_temperature,embedded_noslip=.not.heating,mol_mode=scheme==3)
+    else
+      call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1e-7_dp,2,.false.,flags, &
+        [0._dp,0._dp,0._dp],1e-8_dp,1e-12_dp,serial_result,extended_six,faces,b,w,ch,ext,limiter,good, &
+        embedded_wall_temperature=target_temperature,embedded_noslip=.not.heating,mol_mode=scheme==4)
+    end if
+    call require(good,'serial embedded wall evolution')
+    do p=1,3
+      if(owners(p)/=rank) cycle
+      call require(all(serial_result%nodes(p)%state==evolved%fields(p)%values),'exact serial MPI heated/viscous state')
+      call require(all(serial_result%nodes(p)%temperature==evolved_t%fields(p)%values(1,:,:,:)), &
+        'exact serial MPI heated/viscous temperature')
+    end do
+    error=max(maxval(abs(b-boundary)/max(1._dp,abs(boundary))),maxval(abs(w-wall)/max(1._dp,abs(wall))), &
+      maxval(abs(ch-chemical)/max(1._dp,abs(chemical))),maxval(abs(ext-external)/max(1._dp,abs(external))))
+    call require(error<1e-12_dp.and.limiter==theta,'serial MPI wall ledgers and limiter')
+  end subroutine compare_serial_wall
   subroutine require(condition,message)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: message

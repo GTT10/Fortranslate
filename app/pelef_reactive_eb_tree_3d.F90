@@ -74,7 +74,7 @@ program pelef_reactive_eb_tree_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     advance_reactive_eb_tree_full_3d,integrate_reactive_eb_tree_3d,reactive_eb_tree_timestep_3d, &
     build_eb_tree_extended_geometry_3d,advance_reactive_eb_tree_sdc_3d,advance_reactive_eb_tree_sdc_subcycle_3d, &
-    remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d
+    remap_reactive_eb_tree_3d,tag_reactive_eb_tree_temperature_3d,compute_eb_tree_wall_transport_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length, &
     resolve_selected_composition
@@ -162,12 +162,10 @@ program pelef_reactive_eb_tree_3d
   real(dp) :: wall_temperature(6)=0,embedded_wall_temperature=0
   logical :: embedded_noslip=.false.,mol_mode=.false.,mol_lax_friedrichs=.false.
   real(dp), allocatable :: active_embedded_temperature
-#ifdef PELEF_MPI_EB_TREE
   type(eb_geometry_3d), allocatable :: heat_geometry(:)
   type(amr_tree_state_3d) :: heat_rates
   real(dp) :: heat_frequency
   real(dp), allocatable :: wall_exchange(:)
-#endif
   real(dp), allocatable :: active_wall_temperature(:)
   character(len=16) :: boundary_faces(6)='legacy'
   character(len=16), allocatable :: active_faces(:)
@@ -285,21 +283,13 @@ program pelef_reactive_eb_tree_3d
   if(.not.ieee_is_finite(embedded_wall_temperature).or.embedded_wall_temperature<0) &
     error stop 'Invalid embedded wall temperature'
   if(embedded_wall_temperature>0) then
-#ifndef PELEF_MPI_EB_TREE
-    error stop 'Embedded wall heating requires the MPI tree application'
-#else
     if(time_integrator/='sdc'.or..not.transport_enabled.or..not.thermal_conduction_enabled) &
       error stop 'Embedded wall heating requires SDC and thermal conduction'
     allocate(active_embedded_temperature,source=embedded_wall_temperature)
-#endif
   end if
   if(embedded_noslip) then
-#ifndef PELEF_MPI_EB_TREE
-    error stop 'Embedded no-slip wall requires the MPI tree application'
-#else
     if(time_integrator/='sdc'.or..not.transport_enabled.or..not.viscosity_enabled) &
       error stop 'Embedded no-slip wall requires SDC and viscosity'
-#endif
   end if
   if(.not.all(ieee_is_finite([regular_density,cut_density,initial_pressure]))) error stop 'Invalid initial state'
   if(min(regular_density,cut_density,initial_pressure)<=0) error stop 'Nonpositive initial state'
@@ -598,18 +588,23 @@ program pelef_reactive_eb_tree_3d
       if (.not.ok) error stop 'Tree timestep estimate failed'
       dt=min(dt,estimated_dt)
     end if
-#ifdef PELEF_MPI_EB_TREE
     if(allocated(active_embedded_temperature).or.embedded_noslip) then
       if(.not.allocated(wall_exchange)) allocate(wall_exchange(reactive_nvar(size(species))))
+#ifdef PELEF_MPI_EB_TREE
       call compute_mpi_eb_wall_transport_3d(species,transport,topology,mpi_owners,mpi_geometry,heat_geometry, &
         mpi_state,mpi_temperature,allocated(active_embedded_temperature),embedded_noslip,embedded_wall_temperature, &
         heat_rates,wall_exchange,heat_frequency,MPI_COMM_WORLD,ok, &
         boundary_faces=active_faces,inflow_state=inlet_state,inflow_mach=active_mach, &
         inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+#else
+      call compute_eb_tree_wall_transport_3d(species,transport,tree,heat_geometry, &
+        allocated(active_embedded_temperature),embedded_noslip,embedded_wall_temperature, &
+        heat_rates,wall_exchange,heat_frequency,ok,boundary_faces=active_faces, &
+        inflow_state=inlet_state,inflow_mach=active_mach,inflow_temperature=active_temperature,inflow_pressure=active_pressure)
+#endif
       if(.not.ok) error stop 'Embedded wall timestep estimate failed'
       if(heat_frequency>0) dt=min(dt,transport_cfl/heat_frequency)
     end if
-#endif
 #ifdef PELEF_MPI_EB_SPRAY
     if(les_enabled) then
       call les_source(mpi_state,mpi_temperature,dt,-1,les_rates,les_flux,les_theta,MPI_COMM_WORLD,ok)
@@ -834,14 +829,16 @@ contains
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
-          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
+          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs, &
+          embedded_wall_temperature=active_embedded_temperature,embedded_noslip=embedded_noslip)
         else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,sdc_iterations,chemistry_enabled, &
           transport_flags,external_forcing,rtol,atol, &
           tree,extended_geometry,active_faces,boundary,wall,chemical,step_force,theta,ok,sdc_ir, &
           difmag,inlet_state,active_mach,active_temperature,active_pressure,active_wall_temperature, &
           redistribution=redistribution,target_volume_fraction=state_redist_target_volume_fraction, &
-          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
+          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs, &
+          embedded_wall_temperature=active_embedded_temperature,embedded_noslip=embedded_noslip)
         end if
       else
       call advance_reactive_eb_tree_full_3d(species,reactions,transport,riemann_solver,dt,chemistry_enabled, &
@@ -1730,7 +1727,6 @@ contains
     call build_eb_tree_extended_geometry_3d(topology,physical,extended_levels(topology%level_count()), &
       extended_geometry,valid)
     if(.not.valid) error stop 'Cannot build CTU patch geometry cache'
-#ifdef PELEF_MPI_EB_TREE
     if(allocated(active_embedded_temperature).or.embedded_noslip) then
       if(allocated(heat_geometry)) deallocate(heat_geometry)
       allocate(heat_geometry(size(topology%nodes)))
@@ -1739,7 +1735,6 @@ contains
         if(.not.valid) error stop 'Cannot build embedded heat geometry cache'
       end do
     end if
-#endif
     call move_alloc(descriptors,cached_descriptors)
   end subroutine refresh_ctu_geometry
   function descriptor_for(layout,index) result(descriptor)

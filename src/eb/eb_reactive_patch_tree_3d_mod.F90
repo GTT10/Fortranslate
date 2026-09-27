@@ -14,6 +14,7 @@ module eb_reactive_patch_tree_3d_mod
   use reactive_eb_cfl_3d_mod, only: reactive_eb_signal_speeds_3d,compute_reactive_eb_euler_cfl_timestep_3d
   use eb_reactive_hydro_3d_mod, only: advance_reactive_eb_euler_3d,advance_reactive_eb_plm_ctu_3d, &
     compute_reactive_eb_flattening_3d,eb_plm_boundary_3d,compute_sdc_eb_hydro_3d
+  use eb_wall_heat_source_3d_mod, only: compute_eb_wall_transport_source_3d
   use eb_mol_hydro_3d_mod, only: compute_mol_eb_hydro_3d
   use eb_reactive_wall_flux_3d_mod, only: reactive_eb_slip_wall_source_3d
   use elementary_kinetics_mod, only: elementary_reaction
@@ -45,6 +46,7 @@ module eb_reactive_patch_tree_3d_mod
   public :: advance_reactive_eb_tree_subcycle_transport_3d
   public :: advance_reactive_eb_tree_subcycle_hydro_3d
   public :: advance_reactive_eb_tree_hydro_3d,compute_sdc_eb_tree_hydro_3d
+  public :: compute_eb_tree_wall_transport_3d
   public :: compute_mol_eb_tree_hydro_3d
   public :: synchronize_reactive_eb_tree_flux_3d
   public :: fill_reactive_eb_tree_halo_3d,fill_sdc_eb_tree_source_halo_3d
@@ -1265,8 +1267,9 @@ contains
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary, &
-      evaluate_reaction,mol_mode,mol_lax_friedrichs)
-    logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs
+      evaluate_reaction,mol_mode,mol_lax_friedrichs,embedded_wall_temperature,embedded_noslip)
+    real(dp), optional, intent(in) :: embedded_wall_temperature
+    logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs,embedded_noslip
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1466,13 +1469,15 @@ contains
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
         level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target,source_adapter,step_aux, &
-          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
+          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs, &
+          embedded_wall_temperature=embedded_wall_temperature,embedded_noslip=embedded_noslip)
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
         level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target, &
-          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs)
+          evaluate_reaction=evaluate_reaction,mol_mode=mol_mode,mol_lax_friedrichs=mol_lax_friedrichs, &
+          embedded_wall_temperature=embedded_wall_temperature,embedded_noslip=embedded_noslip)
       end if
       if(.not.accepted) return
       if(method/='none') then
@@ -1610,8 +1615,9 @@ contains
       target_depth,ancestor_start,ancestor_end,fractions_start,fractions_end,source_start,source_end, &
       integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer,target_volume_fraction, &
       auxiliary_source,auxiliary_change, &
-      evaluate_reaction,mol_mode,mol_lax_friedrichs)
-    logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs
+      evaluate_reaction,mol_mode,mol_lax_friedrichs,embedded_wall_temperature,embedded_noslip)
+    real(dp), optional, intent(in) :: embedded_wall_temperature
+    logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs,embedded_noslip
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1656,8 +1662,10 @@ contains
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
     real(dp) :: recovered,speed
     integer :: nv,node,n(3),it,i,j,k,c
-    logical :: valid,diffusive,mol
-    type(eb_geometry_3d), allocatable :: mol_geometry(:)
+    logical :: valid,diffusive,mol,noslip,wall_active
+    type(eb_geometry_3d), allocatable :: mol_geometry(:),heat_geometry(:)
+    real(dp), allocatable :: heat_stage,heat_frequency,wall_impulse(:)
+    real(dp) :: heat_old,heat_new,impulse_old(3),impulse_new(3)
     real(dp) :: mol_wall_old(size(wall_change)),mol_wall_new(size(wall_change))
     ok=.false.;nv=reactive_nvar(size(species));theta=1
     mol=.false.
@@ -1666,6 +1674,15 @@ contains
       if(mol_lax_friedrichs.and..not.mol) return
     end if
     mol_wall_old=0;mol_wall_new=0
+    heat_old=0;heat_new=0;impulse_old=0;impulse_new=0
+    noslip=.false.
+    if(present(embedded_noslip)) noslip=embedded_noslip
+    wall_active=noslip.or.present(embedded_wall_temperature)
+    if(noslip.and..not.transport_flags(1)) return
+    if(present(embedded_wall_temperature)) then
+      if(.not.ieee_is_finite(embedded_wall_temperature).or.embedded_wall_temperature<=0) return
+      if(.not.transport_flags(2)) return
+    end if
     if(present(evaluate_reaction).and..not.chemistry) return
     if(.not.valid_tree(tree,nv)) return
     if(any([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]/=nv)) return
@@ -1714,14 +1731,24 @@ contains
       call average_down_reactive_eb_tree_3d(species,old,valid)
       if(.not.valid) return
     end if
-    if(mol) then
+    if(mol.or.wall_active) then
       if(size(extended_geometry)/=size(tree%nodes)) return
-      allocate(mol_geometry(size(tree%nodes)))
+      if(mol) allocate(mol_geometry(size(tree%nodes)))
+      if(wall_active) then
+        allocate(heat_geometry(size(tree%nodes)),heat_stage,heat_frequency)
+        if(noslip) allocate(wall_impulse(3))
+      end if
       do node=1,size(tree%nodes)
         n=tree%topology%nodes(node)%shape
         if(any([extended_geometry(node)%nx,extended_geometry(node)%ny,extended_geometry(node)%nz]/=n+12)) return
-        call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,mol_geometry(node),valid)
-        if(.not.valid) return
+        if(mol) then
+          call extract_eb_geometry_3d(extended_geometry(node),[4,4,4],n+9,mol_geometry(node),valid)
+          if(.not.valid) return
+        end if
+        if(wall_active) then
+          call extract_eb_geometry_3d(extended_geometry(node),[5,5,5],n+8,heat_geometry(node),valid)
+          if(.not.valid) return
+        end if
       end do
     end if
     allocate(primitive(reactive_nprim(size(species))),ir%fields(size(tree%nodes)))
@@ -1748,7 +1775,7 @@ contains
     candidate=old;diffusive=any(transport_flags(:3))
     call sources(old,e0,d0,a0,0,f0,transfer0,valid,fractions_start)
     if(.not.valid) return
-    e1=e0;d1=d0;mol_wall_new=mol_wall_old
+    e1=e0;d1=d0;mol_wall_new=mol_wall_old;heat_new=heat_old;impulse_new=impulse_old
     if(present(auxiliary_source)) a1=a0
     call predictor_field(e0,d0,a0,op)
     allocate(u%fields(size(tree%nodes)),t%fields(size(tree%nodes)))
@@ -1868,6 +1895,9 @@ contains
     call integrate_reactive_eb_tree_3d(ledger,wall,valid)
     if(.not.valid) return
     if(mol) wall=.5_dp*(mol_wall_old+mol_wall_new)
+    wall(5)=wall(5)+.5_dp*(heat_old+heat_new)
+    wall(2:4)=wall(2:4)+.5_dp*(impulse_old+impulse_new)
+    if(.not.all(ieee_is_finite(wall))) return
     if(selected_depth<0) then
       if(redistribution_method/='none') before_sync=candidate
       call synchronize_reactive_eb_tree_flux_3d(species,candidate,hf,valid,boundary_faces=boundary_faces)
@@ -2044,8 +2074,20 @@ contains
         call compute_sdc_eb_tree_transport_3d(species,transport,dt,transport_flags(1),transport_flags(2), &
           transport_flags(3),transport_flags(4),state,transport_rate,flux,stage_theta,good, &
           inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
-          target_depth,ancestor_start,ancestor_end,fractions)
+          target_depth,ancestor_start,ancestor_end,fractions, &
+          embedded_wall_temperature=embedded_wall_temperature,extended_geometry=heat_geometry, &
+          embedded_wall_energy=heat_stage,embedded_frequency=heat_frequency, &
+          embedded_noslip=embedded_noslip,embedded_wall_impulse=wall_impulse)
         if(.not.good) return
+        if(wall_active) then
+          if(stage==0) then
+            heat_old=heat_stage
+            if(noslip) impulse_old=wall_impulse
+          else
+            heat_new=heat_stage
+            if(noslip) impulse_new=wall_impulse
+          end if
+        end if
       else
         stage_theta=1
       end if
@@ -2236,13 +2278,88 @@ contains
     end subroutine reaction_half
   end subroutine advance_reactive_eb_tree_full_3d
 
+  ! Two-cell donor margins for the quadratic embedded-wall stencil. Publish
+  ! composite wall exchange only after every active patch succeeds.
+  subroutine compute_eb_tree_wall_transport_3d(species,transport,tree,extended_geometry, &
+      conduction,noslip,wall_temperature,rate,wall_exchange,frequency,ok, &
+      boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,target_depth, &
+      ancestor_start,ancestor_end,ancestor_fraction)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(eb_reactive_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), intent(in) :: extended_geometry(:)
+    logical, intent(in) :: conduction,noslip
+    real(dp), intent(in) :: wall_temperature
+    type(amr_tree_state_3d), intent(inout) :: rate
+    real(dp), intent(inout) :: wall_exchange(:),frequency
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
+    integer, optional, intent(in) :: target_depth
+    type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
+    real(dp), optional, intent(in) :: ancestor_fraction(:)
+    type(amr_tree_state_3d) :: candidate
+    type(eb_reactive_tree_3d) :: ledger
+    type(eb_geometry_3d) :: center
+    real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:),vf(:,:,:)
+    real(dp) :: bound,node_frequency,inventory(reactive_nvar(size(species))),node_exchange(reactive_nvar(size(species)))
+    integer :: nv,node,n(3),depth
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species));depth=-1
+    if(.not.valid_tree(tree,nv).or.size(transport)/=size(species)) return
+    if(.not.ieee_is_finite(wall_temperature).or.size(wall_exchange)/=nv) return
+    if(conduction.and.wall_temperature<=0) return
+    if(size(extended_geometry)/=size(tree%nodes)) return
+    if(present(target_depth)) then
+      depth=target_depth
+      if(depth<0.or.depth>=tree%topology%level_count()) return
+    end if
+    if(present(ancestor_start).or.present(ancestor_end).or.present(ancestor_fraction)) then
+      if(depth<0) return
+    end if
+    allocate(candidate%fields(size(tree%nodes)));bound=0
+    do node=1,size(tree%nodes)
+      n=tree%topology%nodes(node)%shape
+      if(any([extended_geometry(node)%nx,extended_geometry(node)%ny,extended_geometry(node)%nz]/=n+4)) return
+      call extract_eb_geometry_3d(extended_geometry(node),[3,3,3],n+2,center,valid)
+      if(.not.valid) return
+      if(.not.matching_eb_metrics_3d(center,tree%nodes(node)%geometry)) return
+      allocate(candidate%fields(node)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      if(depth>=0.and.tree%topology%nodes(node)%level/=depth) cycle
+      allocate(ghost(nv,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2), &
+        gt(-1:n(1)+2,-1:n(2)+2,-1:n(3)+2),vf(-1:n(1)+2,-1:n(2)+2,-1:n(3)+2))
+      call fill_reactive_eb_tree_halo_3d(species,tree,node,ghost,gt,valid, &
+        boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_mach=inflow_mach, &
+        inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf, &
+        halo_width=2,target_volume_fraction=extended_geometry(node)%volume_fraction,restrict_snapshot=.false., &
+        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction)
+      if(.not.valid) return
+      call compute_eb_wall_transport_source_3d(species,transport,ghost,gt,extended_geometry(node), &
+        [3,3,3],n+2,conduction,noslip,wall_temperature,candidate%fields(node)%values,node_exchange,node_frequency,valid)
+      if(.not.valid) return
+      bound=max(bound,node_frequency)
+      deallocate(ghost,gt,vf)
+    end do
+    ledger=tree
+    do node=1,size(tree%nodes)
+      ledger%nodes(node)%state=candidate%fields(node)%values
+    end do
+    ! Exclude covered coarse cells rather than summing per-patch ledgers.
+    call integrate_reactive_eb_tree_3d(ledger,inventory,valid)
+    if(.not.valid) return
+    call move_alloc(candidate%fields,rate%fields)
+    wall_exchange=inventory;frequency=bound;ok=.true.
+  end subroutine compute_eb_tree_wall_transport_3d
+
   ! Common-interval molecular transport: closed outflow edges or open Mach inlets.
   ! Provisional transport rates and time-integrated face densities on every
   ! level. Parent states are retained until the coupled driver synchronizes.
   subroutine compute_sdc_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
       diffusion,barodiffusion,tree,transport_rate,integrated_flux,minimum_theta,ok, &
       inflow_mach,inflow_temperature,inflow_pressure,boundary_faces,inflow_state,wall_temperature, &
-      target_depth,ancestor_start,ancestor_end,ancestor_fraction)
+      target_depth,ancestor_start,ancestor_end,ancestor_fraction, &
+      embedded_wall_temperature,extended_geometry,embedded_wall_energy,embedded_frequency, &
+      embedded_noslip,embedded_wall_impulse)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     logical, intent(in) :: viscosity,conduction,diffusion,barodiffusion
@@ -2259,6 +2376,13 @@ contains
     integer, optional, intent(in) :: target_depth
     type(eb_reactive_tree_3d), optional, intent(in) :: ancestor_start,ancestor_end
     real(dp), optional, intent(in) :: ancestor_fraction(:)
+    real(dp), optional, intent(in) :: embedded_wall_temperature
+    type(eb_geometry_3d), optional, intent(in) :: extended_geometry(:)
+    real(dp), optional, intent(inout) :: embedded_wall_energy,embedded_frequency,embedded_wall_impulse(3)
+    logical, optional, intent(in) :: embedded_noslip
+    logical :: noslip,wall_active
+    real(dp) :: wall_values(reactive_nvar(size(species))),heat_frequency,heat_energy,wall_impulse(3),wall_temp
+    type(amr_tree_state_3d) :: heat
     integer :: selected_depth
     type(amr_tree_state_3d) :: rates
     type(eb_integrated_flux_3d), allocatable :: flux(:)
@@ -2271,6 +2395,18 @@ contains
     integer :: nv,node,n(3),depth
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    noslip=.false.;wall_temp=0
+    if(present(embedded_noslip)) noslip=embedded_noslip
+    wall_active=noslip.or.present(embedded_wall_temperature)
+    if(noslip.neqv.present(embedded_wall_impulse)) return
+    if(noslip.and..not.viscosity) return
+    if(wall_active.neqv.present(extended_geometry)) return
+    if(wall_active.neqv.present(embedded_wall_energy)) return
+    if(wall_active.neqv.present(embedded_frequency)) return
+    if(present(embedded_wall_temperature)) then
+      wall_temp=embedded_wall_temperature
+      if(.not.conduction.or..not.ieee_is_finite(wall_temp).or.wall_temp<=0) return
+    end if
     if(present(wall_temperature)) then
       if(.not.present(boundary_faces)) return
       if(.not.all(ieee_is_finite(wall_temperature)).or.any(wall_temperature<=0)) return
@@ -2322,8 +2458,25 @@ contains
       deallocate(ghost,gt)
     end do
     if(.not.ieee_is_finite(theta)) return
+    if(wall_active) then
+      call compute_eb_tree_wall_transport_3d(species,transport,tree,extended_geometry, &
+        present(embedded_wall_temperature),noslip,wall_temp,heat,wall_values,heat_frequency,valid, &
+        boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,target_depth, &
+        ancestor_start,ancestor_end,ancestor_fraction)
+      if(.not.valid) return
+      heat_energy=dt*wall_values(5);wall_impulse=dt*wall_values(2:4)
+      if(.not.all(ieee_is_finite([heat_energy,wall_impulse]))) return
+      do node=1,size(tree%nodes)
+        rates%fields(node)%values=rates%fields(node)%values+heat%fields(node)%values
+        if(.not.all(ieee_is_finite(rates%fields(node)%values))) return
+      end do
+    end if
     transport_rate=rates;call move_alloc(flux,integrated_flux)
     minimum_theta=theta;ok=.true.
+    if(wall_active) then
+      embedded_wall_energy=heat_energy;embedded_frequency=heat_frequency
+      if(noslip) embedded_wall_impulse=wall_impulse
+    end if
   end subroutine compute_sdc_eb_tree_transport_3d
 
   subroutine advance_reactive_eb_tree_transport_3d(species,transport,dt,viscosity,conduction, &
