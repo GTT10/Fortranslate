@@ -2109,7 +2109,7 @@ The volume denominator's numerical epsilon is converted from cm³ to m³.
 The configured `minimum_diameter` supplies the radius floor, rather than the
 reference's density-dependent minimum-mass rule.
 
-Each release creates four equal-weight children in opposite transverse pairs,
+By default, each release creates four equal-weight children in opposite transverse pairs,
 with speed `0.188 * omega_KH * lambda_KH`. They inherit the parent's position,
 temperature and liquid material, retain `parent_id`, and start fresh breakup states.
 The transverse plane uses the parent velocity (relative gas velocity if stationary).
@@ -2119,11 +2119,14 @@ PeleF choice and does not reproduce the upstream random azimuth/count algorithm.
 A separate `construct_reference_khrt_children` API now implements the reference
 count and transverse basis from explicit uniform samples, returning both gas
 momentum and energy compensation. It returns release positions before drift.
-Serial/MPI shedding APIs now select it through paired optional
-`reference_factor` and `gas_momentum` arguments, with variable counts and
-deterministic samples keyed by parent ID and the global ID watermark
-([release evidence](validation/khrt-reference-mpi-20260927.md)). Application
-selection and gas deposition of the returned vector feedback remain open.
+Set `khrt_parcel_factor` in [0,1] to select it; -1 retains the default quadrature.
+The reference's usual exponent is 0.5. Smaller factors create more computational
+parcels and can reach `maximum_parcels` sooner. Use the flat name in regular
+serial/MPI input, `options%khrt_parcel_factor` for serial EB/MPI AMR, or
+`particle_options%khrt_parcel_factor` for MPI EB tree input. Coupled source paths
+deposit both gas momentum and energy compensation. Deterministic samples use
+the parent ID and global ID watermark, and checkpoint context binds the policy
+([application evidence](validation/khrt-reference-app-20260927.md)).
 Creation occurs at the accepted parcel substep's end; children advance through
 any remaining interval. Failed feedback, capacity checks or later chemistry roll
 back the entire coupled update.

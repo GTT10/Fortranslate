@@ -366,6 +366,12 @@ See [focused evidence](../../docs/validation/spray-mpi-eb-properties-20260918.md
 
 ## KH-RT child parcels
 
+Add `particle_options%khrt_parcel_factor=.5` to select reference-count children
+with sampled azimuths. The default -1 retains four symmetric children. Gas
+momentum and energy compensate the child velocity changes, and changing the
+factor rejects checkpoint continuation. Common/recursive SDC checks are recorded
+[here](../../docs/validation/khrt-reference-app-20260927.md).
+
 The MPI EB executable now accepts the existing KH child controls, for example:
 
 ```fortran

@@ -9,12 +9,12 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
-KHRT now has a reference-count/azimuth child constructor with explicit random
-samples and conservative gas momentum/energy compensation. Application routing
-still uses four symmetric children. Serial/MPI release APIs now handle variable
-counts, parent-ordered IDs, deterministic samples and vector feedback
-([release checks](validation/khrt-reference-mpi-20260927.md)); coupled gas
-deposition and application/restart policy remain to be connected.
+KHRT now connects reference-count/azimuth children, deterministic samples and
+conservative gas momentum/energy compensation to application input through
+`khrt_parcel_factor`. The default -1 retains four symmetric children; [0,1]
+enables the reference count policy. Fixed-mechanism MPI EB common/recursive
+SDC has conservation and changed-rank continuation checks
+([application evidence](validation/khrt-reference-app-20260927.md)).
 
 MPI AMR SDC now accepts owner-local diffusion callbacks for common and recursive
 steps, with collective validation and combined-flux synchronization
