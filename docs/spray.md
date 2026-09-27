@@ -6,6 +6,15 @@ single-component point parcels, molecular transport, a deviatoric Smagorinsky
 closure and native or CVODE cell chemistry. It does not replace the existing
 AMR/EB/MPI applications or claim those features are connected to particles.
 
+## LES in particle SDC
+
+The common and recursive MPI particle SDC library wrappers accept a diffusion
+callback. `compute_mpi_regular_eb_les_sdc_3d` supplies Smagorinsky, WALE, Vreman
+or Dynamic rates and integrated face fluxes on fully regular geometry; it
+rejects cut/covered cells. Four-rank mixed-parcel checks cover conservation and
+transactional rejection ([evidence](validation/les-particle-sdc-20260927.md)).
+Application input routing remains open.
+
 ## Particle source export for SDC integration
 
 MPI AMR/EB deposition and `advance_mpi_amr_mixture_coupling` accept optional
