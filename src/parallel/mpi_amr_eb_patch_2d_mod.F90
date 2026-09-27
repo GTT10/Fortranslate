@@ -53,6 +53,7 @@ module mpi_amr_eb_patch_2d_mod
     close_cut_patch_set_conservation_2d
   use reactive_eb_2d_driver_mod, only: &
     compute_reactive_eb_cfl_timestep_2d
+  use gas_transport_mod, only: transport_numeric_values
   implicit none
   private
 
@@ -6725,7 +6726,7 @@ contains
       return
     end if
 
-    allocate(numeric_controls(2 + 5 * nsp + 5 * (5 + nprim + nsp)))
+    allocate(numeric_controls(2 + (14+4*nsp) * nsp + 5 * (5 + nprim + nsp)))
     allocate(numeric_minimum(size(numeric_controls)))
     allocate(numeric_maximum(size(numeric_controls)))
     allocate(integer_controls(6 + nsp + 24 * nsp + 5 * 3 * 24))
@@ -6736,12 +6737,9 @@ contains
     numeric_controls(1:2) = [interval, target_volume_fraction]
     numeric_index = 2
     do species_index = 1, nsp
-      numeric_controls(numeric_index + 1:numeric_index + 5) = [ &
-        transport(species_index)%well_depth, &
-        transport(species_index)%diameter, transport(species_index)%dipole, &
-        transport(species_index)%polarizability, &
-        transport(species_index)%rotational_relaxation]
-      numeric_index = numeric_index + 5
+      numeric_controls(numeric_index + 1:numeric_index + 14+4*nsp) = &
+        transport_numeric_values(transport(species_index),nsp)
+      numeric_index = numeric_index + 14+4*nsp
     end do
     do face = 1, 4
       numeric_controls(numeric_index + 1:numeric_index + 5) = [ &

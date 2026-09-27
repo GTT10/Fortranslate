@@ -5,6 +5,7 @@
  time_step=1e-7,final_time=2e-7,maximum_steps=2,maximum_step_retries=0,
  time_integrator='sdc',sdc_iterations=2,subcycling=.false.,automatic_timestep=.false.,
  chemistry_enabled=.false.,transport_enabled=.true.,
+ simple_transport_enabled=@SIMPLE_TRANSPORT@,
  hydro_method='plm_ctu',riemann_solver='pelec',boundary_faces=6*'periodic',
  composition_count=2,composition_species='N2','O2',composition_mole_fractions=.79,.21,
  regular_density=@DENSITY@,cut_density=@DENSITY@,initial_pressure=101325,

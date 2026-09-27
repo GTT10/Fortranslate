@@ -23,6 +23,11 @@ def main():
     assert bundle['source']['sha256'] == manifest['files']['yaml']['sha256']
     source = args.bundle.parent / bundle['source']['file']
     assert hashlib.sha256(source.read_bytes()).hexdigest() == bundle['source']['sha256']
+    simple_transport = 'simple_transport' in bundle
+    if simple_transport:
+        from pelephysics_transport_import import regenerate_simple_transport
+        if bundle['simple_transport'] != regenerate_simple_transport(bundle,args.bundle.parent):
+            raise ValueError('Simple transport coefficients differ from pinned source')
     mw = {s['name']: s['molecular_weight'] for s in bundle['thermo']}
     denominator = .21*mw['O2'] + .79*mw['N2']
     oxygen = .21*mw['O2']/denominator
@@ -33,6 +38,7 @@ def main():
     text = text.replace('@O2@', format(oxygen, '.17g')).replace('@N2@', format(1-oxygen, '.17g'))
     (args.output / 'reference.inp').write_text(text)
     tree = (root / 'cases/spray_reference/tree.nml.in').read_text().replace('@DENSITY@', format(density, '.17g'))
+    tree = tree.replace('@SIMPLE_TRANSPORT@', '.true.' if simple_transport else '.false.')
     (args.output / 'tree.nml').write_text(tree)
     (args.output / 'spray.nml').write_bytes((root / 'cases/spray_reference/spray.nml').read_bytes())
     (args.output / 'level_set.dat').write_text('4 4 4\n' + '1.0\n' * 5**3)
@@ -42,7 +48,7 @@ def main():
     (args.output / 'particles.dat').write_text('4\n' + (' '.join(format(v, '.17g') for v in row)+'\n')*4)
     (args.output / 'preparation.json').write_text(json.dumps(dict(
         reference=manifest, gas_temperature=400, liquid_temperature=310,
-        total_liquid_mass_kg=1e-10, multiplicity=multiplicity,
+        total_liquid_mass_kg=1e-10, multiplicity=multiplicity,simple_transport_enabled=simple_transport,
         gas_mass_fractions=dict(O2=oxygen,N2=1-oxygen),
         note='3D periodic in-range adaptation; time-integrator parity not established'), indent=2)+'\n')
     print(args.output.resolve())

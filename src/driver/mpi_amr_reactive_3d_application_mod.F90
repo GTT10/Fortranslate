@@ -36,6 +36,7 @@ module mpi_amr_reactive_3d_application_mod
     amr_reactive_3d_transport_operator,amr_reactive_boundary_signature_3d
   use mpi_amr_checkpoint_3d_mod, only: write_mpi_amr_checkpoint_3d,read_mpi_amr_checkpoint_3d
   use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
+  use gas_transport_mod, only: transport_numeric_values
   implicit none
   private
 
@@ -887,18 +888,14 @@ contains
 
     allocate(species_names(size(species)), transport_names(size(transport)))
     allocate(transport_geometries(size(transport)))
-    allocate(transport_values(5 * size(transport)))
+    allocate(transport_values((14+4*size(transport)) * size(transport)))
     do species_index = 1, size(species)
       species_names(species_index) = species(species_index)%name
       transport_names(species_index) = transport(species_index)%name
       transport_geometries(species_index) = transport(species_index)%geometry
-      value_offset = 5 * (species_index - 1)
-      transport_values(value_offset + 1:value_offset + 5) = [ &
-        transport(species_index)%well_depth, &
-        transport(species_index)%diameter, &
-        transport(species_index)%dipole, &
-        transport(species_index)%polarizability, &
-        transport(species_index)%rotational_relaxation]
+      value_offset = (14+4*size(transport)) * (species_index - 1)
+      transport_values(value_offset + 1:value_offset + 14+4*size(transport)) = &
+        transport_numeric_values(transport(species_index),size(transport))
     end do
     controls = [ &
       config%viscosity_enabled, config%thermal_conduction_enabled, &
@@ -1038,7 +1035,7 @@ contains
     allocate(reversible(nreactions), efficiencies_allocated(nreactions))
     allocate(troe_enabled(nreactions))
     allocate(species_values(18 * nspecies))
-    allocate(transport_values(5 * nspecies))
+    allocate(transport_values((14+4*nspecies) * nspecies))
     reaction_stride = 3 * nspecies + 27 + 4*plog_capacity + chebyshev_capacity**2
     allocate(reaction_values(reaction_stride * nreactions))
     species_values = 0.0_dp
@@ -1062,13 +1059,9 @@ contains
         species(species_index)%low_coefficients
       species_values(value_offset + 12:value_offset + 18) = &
         species(species_index)%high_coefficients
-      value_offset = 5 * (species_index - 1)
-      transport_values(value_offset + 1:value_offset + 5) = [ &
-        transport(species_index)%well_depth, &
-        transport(species_index)%diameter, &
-        transport(species_index)%dipole, &
-        transport(species_index)%polarizability, &
-        transport(species_index)%rotational_relaxation]
+      value_offset = (14+4*size(transport)) * (species_index - 1)
+      transport_values(value_offset + 1:value_offset + 14+4*size(transport)) = &
+        transport_numeric_values(transport(species_index),size(transport))
     end do
     do reaction_index = 1, nreactions
       reaction_equations(reaction_index) = reactions(reaction_index)%equation

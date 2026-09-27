@@ -603,6 +603,7 @@ contains
     real(dp) :: temperature_power, sqrt_weight_sum
     real(dp) :: numerator_factor, numerator, denominator, coefficient
     real(dp), allocatable :: candidate(:, :)
+    real(dp) :: simple_mu,simple_k,simple_d(size(species))
     integer :: i, j
 
     binary_diffusion = 0.0_dp
@@ -614,6 +615,12 @@ contains
     if (temperature <= 0.0_dp) return
     if (.not. ieee_is_finite(pressure)) return
     if (pressure <= 0.0_dp) return
+    if(allocated(transport(1)%simple_binary)) then
+      call simple_transport_from_records(species,transport, &
+        spread(1.0_dp/size(species),1,size(species)),temperature,pressure, &
+        simple_mu,simple_k,simple_d,binary_diffusion,ok)
+      return
+    end if
     allocate(candidate(size(species), size(species)))
     candidate = 0.0_dp
     pressure_atmospheres = pressure / standard_atmosphere
@@ -720,6 +727,7 @@ contains
     real(dp), allocatable :: binary_diffusion(:, :), candidate(:)
     real(dp) :: denominator, total, modified_total, mass_fraction_mean
     real(dp) :: mass_difference, correction, numerator, coefficient, term
+    real(dp) :: simple_mu,simple_k
     integer :: i, j, nspecies
 
     diffusion_coefficients = 0.0_dp
@@ -732,6 +740,12 @@ contains
     if (temperature <= 0.0_dp) return
     if (.not. ieee_is_finite(pressure)) return
     if (pressure <= 0.0_dp) return
+    if(allocated(transport(1)%simple_binary)) then
+      allocate(binary_diffusion(nspecies,nspecies))
+      call simple_transport_from_records(species,transport,mass_fractions,temperature,pressure, &
+        simple_mu,simple_k,diffusion_coefficients,binary_diffusion,ok)
+      return
+    end if
     allocate(y_modified(nspecies), mole_fractions(nspecies))
     allocate(binary_diffusion(nspecies, nspecies))
     allocate(candidate(nspecies))
@@ -808,6 +822,7 @@ contains
     real(dp), intent(out) :: diffusion_coefficients(:)
     logical, intent(out) :: ok
 
+    real(dp) :: binary(size(species),size(species))
     logical :: local_ok
     real(dp) :: candidate_viscosity, candidate_conductivity
     real(dp), allocatable :: candidate_diffusion(:)
@@ -823,6 +838,11 @@ contains
     if (temperature <= 0.0_dp) return
     if (.not. ieee_is_finite(pressure)) return
     if (pressure <= 0.0_dp) return
+    if(allocated(transport(1)%simple_binary)) then
+      call simple_transport_from_records(species,transport,mass_fractions,temperature,pressure, &
+        viscosity,conductivity,diffusion_coefficients,binary,ok)
+      return
+    end if
     allocate(candidate_diffusion(size(species)))
     candidate_viscosity = 0.0_dp
     candidate_conductivity = 0.0_dp
@@ -848,6 +868,29 @@ contains
     diffusion_coefficients = candidate_diffusion
     ok = .true.
   end subroutine mixture_transport_coefficients
+
+  subroutine simple_transport_from_records(species,transport,y,t,p,mu,k,d,binary,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: y(:),t,p
+    real(dp), intent(out) :: mu,k,d(:),binary(:,:)
+    logical, intent(out) :: ok
+    real(dp) :: fm(4,size(species)),fl(4,size(species))
+    real(dp) :: fd(4,size(species)*(size(species)+1)/2),rho
+    integer :: i,j,n
+    n=size(species)
+    do j=1,n
+      fm(:,j)=transport(j)%simple_viscosity
+      fl(:,j)=transport(j)%simple_conductivity
+      do i=1,j
+        fd(:,j*(j-1)/2+i)=transport(i)%simple_binary(:,j)
+      end do
+    end do
+    call pelephysics_simple_transport(species%molecular_weight,y,t,p,fm,fl,fd,mu,k,d,binary,ok)
+    if(.not.ok) return
+    rho=p/(8314.46261815324_dp*t*sum(y/species%molecular_weight))
+    d=d/rho
+  end subroutine
 
   subroutine pelephysics_simple_transport(molecular_weights,y,temperature,pressure, &
       fitmu,fitlam,fitbinary,viscosity,conductivity,rho_diffusion,binary,ok)

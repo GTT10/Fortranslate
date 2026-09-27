@@ -23,6 +23,7 @@ module amr_reactive_3d_checkpoint_mod
   use amr_hierarchy_3d_mod, only: &
     amr_patch_3d, initialize_amr_patch_3d, restrict_average_3d
   use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
+  use gas_transport_mod, only: write_simple_transport_fits,check_simple_transport_fits
   implicit none
   private
 
@@ -1376,6 +1377,8 @@ contains
         transport(species_index)%dipole, &
         transport(species_index)%polarizability, &
         transport(species_index)%rotational_relaxation
+      if(status/=0) return
+      call write_simple_transport_fits(unit,transport(species_index),status)
       if (status /= 0) return
     end do
     write(unit, '(a)', iostat=status) "TRANSPORT_CONTROLS"
@@ -1498,6 +1501,11 @@ contains
       if (.not. all(checkpoint_real_matches( &
           stored_values, expected_values))) then
         message = "Transport 3D AMR checkpoint database mismatch"
+        return
+      end if
+      call check_simple_transport_fits(unit,transport(species_index),status)
+      if(status/=0) then
+        message='Simple transport checkpoint mismatch'
         return
       end if
     end do

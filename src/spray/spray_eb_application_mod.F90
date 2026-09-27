@@ -30,6 +30,7 @@ module spray_eb_application_mod
   use spray_eb_field_mod, only: eb_spray_stencil
   use spray_checkpoint_mod, only: write_spray_checkpoint,read_spray_checkpoint,spray_checkpoint_context_capacity
   use amr_reactive_3d_checkpoint_mod, only: write_selected_checkpoint_context
+  use gas_transport_mod, only: write_transport_context
   implicit none
   private
   public :: run_eb_spray_application
@@ -592,7 +593,7 @@ contains
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
       do j=1,size(species)
         if(ios==0) write(scratch,*,iostat=ios) species(j)
-        if(ios==0) write(scratch,*,iostat=ios) transport(j)
+        if(ios==0) call write_transport_context(scratch,transport(j),ios)
       end do
       if(ios==0) call write_selected_checkpoint_context(scratch,reactions,'EB_SPRAY_V1',method,composition, &
         config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,ios)

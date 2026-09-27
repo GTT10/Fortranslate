@@ -32,6 +32,7 @@ module mpi_amr_sparse_reactive_3d_mod
     reactive_transport_ghosted_fluxes_3d,physical_transport_ghosted_fluxes_3d, &
     reactive_transport_interface_theta_3d, reactive_transport_timestep_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d, initialize_amr_patch_3d
+  use gas_transport_mod, only: transport_numeric_values
   implicit none
   private
 
@@ -5646,19 +5647,14 @@ contains
       distribution%comm, counts_match, collective_ok)
     if (.not. collective_ok) return
 
-    allocate(local_reals(5, local_count), root_reals(5, local_count))
+    allocate(local_reals(14+4*local_count, local_count), root_reals(14+4*local_count, local_count))
     allocate(local_geometry(local_count), root_geometry(local_count))
     allocate(local_names(local_count), root_names(local_count))
     local_ok = local_valid
     do species_index = 1, local_count
       local_names(species_index) = transport(species_index)%name
       local_geometry(species_index) = transport(species_index)%geometry
-      local_reals(:, species_index) = [ &
-        transport(species_index)%well_depth, &
-        transport(species_index)%diameter, &
-        transport(species_index)%dipole, &
-        transport(species_index)%polarizability, &
-        transport(species_index)%rotational_relaxation]
+      local_reals(:, species_index) = transport_numeric_values(transport(species_index),local_count)
     end do
     if (local_ok) local_ok = all(ieee_is_finite(local_reals))
     if (local_ok) then

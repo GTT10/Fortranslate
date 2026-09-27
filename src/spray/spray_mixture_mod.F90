@@ -243,6 +243,7 @@ contains
       end do
       di=diffusion(v)
       if (carrier_sum>0.and.resistance>0) di=carrier_sum/resistance
+      if(allocated(transport(v)%simple_binary)) di=diffusion(v)*mw/mw_g(v)
       diff_weights(i)=xs(i)*di
     end do
     candidate%diffusivity=diffusion(components(1)%vapor_index)

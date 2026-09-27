@@ -76,6 +76,10 @@ program pelef_reactive_eb_tree_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
   use selected_composition_mod, only: selected_composition_max_species,selected_composition_name_length, &
     resolve_selected_composition
+#ifdef PELEF_SELECTED_SIMPLE_TRANSPORT
+  use @PELEF_BUNDLE_MODULE_NAME@, only: load_selected_simple => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@_simple
+  use gas_transport_mod, only: set_simple_transport_fits
+#endif
   implicit none
 #ifdef PELEF_MPI_EB_SPRAY
   interface
@@ -173,9 +177,13 @@ program pelef_reactive_eb_tree_3d
   character(len=512) :: level_set_file='',section_file='',output_file='eb_tree.csv',checkpoint_file='',restart_file=''
   integer :: rebalance_interval_steps=0
   real(dp) :: rebalance_minimum_gain=0.1_dp
+  logical :: simple_transport_enabled=.false.
+#ifdef PELEF_SELECTED_SIMPLE_TRANSPORT
+  real(dp) :: simple_coefficients(4,2*selected_nspecies+selected_nspecies*(selected_nspecies+1)/2)
+#endif
   namelist /eb_tree/ root_shape,child_count,parent,ratio,lower,upper,domain_lower,domain_upper, &
     geometry_type,plane_axis,plane_position,extrusion_axis,level_set_file,section_file,time_step,final_time, &
-    maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,riemann_solver, &
+    maximum_steps,maximum_step_retries,rtol,atol,chemistry_enabled,transport_enabled,simple_transport_enabled,riemann_solver, &
     inflow_mach,inflow_temperature,inflow_pressure,difmag,hydro_method,boundary_faces,inflow_density,inflow_velocity, &
     inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
     regular_density,cut_density,initial_pressure,wall_temperature, &
@@ -411,6 +419,9 @@ program pelef_reactive_eb_tree_3d
     end do
   end if
   coarse=geometry_levels(1)
+#ifndef PELEF_SELECTED_SIMPLE_TRANSPORT
+  if(simple_transport_enabled) error stop 'Simple transport requires a bundle with pinned fits'
+#endif
 #ifdef PELEF_SELECTED_EB_TREE
   call load_selected_thermo(species,ok)
   if (.not.ok) error stop 'Selected thermodynamic load failed'
@@ -426,6 +437,14 @@ program pelef_reactive_eb_tree_3d
     write(*,'(a)') trim(message)
     error stop 'Invalid selected mechanism'
   end if
+#ifdef PELEF_SELECTED_SIMPLE_TRANSPORT
+  if(simple_transport_enabled) then
+    call load_selected_simple(simple_coefficients,ok)
+    if(.not.ok) error stop 'Simple transport coefficient load failed'
+    call set_simple_transport_fits(transport,simple_coefficients,ok)
+    if(.not.ok) error stop 'Invalid Simple transport coefficients'
+  end if
+#endif
   element_names=selected_element_names; element_atoms=selected_element_atoms
   config%thermo_model='selected'
   config%composition_count=composition_count;config%composition_species=composition_species

@@ -19,6 +19,7 @@ module reactive_eb_3d_checkpoint_mod
     reactive_eb_3d_config,reactive_eb_geometry_identity,valid_reactive_eb_boundaries
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d
+  use gas_transport_mod, only: write_simple_transport_fits,check_simple_transport_fits
   implicit none
   private
 
@@ -395,6 +396,8 @@ contains
         transport(transport_index)%dipole, &
         transport(transport_index)%polarizability, &
         transport(transport_index)%rotational_relaxation
+      if (status /= 0) go to 900
+      call write_simple_transport_fits(unit,transport(transport_index),status)
       if (status /= 0) go to 900
     end do
 
@@ -1055,6 +1058,8 @@ contains
       if (.not. all(ieee_is_finite(stored_transport_values)) .or. &
           .not. all(checkpoint_real_matches( &
             stored_transport_values, expected_transport_values))) go to 900
+      call check_simple_transport_fits(unit,transport(transport_index),status)
+      if (status /= 0) go to 900
     end do
 
     read(unit, '(a)', iostat=status) marker

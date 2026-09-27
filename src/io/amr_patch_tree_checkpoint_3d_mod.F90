@@ -11,6 +11,7 @@ module amr_patch_tree_checkpoint_3d_mod
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     average_down_amr_patch_tree_3d
+  use gas_transport_mod, only: write_transport_context
   implicit none
   private
   type, public :: amr_tree_checkpoint_3d
@@ -65,7 +66,7 @@ contains
     do i=1,size(species)
       write(unit,*,iostat=status) species(i)
       if (status/=0) go to 900
-      write(unit,*,iostat=status) transport(i)
+      call write_transport_context(unit,transport(i),status)
       if (status/=0) go to 900
     end do
     call write_selected_checkpoint_context(unit,reactions,identity,integrator,mole_fractions, &

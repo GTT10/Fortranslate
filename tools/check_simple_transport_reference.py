@@ -123,12 +123,17 @@ def main():
         (out/'generated.f90').write_text(generate(bundle))
         generated_sources = ['generated.f90']
         use = (f"  use {bundle['module_name']}, only: load_fits => {bundle['transport_loader_name']}_simple, &\n"
-               f"    load_thermo => {bundle['thermo_loader_name']}\n"
-               '  use nasa7_thermo_mod, only: nasa7_species\n')
+               f"    load_thermo => {bundle['thermo_loader_name']}, load_transport => {bundle['transport_loader_name']}\n"
+               '  use nasa7_thermo_mod, only: nasa7_species\n'
+               '  use gas_transport_mod, only: gas_transport_species,load_gas_transport_data,set_simple_transport_fits\n'
+               '  use mixture_transport_mod, only: mixture_transport_coefficients,binary_diffusion_coefficients\n')
         fortran = fortran.replace('  implicit none', use+'  implicit none')
         fortran = fortran.replace('  integer :: ios,i,j',
                                  '  type(nasa7_species), allocatable :: species(:)\n'
-                                 '  real(dp) :: coefficients(4,12)\n  integer :: ios,i,j')
+                                 '  type(gas_transport_species), allocatable :: records(:)\n'
+                                 '  character(len=24) :: names(3)\n'
+                                 '  integer :: geometries(3)\n'
+                                 '  real(dp) :: coefficients(4,12),values(5,3),rho\n  integer :: ios,i,j')
         begin = fortran.index("  open(10,file='fits.dat'")
         end = fortran.index('  close(10)',begin)+len('  close(10)')
         fortran = fortran[:begin]+'''  call load_thermo(species,ok)
@@ -137,7 +142,20 @@ def main():
   call load_fits(coefficients,ok)
   if(.not.ok) error stop 'Generated fits failed'
   fm=coefficients(:,1:3);fl=coefficients(:,4:6);fd=coefficients(:,7:12)
+  call load_transport(names,geometries,values,ok)
+  if(.not.ok) error stop 'Generated transport failed'
+  call load_gas_transport_data(names,geometries,values,records,ok)
+  if(.not.ok) error stop 'Transport records failed'
+  call set_simple_transport_fits(records,coefficients,ok)
+  if(.not.ok) error stop 'Fit attachment failed'
 '''+fortran[end:]
+        fortran = fortran.replace(
+            '    call pelephysics_simple_transport(mw,y,t,p,fm,fl,fd,mu,k,rd,db,ok)',
+            '''    call mixture_transport_coefficients(species,records,y,t,p,mu,k,rd,ok)
+    if(.not.ok) error stop 'Record transport failed'
+    rho=p/(8314.46261815324_dp*t*sum(y/mw))
+    rd=rd*rho
+    call binary_diffusion_coefficients(species,records,t,p,db,ok)''',1)
         bundle_hash = hashlib.sha256(args.bundle.read_bytes()).hexdigest()
     (out/'candidate.f90').write_text(fortran)
     states = [(340,101325,.25,.17,.58), (400,101325,0,.233,.767),
