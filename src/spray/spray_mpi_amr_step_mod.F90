@@ -642,13 +642,23 @@ contains
       gas_halo,temperature_halo,width,nodes,parcels,component_mass,lower,spacing,periodic,dt,source_halo,ok, &
       fluid_fraction,nodal_phi,centroids,drift_interval,boundary_faces,wall_change,boundary_change, &
       target_level,level_source,source_remainder,route_to_coarse,eb_geometry,maximum_received, &
-      containing_cell,physical_source,last_id)
+      containing_cell,physical_source,last_id,wall_films,film_mass,film_settings,model_rejected)
     integer(int64), optional, intent(inout) :: last_id
     integer(int64) :: watermark
+    type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
+    real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
+    type(spray_wall_options), optional, intent(in) :: film_settings
+    logical, optional, intent(out) :: model_rejected
+    type(spray_wall_film), allocatable :: patches(:)
+    real(dp), allocatable :: patch_mass(:,:),pressures(:),impact_pressure(:)
+    type(spray_eb_wall_options) :: impact_settings
+    integer :: film_flag,film_low,film_high,parent,lo,hi,mid
+    logical :: rejected
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
+    real(dp) :: mw(size(components)),impact_exterior(5+size(components))
     type(spray_options), intent(in) :: options
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),width,nodes(:)
@@ -694,6 +704,26 @@ contains
     integer :: p,nv,nc,status
     logical :: valid,agreed
     ok=.false.;nv=reactive_nvar(size(species));nc=size(components)
+    if(present(model_rejected)) model_rejected=.false.
+    film_flag=merge(1,0,present(wall_films))+2*merge(1,0,present(film_mass))+4*merge(1,0,present(film_settings))
+    call MPI_Allreduce(film_flag,film_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(film_flag,film_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.film_low/=film_high) return
+    if(film_flag/=0.and.film_flag/=7) return
+    if(present(wall_films)) then
+      valid=allocated(wall_films).and.allocated(film_mass).and.present(last_id).and. &
+        present(nodal_phi).and.present(drift_interval)
+      call agree();if(.not.agreed) return
+      valid=valid_wall_options(film_settings,[character(len=16):: &
+        'slip_wall','slip_wall','slip_wall','slip_wall','slip_wall','slip_wall'])
+      valid=valid.and.all(film_settings%temperature==film_settings%temperature(1))
+      call agree();if(.not.agreed) return
+      patches=wall_films;patch_mass=film_mass
+      impact_settings%temperature=film_settings%temperature(1)
+      impact_settings%contact_angle=film_settings%contact_angle
+      impact_settings%maximum_films=film_settings%maximum_films
+    end if
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
     valid=valid.and.nc>=1.and.nc<=16.and.size(transport)==size(species)
@@ -781,10 +811,12 @@ contains
     candidate=parcels;masses=component_mass;change=0
     allocate(gas_properties(4,size(parcels)),reynolds(size(parcels)))
     gas_properties=0;reynolds=0
+    allocate(pressures(size(parcels)),source=1._dp)
     do p=1,size(parcels)
       if(parcels(p)%mass<=0) cycle
       call reactive_conserved_to_primitive(species,sampled(:,p),sampled_t(1,p),primitive,tg,sound,valid)
       if(.not.valid) exit
+      pressures(p)=primitive(5)
       call advance_mixture_frozen_gas(species,transport,primitive,tg,candidate(p),components,masses(:,p), &
         options,dt,change(:,p),valid)
       if(.not.valid) exit
@@ -845,7 +877,48 @@ contains
       call agree();if(.not.agreed) return
       change(5,:)=change(5,:)+child_energy
     end if
-    if(present(drift_interval)) then
+    if(present(wall_films)) then
+      ! Shedding children inherit the sampled pressure of their pre-drift parent,
+      ! matching the common-step impact preparation. Sources retain parent sites.
+      allocate(impact_pressure(size(candidate)))
+      do p=1,size(candidate)
+        parent=p
+        if(p>size(parcels)) then
+          parent=0
+          lo=1;hi=size(parcels)
+          do while(lo<=hi)
+            mid=lo+(hi-lo)/2
+            if(parcels(mid)%id==candidate(p)%parent_id) then
+              parent=mid;exit
+            else if(parcels(mid)%id<candidate(p)%parent_id) then
+              lo=mid+1
+            else
+              hi=mid-1
+            end if
+          end do
+          if(parent==0) then
+            valid=.false.;exit
+          end if
+        end if
+        impact_pressure(p)=pressures(parent)
+      end do
+      call agree();if(.not.agreed) return
+      do c=1,nc
+        mw(c)=species(components(c)%vapor_index)%molecular_weight
+      end do
+      upper=lower+spacing*real(tree%nodes(1)%shape,dp)
+      global_wall=0;impact_exterior=0;hits=0
+      call advance_mpi_level_set_impacts(comm,components,options,impact_settings,nodal_phi,mw,impact_pressure, &
+        lower,upper,drift_dt,candidate,masses,patches,patch_mass,watermark,global_wall,hits,valid,rejected, &
+        impact_exterior,faces)
+      if(rejected.and.present(model_rejected)) model_rejected=.true.
+      if(.not.valid) return
+      ! Impact API reports inventory received by the wall, already MPI summed.
+      global_wall=-global_wall;global_exterior=0;global_exterior(:5)=impact_exterior(:5)
+      do c=1,nc
+        global_exterior(5+components(c)%vapor_index)=global_exterior(5+components(c)%vapor_index)+impact_exterior(5+c)
+      end do
+    else if(present(drift_interval)) then
       allocate(energies(size(candidate)));energies=0
       do p=1,size(candidate)
         if(candidate(p)%mass<=0) cycle
@@ -915,6 +988,9 @@ contains
     if(present(target_level)) then
       call move_alloc(routed%fields,level_source%fields)
       call move_alloc(remainder%fields,source_remainder%fields)
+    end if
+    if(present(wall_films)) then
+      call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
     end if
     if(present(last_id)) last_id=watermark
     call move_alloc(candidate,parcels);call move_alloc(masses,component_mass)

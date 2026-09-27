@@ -1,7 +1,8 @@
 program test_spray_mpi_eb_sample
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
-  use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
+  use spray_mpi_amr_step_mod, only: kick_mpi_amr_mixture_halo, &
+    advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
     advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage,advance_mpi_eb_recursive_population_stage
   use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage,spray_sdc_film_stage, &
     advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level
@@ -135,7 +136,12 @@ contains
     type(spray_parcel) :: reference
     type(spray_level_population) :: group(3),before_group(3),expected_group(3)
     real(dp) :: accel(3),dv(3),expected_force(5),old_force(5),parcel_weight,birth_position(3)
-    integer(int64) :: child_id
+    integer(int64) :: child_id,impact_id
+    type(spray_wall_film), allocatable :: impact_films(:)
+    real(dp), allocatable :: impact_mass(:,:)
+    real(dp) :: impact_total(3),initial_total(3)
+    logical :: rejected
+    integer :: trial
     type(spray_sdc_population_stage) :: work,hierarchy_work(2),child_work
     type(spray_level_population), allocatable :: physical(:),virtuals(:),incoming(:)
     type(spray_level_population) :: root_finished
@@ -502,6 +508,68 @@ contains
         ghost_volume_fraction=film_volume,halo_width=1,target_volume_fraction=metrics, &
         boundary_faces=faces,restrict_snapshot=.false.)
       call require(ok,'frozen film stage halo')
+      ! Exercise the same halo exchange followed by deposition/splash flight.
+      child_options=options;child_options%surface_tension=.072_dp;child_options%liquid_viscosity=.001_dp
+      child_options%drag=.false.;child_options%heat=.false.;child_options%evaporation=.false.
+      film_options%temperature=300;film_options%maximum_films=100;film_options%enabled=.true.
+      do trial=1,2
+        allocate(impact_films(0),impact_mass(1,0));ghosts=before_group(1)%parcels;mass=before_group(1)%component_mass
+        if(count>0) then
+          ghosts(1)=spray_parcel(1_int64,[1.5_dp,1.250001_dp,1.5_dp], &
+            [0._dp,-real(merge(1,100,trial==1),dp),0._dp],1e-9_dp,350._dp,100._dp)
+          mass(:,1)=ghosts(1)%mass
+        end if
+        initial_total=0
+        if(count>0) then
+          initial_total(1)=ghosts(1)%mass*ghosts(1)%multiplicity
+          initial_total(2)=initial_total(1)*ghosts(1)%velocity(2)
+          initial_total(3)=initial_total(1)*(liquid_energy(liquid(1),350._dp)+.5_dp*sum(ghosts(1)%velocity**2))
+        end if
+        call MPI_Allreduce(MPI_IN_PLACE,initial_total,3,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+        impact_id=1;wall=17;ledger=19;old_mass=mass;old_source=source
+        ! Fail source routing after private impacts, then retry the same input.
+        call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners, &
+          film_halo,film_halo_t,1,query_nodes,ghosts,mass,zero,spacing,periodic,1e-8_dp,source,ok, &
+          film_volume,phi,centroids,2e-6_dp,faces,wall,ledger, &
+          target_level=1,level_source=group_source,source_remainder=group_remainder, &
+          eb_geometry=g,maximum_received=-1,last_id=impact_id,wall_films=impact_films,film_mass=impact_mass, &
+          film_settings=film_options,model_rejected=rejected)
+        call require(.not.ok.and..not.rejected.and.impact_id==1.and.size(impact_films)==0.and. &
+          all(mass==old_mass).and.all(wall==17).and.all(ledger==19),'late source failure rolls back impact payloads')
+        if(count>0) call require(all(ghosts(1)%position==[1.5_dp,1.250001_dp,1.5_dp]), &
+          'late source failure retains pre-impact position')
+        do p=1,2
+          if(owners(p)/=rank) cycle
+          call require(all(source%fields(p)%values==old_source%fields(p)%values),'late impact source rollback')
+        end do
+        call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquid,child_options,tree,owners, &
+          film_halo,film_halo_t,1,query_nodes,ghosts,mass,zero,spacing,periodic,1e-8_dp,source,ok, &
+          film_volume,phi,centroids,2e-6_dp,faces,wall,ledger, &
+          last_id=impact_id,wall_films=impact_films,film_mass=impact_mass,film_settings=film_options,model_rejected=rejected)
+        call require(ok.and..not.rejected,'halo impact flight')
+        impact_total=0
+        do p=1,size(ghosts)
+          parcel_weight=ghosts(p)%mass*ghosts(p)%multiplicity
+          impact_total(1)=impact_total(1)+parcel_weight
+          impact_total(2)=impact_total(2)+parcel_weight*ghosts(p)%velocity(2)
+          impact_total(3)=impact_total(3)+parcel_weight*(liquid_energy(liquid(1),ghosts(p)%temperature)+ &
+            .5_dp*sum(ghosts(p)%velocity**2))
+        end do
+        do p=1,size(impact_films)
+          impact_total(1)=impact_total(1)+impact_films(p)%mass
+          impact_total(3)=impact_total(3)+impact_films(p)%mass*liquid_energy(liquid(1),impact_films(p)%temperature)
+        end do
+        call MPI_Allreduce(MPI_IN_PLACE,impact_total,3,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+        call require(all(abs(impact_total-initial_total-wall([1,3,5]))<= &
+          1e-12_dp*max(abs(initial_total),1e-30_dp)),'halo impact gas particle film wall inventory')
+        call require(all(ledger==0),'interior impact has no outflow')
+        if(count>0) then
+          call require(size(impact_films)>0,'halo contact deposits a physical film')
+          if(trial==2) call require(size(ghosts)>1.and.impact_id>1,'halo splash creates children and IDs')
+        end if
+        deallocate(impact_films,impact_mass)
+      end do
+
       call reactive_conserved_to_primitive(species,cell,900._dp,primitive,t,sound,ok)
       call require(ok,'frozen film reference gas')
       allocate(films(2*count),film_mass(1,2*count),probes(3,2*count),film_nodes(2*count))
