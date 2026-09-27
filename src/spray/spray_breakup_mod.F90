@@ -17,6 +17,7 @@ module spray_breakup_mod
     real(dp) :: mass=0,drop_mass=0,multiplicity=0,diameter=0,tangential_speed=0
   end type
   public :: advance_khrt_shedding,construct_khrt_children,advance_mixture_khrt_shedding
+  public :: construct_configured_khrt_children
   public :: khrt_reference_child_count,construct_reference_khrt_children,khrt_reference_uniforms
 contains
   ! Stateless xorshift64 samples keyed by persistent parent ID and pre-release
@@ -115,6 +116,38 @@ contains
     end function
   end subroutine
 
+  subroutine construct_configured_khrt_children(options,parent,release,axis,watermark,capacity,children,exchange,ok)
+    type(spray_options), intent(in) :: options
+    type(spray_parcel), intent(in) :: parent
+    type(spray_khrt_release), intent(in) :: release
+    real(dp), intent(in) :: axis(3)
+    integer(int64), intent(in) :: watermark
+    integer, intent(in) :: capacity
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    real(dp), intent(inout) :: exchange(4)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: uniforms(:)
+    real(dp) :: pending(4)
+    integer :: number
+    ok=.false.;pending=0;number=4
+    if(.not.valid_spray_options(options)) return
+    if(options%khrt_parcel_factor>=0) then
+      call khrt_reference_child_count(release%multiplicity,options%khrt_parcel_factor,capacity,number,ok)
+      if(.not.ok) return
+    endif
+    ok=.false.
+    if(number>capacity.or.watermark<parent%id.or.watermark>huge(watermark)-int(number,int64)) return
+    if(options%khrt_parcel_factor>=0) then
+      allocate(uniforms(number))
+      call khrt_reference_uniforms(parent%id,watermark,uniforms)
+      call construct_reference_khrt_children(parent,release,axis,options%khrt_parcel_factor,uniforms, &
+        watermark+1_int64,children,pending,ok)
+    else
+      call construct_khrt_children(parent,release,axis,watermark+1_int64,children,pending(4),ok)
+    endif
+    if(ok) exchange=pending
+  end subroutine
+
   subroutine advance_mixture_khrt_shedding(components,options,parcels,component_mass,gas_density, &
       gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible,reference_factor,gas_momentum)
     type(spray_liquid), intent(in) :: components(:)
@@ -128,7 +161,8 @@ contains
     real(dp), optional, intent(in) :: reference_factor
     real(dp), allocatable, optional, intent(inout) :: gas_momentum(:,:)
     real(dp), allocatable :: momentum(:,:),uniforms(:)
-    real(dp) :: exchange(4)
+    real(dp) :: exchange(4),factor
+    logical :: reference
     integer, allocatable :: child_counts(:)
     type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
     type(spray_khrt_release), allocatable :: releases(:)
@@ -142,14 +176,16 @@ contains
     ok=.false.
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
-    valid=valid.and.(present(reference_factor).eqv.present(gas_momentum))
-    if(present(reference_factor)) then
-      if(ieee_is_finite(reference_factor)) then
-        valid=valid.and.reference_factor>=0.and.reference_factor<=1
-      else
-        valid=.false.
-      endif
+    factor=options%khrt_parcel_factor
+    if(present(reference_factor)) factor=reference_factor
+    reference=.false.
+    if(ieee_is_finite(factor)) then
+      reference=factor>=0
+      valid=valid.and.(factor==-1.or.(factor>=0.and.factor<=1))
+    else
+      valid=.false.
     endif
+    if(reference.or.present(reference_factor)) valid=valid.and.present(gas_momentum)
     if (.not.valid) return
     np=size(parcels);nc=size(components)
     valid=np<=1000000.and.nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,np])
@@ -187,8 +223,8 @@ contains
       masses(:,p)=candidate(p)%mass*fractions(:,p)
       if (releases(p)%mass>0) then
         child_counts(p)=4
-        if(present(reference_factor)) call khrt_reference_child_count(releases(p)%multiplicity, &
-          reference_factor,options%maximum_parcels-np-number,child_counts(p),valid)
+        if(reference) call khrt_reference_child_count(releases(p)%multiplicity, &
+          factor,options%maximum_parcels-np-number,child_counts(p),valid)
         if(.not.valid) exit
         number=number+child_counts(p)
       endif
@@ -205,11 +241,11 @@ contains
       if (releases(p)%mass<=0) cycle
       axis=candidate(p)%velocity
       if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
-      if(present(reference_factor)) then
+      if(reference) then
         if(allocated(uniforms)) deallocate(uniforms)
         allocate(uniforms(child_counts(p)))
         call khrt_reference_uniforms(candidate(p)%id,last_id,uniforms)
-        call construct_reference_khrt_children(candidate(p),releases(p),axis,reference_factor,uniforms, &
+        call construct_reference_khrt_children(candidate(p),releases(p),axis,factor,uniforms, &
           first_id+int(cursor-np,int64),children,exchange,valid)
         if(valid) then
           momentum(:,p)=exchange(:3);energy(p)=exchange(4)

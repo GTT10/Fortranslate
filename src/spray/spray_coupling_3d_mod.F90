@@ -270,7 +270,7 @@ contains
     type(spray_options), intent(in), optional :: breakup_options(:)
     type(spray_khrt_shedding_state) :: shedding
     type(spray_khrt_release) :: release
-    real(dp) :: reynolds,dispersion_energy,release_axis(3)
+    real(dp) :: reynolds,child_exchange(4),release_axis(3)
     type(spray_options) :: local_breakup
     type(spray_wall_options), intent(in), optional :: wall_options
     type(spray_wall_film), allocatable, intent(inout), optional :: wall_films(:)
@@ -471,16 +471,14 @@ contains
           message='Spray breakup rejected; complete coupling step rolled back'; return
         end if
         if (release%mass>0) then
-          if (size(drops)>options%maximum_parcels-4) return
-          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
           release_axis=next%velocity
           if (norm2(release_axis)<1e-12_dp) release_axis=film%gas_velocity-next%velocity
-          call construct_khrt_children(next,release,release_axis,drops(size(drops))%id+1_int64, &
-            spawned,dispersion_energy,local_ok)
+          call construct_configured_khrt_children(local_breakup,next,release,release_axis,drops(size(drops))%id, &
+            options%maximum_parcels-size(drops),spawned,child_exchange,local_ok)
           if (.not.local_ok) return
           do n=1,8
             i=indices(1,n);j=indices(2,n);k=indices(3,n)
-            candidate(5,i,j,k)=candidate(5,i,j,k)+weights(n)*dispersion_energy/volume
+            candidate(2:5,i,j,k)=candidate(2:5,i,j,k)+weights(n)*child_exchange/volume
             call reactive_conserved_to_primitive(species,candidate(:,i,j,k),temp(i,j,k),primitive,recovered,sound,local_ok)
             if (.not.local_ok) then
               message='KH child dispersion energy rejected; complete step rolled back';return
@@ -653,7 +651,7 @@ contains
     type(spray_khrt_shedding_state) :: shedding
     type(spray_khrt_release) :: release
     real(dp), allocatable :: starts(:)
-    real(dp) :: reynolds,dispersion_energy,release_axis(3)
+    real(dp) :: reynolds,child_exchange(4),release_axis(3)
     type(spray_parcel) :: next
     type(spray_liquid) :: effective
     type(spray_film) :: mixture_film
@@ -844,17 +842,14 @@ contains
           next_mass=next_mass*(next%mass/old_mass)
         end if
         if (release%mass>0) then
-          if (size(drops)>options%maximum_parcels-4) then
-            message='Mixture KH children exceed parcel limit; complete update rolled back';return
-          end if
-          if (drops(size(drops))%id>huge(1_int64)-4_int64) return
           release_axis=next%velocity
           if (norm2(release_axis)<1e-12_dp) release_axis=primitive(2:4)-next%velocity
-          call construct_khrt_children(next,release,release_axis,drops(size(drops))%id+1_int64,children,dispersion_energy,valid)
+          call construct_configured_khrt_children(options,next,release,release_axis,drops(size(drops))%id, &
+            options%maximum_parcels-size(drops),children,child_exchange,valid)
           if (.not.valid) return
           do n=1,8
             i=indices(1,n);j=indices(2,n);k=indices(3,n)
-            gas(5,i,j,k)=gas(5,i,j,k)+weights(n)*dispersion_energy/volume
+            gas(2:5,i,j,k)=gas(2:5,i,j,k)+weights(n)*child_exchange/volume
             call reactive_conserved_to_primitive(species,gas(:,i,j,k),temp(i,j,k),primitive,recovered,sound,valid)
             if (.not.valid) then
               message='Mixture KH dispersion energy rejected; complete update rolled back';return

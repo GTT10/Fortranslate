@@ -1094,6 +1094,18 @@ if(PELEF_MECHANISM_BUNDLE AND TARGET pelef_selected_spray_tree_runtime AND PELEF
 endif()
 
 if(TARGET test_spray_mpi_eb_reactive)
+  foreach(reference_mode common recursive)
+    set(reference_options)
+    if(reference_mode STREQUAL "recursive")
+      list(APPEND reference_options --recursive)
+    endif()
+    add_test(NAME spray_reference_khrt_app_${reference_mode}
+      COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/application/check_reference_khrt_app.py"
+        --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/reference-khrt-${reference_mode}" ${reference_options})
+    set_tests_properties(spray_reference_khrt_app_${reference_mode}
+      PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "spray;mpi;sdc;restart")
+  endforeach()
   foreach(ctu_mode IN ITEMS ctu ctu-subcycle ctu-inflow ctu-inflow-subcycle ctu-periodic ctu-periodic-subcycle ctu-wall ctu-wall-subcycle
       ctu-isothermal ctu-isothermal-subcycle)
     add_test(NAME spray_mpi_eb_reactive_${ctu_mode}

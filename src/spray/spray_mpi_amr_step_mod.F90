@@ -479,6 +479,7 @@ contains
       if(population/=1.or.drift_dt<=0) then
         population_options%khrt_children=.false.
         population_options%khrt_reference_diameter_cubed=0
+        population_options%khrt_parcel_factor=-1
       end if
       ! Root has no ghosts, but use retained routing for its allocated empty set.
       ! Pinned SprayParticles.cpp gates splash by isActive and do_move.
@@ -810,7 +811,7 @@ contains
     integer :: transfer_flags,transfer_low,transfer_high,node,rank,n(3)
     real(dp), allocatable :: masses(:,:),positions(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
     real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,low_dt,high_dt
-    real(dp), allocatable :: gas_properties(:,:),reynolds(:),child_energy(:)
+    real(dp), allocatable :: gas_properties(:,:),reynolds(:),child_momentum(:,:),child_energy(:)
     logical, allocatable :: eligible(:)
     type(spray_parcel) :: preview(1)
     real(dp) :: preview_wall(5),preview_exterior(5)
@@ -986,12 +987,13 @@ contains
         call agree();if(.not.agreed) return
       end if
       call advance_mpi_khrt_shedding(comm,components,options,candidate,masses,gas_properties(1,:), &
-        gas_properties(2:4,:),reynolds,dt,watermark,child_energy,valid,eligible)
+        gas_properties(2:4,:),reynolds,dt,watermark,child_energy,valid,eligible,gas_momentum=child_momentum)
       if(.not.valid) return
       valid=all(ieee_is_finite(child_energy))
       if(valid) valid=.not.any(change(5,:)>huge(1._dp)-max(child_energy,0._dp)).and. &
         .not.any(change(5,:)< -huge(1._dp)-min(child_energy,0._dp))
       call agree();if(.not.agreed) return
+      change(2:4,:)=change(2:4,:)+child_momentum
       change(5,:)=change(5,:)+child_energy
     end if
     if(present(wall_films)) then
@@ -1183,7 +1185,7 @@ contains
     real(dp) :: global_ledger(reactive_nvar(size(species))),exchange(5)
     character(len=32) :: faces(6),reference_faces(6)
     integer(int64) :: accepted_id,trial_id
-    real(dp), allocatable :: reynolds(:),child_energy(:)
+    real(dp), allocatable :: reynolds(:),child_momentum(:,:),child_energy(:)
     integer :: child_flag,low_flag,high_flag
     type(spray_parcel), allocatable :: drops(:),trial(:),survivors(:)
     type(spray_liquid) :: effective
@@ -1499,10 +1501,13 @@ contains
             call agree()
           end if
           if(agreed) call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,kick_dt,trial_id,child_energy,valid,eligible)
+            primitive(2:4,:),reynolds,kick_dt,trial_id,child_energy,valid,eligible,gas_momentum=child_momentum)
           if (valid) valid=size(trial)<=125000
           call agree()
-          if (agreed) change(5,:)=change(5,:)+child_energy
+          if (agreed) then
+            change(2:4,:)=change(2:4,:)+child_momentum
+            change(5,:)=change(5,:)+child_energy
+          endif
         end if
         if(allocated(impact_exterior)) impact_exterior=0
         if(agreed.and.present(eb_geometry).and..not.present(wall_films).and.motion_dt>0) then

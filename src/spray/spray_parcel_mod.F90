@@ -48,6 +48,7 @@ module spray_parcel_mod
   type, public :: spray_options
     logical :: khrt_children=.false.
     real(dp) :: khrt_reference_diameter_cubed=0
+    real(dp) :: khrt_parcel_factor=-1 ! -1: symmetric quadrature; [0,1]: reference count and sampled azimuth
     real(dp) :: khrt_b0=.61_dp,khrt_b1=7.0_dp,khrt_c3=1.0_dp
     real(dp) :: maximum_multiplicity=0.0_dp
     integer :: maximum_parcels=1000000
@@ -302,6 +303,10 @@ contains
     if (o%maximum_multiplicity>0.and.o%maximum_multiplicity<1e-12_dp) return
     if (o%maximum_parcels<1.or.o%maximum_parcels>1000000) return
     if (o%maximum_multiplicity>0.and.trim(o%breakup_model)=='none') return
+    if (.not.ieee_is_finite(o%khrt_parcel_factor)) return
+    if (o%khrt_parcel_factor/=-1) then
+      if(o%khrt_parcel_factor<0.or.o%khrt_parcel_factor>1.or..not.o%khrt_children) return
+    endif
     if (.not.ieee_is_finite(o%khrt_reference_diameter_cubed)) return
     if (o%khrt_children) then
       if (o%breakup_model/='khrt') return

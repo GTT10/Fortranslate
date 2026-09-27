@@ -83,7 +83,7 @@ contains
     real(dp) :: y(size(components)),rates(size(components)),hv(size(components))
     integer :: np,nc,nvar,p,n,attempt,count_steps,hits,film_steps
     real(dp) :: film_change(5)
-    real(dp), allocatable :: reynolds(:),child_energy(:),impact_pressures(:)
+    real(dp), allocatable :: reynolds(:),child_momentum(:,:),child_energy(:),impact_pressures(:)
     logical, allocatable :: eligible(:)
     real(dp) :: crossing_fraction,crossing_position(3),crossing_normal(3)
     integer :: crossing_cell(3),parent
@@ -268,9 +268,12 @@ contains
             eligible(p)=.not.crossing
           end do
           if(valid) call advance_mixture_khrt_shedding(components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,dt,next_watermark,child_energy,valid,eligible)
+            primitive(2:4,:),reynolds,dt,next_watermark,child_energy,valid,eligible,gas_momentum=child_momentum)
           if(valid) valid=size(trial)<=125000
-          if(valid) change(5,:)=change(5,:)+child_energy
+          if(valid) then
+            change(2:4,:)=change(2:4,:)+child_momentum
+            change(5,:)=change(5,:)+child_energy
+          endif
         end if
         exchange=0;hits=0;film_change=0;trial_exterior=0
         if(allocated(impact_exterior)) impact_exterior=0

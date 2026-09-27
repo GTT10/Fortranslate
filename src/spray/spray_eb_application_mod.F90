@@ -611,6 +611,7 @@ contains
         if(ios/=0.or.len_trim(line)==len(line)) error stop 'EB checkpoint context line exceeds capacity'
         length=len(context)+len_trim(line)+1
         if(length>spray_checkpoint_context_capacity) error stop 'EB checkpoint context exceeds capacity'
+        if(options%khrt_parcel_factor==-1.and.index(line,'%KHRT_PARCEL_FACTOR=')>0) cycle
         context=context//trim(line)//'|'
       end do
       close(scratch)

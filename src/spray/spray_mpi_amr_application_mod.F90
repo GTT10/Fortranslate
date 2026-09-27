@@ -456,6 +456,7 @@ contains
       read(unit,'(a)',iostat=ios) context_line
       if (ios<0) exit
       if (ios/=0) call fatal('Cannot read spray context')
+      if(options%khrt_parcel_factor==-1.and.index(context_line,'%KHRT_PARCEL_FACTOR=')>0) cycle
       spray_context=spray_context//trim(context_line)//achar(10)
     end do
     close(unit)

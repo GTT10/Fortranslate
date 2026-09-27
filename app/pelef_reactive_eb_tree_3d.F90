@@ -1040,6 +1040,7 @@ contains
         read(stream,'(a)',iostat=code) context_line
         if(code==iostat_end) exit
         if(code/=0) error stop 'Cannot read spray context'
+        if(particle_options%khrt_parcel_factor==-1.and.index(context_line,'%KHRT_PARCEL_FACTOR=')>0) cycle
         if(len(spray_context)+len_trim(context_line)+1>130000) error stop 'Spray context capacity exceeded'
         spray_context=spray_context//trim(context_line)//'|'
       end do

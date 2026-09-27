@@ -35,7 +35,7 @@ contains
   type(spray_wall_options) :: impact
   character(len=8) :: breakup_model='none'
   logical :: khrt_children=.false.
-  real(dp) :: khrt_reference_diameter_cubed=0
+  real(dp) :: khrt_reference_diameter_cubed=0,khrt_parcel_factor=-1
   real(dp) :: surface_tension=0,liquid_viscosity=0,khrt_b0=.61_dp,khrt_b1=7,khrt_c3=1
   type(spray_size_options) :: size_options,port_size(16)
   type(spray_nozzle_model) :: nozzle,port_nozzle(16)
@@ -109,7 +109,8 @@ contains
     port_mass,port_center,port_axis,port_fractions,port_speed,port_half_angle,port_diameter,port_temperature, &
     port_profile_points,port_profile_times,port_profile_rates,nozzle_radius,port_nozzle_radius, &
     size_options,port_size,nozzle,port_nozzle,breakup_model,surface_tension,liquid_viscosity,khrt_b0,khrt_b1,khrt_c3, &
-    khrt_children,khrt_reference_diameter_cubed,les_cs,les_prt,les_sct,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
+    khrt_children,khrt_reference_diameter_cubed,khrt_parcel_factor,les_cs,les_prt,les_sct, &
+    les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
     boundary_faces,wall_temperature,wall_velocity,impact,les_harmonic_mean,les_ci,outlet_pressure, &
     inflow_mach,inflow_temperature,inflow_pressure
   call MPI_Init(ierr)
@@ -297,6 +298,7 @@ contains
   end if
   options%breakup_model=breakup_model;options%surface_tension=surface_tension;options%liquid_viscosity=liquid_viscosity
   options%khrt_b0=khrt_b0;options%khrt_b1=khrt_b1;options%khrt_c3=khrt_c3
+  options%khrt_parcel_factor=khrt_parcel_factor
   options%khrt_children=khrt_children;options%khrt_reference_diameter_cubed=khrt_reference_diameter_cubed
   call require(valid_spray_options(options),'Invalid breakup settings')
   if (breakup_model/='none'.or.surface_tension/=0.or.liquid_viscosity/=0.or. &
@@ -315,6 +317,13 @@ contains
       'Checkpoint KH child context too long')
     checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
   end if
+  if(khrt_parcel_factor>=0) then
+    write(profile_context,'(*(g0,1x))',iostat=status) 'khrt-reference-xorshift64-v1',khrt_parcel_factor
+    call require(status==0,'KH reference context serialization failed')
+    call require(len_trim(checkpoint_context)+1+len_trim(profile_context)<=len(checkpoint_context), &
+      'Checkpoint KH reference context too long')
+    checkpoint_context=trim(checkpoint_context)//' '//trim(profile_context)
+  endif
   call require(les_model=='smagorinsky'.or.les_model=='wale'.or.les_model=='vreman'.or.les_model=='dynamic', &
     'Invalid LES model')
   call require(.not.les_harmonic_mean.or.les_model=='dynamic','Harmonic LES interpolation requires dynamic model')

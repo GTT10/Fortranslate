@@ -108,6 +108,7 @@ contains
     type(spray_nozzle_model), allocatable :: port_nozzle_models(:)
     logical :: port_nozzle_overrides
     logical :: khrt_children
+    real(dp) :: khrt_parcel_factor
     real(dp) :: khrt_reference_diameter_cubed
     logical :: velocity_from_rate
     real(dp) :: discharge_coefficient,port_discharge_coefficients(16),event_speed
@@ -176,7 +177,7 @@ contains
       mixture_normal_boiling_temperatures, &
       mixture_critical_temperatures, &
       cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration,outlet_pressure,inflow_mach, &
-      breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed, &
+      breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed,khrt_parcel_factor, &
       liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
@@ -269,7 +270,7 @@ contains
     port_mixture_fractions=0
     mixture_count=0;mixture_vapor_names='';mixture_fractions=0;mixture_densities=0;mixture_cps=0
     mixture_reference_temperatures=0;mixture_reference_pressures=101325;mixture_latent_heats=0
-    khrt_children=.false.;khrt_reference_diameter_cubed=0
+    khrt_children=.false.;khrt_reference_diameter_cubed=0;khrt_parcel_factor=-1
     velocity_from_rate=.false.;discharge_coefficient=1;port_discharge_coefficients=-1
     nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
     port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
@@ -727,6 +728,7 @@ contains
       end do
     end if
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
+    options%khrt_parcel_factor=khrt_parcel_factor
     options%khrt_children=khrt_children;options%khrt_reference_diameter_cubed=khrt_reference_diameter_cubed
     split_enabled=maximum_multiplicity>0.or.khrt_children
     lineage_enabled=split_enabled.or.impact_enabled
@@ -1047,6 +1049,10 @@ contains
     if (khrt_children) then
       context=trim(context)//' khrt-shed-children-v1'
       call append_reals([khrt_reference_diameter_cubed])
+      if(khrt_parcel_factor>=0) then
+        context=trim(context)//' khrt-reference-xorshift64-v1'
+        call append_reals([khrt_parcel_factor])
+      endif
     end if
     if (mixture_count>0) then
       if (any(port_mixture_fractions/=0)) then

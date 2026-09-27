@@ -1698,7 +1698,8 @@ contains
     real(dp), optional, intent(in) :: reference_factor
     real(dp), allocatable, optional, intent(inout) :: gas_momentum(:,:)
     real(dp), allocatable :: momentum(:,:),uniforms(:)
-    real(dp) :: exchange(4)
+    real(dp) :: exchange(4),factor
+    logical :: reference
     integer, allocatable :: child_counts(:)
     type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
     type(spray_khrt_release), allocatable :: releases(:)
@@ -1712,14 +1713,16 @@ contains
     ok=.false.
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
-    valid=valid.and.(present(reference_factor).eqv.present(gas_momentum))
-    if(present(reference_factor)) then
-      if(ieee_is_finite(reference_factor)) then
-        valid=valid.and.reference_factor>=0.and.reference_factor<=1
-      else
-        valid=.false.
-      endif
+    factor=options%khrt_parcel_factor
+    if(present(reference_factor)) factor=reference_factor
+    reference=.false.
+    if(ieee_is_finite(factor)) then
+      reference=factor>=0
+      valid=valid.and.(factor==-1.or.(factor>=0.and.factor<=1))
+    else
+      valid=.false.
     endif
+    if(reference.or.present(reference_factor)) valid=valid.and.present(gas_momentum)
     call agree()
     if (.not.agreed) return
     np=size(parcels);nc=size(components)
@@ -1730,7 +1733,7 @@ contains
     call agree()
     if (.not.agreed) return
     bounds=[dt,0._dp,0._dp]
-    if(present(reference_factor)) bounds(2:3)=[1._dp,reference_factor]
+    if(reference) bounds(2:3)=[1._dp,factor]
     call MPI_Allreduce(bounds,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
@@ -1764,8 +1767,8 @@ contains
       masses(:,p)=candidate(p)%mass*fractions(:,p)
       if (releases(p)%mass>0) then
         child_counts(p)=4
-        if(present(reference_factor)) call khrt_reference_child_count(releases(p)%multiplicity, &
-          reference_factor,options%maximum_parcels-np-number,child_counts(p),valid)
+        if(reference) call khrt_reference_child_count(releases(p)%multiplicity, &
+          factor,options%maximum_parcels-np-number,child_counts(p),valid)
         if(.not.valid) exit
         number=number+child_counts(p)
       endif
@@ -1782,11 +1785,11 @@ contains
       if (releases(p)%mass<=0) cycle
       axis=candidate(p)%velocity
       if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
-      if(present(reference_factor)) then
+      if(reference) then
         if(allocated(uniforms)) deallocate(uniforms)
         allocate(uniforms(child_counts(p)))
         call khrt_reference_uniforms(candidate(p)%id,last_id,uniforms)
-        call construct_reference_khrt_children(candidate(p),releases(p),axis,reference_factor,uniforms, &
+        call construct_reference_khrt_children(candidate(p),releases(p),axis,factor,uniforms, &
           first_id+int(cursor-np,int64),children,exchange,valid)
         if(valid) then
           momentum(:,p)=exchange(:3);energy(p)=exchange(4)
@@ -1843,7 +1846,7 @@ contains
     real(dp) :: ledger(size(state,1)),trial_ledger(size(state,1)),global_ledger(size(state,1)),exchange(5)
     integer(int64), optional, intent(inout) :: last_id
     integer(int64) :: accepted_id,trial_id
-    real(dp), allocatable :: reynolds(:),child_energy(:)
+    real(dp), allocatable :: reynolds(:),child_momentum(:,:),child_energy(:)
     integer :: child_flag,low_flag,high_flag
     type(spray_parcel), allocatable :: drops(:),trial(:),survivors(:)
     type(spray_liquid) :: effective
@@ -2005,10 +2008,13 @@ contains
         call agree()
         if (agreed.and.options%khrt_children) then
           call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid)
+            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid,gas_momentum=child_momentum)
           if (valid) valid=size(trial)<=125000
           call agree()
-          if (agreed) change(5,:)=change(5,:)+child_energy
+          if (agreed) then
+            change(2:4,:)=change(2:4,:)+child_momentum
+            change(5,:)=change(5,:)+child_energy
+          endif
         end if
         impact_wall=0
         if (agreed.and.present(wall_films)) then
