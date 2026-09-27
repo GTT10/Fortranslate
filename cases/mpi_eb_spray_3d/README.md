@@ -51,8 +51,10 @@ reported in the `force` budget column
 ([checks](../../docs/validation/spray-recursive-acceleration-20260927.md)). Keep
 `wall_impacts=.false.` and `walls%evolve=.false.` in `/eb_spray/`; films reject
 at input. ETAB and KHRT diameter evolution and `maximum_multiplicity` splitting
-are supported; `khrt_children=.true.` still rejects
-([breakup checks](../../docs/validation/spray-recursive-breakup-20260927.md)). Periodic migration also rejects.
+are supported ([breakup checks](../../docs/validation/spray-recursive-breakup-20260927.md)).
+`khrt_children=.true.` with a positive `khrt_reference_diameter_cubed` also enables
+physical shedding children in the old-time stage; copies do not create children
+([checks](../../docs/validation/spray-recursive-children-20260927.md)). Periodic migration also rejects.
 Reflecting particle/EB walls are distinct from the unsupported film-impact model.
 
 Physical particle exchange is synchronized conservatively after each outer step.
