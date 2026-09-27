@@ -1,0 +1,18 @@
+&reactive_3d
+ nx=16,ny=16,nz=16
+ x_upper=6.283185307179586,y_upper=6.283185307179586,z_upper=6.283185307179586
+ final_time=1e-6,maximum_steps=100,time_integrator='sdc',sdc_iterations=2
+ problem='uniform_reactor',thermo_model='full_h2o2'
+ x_h2=0,x_h=0,x_o=0,x_o2=0,x_oh=0,x_h2o=0,x_ho2=0,x_h2o2=0,x_ar=0,x_n2=1
+ reconstruction='characteristic_ppm',riemann_solver='pelec',boundary_condition='periodic'
+ chemistry_enabled=.false.,transport_enabled=.true.
+ initial_temperature=400,initial_pressure=101325
+ initial_velocity_x=0,initial_velocity_y=0,initial_velocity_z=0
+ output_file='hit.csv'
+/
+&reactive_hit
+ input_file='hit_ic_4_32.dat',inres=32,binfmt=.false.,mach_t0=.1,uin_norm=1
+/
+&reactive_les
+ enabled=.true.,model='wale',cs=.5,prt=.7,sct=.7,ci=0
+/

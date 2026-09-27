@@ -9,6 +9,13 @@ Older milestone prose remains historical detail, not a current global status.
 
 ## Supported boundary
 
+Regular fixed/selected gas applications now accept pinned-format HIT velocity
+cubes through `reactive_hit`, with ASCII/binary input, periodic interpolation
+and Mach scaling. Manufactured interpolation and pinned 32³ input checks reach
+WALE SDC with exact fixed/selected output
+([evidence](validation/hit-input-20260927.md), [case](../cases/reactive_hit_3d/README.md)).
+This is initialization/integration evidence, not evolved HIT reference parity.
+
 The forced reactor now has a transactional CVODE BDF backend for changing
 species densities and internal-energy sources. Inert analytical, early-time
 native-reactor comparison and failure/reuse checks pass
