@@ -1,12 +1,13 @@
 module eb_reactive_transfer_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d
   implicit none
   private
-  public :: face_metrics
+  public :: face_metrics,recover_reactive_eb_cell_3d
   public :: restrict_reactive_eb_state_3d,prolong_reactive_eb_state_pcm_3d
   public :: fill_reactive_eb_patch_halo_3d,overlay_reactive_eb_peer_halo_3d
 contains
@@ -16,8 +17,9 @@ contains
   ! remain untouched unless volume fractions request all peer-covered slots.
   ! The caller owns collection-wide overlap validation.
   subroutine overlay_reactive_eb_peer_halo_3d(species,target,peer,peer_offset,peer_state,peer_temperature, &
-      ghost_state,ghost_temperature,ok,ghost_volume_fraction)
+      ghost_state,ghost_temperature,ok,ghost_volume_fraction,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_geometry_3d), intent(in) :: target,peer
     integer, intent(in) :: peer_offset(3)
     real(dp), intent(in) :: peer_state(:,:,:,:),peer_temperature(:,:,:)
@@ -31,6 +33,9 @@ contains
     integer :: n(3),pn(3),nvar,axis,side,first(3),last(3),idx(3),source(3),face(3),peer_face(3),i,j,k
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if (.not.target%is_valid().or..not.peer%is_valid()) return
     n=[target%nx,target%ny,target%nz];pn=[peer%nx,peer%ny,peer%nz]
     ! Only touching boxes are meaningful to this pair operation. Bound offsets
@@ -75,8 +80,8 @@ contains
               guess=peer_temperature(source(1),source(2),source(3))
               if (.not.ieee_is_finite(guess)) return
               if (guess<=0._dp) return
-              call reactive_conserved_to_primitive(species,peer_state(:,source(1),source(2),source(3)),guess, &
-                primitive,recovered,speed,valid)
+              call recover_reactive_eb_cell_3d(species,target,[i,j,k],peer_state(:,source(1),source(2),source(3)),guess, &
+                primitive,recovered,speed,valid,frame)
               if (.not.valid) return
               candidate(:,i,j,k)=peer_state(:,source(1),source(2),source(3));temps(i,j,k)=recovered
             end do
@@ -95,8 +100,8 @@ contains
             if(volumes(i,j,k)<=0) cycle
             guess=peer_temperature(source(1),source(2),source(3))
             if(.not.ieee_is_finite(guess).or.guess<=0) return
-            call reactive_conserved_to_primitive(species,peer_state(:,source(1),source(2),source(3)),guess, &
-              primitive,recovered,speed,valid)
+            call recover_reactive_eb_cell_3d(species,target,[i,j,k],peer_state(:,source(1),source(2),source(3)),guess, &
+              primitive,recovered,speed,valid,frame)
             if(.not.valid) return
             candidate(:,i,j,k)=peer_state(:,source(1),source(2),source(3));temps(i,j,k)=recovered
           end do
@@ -128,8 +133,9 @@ contains
   ! storage is zero. Optional volume fractions request complete halos, with PCM
   ! parent geometry at coarse/fine boundaries. This is not full metric parity.
   subroutine fill_reactive_eb_patch_halo_3d(species,coarse,fine,lower,ratio,coarse_state,coarse_temperature, &
-      fine_state,fine_temperature,ghost_state,ghost_temperature,ok,ghost_volume_fraction)
+      fine_state,fine_temperature,ghost_state,ghost_temperature,ok,ghost_volume_fraction,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_geometry_3d), intent(in) :: coarse,fine
     integer, intent(in) :: lower(3),ratio
     real(dp), intent(in) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
@@ -143,6 +149,9 @@ contains
     real(dp) :: spacing(3),origin(3),fine_origin(3),fine_end(3),expected_end(3),tolerance,area,guess,recovered,speed
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if (.not.coarse%is_valid().or..not.fine%is_valid().or.ratio<1) return
     dims=[fine%nx,fine%ny,fine%nz];parent_dims=[coarse%nx,coarse%ny,coarse%nz]
     if (any(mod(dims,ratio)/=0).or.any(lower<1).or.any(lower>parent_dims)) return
@@ -197,7 +206,7 @@ contains
               end if
               if (.not.ieee_is_finite(guess)) return
               if (guess<=0._dp) return
-              call reactive_conserved_to_primitive(species,donor,guess,primitive,recovered,speed,valid)
+              call recover_reactive_eb_cell_3d(species,fine,[i,j,k],donor,guess,primitive,recovered,speed,valid,frame)
               if (.not.valid) return
               candidate(:,i,j,k)=donor;temps(i,j,k)=recovered
             end do
@@ -234,7 +243,7 @@ contains
             ! Open faces were already checked above. Retain their existing values.
             if(temps(i,j,k)>0) cycle
             if(.not.ieee_is_finite(guess).or.guess<=0) return
-            call reactive_conserved_to_primitive(species,donor,guess,primitive,recovered,speed,valid)
+            call recover_reactive_eb_cell_3d(species,fine,[i,j,k],donor,guess,primitive,recovered,speed,valid,frame)
             if(.not.valid) return
             candidate(:,i,j,k)=donor;temps(i,j,k)=recovered
           end do
@@ -249,8 +258,9 @@ contains
   ! Covered destination storage is retained. Publish U and T together only
   ! after all active donor and destination states pass the existing EOS checks.
   subroutine restrict_reactive_eb_state_3d(species,fine,ratio,fine_state,fine_temperature, &
-      coarse_state,coarse_temperature,ok)
+      coarse_state,coarse_temperature,ok,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_geometry_3d), intent(in) :: fine
     integer, intent(in) :: ratio
     real(dp), intent(in) :: fine_state(:,:,:,:),fine_temperature(:,:,:)
@@ -262,6 +272,9 @@ contains
     integer :: i,j,k,ii,jj,kk,nvar,allocation_status,lo(3),hi(3)
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     call coarsen_eb_geometry_3d(fine,ratio,coarse,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))
@@ -285,8 +298,8 @@ contains
                 if (fine%volume_fraction(ii,jj,kk)<=0._dp) cycle
                 if (.not.ieee_is_finite(fine_temperature(ii,jj,kk))) return
                 if (fine_temperature(ii,jj,kk)<=0._dp) return
-                call reactive_conserved_to_primitive(species,fine_state(:,ii,jj,kk),fine_temperature(ii,jj,kk), &
-                  primitive,recovered,sound_speed,valid)
+                call recover_reactive_eb_cell_3d(species,fine,[ii,jj,kk],fine_state(:,ii,jj,kk),fine_temperature(ii,jj,kk), &
+                  primitive,recovered,sound_speed,valid,frame)
                 if (.not.valid) return
                 weight=fine%volume_fraction(ii,jj,kk)/volume
                 candidate(:,i,j,k)=candidate(:,i,j,k)+weight*fine_state(:,ii,jj,kk)
@@ -294,8 +307,8 @@ contains
               end do
             end do
           end do
-          call reactive_conserved_to_primitive(species,candidate(:,i,j,k),guess, &
-            primitive,temps(i,j,k),sound_speed,valid)
+          call recover_reactive_eb_cell_3d(species,coarse,[i,j,k],candidate(:,i,j,k),guess, &
+            primitive,temps(i,j,k),sound_speed,valid,frame)
           if (.not.valid) return
         end do
       end do
@@ -307,8 +320,9 @@ contains
   ! Piecewise constant prolongation preserves the kappa-weighted inventory
   ! because the coarse geometry is restricted from the supplied fine geometry.
   subroutine prolong_reactive_eb_state_pcm_3d(species,fine,ratio,coarse_state,coarse_temperature, &
-      fine_state,fine_temperature,ok)
+      fine_state,fine_temperature,ok,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_geometry_3d), intent(in) :: fine
     integer, intent(in) :: ratio
     real(dp), intent(in) :: coarse_state(:,:,:,:),coarse_temperature(:,:,:)
@@ -320,6 +334,9 @@ contains
     integer :: i,j,k,ii,jj,kk,nvar,allocation_status,lo(3),hi(3)
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     call coarsen_eb_geometry_3d(fine,ratio,coarse,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))
@@ -335,8 +352,8 @@ contains
           if (coarse%volume_fraction(i,j,k)<=0._dp) cycle
           if (.not.ieee_is_finite(coarse_temperature(i,j,k))) return
           if (coarse_temperature(i,j,k)<=0._dp) return
-          call reactive_conserved_to_primitive(species,coarse_state(:,i,j,k),coarse_temperature(i,j,k), &
-            primitive,recovered,sound_speed,valid)
+          call recover_reactive_eb_cell_3d(species,coarse,[i,j,k],coarse_state(:,i,j,k),coarse_temperature(i,j,k), &
+            primitive,recovered,sound_speed,valid,frame)
           if (.not.valid) return
           lo=([i,j,k]-1)*ratio+1; hi=[i,j,k]*ratio
           do kk=lo(3),hi(3)
@@ -345,6 +362,11 @@ contains
                 if (fine%volume_fraction(ii,jj,kk)<=0._dp) cycle
                 candidate(:,ii,jj,kk)=coarse_state(:,i,j,k)
                 temps(ii,jj,kk)=recovered
+                if(present(frame)) then
+                  call recover_reactive_eb_cell_3d(species,fine,[ii,jj,kk],candidate(:,ii,jj,kk),recovered, &
+                    primitive,temps(ii,jj,kk),sound_speed,valid,frame)
+                  if(.not.valid) return
+                end if
               end do
             end do
           end do
@@ -354,6 +376,29 @@ contains
     fine_state=candidate; fine_temperature=temps
     ok=.true.
   end subroutine prolong_reactive_eb_state_pcm_3d
+
+  ! Conserved transfer keeps rotating energy unchanged. Recover thermodynamics
+  ! at the receiving cell center, including halo indices outside the patch.
+  subroutine recover_reactive_eb_cell_3d(species,geometry,index,state,guess,primitive,temperature,speed,ok,frame)
+    type(nasa7_species), intent(in) :: species(:)
+    type(eb_geometry_3d), intent(in) :: geometry
+    integer, intent(in) :: index(3)
+    real(dp), intent(in) :: state(:),guess
+    real(dp), intent(out) :: primitive(:),temperature,speed
+    logical, intent(out) :: ok
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), allocatable :: potential
+    real(dp) :: position(3)
+    primitive=0;temperature=0;speed=0;ok=.false.
+    if(present(frame)) then
+      allocate(potential)
+      position=[geometry%x_lower,geometry%y_lower,geometry%z_lower]+ &
+        (real(index,dp)-.5_dp)*[geometry%dx,geometry%dy,geometry%dz]
+      call rotating_potential_3d(frame,position,potential,ok)
+      if(.not.ok) return
+    end if
+    call reactive_conserved_to_primitive(species,state,guess,primitive,temperature,speed,ok,potential)
+  end subroutine recover_reactive_eb_cell_3d
 
   pure logical function fields_match(state,temperature,geometry,nvar) result(valid)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:)

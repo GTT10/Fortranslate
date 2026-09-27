@@ -1,6 +1,7 @@
 module eb_reactive_patch_tree_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
+  use rotating_frame_3d_mod, only: rotating_frame_3d,convert_rotating_energy_3d
   use precision_mod, only: dp
   use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
@@ -24,7 +25,8 @@ module eb_reactive_patch_tree_3d_mod
   use eb_reactive_two_level_3d_mod, only: eb_reactive_patch_3d,matching_eb_metrics_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d, &
     restrict_eb_integrated_flux_3d,reconcile_reactive_eb_peer_flux_3d,reflux_reactive_eb_state_3d
-  use eb_reactive_transfer_3d_mod, only: prolong_reactive_eb_state_pcm_3d,restrict_reactive_eb_state_3d, &
+  use eb_reactive_transfer_3d_mod, only: recover_reactive_eb_cell_3d, prolong_reactive_eb_state_pcm_3d, &
+      restrict_reactive_eb_state_3d, &
     overlay_reactive_eb_peer_halo_3d
   use amr_patch_tree_remap_3d_mod, only: covered
   implicit none
@@ -773,8 +775,9 @@ contains
     call move_alloc(candidate,patches);ok=.true.
   end subroutine build_eb_tree_extended_geometry_3d
 
-  subroutine initialize_reactive_eb_tree_3d(species,topology,finest,root_state,root_temperature,tree,ok)
+  subroutine initialize_reactive_eb_tree_3d(species,topology,finest,root_state,root_temperature,tree,ok,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(amr_patch_tree_3d), intent(in) :: topology
     type(eb_geometry_3d), intent(in) :: finest
     real(dp), intent(in) :: root_state(:,:,:,:),root_temperature(:,:,:)
@@ -787,6 +790,9 @@ contains
     integer :: count,level,node,parent,ratio,lo(3),hi(3),d(3),i,j,k,index(3),nv
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     call amr_tree_integer_layout_3d(topology,origin,domain,ratios,valid)
     if (.not.valid.or..not.finest%is_valid()) return
     count=size(ratios);nv=reactive_nvar(size(species))
@@ -809,7 +815,7 @@ contains
       if (node==1) then
         candidate%nodes(node)%state=root_state;candidate%nodes(node)%temperature=root_temperature
         call prolong_reactive_eb_state_pcm_3d(species,levels(1),1,root_state,root_temperature, &
-          candidate%nodes(1)%state,candidate%nodes(1)%temperature,valid)
+          candidate%nodes(1)%state,candidate%nodes(1)%temperature,valid,frame)
       else
         parent=topology%nodes(node)%parent;ratio=topology%nodes(node)%patch%refinement_ratio
         call bounds(topology,node,lo,hi)
@@ -825,7 +831,7 @@ contains
         call prolong_reactive_eb_state_pcm_3d(species,candidate%nodes(node)%geometry,ratio, &
           candidate%nodes(parent)%state(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
           candidate%nodes(parent)%temperature(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
-          candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid)
+          candidate%nodes(node)%state,candidate%nodes(node)%temperature,valid,frame)
       end if
       if (.not.valid) return
     end do
@@ -1118,14 +1124,18 @@ contains
     valid=.true.
   end function valid_tree
 
-  subroutine average_down_reactive_eb_tree_3d(species,tree,ok)
+  subroutine average_down_reactive_eb_tree_3d(species,tree,ok,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_reactive_tree_3d), intent(inout) :: tree
     logical, intent(out) :: ok
     type(eb_reactive_tree_3d) :: candidate
     integer :: node,parent,lo(3),hi(3)
     logical :: valid
     ok=.false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if (.not.valid_tree(tree,reactive_nvar(size(species)))) return
     candidate=tree
     do node=size(tree%nodes),2,-1
@@ -1134,7 +1144,7 @@ contains
       call restrict_reactive_eb_state_3d(species,candidate%nodes(node)%geometry, &
         tree%topology%nodes(node)%patch%refinement_ratio,candidate%nodes(node)%state,candidate%nodes(node)%temperature, &
         candidate%nodes(parent)%state(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
-        candidate%nodes(parent)%temperature(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),valid)
+        candidate%nodes(parent)%temperature(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),valid,frame)
       if (.not.valid) return
     end do
     tree=candidate;ok=.true.
@@ -2571,8 +2581,9 @@ contains
   ! Rates are per fluid volume; fluxes are time-integrated face densities.
   subroutine compute_mol_eb_tree_hydro_3d(species,tree,extended_geometry,dt,order,hydro_rate,flux,ok, &
       boundary_faces,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
-      target_depth,ancestor_start,ancestor_end,ancestor_fraction,lax_friedrichs)
+      target_depth,ancestor_start,ancestor_end,ancestor_fraction,lax_friedrichs,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_reactive_tree_3d), intent(in) :: tree
     type(eb_geometry_3d), intent(in) :: extended_geometry(:)
     real(dp), intent(in) :: dt
@@ -2594,6 +2605,9 @@ contains
     integer :: nv,node,n(3),depth
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species));depth=-1
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if(.not.valid_tree(tree,nv).or..not.ieee_is_finite(dt)) return
     if(dt<=0.or.(order/=1.and.order/=2)) return
     if(size(extended_geometry)/=size(tree%nodes)) return
@@ -2619,10 +2633,10 @@ contains
         boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_mach=inflow_mach, &
         inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure,ghost_volume_fraction=vf, &
         halo_width=3,target_volume_fraction=extended_geometry(node)%volume_fraction,restrict_snapshot=.false., &
-        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction)
+        ancestor_start=ancestor_start,ancestor_end=ancestor_end,ancestor_fraction=ancestor_fraction,frame=frame)
       if(.not.valid) return
       call compute_mol_eb_hydro_3d(species,extended_geometry(node),ghost,gt,dt,order, &
-        rates%fields(node)%values,candidate_flux(node),boundary,wall,valid,lax_friedrichs)
+        rates%fields(node)%values,candidate_flux(node),boundary,wall,valid,lax_friedrichs,frame)
       if(.not.valid) return
       deallocate(ghost,gt,vf)
     end do
@@ -3488,8 +3502,9 @@ contains
 
   subroutine fill_reactive_eb_tree_halo_3d(species,tree,target,ghost,ghost_temperature,ok, &
       ancestor_start,ancestor_end,ancestor_fraction,inflow_mach,inflow_temperature,inflow_pressure, &
-      ghost_volume_fraction,halo_width,target_volume_fraction,boundary_faces,inflow_state,restrict_snapshot)
+      ghost_volume_fraction,halo_width,target_volume_fraction,boundary_faces,inflow_state,restrict_snapshot,frame)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(eb_reactive_tree_3d), intent(in) :: tree
     integer, intent(in) :: target
     integer, optional, intent(in) :: halo_width
@@ -3517,6 +3532,9 @@ contains
     logical, optional, intent(in) :: restrict_snapshot
     logical :: valid,physical,restrict_state
     ok=.false.;nv=reactive_nvar(size(species));width=1
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     if(present(halo_width)) width=halo_width
     if(width<1.or.width>huge(1)/4) return
     if(width>1.and.(.not.present(ghost_volume_fraction).or..not.present(target_volume_fraction))) return
@@ -3577,7 +3595,7 @@ contains
     restrict_state=.true.
     if(present(restrict_snapshot)) restrict_state=restrict_snapshot
     if(restrict_state) then
-      call average_down_reactive_eb_tree_3d(species,snapshot,valid)
+      call average_down_reactive_eb_tree_3d(species,snapshot,valid,frame)
       if (.not.valid) return
     end if
     allocate(candidate(nv,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width), &
@@ -3644,10 +3662,12 @@ contains
         end if
         if (.not.ieee_is_finite(guess)) return
         if (guess<=0._dp) return
-        call reactive_conserved_to_primitive(species,value, &
-          guess,primitive,recovered,speed,valid)
+        call recover_reactive_eb_cell_3d(species,tree%nodes(target)%geometry,[i,j,k],value, &
+          guess,primitive,recovered,speed,valid,frame)
         if (.not.valid) return
         if (physical.and.mach(2*axis-1+side)>=0) then
+          call boundary_energy(.false.,valid)
+          if(.not.valid) return
           if (pin(2*axis-1+side)>0) then
             call mach_inlet_ghost_3d(species,value,recovered,2*axis-1+side,tin(2*axis-1+side), &
               mach(2*axis-1+side),inlet_value,inlet_t,valid,inlet_pressure=pin(2*axis-1+side))
@@ -3657,6 +3677,8 @@ contains
           end if
           if (.not.valid) return
           value=inlet_value;recovered=inlet_t
+          call boundary_energy(.true.,valid)
+          if(.not.valid) return
         end if
         if(physical) then
           call prescribed_inlet(2*axis-1+side,valid)
@@ -3733,13 +3755,16 @@ contains
               fraction*ancestor_end%nodes(donor)%temperature(source(1),source(2),source(3))
           end if
         end if
-        call reactive_conserved_to_primitive(species,value,guess,primitive,recovered,speed,valid)
+        call recover_reactive_eb_cell_3d(species,tree%nodes(target)%geometry,[i,j,k],value,guess,primitive, &
+      recovered,speed,valid,frame)
         if(.not.valid) return
         if(inlet_face>0) then
           if(faces(inlet_face)=='inflow') then
             call prescribed_inlet(inlet_face,valid)
             if(.not.valid) return
           else
+          call boundary_energy(.false.,valid)
+          if(.not.valid) return
           if(pin(inlet_face)>0) then
             call mach_inlet_ghost_3d(species,value,recovered,inlet_face,tin(inlet_face),mach(inlet_face), &
               inlet_value,inlet_t,valid,inlet_pressure=pin(inlet_face))
@@ -3749,6 +3774,8 @@ contains
           end if
           if(.not.valid) return
           value=inlet_value;recovered=inlet_t
+          call boundary_energy(.true.,valid)
+          if(.not.valid) return
           end if
         end if
         value(2:4)=value(2:4)*real(momentum_sign,dp)
@@ -3765,13 +3792,27 @@ contains
       if (any(offset < -int(tree%topology%nodes(node)%shape,int64)).or.any(offset>int(n,int64))) cycle
       call overlay_reactive_eb_peer_halo_3d(species,snapshot%nodes(target)%geometry,snapshot%nodes(node)%geometry, &
         int(offset),snapshot%nodes(node)%state,snapshot%nodes(node)%temperature, &
-        candidate(:,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1),valid)
+        candidate(:,0:n(1)+1,0:n(2)+1,0:n(3)+1),temps(0:n(1)+1,0:n(2)+1,0:n(3)+1),valid,frame=frame)
       if (.not.valid) return
     end do
     ghost=candidate;ghost_temperature=temps
     if(present(ghost_volume_fraction)) ghost_volume_fraction=volumes
     ok=.true.
   contains
+    ! Prescribed and Mach inlet APIs use ordinary relative total energy.
+    subroutine boundary_energy(to_rotating,accepted)
+      logical, intent(in) :: to_rotating
+      logical, intent(out) :: accepted
+      real(dp) :: position(3),energy
+      accepted=.true.
+      if(.not.present(frame)) return
+      position=[tree%nodes(target)%geometry%x_lower,tree%nodes(target)%geometry%y_lower, &
+        tree%nodes(target)%geometry%z_lower]+(real([i,j,k],dp)-.5_dp)* &
+        [tree%nodes(target)%geometry%dx,tree%nodes(target)%geometry%dy,tree%nodes(target)%geometry%dz]
+      energy=value(5)
+      call convert_rotating_energy_3d(frame,position,value(1),value(5),to_rotating,energy,accepted)
+      if(accepted) value(5)=energy
+    end subroutine boundary_energy
     subroutine map_wall_donor(position,signs)
       integer(int64), intent(inout) :: position(3)
       integer, intent(out) :: signs(3)
@@ -3806,7 +3847,10 @@ contains
       if(faces(face)/='inflow') return
       call reactive_conserved_to_primitive(species,inflow_state(:,face),tin(face), &
         primitive,recovered,speed,accepted)
-      if(accepted) value=inflow_state(:,face)
+      if(accepted) then
+        value=inflow_state(:,face)
+        call boundary_energy(.true.,accepted)
+      end if
     end subroutine
     logical function matching_snapshot(other) result(matches)
       type(eb_reactive_tree_3d), intent(in) :: other
