@@ -3,8 +3,9 @@ program test_spray_mpi_eb_sample
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_amr_step_mod, only: advance_mpi_eb_ghost_stage,advance_mpi_eb_population_stage, &
     advance_mpi_eb_population_sdc_stage,spray_sdc_population_stage,advance_mpi_eb_recursive_population_stage
-  use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage,spray_sdc_film_stage
-  use spray_mpi_amr_film_mod, only: spray_level_film_population
+  use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage,spray_sdc_film_stage, &
+    advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level
+  use spray_mpi_amr_film_mod, only: spray_level_film_population,initialize_mpi_eb_film_levels
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,advance_mixture_wall_film_frozen
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations
@@ -120,7 +121,9 @@ contains
     type(spray_options) :: options,child_options
     type(spray_wall_options) :: film_options
     type(spray_level_film_population) :: film_groups(3),old_film_groups(3)
-    type(spray_sdc_film_stage) :: film_work,depletion_work
+    type(spray_sdc_film_stage) :: film_work,depletion_work,film_clocks(2)
+    type(spray_level_film_population), allocatable :: film_physical(:),film_virtuals(:),film_ghosts(:)
+    type(spray_level_film_population) :: root_finished_film
     type(amr_tree_state_3d) :: expected_film_source,expected_film_remainder,expected_physical_film
     real(dp) :: old_film_wall(5),expected_film_wall(5)
     type(spray_wall_film), allocatable :: films(:),reference_films(:),kept_films(:)
@@ -641,6 +644,60 @@ contains
           size(film_groups(population)%probes,2)==0.and.size(film_groups(population)%component_mass,2)==0, &
           'depleted film population and metadata compact together')
       end do
+      film_options%minimum_height=1e-15_dp
+      call initialize_mpi_eb_film_levels(MPI_COMM_WORLD,tree,owners,films,film_mass,zero,spacing,100,phi,film_physical,ok)
+      call require(ok,'recursive film hierarchy initialization')
+      allocate(film_virtuals(2),film_ghosts(2))
+      do p=1,2
+        film_virtuals(p)%films=film_physical(p)%films(:0)
+        film_virtuals(p)%component_mass=film_physical(p)%component_mass(:,:0)
+        film_virtuals(p)%nodes=film_physical(p)%nodes(:0);film_virtuals(p)%probes=film_physical(p)%probes(:,:0)
+        film_ghosts(p)=film_virtuals(p)
+      end do
+      fraction=0
+      call advance_mpi_eb_recursive_film_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        gas,temp,1,0,1,100,film_physical,film_virtuals,film_ghosts,film_clocks,0._dp,2e-10_dp,0,2,faces, &
+        group_source,group_remainder,wall,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction,physical_source=physical_source)
+      call require(ok.and.size(film_ghosts(2)%films)==count,'root old film stage creates child ghosts')
+      wall=17
+      call advance_mpi_eb_recursive_film_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        gas,temp,1,1,1,100,film_physical,film_virtuals,film_ghosts,film_clocks,0._dp,1e-10_dp,0,2,faces, &
+        group_source,group_remainder,wall,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction,physical_source=physical_source)
+      call require(.not.ok.and.film_clocks(2)%next_stage==0.and.all(wall==17),'film child waits for parent interval')
+      do stage=1,2
+        call advance_mpi_eb_recursive_film_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+          gas,temp,1,0,1,100,film_physical,film_virtuals,film_ghosts,film_clocks,0._dp,2e-10_dp,stage,2,faces, &
+          group_source,group_remainder,wall,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction, &
+          physical_source=physical_source)
+        call require(ok,'root new film stages')
+      end do
+      root_finished_film=film_physical(1)
+      call finish_mpi_eb_film_level(MPI_COMM_WORLD,0,0._dp,2e-10_dp,1,1,film_virtuals,film_ghosts,film_clocks,ok)
+      call require(.not.ok,'root film cleanup waits for descendant synchronization')
+      do substep=0,1
+        do stage=0,2
+          fraction=.5_dp*substep
+          if(stage>0) fraction=fraction+.5_dp
+          call advance_mpi_eb_recursive_film_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options, &
+            tree,owners,g,gas,temp,1,1,1,100,film_physical,film_virtuals,film_ghosts,film_clocks, &
+            substep*1e-10_dp,1e-10_dp,stage,2,faces,group_source,group_remainder,wall,ok, &
+            phi,centroids,metrics,gas,ending,temp,temp,fraction,physical_source=physical_source)
+          call require(ok,'recursive film child interval')
+        end do
+        call finish_mpi_eb_film_level(MPI_COMM_WORLD,1,substep*1e-10_dp,1e-10_dp,substep+1,2, &
+          film_virtuals,film_ghosts,film_clocks,ok)
+        call require(ok.and.size(film_virtuals(2)%films)==0,'film virtuals expire after every child interval')
+        call require(size(film_ghosts(2)%films)==merge(count,0,substep==0),'film ghosts expire only after final child cycle')
+      end do
+      call require(all(film_physical(1)%component_mass==root_finished_film%component_mass), &
+        'child film copies do not advance parent physical films again')
+      wall=17
+      call advance_mpi_eb_recursive_film_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        gas,temp,1,1,1,100,film_physical,film_virtuals,film_ghosts,film_clocks,2e-10_dp,1e-10_dp,0,2,faces, &
+        group_source,group_remainder,wall,ok,phi,centroids,metrics,gas,ending,temp,temp,fraction,physical_source=physical_source)
+      call require(.not.ok.and.all(wall==17),'film child cannot exceed parent clock')
+      call finish_mpi_eb_film_level(MPI_COMM_WORLD,0,0._dp,2e-10_dp,1,1,film_virtuals,film_ghosts,film_clocks,ok)
+      call require(ok.and.size(film_virtuals(1)%films)==0.and.size(film_ghosts(1)%films)==0,'root film cleanup')
       old_mass=mass;old_source=source;wall=17;ledger=19;fraction=1.1_dp
       call advance_mpi_eb_ghost_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g,gas,temp, &
         1,1,1,100,query_nodes,ghosts,mass,1e-8_dp,0._dp,faces,source,remainder,wall,ledger,ok,phi,centroids,metrics, &
