@@ -824,7 +824,8 @@ contains
     if(.not.valid_spray_options(particle_options)) &
       error stop 'Unsupported particle options'
     if(time_integrator=='sdc'.and.subcycling) then
-      if(any(boundary_faces=='periodic')) error stop 'Recursive spray SDC periodic migration is not implemented'
+      if(wall_impacts.and.any(boundary_faces=='periodic')) &
+        error stop 'Recursive spray SDC periodic film copies are not implemented'
     end if
     if(number>particle_options%maximum_parcels) error stop 'Particle capacity exceeded'
     if(.not.all(ieee_is_finite(acceleration))) error stop 'Invalid MPI EB acceleration'

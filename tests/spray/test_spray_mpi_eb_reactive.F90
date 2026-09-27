@@ -381,6 +381,9 @@ contains
       if(rank==nranks-1) drops(1)%position(1)=.00199999_dp
       final_owner=0
     end if
+    if(test_mode=='sdc-recursive-periodic') then
+      if(rank==nranks-1) drops(1)%position(1)=.00399999_dp
+    end if
     if(test_mode=='sdc-recursive-entering') then
       if(rank==nranks-1) then
         drops(1)%position(1)=.00200001_dp;drops(1)%velocity(1)=-20._dp
@@ -502,6 +505,8 @@ contains
       'recursive physical collection')
     if(rank==final_owner.and.test_mode=='sdc-recursive-crossing') &
       call require(drops(1)%position(1)>.002_dp,'crossed fine boundary')
+    if(rank==final_owner.and.test_mode=='sdc-recursive-periodic') &
+      call require(drops(1)%position(1)>=0.and.drops(1)%position(1)<2e-7_dp,'recursive wrap enters fine patch')
     if(rank==final_owner.and.test_mode=='sdc-recursive-entering') &
       call require(drops(1)%position(1)<.002_dp,'entered fine patch')
     if(rank==0.and.(test_mode=='sdc-recursive-crossing'.or.test_mode=='sdc-recursive-entering')) then

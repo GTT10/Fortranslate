@@ -90,7 +90,7 @@ contains
     real(dp) :: low_multiplicity,high_multiplicity
     real(dp) :: exterior(size(source_change)),particle_force_total(size(source_change)),theta,h(3),origin(3)
     integer :: nv,levels,rank,status,node,n(3),i,j,k,p,ios
-    logical :: valid,agreed
+    logical :: valid,agreed,periodic(3)
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
     impacts=.false.
     if(present(film_impacts)) impacts=film_impacts
@@ -106,11 +106,15 @@ contains
     if(film_flag/=0.and.film_flag/=7.and.film_flag/=15) return
     valid=allocated(parcels).and.allocated(component_mass).and.tree%is_valid().and.valid_spray_options(options)
     if(present(films)) valid=valid.and.allocated(films).and.allocated(film_mass)
-    valid=valid.and.all(boundary_faces=='outflow'.or. &
+    valid=valid.and.all(boundary_faces=='periodic'.or.boundary_faces=='outflow'.or. &
       boundary_faces=='slip_wall'.or.boundary_faces=='no_slip_wall'.or. &
       boundary_faces=='inflow'.or.boundary_faces=='isothermal_wall')
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
+    periodic=boundary_faces([1,3,5])=='periodic'
+    valid=valid.and.all(periodic.eqv.(boundary_faces([2,4,6])=='periodic'))
+    ! Film copy placement still has a nonperiodic ownership contract.
+    if(present(films)) valid=valid.and..not.any(periodic)
     call agree();if(.not.agreed) return
     call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -171,7 +175,7 @@ contains
     end do
     call agree();if(.not.agreed) return
     call initialize_mpi_amr_sdc_populations(comm,tree,owners,parcels,component_mass,lower,spacing, &
-      [.false.,.false.,.false.],2,options%maximum_parcels,physical,virtuals,ghosts,agreed,phi)
+      periodic,2,options%maximum_parcels,physical,virtuals,ghosts,agreed,phi)
     if(.not.agreed) return
     if(present(films)) then
       call initialize_mpi_eb_film_levels(comm,tree,owners,films,film_mass,lower,spacing, &
@@ -211,7 +215,7 @@ contains
       call agree();if(.not.agreed) return
       total_steps=total_steps+counts(p)
     end do
-    call collect_mpi_amr_level_particles(comm,tree,owners,physical,lower,spacing,[.false.,.false.,.false.], &
+    call collect_mpi_amr_level_particles(comm,tree,owners,physical,lower,spacing,periodic, &
       options%maximum_parcels,final,masses,agreed,phi)
     if(.not.agreed) return
     if(present(films)) then
@@ -341,7 +345,7 @@ contains
       if(.not.good) return
       if(depth==0.or.(iteration<ncycle.and.depth<levels-1)) then
         call redistribute_mpi_amr_subtree_particles(post_comm,tree,owners,physical,lower,spacing, &
-          [.false.,.false.,.false.],depth,iteration,options%maximum_parcels,good,phi)
+          periodic,depth,iteration,options%maximum_parcels,good,phi)
         if(.not.good) return
       end if
       if(present(films)) then

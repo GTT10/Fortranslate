@@ -93,7 +93,7 @@ def main():
             spray = directory / 'spray.nml'
             spray.write_text(spray.read_text().replace('&eb_spray', '&eb_spray\n particle_outflow=.true.,', 1))
         if a.periodic or a.wall or a.isothermal:
-            extra = ("boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic'," + extra)
+            extra += "boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic',"
             if a.wall or a.isothermal:
                 extra = extra.replace("'periodic'", "'no_slip_wall'")
             if a.isothermal:
