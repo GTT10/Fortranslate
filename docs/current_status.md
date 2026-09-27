@@ -27,7 +27,10 @@ estimates for coordinated patch iterations
 ([halo checks](validation/les-sdc-halos-20260927.md)).
 Serial AMR common-step SDC now connects all four LES closures to stage sources
 and combined-flux reflux ([AMR checks](validation/les-amr-sdc-20260927.md)).
-Recursive LES SDC, MPI and application routing remain open.
+Serial recursive LES SDC now forwards parent temporal donors and combines
+substep fluxes at synchronization
+([recursive checks](validation/les-amr-sdc-recursive-20260927.md)). MPI and
+application routing remain open.
 The library couples chemistry into periodic SDC
 ([checks](validation/sdc-reactions-20260926.md)), and fixed/selected application
 input now enables it with persistent reaction sources
