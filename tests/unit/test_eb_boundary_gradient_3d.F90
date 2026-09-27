@@ -5,9 +5,11 @@ program test_eb_boundary_gradient_3d
   implicit none
   type(eb_boundary_gradient_3d) :: stencil,saved
   real(dp) :: n(3),b(3),h(3),v(0:2,0:2,0:2),r(3),gradient(3),flux,expected
+  real(dp) :: velocity(3,0:2,0:2,0:2),wall_velocity(3),traction(3),expected_traction(3)
   logical :: covered(0:2,0:2,0:2),ok
   integer :: axis,bits,i,j,k,count
   h=.02_dp;b=[-.31_dp,.12_dp,-.23_dp];gradient=[2._dp,-3._dp,5._dp];count=0
+  wall_velocity=[3._dp,-2._dp,1._dp]
   do axis=1,3
     do bits=0,7
       n=[.2_dp,.3_dp,.4_dp];n(axis)=.8_dp
@@ -22,6 +24,7 @@ program test_eb_boundary_gradient_3d
           do k=0,2
             r=h*(real(stencil%offset+[i,j,k],dp)-b)
             v(i,j,k)=400+dot_product(gradient,r)+sum(r*r)+r(1)*r(3)
+            velocity(:,i,j,k)=wall_velocity+gradient*dot_product(r,n)+[1._dp,2._dp,-1._dp]*dot_product(r,n)**2
           end do
         end do
       end do
@@ -29,6 +32,9 @@ program test_eb_boundary_gradient_3d
       call apply_eb_boundary_flux_3d(stencil,v,covered,400._dp,3._dp,flux,ok)
       expected=3*.7_dp*h(1)**2*dot_product(gradient,n)
       if(.not.ok.or.abs(flux-expected)>2e-14_dp) error stop 'quadratic normal derivative'
+      call apply_eb_boundary_viscous_flux_3d(stencil,velocity,covered,n,wall_velocity,2._dp,.7_dp,traction,ok)
+      expected_traction=.7_dp*h(1)**2*(2*gradient+(2._dp/3._dp+.7_dp)*dot_product(n,gradient)*n)
+      if(.not.ok.or.maxval(abs(traction-expected_traction))>2e-14_dp) error stop 'normal and tangent stress'
       count=count+1
     end do
   end do
@@ -44,5 +50,11 @@ program test_eb_boundary_gradient_3d
   covered=.true.;flux=123
   call apply_eb_boundary_flux_3d(stencil,v,covered,400._dp,3._dp,flux,ok)
   if(ok.or.flux/=123) error stop 'covered donor rollback'
-  print *, 'PASS: quadratic fields in',count,'orientations; donor checks and rollback'
+  traction=123
+  call apply_eb_boundary_viscous_flux_3d(stencil,velocity,covered,n,wall_velocity,2._dp,.7_dp,traction,ok)
+  if(ok.or.any(traction/=123)) error stop 'viscous donor rollback'
+  covered=.false.
+  call apply_eb_boundary_viscous_flux_3d(stencil,velocity,covered,n,wall_velocity,2._dp,-.1_dp,traction,ok)
+  if(ok.or.any(traction/=123)) error stop 'negative bulk rejection'
+  print *, 'PASS: quadratic scalar/vector fields in',count,'orientations; donor checks and rollback'
 end program

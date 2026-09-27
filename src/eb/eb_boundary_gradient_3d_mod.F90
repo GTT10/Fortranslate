@@ -4,6 +4,7 @@ module eb_boundary_gradient_3d_mod
   implicit none
   private
   public :: eb_boundary_gradient_3d,build_eb_quadratic_gradient_3d,apply_eb_boundary_flux_3d
+  public :: apply_eb_boundary_viscous_flux_3d
   type :: eb_boundary_gradient_3d
     integer :: offset(3)=0
     real(dp) :: weights(0:2,0:2,0:2)=0,wall_weight=0
@@ -69,6 +70,47 @@ contains
     trial%wall_weight=factor*(-(d(1)+d(2))/(d(1)*d(2)))
     if(.not.all(ieee_is_finite(trial%weights)).or..not.ieee_is_finite(trial%wall_weight)) return
     stencil=trial;ok=.true.
+  end subroutine
+
+  ! Extensive momentum flux from the pinned normal/tangent construction.
+  ! Normal stress uses 4*mu/3+bulk; tangential stress uses mu. This routine
+  ! returns traction only; it does not invent an energy flux for a moving wall.
+  subroutine apply_eb_boundary_viscous_flux_3d(stencil,velocity,covered,normal,wall_velocity,mu,bulk,flux,ok)
+    type(eb_boundary_gradient_3d), intent(in) :: stencil
+    real(dp), intent(in) :: velocity(3,0:2,0:2,0:2),normal(3),wall_velocity(3),mu,bulk
+    logical, intent(in) :: covered(0:2,0:2,0:2)
+    real(dp), intent(inout) :: flux(3)
+    logical, intent(out) :: ok
+    real(dp) :: n(3),t1(3),t2(3),alpha(3),magnitude,weights(3),basis(3,3),total(3),stress(3),candidate(3)
+    integer :: order(3),axis,i,j,k
+    ok=.false.
+    if(.not.all(ieee_is_finite([normal,wall_velocity,mu,bulk,stencil%wall_weight]))) return
+    if(mu<0.or.bulk<0.or..not.all(ieee_is_finite(stencil%weights))) return
+    magnitude=norm2(normal)
+    if(.not.ieee_is_finite(magnitude).or.magnitude<=tiny(1._dp)) return
+    n=normal/magnitude;weights=abs(n)
+    do axis=1,3
+      order(axis)=maxloc(weights,dim=1);weights(order(axis))=-1
+    end do
+    alpha=0;alpha(order(3))=1
+    t1=alpha-dot_product(n,alpha)*n;t1=t1/norm2(t1)
+    t2=[n(2)*t1(3)-n(3)*t1(2),n(3)*t1(1)-n(1)*t1(3),n(1)*t1(2)-n(2)*t1(1)]
+    basis(1,:)=n;basis(2,:)=t1;basis(3,:)=t2
+    total=0
+    do i=0,2
+      do j=0,2
+        do k=0,2
+          if(abs(stencil%weights(i,j,k))<=1e-14_dp) cycle
+          if(covered(i,j,k).or..not.all(ieee_is_finite(velocity(:,i,j,k)))) return
+          total=total+stencil%weights(i,j,k)*matmul(basis,velocity(:,i,j,k))
+        end do
+      end do
+    end do
+    total=total+matmul(basis,wall_velocity)*stencil%wall_weight
+    stress=[(4._dp/3._dp*mu+bulk)*total(1),mu*total(2),mu*total(3)]
+    candidate=matmul(transpose(basis),stress)
+    if(.not.all(ieee_is_finite(candidate))) return
+    flux=candidate;ok=.true.
   end subroutine
 
   ! Values/covered flags are gathered at cell+offset+[0:2,0:2,0:2].
