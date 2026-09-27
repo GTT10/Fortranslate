@@ -8,7 +8,7 @@ module reactive_transport_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use mixture_thermo_mod, only: mixture_mass_properties
   use gas_transport_mod, only: gas_transport_species
-  use mixture_transport_mod, only: mixture_transport_coefficients
+  use mixture_transport_mod, only: mixture_transport_coefficients,simple_bulk_viscosity
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_species_component, &
     reactive_mass_fraction_component, reactive_conserved_to_primitive
@@ -538,6 +538,7 @@ contains
     real(dp), allocatable :: diffusion(:), yleft(:), yright(:), yface(:)
     real(dp), allocatable :: xleft(:), xright(:), hface(:), species_flux(:)
     real(dp) :: molecular_weight,gas_constant,cp,cv,gamma,enthalpy,energy,entropy
+    real(dp) :: bulk,left_bulk,right_bulk
     real(dp) :: viscosity, conductivity, density_face, pressure_face
     real(dp) :: divergence, tau_normal(3), velocity_face(3)
     real(dp) :: viscous_power
@@ -636,6 +637,20 @@ contains
       call reset_transport_face_outputs_3d(flux, species_energy)
       return
     end if
+    bulk=0
+    if(viscosity_enabled.and..not.present(constant_coefficients)) then
+      if(allocated(transport(1)%simple_binary)) then
+        call simple_bulk_viscosity(species,transport,yleft,left_temperature,left_bulk,local_ok)
+        if(.not.local_ok) then
+          call reset_transport_face_outputs_3d(flux,species_energy);return
+        end if
+        call simple_bulk_viscosity(species,transport,yright,right_temperature,right_bulk,local_ok)
+        if(.not.local_ok) then
+          call reset_transport_face_outputs_3d(flux,species_energy);return
+        end if
+        if(min(left_bulk,right_bulk)>0) bulk=2*min(left_bulk,right_bulk)/(1+min(left_bulk,right_bulk)/max(left_bulk,right_bulk))
+      end if
+    end if
     if (viscosity_enabled) then
       if (.not. finite_sum_fits(gradient(1, 1), gradient(2, 2))) then
         call reset_transport_face_outputs_3d(flux, species_energy)
@@ -665,7 +680,7 @@ contains
         tau_normal(component) = viscosity * &
           (gradient(normal, component) + gradient(component, normal))
         if (component == normal) then
-          correction_factor = (2.0_dp / 3.0_dp) * viscosity
+          correction_factor = (2.0_dp / 3.0_dp) * viscosity-bulk
           if (.not. finite_product_fits( &
               correction_factor, divergence)) then
             call reset_transport_face_outputs_3d(flux, species_energy)
@@ -678,7 +693,7 @@ contains
             return
           end if
           tau_normal(component) = tau_normal(component) - &
-            (2.0_dp / 3.0_dp) * viscosity * divergence
+            correction_factor * divergence
         end if
       end do
       if (.not. all(ieee_is_finite(tau_normal))) then
@@ -1630,6 +1645,7 @@ contains
     real(dp) :: inverse_dx, inverse_dy, inverse_dz
     real(dp) :: inverse_dx_squared, inverse_dy_squared, inverse_dz_squared
     real(dp) :: metric_partial, metric_sum
+    real(dp) :: bulk
     logical :: local_ok
     integer :: i, j, k, species_index, nspecies, nvar
 
@@ -1729,14 +1745,23 @@ contains
                 dt, maximum_diffusivity)
               return
             end if
-            numerator = (4.0_dp / 3.0_dp) * viscosity
+            bulk=0
+            if(.not.present(constant_coefficients)) then
+              if(allocated(transport(1)%simple_binary)) then
+                call simple_bulk_viscosity(species,transport,mass_fractions,checked_temperature,bulk,local_ok)
+                if(.not.local_ok) then
+                  call reset_transport_timestep_outputs_3d(dt,maximum_diffusivity);return
+                end if
+              end if
+            end if
+            numerator = (4.0_dp / 3.0_dp) * viscosity+bulk
             if (.not. finite_quotient_fits( &
                 numerator, primitive(1))) then
               call reset_transport_timestep_outputs_3d( &
                 dt, maximum_diffusivity)
               return
             end if
-            candidate = (4.0_dp / 3.0_dp) * viscosity / primitive(1)
+            candidate = numerator / primitive(1)
             if (.not. ieee_is_finite(candidate)) then
               call reset_transport_timestep_outputs_3d( &
                 dt, maximum_diffusivity)

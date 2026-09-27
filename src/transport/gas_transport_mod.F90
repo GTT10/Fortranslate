@@ -174,7 +174,7 @@ contains
     integer :: j
     status=0
     if(.not.allocated(record%simple_binary)) return
-    write(unit,'(a)',iostat=status) 'PELEF_SIMPLE_TRANSPORT_V1'
+    write(unit,'(a)',iostat=status) 'PELEF_SIMPLE_TRANSPORT_V2'
     if(status/=0) return
     write(unit,'(*(es27.18e3,1x))',iostat=status) record%simple_viscosity,record%simple_conductivity
     if(status/=0) return
@@ -196,7 +196,7 @@ contains
     read(unit,'(a)',iostat=status) marker
     if(status/=0) return
     status=1
-    if(marker/='PELEF_SIMPLE_TRANSPORT_V1') return
+    if(marker/='PELEF_SIMPLE_TRANSPORT_V2') return
     read(unit,*,iostat=status) values
     if(status/=0) return
     status=1

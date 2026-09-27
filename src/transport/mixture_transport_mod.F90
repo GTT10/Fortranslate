@@ -26,6 +26,7 @@ module mixture_transport_mod
   public :: mixture_averaged_diffusion_coefficients
   public :: mixture_transport_coefficients
   public :: pelephysics_simple_transport
+  public :: simple_bulk_viscosity
 
 contains
 
@@ -868,6 +869,52 @@ contains
     diffusion_coefficients = candidate_diffusion
     ok = .true.
   end subroutine mixture_transport_coefficients
+
+  subroutine simple_bulk_viscosity(species,transport,y,t,bulk,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: y(:),t
+    real(dp), intent(out) :: bulk
+    logical, intent(out) :: ok
+    real(dp) :: ym(size(y)),x(size(y)),xi(size(y)),weights(4),cp,cv,h,e,s,r,cint,crot
+    real(dp) :: z,fn,ft,exponent,mu,pi32
+    integer :: i
+    logical :: valid
+    bulk=0;ok=.false.
+    if(.not.valid_transport_inputs(species,transport)) return
+    if(.not.valid_mixture_composition(species,y)) return
+    if(.not.ieee_is_finite(t)) return
+    if(t<1.or.t>1e6_dp) return
+    if(.not.allocated(transport(1)%simple_binary)) return
+    if(maxval(transport%well_depth)>1e8_dp.or.maxval(transport%rotational_relaxation)>1e8_dp) return
+    ym=y+1e-15_dp*(sum(y)/size(y)-y);x=ym/species%molecular_weight;x=x/sum(x)
+    weights(1)=1;weights(2)=log(t);weights(3)=weights(2)**2;weights(4)=weights(2)*weights(3)
+    pi32=acos(-1._dp)**1.5_dp;xi=0
+    do i=1,size(y)
+      if(transport(i)%geometry==0) cycle
+      call nasa7_mass_properties(species(i),t,cp,cv,h,e,s,valid)
+      if(.not.valid) return
+      r=nasa7_specific_gas_constant(species(i));cint=cv/r-1.5_dp
+      if(cint<0) return
+      crot=1.5_dp
+      if(transport(i)%geometry==1) crot=1
+      z=transport(i)%well_depth/298._dp
+      fn=1+.5_dp*pi32*sqrt(z)+(2+.5_dp*acos(-1._dp)**2)*z+pi32*z*sqrt(z)
+      z=transport(i)%well_depth/t
+      ft=1+.5_dp*pi32*sqrt(z)+(2+.5_dp*acos(-1._dp)**2)*z+pi32*z*sqrt(z)
+      exponent=sum(transport(i)%simple_viscosity*weights)
+      if(abs(exponent)>100) return
+      mu=.1_dp*exp(exponent)
+      xi(i)=.25_dp*acos(-1._dp)*(cint/(cint+1.5_dp))**2* &
+        transport(i)%rotational_relaxation/crot*fn/ft*mu
+    end do
+    if(.not.all(ieee_is_finite(xi)).or.any(xi<0)) return
+    bulk=sum(x*sqrt(sqrt(xi**3)))**(4._dp/3)
+    if(.not.ieee_is_finite(bulk)) then
+      bulk=0;return
+    end if
+    ok=.true.
+  end subroutine
 
   subroutine simple_transport_from_records(species,transport,y,t,p,mu,k,d,binary,ok)
     type(nasa7_species), intent(in) :: species(:)

@@ -23,6 +23,7 @@ int main() {
   egtransetWT(p.wt.data());
   egtransetCOFETA(p.fitmu.data()); egtransetCOFLAM(p.fitlam.data());
   egtransetCOFD(p.fitdbin.data());
+  egtransetEPS(p.eps.data()); egtransetZROT(p.zrot.data()); egtransetNLIN(p.nlin.data());
   for(int i=0;i<NUM_SPECIES;++i) p.iwt[i]=1/p.wt[i];
   std::ofstream fits("fits.dat"); fits << std::setprecision(17);
   for(auto v:p.wt) fits << v << '\n';
@@ -93,7 +94,10 @@ def main():
     parser.add_argument('--candidate-build', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--bundle', type=Path, help='Use imported/generated Fortran coefficients')
+    parser.add_argument('--bulk', action='store_true', help='Also check the fitted bulk viscosity; requires --bundle')
     args = parser.parse_args()
+    if args.bulk and not args.bundle:
+        parser.error('--bulk requires --bundle')
     ref, candidate, out = (p.resolve() for p in
                            (args.reference_build, args.candidate_build, args.output))
     out.mkdir(parents=True, exist_ok=False)
@@ -107,7 +111,11 @@ def main():
     source_hashes = {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in [physics/'Source/Transport/Simple.H',
                                   physics/'Mechanisms/heptane_3sp/mechanism.H']}
-    (out/'reference.cpp').write_text(CPP)
+    cpp = CPP
+    if args.bulk:
+        cpp = cpp.replace('transport(false,true,true,true,false,','transport(true,true,true,true,false,')
+        cpp = cpp.replace("    out << '\\n';", "    out << ' ' << xi*.1 << '\\n';")
+    (out/'reference.cpp').write_text(cpp)
     fortran = FORTRAN
     generated_sources = []
     bundle_hash = None
@@ -157,6 +165,41 @@ def main():
     rd=rd*rho
     call binary_diffusion_coefficients(species,records,t,p,db,ok)''',1)
         bundle_hash = hashlib.sha256(args.bundle.read_bytes()).hexdigest()
+    if args.bulk:
+        fortran = fortran.replace('  implicit none',
+            '  use mixture_transport_mod, only: simple_bulk_viscosity\n'
+            '  use reactive_transport_3d_mod, only: reactive_transport_face_flux_3d,reactive_transport_timestep_3d\n'
+            '  use reactive_1d_mod, only: reactive_primitive_to_conserved\n  implicit none')
+        fortran = fortran.replace('  integer :: ios,i,j',
+            '  real(dp) :: bulk,q(8),gradient(3,3),flux(8),species_energy,dt,dmax,sound\n'
+            '  real(dp) :: state(8,2,2,2),temperatures(2,2,2)\n  integer :: ios,i,j,ii,jj,kk')
+        fortran = fortran.replace("    write(11,'(5es26.17)') mu,k,rd",'''    call simple_bulk_viscosity(species,records,y,t,bulk,ok)
+    if(.not.ok) error stop 'Bulk viscosity failed'
+    write(11,'(6es26.17)') mu,k,rd,bulk''')
+        fortran = fortran.replace('  y=[-1.0_dp,1.0_dp,1.0_dp]', '''  q=[rho,1._dp,2._dp,3._dp,p,y]
+  gradient=0
+  do i=1,3
+    gradient(i,i)=1
+  end do
+  call reactive_transport_face_flux_3d(species,records,q,q,t,t,1._dp,1,gradient, &
+    .true.,.false.,.false.,.false.,flux,species_energy,ok)
+  if(.not.ok) error stop 'Bulk face flux failed'
+  if(abs(flux(2)+3*bulk)>1e-12_dp*bulk) error stop 'Isotropic compression stress mismatch'
+  if(abs(flux(5)+3*bulk)>1e-12_dp*bulk) error stop 'Bulk viscous work mismatch'
+  do kk=1,2
+    do jj=1,2
+      do ii=1,2
+        temperatures(ii,jj,kk)=t
+        call reactive_primitive_to_conserved(species,q,state(:,ii,jj,kk),temperatures(ii,jj,kk),sound,ok)
+        if(.not.ok) error stop 'Timestep state failed'
+      end do
+    end do
+  end do
+  call reactive_transport_timestep_3d(species,records,state,temperatures,2,2,2,1._dp,1._dp,1._dp,.5_dp, &
+    .true.,.false.,.false.,dt,dmax,ok)
+  if(.not.ok.or.dt<=0) error stop 'Bulk timestep failed'
+  if(abs(dmax-(4*mu/3+bulk)/rho)>1e-12_dp*dmax) error stop 'Bulk timestep omitted dilatation viscosity'
+  y=[-1.0_dp,1.0_dp,1.0_dp]''')
     (out/'candidate.f90').write_text(fortran)
     states = [(340,101325,.25,.17,.58), (400,101325,0,.233,.767),
               (1200,3e6,.4,.3,.3), (300,101325,1,0,0),
@@ -172,6 +215,11 @@ def main():
          str(candidate/'libpelef_selected_reactive_1d_runtime.a'),
          str(candidate/'libpelef_selected_runtime_core.a'),'-o','candidate'],
         ['./candidate']]
+    if args.bulk:
+        commands[2][1:1] = ['-I'+str(candidate/'selected_reactive_3d_private_modules')]
+        index = commands[2].index(str(candidate/'libpelef_selected_reactive_1d_runtime.a'))
+        commands[2][index:index] = [str(candidate/'libpelef_selected_reactive_3d_runtime.a'),
+                                   str(candidate/'libpelef_selected_reactive_2d_runtime.a')]
     with (out/'commands.log').open('w') as log:
         for command in commands:
             log.write(shlex.join(command)+'\n'); log.flush()
@@ -181,13 +229,15 @@ def main():
     if len(expected)!=len(states) or len(actual)!=len(states):
         raise ValueError('Incomplete output')
     for row in expected+actual:
-        if len(row)!=5 or not all(math.isfinite(v) and v>0 for v in row):
+        if len(row)!=(6 if args.bulk else 5) or not all(math.isfinite(v) and v>0 for v in row):
             raise ValueError('Invalid transport output')
     errors = [max(abs(a-b)/abs(a) for a,b in zip(r,c)) for r,c in zip(expected,actual)]
     report = dict(states=states, relative_errors=errors, maximum_relative_error=max(errors),
                   tolerance=2e-12, commands=commands,
                   reference_identity=identity, source_sha256=source_hashes,
                   bundle_sha256=bundle_hash,
+                  bulk_viscosity=args.bulk,
+                  bulk_stress_and_timestep_checks=args.bulk,
                   fits_sha256=hashlib.sha256((out/'fits.dat').read_bytes()).hexdigest())
     (out/'comparison.json').write_text(json.dumps(report,indent=2)+'\n')
     if max(errors)>2e-12:
