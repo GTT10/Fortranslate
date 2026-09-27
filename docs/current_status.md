@@ -26,6 +26,10 @@ thermal intervals and bind restart settings. A heated particle case, exact
 rank-changing continuation and changed-temperature rejection pass; full
 Spray-EB parity and embedded viscous traction remain open
 ([application evidence](validation/eb-wall-application-20260927.md)).
+A separate embedded viscous-traction kernel now includes normal bulk viscosity
+and tangential shear, matching the compiled pinned function to `1.44e-14` in
+24 cases. Its gas-source and application integration remains open
+([traction kernel](validation/eb-wall-viscous-kernel-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
