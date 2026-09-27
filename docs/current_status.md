@@ -37,6 +37,9 @@ a compiled 64-state audit reproduces its `8.87e-7 K` stored-temperature/EOS
 discrepancy. This bounds the temperature comparison without changing conserved
 energy; the momentum residual remains unresolved
 ([inversion audit](validation/spray-temperature-inversion-20260927.md)).
+EB tree inputs now expose individual gas transport operators with unchanged
+defaults; a two-rank continuation preserves the gas output and rejects changed
+transport settings ([controls](validation/eb-tree-transport-controls-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
