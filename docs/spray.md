@@ -101,6 +101,9 @@ source exchange now also accept periodic axes, including application wall impact
 coordinates are preserved. Surface-validation probes now split at periodic
 faces and use wrapped ownership while retaining their unwrapped coordinates
 ([seam placement checks](validation/spray-periodic-film-probes-20260927.md)).
+Periodic axes also reach EB particle/film remapping, load balancing and checkpoint
+migration. Recursive periodic film-bearing regrid and changed-rank continuation
+have a [focused lifecycle check](validation/spray-periodic-lifecycle-20260927.md).
 
 `locate_amr_tree_spray_cells`, `partition_amr_tree_spray_parcels`, and the
 regular/EB MPI migration APIs accept optional `maximum_level` (zero based).

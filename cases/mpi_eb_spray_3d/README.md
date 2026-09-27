@@ -63,6 +63,9 @@ wall impacts, film copies and thermal evolution
 Film surface-validation probes can cross periodic faces; wall coordinates remain
 inside the closed physical domain and are preserved
 ([placement checks](../../docs/validation/spray-periodic-film-probes-20260927.md)).
+Periodic particle/film ownership is also used during regridding, load balancing
+and checkpoint migration
+([lifecycle checks](../../docs/validation/spray-periodic-lifecycle-20260927.md)).
 The default `wall_impacts=.false.` retains specular particle/EB reflection.
 
 Physical particle exchange is synchronized conservatively after each outer step.
