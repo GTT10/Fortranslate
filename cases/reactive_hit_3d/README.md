@@ -137,3 +137,10 @@ The default uses the face-normal component. See the
 Hydro, transport and
 transport/WALE one-step comparisons have now passed against the full pinned
 executable; see the [bounded results](../../docs/validation/hit-full-reference-20260927.md).
+
+Use `--steps N` for multiple steps at a `1e-8` s cap. The checker requires
+matching final time and the requested step count. Regular applications expose
+the cap as `&reactive_timestep maximum_dt=1e-8 /`; existing stability limits
+still apply, and the value must be finite and positive. Omitting this namelist
+retains unrestricted adaptive timesteps. Three-step dynamic/Smagorinsky/Vreman
+comparisons are recorded [here](../../docs/validation/hit-multistep-reference-20260927.md).

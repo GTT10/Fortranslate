@@ -23,6 +23,10 @@ reference's all-direction x-component selection; this explains the preceding
 `7.67e-11` residual ([intervention](validation/hit-dynamic-heat-component-20260927.md)).
 Its SI denominator regularizers also have an independent unit-conversion check
 ([details](validation/hit-dynamic-reference-20260927.md)).
+An optional regular timestep cap now supports matched multistep reference
+runs. Dynamic, Smagorinsky and Vreman agree over three steps on 4³ cells
+(maximum normalized difference `7.72e-14`;
+[checks](validation/hit-multistep-reference-20260927.md)).
 HIT input also accepts an explicit coordinate-unit factor; the gamma-law
 template converts centimetre reference lengths to metres, with exact
 manufactured-input equivalence ([checks](validation/hit-coordinate-20260927.md)).
