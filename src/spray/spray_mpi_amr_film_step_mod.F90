@@ -33,7 +33,8 @@ module spray_mpi_amr_film_step_mod
 contains
   ! Deposits created after the old particle exchange receive only the final
   ! film half kick. Keep existing midpoint films, rates and copies unchanged.
-  subroutine append_mpi_eb_film_births(comm,tree,owners,lower,spacing,grow,maximum_films,phi,films,mass,work,ok)
+  subroutine append_mpi_eb_film_births(comm,tree,owners,lower,spacing,grow,maximum_films,phi,films,mass,work,ok,periodic)
+    logical, optional, intent(in) :: periodic(3)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),grow,maximum_films
@@ -60,7 +61,7 @@ contains
     candidate%component_mass(:,:nold)=work%midpoint(1)%component_mass
     candidate%component_mass(:,nold+1:)=mass
     call migrate_mpi_amr_wall_films(comm,tree,owners,candidate%films,candidate%component_mass,lower,spacing, &
-      maximum_films,valid,phi,nodes=candidate%nodes,probes=candidate%probes,logical_level=work%depth,grow=grow)
+      maximum_films,valid,phi,nodes=candidate%nodes,probes=candidate%probes,logical_level=work%depth,grow=grow,periodic=periodic)
     if(.not.valid) return
     work%midpoint(1)=candidate;work%births_attached=.true.;ok=.true.
   end subroutine append_mpi_eb_film_births
@@ -161,7 +162,8 @@ contains
     levels=tree%level_count();level=target_level+1
     valid=all([size(physical),size(virtuals),size(ghosts),size(work)]==levels)
     valid=valid.and.level>=1.and.level<=levels.and.all(ieee_is_finite([time,interval]))
-    valid=valid.and.time>=0.and.interval>0.and..not.any(faces=='periodic')
+    valid=valid.and.time>=0.and.interval>0
+    valid=valid.and.all((faces([1,3,5])=='periodic').eqv.(faces([2,4,6])=='periodic'))
     call agree();if(.not.agreed) return
     flags=[levels,target_level,stage,iterations];times=[time,interval]
     call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
@@ -194,7 +196,7 @@ contains
     candidate=work(level);group(1)=physical(level);group(2)=virtuals(level);group(3)=ghosts(level)
     if(stage==0) then
       call refresh_mpi_eb_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow, &
-        maximum_films,nodal_phi,new_virtual,next_ghost,valid)
+        maximum_films,nodal_phi,new_virtual,next_ghost,valid,periodic)
       if(.not.valid) return
       group(2)=new_virtual
     end if

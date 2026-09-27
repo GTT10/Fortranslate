@@ -169,7 +169,7 @@ program test_spray_mpi_eb_reactive
   if(test_mode=='sdc-force') accel=[1000._dp,-2000._dp,3000._dp]
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   if(index(test_mode,'sdc-recursive')==1) then
-    if(test_mode=='sdc-recursive-impact') then
+    if(index(test_mode,'sdc-recursive-impact')==1) then
       call check_recursive_impact()
     else
       call check_recursive_spray()
@@ -320,6 +320,9 @@ contains
       drops(1)=spray_parcel(1_int64,[.0012_dp,.001250001_dp,.0015_dp], &
         [0._dp,-100._dp,0._dp],1e-9_dp,350._dp,1._dp)
       masses(:,1)=[.25_dp,.75_dp]*drops(1)%mass
+    end if
+    if(index(test_mode,'periodic')>0.and.rank==nranks-1) then
+      drops(1)%position(3)=.003999999_dp;drops(1)%velocity(3)=100._dp
     end if
     allocate(film_settings,films(merge(1,0,rank==0.or.rank==nranks-1)))
     allocate(film_mass(2,size(films)))

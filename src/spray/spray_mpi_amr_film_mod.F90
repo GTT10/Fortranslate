@@ -20,7 +20,9 @@ contains
   ! Rebuild a level's virtual films and the next level's incoming ghost films.
   ! Selection follows logical physical levels; neither output changes the input.
   subroutine refresh_mpi_eb_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow,maximum_films, &
-      nodal_phi,virtuals,next_ghosts,ok)
+      nodal_phi,virtuals,next_ghosts,ok,periodic)
+    logical, optional, intent(in) :: periodic(3)
+    logical :: wrap(3)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),target_level,grow,maximum_films
@@ -34,6 +36,8 @@ contains
     integer(int64) :: count_all
     real(dp) :: probe_offset,upper(3)
     logical :: valid,agreed
+    wrap=.false.
+    if(present(periodic)) wrap=periodic
     ok=.false.;valid=tree%is_valid()
     call agree();if(.not.agreed) return
     levels=tree%level_count()
@@ -85,7 +89,7 @@ contains
     end do
     ! This collective validates replicated topology/geometry before ghost routing.
     call migrate_mpi_amr_wall_films(comm,tree,owners,coarse_copy%films,coarse_copy%component_mass,lower,spacing, &
-      maximum_films,valid,nodal_phi,maximum_level=target_level,nodes=coarse_copy%nodes,probes=coarse_copy%probes)
+      maximum_films,valid,nodal_phi,maximum_level=target_level,nodes=coarse_copy%nodes,probes=coarse_copy%probes,periodic=wrap)
     if(.not.valid) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp)
     probe_offset=max(1e-8_dp*minval((upper-lower)/real(shape(nodal_phi)-1,dp)), &
@@ -100,7 +104,7 @@ contains
     call agree();if(.not.agreed) return
     if(target_level+1<levels) then
       call locate_amr_tree_ghost_cells(tree,physical(target_level+1)%probes,lower,spacing, &
-        [.false.,.false.,.false.],target_level+1,grow,locations,valid)
+        wrap,target_level+1,grow,locations,valid)
       call agree();if(.not.agreed) return
       call route_copies(physical(target_level+1),locations(1,:),fine_copy)
       if(.not.agreed) return
@@ -175,7 +179,8 @@ contains
 
   ! Build physical level populations without modifying the flat input films.
   subroutine initialize_mpi_eb_film_levels(comm,tree,owners,films,component_mass,lower,spacing,maximum_films, &
-      nodal_phi,physical,ok)
+      nodal_phi,physical,ok,periodic)
+    logical, optional, intent(in) :: periodic(3)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),maximum_films
@@ -196,7 +201,7 @@ contains
     if(status/=MPI_SUCCESS.or..not.agreed) return
     candidate=films;mass=component_mass
     call migrate_mpi_amr_wall_films(comm,tree,owners,candidate,mass,lower,spacing,maximum_films,valid, &
-      nodal_phi,nodes=nodes,probes=probes)
+      nodal_phi,nodes=nodes,probes=probes,periodic=periodic)
     if(.not.valid) return
     allocate(levels(tree%level_count()),selected(size(candidate)))
     do level=1,size(levels)
@@ -222,7 +227,9 @@ contains
   ! Preserve exact wall coordinates and every film/component field. Films have
   ! no global ID; receive order is source rank followed by original local order.
   subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok, &
-      nodal_phi,maximum_level,nodes,probes,logical_level,grow)
+      nodal_phi,maximum_level,nodes,probes,logical_level,grow,periodic)
+    logical, optional, intent(in) :: periodic(3)
+    logical :: wrap(3)
     integer, allocatable, optional, intent(inout) :: nodes(:)
     real(dp), allocatable, optional, intent(inout) :: probes(:,:)
     integer, allocatable :: next_nodes(:)
@@ -243,12 +250,13 @@ contains
     real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
     integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
     real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
-    integer :: config(7),lowconfig(7),highconfig(7),top_level,selected_level,extent,nranks,ierr,nc,np,p,r,q,nreceived,width
+    integer :: config(10),lowconfig(10),highconfig(10),top_level,selected_level,extent,nranks,ierr,nc,np,p,r,q,nreceived,width
     logical :: valid,agreed
     integer :: dims(3),reference_dims(3)
     real(dp), allocatable :: reference_phi(:,:,:)
     real(dp) :: probe_offset
-    ok=.false.;nc=0
+    ok=.false.;nc=0;wrap=.false.
+    if(present(periodic)) wrap=periodic
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=allocated(films).and.allocated(component_mass).and.(present(nodes).eqv.present(probes))
@@ -276,11 +284,12 @@ contains
     valid=top_level>=0.and.top_level<=maxval(tree%nodes%level)
     if(present(logical_level)) valid=valid.and.selected_level>=0.and.selected_level<=top_level.and.extent>=0.and.extent<=1000000
     call agree();if(.not.agreed) return
-    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level,merge(1,0,present(nodes)),selected_level,extent]
+    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level, &
+      merge(1,0,present(nodes)),selected_level,extent,merge(1,0,wrap)]
     bounds=[lower,spacing]
-    call MPI_Allreduce(config,lowconfig,7,MPI_INTEGER,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(config,lowconfig,10,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,highconfig,7,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,highconfig,10,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -324,6 +333,9 @@ contains
       call MPI_Bcast(reference_phi,size(reference_phi),MPI_DOUBLE_PRECISION,0,comm,ierr)
       if (ierr/=MPI_SUCCESS) return
       valid=all(reference_phi==nodal_phi)
+      if(wrap(1)) valid=valid.and.all(nodal_phi(0,:,:)==nodal_phi(dims(1),:,:))
+      if(wrap(2)) valid=valid.and.all(nodal_phi(:,0,:)==nodal_phi(:,dims(2),:))
+      if(wrap(3)) valid=valid.and.all(nodal_phi(:,:,0)==nodal_phi(:,:,dims(3)))
       call agree();if (.not.agreed) return
       deallocate(reference_phi)
     end if
@@ -424,9 +436,9 @@ contains
     integer function owner(position,found_node) result(owner_rank)
       integer, optional, intent(out) :: found_node
       real(dp), intent(in) :: position(3)
-      real(dp) :: fraction(3)
+      real(dp) :: fraction(3),offset(3),length(3)
       integer(int64) :: cell(3)
-      integer :: peer,level,best
+      integer :: peer,level,best,axis
       integer, allocatable :: location(:,:)
       logical :: located
       owner_rank=-1
@@ -441,7 +453,7 @@ contains
         ! Keep the generating logical level until synchronization, including
         ! deposits in its grown region. A miss rejects rather than losing film.
         call locate_amr_tree_ghost_cells(tree,reshape(position,[3,1]),lower,spacing, &
-          [.false.,.false.,.false.],selected_level,extent,location,located)
+          wrap,selected_level,extent,location,located)
         if(.not.located) return
         peer=location(1,1)
         if(peer==0) return
@@ -449,7 +461,11 @@ contains
         if(present(found_node)) found_node=peer
         return
       end if
-      fraction=(position-lower)/(spacing*real(tree%nodes(1)%shape,dp));best=-1
+      length=spacing*real(tree%nodes(1)%shape,dp);offset=position-lower
+      do axis=1,3
+        if(wrap(axis)) offset(axis)=modulo(offset(axis),length(axis))
+      end do
+      fraction=offset/length;best=-1
       do peer=1,size(tree%nodes)
         level=tree%nodes(peer)%level+1
         if (level<=best.or.level>top_level+1) cycle

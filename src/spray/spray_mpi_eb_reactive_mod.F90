@@ -113,8 +113,6 @@ contains
     if(present(gas_particle_change)) valid=valid.and.size(gas_particle_change)==nv
     periodic=boundary_faces([1,3,5])=='periodic'
     valid=valid.and.all(periodic.eqv.(boundary_faces([2,4,6])=='periodic'))
-    ! Film copy placement still has a nonperiodic ownership contract.
-    if(present(films)) valid=valid.and..not.any(periodic)
     call agree();if(.not.agreed) return
     call MPI_Allreduce(options%maximum_multiplicity,low_multiplicity,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -179,7 +177,7 @@ contains
     if(.not.agreed) return
     if(present(films)) then
       call initialize_mpi_eb_film_levels(comm,tree,owners,films,film_mass,lower,spacing, &
-        film_settings%maximum_films,phi,film_physical,agreed)
+        film_settings%maximum_films,phi,film_physical,agreed,periodic)
       if(.not.agreed) return
       allocate(film_virtuals(levels),film_ghosts(levels),film_work(levels))
       do p=1,levels
@@ -235,7 +233,7 @@ contains
         cursor=cursor+film_count
       end do
       call migrate_mpi_amr_wall_films(comm,tree,owners,final_films,final_film_mass,lower,spacing, &
-        film_settings%maximum_films,agreed,phi)
+        film_settings%maximum_films,agreed,phi,periodic=periodic)
       if(.not.agreed) return
     end if
     before_split=watermark
@@ -410,7 +408,7 @@ contains
           ! They miss the old film kick and join only the final half kick.
           call append_mpi_eb_film_births(source_comm,tree,owners,lower,spacing,2,film_settings%maximum_films,phi, &
             work(depth+1)%midpoint_films(old_films+1:),work(depth+1)%midpoint_film_mass(:,old_films+1:), &
-            film_work(depth+1),good)
+            film_work(depth+1),good,periodic)
           if(.not.good) return
         end if
         do p=1,size(owners)

@@ -1064,7 +1064,7 @@ if(TARGET test_spray_mpi_eb_reactive)
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc-recursive)
   set_tests_properties(spray_mpi_eb_sdc_recursive_2 PROPERTIES LABELS "spray;mpi;eb;sdc" TIMEOUT 120 PROCESSORS 2)
-  foreach(boundary inflow isothermal crossing entering breakup khrt children film impact periodic)
+  foreach(boundary inflow isothermal crossing entering breakup khrt children film impact periodic impact-periodic)
     add_test(NAME spray_mpi_eb_sdc_recursive_${boundary}_2
       COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
         $<TARGET_FILE:test_spray_mpi_eb_reactive> ${MPIEXEC_POSTFLAGS} sdc-recursive-${boundary})
@@ -1101,6 +1101,12 @@ if(TARGET pelef_mpi_eb_spray_3d)
       --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
       --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/spray-sdc-recursive-impact-app")
   set_tests_properties(spray_mpi_eb_sdc_recursive_impact_app
+    PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "spray;mpi;eb;sdc")
+  add_test(NAME spray_mpi_eb_sdc_recursive_periodic_impact_app
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_recursive_eb_spray_impacts.py"
+      --exe $<TARGET_FILE:pelef_mpi_eb_spray_3d> --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/spray-sdc-recursive-periodic-impact-app" --periodic)
+  set_tests_properties(spray_mpi_eb_sdc_recursive_periodic_impact_app
     PROPERTIES TIMEOUT 300 PROCESSORS 4 LABELS "spray;mpi;eb;sdc")
   add_test(NAME spray_mpi_eb_sdc_recursive_restart_regrid
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_recursive_eb_spray_restart.py"

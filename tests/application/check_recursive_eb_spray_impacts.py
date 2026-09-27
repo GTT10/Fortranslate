@@ -19,6 +19,7 @@ def main():
     for name in ('exe', 'mpiexec', 'source', 'work'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--restart', action='store_true')
+    parser.add_argument('--periodic', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='impact_', dir=args.work.resolve()))
@@ -42,6 +43,9 @@ def main():
         text = text.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
         text = text.replace("output_file='result.csv'", "output_file='result.csv',time_integrator='sdc',"
                             "sdc_iterations=2,subcycling=.true.,boundary_faces=6*'outflow'")
+        if args.periodic:
+            text = text.replace("boundary_faces=6*'outflow'",
+                                "boundary_faces='periodic','periodic','outflow','outflow','periodic','periodic'")
         tree.write_text(text.replace("&eb_tree", "&eb_tree\n" + controls, 1))
         (directory / 'spray.nml').write_text("""&eb_spray
  nc=1,number=1,vapor_names(1)='H2O',fractions(1)=1.,
@@ -53,6 +57,12 @@ def main():
  walls%liquid_conductivity=.6,walls%minimum_height=1.e-15
 /
 """)
+        if args.periodic:
+            spray = directory / 'spray.nml'
+            spray.write_text(spray.read_text().replace('center=.0012,.001250001,.0015',
+                                                       'center=.0012,.001250001,.0039999995')
+                             .replace('axis=0.,-1.,0.,speed=100.',
+                                      'axis=0.,-1.,1.,speed=141.4213562373095'))
         with (directory / 'run.log').open('w') as log:
             subprocess.run([str(args.mpiexec.resolve()), '-n', str(ranks), str(args.exe.resolve()),
                             'tree.nml', 'spray.nml'], cwd=directory, env=env, stdout=log,
@@ -70,6 +80,8 @@ def main():
         films = sorted((row for path in directory.glob('result.csv.films.rank*.csv')
                         for row in rows(path)), key=lambda row: tuple(float(v) for v in row.values()))
         assert len(particles) > 1 and films, (len(particles), len(films))
+        if args.periodic:
+            assert all(0 <= float(row['z']) < 2e-6 for row in films), films
         ids = [int(row['id']) for row in particles]
         assert len(set(ids)) == len(ids) and max(ids) > 1, ids
         for row in particles + films:
@@ -110,7 +122,8 @@ def main():
                 x, y = float(first[key]), float(second[key])
                 assert abs(x - y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
         assert 'Completed steps: 2' in (work / 'continued' / 'run.log').read_text()
-    print(f'PASS: recursive EB splash, films, inventories, rank comparison; restart={args.restart}; {work}')
+    print(f'PASS: recursive EB splash, films, inventories, rank comparison; '
+          f'restart={args.restart}; periodic={args.periodic}; {work}')
 
 
 if __name__ == '__main__':
