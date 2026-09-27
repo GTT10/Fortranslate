@@ -14,6 +14,9 @@ model for HIT/SDC/LES, with independent ideal-gas state and transport-scale
 checks for four LES closures ([evidence](validation/gamma-law-app-20260927.md)).
 Its prescribed transport needs no invented molecular database; gamma-law
 MPI/AMR support and external evolved-field parity are not established.
+HIT input also accepts an explicit coordinate-unit factor; the gamma-law
+template converts centimetre reference lengths to metres, with exact
+manufactured-input equivalence ([checks](validation/hit-coordinate-20260927.md)).
 
 Periodic 3D transport face/flux and timestep APIs now accept explicit constant
 viscosity and conductivity, with analytical flux and coefficient-scaling checks
