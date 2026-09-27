@@ -11,6 +11,26 @@ The supplied case has a 4-cubed root, two children, and grandchildren with
 separate parents (three levels, ratios two). A planar wall cuts z=0.31.
 Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 
+## Method of lines (MOL)
+
+Fixed and selected serial/MPI gas executables accept these additions to the
+SDC input:
+
+```fortran
+ time_integrator='sdc', mol_mode=.true.,
+ hydro_method='plm_ctu', riemann_solver='pelec',
+ boundary_faces=6*'outflow',
+```
+
+`mol_lax_friedrichs=.true.` selects the LF interface flux; the default MOL
+interface is acoustic. `subcycling=.true.` enables recursive level intervals.
+MOL and LF choices must match the saved checkpoint. The existing CTU input
+selector remains required by the SDC input contract; `mol_mode` selects the
+actual hydro update. Three-level serial/MPI comparisons and serial-to-MPI
+restart are recorded in [the connection evidence](../../docs/validation/serial-mol-tree-20260927.md).
+The nested LF negative-fuel case remains unresolved; these focused checks do
+not establish positivity for arbitrary cut-cell states.
+
 ## Artificial viscosity
 
 Gas executables accept finite nonnegative `difmag` in `&eb_tree` (for example,

@@ -75,6 +75,10 @@ Common particle MOL now passes its short evaporating fixture and exact
 rank-changing restart after adding a positive-face slope bound. This safeguard
 extends the pinned reconstruction; full reference parity remains open
 ([repair](validation/mol-positive-faces-20260927.md)).
+Serial tree common and recursive MOL evolution now also connects reaction,
+transport, redistribution and restart. Four three-level cases match MPI state
+and temperature exactly; serial-to-MPI continuation passes
+([serial connection](validation/serial-mol-tree-20260927.md)).
 The MPI gas application now exposes `mol_mode`, binds it to checkpoint identity,
 and passes a short heated-wall case with exact rank-changing continuation
 ([application checks](validation/mpi-mol-application-20260927.md)).
