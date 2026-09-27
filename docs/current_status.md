@@ -22,8 +22,11 @@ wall fixture, including empty-rank ownership and collective rollback
 ([MPI spatial evaluation](validation/mpi-eb-mol-rate-20260927.md)).
 Nonreacting common MPI steps now combine old/new MOL rates, transport and wall
 exchange with trapezoidal weights. Focused heat, viscosity and nonuniform
-inviscid cases conserve inventory; reacting, recursive and particle/application
-MOL connections remain open ([time update](validation/mpi-mol-time-20260927.md)).
+inviscid cases conserve inventory ([time update](validation/mpi-mol-time-20260927.md)).
+Reacting common MOL now re-evaluates the preceding reacted state between
+iterations; a homogeneous reactor comparison and late-reactor rollback pass.
+Recursive and particle/application MOL connections remain open
+([reacting update](validation/mpi-mol-reaction-20260927.md)).
 
 The pinned Spray-EB plane and five initial physical droplets now have an
 auditable SI input preparer preserving the default 64³ grid and final time.
