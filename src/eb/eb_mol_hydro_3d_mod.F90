@@ -1,6 +1,7 @@
 module eb_mol_hydro_3d_mod
   use precision_mod, only: dp
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use mol_riemann_3d_mod, only: mol_riemann_flux_3d
@@ -16,7 +17,7 @@ contains
   ! side. Return central spatial rates and dt-integrated intensive face fluxes.
   ! Caller supplies physical boundary ghosts and performs redistribution.
   subroutine compute_mol_eb_hydro_3d(species,geometry,state,temperature,dt,order, &
-      hydro_rate,integrated_flux,boundary_change,wall_change,ok,lax_friedrichs)
+      hydro_rate,integrated_flux,boundary_change,wall_change,ok,lax_friedrichs,frame)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
@@ -25,6 +26,9 @@ contains
     type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
     logical, intent(out) :: ok
     logical, optional, intent(in) :: lax_friedrichs
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), allocatable :: potential(:,:,:),wall_potential(:,:,:),potential_cell,potential_face(:)
+    real(dp) :: position(3)
     type(eb_geometry_3d) :: margin,physical
     type(eb_integrated_flux_3d) :: raw,flux
     real(dp), allocatable :: primitive(:,:,:,:),sound(:,:,:),rates(:,:,:,:),walls(:,:,:,:)
@@ -42,16 +46,29 @@ contains
     if(any(shape(hydro_rate)/=[nv,out]).or.size(boundary_change)/=nv.or.size(wall_change)/=nv) return
     allocate(primitive(np,n(1),n(2),n(3)),sound(n(1),n(2),n(3)))
     primitive=0;sound=0
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+      allocate(potential(n(1),n(2),n(3)),wall_potential(out(1),out(2),out(3)),potential_cell,potential_face(2))
+      potential=0
+    end if
     do k=1,n(3)
     do j=1,n(2)
     do i=1,n(1)
       if(geometry%volume_fraction(i,j,k)<=0) cycle
+      if(present(frame)) then
+        position=[geometry%x_lower+(real(i,dp)-.5_dp)*geometry%dx, &
+          geometry%y_lower+(real(j,dp)-.5_dp)*geometry%dy,geometry%z_lower+(real(k,dp)-.5_dp)*geometry%dz]
+        call rotating_potential_3d(frame,position,potential_cell,valid)
+        if(.not.valid) return
+        potential(i,j,k)=potential_cell
+      end if
       call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k), &
-        primitive(:,i,j,k),t,sound(i,j,k),valid)
+        primitive(:,i,j,k),t,sound(i,j,k),valid,potential_cell)
       if(.not.valid) return
     end do
     end do
     end do
+    if(allocated(wall_potential)) wall_potential=potential(4:n(1)-3,4:n(2)-3,4:n(3)-3)
     call extract_eb_geometry_3d(geometry,[3,3,3],n-2,margin,valid)
     if(.not.valid) return
     call extract_eb_geometry_3d(geometry,[4,4,4],n-3,physical,valid)
@@ -69,6 +86,8 @@ contains
         if(geometry%volume_fraction(cell(1),cell(2),cell(3))<=0.or. &
           geometry%volume_fraction(peer(1),peer(2),peer(3))<=0) return
         cs=[sound(cell(1),cell(2),cell(3)),sound(peer(1),peer(2),peer(3))]
+        if(allocated(potential_face)) potential_face= &
+          [potential(cell(1),cell(2),cell(3)),potential(peer(1),peer(2),peer(3))]
         connected=.true.
         peer=cell;peer(axis)=peer(axis)-1
         connected(1,1)=aperture(axis,peer)>0
@@ -78,7 +97,7 @@ contains
           peer=cell;peer(axis)=peer(axis)+s
           stencil(:,s)=primitive(:,peer(1),peer(2),peer(3))
         end do
-        call mol_riemann_flux_3d(species,stencil,cs,axis,connected,order,f,valid,lax_friedrichs)
+        call mol_riemann_flux_3d(species,stencil,cs,axis,connected,order,f,valid,lax_friedrichs,potential_face)
         if(.not.valid) return
         select case(axis)
         case(1);raw%x(:,i,j,k)=f
@@ -94,10 +113,10 @@ contains
     call interpolate_reactive_eb_centroid_fluxes_3d(margin,raw%x,raw%y,raw%z,flux%x,flux%y,flux%z,valid,mol_stencil=.true.)
     if(.not.valid) return
     call reactive_eb_flux_divergence_3d(species,state(:,4:n(1)-3,4:n(2)-3,4:n(3)-3), &
-      temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3),physical,flux%x,flux%y,flux%z,rates,valid)
+      temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3),physical,flux%x,flux%y,flux%z,rates,valid,wall_potential)
     if(.not.valid) return
     call reactive_eb_slip_wall_source_3d(species,state(:,4:n(1)-3,4:n(2)-3,4:n(3)-3), &
-      temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3),physical,walls,valid)
+      temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3),physical,walls,valid,wall_potential)
     if(.not.valid) return
     volume=physical%dx*physical%dy*physical%dz
     do c=1,nv

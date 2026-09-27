@@ -128,12 +128,13 @@ contains
 
   subroutine reactive_eb_slip_wall_flux_3d( &
       species, conserved, temperature_guess, fluid_normal, flux, &
-      wall_pressure, ok)
+      wall_pressure, ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: conserved(:), temperature_guess
     real(dp), intent(in) :: fluid_normal(3)
     real(dp), intent(out) :: flux(:), wall_pressure
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: normal_magnitude, recovered_temperature, sound_speed
@@ -156,7 +157,7 @@ contains
     allocate(primitive(reactive_nprim(nspecies)))
     call reactive_conserved_to_primitive( &
       species, conserved, temperature_guess, primitive, &
-      recovered_temperature, sound_speed, ok)
+      recovered_temperature, sound_speed, ok,rotating_potential)
     if (.not. ok) return
 
     wall_pressure = primitive(5)
@@ -169,12 +170,14 @@ contains
   end subroutine reactive_eb_slip_wall_flux_3d
 
   subroutine reactive_eb_slip_wall_source_3d( &
-      species, state, temperature, geometry, source, ok)
+      species, state, temperature, geometry, source, ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(out) :: source(:, :, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential(:,:,:)
+    real(dp), allocatable :: potential_cell
 
     real(dp), allocatable :: candidate(:, :, :, :), wall_flux(:)
     real(dp) :: fluid_volume, wall_pressure
@@ -194,6 +197,12 @@ contains
         any(shape(temperature) /= &
           [geometry%nx, geometry%ny, geometry%nz])) return
 
+    if(present(rotating_potential)) then
+      if(any(shape(rotating_potential)/=shape(temperature))) return
+      if(.not.all(ieee_is_finite(rotating_potential))) return
+      if(any(rotating_potential<0)) return
+      allocate(potential_cell)
+    end if
     allocate(candidate(nvar, geometry%nx, geometry%ny, geometry%nz))
     allocate(wall_flux(nvar))
     candidate = 0.0_dp
@@ -209,9 +218,10 @@ contains
             geometry%boundary_normal_x(i, j, k), &
             geometry%boundary_normal_y(i, j, k), &
             geometry%boundary_normal_z(i, j, k)]
+          if(allocated(potential_cell)) potential_cell=rotating_potential(i,j,k)
           call reactive_eb_slip_wall_flux_3d( &
             species, state(:, i, j, k), temperature(i, j, k), &
-            fluid_normal, wall_flux, wall_pressure, local_ok)
+            fluid_normal, wall_flux, wall_pressure, local_ok,potential_cell)
           if (.not. local_ok) return
           candidate(:, i, j, k) = &
             -geometry%boundary_area(i, j, k) * wall_flux / fluid_volume
@@ -232,7 +242,7 @@ contains
 
   subroutine reactive_eb_flux_divergence_3d( &
       species, state, temperature, geometry, x_flux, y_flux, z_flux, &
-      rhs, ok)
+      rhs, ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -241,6 +251,7 @@ contains
     real(dp), intent(in) :: z_flux(:, :, :, 0:)
     real(dp), intent(out) :: rhs(:, :, :, :)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential(:,:,:)
 
     real(dp), allocatable :: candidate(:, :, :, :)
     real(dp), allocatable :: wall_source(:, :, :, :)
@@ -278,7 +289,7 @@ contains
     allocate(candidate(nvar, geometry%nx, geometry%ny, geometry%nz))
     allocate(wall_source(nvar, geometry%nx, geometry%ny, geometry%nz))
     call reactive_eb_slip_wall_source_3d( &
-      species, state, temperature, geometry, wall_source, local_ok)
+      species, state, temperature, geometry, wall_source, local_ok,rotating_potential)
     if (.not. local_ok) return
 
     candidate = 0.0_dp

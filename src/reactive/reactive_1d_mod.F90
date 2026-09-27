@@ -169,11 +169,13 @@ contains
   end function reactive_mass_fraction_component
 
   subroutine reactive_primitive_to_conserved( &
-      species, primitive, conserved, temperature, sound_speed, ok)
+      species, primitive, conserved, temperature, sound_speed, ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: primitive(:)
     real(dp), intent(out) :: conserved(:), temperature, sound_speed
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential
+    real(dp) :: potential_density,rotating_energy
 
     real(dp), allocatable :: y(:), candidate_conserved(:)
     real(dp) :: rho, u, v, w, pressure, r_mix
@@ -190,6 +192,10 @@ contains
     temperature = 0.0_dp
     sound_speed = 0.0_dp
     ok = .false.
+    if(present(rotating_potential)) then
+      if(.not.ieee_is_finite(rotating_potential)) return
+      if(rotating_potential<0) return
+    end if
     nspecies = size(species)
     if (size(primitive) /= reactive_nprim(nspecies)) return
     if (size(conserved) /= reactive_nvar(nspecies)) return
@@ -276,6 +282,13 @@ contains
     call reactive_checked_multiply( &
       rho, energy_with_kinetic, candidate_conserved(iet), local_ok)
     if (.not. local_ok) return
+    if(present(rotating_potential)) then
+      call reactive_checked_multiply(rho,rotating_potential,potential_density,local_ok)
+      if(.not.local_ok) return
+      call reactive_checked_add(candidate_conserved(iet),-potential_density,rotating_energy,local_ok)
+      if(.not.local_ok) return
+      candidate_conserved(iet)=rotating_energy
+    end if
     do k = 1, nspecies
       call reactive_checked_multiply( &
         rho, y(k), candidate_conserved(reactive_species_component(k)), local_ok)
@@ -294,11 +307,13 @@ contains
 
   subroutine reactive_conserved_to_primitive( &
       species, conserved, temperature_guess, primitive, temperature, &
-      sound_speed, ok)
+      sound_speed, ok,rotating_potential)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: conserved(:), temperature_guess
     real(dp), intent(out) :: primitive(:), temperature, sound_speed
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: rotating_potential
+    real(dp) :: potential_density,total_energy
 
     real(dp), allocatable :: y(:), candidate_primitive(:)
     real(dp) :: rho, u, v, w, kinetic_density, target_energy, pressure
@@ -312,6 +327,10 @@ contains
     temperature = 0.0_dp
     sound_speed = 0.0_dp
     ok = .false.
+    if(present(rotating_potential)) then
+      if(.not.ieee_is_finite(rotating_potential)) return
+      if(rotating_potential<0) return
+    end if
     nspecies = size(species)
     if (size(conserved) /= reactive_nvar(nspecies)) return
     if (size(primitive) /= reactive_nprim(nspecies)) return
@@ -345,7 +364,14 @@ contains
     if (.not. local_ok) return
     call reactive_checked_divide(kinetic_numerator, rho, kinetic_density, local_ok)
     if (.not. local_ok) return
-    call reactive_checked_add(conserved(iet), -kinetic_density, &
+    total_energy=conserved(iet)
+    if(present(rotating_potential)) then
+      call reactive_checked_multiply(rho,rotating_potential,potential_density,local_ok)
+      if(.not.local_ok) return
+      call reactive_checked_add(conserved(iet),potential_density,total_energy,local_ok)
+      if(.not.local_ok) return
+    end if
+    call reactive_checked_add(total_energy, -kinetic_density, &
       energy_residual, local_ok)
     if (.not. local_ok) return
     call reactive_checked_divide(energy_residual, rho, target_energy, local_ok)
