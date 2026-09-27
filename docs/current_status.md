@@ -52,6 +52,9 @@ Accepted MPI SDC states now reject even tiny negative species before
 publication; a two-rank red/green rollback test and nested restart pass.
 The upstream clipping cleanup changes species inventory and is not applied
 ([acceptance repair and conservation boundary](validation/sdc-negative-species-20260927.md)).
+Serial SDC now applies the same strict accepted-species contract before output
+publication; a negative-source rollback test and the existing serial tree test
+pass ([serial acceptance repair](validation/serial-sdc-negative-species-20260927.md)).
 Owner-local MPI MOL rates and fluxes now match serial evaluation in a nested
 wall fixture, including empty-rank ownership and collective rollback
 ([MPI spatial evaluation](validation/mpi-eb-mol-rate-20260927.md)).
