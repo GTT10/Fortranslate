@@ -15,6 +15,10 @@ viscosity and conductivity, with analytical flux and coefficient-scaling checks
 and fixed/selected applications now accept `reactive_constant_transport`, with
 active coefficient, WALE coexistence, conservation and exact fixed/selected
 output checks ([integration](validation/constant-transport-app-20260927.md)).
+`mode='hit'` derives the coefficients from initialized HIT scales and supplied
+Taylor length/Reynolds/Prandtl parameters, with independent coefficient and
+explicit-input equivalence checks
+([scaling evidence](validation/hit-transport-scales-20260927.md)).
 
 Primitive conversion now preserves exact forward-EOS endpoint states when
 inverse rounding lands outside the mechanism interval. Strict ranges and

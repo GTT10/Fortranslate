@@ -31,8 +31,9 @@ values; total energy includes the updated kinetic energy. Input coordinates
 and application coordinates must use the same length units (PeleF uses SI).
 
 This example uses NASA7 nitrogen and molecular transport. It does not reproduce
-the reference's gamma-law EOS, constant viscosity derived from Taylor Reynolds
-number, forced turbulence, or long-time statistics. The 16³ example is a
+the reference's gamma-law EOS, forced turbulence, or long-time statistics.
+Constant viscosity from Taylor Reynolds number is available through the input
+below. The 16³ example is a
 usable input template; focused checks used smaller grids. See
 [implementation evidence](../../docs/validation/hit-input-20260927.md).
 
@@ -53,5 +54,18 @@ retain the molecular mixture model. Species diffusion retains its mixture
 model; for the HIT reference's zero species diffusion, set
 `species_diffusion_enabled=.false.,barodiffusion_enabled=.false.` in
 `reactive_3d`. Nonperiodic boundaries, split stepping, or disabled transport
-reject enabled constant transport. Reynolds-based coefficient construction is
-not automatic; supply the converted SI values explicitly.
+reject enabled constant transport. Alternatively, derive them from the initialized HIT state:
+
+```fortran
+&reactive_constant_transport
+ enabled=.true., mode='hit', lambda0=.5, reynolds_lambda0=100, prandtl=.71
+/
+```
+
+Use one constant-transport namelist. `lambda0` is in metres. Density, cp and
+`urms=mach_t0*sound_speed/sqrt(3)` come from successful HIT initialization;
+`viscosity=rho*urms*lambda0/reynolds_lambda0` and
+`conductivity=viscosity*cp/prandtl`. This RMS is independent of `uin_norm`.
+Positive length/Re/Pr and positive initialized scales are required. Explicit
+nonzero coefficients cannot be mixed with `mode='hit'`. The default mode is
+`specified`. See [coefficient checks](../../docs/validation/hit-transport-scales-20260927.md).
