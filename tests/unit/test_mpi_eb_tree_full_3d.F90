@@ -3,6 +3,7 @@ program test_mpi_eb_tree_full_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use mpi_f08
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
@@ -43,6 +44,8 @@ program test_mpi_eb_tree_full_3d
   integer, allocatable :: diffusion_owners(:)
   type(eb_geometry_3d), allocatable :: diffusion_geometry(:)
   logical :: diffusion_failure=.false.
+  integer :: reactor_calls=0
+  logical :: reactor_failure=.false.
   integer :: diffusion_calls=0
   integer :: predictor_calls=0
   integer, allocatable :: predictor_owners(:)
@@ -114,7 +117,7 @@ program test_mpi_eb_tree_full_3d
   call check_sdc_loop()
   if(test_mode=="subcycle".or.test_mode=="redist_level".or.test_mode=="redist_recursive".or. &
      test_mode=="state_redist".or.test_mode=="state_recursive".or.test_mode=="aux_source".or. &
-     test_mode=="aux_recursive".or.test_mode=="aux_route".or.test_mode=="diffusion") then
+     test_mode=="aux_recursive".or.test_mode=="aux_route".or.test_mode=="diffusion".or.test_mode=="reactor") then
     deallocate(u,t)
     cycle
   end if
@@ -149,6 +152,23 @@ program test_mpi_eb_tree_full_3d
   if (rank==0) print *, 'test_mpi_eb_tree_full_3d: PASS'
   call MPI_Finalize(status)
 contains
+  subroutine reactor_adapter(species,reactions,initial_energy_density,external_species,external_energy, &
+      duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: initial_energy_density,external_species(:),external_energy,duration,rtol,atol
+    real(dp), intent(inout) :: species_density(:),temperature
+    integer, intent(out) :: completed_steps
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_steps
+    reactor_calls=reactor_calls+1
+    if(reactor_failure.and.rank==0.and.reactor_calls==2) then
+      species_density=-1;temperature=-1;completed_steps=0;ok=.false.
+      return
+    end if
+    call advance_forced_reactor_interval(species,reactions,initial_energy_density,external_species,external_energy, &
+      duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps=maximum_steps)
+  end subroutine reactor_adapter
   subroutine diffusion_source(state,temp,interval,depth,rate,flux,limiter,comm,good, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
     type(amr_tree_state_3d), intent(in) :: state,temp
@@ -179,7 +199,7 @@ contains
     type(amr_tree_state_3d) :: local,lt,ir,serial_ir,old_ir,old,ot
     real(dp) :: b(nv),w(nv),ch(nv),ext(nv),sb(nv),sw(nv),sch(nv),sext(nv),limiter,slimiter
     real(dp) :: initial_inventory(nv),final_inventory(nv),error,force(3),viscosity_coefficient,recovered,sound
-    integer :: owners(count),p,x,y,z,layout,failure
+    integer :: owners(count),p,x,y,z,layout,failure,expected_reactor_calls
     character(len=16) :: faces(6),method
     logical :: good
     method='none'
@@ -245,10 +265,17 @@ contains
         ir%fields(p)%values=0
       end do
       old=local;ot=lt;old_ir=ir
+      reactor_calls=0;expected_reactor_calls=0
+      do p=1,count
+        if(owners(p)/=rank) cycle
+        expected_reactor_calls=expected_reactor_calls+2*sum(merge(1,0,geometry(p)%volume_fraction>0))
+      end do
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
-        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,redistribution=method)
+        b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,redistribution=method,evaluate_reaction=reactor_adapter)
       call require(good,'MPI coupled SDC')
+      call require(reactor_calls==expected_reactor_calls,'callback only on owned noncovered cells')
+      reactor_calls=0
       if(test_mode=='diffusion') then
         diffusion_owners=owners;diffusion_geometry=geometry
         local=old;lt=ot;ir=old_ir
@@ -274,14 +301,25 @@ contains
       if(rank==0) print *, 'MPI SDC layout, composite residual: ',layout,error
       call require(error<3.e-14_dp,'SDC composite closure')
       if(test_mode/='state_redist') call check_sdc_level(initial,geometry,extended,owners,old,ot)
-      do failure=1,2
+      do failure=1,merge(4,2,test_mode=="reactor")
         local=old;lt=ot;ir=old_ir;b=17;w=19;ch=23;ext=29;limiter=31
         viscosity_coefficient=.1_dp
         if(failure==1) viscosity_coefficient=-1
         if(failure==2.and.rank==nranks-1) force(1)=force(1)+1
+        reactor_calls=0;reactor_failure=failure==3
+        if(failure==4.and.rank==nranks-1) then
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
           1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
           b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=viscosity_coefficient,redistribution=method)
+        else
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,local,lt,extended, &
+          1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,faces, &
+          b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=viscosity_coefficient,redistribution=method, &
+          evaluate_reaction=reactor_adapter)
+        end if
+        if(failure==4) call require(reactor_calls==0,'reactor mismatch rejected before cells')
+        reactor_failure=.false.
+
         force=[2.e4_dp,-3.e4_dp,4.e4_dp]
         call require(.not.good,'collective coupled SDC rejection')
         do p=1,count
@@ -334,6 +372,7 @@ contains
       end if
       deallocate(local%fields,lt%fields,ir%fields)
     end do
+    if(test_mode=="reactor") call check_sdc_recursive(initial,geometry,extended,faces,force)
   end subroutine check_sdc_loop
   subroutine check_auxiliary_sources(initial,geometry,extended,faces,force)
     type(eb_reactive_tree_3d), intent(in) :: initial
@@ -710,8 +749,10 @@ contains
     call advance_reactive_eb_tree_sdc_subcycle_3d(species,reactions,transport,1.e-10_dp,2,.true., &
       [.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,reference,extended,faces, &
       sb,sw,sch,sext,slimiter,good,serial_ir,level_steps=serial_counts,redistribution=method, &
-      auxiliary_source=serial_provider,auxiliary_change=saux,route_auxiliary=test_mode=='aux_route')
-    call require(good,'serial recursive SDC')
+      auxiliary_source=serial_provider,auxiliary_change=saux,route_auxiliary=test_mode=='aux_route', &
+      evaluate_reaction=reactor_adapter)
+    call require(good.and.reactor_calls>0,'serial recursive SDC callback')
+    reactor_calls=0
     if(allocated(saux)) then
       call require(serial_source_calls==21,'serial recursive source calls')
       profile=initial
@@ -779,11 +820,15 @@ contains
       if(allocated(aux)) then
         coefficient=.1_dp;source_failure=1;aux=41
       end if
+      reactor_calls=0;reactor_failure=test_mode=="reactor"
+      if(reactor_failure) coefficient=.1_dp
       old=local;ot=lt;old_ir=ir;b=17;w=19;ch=23;ext=29;limiter=31;counts=37
       call advance_mpi_eb_tree_sdc_subcycle_3d(species,reactions,transport,topology,owners,geometry,local,lt, &
         1.e-10_dp,2,.true.,[.true.,.true.,.true.,.true.],force,2.e-7_dp,1.e-12_dp,extended,faces, &
         b,w,ch,ext,limiter,MPI_COMM_WORLD,good,ir,difmag=coefficient,level_steps=counts,redistribution=method, &
-        auxiliary_source=mpi_provider,auxiliary_change=aux,route_auxiliary=test_mode=='aux_route')
+        auxiliary_source=mpi_provider,auxiliary_change=aux,route_auxiliary=test_mode=='aux_route', &
+        evaluate_reaction=reactor_adapter)
+      reactor_failure=.false.
       call require(.not.good,'recursive rejected stage')
       if(allocated(aux)) then
         call require(mpi_source_calls==21.and.all(aux==41),'last descendant source failure and ledger rollback')

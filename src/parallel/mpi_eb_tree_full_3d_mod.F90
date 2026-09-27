@@ -4,6 +4,7 @@ module mpi_eb_tree_full_3d_mod
   use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
   use gas_transport_mod, only: gas_transport_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -127,7 +128,9 @@ contains
   end subroutine
 
   subroutine react_sdc_mpi_eb_tree_3d(species,reactions,tree,owners,geometry,old_state,old_temperature, &
-      nonreacting_rates,dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth)
+      nonreacting_rates,dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -141,7 +144,7 @@ contains
     integer, optional, intent(in) :: target_depth
     type(amr_tree_state_3d) :: candidate,temps,sources
     real(dp) :: controls(3),low(3),high(3),stamp
-    integer :: nv,depth,counts(3),min_counts(3),max_counts(3),rank,status,node,n(3)
+    integer :: nv,depth,counts(4),min_counts(4),max_counts(4),rank,status,node,n(3)
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species));depth=-1;controls=[dt,rtol,atol]
     valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0.and.size(reactions)>0
@@ -155,10 +158,10 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
-    counts=[size(species),size(reactions),depth]
-    call MPI_Allreduce(counts,min_counts,3,MPI_INTEGER,MPI_MIN,comm,status)
+    counts=[size(species),size(reactions),depth,merge(1,0,present(evaluate_reaction))]
+    call MPI_Allreduce(counts,min_counts,4,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,max_counts,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,max_counts,4,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(min_counts/=max_counts)) return
     call validate_mpi_amr_tree_local_3d(tree,owners,old_state,nv,comm,ready)
     if(.not.ready) return
@@ -195,7 +198,8 @@ contains
       call react_sdc_eb_state_3d(species,reactions,old_state%fields(node)%values, &
         old_temperature%fields(node)%values(1,:,:,:),geometry(node),nonreacting_rates%fields(node)%values, &
         dt,rtol,atol,candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:), &
-        sources%fields(node)%values,valid)
+        sources%fields(node)%values,valid, &
+          evaluate_reaction=evaluate_reaction)
       call tree_work_stop(node,stamp)
       if(.not.valid) exit
     end do
@@ -408,7 +412,9 @@ contains
       reaction_source,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder,evaluate_diffusion)
+      target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder,evaluate_diffusion, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -456,7 +462,7 @@ contains
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
     real(dp) :: controls(11),low(11),high(11),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
-    integer :: counts(10),mincounts(10),maxcounts(10),nv,rank,status,node,n(3),it,i,j,k,c,ios
+    integer :: counts(11),mincounts(11),maxcounts(11),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive,has_diffusion
     ok=.false.;nv=reactive_nvar(size(species));theta=1
     has_diffusion=present(evaluate_diffusion)
@@ -478,6 +484,7 @@ contains
     valid=valid.and..not.(present(reaction_source).and..not.chemistry)
     valid=valid.and.(present(auxiliary_source).eqv.present(auxiliary_change))
     if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
+    valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
     call agree(valid,comm,ready)
     if(.not.ready) return
     call MPI_Allreduce(controls,low,11,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
@@ -485,10 +492,11 @@ contains
     call MPI_Allreduce(controls,high,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
-      merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder)),merge(1,0,present(evaluate_diffusion))]
-    call MPI_Allreduce(counts,mincounts,10,MPI_INTEGER,MPI_MIN,comm,status)
+      merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder)),merge(1,0,present(evaluate_diffusion)), &
+      merge(1,0,present(evaluate_reaction))]
+    call MPI_Allreduce(counts,mincounts,11,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,maxcounts,10,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,maxcounts,11,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(mincounts/=maxcounts)) return
     selected_depth=-1
     if(present(target_depth)) selected_depth=target_depth
@@ -632,7 +640,8 @@ contains
       end do
       if(chemistry) then
         call react_sdc_mpi_eb_tree_3d(species,reactions,tree,owners,geometry,old,ot,rates,dt,rtol,atol, &
-          candidate,ct,ir,comm,ready,target_depth)
+          candidate,ct,ir,comm,ready,target_depth, &
+          evaluate_reaction=evaluate_reaction)
         if(.not.ready) return
       else
         do node=1,size(owners)
@@ -977,7 +986,9 @@ contains
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,comm,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source, &
-      predictor_builder,post_level,evaluate_diffusion)
+      predictor_builder,post_level,evaluate_diffusion, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1037,6 +1048,7 @@ contains
     valid=valid.and.(.not.routing.or.has_auxiliary)
     valid=valid.and.(has_auxiliary.eqv.present(auxiliary_change))
     if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
+    valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
     call agree(valid,comm,ready)
     if(.not.ready) return
     call MPI_Allreduce(merge(1,0,has_auxiliary)+merge(2,0,present(halo_source)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
@@ -1054,6 +1066,10 @@ contains
     call MPI_Allreduce(merge(1,0,routing),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(merge(1,0,routing),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.method_low/=method_high) return
+    call MPI_Allreduce(merge(1,0,present(evaluate_reaction)),method_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(merge(1,0,present(evaluate_reaction)),method_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.method_low/=method_high) return
     method='none'
     if(present(redistribution)) method=redistribution
@@ -1267,14 +1283,16 @@ contains
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
-        evaluate_diffusion=evaluate_diffusion)
+        evaluate_diffusion=evaluate_diffusion, &
+          evaluate_reaction=evaluate_reaction)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
-        evaluate_diffusion=evaluate_diffusion)
+        evaluate_diffusion=evaluate_diffusion, &
+          evaluate_reaction=evaluate_reaction)
       end if
       else
       if(has_auxiliary) then
@@ -1282,13 +1300,15 @@ contains
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion)
+        redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
+          evaluate_reaction=evaluate_reaction)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
-        redist_target,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion)
+        redist_target,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
+          evaluate_reaction=evaluate_reaction)
       end if
       end if
       if(.not.accepted) return

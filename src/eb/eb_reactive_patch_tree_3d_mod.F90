@@ -2,6 +2,7 @@ module eb_reactive_patch_tree_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d,valid_reactive_boundaries_3d
@@ -1261,7 +1262,9 @@ contains
       transport_flags,force,rtol,atol,tree,extended_geometry,boundary_faces, &
       boundary_change,wall_change,chemical_change,source_change,minimum_theta,ok,reaction_source, &
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
-      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary)
+      target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1301,6 +1304,7 @@ contains
     integer :: nv,node,n(3),levels,c
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    if(present(evaluate_reaction).and..not.chemistry) return
     routing=.false.
     if(present(route_auxiliary)) routing=route_auxiliary
     if(.not.valid_tree(tree,nv).or..not.ieee_is_finite(dt).or.dt<=0) return
@@ -1458,12 +1462,14 @@ contains
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
-        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target,source_adapter,step_aux)
+        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target,source_adapter,step_aux, &
+          evaluate_reaction=evaluate_reaction)
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
         difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
-        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target)
+        level,starts,ends,fstart,fend,source0,source1,flux,op,np,method,transfer,redist_target, &
+          evaluate_reaction=evaluate_reaction)
       end if
       if(.not.accepted) return
       if(method/='none') then
@@ -1599,7 +1605,9 @@ contains
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature, &
       target_depth,ancestor_start,ancestor_end,fractions_start,fractions_end,source_start,source_end, &
       integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer,target_volume_fraction, &
-      auxiliary_source,auxiliary_change)
+      auxiliary_source,auxiliary_change, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1645,6 +1653,7 @@ contains
     integer :: nv,node,n(3),it,i,j,k,c
     logical :: valid,diffusive
     ok=.false.;nv=reactive_nvar(size(species));theta=1
+    if(present(evaluate_reaction).and..not.chemistry) return
     if(.not.valid_tree(tree,nv)) return
     if(any([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]/=nv)) return
     if(iterations<1.or..not.all(ieee_is_finite([dt,force,rtol,atol]))) return
@@ -1764,7 +1773,8 @@ contains
         rates%fields(node)%values=rates%fields(node)%values+hydro%fields(node)%values
       end do
       if(chemistry) then
-        call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid,target_depth)
+        call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid,target_depth, &
+          evaluate_reaction=evaluate_reaction)
         if(.not.valid) return
         do node=1,size(tree%nodes)
           if(.not.active(node)) cycle
@@ -3503,7 +3513,9 @@ contains
   ! Provisional SDC chemistry evolves all fluid cells at each selected level,
   ! including refined parents. Reflux and restriction belong to the time driver.
   subroutine react_sdc_eb_tree_3d(species,reactions,old_tree,nonreacting_rates,dt,rtol,atol, &
-      state,temperature,reaction_source,ok,target_depth)
+      state,temperature,reaction_source,ok,target_depth, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_reactive_tree_3d), intent(in) :: old_tree
@@ -3546,7 +3558,8 @@ contains
         call react_sdc_state_3d(species,reactions,old_tree%nodes(node)%state(:,i:i,j:j,k:k), &
           old_tree%nodes(node)%temperature(i:i,j:j,k:k),nonreacting_rates%fields(node)%values(:,i:i,j:j,k:k), &
           dt,rtol,atol,candidate%fields(node)%values(:,i:i,j:j,k:k),temps%fields(node)%values(1,i:i,j:j,k:k), &
-          sources%fields(node)%values(:,i:i,j:j,k:k),valid)
+          sources%fields(node)%values(:,i:i,j:j,k:k),valid, &
+          evaluate_reaction=evaluate_reaction)
         if(.not.valid) return
       end do
       end do

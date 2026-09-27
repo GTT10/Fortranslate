@@ -2,6 +2,7 @@ module reactive_eb_3d_driver_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use state_indices_mod, only: imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -45,7 +46,9 @@ contains
   subroutine advance_reactive_eb_sdc_3d(species,reactions,transport,state,temperature,geometry,extended,dt, &
       iterations,chemistry,transport_flags,force,rtol,atol,redistribution,boundary_faces, &
       boundary_change,wall_change,source_change,minimum_theta,ok,reaction_source,integrated_flux, &
-      difmag,target_volume_fraction,inflow_state,inflow_temperature,wall_temperature,chemistry_change)
+      difmag,target_volume_fraction,inflow_state,inflow_temperature,wall_temperature,chemistry_change, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -69,6 +72,7 @@ contains
     integer :: nv,n(3),i,j,k,it
     logical :: valid,diffusive
     ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
+    if(present(evaluate_reaction).and..not.chemistry) return
     if(.not.geometry%is_valid().or..not.valid_ctu_geometry(geometry,extended,'pelec')) return
     if(any(shape(state)/=[nv,n]).or.any(shape(temperature)/=n)) return
     if(size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(source_change)/=nv) return
@@ -115,7 +119,8 @@ contains
       if(.not.valid) return
       rates=.5_dp*e1+.5_dp*e0+.5_dp*d1+.5_dp*d0+hydro
       if(chemistry) then
-        call react_sdc_eb_state_3d(species,reactions,old,ot,geometry,rates,dt,rtol,atol,u,t,ir,valid)
+        call react_sdc_eb_state_3d(species,reactions,old,ot,geometry,rates,dt,rtol,atol,u,t,ir,valid, &
+          evaluate_reaction=evaluate_reaction)
       else
         u=old+dt*rates
         call recover(u,t,valid)
@@ -236,7 +241,9 @@ contains
 
   ! Rates and states are per fluid volume; geometry supplies the active mask.
   subroutine react_sdc_eb_state_3d(species,reactions,old_state,old_temperature,geometry,nonreacting_rates, &
-      dt,rtol,atol,state,temperature,reaction_source,ok)
+      dt,rtol,atol,state,temperature,reaction_source,ok, &
+      evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -260,7 +267,8 @@ contains
       if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
       call react_sdc_state_3d(species,reactions,old_state(:,i:i,j:j,k:k),old_temperature(i:i,j:j,k:k), &
         nonreacting_rates(:,i:i,j:j,k:k),dt,rtol,atol,candidate(:,i:i,j:j,k:k),ct(i:i,j:j,k:k), &
-        ir(:,i:i,j:j,k:k),valid)
+        ir(:,i:i,j:j,k:k),valid, &
+          evaluate_reaction=evaluate_reaction)
       if(.not.valid) return
     end do
     end do
