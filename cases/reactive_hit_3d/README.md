@@ -144,3 +144,15 @@ the cap as `&reactive_timestep maximum_dt=1e-8 /`; existing stability limits
 still apply, and the value must be finite and positive. Omitting this namelist
 retains unrestricted adaptive timesteps. Three-step dynamic/Smagorinsky/Vreman
 comparisons are recorded [here](../../docs/validation/hit-multistep-reference-20260927.md).
+
+## Pinned linear momentum forcing
+
+Regular SDC accepts `&reactive_linear_forcing coefficient=1000,momentum_offset=0,0,0 /`.
+This adds `coefficient*rho*(momentum-momentum_offset)` to momentum rates and
+adds no energy rate, following the pinned source exactly. Coefficient units
+are m³/(kg s); offset units are momentum density, kg/(m² s). Defaults are zero.
+This differs from the ordinary constant external force/work input.
+For upstream CGS values, multiply the coefficient by 0.001 and offsets by 10.
+Nonzero initial mean velocity is configured separately.
+The comparison checker accepts `--linear-forcing 1000` in SI units; see
+[the implementation and bounded checks](../../docs/validation/hit-linear-forcing-20260927.md).

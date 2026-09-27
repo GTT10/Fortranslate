@@ -27,6 +27,10 @@ An optional regular timestep cap now supports matched multistep reference
 runs. Dynamic, Smagorinsky and Vreman agree over three steps on 4³ cells
 (maximum normalized difference `7.72e-14`;
 [checks](validation/hit-multistep-reference-20260927.md)).
+The pinned state-dependent linear momentum forcing now reaches regular SDC
+source stages and inventory accounting. Three-step hydro and transport/WALE
+comparisons agree with the full reference (`3.92e-15` maximum normalized
+difference; [checks](validation/hit-linear-forcing-20260927.md)).
 HIT input also accepts an explicit coordinate-unit factor; the gamma-law
 template converts centimetre reference lengths to metres, with exact
 manufactured-input equivalence ([checks](validation/hit-coordinate-20260927.md)).
