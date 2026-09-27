@@ -75,7 +75,11 @@ transport, preserving transport boundary inventories and exported fluxes
 ([focused checks](validation/sdc-callback-transport-20260927.md)).
 The opt-in LES runtime now supplies a regular SDC wrapper for Smagorinsky,
 WALE, Vreman and Dynamic sources alongside molecular transport and forcing
-([library checks](validation/les-sdc-20260927.md)); application routing remains open.
+([library checks](validation/les-sdc-20260927.md)). Fixed/selected regular gas
+applications now accept `reactive_les`, with diffusion timestep limits and
+separate LES boundary inventories. Four-closure CVODE application checks give
+exact fixed/selected CSVs and reject unavailable or incompatible selections
+([application checks](validation/les-regular-app-20260927.md)).
 The regular LES SDC wrapper now also forwards selectable forced reactors, with
 four-closure CVODE dispatch, conservation and rollback checks
 ([reactor integration](validation/les-sdc-cvode-20260927.md)).

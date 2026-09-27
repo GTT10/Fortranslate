@@ -45,3 +45,25 @@ independent of solver. Set `difmag=0` to disable it, or a positive value to
 choose its strength. Fixed and selected regular gas executables print the
 resolved coefficient. Older zero-policy runs/checkpoints require explicit zero.
 See [default-policy checks](../../docs/validation/regular-gas-default-difmag-20260925.md).
+
+## Optional regular-grid LES with SDC
+
+Build with `PELEF_ENABLE_SPRAY=ON`. Fixed and selected regular 3D executables
+accept this additional namelist together with `time_integrator='sdc'` in
+`reactive_3d`:
+
+```fortran
+&reactive_les
+ enabled=.true., model='smagorinsky', cs=.17, prt=.7, sct=.7, ci=0
+/
+```
+
+Models are `smagorinsky`, `wale`, `vreman`, and `dynamic`. Dynamic uses
+`test_model='box'`, `test_ratio=2`, `grid_ratio=1`, and
+`harmonic_mean=.false.` by default; it requires `ci=0`. Nondefault filter
+controls require Dynamic. The namelist defaults to disabled. Enabled LES
+requires SDC and the optional runtime; unsupported builds reject it.
+`sdc_reactor='cvode'` additionally requires SUNDIALS and enabled chemistry.
+Boundary flux inventories and the LES diffusion timestep bound are included.
+See [focused application evidence](../../docs/validation/les-regular-app-20260927.md)
+for the tested scope. These are experimental LES capabilities.
