@@ -374,7 +374,12 @@ def validate(data: dict[str, Any]) -> None:
         raise ValueError("species names collide in case-insensitive Fortran")
     if len(species) > MAX_SPECIES:
         raise ValueError(f"mechanism exceeds {MAX_SPECIES} species")
-    if not data.get("reactions"):
+    if "nonreacting" in data and not isinstance(data["nonreacting"], bool):
+        raise ValueError("nonreacting must be a boolean")
+    if data.get("nonreacting", False):
+        if data.get("reactions") != [] or not all(data.get(k) for k in ("source", "thermo", "transport")):
+            raise ValueError("nonreacting bundle requires source, thermo, transport and an empty reaction list")
+    elif not data.get("reactions"):
         raise ValueError("mechanism must contain reactions")
     identifiers = ["module_name", "loader_name", "kernel_name"]
     identifiers += ["jacobian_name", "symbol_prefix"]
@@ -767,6 +772,10 @@ def emit_species_data_loaders(lines: list[str], data: dict[str, Any]) -> None:
 def emit_parameter_array(
     lines: list[str], declaration: str, values: list[str], chunk_size: int
 ) -> None:
+    if not values:
+        kind = declaration.split(",", 1)[0]
+        lines.append(f"  {declaration} = [ {kind} :: ]")
+        return
     lines.append(f"  {declaration} = [ &")
     for offset in range(0, len(values), chunk_size):
         chunk = values[offset:offset + chunk_size]

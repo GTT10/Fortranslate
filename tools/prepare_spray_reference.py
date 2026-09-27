@@ -42,14 +42,15 @@ def preserve(path: Path, data: bytes) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--fuel', choices=['methanol', 'dodecane'], default='methanol')
+    parser.add_argument('--fuel', choices=['methanol', 'dodecane', 'heptane-3sp'], default='methanol')
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--yaml', type=Path, help='Offline, exact pinned YAML bytes')
     parser.add_argument('--license', type=Path, help='Offline, exact upstream license bytes')
     args = parser.parse_args()
     if bool(args.yaml) != bool(args.license):
         parser.error('--yaml and --license must be supplied together')
-    reference = 'spray_methanol.json' if args.fuel == 'methanol' else 'dodecane_lu.json'
+    reference = {'methanol': 'spray_methanol.json', 'dodecane': 'dodecane_lu.json',
+                 'heptane-3sp': 'heptane_3sp.json'}[args.fuel]
     manifest = json.loads((ROOT/'references'/reference).read_text())
     prefix = manifest['symbol_prefix']
     data = {}
@@ -71,9 +72,10 @@ def main() -> int:
         preserve(out/entry['basename'], data[key])
     bundle = build_bundle(out/manifest['files']['yaml']['basename'], phase=manifest['phase'],
                           module_name=prefix+'_mechanism_mod', symbol_prefix=prefix,
-                          chemistry_integrator='implicit',
+                          chemistry_integrator='implicit', nonreacting=manifest.get('nonreacting', False),
                           description=('Pinned FFCM1_Red: optional methanol spray verification, not diesel validation'
                                        if args.fuel == 'methanol' else
+                                       'Pinned reaction-free NC7H16/O2/N2 spray reference' if args.fuel == 'heptane-3sp' else
                                        'Pinned Lu n-dodecane: gas chemistry integration, not experimental spray validation'))
     validate(bundle)
     if len(bundle['species']) != manifest['species_count'] or len(bundle['reactions']) != manifest['reaction_count']:

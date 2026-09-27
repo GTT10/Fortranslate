@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/Pele-Suite/PelePhysics.git",
+  "commit": "6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b",
+  "phase": "gas",
+  "symbol_prefix": "heptane_3sp",
+  "species_count": 3,
+  "reaction_count": 0,
+  "files": {
+    "yaml": {
+      "path": "Mechanisms/heptane_3sp/mechanism.yaml",
+      "basename": "heptane_3sp.yaml",
+      "git_blob": "8a1ace14c72c637da4eb19aba5006259a05d0ab4",
+      "sha256": "5df1e27a9551d3c54e17945e12e6e1e6db366f90df01ea548b0f6f19f30284a4"
+    },
+    "license": {
+      "path": "license.txt",
+      "basename": "PelePhysics-license.txt",
+      "sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2"
+    }
+  },
+  "note": "Pinned reaction-free NC7H16/O2/N2 data for Spray-Evaporation. Upstream description mentions decane; species identity is NC7H16. No temperature-range extension or experimental validation.",
+  "nonreacting": true
+}

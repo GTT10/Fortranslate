@@ -138,7 +138,7 @@ def _validate_cantera_runtime(cantera: Any) -> tuple[str, str]:
     return version, commit
 
 
-def _validate_phase_models(cantera_phase: Any) -> None:
+def _validate_phase_models(cantera_phase: Any, *, nonreacting: bool = False) -> None:
     name = str(getattr(cantera_phase, "name", "<unnamed>"))
     phase_thermo = str(getattr(cantera_phase, "thermo_model", "")).lower()
     if phase_thermo != "ideal-gas":
@@ -147,7 +147,7 @@ def _validate_phase_models(cantera_phase: Any) -> None:
             f"{phase_thermo or '<missing>'}; only ideal-gas is supported"
         )
     phase_kinetics = str(getattr(cantera_phase, "kinetics_model", "")).lower()
-    if phase_kinetics != "bulk":
+    if phase_kinetics != "bulk" and not (nonreacting and phase_kinetics == "none"):
         raise ValueError(
             f"phase {name!r}: unsupported kinetics model "
             f"{phase_kinetics or '<missing>'}; only bulk is supported"
@@ -713,6 +713,7 @@ def build_bundle(
     chemistry_integrator: str = "implicit",
     description: str | None = None,
     source_file: str | None = None,
+    nonreacting: bool = False,
 ) -> dict[str, Any]:
     """Build a deterministic normalized bundle without writing a file."""
 
@@ -736,8 +737,10 @@ def build_bundle(
     if not species_names:
         raise ValueError("selected phase contains no species")
 
-    _validate_phase_models(cantera_phase)
-    if int(getattr(cantera_phase, "n_reactions", 0)) <= 0:
+    _validate_phase_models(cantera_phase, nonreacting=nonreacting)
+    if nonreacting and int(getattr(cantera_phase, "n_reactions", 0)) != 0:
+        raise ValueError("nonreacting import requires zero source reactions")
+    if not nonreacting and int(getattr(cantera_phase, "n_reactions", 0)) <= 0:
         raise ValueError("selected phase contains no reactions")
 
     species = [cantera_phase.species(index) for index in range(len(species_names))]
@@ -808,6 +811,8 @@ def build_bundle(
             "target_units": dict(_TARGET_UNITS),
         },
     }
+    if nonreacting:
+        bundle["nonreacting"] = True
     # This also catches accidental NaN/Infinity values returned by a future
     # Cantera API before anything reaches disk.
     json.dumps(bundle, allow_nan=False)
@@ -888,6 +893,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="implicit",
         help="generic reactive-flow chemistry integrator policy",
     )
+    parser.add_argument("--nonreacting", action="store_true", help="Require and preserve a reaction-free phase")
     parser.add_argument("--description")
     parser.add_argument(
         "--source-file",
@@ -913,6 +919,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             chemistry_integrator=args.chemistry_integrator,
             description=args.description,
             source_file=args.source_file,
+            nonreacting=args.nonreacting,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ingest_cantera_mechanism: error: {exc}", file=sys.stderr)

@@ -211,6 +211,30 @@ class IngestHelpersTest(unittest.TestCase):
 class PinnedCanteraBundleTest(unittest.TestCase):
     yaml_path = ROOT / "mechanisms" / "h2o2_cantera.yaml"
 
+    def test_explicit_nonreacting_bundle(self) -> None:
+        from generate_elementary_mechanism import validate, generate
+        source = _cantera.Solution(str(self.yaml_path), name="ohmech")
+        phase = _cantera.Solution(thermo="ideal-gas", species=[source.species("O2"), source.species("N2")],
+                                  transport_model="mixture-averaged", name="inert")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inert.yaml"
+            phase.write_yaml(str(path))
+            with self.assertRaises(ValueError):
+                ingest.build_bundle(path, phase="inert")
+            bundle = ingest.build_bundle(path, phase="inert", nonreacting=True)
+            validate(bundle)
+            self.assertEqual(bundle["reactions"], [])
+            self.assertEqual(bundle["species"], ["O2", "N2"])
+            self.assertEqual(bundle["source"]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            generated = generate(bundle)
+            self.assertIn("source_indices(0) = [ integer :: ]", generated)
+            self.assertIn("duplicate_reactions(0) = [ logical :: ]", generated)
+            del bundle["nonreacting"]
+            with self.assertRaisesRegex(ValueError, "must contain reactions"):
+                validate(bundle)
+        with self.assertRaisesRegex(ValueError, "requires zero source reactions"):
+            ingest.build_bundle(self.yaml_path, phase="ohmech", nonreacting=True)
+
     def test_bundle_is_complete_ordered_and_generator_inputtable(self) -> None:
         metadata = {
             "phase": "ohmech",
