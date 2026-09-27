@@ -12,7 +12,7 @@ module mpi_eb_tree_full_3d_mod
   use reactive_3d_mod, only: advance_reactive_chemistry_3d
   use reactive_eb_3d_driver_mod, only: react_sdc_eb_state_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,extract_eb_geometry_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
   use mpi_eb_tree_transfer_3d_mod, only: integrate_mpi_eb_tree_3d,average_down_mpi_eb_tree_3d, &
     validate_mpi_eb_tree_geometry_3d
@@ -413,7 +413,7 @@ contains
       target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions_start,fractions_end, &
       source_start,source_end,integrated_flux,old_predictor,new_predictor,redistribution,redistribution_transfer, &
       target_volume_fraction,auxiliary_source,auxiliary_change,gas_acceleration,predictor_builder,evaluate_diffusion, &
-      evaluate_reaction)
+      evaluate_reaction,embedded_wall_temperature)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
@@ -455,12 +455,15 @@ contains
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
-    real(dp), optional, intent(in) :: wall_temperature(6)
+    real(dp), optional, intent(in) :: wall_temperature(6),embedded_wall_temperature
+    type(eb_geometry_3d), allocatable :: heat_geometry(:)
+    real(dp), allocatable :: heat_stage,heat_frequency
+    real(dp) :: heat_old,heat_new
     type(amr_tree_state_3d) :: old,ot,candidate,ct,e0,e1,d0,d1,rates,hydro,ir,ledger
     type(eb_integrated_flux_3d), allocatable :: f0(:),f1(:),hf(:)
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),chemical(size(chemical_change))
     real(dp) :: external(size(source_change)),v0(size(source_change)),v1(size(source_change)),theta,stage_theta
-    real(dp) :: controls(11),low(11),high(11),recovered,speed
+    real(dp) :: controls(13),low(13),high(13),recovered,speed
     real(dp), allocatable :: primitive(:),wall_rate(:,:,:,:)
     integer :: counts(11),mincounts(11),maxcounts(11),nv,rank,status,node,n(3),it,i,j,k,c,ios
     logical :: valid,ready,diffusive,has_diffusion
@@ -475,8 +478,11 @@ contains
     call agree(redistribution_method=='none'.or.redistribution_method=='flux_redist'.or. &
       redistribution_method=='state_redist',comm,ready)
     if(.not.ready) return
-    controls=[dt,force,rtol,atol,merge(1._dp,0._dp,redistribution_method=='flux_redist')+ &
+    controls(:11)=[dt,force,rtol,atol,merge(1._dp,0._dp,redistribution_method=='flux_redist')+ &
       merge(2._dp,0._dp,redistribution_method=='state_redist'),redist_target,accel]
+    controls(12:13)=0
+    if(present(embedded_wall_temperature)) controls(12:13)=[1._dp,embedded_wall_temperature]
+    heat_old=0;heat_new=0
     valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0.and.iterations>=1
     valid=valid.and.redist_target>0.and.redist_target<=1.and.all(abs(accel)<=1e6_dp)
     valid=valid.and.all([size(boundary_change),size(wall_change),size(chemical_change),size(source_change)]==nv)
@@ -485,11 +491,12 @@ contains
     valid=valid.and.(present(auxiliary_source).eqv.present(auxiliary_change))
     if(present(auxiliary_change)) valid=valid.and.size(auxiliary_change)==nv
     valid=valid.and.(chemistry.or..not.present(evaluate_reaction))
+    if(present(embedded_wall_temperature)) valid=valid.and.transport_flags(2).and.embedded_wall_temperature>0
     call agree(valid,comm,ready)
     if(.not.ready) return
-    call MPI_Allreduce(controls,low,11,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    call MPI_Allreduce(controls,low,13,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,13,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     counts=[iterations,merge(1,0,chemistry),merge(1,0,transport_flags),merge(1,0,present(reaction_source)), &
       merge(1,0,present(auxiliary_source)),merge(1,0,present(predictor_builder)),merge(1,0,present(evaluate_diffusion)), &
@@ -533,6 +540,20 @@ contains
       call validate_mpi_amr_tree_local_3d(tree,owners,ot,1,comm,ready)
       if(.not.ready) return
       if(selected_depth>=tree%level_count()) return
+    end if
+    if(present(embedded_wall_temperature)) then
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,extended_geometry,nv,comm,ready,padding=6)
+      if(.not.ready) return
+      allocate(heat_geometry(size(owners)),heat_stage,heat_frequency,stat=ios)
+      call agree(ios==0,comm,ready)
+      if(.not.ready) return
+      do node=1,size(owners)
+        n=tree%nodes(node)%shape
+        call extract_eb_geometry_3d(extended_geometry(node),[5,5,5],n+8,heat_geometry(node),valid)
+        if(.not.valid) exit
+      end do
+      call agree(valid,comm,ready)
+      if(.not.ready) return
     end if
     if(selection(2)==6) then
       levels=tree%level_count()-1
@@ -584,7 +605,7 @@ contains
     candidate=old;ct=ot;diffusive=any(transport_flags(:3))
     call sources(old,ot,e0,d0,a0,0,f0,transfer0,ready,fractions_start)
     if(.not.ready) return
-    e1=e0;d1=d0
+    e1=e0;d1=d0;heat_new=heat_old
     if(present(auxiliary_source)) a1=a0
     call predictor_field(e0,d0,a0,op,ready)
     if(.not.ready) return
@@ -697,6 +718,9 @@ contains
     call agree(valid,comm,ready)
     if(.not.ready) return
     call integrate_mpi_eb_tree_3d(tree,owners,geometry,ledger,wall,comm,ready)
+    if(.not.ready) return
+    wall(5)=wall(5)+.5_dp*(heat_old+heat_new)
+    call agree(all(ieee_is_finite(wall)),comm,ready)
     if(.not.ready) return
     if(selected_depth<0) then
       if(redistribution_method/='none') before_sync=candidate
@@ -894,7 +918,16 @@ contains
           transport_flags(1),transport_flags(2),transport_flags(3),transport_flags(4),gas,temp, &
           transport_rate,flux,stage_theta,comm,all_ok,inflow_mach,inflow_temperature,inflow_pressure, &
           boundary_faces,inflow_state,wall_temperature, &
-          target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions)
+          target_depth,ancestor_start,ancestor_end,temperature_start,temperature_end,fractions, &
+          embedded_wall_temperature=embedded_wall_temperature,extended_geometry=heat_geometry, &
+          embedded_wall_energy=heat_stage,embedded_frequency=heat_frequency)
+        if(present(embedded_wall_temperature).and.all_ok) then
+          if(stage==0) then
+            heat_old=heat_stage
+          else
+            heat_new=heat_stage
+          end if
+        end if
         if(.not.all_ok) return
       else
         stage_theta=1
@@ -987,7 +1020,7 @@ contains
       difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure,wall_temperature,level_steps,redistribution, &
       target_volume_fraction,auxiliary_source,auxiliary_change,route_auxiliary,gas_acceleration,halo_source, &
       predictor_builder,post_level,evaluate_diffusion, &
-      evaluate_reaction)
+      evaluate_reaction,embedded_wall_temperature)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(mpi_eb_sdc_diffusion_source), optional :: evaluate_diffusion
     type(nasa7_species), intent(in) :: species(:)
@@ -1007,7 +1040,7 @@ contains
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
-    real(dp), optional, intent(in) :: wall_temperature(6),gas_acceleration(3)
+    real(dp), optional, intent(in) :: wall_temperature(6),gas_acceleration(3),embedded_wall_temperature
     integer(int64), optional, intent(inout) :: level_steps(:)
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: target_volume_fraction
@@ -1284,7 +1317,7 @@ contains
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
         evaluate_diffusion=evaluate_diffusion, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
@@ -1292,7 +1325,7 @@ contains
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,gas_acceleration=gas_acceleration,predictor_builder=predictor_adapter, &
         evaluate_diffusion=evaluate_diffusion, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature)
       end if
       else
       if(has_auxiliary) then
@@ -1301,14 +1334,14 @@ contains
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,source_adapter,step_aux,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature)
       else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,tree,owners,geometry,candidate,ct, &
         extended_geometry,interval,iterations,chemistry,transport_flags,force,rtol,atol,boundary_faces, &
         b,w,ch,ext,limiter,comm,accepted,ir,difmag,inflow_state,inflow_mach,inflow_temperature,inflow_pressure, &
         wall_temperature,level,starts,ends,ts,te,fstart,fend,source0,source1,flux,op,np,method,transfer, &
         redist_target,gas_acceleration=gas_acceleration,evaluate_diffusion=evaluate_diffusion, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,embedded_wall_temperature=embedded_wall_temperature)
       end if
       end if
       if(.not.accepted) return
