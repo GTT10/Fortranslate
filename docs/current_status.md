@@ -12,8 +12,11 @@ Older milestone prose remains historical detail, not a current global status.
 Explicit reaction-free mechanism import now supports the pinned NC7H16/O2/N2
 Spray-Evaporation material data, retaining source/license hashes and typed
 zero-reaction generated arrays. Focused importer checks and generated-module
-compilation pass; application integration and reference-temperature alignment
-remain pending ([evidence](validation/nonreacting-spray-import-20260927.md)).
+compilation pass ([evidence](validation/nonreacting-spray-import-20260927.md)).
+The selected serial spray application now runs this reaction-free bundle with
+active evaporation and conserved gas/liquid transfer at temperatures inside
+the source range. Chemistry ON and 273 K gas are rejected; full upstream
+spray parity remains pending ([integration](validation/nonreacting-spray-app-20260927.md)).
 
 The fixed regular application now exposes a nonreacting `gamma_law` pseudo-air
 model for HIT/SDC/LES, with independent ideal-gas state and transport-scale

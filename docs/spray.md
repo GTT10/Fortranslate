@@ -8,6 +8,13 @@ AMR/EB/MPI applications or claim those features are connected to particles.
 
 ## LES in particle SDC
 
+The selected serial spray executable also accepts an explicitly nonreacting
+mechanism bundle. Use `--fuel heptane-3sp` with `tools/prepare_spray_reference.py`
+and build with the returned bundle/source paths. The
+[NC7H16 fixture](../cases/spray_3d/heptane_nonreacting.nml) requires
+`chemistry_enabled=.false.`; it uses temperatures inside the imported NASA7
+range. See [integration evidence](validation/nonreacting-spray-app-20260927.md).
+
 The common and recursive MPI particle SDC library wrappers accept a diffusion
 callback. `compute_mpi_regular_eb_les_sdc_3d` supplies Smagorinsky, WALE, Vreman
 or Dynamic rates and integrated face fluxes on fully regular geometry; it
