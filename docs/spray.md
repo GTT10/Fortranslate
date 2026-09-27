@@ -57,6 +57,8 @@ The recursive driver now connects this handoff, splash IDs, thermal evolution an
 combined conservation ([coupled impact checks](validation/spray-recursive-impact-20260927.md)).
 Application input now enables the recursive impact/film path with `wall_impacts`
 and `walls%evolve` ([application checks](validation/spray-recursive-impact-app-20260927.md)).
+Film-bearing two-to-four-rank restart now exactly matches continuous output
+([continuation check](validation/spray-recursive-film-restart-20260927.md)).
 Uniform particle acceleration now
 brackets each level interval with old/new half kicks; only physical particles
 contribute to the external force ledger

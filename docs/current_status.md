@@ -185,8 +185,9 @@ optional routing now retains off-level exchanges until coarse-interval
 synchronization ([checks](validation/sdc-cross-level-source-20260927.md)).
 Recursive MPI EB spray application input now connects particle impacts, splash
 and newborn-film thermal updates with focused two/four-rank conservation checks
-([evidence](validation/spray-recursive-impact-app-20260927.md)); recursive
-film-bearing restart remains unqualified. A serial
+([evidence](validation/spray-recursive-impact-app-20260927.md)). A film-bearing
+two-to-four-rank restart exactly matches continuous gas/particle/film output
+([focused check](validation/spray-recursive-film-restart-20260927.md)). A serial
 composite weighted-state operator now supports outward receivers and connected
 neighborhood fallback across coarse/fine leaf faces, with conservation and
 single-grid comparisons

@@ -523,6 +523,7 @@ alongside parcel state, IDs and injection progress. Common-step SDC currently
 requires `subcycling=.false.`. `wall_impacts=.true.` now connects EB
 deposition/splash and film evolution using the existing `walls` controls; film
 state and splash IDs are retained across restart. Recursive film/splash scheduling
-uses the controls above; its film-bearing restart is not yet independently checked.
+uses the controls above; film-bearing two-to-four-rank continuation now has
+[focused evidence](../../docs/validation/spray-recursive-film-restart-20260927.md).
 The normal split integrator remains
 the default. This experimental path is not physical spray validation.
