@@ -1998,6 +1998,7 @@ program test_spray_core
     block
       real(dp) :: kij(3,3),rut(3),aij(3,3),a,ft(3),bij(3,3),b,test_ft(3),coeff(3),vel(3),leonard(3,3)
       real(dp), parameter :: eps=1e-8_dp
+      real(dp) :: si_coeff(3)
       integer :: i,j
       grad=0;grad(1,2)=3;vel=[1._dp,2._dp,3._dp]
       call dynamic_smagorinsky_quantities(grad,[2._dp,-1._dp,0._dp],2._dp,vel,300._dp, &
@@ -2027,6 +2028,10 @@ program test_spray_core
       call near(coeff(1),16/(8+eps),1e-13_dp,'dynamic double off-diagonal contraction')
       call near(coeff(2),1._dp,1e-13_dp,'dynamic CI upper bound')
       call near(coeff(3),36/(9+eps),1e-13_dp,'dynamic thermal contraction')
+      call dynamic_smagorinsky_coefficients(2000._dp,vel/100,300._dp,kij/10,rut*10,aij/10,a/10, &
+        ft*10,bij/10,b/10,test_ft*10,si_coeff,ok,si_units=.true.)
+      call require(ok,'dynamic SI coefficient solve')
+      call require(maxval(abs(si_coeff-coeff))<1e-13_dp,'dynamic CGS to SI regularizer equivalence')
       b=18
       call dynamic_smagorinsky_coefficients(2._dp,vel,300._dp,kij,rut,aij,a,ft,bij,b,test_ft,coeff,ok)
       call require(ok,'dynamic interior CI solve')

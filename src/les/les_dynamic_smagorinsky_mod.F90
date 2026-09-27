@@ -540,7 +540,7 @@ contains
             reshape(filtered_quantities(1:9,i,j,k),[3,3]),filtered_quantities(10:12,i,j,k), &
             reshape(filtered_quantities(13:21,i,j,k),[3,3]),filtered_quantities(22,i,j,k), &
             filtered_quantities(23:25,i,j,k),reshape(test_quantities(13:21,i,j,k),[3,3]), &
-            test_quantities(22,i,j,k),test_quantities(23:25,i,j,k),raw(:,i,j,k),local_ok)
+            test_quantities(22,i,j,k),test_quantities(23:25,i,j,k),raw(:,i,j,k),local_ok,si_units=.true.)
           if (.not.local_ok) return
         end do
       end do
@@ -580,14 +580,24 @@ contains
   ! test_flux_T come from the test-filtered primitive state at the test width.
   ! Output ordering: Cs^2, CI, Cs^2/PrT. This routine performs no spatial filter.
   subroutine dynamic_smagorinsky_coefficients(density,velocity,temperature,kij,rut,alphaij,alpha,flux_t, &
-      betaij,beta,test_flux_t,coefficients,ok)
+      betaij,beta,test_flux_t,coefficients,ok,si_units)
+    logical, optional, intent(in) :: si_units
     real(dp), intent(in) :: density,velocity(3),temperature,kij(3,3),rut(3),alphaij(3,3),alpha,flux_t(3)
     real(dp), intent(in) :: betaij(3,3),beta,test_flux_t(3)
     real(dp), intent(out) :: coefficients(3)
     logical, intent(out) :: ok
-    real(dp) :: l(3,3),m(3,3),t(3),ke(3),lkk,bma,candidate(3)
+    real(dp) :: l(3,3),m(3,3),t(3),ke(3),lkk,bma,candidate(3),stress_squared_floor,stress_floor,heat_squared_floor
     integer :: i,j
     coefficients=0;ok=.false.
+    ! Raw reference-kernel callers retain CGS. Grid callers supply SI fields.
+    ! Stress_CGS=10*stress_SI; (rho*u*T)_CGS=.1*(rho*u*T)_SI.
+    ! The dimensionless coefficient floor remains the pinned value.
+    stress_squared_floor=regularizer;stress_floor=regularizer;heat_squared_floor=regularizer
+    if(present(si_units)) then
+      if(si_units) then
+        stress_squared_floor=regularizer/100;stress_floor=regularizer/10;heat_squared_floor=regularizer*100
+      end if
+    end if
     if (.not.all(ieee_is_finite([density,velocity,temperature,rut,alpha,flux_t,beta,test_flux_t]))) return
     if (.not.all(ieee_is_finite(kij)).or..not.all(ieee_is_finite(alphaij))) return
     if (.not.all(ieee_is_finite(betaij))) return
@@ -602,9 +612,9 @@ contains
       end do
     end do
     m=betaij-alphaij;t=flux_t-test_flux_t;ke=rut-density*velocity*temperature
-    lkk=l(1,1)+l(2,2)+l(3,3);bma=beta-alpha+regularizer
+    lkk=l(1,1)+l(2,2)+l(3,3);bma=beta-alpha+stress_floor
     if (bma==0) return
-    candidate(1)=max(sum(l*m)/(sum(m*m)+regularizer),regularizer)
+    candidate(1)=max(sum(l*m)/(sum(m*m)+stress_squared_floor),regularizer)
     ! Apply the pinned [floor,1] clipping before division to avoid overflow
     ! when the regularized isotropic denominator is nonzero but very small.
     candidate(2)=regularizer
@@ -612,7 +622,7 @@ contains
       candidate(2)=1
       if (abs(lkk)<abs(bma)) candidate(2)=max(lkk/bma,regularizer)
     end if
-    candidate(3)=max(sum(ke*t)/(sum(t*t)+regularizer),regularizer)
+    candidate(3)=max(sum(ke*t)/(sum(t*t)+heat_squared_floor),regularizer)
     if (.not.all(ieee_is_finite(candidate))) return
     coefficients=candidate;ok=.true.
   end subroutine
