@@ -11,9 +11,10 @@ Older milestone prose remains historical detail, not a current global status.
 
 KHRT now has a reference-count/azimuth child constructor with explicit random
 samples and conservative gas momentum/energy compensation. Application routing
-still uses four symmetric children; variable-count MPI allocation, random-state
-identity and vector feedback remain to be connected
-([kernel checks](validation/khrt-reference-children-20260927.md)).
+still uses four symmetric children. Serial/MPI release APIs now handle variable
+counts, parent-ordered IDs, deterministic samples and vector feedback
+([release checks](validation/khrt-reference-mpi-20260927.md)); coupled gas
+deposition and application/restart policy remain to be connected.
 
 MPI AMR SDC now accepts owner-local diffusion callbacks for common and recursive
 steps, with collective validation and combined-flux synchronization

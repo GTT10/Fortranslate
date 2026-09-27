@@ -2119,9 +2119,11 @@ PeleF choice and does not reproduce the upstream random azimuth/count algorithm.
 A separate `construct_reference_khrt_children` API now implements the reference
 count and transverse basis from explicit uniform samples, returning both gas
 momentum and energy compensation. It returns release positions before drift.
-This API is not yet selected by application input; dynamic allocation, random
-samples and feedback routing remain to be connected
-([kernel evidence](validation/khrt-reference-children-20260927.md)).
+Serial/MPI shedding APIs now select it through paired optional
+`reference_factor` and `gas_momentum` arguments, with variable counts and
+deterministic samples keyed by parent ID and the global ID watermark
+([release evidence](validation/khrt-reference-mpi-20260927.md)). Application
+selection and gas deposition of the returned vector feedback remain open.
 Creation occurs at the accepted parcel substep's end; children advance through
 any remaining interval. Failed feedback, capacity checks or later chemistry roll
 back the entire coupled update.
