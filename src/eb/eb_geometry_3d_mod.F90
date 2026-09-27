@@ -509,6 +509,11 @@ contains
               fraction=max(0._dp,min(1._dp,face_area/(h(a)*h(b))))
               offset=0._dp
               if (face_area>0._dp) offset=face_m/face_area/h
+              ! Exactly invariant nodal values imply an extruded face region.
+              ! Preserve its transverse reflection symmetry instead of retaining
+              ! cancellation error from the two triangle moments.
+              if(values(1)==values(2).and.values(4)==values(3)) offset(a)=0._dp
+              if(values(1)==values(4).and.values(2)==values(3)) offset(b)=0._dp
               select case(d)
               case(1)
                 candidate%x_face_fraction(i-1+side,j,k)=fraction

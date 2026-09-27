@@ -206,6 +206,35 @@ program test_eb_geometry_3d
   end block
 
   block
+    type(eb_geometry_3d) :: symmetric
+    real(dp) :: phi(0:8,0:8,0:8),position(3)
+    integer :: axis,ii,jj,kk
+    do axis=1,3
+      do kk=0,8
+      do jj=0,8
+      do ii=0,8
+        position=real([ii,jj,kk],dp)*.0005_dp
+        phi(ii,jj,kk)=position(axis)-.0007_dp
+      end do
+      end do
+      end do
+      call build_level_set_eb_geometry_3d(phi,[0._dp,0._dp,0._dp],[.004_dp,.004_dp,.004_dp],symmetric,ok)
+      call require(ok,'axis-invariant nodal geometry')
+      select case(axis)
+      case(1)
+        call require(all(symmetric%x_face_centroid_y==0).and.all(symmetric%x_face_centroid_z==0).and. &
+          all(symmetric%y_face_centroid_z==0).and.all(symmetric%z_face_centroid_y==0),'exact x-plane face symmetry')
+      case(2)
+        call require(all(symmetric%y_face_centroid_x==0).and.all(symmetric%y_face_centroid_z==0).and. &
+          all(symmetric%x_face_centroid_z==0).and.all(symmetric%z_face_centroid_x==0),'exact y-plane face symmetry')
+      case(3)
+        call require(all(symmetric%z_face_centroid_x==0).and.all(symmetric%z_face_centroid_y==0).and. &
+          all(symmetric%x_face_centroid_y==0).and.all(symmetric%y_face_centroid_x==0),'exact z-plane face symmetry')
+      end select
+    end do
+  end block
+
+  block
     type(eb_geometry_3d) :: cut,opposite,saved
     real(dp) :: phi(0:10,0:8,0:6),volume,expected,moment(3),position(3),cell_volume
     integer :: ii,jj,kk
