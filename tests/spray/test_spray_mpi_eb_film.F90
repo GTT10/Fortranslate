@@ -4,7 +4,7 @@ program test_spray_mpi_eb_film
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_wall_impact_mod, only: spray_wall_film
-  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
+  use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels,spray_level_film_population
   implicit none
   type(amr_patch_3d) :: patches(3)
   type(amr_patch_tree_3d) :: tree,coarse
@@ -13,6 +13,11 @@ program test_spray_mpi_eb_film
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
   real(dp) :: zero(3)=0._dp,spacing(3)=1._dp,total(2),initial(2)
   real(dp) :: phi(0:16,0:16,0:16)
+  type(spray_level_film_population), allocatable :: physical(:),kept(:)
+  integer, allocatable :: nodes(:)
+  real(dp), allocatable :: probes(:,:)
+  real(dp) :: probe_offset
+  integer :: level,c
   integer :: i
   integer :: rank,nranks,ierr,p,id,owners(4),bad_owners(4),expected_count
   logical :: ok
@@ -84,6 +89,56 @@ program test_spray_mpi_eb_film
     if (p>1) call require(films(p)%temperature>films(p-1)%temperature,'stable source rank/local ordering')
   end do
   call payload()
+  allocate(nodes(1),probes(3,1));nodes=17;probes=19
+  call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,0,ok,phi, &
+    nodes=nodes,probes=probes)
+  call require(.not.ok.and.all(nodes==17).and.all(probes==19),'migration metadata rolls back on capacity failure')
+  if(rank==0) then
+    call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,100,ok,phi)
+  else
+    call migrate_mpi_amr_wall_films(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,100,ok,phi, &
+      nodes=nodes,probes=probes)
+  end if
+  call require(.not.ok.and.all(nodes==17).and.all(probes==19),'metadata presence agreed across ranks')
+  call initialize_mpi_eb_film_levels(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,100,phi,physical,ok)
+  call require(ok.and.size(physical)==3,'physical film hierarchy initialized')
+  probe_offset=max(1e-8_dp*.25_dp,128*epsilon(1._dp)*4)
+  total=0;c=0
+  do level=1,3
+    c=c+size(physical(level)%films)
+    call require(size(physical(level)%component_mass,2)==size(physical(level)%films).and. &
+      size(physical(level)%probes,2)==size(physical(level)%films).and. &
+      size(physical(level)%nodes)==size(physical(level)%films),'film level payload dimensions')
+    do p=1,size(physical(level)%films)
+      id=nint(physical(level)%films(p)%temperature)-300;expected=make_film(id)
+      call require(tree%nodes(physical(level)%nodes(p))%level==level-1.and. &
+        owners(physical(level)%nodes(p))==rank,'physical film level and owner agree')
+      call require(all(physical(level)%films(p)%position==expected%position).and. &
+        all(physical(level)%films(p)%normal==expected%normal),'level initialization preserves wall geometry')
+      call require(all(physical(level)%probes(:,p)==expected%position+probe_offset*expected%normal), &
+        'film hierarchy exports exact fluid-side ownership probe')
+      call require(physical(level)%films(p)%material_id==expected%material_id.and. &
+        all(physical(level)%component_mass(:,p)==expected%mass*[.25_dp,.75_dp]),'film hierarchy material and components')
+    end do
+    total=total+sum(physical(level)%component_mass,dim=2)
+  end do
+  call require(c==size(films),'every local film assigned to exactly one level')
+  call require(size(physical(1)%films)==0,'covered root has allocated empty physical film population')
+  call MPI_Allreduce(MPI_IN_PLACE,total,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(total-initial)<=2e-12_dp*initial),'level film inventory')
+  kept=physical
+  call initialize_mpi_eb_film_levels(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,0,phi,physical,ok)
+  call require(.not.ok,'film hierarchy capacity failure')
+  do level=1,3
+    call require(all(physical(level)%component_mass==kept(level)%component_mass).and. &
+      all(physical(level)%nodes==kept(level)%nodes).and.all(physical(level)%probes==kept(level)%probes), &
+      'film hierarchy failure preserves complete level metadata')
+    do p=1,size(physical(level)%films)
+      call require(all(physical(level)%films(p)%position==kept(level)%films(p)%position).and. &
+        physical(level)%films(p)%temperature==kept(level)%films(p)%temperature,'film hierarchy payload rollback')
+    end do
+  end do
+  call payload()
   owners=modulo(owners+1,nranks)
   call migrate(100)
   call require(ok,'changed gas owners');call payload()
@@ -100,6 +155,12 @@ program test_spray_mpi_eb_film
   deallocate(films,masses);allocate(films(0),masses(2,0))
   call migrate(0)
   call require(ok.and.size(films)==0.and.size(masses,2)==0,'globally empty films')
+  call initialize_mpi_eb_film_levels(MPI_COMM_WORLD,tree,owners,films,masses,zero,spacing,0,phi,physical,ok)
+  call require(ok.and.size(physical)==3,'globally empty film hierarchy')
+  do level=1,3
+    call require(size(physical(level)%films)==0.and.size(physical(level)%nodes)==0.and. &
+      size(physical(level)%component_mass,2)==0.and.size(physical(level)%probes,2)==0,'empty film level arrays')
+  end do
   if (rank==0) print *, 'PASS: MPI EB fluid-side stationary film migration'
   call MPI_Finalize(ierr)
 contains

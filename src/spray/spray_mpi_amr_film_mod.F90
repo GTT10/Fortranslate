@@ -9,19 +9,65 @@ module spray_mpi_amr_film_mod
   use spray_eb_tree_stencil_mod, only: compatible_eb_nodal_lattice
   implicit none
   private
-  public :: migrate_mpi_amr_wall_films
+  public :: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels
   type, public :: spray_level_film_population
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: component_mass(:,:),probes(:,:)
     integer, allocatable :: nodes(:)
   end type spray_level_film_population
 contains
+  ! Build physical level populations without modifying the flat input films.
+  subroutine initialize_mpi_eb_film_levels(comm,tree,owners,films,component_mass,lower,spacing,maximum_films, &
+      nodal_phi,physical,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),maximum_films
+    type(spray_wall_film), allocatable, intent(in) :: films(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3),nodal_phi(0:,0:,0:)
+    type(spray_level_film_population), allocatable, intent(inout) :: physical(:)
+    logical, intent(out) :: ok
+    type(spray_wall_film), allocatable :: candidate(:)
+    real(dp), allocatable :: mass(:,:),probes(:,:)
+    integer, allocatable :: nodes(:)
+    logical, allocatable :: selected(:)
+    type(spray_level_film_population), allocatable :: levels(:)
+    integer :: level,p,c,status
+    logical :: valid,agreed
+    ok=.false.;valid=allocated(films).and.allocated(component_mass)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    candidate=films;mass=component_mass
+    call migrate_mpi_amr_wall_films(comm,tree,owners,candidate,mass,lower,spacing,maximum_films,valid, &
+      nodal_phi,nodes=nodes,probes=probes)
+    if(.not.valid) return
+    allocate(levels(tree%level_count()),selected(size(candidate)))
+    do level=1,size(levels)
+      do p=1,size(candidate)
+        selected(p)=tree%nodes(nodes(p))%level==level-1
+      end do
+      levels(level)%films=pack(candidate,selected);levels(level)%nodes=pack(nodes,selected)
+      allocate(levels(level)%component_mass(size(mass,1),count(selected)),levels(level)%probes(3,count(selected)))
+      do c=1,size(mass,1)
+        levels(level)%component_mass(c,:)=pack(mass(c,:),selected)
+      end do
+      do c=1,3
+        levels(level)%probes(c,:)=pack(probes(c,:),selected)
+      end do
+    end do
+    call move_alloc(levels,physical);ok=.true.
+  end subroutine initialize_mpi_eb_film_levels
+
   ! Stationary films use the finest containing cell, with closed physical bounds.
   ! Optional maximum_level caps ownership without changing the wall geometry.
   ! Preserve exact wall coordinates and every film/component field. Films have
   ! no global ID; receive order is source rank followed by original local order.
   subroutine migrate_mpi_amr_wall_films(comm,tree,node_owners,films,component_mass,lower,spacing,maximum_films,ok, &
-      nodal_phi,maximum_level)
+      nodal_phi,maximum_level,nodes,probes)
+    integer, allocatable, optional, intent(inout) :: nodes(:)
+    real(dp), allocatable, optional, intent(inout) :: probes(:,:)
+    integer, allocatable :: next_nodes(:)
+    real(dp), allocatable :: next_probes(:,:)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(spray_wall_film), allocatable, intent(inout) :: films(:)
@@ -33,12 +79,12 @@ contains
     logical, intent(out) :: ok
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    integer :: node,nodes,descriptor(13),reference(13),low_nodes,high_nodes,allocation_status
+    integer :: node,node_count,descriptor(13),reference(13),low_nodes,high_nodes,allocation_status
     type(spray_wall_film), allocatable :: candidate(:)
     real(dp), allocatable :: sent(:,:),received(:,:),masses(:,:)
     integer, allocatable :: counts(:),offsets(:),incoming(:),starts(:),cursor(:),owners(:),material(:),got_material(:)
     real(dp) :: bounds(6),lowbounds(6),highbounds(6),upper(3)
-    integer :: config(4),lowconfig(4),highconfig(4),top_level,nranks,ierr,nc,np,p,r,q,nreceived,width
+    integer :: config(5),lowconfig(5),highconfig(5),top_level,nranks,ierr,nc,np,p,r,q,nreceived,width
     logical :: valid,agreed
     integer :: dims(3),reference_dims(3)
     real(dp), allocatable :: reference_phi(:,:,:)
@@ -46,7 +92,7 @@ contains
     ok=.false.;nc=0
     call MPI_Comm_size(comm,nranks,ierr)
     if (ierr/=MPI_SUCCESS) return
-    valid=allocated(films).and.allocated(component_mass)
+    valid=allocated(films).and.allocated(component_mass).and.(present(nodes).eqv.present(probes))
     if (allocated(component_mass)) nc=size(component_mass,1)
     call agree()
     if (.not.agreed) return
@@ -64,22 +110,22 @@ contains
     if(present(maximum_level)) top_level=maximum_level
     valid=top_level>=0.and.top_level<=maxval(tree%nodes%level)
     call agree();if(.not.agreed) return
-    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lowconfig,4,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[nc,maximum_films,merge(1,0,present(nodal_phi)),top_level,merge(1,0,present(nodes))];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lowconfig,5,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,highconfig,4,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,highconfig,5,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,lowbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,highbounds,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (any(lowconfig/=highconfig).or.any(lowbounds/=highbounds)) return
-    nodes=size(tree%nodes)
-    call MPI_Allreduce(nodes,low_nodes,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    node_count=size(tree%nodes)
+    call MPI_Allreduce(node_count,low_nodes,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(nodes,high_nodes,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(node_count,high_nodes,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.low_nodes/=high_nodes) return
-    do node=1,nodes
+    do node=1,node_count
       associate(n=>tree%nodes(node),patch=>tree%nodes(node)%patch)
         descriptor=[node_owners(node),n%parent,n%level,n%shape,patch%refinement_ratio, &
           patch%coarse_i_lower,patch%coarse_i_upper,patch%coarse_j_lower,patch%coarse_j_upper, &
@@ -160,23 +206,39 @@ contains
     valid=allocation_status==0;call agree();if (.not.agreed) return
     call MPI_Comm_rank(comm,r,ierr)
     if (ierr/=MPI_SUCCESS) return
+    if(present(nodes)) then
+      allocate(next_nodes(nreceived),next_probes(3,nreceived),stat=allocation_status)
+      valid=allocation_status==0;call agree();if(.not.agreed) return
+    end if
     do p=1,nreceived
       candidate(p)=spray_wall_film(received(1:3,p),received(4:6,p),received(7,p),received(8,p), &
         received(9,p),received(10,p),got_material(p))
       masses(:,p)=received(11:,p)
-      valid=valid_wall_component_inventory(candidate(p),masses(:,p)).and.film_owner(candidate(p))==r
+      valid=valid_wall_component_inventory(candidate(p),masses(:,p))
+      if(present(nodes)) then
+        valid=valid.and.film_owner(candidate(p),next_nodes(p),next_probes(:,p))==r
+      else
+        valid=valid.and.film_owner(candidate(p))==r
+      end if
       if (.not.valid) exit
     end do
     call agree()
     if (.not.agreed) return
+    if(present(nodes)) then
+      call move_alloc(next_nodes,nodes);call move_alloc(next_probes,probes)
+    end if
     call move_alloc(candidate,films);call move_alloc(masses,component_mass);ok=.true.
   contains
-    integer function film_owner(film) result(owner_rank)
+    integer function film_owner(film,found_node,fluid_probe) result(owner_rank)
+      integer, optional, intent(out) :: found_node
+      real(dp), optional, intent(out) :: fluid_probe(3)
       type(spray_wall_film), intent(in) :: film
       real(dp) :: probe(3),point(3),normal(3),fraction
       integer :: cell(3)
       logical :: hit,good
       owner_rank=-1
+      if(present(found_node)) found_node=0
+      if(present(fluid_probe)) fluid_probe=0
       if (present(nodal_phi)) then
         probe=film%position+probe_offset*film%normal
         point=0;normal=0;fraction=0;cell=0;hit=.false.
@@ -185,17 +247,21 @@ contains
         if (.not.good.or..not.hit) return
         if (norm2(point-film%position)>.01_dp*probe_offset) return
         if (dot_product(normal,film%normal)<1-1e-10_dp) return
-        owner_rank=owner(probe)
+        owner_rank=owner(probe,found_node)
+        if(present(fluid_probe)) fluid_probe=probe
       else
-        owner_rank=owner(film%position)
+        owner_rank=owner(film%position,found_node)
+        if(present(fluid_probe)) fluid_probe=film%position
       end if
     end function
-    integer function owner(position) result(owner_rank)
+    integer function owner(position,found_node) result(owner_rank)
+      integer, optional, intent(out) :: found_node
       real(dp), intent(in) :: position(3)
       real(dp) :: fraction(3)
       integer(int64) :: cell(3)
       integer :: peer,level,best
       owner_rank=-1
+      if(present(found_node)) found_node=0
       if (.not.all(ieee_is_finite(position))) return
       if (any(position<lower).or.any(position>upper).or.any(abs(position)>1.e9_dp)) return
       fraction=(position-lower)/(spacing*real(tree%nodes(1)%shape,dp));best=-1
@@ -206,6 +272,7 @@ contains
         cell=min(domain(:,level)-1,floor(fraction*real(domain(:,level),dp),kind=int64))
         if (any(cell<origin(:,peer)).or.any(cell-origin(:,peer)>=int(tree%nodes(peer)%shape,int64))) cycle
         best=level;owner_rank=node_owners(peer)
+        if(present(found_node)) found_node=peer
       end do
     end function
     subroutine agree()
