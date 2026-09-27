@@ -13,8 +13,7 @@ A 3D embedded-wall quadratic gradient and scalar heat-flux kernel now follows
 the pinned type-0 stencil. Its coefficients agree with a compiled reference in
 24 orientations ([kernel evidence](validation/eb-boundary-gradient-20260927.md)).
 An optional SDC transport source now returns gas energy rates and integrated
-wall heat, with analytic heat/ledger and rollback checks. Application
-budget/timestep/restart wiring remains open
+wall heat, with analytic heat/ledger and rollback checks
 ([source integration](validation/eb-wall-heat-source-20260927.md)).
 MPI two-layer donor exchange and composite wall-heat integration now pass a
 cross-rank stencil case and exclude covered coarse cells
@@ -22,6 +21,11 @@ cross-rank stencil case and exclude covered coarse cells
 Common and recursive SDC evolution now include wall heat in their energy ledger;
 a two-rank cooling case closes total inventory to `1.8e-15` relative
 ([time integration](validation/eb-wall-sdc-integrator-20260927.md)).
+MPI gas/particle SDC applications now expose embedded wall temperature, cap
+thermal intervals and bind restart settings. A heated particle case, exact
+rank-changing continuation and changed-temperature rejection pass; full
+Spray-EB parity and embedded viscous traction remain open
+([application evidence](validation/eb-wall-application-20260927.md)).
 
 A pinned four-port Spray-Multijet adaptation completes two SDC steps and eight
 events with 32 parcels and closed fuel inventory. Original liquid-property
