@@ -18,20 +18,31 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('exe', 'mpiexec', 'source', 'work'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--restart', action='store_true')
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='impact_', dir=args.work.resolve()))
     outputs = []
     env = dict(os.environ, OMPI_MCA_rmaps_base_oversubscribe='1')
-    for ranks in (2, 4):
-        directory = work / str(ranks)
+    archive = work / 'stopped' / 'saved.step1'
+    checkpoint_bytes = {}
+    budgets = []
+    runs = [(2, '2', ''), (4, '4', '')]
+    if args.restart:
+        runs = [(4, 'continuous', ''),
+                (2, 'stopped', "checkpoint_file='saved',checkpoint_interval_steps=1,stop_after_checkpoint=.true.,"),
+                (4, 'continued', f"restart_file='{archive}',")]
+    for ranks, label, controls in runs:
+        directory = work / label
         shutil.copytree(args.source / 'cases/mpi_eb_spray_3d', directory)
         tree = directory / 'tree.nml'
-        text = tree.read_text().replace('final_time=2.e-8', 'final_time=1.e-8')
+        text = tree.read_text()
+        if not args.restart:
+            text = text.replace('final_time=2.e-8', 'final_time=1.e-8')
         text = text.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
         text = text.replace("output_file='result.csv'", "output_file='result.csv',time_integrator='sdc',"
                             "sdc_iterations=2,subcycling=.true.,boundary_faces=6*'outflow'")
-        tree.write_text(text)
+        tree.write_text(text.replace("&eb_tree", "&eb_tree\n" + controls, 1))
         (directory / 'spray.nml').write_text("""&eb_spray
  nc=1,number=1,vapor_names(1)='H2O',fractions(1)=1.,
  total_mass=1.e-9,center=.0012,.001250001,.0015,
@@ -46,6 +57,13 @@ def main():
             subprocess.run([str(args.mpiexec.resolve()), '-n', str(ranks), str(args.exe.resolve()),
                             'tree.nml', 'spray.nml'], cwd=directory, env=env, stdout=log,
                            stderr=subprocess.STDOUT, timeout=120, check=True)
+        if label == 'stopped':
+            checkpoint_bytes = {suffix: Path(str(archive) + suffix).read_bytes()
+                                for suffix in ('', '.gas', '.particles')}
+            metadata = checkpoint_bytes['.particles'].decode().splitlines()[2].split()
+            assert int(metadata[3]) > 0 and int(metadata[4]) > 1, metadata
+            assert 'Completed steps: 1' in (directory / 'run.log').read_text()
+            continue
         gas = rows(directory / 'result.csv')
         particles = sorted((row for path in directory.glob('result.csv.particles.rank*.csv')
                             for row in rows(path)), key=lambda row: int(row['id']))
@@ -72,7 +90,8 @@ def main():
             scale = max(scale, 1e-30)
             assert abs(residual) <= 3e-12 * scale, (row, residual)
             maximum = max(maximum, abs(residual) / scale)
-        print(f'{ranks} ranks: {len(particles)} particles, {len(films)} films, residual {maximum:.17g}')
+        budgets.append(budget)
+        print(f'{label}, {ranks} ranks: {len(particles)} particles, {len(films)} films, residual {maximum:.17g}')
         outputs.append((gas, particles, films))
     for left, right in zip(*outputs):
         assert len(left) == len(right)
@@ -82,7 +101,16 @@ def main():
                 x, y = float(first[key]), float(second[key])
                 assert math.isfinite(x) and math.isfinite(y)
                 assert abs(x - y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
-    print(f'PASS: recursive EB splash, film evolution, inventories and rank parity; {work}')
+    if args.restart:
+        for left, right in zip(*outputs):
+            assert left == right, 'restart gas/particle/film CSVs must exactly match continuous run'
+        assert all(Path(str(archive) + suffix).read_bytes() == data for suffix, data in checkpoint_bytes.items())
+        for first, second in zip(*budgets):
+            for key in ('initial', 'final', 'boundary', 'wall', 'chemistry', 'injected', 'force'):
+                x, y = float(first[key]), float(second[key])
+                assert abs(x - y) <= 3e-12 * max(abs(x), abs(y), 1e-30), (key, x, y)
+        assert 'Completed steps: 2' in (work / 'continued' / 'run.log').read_text()
+    print(f'PASS: recursive EB splash, films, inventories, rank comparison; restart={args.restart}; {work}')
 
 
 if __name__ == '__main__':
