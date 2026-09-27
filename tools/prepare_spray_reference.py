@@ -47,7 +47,7 @@ def main() -> int:
     parser.add_argument('--yaml', type=Path, help='Offline, exact pinned YAML bytes')
     parser.add_argument('--license', type=Path, help='Offline, exact upstream license bytes')
     parser.add_argument('--simple-transport-header', type=Path,
-                        help='Import exact pinned Simple transport fits (heptane-3sp or decane-3sp)')
+                        help='Import exact pinned Simple transport fits (heptane-3sp, decane-3sp or dodecane)')
     args = parser.parse_args()
     if bool(args.yaml) != bool(args.license):
         parser.error('--yaml and --license must be supplied together')
@@ -55,7 +55,7 @@ def main() -> int:
                  'heptane-3sp': 'heptane_3sp.json', 'decane-3sp': 'decane_3sp.json'}[args.fuel]
     manifest = json.loads((ROOT/'references'/reference).read_text())
     if args.simple_transport_header and 'simple_transport_header' not in manifest:
-        parser.error('Simple transport header import is supported only for pinned three-species spray mixtures')
+        parser.error('This pinned mechanism has no supported Simple transport header')
     prefix = manifest['symbol_prefix']
     data = {}
     for key, entry in manifest['files'].items():

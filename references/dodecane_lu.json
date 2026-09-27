@@ -19,5 +19,14 @@
       "sha256": "ab3780d785daf07527c2552e62558d3ac4623328868e53fe584a0ee720ffb6e2"
     }
   },
-  "note": "Pinned gas-phase n-dodecane integration reference. No liquid property model or experimental validation is provided."
+  "note": "Pinned gas-phase n-dodecane integration reference. No liquid property model or experimental validation is provided.",
+  "simple_transport_header": {
+    "path": "Mechanisms/dodecane_lu/mechanism.H",
+    "basename": "dodecane_lu_transport.H",
+    "sha256": "5d943543c3f705867de594d1c8c9481ef7c4db1b22f403eeaeca515532cbc90c",
+    "git_blob": "ff4a703dc2a6e603e915fc5e0175b8df7df6f791",
+    "species_macro_aliases": {
+      "CH2*": "CH2D"
+    }
+  }
 }

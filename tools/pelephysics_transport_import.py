@@ -16,7 +16,8 @@ def import_simple_transport(header: Path, species: list[str], manifest: dict) ->
         raise ValueError('Simple transport header Git blob mismatch')
     text = content.decode('ascii')
     for index, name in enumerate(species):
-        if not re.search(r'^#define '+re.escape(name)+r'_ID\s+'+str(index)+r'\s*$', text, re.M):
+        macro = entry.get('species_macro_aliases', {}).get(name, name)
+        if not re.search(r'^#define '+re.escape(macro)+r'_ID\s+'+str(index)+r'\s*$', text, re.M):
             raise ValueError('Simple transport species ordering mismatch')
     n = len(species)
     if n != manifest['species_count']:
@@ -43,7 +44,7 @@ def regenerate_simple_transport(bundle: dict, directory: Path) -> dict:
     """Re-read pinned bytes; never trust coefficients copied from bundle JSON."""
     source = bundle['simple_transport']['source']
     manifest = None
-    for name in ('heptane_3sp', 'decane_3sp'):
+    for name in ('heptane_3sp', 'decane_3sp', 'dodecane_lu'):
         candidate = json.loads((Path(__file__).resolve().parents[1]/'references'/f'{name}.json').read_text())
         entry = candidate['simple_transport_header']
         if source == dict(file=entry['basename'], sha256=entry['sha256'],
