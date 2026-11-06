@@ -169,10 +169,75 @@ program test_amr_patch_tree_transport_3d
       end do
       call require(all(budget==-17).and.largest==-19.and.theta==-23,'diagnostics rollback')
     end do
+    call check_thermal_slip_stage()
   end do
 contains
+  subroutine check_thermal_slip_stage()
+    type(amr_tree_state_3d) :: reference,actual,retained,sample,sample_t
+    type(amr_tree_flux_3d), allocatable :: reference_flux(:),actual_flux(:)
+    character(len=32) :: bc(6)
+    logical :: mask(6)
+    real(dp) :: minimum,reference_dt,actual_dt,maximum,wall_values(6)
+    real(dp) :: heat_q(12),heat_u(12),heat_t,heat_sound
+    integer :: face,peer,a,b,cidx,dims(3)
+    ! With zero velocity the slip/no-slip ghost states coincide. This oracle
+    ! isolates thermal face placement; nonuniform moving ghosts need not agree.
+    sample=state;sample_t=temperature
+    heat_q=0;heat_q(1)=.3_dp;heat_q(5)=101325
+    heat_q(6)=.03_dp;heat_q(9)=.22_dp;heat_q(12)=.75_dp
+    call reactive_primitive_to_conserved(species,heat_q,heat_u,heat_t,heat_sound,ok)
+    call require(ok,'stationary thermal face oracle')
+    do peer=1,size(tree%nodes)
+      dims=tree%nodes(peer)%shape
+      do cidx=1,dims(3)
+      do b=1,dims(2)
+      do a=1,dims(1)
+        sample%fields(peer)%values(:,a,b,cidx)=heat_u
+        sample_t%fields(peer)%values(1,a,b,cidx)=heat_t
+      enddo
+      enddo
+      enddo
+    enddo
+    wall_values=1100
+    do face=1,6
+      bc='slip_wall';bc(face)='isothermal_wall'
+      minimum=1
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,sample,sample_t,spacing,1e-8_dp,bc, &
+        [.false.,.true.,.false.,.false.],reference,reference_flux,minimum,ok,wall_temperature=wall_values)
+      call require(ok,'reference AMR wall heat')
+      call compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,sample,sample_t,spacing, &
+        .15_dp,.false.,.true.,.false.,reference_dt,maximum,ok,bc,wall_values)
+      call require(ok,'reference AMR wall timestep')
+      bc='slip_wall';mask=.false.;mask(face)=.true.
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,sample,sample_t,spacing,1e-8_dp,bc, &
+        [.false.,.true.,.false.,.false.],actual,actual_flux,minimum,ok,wall_temperature=wall_values, &
+        isothermal_slip_faces=mask)
+      call require(ok,'explicit AMR thermal slip')
+      do peer=1,size(tree%nodes)
+        call require(all(actual%fields(peer)%values==reference%fields(peer)%values),'thermal slip rates exact')
+        call require(all(actual_flux(peer)%x==reference_flux(peer)%x).and. &
+          all(actual_flux(peer)%y==reference_flux(peer)%y).and. &
+          all(actual_flux(peer)%z==reference_flux(peer)%z),'physical-face thermal slip flux exact')
+      enddo
+      call compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,sample,sample_t,spacing, &
+        .15_dp,.false.,.true.,.false.,actual_dt,maximum,ok,bc,wall_values,isothermal_slip_faces=mask)
+      call require(ok.and.actual_dt==reference_dt,'thermal slip AMR timestep exact')
+      retained=actual;minimum=-23;bc(face)='outflow'
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,sample,sample_t,spacing,1e-8_dp,bc, &
+        [.false.,.true.,.false.,.false.],actual,actual_flux,minimum,ok,wall_temperature=wall_values, &
+        isothermal_slip_faces=mask)
+      call require(.not.ok.and.minimum==-23,'invalid thermal slip mask rejects transaction')
+      do peer=1,size(tree%nodes)
+        call require(all(actual%fields(peer)%values==retained%fields(peer)%values),'thermal slip failed rate rollback')
+        call require(all(actual_flux(peer)%x==reference_flux(peer)%x).and. &
+          all(actual_flux(peer)%y==reference_flux(peer)%y).and. &
+          all(actual_flux(peer)%z==reference_flux(peer)%z),'thermal slip failed flux rollback')
+      enddo
+    enddo
+    print *, 'PASS: six-face AMR thermal slip, physical-face clipping, timestep and rollback'
+  end subroutine check_thermal_slip_stage
   subroutine check_sdc_transport_stage()
-    type(amr_tree_state_3d) :: rates,candidate,prior,selected,packed,future,retained
+    type(amr_tree_state_3d) :: rates,candidate,prior,selected,packed,future,retained,held_probe,total_rates,held_rates
     type(amr_tree_flux_3d), allocatable :: flux(:),prior_flux(:),selected_flux(:)
     real(dp) :: before(12),after(12),correction(12),largest,minimum,expected(12,4,4,4),et(4,4,4),unused
     integer :: peer,depth,dims(3)
@@ -181,6 +246,21 @@ contains
     call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
       [.true.,.true.,.true.,.true.],rates,flux,minimum,ok)
     call require(ok.and.minimum>=0.and.minimum<=1,'SDC hierarchy transport rate and integrated flux')
+    if(geometry==1) then
+      held_probe=temperature
+      held_probe%fields(1)%values(1,:,:,:)=1.001_dp*state%fields(1)%values(5,:,:,:)
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
+        [.true.,.true.,.true.,.true.],total_rates,selected_flux,minimum,ok, &
+        internal_energy=held_probe,total_energy_primitives=.true.)
+      call require(ok,'MOL transport with distinct retained internal energy')
+      call require(all(total_rates%fields(1)%values==rates%fields(1)%values), &
+        'MOL transport uses total energy despite distinct retained internal energy')
+      call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,spacing,dt,faces, &
+        [.true.,.true.,.true.,.true.],held_rates,selected_flux,minimum,ok,internal_energy=held_probe)
+      call require(ok,'default held transport retained')
+      call require(maxval(abs(held_rates%fields(1)%values-rates%fields(1)%values))>1e-8_dp, &
+        'held transport control distinguishes thermodynamic input')
+    endif
     candidate=state
     do peer=1,size(tree%nodes)
       candidate%fields(peer)%values=state%fields(peer)%values+dt*rates%fields(peer)%values

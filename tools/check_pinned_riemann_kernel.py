@@ -128,6 +128,16 @@ def main() -> None:
                 left[5:]=[v*weight for v in left[5:]]
                 right[5:]=[v*(2-weight) for v in right[5:]]
                 rows.append(left+right+[700.])
+    # Both cells are within the NASA fit interval; the acoustic star state
+    # expands below it. Fuego evaluates that positive transient temperature.
+    y = [0., 0., 0., .3, 0., 0., .7]
+    r = sum(v*8314.46261815324/m for v,m in zip(y,mw))
+    pressure_expansion_cases = 0
+    for ratio in (10., 100., 1000.):
+        left = [1e6/(r*300.), 0., 0., 0., 1e6]+y
+        right = [left[0]/ratio, 0., 0., 0., left[4]/ratio]+y
+        rows.extend((left+right+[700.], right+left+[700.]))
+        pressure_expansion_cases += 2
     inputs=''.join(' '.join(format(v,'.17g') for v in row)+'\n' for row in rows)
     (work/'inputs.txt').write_text(inputs)
     ref=run([str(work/'reference')],input=thermo+inputs)
@@ -147,7 +157,8 @@ def main() -> None:
     report=dict(reference_commit=pin,header_sha256=hashlib.sha256(header.encode()).hexdigest(),
                 godunov_sha256=hashlib.sha256(godunov.encode()).hexdigest() if args.face_flux else None,
                 executable_sha256=hashlib.sha256(args.executable.read_bytes()).hexdigest(),
-                face_flux=args.face_flux,cases=len(rows),values=14*len(rows),max_scaled_error=worst,tolerance=3e-12,
+                face_flux=args.face_flux,cases=len(rows),pressure_expansion_cases=pressure_expansion_cases,
+                values=14*len(rows),max_scaled_error=worst,tolerance=3e-12,
                 compile_command=command,eos='NASA7 SI adapter using exported PeleF coefficients',status='PASS')
     (work/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))

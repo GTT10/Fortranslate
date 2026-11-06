@@ -15,6 +15,7 @@ program test_mpi_amr_patch_tree_remap_3d
   type(amr_patch_tree_3d) :: old_tree,new_tree,root_tree,target,changed
   type(amr_patch_3d) :: old_patches(2),new_patches(3)
   type(amr_tree_state_3d) :: old,old_t,local,local_t,out,out_t,oracle,oracle_t,saved,saved_t,gathered,source
+  type(amr_tree_state_3d) :: old_heat,local_heat,out_heat,oracle_heat,saved_heat
   type(nasa7_species), allocatable :: species(:)
   integer, allocatable :: old_owners(:),new_owners(:),bad_owners(:)
   real(dp) :: root(2,2,2,2),before(2),after(2),gas(12,2,2,2),temp(1,2,2,2),q(12),sound
@@ -108,26 +109,100 @@ program test_mpi_amr_patch_tree_remap_3d
   call reactive_primitive_to_conserved(species,q,old%fields(3)%values(:,1,1,1), &
     old_t%fields(3)%values(1,1,1,1),sound,ok)
   call require(ok,'leaf perturbation')
-  call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,new_tree,species,oracle,oracle_t,ok)
+  old_heat=old_t
+  do node=1,size(old_tree%nodes)
+    old_heat%fields(node)%values=real((-1)**node*node,dp)*1.e9_dp
+  end do
+  call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,new_tree,species,oracle,oracle_t,ok, &
+    old_heat_release=old_heat,heat_release=oracle_heat)
   call require(ok,'serial reactive remap')
   old_owners=mod([0,1,2],nranks);new_owners=mod([1,2,0,1],nranks)
   call localize(old,old_owners,local)
   call localize(old_t,old_owners,local_t)
+  call localize(old_heat,old_owners,local_heat)
   call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,new_tree,new_owners, &
-    species,out,out_t,MPI_COMM_WORLD,ok)
+    species,out,out_t,MPI_COMM_WORLD,ok,old_heat_release=local_heat,heat_release=out_heat)
   call require(ok,'distributed reactive remap')
   call compare_oracle(out,oracle,new_owners)
   call compare_oracle(out_t,oracle_t,new_owners)
-  saved=out;saved_t=out_t
+  call compare_oracle(out_heat,oracle_heat,new_owners)
+  call retained_energy_remap()
+  saved=out;saved_t=out_t;saved_heat=out_heat
   if (rank==old_owners(3)) local%fields(3)%values(5,:,:,:)=-1e12_dp
   call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,new_tree,new_owners, &
-    species,out,out_t,MPI_COMM_WORLD,ok)
+    species,out,out_t,MPI_COMM_WORLD,ok,old_heat_release=local_heat,heat_release=out_heat)
   call require(.not.ok,'late EOS failure rejected collectively')
   call same(out,saved,'EOS state rollback')
+  call same(out_heat,saved_heat,'EOS heat rollback')
   call same(out_t,saved_t,'EOS temperature rollback')
   if (rank==0) print *, 'PASS: sparse remap, changing ratios/owners, empty ranks, conservation, exact serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine retained_energy_remap()
+    type(amr_tree_state_3d) :: held,local_held,actual,serial_held,serial_gas,serial_t,keep_gas,keep_t,keep_held
+    real(dp) :: initial(1),final(1)
+    integer :: layout,shape_case,peer
+    held=old_t
+    do peer=1,size(old_tree%nodes)
+      held%fields(peer)%values(1,:,:,:)=.8_dp*old%fields(peer)%values(5,:,:,:)
+    enddo
+    call composite_integrals_amr_patch_tree_3d(old_tree,held,[.5_dp,.5_dp,.5_dp],initial,ok)
+    call require(ok,'retained initial inventory')
+    do layout=1,2
+      old_owners=mod([0,1,2],nranks)
+      if(layout==2) old_owners=0
+      call localize(old,old_owners,local)
+      call localize(old_t,old_owners,local_t)
+      call localize(held,old_owners,local_held)
+      do shape_case=1,3
+        target=new_tree
+        if(shape_case==2) target=root_tree
+        if(shape_case==3) target=old_tree
+        new_owners=[(mod(peer,nranks),peer=1,size(target%nodes))]
+        if(layout==2) new_owners=nranks-1
+        call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,target,species,serial_gas,serial_t,ok, &
+          old_internal_energy=held,internal_energy=serial_held)
+        call require(ok,'serial retained reactive oracle')
+        call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,target,new_owners, &
+          species,out,out_t,MPI_COMM_WORLD,ok,old_internal_energy=local_held,internal_energy=actual)
+        call require(ok,'MPI retained reactive remap')
+        call compare_oracle(out,serial_gas,new_owners)
+        call compare_oracle(out_t,serial_t,new_owners)
+        call compare_oracle(actual,serial_held,new_owners)
+        call gather_mpi_amr_tree_3d(target,new_owners,actual,gathered,MPI_COMM_WORLD,0,ok)
+        call require(ok,'retained gather')
+        if(rank==0) then
+          call composite_integrals_amr_patch_tree_3d(target,gathered,[.5_dp,.5_dp,.5_dp],final,ok)
+          call require(ok.and.all(abs(final-initial)<2e-12_dp*max(1._dp,abs(initial))),'retained global conservation')
+        endif
+        keep_gas=out;keep_t=out_t;keep_held=actual
+        if(rank==old_owners(3)) local_held%fields(3)%values=-1e12_dp
+        call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,target,new_owners, &
+          species,out,out_t,MPI_COMM_WORLD,ok,old_internal_energy=local_held,internal_energy=actual)
+        call require(.not.ok,'rank-local retained EOS rejection')
+        call same(out,keep_gas,'retained MPI gas rollback')
+        call same(out_t,keep_t,'retained MPI temperature rollback')
+        call same(actual,keep_held,'retained MPI scalar rollback')
+        call localize(held,old_owners,local_held)
+        if(rank==0) then
+          call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,target,new_owners, &
+            species,out,out_t,MPI_COMM_WORLD,ok,old_internal_energy=local_held,internal_energy=actual)
+        else
+          call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,target,new_owners, &
+            species,out,out_t,MPI_COMM_WORLD,ok)
+        endif
+        call require(.not.ok,'rank-disagreeing retained presence rejected')
+        call same(actual,keep_held,'retained presence rollback')
+      enddo
+    enddo
+    old_owners=mod([0,1,2],nranks);new_owners=mod([1,2,0,1],nranks)
+    call localize(old,old_owners,local)
+    call localize(old_t,old_owners,local_t)
+    call remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,local,local_t,new_tree,new_owners, &
+      species,out,out_t,MPI_COMM_WORLD,ok)
+    call require(ok,'restore legacy fixture after retained checks')
+  end subroutine retained_energy_remap
+
   subroutine localize(full,owners,part)
     type(amr_tree_state_3d), intent(in) :: full
     integer, intent(in) :: owners(:)

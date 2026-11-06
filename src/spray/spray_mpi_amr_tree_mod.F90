@@ -353,7 +353,7 @@ contains
   ! Reassign an existing ghost population, retaining members now inside fine
   ! valid boxes and removing dead copies or copies outside all grown boxes.
   subroutine redistribute_mpi_amr_ghost_particles(comm,tree,owners,ghosts,ghost_mass,ghost_nodes,lower,spacing, &
-      periodic,target_level,grow,maximum_parcels,ok,nodal_phi)
+      periodic,target_level,grow,maximum_parcels,ok,nodal_phi,tab_tangent_history)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),target_level,grow,maximum_parcels
@@ -364,11 +364,12 @@ contains
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: mass(:,:)
     integer, allocatable :: nodes(:)
     call route_mpi_amr_ghost_particles(comm,tree,owners,ghosts,ghost_mass,lower,spacing,periodic, &
-      target_level,grow,maximum_parcels,candidate,mass,nodes,ok,.false.,nodal_phi)
+      target_level,grow,maximum_parcels,candidate,mass,nodes,ok,.false.,nodal_phi,tab_tangent_history=tab_tangent_history)
     if(.not.ok) return
     call move_alloc(candidate,ghosts);call move_alloc(mass,ghost_mass);call move_alloc(nodes,ghost_nodes)
   end subroutine redistribute_mpi_amr_ghost_particles
@@ -377,7 +378,7 @@ contains
   ! Crossing a valid-box edge is allowed inside its grow region; escaping all
   ! grown boxes rejects collectively rather than deleting physical inventory.
   subroutine redistribute_mpi_amr_level_particles(comm,tree,owners,parcels,component_mass,nodes,lower,spacing, &
-      periodic,target_level,grow,maximum_parcels,ok,nodal_phi)
+      periodic,target_level,grow,maximum_parcels,ok,nodal_phi,tab_tangent_history)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),target_level,grow,maximum_parcels
@@ -388,17 +389,19 @@ contains
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: mass(:,:)
     integer, allocatable :: locations(:)
     call route_mpi_amr_ghost_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
-      target_level,grow,maximum_parcels,candidate,mass,locations,ok,.false.,nodal_phi,retain_all=.true.)
+      target_level,grow,maximum_parcels,candidate,mass,locations,ok,.false.,nodal_phi,retain_all=.true., &
+      tab_tangent_history=tab_tangent_history)
     if(.not.ok) return
     call move_alloc(candidate,parcels);call move_alloc(mass,component_mass);call move_alloc(locations,nodes)
   end subroutine redistribute_mpi_amr_level_particles
 
   subroutine route_mpi_amr_ghost_particles(comm,tree,owners,parcels,component_mass,lower,spacing,periodic, &
-      target_level,grow,maximum_parcels,ghosts,ghost_mass,ghost_nodes,ok,coarse_only,nodal_phi,retain_all)
+      target_level,grow,maximum_parcels,ghosts,ghost_mass,ghost_nodes,ok,coarse_only,nodal_phi,retain_all,tab_tangent_history)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),target_level,grow,maximum_parcels
@@ -412,10 +415,12 @@ contains
     logical, intent(in) :: coarse_only
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
+    real(dp), allocatable :: history(:),copies_history(:)
     type(spray_parcel), allocatable :: physical(:),copies(:)
     real(dp), allocatable :: mass(:,:),masses(:,:),positions(:,:)
     integer, allocatable :: found(:,:),active(:,:),counts(:),offsets(:),next(:),nodes(:)
-    integer :: p,r,q,status,rank,nranks,flags(5),low(5),high(5)
+    integer :: p,r,q,status,rank,nranks,flags(6),low(6),high(6)
     logical, optional, intent(in) :: retain_all
     logical :: keep_live
     logical :: valid,agreed
@@ -426,10 +431,11 @@ contains
       target_level<tree%level_count().and.grow>=0.and.grow<=1000000
     call agree()
     if(.not.agreed) return
-    flags=[target_level,grow,merge(1,0,present(nodal_phi)),merge(1,0,coarse_only),merge(1,0,keep_live)]
-    call MPI_Allreduce(flags,low,5,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[target_level,grow,merge(1,0,present(nodal_phi)),merge(1,0,coarse_only),merge(1,0,keep_live), &
+      merge(1,0,present(tab_tangent_history))]
+    call MPI_Allreduce(flags,low,6,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,5,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,6,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     ! Private physical migration validates replicated topology, bounds, payload
     ! and EB geometry before any selection or output publication.
@@ -450,11 +456,28 @@ contains
         q=q+1;mass(:,q)=component_mass(:,p)
       end do
     end if
+    if(present(tab_tangent_history)) then
+      valid=allocated(tab_tangent_history)
+      call agree();if(.not.agreed) return
+      valid=size(tab_tangent_history)==size(parcels)
+      if(valid) valid=all(ieee_is_finite(tab_tangent_history)).and.all(tab_tangent_history>=0)
+      call agree();if(.not.agreed) return
+      history=tab_tangent_history
+      if(.not.coarse_only) history=pack(tab_tangent_history,parcels%mass>0)
+    if(present(nodal_phi)) then
+      call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,physical,lower,spacing,1000000,valid,mass, &
+        periodic=periodic,tab_tangent_history=history)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,physical,lower,spacing,periodic,1000000,valid,mass, &
+        tab_tangent_history=history)
+    end if
+    else
     if(present(nodal_phi)) then
       call migrate_eb_tree_spray_parcels(comm,tree,owners,nodal_phi,physical,lower,spacing,1000000,valid,mass,periodic=periodic)
     else
       call migrate_amr_tree_spray_parcels(comm,tree,owners,physical,lower,spacing,periodic,1000000,valid,mass)
     end if
+    endif
     if(.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
@@ -483,12 +506,18 @@ contains
       offsets(r)=offsets(r-1)+counts(r-1)
     end do
     next=offsets+1;allocate(copies(sum(counts)),masses(size(mass,1),sum(counts)))
+    if(present(tab_tangent_history)) allocate(copies_history(sum(counts)))
     do p=1,size(physical)
       if(found(1,p)==0) cycle
       r=owners(found(1,p))+1;q=next(r);next(r)=q+1
+      if(present(tab_tangent_history)) copies_history(q)=history(p)
       copies(q)=physical(p);masses(:,q)=mass(:,p)
     end do
-    call exchange_spray_parcel_bins(comm,copies,counts,offsets,maximum_parcels,valid,masses)
+    if(present(tab_tangent_history)) then
+      call exchange_spray_parcel_bins(comm,copies,counts,offsets,maximum_parcels,valid,masses,copies_history)
+    else
+      call exchange_spray_parcel_bins(comm,copies,counts,offsets,maximum_parcels,valid,masses)
+    endif
     if(.not.valid) return
     deallocate(positions);allocate(positions(3,size(copies)))
     do p=1,size(copies)
@@ -505,6 +534,7 @@ contains
     end if
     call agree()
     if(.not.agreed) return
+    if(present(tab_tangent_history)) call move_alloc(copies_history,tab_tangent_history)
     nodes=found(1,:)
     call move_alloc(copies,ghosts);call move_alloc(masses,ghost_mass);call move_alloc(nodes,ghost_nodes)
     ok=.true.
@@ -655,7 +685,7 @@ contains
   ! resolution or a common integer refinement of it, as used by the gas EB hierarchy builder.
   ! Optional periodic axes wrap before EB checking and require matching nodal seams.
   subroutine migrate_eb_tree_spray_parcels(comm,tree,owners,phi,parcels,lower,spacing, &
-      maximum_parcels,ok,component_mass,maximum_level,periodic)
+      maximum_parcels,ok,component_mass,maximum_level,periodic,tab_tangent_history)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, optional, intent(in) :: maximum_level
@@ -666,11 +696,13 @@ contains
     logical, optional, intent(in) :: periodic(3)
     logical :: wrap(3)
     logical, intent(out) :: ok
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
+    real(dp), allocatable :: history(:)
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: masses(:,:),reference(:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    integer :: dims(3),low(3),high(3),ios,ierr,p,axis,cell(3)
+    integer :: dims(3),low(3),high(3),ios,ierr,p,axis,cell(3),history_flag,history_min,history_max
     real(dp) :: upper(3),fraction,position(3),normal(3)
     logical :: valid,agreed,hit
     ok=.false.;dims=shape(phi)-1;wrap=.false.
@@ -689,6 +721,25 @@ contains
     if(wrap(2)) valid=valid.and.all(phi(:,0,:)==phi(:,dims(2),:))
     if(wrap(3)) valid=valid.and.all(phi(:,:,0)==phi(:,:,dims(3)))
     call agree();if(.not.agreed) return
+    history_flag=merge(1,0,present(tab_tangent_history))
+    call MPI_Allreduce(history_flag,history_min,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(history_flag,history_max,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.history_min/=history_max) return
+    if(present(tab_tangent_history)) then
+      valid=allocated(tab_tangent_history)
+      call agree();if(.not.agreed) return
+    candidate=parcels
+    history=tab_tangent_history
+    if(present(component_mass)) then
+      masses=component_mass
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
+        wrap,maximum_parcels,valid,masses,maximum_level,history)
+    else
+      call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
+        wrap,maximum_parcels,valid,maximum_level=maximum_level,tab_tangent_history=history)
+    end if
+    else
     candidate=parcels
     if(present(component_mass)) then
       masses=component_mass
@@ -698,6 +749,7 @@ contains
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing, &
         wrap,maximum_parcels,valid,maximum_level=maximum_level)
     end if
+    endif
     if(.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(valid) valid=compatible_eb_nodal_lattice(dims,domain(:,size(domain,2)))
@@ -732,6 +784,7 @@ contains
     end do
     call agree()
     if(.not.agreed) return
+    if(present(tab_tangent_history)) call move_alloc(history,tab_tangent_history)
     call move_alloc(candidate,parcels)
     if(present(component_mass)) call move_alloc(masses,component_mass)
     ok=.true.
@@ -742,7 +795,7 @@ contains
     end subroutine
   end subroutine
   subroutine migrate_amr_tree_spray_parcels(comm,tree,owners,parcels,lower,spacing,periodic, &
-      maximum_parcels,ok,component_mass,maximum_level)
+      maximum_parcels,ok,component_mass,maximum_level,tab_tangent_history)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, optional, intent(in) :: maximum_level
@@ -752,11 +805,13 @@ contains
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
+    real(dp), allocatable :: history(:)
     type(spray_parcel), allocatable :: candidate(:)
     real(dp), allocatable :: masses(:,:),positions(:,:)
     integer, allocatable :: counts(:),offsets(:),locations(:,:)
     real(dp) :: bounds(6),reference_bounds(6)
-    integer :: rank,nranks,ierr,nodes,low,high,node,p,ios,descriptor(13),reference(13),flags(5),reference_flags(5),ceiling
+    integer :: rank,nranks,ierr,nodes,low,high,node,p,ios,descriptor(13),reference(13),flags(6),reference_flags(6),ceiling
     logical :: valid,agreed
     ok=.false.
     call MPI_Comm_rank(comm,rank,ierr)
@@ -768,6 +823,13 @@ contains
     if (valid) valid=size(owners)==size(tree%nodes).and.size(parcels)<=1000000
     if (valid) valid=all(owners>=0).and.all(owners<nranks)
     if (present(component_mass)) valid=valid.and.allocated(component_mass)
+    if(present(tab_tangent_history)) then
+      valid=valid.and.allocated(tab_tangent_history)
+      if(allocated(tab_tangent_history).and.allocated(parcels)) then
+        valid=valid.and.size(tab_tangent_history)==size(parcels)
+        valid=valid.and.all(ieee_is_finite(tab_tangent_history)).and.all(tab_tangent_history>=0)
+      endif
+    endif
     call agree()
     if (.not.agreed) return
     ceiling=tree%level_count()-1
@@ -783,8 +845,10 @@ contains
     bounds=[lower,spacing];reference_bounds=bounds
     call MPI_Bcast(reference_bounds,6,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    flags=[merge(1,0,periodic),merge(1,0,present(component_mass)),ceiling];reference_flags=flags
-    call MPI_Bcast(reference_flags,5,MPI_INTEGER,0,comm,ierr)
+    flags=[merge(1,0,periodic),merge(1,0,present(component_mass)),ceiling, &
+      merge(1,0,present(tab_tangent_history))]
+    reference_flags=flags
+    call MPI_Bcast(reference_flags,6,MPI_INTEGER,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=all(bounds==reference_bounds).and.all(flags==reference_flags)
     call agree()
@@ -802,6 +866,25 @@ contains
     end do
     call agree()
     if (.not.agreed) return
+    if(present(tab_tangent_history)) then
+    candidate=parcels
+    history=tab_tangent_history
+    if (present(component_mass)) then
+      masses=component_mass
+      call partition_amr_tree_spray_parcels(tree,owners,nranks,candidate,lower,spacing,periodic, &
+        counts,offsets,locations,valid,masses,maximum_level,history)
+    else
+      call partition_amr_tree_spray_parcels(tree,owners,nranks,candidate,lower,spacing,periodic, &
+        counts,offsets,locations,valid,maximum_level=maximum_level,tab_tangent_history=history)
+    end if
+    call agree()
+    if (.not.agreed) return
+    if (present(component_mass)) then
+      call exchange_spray_parcel_bins(comm,candidate,counts,offsets,maximum_parcels,valid,masses,history)
+    else
+      call exchange_spray_parcel_bins(comm,candidate,counts,offsets,maximum_parcels,valid,tab_tangent_history=history)
+    end if
+    else
     candidate=parcels
     if (present(component_mass)) then
       masses=component_mass
@@ -818,6 +901,7 @@ contains
     else
       call exchange_spray_parcel_bins(comm,candidate,counts,offsets,maximum_parcels,valid)
     end if
+    endif
     if (.not.valid) return
     allocate(positions(3,size(candidate)),stat=ios)
     valid=ios==0;call agree()
@@ -833,6 +917,7 @@ contains
     end if
     call agree()
     if (.not.agreed) return
+    if(present(tab_tangent_history)) call move_alloc(history,tab_tangent_history)
     call move_alloc(candidate,parcels)
     if (present(component_mass)) call move_alloc(masses,component_mass)
     ok=.true.

@@ -3,9 +3,9 @@ module spray_eb_impact_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_coupling_3d_mod, only: valid_spray_boundary_faces
-  use spray_wall_impact_mod, only: count_periodic_film_images
+  use spray_wall_impact_mod, only: count_periodic_film_images,pelec_splash_critical_parameter
   use spray_parcel_mod
-  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
+  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties,liquid_mixture_viscosity
   use spray_wall_impact_mod, only: spray_wall_film,resolve_mixture_wall_impact,mixture_impact_boiling_temperature
   use spray_wall_impact_mod, only: classify_wall_impact,splash_mass_fractions,splash_velocity_components
   use spray_eb_intersection_mod, only: intersect_spray_level_set
@@ -66,20 +66,22 @@ contains
     un=-dot_product(parent%velocity,normal)
     if(un<=0) return
     y=component_mass/parent%mass
-    call liquid_mixture_properties(components,y,parent%temperature,rho,cp,e,valid)
+    call liquid_mixture_properties(components,y,parent%temperature,rho,cp,e,valid,pressure,molecular_weights)
     if(.not.valid) return
     call mixture_impact_boiling_temperature(components,y,molecular_weights,pressure,boil,valid)
     if(.not.valid) return
     effective=components(1);effective%density=rho;effective%density_model='constant'
     effective%density_coefficients=0;effective%density_temperature_range=0
     d=parcel_diameter(parent,effective);mu=liquid_viscosity_at_temperature(properties,parent%temperature)
+    call liquid_mixture_viscosity(components,y,parent%temperature, &
+      liquid_viscosity_at_temperature(properties,parent%temperature),mu,valid,pressure,molecular_weights)
+    if(.not.valid) return
     if(.not.ieee_is_finite(properties%surface_tension)) return
     if(d<=0.or.mu<=0.or.properties%surface_tension<1e-8_dp.or.properties%surface_tension>1e3_dp) return
     ! Same pinned impact parameter conversion as the regular planar dispatcher.
     we=rho*d*un**2/properties%surface_tension;re=un*d*rho/mu
     kv=sqrt(we*sqrt(re))
-    kcrit=(26.788_dp*log(pressure*1e-5_dp)+33.546_dp)*exp(-.006_dp*(wall_temperature-260))+36
-    if(kcrit<0) return
+    kcrit=pelec_splash_critical_parameter(pressure,wall_temperature)
     ! Identify inadmissible empirical output separately from step-size failures.
     alpha=max(acos(-1._dp)/6,asin(min(1._dp,un/norm2(parent%velocity))))
     call classify_wall_impact(kv,wall_temperature/boil,alpha,kcrit,film_thickness/d,kind,ms,dm,valid)
@@ -97,7 +99,8 @@ contains
     end if
     trial=parent;masses=component_mass;film=0
     call resolve_mixture_wall_impact(trial,components,masses,location,normal,kv,wall_temperature/boil,kcrit, &
-      film_thickness/d,we,re,contact_angle,first_id,spawned,spawned_mass,deposited,film,budget,kind,valid)
+      film_thickness/d,we,re,contact_angle,first_id,spawned,spawned_mass,deposited,film,budget,kind,valid, &
+      pressure,molecular_weights,reference_parent_position=properties%mixture_time_scheme=='euler')
     if(.not.valid) return
     parent=trial;component_mass=masses;film_mass=film;deposit=deposited
     call move_alloc(spawned,children);call move_alloc(spawned_mass,child_mass)
@@ -284,9 +287,15 @@ contains
         do j=1,size(children)
           n=n+1;queue(n)=children(j);inventory(:,n)=child_mass(:,j)
           remaining(n)=time_left;depth(n)=depth(p);local_pressure(n)=local_pressure(p)
+          ! Pinned SpraySB.cpp creates splash children after the particle loop
+          ! at impact_loc + child_diameter*normal, without this step's flight.
+          if(properties%mixture_time_scheme=='euler') remaining(n)=0
         end do
         watermark=watermark+int(size(children),int64)
-        remaining(p)=time_left;total=total+budget;count=count+1
+        remaining(p)=time_left
+        ! Euler rebound/thermal placement already represents the completed flight.
+        if(properties%mixture_time_scheme=='euler') remaining(p)=0
+        total=total+budget;count=count+1
         if (time_left==0) exit
       end do
       p=p+1

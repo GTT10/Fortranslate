@@ -25,6 +25,7 @@ program test_spray_core
   real(dp) :: value,td,omega,wer,initial_mass,z,tkh,wavelength,tau,acceleration
   real(dp) :: property_input(6)
   real(dp) :: child_exchange(4),saved_exchange(4),child_uniforms(3),reference_velocity(3,3)
+  real(dp) :: etab_uniforms(4),etab_tangent
   integer :: child_count
   real(dp), parameter :: watson_temperatures(4)=[250.0_dp,300.0_dp,373.15_dp,600.0_dp]
   real(dp), parameter :: watson_expected(4)=[2631208.1205871335658_dp,2500000.0_dp, &
@@ -38,6 +39,7 @@ program test_spray_core
   real(dp) :: mixture_y(2),mixture_rho,mixture_cp,mixture_e,mixture_t,mixture_e0
   real(dp) :: component_mass(2),saved_mass(2),evaporated_mass(2),vapor_h(2),mw(2),surface_x(2),mixture_rates(2)
   real(dp), allocatable :: child_component_mass(:,:),saved_child_mass(:,:)
+  real(dp), allocatable :: khrt_energy(:),khrt_momentum(:,:)
   real(dp) :: film_component_mass(2),saved_film_mass(2)
   type(spray_parcel) :: p,q
   type(spray_parcel), allocatable :: drops(:),saved_drops(:)
@@ -140,6 +142,56 @@ program test_spray_core
     call construct_reference_khrt_children(p,release,[1._dp,0._dp,0._dp],.5_dp,child_uniforms, &
       2_int64,drops,child_exchange,ok)
     call require(ok.and.abs(drops(1)%velocity(2)+2._dp)<1e-15_dp,'reference parallel-axis basis fallback')
+    q=p
+    call construct_reference_khrt_children(p,release,[0._dp,0._dp,1._dp],.5_dp,child_uniforms, &
+      2_int64,drops,child_exchange,ok,drift_dt=1e-6_dp)
+    call require(ok,'reference children retain birth displacement')
+    do n=1,size(drops)
+      call require(all(drops(n)%position==p%position+1e-6_dp*drops(n)%velocity),'reference child birth displacement')
+    enddo
+    saved_drops=drops;saved_exchange=child_exchange
+    call construct_reference_khrt_children(p,release,[0._dp,0._dp,1._dp],.5_dp,child_uniforms, &
+      2_int64,drops,child_exchange,ok,drift_dt=-1._dp)
+    call require(.not.ok.and.all(child_exchange==saved_exchange),'invalid birth interval preserves exchange')
+    do n=1,size(drops)
+      call require(all(drops(n)%position==saved_drops(n)%position),'invalid birth interval preserves children')
+    enddo
+    p=q
+    options%breakup_model='khrt';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    options%khrt_children=.true.
+    options%khrt_reference_diameter_cubed=1e-15_dp;options%khrt_parcel_factor=.5_dp
+    d=4._dp*(3.e-16_dp/(4._dp*pi*liquid_density_at_temperature(liquid,350._dp)))**(1._dp/3._dp)
+    p=spray_parcel(1_int64,[0._dp,0._dp,0._dp],[0._dp,0._dp,0._dp], &
+      4._dp*pi*liquid_density_at_temperature(liquid,350._dp)*(.9_dp*d)**3/3._dp,350._dp,100._dp)
+    q=p
+    call advance_khrt_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],2000._dp,1e-3_dp,ok)
+    call require(ok.and.p%mass==q%mass,'reference minimum-mass radius suppresses breakup')
+    options%khrt_parcel_factor=-1
+    call advance_khrt_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],2000._dp,1e-3_dp,ok)
+    call require(ok.and.p%mass<q%mass,'legacy diameter floor remains independent')
+    options%khrt_parcel_factor=.5_dp
+    p=q;p%mass=4._dp*pi*liquid_density_at_temperature(liquid,350._dp)*(1.1_dp*d)**3/3._dp
+    q=p
+    call advance_khrt_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],2000._dp,1e-3_dp,ok)
+    call require(ok.and.p%mass<q%mass,'reference radius above minimum breaks')
+    call require(.5_dp*parcel_diameter(p,liquid)<d,'reference KH child radius is not clamped')
+    p=q;shedding=spray_khrt_shedding_state()
+    shedding%initial_count=p%multiplicity
+    shedding%shed_volume=.91_dp*p%multiplicity*(1.1_dp*d)**3
+    call advance_khrt_shedding(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],2000._dp,1e-7_dp, &
+      options%khrt_reference_diameter_cubed,shedding,release,ok)
+    call require(ok.and.p%mass==0.and.release%mass>0,'reference full shed release')
+    call near(release%diameter,2._dp*d,1e-13_dp,'reference child minimum radius')
+    options%khrt_parcel_factor=-1
+    p=q;p%mass=4._dp*pi*liquid_density_at_temperature(liquid,350._dp)*(.9_dp*d)**3/3._dp
+    deallocate(drops);allocate(drops(1),child_component_mass(1,1))
+    drops(1)=p;child_component_mass(1,1)=p%mass
+    split_watermark=p%id
+    call advance_mixture_khrt_shedding([liquid],options,drops,child_component_mass,[10._dp], &
+      reshape([300._dp,0._dp,0._dp],[3,1]),[2000._dp],1e-3_dp,split_watermark,khrt_energy,ok, &
+      reference_factor=.5_dp,gas_momentum=khrt_momentum)
+    call require(ok.and.size(drops)==1.and.drops(1)%mass==p%mass, &
+      'explicit reference factor also selects minimum-mass radius')
   case('mixture_terminal')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
@@ -214,6 +266,61 @@ program test_spray_core
         call require(abs(film%surface_fraction-expected)<2e-14_dp,'single/mixture surface equivalence')
       end do
     end do
+    options%abramzon_sirignano=.true.;options%evaporation=.true.
+    call build_mixture_film(species,transport,primitive,300.0_dp,p,mixture_components,mixture_y,options, &
+      film,mixture_rates,vapor_h,ok)
+    z=primitive(5)*omega/(8314.46261815324_dp*p%temperature)
+    call require(ok.and.abs(film%density/z-1)<2e-14_dp,'reference cold-gas skin holds drop temperature')
+    call build_spray_film(species,transport,primitive,300.0_dp,p,liquid,options,film,ok)
+    call require(ok.and.abs(film%density/z-1)<2e-14_dp,'single reference cold-gas skin')
+    call advance_parcel_frozen_film(p,liquid,film,options,1e-9_dp,q,transfer,ok)
+    call require(ok.and.abs(q%temperature-p%temperature)<1e-10_dp,'single reference cold-gas convection')
+    component_mass=p%mass*mixture_y;td=p%temperature
+    call advance_mixture_frozen_gas(species,transport,primitive,300.0_dp,p,mixture_components,component_mass, &
+      options,1e-9_dp,totals0,ok)
+    call require(ok.and.abs(p%temperature-td)<1e-10_dp,'reference cold-gas convection does not cool drop')
+    ! Manufactured constant Simple fits expose the rho-D molecular-weight
+    ! convention independently of Chapman-Enskog carrier averaging.
+    do n=1,size(species)
+      allocate(transport(n)%simple_binary(4,size(species)))
+      transport(n)%simple_binary=0
+      transport(n)%simple_viscosity=[log(1.8e-4_dp),0._dp,0._dp,0._dp]
+      transport(n)%simple_conductivity=[log(3000._dp),0._dp,0._dp,0._dp]
+    enddo
+    p%temperature=373.15_dp;primitive=0;primitive(1)=1;primitive(5)=202650
+    primitive(5+liquid%vapor_index)=.2_dp;primitive(15)=.8_dp
+    omega=1/(.2_dp/mw(1)+.8_dp/mw(2))
+    value=.5_dp*mw(1)/(.5_dp*mw(1)+.5_dp*omega)
+    value=(2*value+.2_dp)/3
+    z=(value/mw(1))/(value/mw(1)+(1-value)/mw(2))
+    expected=.5e-4_dp*(1-value)/(1-z)
+    call build_spray_film(species,transport,primitive,600._dp,p,liquid,options,film,ok)
+    call require(ok.and.abs(film%diffusivity/expected-1)<2e-14_dp,'single Simple diffusion matches pinned rho-D conversion')
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok,'single Simple transfer')
+    call mixture_transfer_rates(species,transport,primitive,600._dp,p,mixture_components,mixture_y,options, &
+      value,td,mixture_rates,vapor_h,ok)
+    call require(ok.and.abs(value/inverse_tau-1)<2e-14_dp.and.abs(td/heat-1)<2e-14_dp, &
+      'Simple single and pure-mixture drag and heat agree')
+    call require(abs(mixture_rates(1)/(masscoef*parcel_diameter(p,liquid))-1)<2e-14_dp.and.mixture_rates(2)==0, &
+      'Simple single and pure-mixture evaporation agree')
+    options%abramzon_sirignano=.true.;options%evaporation=.false.
+    do n=1,2
+      td=merge(600._dp,300._dp,n==1)
+      do jcell=1,2
+        expected=td
+        if(jcell==2) expected=p%temperature+.5_dp*max(0._dp,td-p%temperature)
+        z=primitive(5)/(8314.46261815324_dp*expected* &
+          sum(primitive(6:)/species%molecular_weight))
+        call build_spray_film(species,transport,primitive,td,p,liquid,options,film,ok,wall_skin=jcell==2)
+        call require(ok.and.abs(film%density/z-1)<2e-14_dp,'reference gas-only or wall skin temperature')
+        call require(film%surface_fraction==0,'disabled evaporation preserves ambient-only composition')
+        call build_mixture_film(species,transport,primitive,td,p,mixture_components,mixture_y,options, &
+          film,mixture_rates,vapor_h,ok,wall_skin=jcell==2)
+        call require(ok.and.abs(film%density/z-1)<2e-14_dp,'mixed gas-only or wall skin temperature')
+        call require(all(mixture_rates==0),'disabled evaporation has no component vapor weights')
+      enddo
+    enddo
   case('liquid_mw')
     mixture_components=liquid;mixture_components%molecular_weight=[18.0_dp,36.0_dp]
     mixture_y=.5_dp;mw=species(liquid%vapor_index)%molecular_weight;surface_x=-1
@@ -356,10 +463,100 @@ program test_spray_core
     ! Both components remain in the vapor state here, whose total Y is below
     ! the ambient total; the aggregate no-condensation limiter suppresses loss.
     call require(ok.and.all(mixture_rates==0),'wet ambient suppresses aggregate evaporation')
+    call require(heat==0,'active saturated vapor suppresses reference heat transfer')
     call build_mixture_film(species,transport,primitive,600.0_dp,p,mixture_components,mixture_y,options, &
       film,mixture_rates,vapor_h,ok)
     call require(ok.and.all(mixture_rates>0),'reference vapor gate retains both components')
     call require(film%surface_fraction<film%ambient_fraction,'wet reference Spalding number is negative')
+    options%mixture_time_scheme='euler';options%drag_model='pelephysics'
+    options%heat=.false.;options%evaporation=.false.;primitive(2:4)=0
+    p%velocity=[.001_dp,0._dp,0._dp];component_mass=p%mass*mixture_y
+    call build_mixture_film(species,transport,primitive,600._dp,p,mixture_components,mixture_y,options, &
+      film,surface_x,vapor_h,ok)
+    call require(ok,'reference substep ambient film')
+    call liquid_mixture_properties(mixture_components,mixture_y,p%temperature,mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok,'reference substep liquid properties')
+    d=(6*p%mass/(pi*mixture_rho))**(1._dp/3)
+    call require(film%density*d*norm2(p%velocity)/film%viscosity<1,'manufactured Stokes regime')
+    expected=18*film%viscosity/(mixture_rho*d*d);dt=2.5_dp/expected
+    q=p;saved_mass=component_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok)
+    expected=q%velocity(1)*(1-2.5_dp/3)**3
+    call require(ok.and.abs(p%velocity(1)/expected-1)<2e-13_dp,'reference first-state three-substep Euler drag')
+    call require(all(component_mass==saved_mass),'reference drag substeps preserve component masses')
+    p=q;component_mass=saved_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok,time_modifier=.5_dp)
+    expected=q%velocity(1)*(1-1.25_dp/3)**3
+    call require(ok.and.abs(p%velocity(1)/expected-1)<2e-13_dp,'dtmod scales update after flow-time substep estimate')
+    p=q;component_mass=saved_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok,time_modifier=0._dp)
+    call require(.not.ok.and.all(p%velocity==q%velocity).and.all(totals0==0),'invalid dtmod preserves complete state')
+    p=q;component_mass=saved_mass
+    grad=0;grad(1,1)=.0002_dp/dt
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok,acceleration=grad(:,1),force_change=child_totals)
+    value=(1-2.5_dp/3)**3
+    expected=q%velocity(1)*value+.0002_dp/2.5_dp*(1-value)
+    call require(ok.and.abs(p%velocity(1)/expected-1)<2e-13_dp,'simultaneous three-step Euler drag and body force')
+    call require(maxval(abs(p%mass*p%multiplicity*p%velocity+totals0(2:4)- &
+      q%mass*q%multiplicity*q%velocity-child_totals(2:4)))<1e-22_dp,'body force momentum gas parcel closure')
+    expected=.5_dp*q%mass*q%multiplicity*sum(q%velocity**2)
+    value=.5_dp*p%mass*p%multiplicity*sum(p%velocity**2)+totals0(5)-child_totals(5)
+    call require(abs(value/expected-1)<2e-13_dp,'body force work gas parcel closure')
+    p=q;component_mass=saved_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok,acceleration=grad(:,1))
+    call require(.not.ok.and.all(p%velocity==q%velocity).and.all(totals0==0),'untracked body force rejected')
+    p=q;component_mass=saved_mass;options%maximum_substeps=2
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok)
+    call require(.not.ok.and.all(p%velocity==q%velocity).and.all(component_mass==saved_mass).and.all(totals0==0), &
+      'reference substep budget rejection preserves complete state')
+    options%maximum_substeps=100000;options%fixed_parts=.true.
+    primitive(2:4)=[.001_dp,0._dp,0._dp]
+    p=q;component_mass=saved_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok,acceleration=grad(:,1),force_change=child_totals)
+    call require(ok.and.all(p%velocity==0).and.all(p%position==q%position), &
+      'fixed mixture zero velocity and unchanged position despite body force')
+    expected=-q%mass*q%multiplicity*2.5_dp*.001_dp
+    call require(abs(totals0(2)/expected-1)<2e-13_dp.and.all(totals0(3:)==0).and.totals0(1)==0, &
+      'fixed mixture retains analytic gas drag without drag work')
+    call require(maxval(abs(totals0(2:4)-q%mass*q%multiplicity*q%velocity-child_totals(2:4)))<1e-22_dp, &
+      'fixed mixture constraint impulse closes particle gas momentum')
+    expected=-.5_dp*q%mass*q%multiplicity*sum(q%velocity**2)
+    call require(child_totals(5)==expected.and.all(component_mass==saved_mass), &
+      'fixed mixture constraint accounts for initial kinetic removal')
+    options%mixture_time_scheme='conservative';p=q;component_mass=saved_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok,acceleration=grad(:,1),force_change=child_totals)
+    call require(ok.and.all(p%velocity==0).and.all(p%position==q%position), &
+      'fixed conservative mixture ignores body acceleration')
+    options%mixture_time_scheme='euler'
+
+    p=q;component_mass=saved_mass
+    call advance_mixture_frozen_gas(species,transport,primitive,600._dp,p,mixture_components,component_mass, &
+      options,dt,totals0,ok)
+    call require(.not.ok.and.all(p%velocity==q%velocity).and.all(p%position==q%position).and.all(totals0==0), &
+      'fixed mixture without constraint ledger rejects transactionally')
+    film%gas_velocity=primitive(2:4)
+    call spray_transfer_rates(q,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok.and.inverse_tau>0,'fixed scalar correlation')
+    dt=.1_dp/inverse_tau
+    call advance_parcel_frozen_film(q,liquid,film,options,dt,p,child_totals,ok,force_change=totals0(:5))
+    call require(ok.and.all(p%velocity==0).and.all(p%position==q%position),'fixed scalar state')
+    expected=-q%mass*q%multiplicity*.1_dp*.001_dp
+    call require(abs(child_totals(2)/expected-1)<2e-13_dp.and.child_totals(5)==0, &
+      'fixed scalar gas drag without drag work')
+    call require(p%mass==q%mass.and.p%temperature==q%temperature,'fixed scalar no thermal or mass exchange')
+    call require(maxval(abs(p%mass*p%multiplicity*p%velocity+child_totals(2:4)- &
+      q%mass*q%multiplicity*q%velocity-totals0(2:4)))<1e-22_dp,'fixed scalar constraint momentum closure')
+    expected=.5_dp*q%mass*q%multiplicity*sum(q%velocity**2)
+    call require(abs((child_totals(5)-totals0(5))/expected-1)<2e-13_dp,'fixed scalar constraint kinetic closure')
+
   case('mixture_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
@@ -558,6 +755,13 @@ program test_spray_core
     expected=(heat+value-sum(mixture_rates*(vapor_h-[liquid_energy(mixture_components(1),350.0_dp), &
       liquid_energy(mixture_components(2),350.0_dp)])))/(wall_patch%mass*mixture_cp)
     call require(abs(td-expected)<1e-12_dp*max(1.0_dp,abs(expected)),'composition-aware film cooling')
+    p%temperature=wall_patch%temperature
+    call build_mixture_film(species,transport,primitive,600._dp,p,mixture_components,mixture_y,options, &
+      film,surface_x,vapor_h,ok,wall_skin=.true.)
+    call require(ok.and.all(surface_x>0),'component film diffusion weights')
+    expected=(surface_x(1)/surface_x(2))**(2._dp/3)
+    call require(abs(mixture_rates(1)/mixture_rates(2)/expected-1)<2e-13_dp, &
+      'film applies diffusion power to each component')
     dt=1e-10_dp
     call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
       options,.6_dp,400.0_dp,dt,1e-15_dp,totals0,heat,ok)
@@ -568,6 +772,21 @@ program test_spray_core
     call require(ok,'updated film energy')
     call require(abs(wall_patch%mass*mixture_e+totals0(5)+heat-saved_patch%mass*mixture_e0)<1e-14_dp, &
       'frozen film gas wall closure')
+    wall_patch=saved_patch;component_mass=saved_mass;options%mixture_time_scheme='euler'
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,400._dp,mixture_rates,vapor_h,heat,value,td,ok)
+    call require(ok,'Euler film rates')
+    expected=wall_patch%temperature+dt*td
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,400._dp,dt,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.abs(wall_patch%temperature-expected)<2e-12_dp,'reference Euler film temperature update')
+    call require(abs(wall_patch%height/saved_patch%height-wall_patch%mass/saved_patch%mass)<2e-14_dp, &
+      'reference Euler film uses old density for height')
+    call liquid_mixture_properties(mixture_components,component_mass/wall_patch%mass,wall_patch%temperature, &
+      mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok.and.abs(wall_patch%mass*mixture_e+totals0(5)+heat-saved_patch%mass*mixture_e0)<1e-14_dp, &
+      'Euler film gas wall closure')
+    options%mixture_time_scheme='conservative'
     wall_patch=saved_patch;component_mass=saved_mass
     call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600.0_dp, &
       options,.6_dp,400.0_dp,1.0_dp,1e-15_dp,totals0,heat,ok)
@@ -600,6 +819,96 @@ program test_spray_core
     ! retains this dilute component: X_liquid*X_gas is much smaller than psat/P.
     call require(ok.and.component_mass(1)==0,'reference gate releases active film trace in humid gas')
     call require(totals0(5+liquid%vapor_index)==saved_mass(1),'humid trace retains complete species budget')
+    wall_patch=saved_patch;wall_patch%temperature=500;mixture_y=[.4_dp,.6_dp]
+    component_mass=wall_patch%mass*mixture_y;mw=species(mixture_components%vapor_index)%molecular_weight
+    do n=1,2
+      mixture_components(n)%boiling_model='pelemp-cap';mixture_components(n)%reference_temperature=300
+      mixture_components(n)%normal_boiling_temperature=373.15_dp
+      mixture_components(n)%critical_temperature=647
+    enddo
+    mixture_components(1)%conductivity_model='polynomial'
+    mixture_components(1)%conductivity_coefficients=[.1_dp,.001_dp,0._dp,0._dp]
+    mixture_components(1)%conductivity_temperature_range=[300._dp,400._dp]
+    mixture_components(2)%conductivity_model='constant';mixture_components(2)%conductivity=.8_dp
+    value=-1
+    call liquid_mixture_conductivity(mixture_components,mixture_y,500._dp,.6_dp,value,ok,101325._dp,mw)
+    expected=.4_dp*(.1_dp+.001_dp*373.15_dp)+.6_dp*.8_dp
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'mass-weighted component conductivity with boiling cap')
+    mixture_components(1)%viscosity_model='inverse-temperature'
+    mixture_components(1)%viscosity_coefficients=[.001_dp,.2_dp,3._dp,40._dp]
+    mixture_components(1)%viscosity_temperature_range=[300._dp,400._dp]
+    mixture_components(2)%viscosity_model='constant';mixture_components(2)%viscosity=.002_dp
+    value=-1
+    call liquid_mixture_viscosity(mixture_components,mixture_y,500._dp,.003_dp,value,ok,101325._dp,mw)
+    td=.4_dp*(.001_dp+((40._dp/373.15_dp+3._dp)/373.15_dp+.2_dp)/373.15_dp)+.6_dp*.002_dp
+    call require(ok.and.abs(value/td-1)<2e-14_dp,'mass-weighted component viscosity with boiling cap')
+    block
+      type(spray_options) :: local_settings
+      local_settings=options
+      local_settings%breakup_model='khrt';local_settings%surface_tension=.072_dp;local_settings%liquid_viscosity=0
+      call apply_mixture_breakup_viscosity(mixture_components,mixture_y,500._dp,local_settings,ok,101325._dp,mw)
+      call require(ok.and.abs(local_settings%liquid_viscosity/td-1)<2e-14_dp, &
+        'breakup options receive capped composition viscosity')
+      call apply_mixture_breakup_viscosity(mixture_components,mixture_y,299._dp,local_settings,ok,101325._dp,mw)
+      call require(.not.ok.and.abs(local_settings%liquid_viscosity/td-1)<2e-14_dp, &
+        'invalid component viscosity preserves breakup options')
+      local_settings%particle_cfl=-1
+      call apply_mixture_breakup_viscosity(mixture_components,mixture_y,500._dp,local_settings,ok,101325._dp,mw)
+      call require(.not.ok.and.local_settings%particle_cfl==-1.and.abs(local_settings%liquid_viscosity/td-1)<2e-14_dp, &
+        'component viscosity does not hide invalid integration controls')
+    end block
+
+    value=-1
+    call liquid_mixture_viscosity(mixture_components,mixture_y,299._dp,.003_dp,value,ok,101325._dp,mw)
+    call require(.not.ok.and.value==-1,'component viscosity range rejection preserves value')
+    mixture_components(2)%viscosity_model='supplied';mixture_components(2)%viscosity=0
+    call liquid_mixture_viscosity(mixture_components,mixture_y,350._dp,.003_dp,value,ok,101325._dp,mw)
+    call require(.not.ok.and.value==-1,'incomplete active viscosity table rejected')
+    call liquid_mixture_viscosity(mixture_components,[1._dp,0._dp],350._dp,.003_dp,value,ok,101325._dp,mw)
+    call require(ok,'inactive unspecified viscosity component ignored')
+    mixture_components(1)%viscosity_model='supplied';mixture_components(1)%viscosity_coefficients=0
+    mixture_components(1)%viscosity_temperature_range=0
+    call liquid_mixture_viscosity(mixture_components,mixture_y,350._dp,.003_dp,value,ok)
+    call require(ok.and.value==.003_dp,'legacy supplied viscosity retained')
+    options%evaporation=.false.;primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,600._dp,mixture_rates,vapor_h,heat,value,td,ok)
+    expected=2*.25_dp*pi*wall_patch%diameter**2*expected*100/wall_patch%height
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'film wall heat uses component conductivity')
+    mixture_components(2)%conductivity_model='supplied';mixture_components(2)%conductivity=0;value=-1
+    call liquid_mixture_conductivity(mixture_components,mixture_y,500._dp,.6_dp,value,ok,101325._dp,mw)
+    call require(.not.ok.and.value==-1,'partial active-component conductivity rejects without publishing')
+    mixture_components(1)%conductivity_coefficients=[.202499_dp,-.0009_dp,1e-6_dp,0._dp]
+    mixture_components(1)%conductivity_temperature_range=[250._dp,650._dp]
+    call require(.not.valid_spray_liquid(mixture_components(1)),'interior negative conductivity rejected')
+    mixture_components=liquid;mixture_y=[.25_dp,.75_dp]
+    wall_patch=saved_patch;component_mass=wall_patch%mass*mixture_y
+    options%evaporation=.true.;p%temperature=wall_patch%temperature
+    call build_spray_film(species,transport,primitive,600._dp,p,liquid,options,film,ok,wall_skin=.true.)
+    call require(ok,'shared-species scalar film')
+    call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400._dp,.true.,.true.,masscoef, &
+      heat,value,td,ok)
+    call require(ok.and.masscoef>0,'shared-species scalar rate')
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,400._dp,mixture_rates,vapor_h,heat,value,td,ok)
+    call require(ok.and.maxval(abs(mixture_rates/(masscoef*mixture_y**(2._dp/3))-1))<2e-13_dp, &
+      'shared gas species retains component powers inside film rates')
+    options%mixture_time_scheme='euler';wall_patch%temperature=300._dp
+    primitive=0;primitive(1)=1;primitive(5)=101325
+    primitive(15)=.001_dp;primitive(5+liquid%vapor_index)=.999_dp
+    saved_patch=wall_patch;saved_mass=component_mass
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,400._dp,mixture_rates,vapor_h,heat,value,td,ok)
+    call require(ok.and.all(mixture_rates==0).and.heat==0.and.value==0.and.td==0, &
+      'Euler saturated film suppresses evaporation and both heat terms')
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,400._dp,1e-9_dp,1e-15_dp,totals0,heat,ok)
+    call require(ok.and.all(component_mass==saved_mass).and.wall_patch%temperature==saved_patch%temperature.and. &
+      wall_patch%height==saved_patch%height.and.all(totals0==0).and.heat==0,'Euler saturated film remains unchanged')
+    options%evaporation=.false.
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,600._dp, &
+      options,.6_dp,400._dp,mixture_rates,vapor_h,heat,value,td,ok)
+    call require(ok.and.heat>0.and.value>0.and.all(mixture_rates==0),'explicit heat-only film remains enabled')
   case('mixture_wall_exchange')
     mixture_components(1)=liquid
     call initialize_spray_liquid(species,'H2O2',800.0_dp,2000.0_dp,350.0_dp,101325.0_dp,1e6_dp, &
@@ -630,6 +939,37 @@ program test_spray_core
       0.0_dp,0.0_dp,1e-15_dp,totals0,heat,ok)
     call require(.not.ok.and.all(component_mass==saved_mass).and.wall_patch%mass==saved_patch%mass,'film overdraw rollback')
     call require(all(totals0==0).and.heat==0,'failed film exchange zero budgets')
+    wall_patch=saved_patch;component_mass=saved_mass
+    evaporated_mass=[1.1_dp*saved_mass(1),.01_dp*saved_mass(2)]
+    value=sum(evaporated_mass*(vapor_h-[liquid_energy(mixture_components(1),350._dp), &
+      liquid_energy(mixture_components(2),350._dp)]))
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,evaporated_mass,vapor_h, &
+      value,0._dp,1e-15_dp,totals0,heat,ok,euler_temperature=.true.)
+    expected=saved_patch%mass-sum(evaporated_mass)
+    call require(ok.and.component_mass(1)==0.and.abs(component_mass(2)/expected-1)<2e-14_dp, &
+      'Euler film clips overdrawn component and preserves advanced total')
+    call require(wall_patch%temperature==350._dp,'Euler film uses raw rates before component normalization')
+    call require(abs(totals0(1)+wall_patch%mass-saved_patch%mass)<1e-24_dp,'clipped Euler film total mass closure')
+    call liquid_mixture_properties(mixture_components,component_mass/wall_patch%mass,wall_patch%temperature, &
+      mixture_rho,mixture_cp,mixture_e,ok)
+    call require(ok.and.abs(wall_patch%mass*mixture_e+totals0(5)+heat-saved_patch%mass*mixture_e0)<1e-14_dp, &
+      'clipped Euler film gas wall energy closure')
+    wall_patch=saved_patch;component_mass=saved_mass
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,2*saved_mass,vapor_h, &
+      0._dp,0._dp,1e-15_dp,totals0,heat,ok,euler_temperature=.true.)
+    call require(ok.and.wall_patch%mass==0.and.all(component_mass==0),'Euler film total depletion')
+    block
+      type(spray_liquid) :: three_components(3)
+      real(dp) :: three_mass(3),three_loss(3),three_h(3)
+      three_components=liquid;wall_patch=saved_patch
+      three_mass=wall_patch%mass*[.1_dp,.4_dp,.5_dp]
+      three_loss=wall_patch%mass*[.6_dp,0._dp,0._dp]
+      three_h=liquid_energy(liquid,wall_patch%temperature)
+      call advance_mixture_wall_film_exchange(wall_patch,three_components,three_mass,three_loss,three_h, &
+        0._dp,0._dp,1e-15_dp,totals0,heat,ok,euler_temperature=.true.)
+      call require(ok.and.maxval(abs(three_mass/saved_patch%mass-[0._dp,.2_dp,.2_dp]))<2e-14_dp, &
+        'reference Euler clips upper fractions before renormalizing survivors')
+    end block
     do event_index=1,2
       wall_patch=saved_patch;component_mass=saved_mass
       evaporated_mass=merge(saved_mass,.01_dp*saved_mass,event_index==1)
@@ -699,7 +1039,8 @@ program test_spray_core
         2_int64,drops,wall_patch,transfer,regime,ok)
       if (.not.ok) print *, 'rejected impact case',event_index
       call require(ok.and.regime==impact_kinds(event_index),'complete impact regime dispatch')
-      call require(all(drops%khrt_initial_count==0).and.all(drops%khrt_shed_volume==0),'fresh splash KH state')
+      call require(all(drops%khrt_initial_count==drops%multiplicity).and.all(drops%khrt_shed_volume==0), &
+        'fresh splash KH count and empty shed inventory')
       if (regime==impact_rebound) then
         call require(p%khrt_shed_volume==q%khrt_shed_volume,'rebound preserves unspent KH inventory')
       else
@@ -721,6 +1062,19 @@ program test_spray_core
       if (regime==impact_dry.or.regime==impact_wet) &
         call require(p%mass==0.and.size(drops)==4.and.wall_patch%mass>0,'splash plus deposition')
     end do
+    p=q;p%position=[.3_dp,.4_dp,-.02_dp];p%velocity=[2._dp,3._dp,-20._dp]
+    call resolve_wall_impact(p,liquid,[.25_dp,.35_dp,0._dp],[0._dp,0._dp,1._dp], &
+      79._dp,1.1_dp,80._dp,0._dp,100._dp,1000._dp,pi/3,2_int64,drops,wall_patch,transfer,regime,ok, &
+      reference_parent_position=.true.)
+    expected=.823_dp*exp(-.0019835_dp*79._dp**1.6_dp)
+    call require(ok.and.regime==impact_rebound.and.maxval(abs(p%position-[.3_dp,.4_dp,.02_dp*expected])) &
+      <1e-15_dp,'reference rebound preserves tangential endpoint and reflects overshoot')
+    p=q;p%position=[.3_dp,.4_dp,-.02_dp]
+    call resolve_wall_impact(p,liquid,[.25_dp,.35_dp,0._dp],[0._dp,0._dp,1._dp], &
+      150._dp,1.1_dp,80._dp,0._dp,100._dp,1000._dp,pi/3,2_int64,drops,wall_patch,transfer,regime,ok, &
+      reference_parent_position=.true.)
+    call require(ok.and.regime==impact_thermal.and.all(p%position==[.25_dp,.35_dp,0._dp]), &
+      'reference thermal surviving parent stays at impact point')
     saved_drops=drops;saved_patch=wall_patch;p=q
     call resolve_wall_impact(p,liquid,q%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,1.0_dp,80.0_dp, &
       .03_dp,100.0_dp,1000.0_dp,pi/3,2_int64,drops,wall_patch,transfer,regime,ok)
@@ -732,6 +1086,8 @@ program test_spray_core
     call require(p%mass==q%mass.and.all(p%velocity==q%velocity),'parent event rollback')
     call require(all(drops%mass==saved_drops%mass).and.wall_patch%mass==saved_patch%mass,'children and film rollback')
   case('wall_state')
+    p%khrt_initial_count=2*p%multiplicity;p%khrt_shed_volume=1e-12_dp
+    p%deformation=.5_dp;p%deformation_rate=1._dp
     p%velocity=[0.0_dp,0.0_dp,-20.0_dp];p%material_id=2
     call construct_splash_children(p,liquid,p%position,[0.0_dp,0.0_dp,1.0_dp],150.0_dp,0.0_dp,.5_dp, &
       2_int64,drops,transfer,ok)
@@ -740,6 +1096,9 @@ program test_spray_core
     do n=1,4
       call require(drops(n)%id==n+1.and.drops(n)%parent_id==p%id.and.drops(n)%material_id==2,'child identity')
       call require(drops(n)%multiplicity==p%multiplicity.and.drops(n)%temperature==p%temperature,'child population')
+      call require(drops(n)%khrt_initial_count==drops(n)%multiplicity.and.drops(n)%khrt_shed_volume==0, &
+        'reference splash initializes its own N0 and clears shedding')
+      call require(drops(n)%deformation==0.and.drops(n)%deformation_rate==0,'reference splash clears BM1 BM2')
       call require(drops(n)%mass==.125_dp*p%mass,'normal impact equal dry mass partition')
       call require(drops(n)%velocity(3)>0.and.drops(n)%position(3)>p%position(3),'outgoing splash')
       child_totals=child_totals+parcel_totals(drops(n),liquid)
@@ -764,6 +1123,19 @@ program test_spray_core
       wall_patch,film_budget,ok)
     call require(.not.ok.and.wall_patch%mass==saved_patch%mass.and.all(film_budget==0),'invalid film rolls back')
   case('wall_impact')
+    ! Pinned splash_criteria compares Kv with signed Kcrit without clipping.
+    call classify_wall_impact(10._dp,1._dp,pi/6,-20._dp,0._dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_dry,'negative impact threshold enters dry splash')
+    call require(abs(splash_mass-.06455161104657886_dp)<1e-14_dp.and.splash_mass+deposited_mass==1, &
+      'negative threshold dry splash fraction and closure')
+    call classify_wall_impact(10._dp,1.1_dp,pi/6,-20._dp,0._dp,regime,splash_mass,deposited_mass,ok)
+    call require(ok.and.regime==impact_thermal.and.abs(splash_mass-.3063334767248887_dp)<1e-14_dp, &
+      'negative threshold thermal splash fraction')
+
+    call require(abs(pelec_splash_critical_parameter(1e6_dp,260._dp)-69.546_dp)<1e-13_dp, &
+      'PeleC impact pressure normalization at one MPa')
+    call require(abs(pelec_splash_critical_parameter(1e5_dp,260._dp)-7.864350528875512_dp)<1e-13_dp, &
+      'PeleC impact pressure uses MPa scale rather than PeleLM scale')
     call classify_wall_impact(150.0_dp,1.0_dp,pi/6,80.0_dp,0.0_dp,regime,splash_mass,deposited_mass,ok)
     call require(ok.and.regime==impact_dry,'dry splash regime')
     call require(abs(splash_mass-.14206181552235969_dp)<1e-14_dp,'pinned dry splash fraction')
@@ -929,9 +1301,118 @@ program test_spray_core
     saved_mass=surface_x
     call liquid_mixture_surface(mixture_components,mixture_y,mw,400.0_dp,101325.0_dp,surface_x,ok)
     call require(.not.ok.and.all(surface_x==saved_mass),'missing enthalpy preserves mixture output')
+    mixture_components(2)%normal_boiling_temperature=400
+    do n=1,2
+      mixture_components(n)%density_model='polynomial'
+      mixture_components(n)%density_coefficients=[1200._dp,-.5_dp,0._dp,0._dp]
+      mixture_components(n)%density_temperature_range=[250._dp,650._dp]
+      mixture_components(n)%heat_capacity_model='polynomial'
+      mixture_components(n)%heat_capacity_coefficients=[1000._dp,2._dp,0._dp,0._dp]
+      mixture_components(n)%heat_capacity_temperature_range=[250._dp,650._dp]
+    enddo
+    call liquid_mixture_properties(mixture_components,mixture_y,500._dp,mixture_rho,mixture_cp,mixture_e,ok, &
+      101325._dp,mw)
+    expected=1/(.4_dp/(1200-.5_dp*373.15_dp)+.6_dp/(1200-.5_dp*400._dp))
+    call require(ok.and.abs(mixture_rho/expected-1)<2e-14_dp,'component boiling caps reciprocal mixture density')
+    expected=.4_dp*(1000+2*373.15_dp)+.6_dp*(1000+2*400._dp)
+    call require(abs(mixture_cp/expected-1)<2e-14_dp,'component boiling caps mixture heat capacity')
+    expected=.4_dp*liquid_energy(mixture_components(1),500._dp)+.6_dp*liquid_energy(mixture_components(2),500._dp)
+    call require(abs(mixture_e-expected)<=2e-14_dp*max(1._dp,abs(expected)), &
+      'boiling property cap preserves actual-temperature liquid energy')
+    mixture_e0=mixture_e;value=mixture_rho;td=mixture_cp
+    call liquid_evaporation_energy(mixture_components(1),500._dp,expected,ok,101325._dp,mw(1))
+    call require(ok.and.abs(expected-liquid_energy(mixture_components(1),.99_dp*373.15_dp))<1e-9_dp, &
+      'evaporation energy uses reference surface cap')
+    call liquid_evaporation_energy(mixture_components(1),500._dp,expected,ok)
+    call require(ok.and.expected==liquid_energy(mixture_components(1),500._dp), &
+      'unsupplied pressure retains uncapped standalone energy')
+    call liquid_evaporation_energy(mixture_components(1),500._dp,expected,ok,0._dp,mw(1))
+    call require(.not.ok,'evaporation energy rejects invalid pressure')
+    call liquid_mixture_properties(mixture_components,mixture_y,500._dp,mixture_rho,mixture_cp,mixture_e,ok,0._dp,mw)
+    call require(.not.ok.and.mixture_rho==value.and.mixture_cp==td.and.mixture_e==mixture_e0, &
+      'invalid pressure preserves all mixture property outputs')
+    p%temperature=500;component_mass=p%mass*mixture_y
+    evaporated_mass=component_mass*1e-3_dp;vapor_h=0
+    do n=1,2
+      vapor_h(n)=liquid_energy(mixture_components(n),p%temperature)+2e6_dp
+    enddo
+    q=p
+    call advance_mixture_evaporation(p,mixture_components,component_mass,evaporated_mass,vapor_h,0._dp,totals0,ok, &
+      euler_temperature=.true.,pressure=101325._dp,gas_molecular_weights=mw)
+    expected=500._dp-sum(evaporated_mass*(vapor_h-[ &
+      liquid_energy(mixture_components(1),.99_dp*373.15_dp), &
+      liquid_energy(mixture_components(2),.99_dp*400._dp)]))/(q%mass*td)
+    call require(ok.and.abs(p%temperature-expected)<2e-12_dp,'Euler temperature uses boiling-capped component cp')
+    expected=q%mass*(mixture_e0+.5_dp*sum(q%velocity**2))- &
+      p%mass*(.4_dp*liquid_energy(mixture_components(1),p%temperature)+ &
+      .6_dp*liquid_energy(mixture_components(2),p%temperature)+.5_dp*sum(p%velocity**2))
+    call require(abs(totals0(5)/p%multiplicity-expected)<2e-14_dp*max(1._dp,abs(expected)), &
+      'capped Euler update charges actual liquid energy to gas')
+    p=q;primitive=0;primitive(1)=1;primitive(5)=101325;primitive(15)=1
+    call mixture_transfer_rates(species,transport,primitive,600._dp,p,mixture_components,mixture_y,options, &
+      inverse_tau,heat,mixture_rates,vapor_h,ok)
+    call require(ok,'boiling-capped mixed transfer rates')
+    constant_liquid=liquid;constant_liquid%density=value;constant_liquid%heat_capacity=td
+    call build_mixture_film(species,transport,primitive,600._dp,p,mixture_components,mixture_y,options, &
+      film,surface_x,vapor_h,ok)
+    call require(ok,'boiling-capped mixed film')
+    call spray_transfer_rates(p,constant_liquid,film,options,z,omega,masscoef,ok)
+    call require(ok.and.abs(inverse_tau/z-1)<2e-14_dp,'mixed drag uses boiling-capped diameter and density')
+    call require(abs(heat/omega-1)<2e-14_dp,'mixed heat coefficient uses boiling-capped diameter')
+    call require(abs(sum(mixture_rates)/(masscoef*parcel_diameter(p,constant_liquid))-1)<2e-14_dp, &
+      'mixed evaporation uses boiling-capped diameter')
+    mixture_y=[1._dp,0._dp]
+    call build_spray_film(species,transport,primitive,600._dp,p,mixture_components(1),options,film,ok)
+    call require(ok,'single boiling-capped film')
+    call spray_transfer_rates(p,mixture_components(1),film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok,'single boiling-capped rates')
+    call mixture_transfer_rates(species,transport,primitive,600._dp,p,mixture_components,mixture_y,options, &
+      z,omega,mixture_rates,vapor_h,ok)
+    call require(ok.and.abs(z/inverse_tau-1)<2e-14_dp.and.abs(omega/heat-1)<2e-14_dp, &
+      'boiling-capped single and pure-limit mixed transfer agree')
+    d=parcel_diameter(p,mixture_components(1),primitive(5),mw(1))
+    call require(abs(mixture_rates(1)/(masscoef*d)-1)<2e-14_dp.and.mixture_rates(2)==0, &
+      'boiling-capped single and pure-limit evaporation agree')
+    wall_patch=spray_wall_film();wall_patch%normal=[1._dp,0._dp,0._dp]
+    wall_patch%mass=1e-9_dp;wall_patch%temperature=500;wall_patch%diameter=1e-3_dp
+    value=1200-.5_dp*373.15_dp
+    wall_patch%height=wall_patch%mass/(value*.25_dp*pi*wall_patch%diameter**2)
+    saved_patch=wall_patch;component_mass=[wall_patch%mass,0._dp];evaporated_mass=0
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,evaporated_mass,vapor_h, &
+      1e-8_dp,0._dp,1e-9_dp,totals0,solid_energy,ok,pressure=101325._dp,gas_molecular_weights=mw)
+    call require(ok.and.wall_patch%temperature>saved_patch%temperature,'heated boiling-capped film update')
+    call require(abs(wall_patch%height/saved_patch%height-1)<2e-14_dp,'film height retains boiling-capped density')
+    wall_patch%temperature=800;mixture_y=[.4_dp,.6_dp]
+    component_mass=wall_patch%mass*mixture_y;evaporated_mass=0;vapor_h=0
+    mixture_components(2)%critical_temperature=730
+    expected=.999_dp*(.4_dp*647._dp+.6_dp*730._dp)
+    call liquid_mixture_critical_limit(mixture_components,mixture_y,800._dp,value,ok)
+    call require(ok.and.abs(value-expected)<2e-12_dp,'mass-weighted reference critical limit')
+    call liquid_mixture_properties(mixture_components,mixture_y,800._dp,mixture_rho,mixture_cp,mixture_e0,ok, &
+      101325._dp,mw)
+    call require(ok,'old critical-film properties')
+    saved_patch=wall_patch
+    call advance_mixture_wall_film_exchange(wall_patch,mixture_components,component_mass,evaporated_mass,vapor_h, &
+      0._dp,0._dp,1e-15_dp,totals0,solid_energy,ok,pressure=101325._dp,gas_molecular_weights=mw, &
+      euler_temperature=.true.)
+    call require(ok.and.abs(wall_patch%temperature-expected)<2e-12_dp,'Euler film starts at critical-limited temperature')
+    call liquid_mixture_properties(mixture_components,mixture_y,wall_patch%temperature,mixture_rho,mixture_cp,mixture_e,ok, &
+      101325._dp,mw)
+    call require(ok.and.abs(wall_patch%mass*mixture_e+totals0(5)+solid_energy-saved_patch%mass*mixture_e0)<1e-14_dp, &
+      'critical temperature limit conserves accepted liquid gas energy')
+    wall_patch=saved_patch;options%mixture_time_scheme='euler';options%evaporation=.false.
+    call mixture_wall_film_rates(wall_patch,mixture_components,component_mass,species,transport,primitive,900._dp, &
+      options,.6_dp,900._dp,mixture_rates,vapor_h,heat,value,td,ok)
+    expected=2*.25_dp*pi*wall_patch%diameter**2*.6_dp*(900-expected)/wall_patch%height
+    call require(ok.and.abs(value/expected-1)<2e-14_dp,'film heat flux uses critical-limited temperature')
+    call advance_mixture_wall_film_frozen(wall_patch,mixture_components,component_mass,species,transport,primitive,900._dp, &
+      options,.6_dp,900._dp,0._dp,1e-15_dp,totals0,solid_energy,ok)
+    call require(ok.and.wall_patch%temperature==saved_patch%temperature.and.all(totals0==0), &
+      'zero interval preserves supercritical film exactly')
     liquid%vapor_pressure_model='antoine';liquid%antoine_coefficients=[5.40221_dp,1838.675_dp,-31.737_dp,1e5_dp]
     liquid%antoine_temperature_range=[300.0_dp,390.0_dp]
     call saturation_mole_fraction(liquid,18.015_dp,400.0_dp,101325.0_dp,value,ok)
+    td=.99_dp*liquid%normal_boiling_temperature
     expected=1e5_dp/101325*10.0_dp**(5.40221_dp-1838.675_dp/(td-31.737_dp))
     call require(ok.and.abs(value/expected-1)<2e-14_dp,'Antoine uses capped temperature and fit bounds')
     liquid%normal_boiling_temperature=647
@@ -1173,15 +1654,100 @@ program test_spray_core
     call advance_etab_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],1e-10_dp,ok)
     call require(ok,'instant ETAB event')
     call near(p%mass/q%mass,expected**3,1e-12_dp,'ETAB analytical child mass')
+    p=q;p%deformation=1.1_dp;p%deformation_rate=0
+    call advance_etab_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],1e-10_dp,ok, &
+      2000._dp,etab_tangent)
+    call require(ok,'ETAB transverse speed output')
+    ! Compiled pinned TABBreakup.H in native PeleC CGS units, converted to SI.
+    call near(etab_tangent,14.17280950378829_dp,1e-12_dp,'ETAB pinned CGS transverse speed')
+    p=q;p%deformation=1.1_dp;p%deformation_rate=0
+    call advance_spray_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],10._dp, &
+      10._dp*300._dp*2._dp*d/2000._dp,1e-10_dp,ok,etab_tangent)
+    call require(ok,'coupled ETAB transverse speed output')
+    call near(etab_tangent,14.17280950378829_dp,1e-12_dp,'coupled ETAB Reynolds forwarding')
+    block
+      type(spray_parcel) :: probe,old_probe
+      real(dp), parameter :: diameters(3)=[1e-4_dp,2e-5_dp,2e-4_dp]
+      ! Oracle: byte-pinned TABBreakup.H, rho=1 g/cm3, mu=.01 g/(cm s),
+      ! sigma=72 dyn/cm, gas rho=.01 g/cm3, slip=30000 cm/s, Re=2000.
+      real(dp), parameter :: speeds(3)=[12.934037796552419_dp,14.17280950378829_dp,12.771212337209002_dp]
+      real(dp), parameter :: final_diameters(3)=[3.3607815718776135e-5_dp,6.6736516979652751e-6_dp, &
+        6.7274579246275884e-5_dp]
+      integer :: sample
+      do sample=1,3
+        probe=q;probe%mass=liquid%density*pi*diameters(sample)**3/6;probe%multiplicity=100
+        probe%deformation=1.1_dp;probe%deformation_rate=0;old_probe=probe
+        call advance_etab_breakup(probe,liquid,options,10._dp,[300._dp,0._dp,0._dp],1e-10_dp,ok, &
+          2000._dp,etab_tangent)
+        call require(ok,'native CGS ETAB single-event oracle')
+        call near(etab_tangent,speeds(sample),1e-12_dp,'native CGS ETAB transverse speed across radii')
+        call near(parcel_diameter(probe,liquid),final_diameters(sample),1e-12_dp, &
+          'native CGS ETAB child diameter across radii')
+        call near(probe%mass*probe%multiplicity,old_probe%mass*old_probe%multiplicity,1e-13_dp, &
+          'native CGS ETAB represented mass')
+      end do
+    end block
+    p=q;options%maximum_multiplicity=1;options%etab_parcel_factor=.5_dp
+    call advance_spray_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],10._dp, &
+      10._dp*300._dp*2._dp*d/2000._dp,1e-10_dp,ok)
+    call require(.not.ok.and.p%mass==q%mass,'reference ETAB requires transverse speed consumer')
+    options%etab_parcel_factor=-1;options%maximum_multiplicity=0
+    p=spray_parcel(1_int64,[0._dp,0._dp,0._dp],[2._dp,3._dp,4._dp],1e-9_dp,350._dp,16._dp)
+    p%deformation=.4_dp;p%deformation_rate=2._dp
+    etab_uniforms=[0._dp,.25_dp,.5_dp,.75_dp];child_exchange=99
+    call construct_reference_etab_children(p,[0._dp,0._dp,1._dp],.5_dp,5._dp,etab_uniforms, &
+      2_int64,drops,child_exchange,ok)
+    call require(ok.and.size(drops)==4,'reference ETAB child count')
+    child_totals=0
+    do n=1,4
+      call require(drops(n)%id==n+1.and.drops(n)%parent_id==p%id.and.drops(n)%multiplicity==4, &
+        'reference ETAB child identity and count')
+      call require(drops(n)%deformation==p%deformation.and.drops(n)%deformation_rate==p%deformation_rate, &
+        'reference ETAB children retain oscillator')
+      child_totals=child_totals+parcel_totals(drops(n),liquid)
+    enddo
+    child_totals(2:5)=child_totals(2:5)+child_exchange
+    call require(maxval(abs(child_totals-parcel_totals(p,liquid)))<1e-12_dp* &
+      maxval(abs(parcel_totals(p,liquid))), &
+      'reference ETAB gas children conserve mass momentum and energy')
+    saved_drops=drops;saved_exchange=child_exchange;etab_uniforms(2)=1
+    call construct_reference_etab_children(p,[0._dp,0._dp,1._dp],.5_dp,5._dp,etab_uniforms, &
+      2_int64,drops,child_exchange,ok)
+    call require(.not.ok.and.all(child_exchange==saved_exchange).and.all(drops%id==saved_drops%id), &
+      'reference ETAB child rollback')
+    call construct_configured_etab_children(p,[0._dp,0._dp,1._dp],.5_dp,5._dp,5_int64,4, &
+      drops,child_exchange,ok,1e-3_dp)
+    call require(ok.and.size(drops)==4,'configured ETAB child construction')
+    call require(all(drops%id==[6_int64,7_int64,8_int64,9_int64]),'configured ETAB child IDs')
+    do n=1,4
+      call near(maxval(abs(drops(n)%position-p%position-1e-3_dp*drops(n)%velocity)),0._dp,1e-15_dp, &
+        'configured ETAB child final-substep drift')
+    enddo
+    saved_drops=drops;saved_exchange=child_exchange
+    call construct_configured_etab_children(p,[0._dp,0._dp,1._dp],.5_dp,5._dp,5_int64,3, &
+      drops,child_exchange,ok)
+    call require(.not.ok.and.all(child_exchange==saved_exchange).and.all(drops%id==saved_drops%id), &
+      'configured ETAB capacity rollback')
     p=q;p%deformation=0;p%deformation_rate=0
     transfer=parcel_totals(p,liquid);initial_mass=p%mass
     call advance_etab_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],5e-5_dp,ok)
     call require(ok.and.p%mass<initial_mass.and.p%multiplicity>q%multiplicity,'supercritical ETAB breakup')
     call require(maxval(abs(parcel_totals(p,liquid)-transfer))<1e-13_dp*maxval(abs(transfer)), &
       'ETAB inventory conservation')
+    call make_drops();p=drops(1);p%velocity=0
     q=p;options%maximum_substeps=1
     call advance_etab_breakup(p,liquid,options,10.0_dp,[300.0_dp,0.0_dp,0.0_dp],1.0_dp,ok)
     call require(.not.ok.and.p%mass==q%mass.and.p%deformation==q%deformation,'ETAB substep rollback')
+    options%maximum_substeps=100000
+    d=4._dp*(3.e-16_dp/(4._dp*pi*liquid_density_at_temperature(liquid,350._dp)))**(1._dp/3._dp)
+    p=spray_parcel(1_int64,[0._dp,0._dp,0._dp],[0._dp,0._dp,0._dp], &
+      4._dp*pi*liquid_density_at_temperature(liquid,350._dp)*(.9_dp*d)**3/3._dp,350._dp,100._dp)
+    p%deformation=1.1_dp;q=p
+    call advance_etab_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],1e-13_dp,ok)
+    call require(ok.and.p%mass==q%mass,'ETAB minimum-mass radius stops breakup')
+    p%mass=4._dp*pi*liquid_density_at_temperature(liquid,350._dp)*(1.1_dp*d)**3/3._dp
+    call advance_etab_breakup(p,liquid,options,10._dp,[300._dp,0._dp,0._dp],1e-13_dp,ok)
+    call require(ok.and..5_dp*parcel_diameter(p,liquid)<d,'ETAB child may cross minimum-mass radius')
   case('boundaries')
     faces='slip_wall'
     call particle_boundary_stencil([0.0_dp,.002_dp,.002_dp],[0.0_dp,0.0_dp,0.0_dp], &
@@ -1208,6 +1774,17 @@ program test_spray_core
     expected=18.0_dp*film%viscosity/(liquid%density*d*d) * &
       (1.0_dp+0.15_dp*(film%density*d/film%viscosity)**0.687_dp)
     call near(inverse_tau,expected,1.0e-13_dp,'Schiller-Naumann coefficient')
+    film%diffusivity=0
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok.and.heat==0.and.masscoef==0,'zero diffusion with evaporation disabled')
+    call near(inverse_tau,expected,1.0e-13_dp,'drag independent of disabled diffusion')
+    options%heat=.true.
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok.and.heat>0.and.masscoef==0,'heating with zero diffusion')
+    options%evaporation=.true.
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(.not.ok.and.inverse_tau==0.and.heat==0.and.masscoef==0,'zero active diffusion rejects transaction')
+    film%diffusivity=1e-5_dp;options%heat=.false.;options%evaporation=.false.
     dt=0.01_dp
     call advance_parcel_frozen_film(p,liquid,film,options,dt,q,transfer,ok)
     call require(ok,'drag step')
@@ -1309,6 +1886,13 @@ program test_spray_core
     call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.true.,masscoef, &
       heat,value,td,ok)
     call require(ok.and.masscoef==expected,'same Spalding cap in wall film')
+    film%surface_fraction=2e-15_dp;film%ambient_fraction=0
+    call wall_film_transfer_rates(wall_patch,liquid,film,.6_dp,400.0_dp,.true.,.true.,masscoef, &
+      heat,value,td,ok)
+    expected=.25_dp*pi*wall_patch%diameter**2/wall_patch%height* &
+      (film%conductivity/film%cp)**(1._dp/3)*(film%density*film%diffusivity)**(2._dp/3)* &
+      film%surface_fraction
+    call require(ok.and.abs(masscoef/expected-1)<2e-13_dp,'small wall-film Spalding avoids cancellation')
     primitive=0;primitive(1)=1;primitive(5)=101325;primitive(5+liquid%vapor_index)=.1_dp;primitive(15)=.9_dp
     call build_spray_film(species,transport,primitive,500.0_dp,p,liquid,options,film,ok)
     call require(ok,'single vapor cp film')
@@ -1357,6 +1941,19 @@ program test_spray_core
     call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
     call require(ok .and. masscoef == 0.0_dp,'AS zero-Spalding limit')
     call near(heat,2.0_dp*pi*film%conductivity*parcel_diameter(p,liquid),1.0e-13_dp,'AS heat limit')
+    film%surface_fraction=.2_dp;film%ambient_fraction=.2_dp
+    call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+    call require(ok.and.heat==0.and.masscoef==0,'active saturated vapor has zero reference heat transfer')
+    film%ambient_fraction=0
+    do n=1,3
+      film%surface_fraction=2._dp*10._dp**(-12-n)
+      call spray_transfer_rates(p,liquid,film,options,inverse_tau,heat,masscoef,ok)
+      value=film%surface_fraction/(1-film%surface_fraction)
+      expected=2*pi*film%density*film%diffusivity*(value-.5_dp*value*value)
+      call require(ok.and.abs(masscoef/expected-1)<2e-13_dp,'small Spalding evaporation avoids cancellation')
+      expected=2*pi*film%conductivity*parcel_diameter(p,liquid)
+      call require(abs(heat/expected-1)<2e-12_dp,'small positive Spalding reference heat limit')
+    enddo
   case('film_binary')
     primitive=0.0_dp; primitive(1)=1.0_dp; primitive(5)=101325.0_dp
     primitive(11)=0.1_dp; primitive(15)=0.9_dp
@@ -1429,6 +2026,35 @@ program test_spray_core
     call periodic_particle_stencil([-0.00025_dp,0.00425_dp,0.0_dp],lower,spacing,[4,4,4],indices,weights,ok)
     call require(ok .and. all(indices >= 1) .and. all(indices <= 4),'periodic corner')
     call near(sum(weights),1.0_dp,1.0e-14_dp,'partition of unity')
+  case('etab_coupling')
+    call make_drops();call make_gas(.false.)
+    drops%deformation=1.1_dp
+    options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    options%maximum_multiplicity=1._dp;options%etab_parcel_factor=.5_dp
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    saved=state;saved_t=temp;saved_drops=drops
+    call spray_system_totals(state,spacing,drops,liquid,totals0)
+    call advance_spray_coupling_3d(species,transport,liquid,options,state,temp,lower,spacing,drops, &
+      1e-9_dp,steps,ok,message)
+    call require(ok,trim(message))
+    call require(size(drops)>size(saved_drops).and.all(drops%id>saved_drops(size(saved_drops))%id), &
+      'coupled reference ETAB replaces parents with new IDs')
+    call require(all(drops%parent_id>=saved_drops(1)%id),'coupled reference ETAB lineage')
+    call require(all(drops%khrt_initial_count==drops%multiplicity).and.all(drops%khrt_shed_volume==0), &
+      'reference ETAB children initialize their own KH count and empty shed inventory')
+    call require(any(abs(drops(1)%velocity-saved_drops(1)%velocity)>1e-12_dp), &
+      'coupled reference ETAB transverse child velocity')
+    call spray_system_totals(state,spacing,drops,liquid,totals1)
+    call require(maxval(abs(totals1-totals0))<1e-12_dp*maxval(abs(totals0)), &
+      'coupled reference ETAB gas and child conservation')
+    call advance_spray_coupling_3d(species,transport,liquid,options,state,temp,lower,spacing,drops, &
+      1e-9_dp,steps,ok,message)
+    call require(ok,'reference ETAB children continue into the next step')
+    state=saved;temp=saved_t;drops=saved_drops;options%maximum_parcels=size(drops)
+    call advance_spray_coupling_3d(species,transport,liquid,options,state,temp,lower,spacing,drops, &
+      1e-9_dp,steps,ok,message)
+    call require(.not.ok.and.all(state==saved).and.all(temp==saved_t).and. &
+      all(drops%id==saved_drops%id),'coupled reference ETAB capacity rollback')
   case('coupling','rollback','substeps','zero')
     call make_drops(); call make_gas(.false.)
     call spray_system_totals(state,spacing,drops,liquid,totals0)

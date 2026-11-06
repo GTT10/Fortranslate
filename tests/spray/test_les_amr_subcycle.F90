@@ -7,7 +7,10 @@ program test_les_amr_subcycle
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
-  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d,advance_amr_patch_tree_les_level_3d, &
+    convert_amr_les_tree_energy_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use les_amr_subcycle_mod, only: advance_amr_patch_tree_subcycle_les_3d, &
     compute_amr_patch_tree_subcycle_les_timestep_3d
   implicit none
@@ -15,6 +18,9 @@ program test_les_amr_subcycle
   type(amr_patch_tree_3d) :: tree
   type(amr_patch_3d) :: patches(3)
   type(amr_tree_state_3d) :: state,temp,reference,reference_t,saved,saved_t,synchronized
+  type(amr_tree_state_3d) :: coarse_plain,coarse_rotated
+  type(rotating_frame_3d) :: frame
+  type(amr_tree_flux_3d), allocatable :: plain_flux(:),rotated_flux(:)
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),q(12),sound,initial(12),final(12),budget(12),maximum
   real(dp) :: reference_budget(12),reference_max,dt,diffusivity,wall_t(6),wall_v(3,6)
   real(dp), parameter :: spacing(3)=[.001_dp,.0015_dp,.002_dp]
@@ -137,9 +143,90 @@ program test_les_amr_subcycle
         call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'temperature rollback')
       end do
       call require(all(budget==-17).and.maximum==-19.and.all(counts==-23).and.diffusivity==-29,'diagnostic rollback')
-    end do
   end do
   end do
+  end do
+  frame%axis=3;frame%angular_speed=400._dp;frame%axis_point=[.001_dp,-.002_dp,0._dp]
+  faces='outflow'
+  call prolong_amr_patch_tree_3d(tree,root,reference,ok)
+  call require(ok,'rotating recursive LES initial state')
+  call prolong_amr_patch_tree_3d(tree,rt,reference_t,ok)
+  call require(ok,'rotating recursive LES initial temperature')
+  state=reference;temp=reference_t
+  call convert_amr_les_tree_energy_3d(tree,state,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok)
+  call require(ok,'rotating recursive LES energy storage')
+  selected_dt=-1;selected_d=-1
+  call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,reference,reference_t,spacing,.05_dp,faces, &
+    .17_dp,.7_dp,.7_dp,selected_dt,selected_d,ok)
+  call require(ok.and.selected_dt>0,'recursive LES timestep oracle')
+  dt=-1;diffusivity=-1
+  call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temp,spacing,.05_dp,faces, &
+    .17_dp,.7_dp,.7_dp,dt,diffusivity,ok,frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok.and.dt==selected_dt.and.diffusivity==selected_d,'rotating recursive LES timestep parity')
+  dt=min(selected_dt,1e-9_dp)
+  call advance_amr_patch_tree_subcycle_les_3d(tree,species,reference,reference_t,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,reference_budget,reference_max,selected_d,ok)
+  call require(ok,'recursive LES step oracle')
+  call advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temp,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,budget,maximum,diffusivity,ok,frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'rotating recursive LES step')
+  call convert_amr_les_tree_energy_3d(tree,state,spacing,frame,[0._dp,0._dp,0._dp],.false.,ok)
+  call require(ok,'rotating recursive LES energy recovery')
+  do node=1,size(tree%nodes)
+    call require(maxval(abs(state%fields(node)%values-reference%fields(node)%values)/ &
+      max(1._dp,abs(reference%fields(node)%values)))<2e-12_dp,'rotating recursive LES state parity')
+  enddo
+  call require(maxval(abs(budget-reference_budget))<1e-12_dp,'rotating recursive LES budget parity')
+  call prolong_amr_patch_tree_3d(tree,root,reference,ok)
+  call require(ok,'rotating LES level state')
+  call prolong_amr_patch_tree_3d(tree,rt,reference_t,ok)
+  call require(ok,'rotating LES level temperature')
+  state=reference;temp=reference_t
+  call convert_amr_les_tree_energy_3d(tree,state,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok)
+  call require(ok,'rotating LES level storage')
+  call advance_amr_patch_tree_les_level_3d(tree,species,reference,reference_t,0,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,plain_flux,selected_d,ok)
+  call require(ok,'ordinary LES level oracle')
+  call advance_amr_patch_tree_les_level_3d(tree,species,state,temp,0,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,rotated_flux,diffusivity,ok,frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'rotating LES level step')
+  call convert_amr_les_tree_energy_3d(tree,state,spacing,frame,[0._dp,0._dp,0._dp],.false.,ok)
+  call require(ok,'rotating LES level recovery')
+  call require(maxval(abs(state%fields(1)%values-reference%fields(1)%values)/ &
+    max(1._dp,abs(reference%fields(1)%values)))<2e-12_dp,'rotating LES level state parity')
+  call require(maxval(abs(rotated_flux(1)%x-plain_flux(1)%x))<1e-12_dp,'rotating LES level flux parity')
+  call prolong_amr_patch_tree_3d(tree,root,reference,ok)
+  call require(ok,'rotating LES fine level state')
+  call prolong_amr_patch_tree_3d(tree,rt,reference_t,ok)
+  call require(ok,'rotating LES fine level temperature')
+  state=reference;temp=reference_t
+  call convert_amr_les_tree_energy_3d(tree,state,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok)
+  call require(ok,'rotating LES fine level storage')
+  allocate(coarse_plain%fields(size(tree%nodes)))
+  allocate(coarse_plain%fields(1)%values(13,4,4,4))
+  coarse_plain%fields(1)%values(:12,:,:,:)=reference%fields(1)%values
+  coarse_plain%fields(1)%values(13,:,:,:)=reference_t%fields(1)%values(1,:,:,:)
+  coarse_rotated=coarse_plain
+  call convert_amr_les_tree_energy_3d(tree,coarse_rotated,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok, &
+    maximum_depth=0)
+  call require(ok,'rotating LES coarse endpoint storage')
+  call advance_amr_patch_tree_les_level_3d(tree,species,reference,reference_t,1,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,plain_flux,selected_d,ok,coarse_start=coarse_plain,coarse_end=coarse_plain, &
+    fractions_start=[0._dp],fractions_end=[1._dp])
+  call require(ok,'ordinary LES fine level oracle')
+  call advance_amr_patch_tree_les_level_3d(tree,species,state,temp,1,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,rotated_flux,diffusivity,ok,coarse_start=coarse_rotated,coarse_end=coarse_rotated, &
+    fractions_start=[0._dp],fractions_end=[1._dp],frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'rotating LES fine level step')
+  call convert_amr_les_tree_energy_3d(tree,state,spacing,frame,[0._dp,0._dp,0._dp],.false.,ok)
+  call require(ok,'rotating LES fine level recovery')
+  do node=1,size(tree%nodes)
+    if(tree%nodes(node)%level/=1) cycle
+    call require(maxval(abs(state%fields(node)%values-reference%fields(node)%values)/ &
+      max(1._dp,abs(reference%fields(node)%values)))<2e-12_dp,'rotating LES fine level state parity')
+    call require(maxval(abs(rotated_flux(node)%x-plain_flux(node)%x))<1e-12_dp, &
+      'rotating LES fine level flux parity')
+  enddo
   print *, 'PASS: recursive LES, 1/4/36 steps, root oracle, physical/periodic budgets and rollback'
 contains
   subroutine require(condition,label)

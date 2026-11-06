@@ -1,5 +1,11 @@
 # MPI mixed spray
 
+A separate `&reactive_constant_transport` group in the same input sets constant
+gas viscosity/conductivity and optional bulk viscosity and rhoD (kg/(m s)).
+It requires enabled gas transport, reaches gas stages and timestep bounds,
+and is included in restart matching. The same resolved coefficients reach parcel/film skin transport evaluation.
+Full rhoD overrides use the pinned Drag.H molecular-weight conversion.
+
 Build with `PELEF_ENABLE_MPI=ON` and `PELEF_ENABLE_SPRAY=ON`, then run from a
 fresh output directory (input paths may be absolute):
 
@@ -26,11 +32,28 @@ Steps end exactly at pending event times; events at the final time are processed
 before checkpoint/output. Each event preserves prior particles and reserves new
 IDs, then migrates the new population to owners.
 
+Time controls include `initial_timestep_factor` (default 1, range `(0,1]`)
+and `maximum_timestep_growth` (default 1.1, at least 1). Physical limits are
+reduced across ranks before the first-step factor or accepted-step growth cap;
+final-time and injection-event caps follow. Checkpoints retain the last accepted
+interval and bind both controls. A restart requires this interval history.
+`initial_dt` and `fixed_dt` default to zero; nonpositive values are inactive.
+Positive `initial_dt` overrides the first estimate and shrink. Positive
+`fixed_dt` bypasses physical estimates and growth limits, must be no larger
+than `dt_max`, and receives the first-step factor when `initial_dt` is inactive.
+Event/final caps and existing transactional retries still apply; checkpoints
+retain the accepted interval and bind both prescribed controls.
+
+
 Time controls are `final_time`, `dt_max`, `cfl`, `max_steps`, `rtol`, `atol` and
 `chemistry` (`implicit`, `explicit`, or `cvode` in a SUNDIALS build). The code
 reduces hydro/transport time-step limits across ranks and retries rejected complete
 updates with halved steps. `transport_flags(4)` selects viscosity, thermal
 conduction, species diffusion and barodiffusion. Solver/limiter defaults are HLLC/MC.
+
+`mixture_time_scheme='euler'` selects explicit particle velocity and temperature updates;
+the default is `'conservative'`. Gas exchange remains conservative, and the
+scheme must match when restarting, including across MPI rank counts.
 
 Outputs use `output_prefix`:
 
@@ -52,8 +75,10 @@ Set `checkpoint_path='step.chk'` to save the final accepted state. Set
 `restart_path='step.chk'` in a subsequent run, choose a fresh `output_prefix`, and
 increase `final_time` to continue. Already completed injection events are skipped on restart. Gas,
 particles, component masses, budgets, time, step/event counts and the ID high-water mark
-are restored. The MPI rank count may change if the new partition still has at
-least two x cells per rank. The implementation gathers checkpoint data on root;
+are restored. For `time_integrator='sdc'` or `'mol'`, each rank may own one x cell;
+each global axis needs at least two cells. The split integrator requires at least
+two x cells per rank and three cells along y and z. These limits also apply when
+changing the MPI rank count on restart. The implementation gathers checkpoint data on root;
 it is intended for bounded cases, not production parallel I/O.
 
 The checkpoint binds the mechanism, mixture evolution, geometry, liquid properties,
@@ -434,3 +459,47 @@ Fixed and selected H2/O2 same-rank and 2-to-4-rank coefficient/restart checks
 are recorded in [the PPM input evidence](../../docs/validation/difmag-mpi-spray-20260925.md).
 Fixed PLM coupled restart checks are recorded
 [separately](../../docs/validation/spray-plm-difmag-input-20260925.md).
+
+The experimental `time_integrator='mol'` route requires `solver='pelec'`,
+`hydro_reconstruction='characteristic_plm'` and implicit or CVODE chemistry.
+`sdc_iterations` selects the reacting MOL iteration count; nonreacting gas
+uses one trapezoidal pass. `mol_lax_friedrichs=.true.` selects LF face fluxes
+instead of the default acoustic solver. The mode and flux selection are bound
+to checkpoint identity. Particle MKD/MK and film half kicks complete at the
+old and first new gas stages; later reacting passes retain their accepted
+physical exchange. Fixed and selected H2/O2 use this shared connection;
+full-duration reference comparisons remain open.
+
+
+### Rotating gas MOL
+
+Add a separate group for both fixed and selected MPI spray applications:
+
+```fortran
+&mpi_spray_rotation
+ enabled=.true.
+ rotation_axis=2
+ angular_speed=3000
+ axis_point=.03,-.04,.02
+/
+```
+
+`rotation_axis` uses pinned PeleC axes 0/1/2; `angular_speed` is in rad/s and
+`axis_point` is in metres. This option requires MOL. Disabled rotation requires
+default controls (`rotation_axis=2`, zero angular speed and axis point).
+Initial gas and inlet/wall templates contain ordinary energy with relative
+velocity. Published gas energy, CSV and checkpoint fields use
+`rho*(e + |v_rel|^2/2 - Phi)`, with `Phi=omega^2*r_perp^2/2`.
+Gas Coriolis/centrifugal forcing changes momentum; it has no energy source in
+this variable. Thermodynamic, timestep, transport and particle/film evaluations
+recover ordinary gas energy at the local cell/ghost positions.
+
+Particle and film energy remain ordinary. Their gas mass feedback therefore
+adds `-Phi*mass_source` to the stored gas energy source. The history inventory
+combines rotating gas energy and ordinary particle/film energy; its external
+ledger includes this conversion along with the existing gas/particle forcing.
+Gas rotation and `particle_acceleration` are separate controls.
+
+The checkpoint binds the frame axis, angular speed and axis point. The root
+reconstructs global cell potentials for EOS validation, independently of rank
+count. Changed frame controls or enabling/disabling rotation reject restart.

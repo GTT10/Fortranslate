@@ -8,9 +8,11 @@ program test_spray_mpi_eb_step
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
-  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling
+  use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling,convert_mpi_amr_tree_rotating_energy
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
+  use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use gas_transport_mod, only: gas_transport_species
   use transport_database_mod, only: load_h2o2_full_transport
   use, intrinsic :: iso_fortran_env, only: int64
@@ -147,9 +149,117 @@ program test_spray_mpi_eb_step
     call require(drops(1)%velocity(2)>0.and.drops(1)%velocity(1)<20,'reflection and drag')
   end if
   call check_kick_stages()
+  call check_rotating_coupling()
+  call check_reference_etab()
   if(rank==0) print *, 'PASS: MPI EB mixed-particle interval and global wall inventory'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_reference_etab()
+    type(amr_tree_state_3d) :: initial_gas,source
+    integer(int64) :: mark
+    integer :: local_children,total_children,particle_steps
+    real(dp) :: wall_budget(nv)
+    type(spray_wall_options) :: film_settings
+    type(spray_wall_film), allocatable :: wall_films(:)
+    real(dp), allocatable :: wall_mass(:,:)
+    logical :: good
+    field=saved;temp=saved_t
+    if(allocated(drops)) deallocate(drops,masses)
+    allocate(drops(merge(1,0,rank==owners(2))),masses(2,size(drops)))
+    if(size(drops)>0) then
+      drops(1)=spray_parcel(1_int64,[.0015_dp,.002_dp,.0015_dp], &
+        [50._dp,0._dp,0._dp],1e-12_dp,350._dp,16._dp)
+      masses(:,1)=drops(1)%mass*[.25_dp,.75_dp]
+    endif
+    options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    options%maximum_multiplicity=1;options%etab_parcel_factor=.5_dp;options%maximum_parcels=2
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    film_settings%maximum_films=16
+    allocate(wall_films(0),wall_mass(2,0))
+    mark=1;wall_budget=17
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
+      tree,owners,drops,masses,zero,spacing,1e-9_dp,particle_steps,good,last_id=mark, &
+      boundary_change=wall_budget,eb_geometry=g,nodal_phi=phi,wall_films=wall_films, &
+      film_mass=wall_mass,film_settings=film_settings)
+    call require(.not.good.and.mark==1.and.all(wall_budget==17),'MPI EB ETAB capacity rollback')
+    options%maximum_parcels=16
+    call inventory(before)
+    initial_gas=field;source=field
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temp, &
+      tree,owners,drops,masses,zero,spacing,1e-9_dp,particle_steps,good,last_id=mark, &
+      boundary_change=wall_budget,eb_geometry=g,nodal_phi=phi,wall_films=wall_films, &
+      film_mass=wall_mass,film_settings=film_settings,gas_change=source)
+    call require(good.and.mark==5,'MPI EB ETAB child replacement')
+    local_children=size(drops)
+    call MPI_Allreduce(local_children,total_children,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require(total_children==4,'MPI EB ETAB global child count')
+    if(local_children>0) call require(all(drops%parent_id==1),'MPI EB ETAB child lineage')
+    call require(size(wall_films)==0,'MPI EB ETAB impact dispatcher fluid trajectory')
+    do node=1,size(owners)
+      if(owners(node)/=rank) cycle
+      call require(all(abs(field%fields(node)%values-initial_gas%fields(node)%values- &
+        source%fields(node)%values)<=3e-13_dp*max(1._dp,abs(field%fields(node)%values))), &
+        'MPI EB ETAB gas source reconstruction')
+    enddo
+    call inventory(after)
+    call require(all(abs(after-before-wall_budget)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+      'MPI EB ETAB gas and particle conservation')
+  end subroutine
+  subroutine check_rotating_coupling()
+    type(rotating_frame_3d) :: frame
+    type(amr_tree_state_3d) :: reference_gas,reference_t,reference_source,rotating_gas,rotating_t,rotating_source
+    type(spray_parcel), allocatable :: initial(:),reference(:),candidate(:)
+    real(dp), allocatable :: initial_mass(:,:),reference_mass(:,:),candidate_mass(:,:)
+    real(dp) :: wall_reference(nv),wall_rotating(nv),interval
+    integer :: q,reference_steps,rotating_steps
+    logical :: good
+    frame%axis=3;frame%angular_speed=120._dp;frame%axis_point=[.001_dp,.001_dp,.001_dp]
+    interval=2.e-10_dp
+    initial=saved_drops;initial_mass=saved_mass
+    do q=1,size(initial)
+      initial(q)%position=[.0015_dp,.002_dp,.0015_dp]
+    end do
+    reference_gas=saved;reference_t=saved_t;reference=initial;reference_mass=initial_mass
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options, &
+      reference_gas,reference_t,tree,owners,reference,reference_mass,zero,spacing,interval,reference_steps,good, &
+      boundary_change=wall_reference,eb_geometry=g,nodal_phi=phi,gas_change=reference_source,motion_mode='kick')
+    call require(good.and.reference_steps==1,'ordinary rotating reference interval')
+    rotating_gas=saved;rotating_t=saved_t;candidate=initial;candidate_mass=initial_mass
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,rotating_gas,zero,spacing,frame,.true.,good,g)
+    call require(good,'initial rotating gas conversion')
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options, &
+      rotating_gas,rotating_t,tree,owners,candidate,candidate_mass,zero,spacing,interval,rotating_steps,good, &
+      boundary_change=wall_rotating,eb_geometry=g,nodal_phi=phi,gas_change=rotating_source,motion_mode='kick',frame=frame)
+    call require(good.and.rotating_steps==reference_steps,'rotating particle exchange')
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,reference_gas,zero,spacing,frame,.true.,good,g)
+    call require(good,'accepted reference gas conversion')
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,reference_source,zero,spacing,frame,.true.,good,g)
+    call require(good,'accepted reference source conversion')
+    call require(all(wall_rotating==wall_reference).and.all(candidate_mass==reference_mass), &
+      'rotating exchange parcel and wall totals')
+    do q=1,size(candidate)
+      call require(all(candidate(q)%position==reference(q)%position).and. &
+        all(candidate(q)%velocity==reference(q)%velocity),'rotating parcel motion')
+      call require(candidate(q)%mass==reference(q)%mass.and.candidate(q)%temperature==reference(q)%temperature, &
+        'rotating parcel thermodynamics')
+    end do
+    do q=1,size(owners)
+      if(owners(q)/=rank) cycle
+      call require(all(abs(rotating_gas%fields(q)%values-reference_gas%fields(q)%values)<= &
+        2.e-13_dp*max(1._dp,abs(reference_gas%fields(q)%values))),'rotating gas exchange state')
+      call require(all(abs(rotating_source%fields(q)%values-reference_source%fields(q)%values)<= &
+        2.e-13_dp*max(1._dp,abs(reference_source%fields(q)%values))),'rotating gas exchange source')
+    end do
+    rotating_gas=saved
+    if(rank==0) frame%axis=0
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,rotating_gas,zero,spacing,frame,.true.,good,g)
+    call require(.not.good,'rank-local invalid rotation rejected collectively')
+    do q=1,size(owners)
+      if(owners(q)/=rank) cycle
+      call require(all(rotating_gas%fields(q)%values==saved%fields(q)%values),'invalid rotation rollback')
+    end do
+  end subroutine check_rotating_coupling
+
   subroutine check_kick_stages()
     type(amr_tree_state_3d) :: reference_gas,reference_t,reference_source,stage_gas,stage_t,stage_source
     type(spray_parcel), allocatable :: initial(:),reference(:),candidate(:)

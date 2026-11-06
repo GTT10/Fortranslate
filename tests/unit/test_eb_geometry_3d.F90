@@ -15,6 +15,7 @@ program test_eb_geometry_3d
   real(dp) :: fluid_volume, nan_value
   logical :: ok
 
+  call check_positive_nodal_identity()
   call build_axis_plane_eb_geometry_3d( &
     nx, ny, nz, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
     "x", -0.1_dp, geometry, ok)
@@ -301,6 +302,31 @@ program test_eb_geometry_3d
   write(*, '(a)') "test_eb_geometry_3d: PASS"
 
 contains
+  subroutine check_positive_nodal_identity()
+    type(eb_geometry_3d) :: full,coarse
+    real(dp) :: nodal(0:8,0:8,0:8)
+    integer :: x,y,z
+    logical :: good
+    do z=0,8
+    do y=0,8
+    do x=0,8
+      nodal(x,y,z)=100._dp+real(x+2*y+3*z,dp)/8
+    enddo
+    enddo
+    enddo
+    call build_level_set_eb_geometry_3d(nodal,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],full,good)
+    call require(good,'fully positive nodal geometry')
+    call require(all(full%cell_type==eb_regular_cell_3d).and.all(full%volume_fraction==1._dp), &
+      'exact positive-node regular volume identity')
+    call require(all(full%x_face_fraction==1._dp).and.all(full%y_face_fraction==1._dp).and. &
+      all(full%z_face_fraction==1._dp),'exact positive-node regular apertures')
+    call require(all(full%x_face_centroid_y==0).and.all(full%x_face_centroid_z==0).and. &
+      all(full%y_face_centroid_x==0).and.all(full%y_face_centroid_z==0).and. &
+      all(full%z_face_centroid_x==0).and.all(full%z_face_centroid_y==0),'exact regular face centers')
+    call require(all(full%boundary_area==0),'regular nodes create no cut boundary')
+    call coarsen_eb_geometry_3d(full,2,coarse,good)
+    call require(good.and.all(coarse%volume_fraction==1._dp),'regular metric survives restriction')
+  end subroutine check_positive_nodal_identity
 
   subroutine check_coarsening()
     type(eb_geometry_3d) :: fine,coarse,direct,saved

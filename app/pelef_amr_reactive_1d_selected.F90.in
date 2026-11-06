@@ -106,13 +106,15 @@ program pelef_amr_reactive_1d_selected
     requested_temperature_maximum = config%initial_temperature / &
       (1.0_dp - config%density_wave_amplitude)
   end if
-  call validate_selected_temperature_range( &
-    "Selected AMR reactive 1D", requested_temperature_minimum, &
-    requested_temperature_maximum, common_temperature_minimum, &
-    common_temperature_maximum, ok, message)
-  if (.not. ok) then
-    write(*, '(a)') trim(message)
-    error stop 2
+  if (.not. config%pinned_eos_extrapolation) then
+    call validate_selected_temperature_range( &
+      "Selected AMR reactive 1D", requested_temperature_minimum, &
+      requested_temperature_maximum, common_temperature_minimum, &
+      common_temperature_maximum, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      error stop 2
+    end if
   end if
 
   call resolve_reactive_1d_selected_composition( &

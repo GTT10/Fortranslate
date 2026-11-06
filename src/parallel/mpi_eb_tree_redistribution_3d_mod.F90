@@ -4,16 +4,450 @@ module mpi_eb_tree_redistribution_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
-  use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
+  use eb_reactive_redistribution_3d_mod, only: state_redistribution_graph_slopes_3d,limit_state_recipient_slopes, &
+    state_redistribution_boundary_nodes_3d,state_redist_register_3d,compute_state_redist_level_stage_3d, &
+    initialize_state_redist_tree_register_3d,restrict_state_redist_patch_source_3d,srd_coarse_boundary, &
+    assemble_state_redist_patch_rereflux_3d,state_redist_patch_spill_requests_3d, &
+    state_redist_patch_rereflux_budget_3d, &
+    state_redist_rereflux_budget_valid_3d,state_redist_box_3d
+  use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match,extract_eb_geometry_3d
+  use eb_reactive_two_level_3d_mod, only: matching_eb_metrics_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
-  use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
+  use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d, &
+    validate_mpi_amr_tree_metadata_3d,add_mpi_amr_tree_cells_3d
   use mpi_eb_tree_transfer_3d_mod, only: validate_mpi_eb_tree_geometry_3d
   implicit none
   private
+  public :: compute_state_redist_mpi_level_stage_3d,assemble_state_redist_mpi_interface_source_3d
+  public :: assemble_state_redist_mpi_interface_rereflux_3d
   public :: redistribute_sdc_mpi_eb_tree_flux_rate_3d,redistribute_sdc_mpi_eb_tree_level_rate_3d
   public :: redistribute_sdc_mpi_eb_tree_state_level_rate_3d
   public :: redistribute_mpi_eb_tree_state_3d,redistribute_sdc_mpi_eb_tree_state_rate_3d
 contains
+  subroutine assemble_state_redist_mpi_interface_rereflux_3d(tree,owners,geometry,registers,nv,depth, &
+      increment,comm,ok,boundary_faces,spill,spill_active)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nv,depth
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(state_redist_register_3d), intent(in) :: registers(:)
+    type(amr_tree_state_3d), intent(inout) :: increment
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type(amr_tree_state_3d), optional, intent(inout) :: spill
+    logical, optional, intent(out) :: spill_active
+    type(amr_tree_state_3d) :: source,pending,pending_spill
+    type(state_redist_box_3d) :: box
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: h
+    logical :: periodic(3)
+    real(dp), allocatable :: patch_increment(:,:,:,:),halo_spill(:,:,:,:),values(:,:),all_values(:,:)
+    integer, allocatable :: requests(:,:),all_requests(:,:)
+    real(dp) :: local_budget(3,nv),global_budget(3,nv),patch_budget(3,nv),spill_budget(2,nv)
+    integer :: rank,status,p,n(3),capacity,count,m
+    logical :: good,valid,ready,local_active,global_active
+    ok=.false.
+    if(present(spill_active)) spill_active=.false.
+    call assemble_state_redist_mpi_interface_source_3d(tree,owners,geometry,registers,nv,depth, &
+      source,comm,ready,boundary_faces)
+    if(.not.ready) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,good)
+    call MPI_Allreduce(good,ready,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.ready) return
+    periodic=.false.
+    if(present(boundary_faces)) periodic=[boundary_faces(1)=='periodic',boundary_faces(3)=='periodic', &
+      boundary_faces(5)=='periodic']
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    allocate(pending%fields(size(tree%nodes)));valid=.true.;local_budget=0._dp
+    capacity=0;count=0
+    if(present(spill).and.depth>0) then
+      allocate(pending_spill%fields(size(tree%nodes)))
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank) cycle
+        n=tree%nodes(p)%shape
+        allocate(pending_spill%fields(p)%values(nv,n(1),n(2),n(3)),source=0._dp)
+        if(tree%nodes(p)%level==depth) capacity=capacity+product(n+2)-product(n)
+      enddo
+      allocate(all_requests(4,capacity),all_values(nv,capacity))
+    endif
+    do p=1,size(tree%nodes)
+      if(owners(p)/=rank) cycle
+      n=tree%nodes(p)%shape
+      allocate(pending%fields(p)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      if(tree%nodes(p)%level/=depth) cycle
+      h=(geometry(p)%nx-n(1))/2
+      box%valid_lower=h+1;box%valid_upper=h+n
+      box%domain_lower=1_int64+int(h,int64)-origin(:,p)
+      box%domain_upper=domain(:,depth+1)+int(h,int64)-origin(:,p)
+      box%periodic=periodic
+      if(present(spill).and.depth>0) then
+        call assemble_state_redist_patch_rereflux_3d(geometry(p),registers(p),n,source%fields(p)%values, &
+          patch_increment,good,halo_spill,box)
+      else
+        call assemble_state_redist_patch_rereflux_3d(geometry(p),registers(p),n,source%fields(p)%values, &
+          patch_increment,good,box=box)
+      endif
+      if(.not.good) then
+        valid=.false.;exit
+      endif
+      call state_redist_patch_rereflux_budget_3d(geometry(p),n,source%fields(p)%values, &
+        patch_increment,patch_budget,good)
+      if(.not.good) then
+        valid=.false.;exit
+      endif
+      local_budget=local_budget+patch_budget
+      if(present(spill).and.depth>0) then
+        call state_redist_patch_spill_requests_3d(tree,p,geometry,halo_spill,requests,values,spill_budget,good,boundary_faces)
+        if(.not.good) then
+          valid=.false.;exit
+        endif
+        m=size(requests,2)
+        all_requests(:,count+1:count+m)=requests
+        all_values(:,count+1:count+m)=values
+        count=count+m
+        local_budget(2,:)=local_budget(2,:)+spill_budget(1,:)
+        local_budget(3,:)=local_budget(3,:)+spill_budget(2,:)
+      endif
+      call move_alloc(patch_increment,pending%fields(p)%values)
+    enddo
+    call MPI_Allreduce(valid,ready,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.ready) return
+    if(present(spill).and.depth>0) then
+      call add_mpi_amr_tree_cells_3d(tree,owners,pending_spill,nv,all_requests(:,:count), &
+        all_values(:,:count),comm,ready,maximum_depth=depth-1)
+      if(.not.ready) return
+    endif
+    call MPI_Allreduce(local_budget,global_budget,size(local_budget),MPI_DOUBLE_PRECISION,MPI_SUM,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(.not.state_redist_rereflux_budget_valid_3d(global_budget)) return
+    if(present(spill)) then
+      if(depth>0) then
+        local_active=count>0
+        call MPI_Allreduce(local_active,global_active,1,MPI_LOGICAL,MPI_LOR,comm,status)
+        if(status/=MPI_SUCCESS) return
+        call move_alloc(pending_spill%fields,spill%fields)
+        if(present(spill_active)) spill_active=global_active
+      endif
+    endif
+    call move_alloc(pending%fields,increment%fields);ok=.true.
+  end subroutine assemble_state_redist_mpi_interface_rereflux_3d
+
+  ! Owner-local interface ledger restriction, sparse deposit, then exact
+  ! coarse peer/periodic halo refresh. No rank gathers a complete register.
+  subroutine assemble_state_redist_mpi_interface_source_3d(tree,owners,geometry,registers,nv,depth, &
+      source_halos,comm,ok,boundary_faces)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nv,depth
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(state_redist_register_3d), intent(in) :: registers(:)
+    type(amr_tree_state_3d), intent(inout) :: source_halos
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    type records
+      integer, allocatable :: target(:,:)
+      real(dp), allocatable :: value(:,:)
+    end type
+    type(records), allocatable :: patches(:)
+    type(amr_tree_state_3d) :: sources,pending
+    type(state_redist_register_3d) :: expected
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:),requests(:,:),images(:,:)
+    real(dp), allocatable :: contributions(:,:),values(:,:)
+    integer :: rank,status,p,q,n(3),dims(3),extra(3),width,i,j,k,c,idx(3),count,offset,query
+    integer :: controls(7),low(7),high(7)
+    integer(int64) :: total,cell(3)
+    character(len=32) :: faces(6)
+    logical :: good,ready,valid,inside,periodic(3)
+    ok=.false.;faces='outflow'
+    if(present(boundary_faces)) faces=boundary_faces
+    call validate_mpi_amr_tree_metadata_3d(tree,owners,nv,comm,ready)
+    if(.not.ready) return
+    valid=valid_reactive_boundaries_3d(faces).and.depth>=0.and.depth+1<tree%level_count()
+    valid=valid.and.size(geometry)==size(tree%nodes).and.size(registers)==size(tree%nodes)
+    call agree(valid,ready)
+    if(.not.ready) return
+    controls(1)=depth
+    controls(2:7)=merge(1,0,faces=='periodic')
+    call MPI_Allreduce(controls,low,7,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,7,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    extra=[geometry(1)%nx,geometry(1)%ny,geometry(1)%nz]-tree%nodes(1)%shape
+    valid=all(extra>=2).and.all(modulo(extra,2)==0).and.all(extra==extra(1))
+    call agree(valid,ready)
+    if(.not.ready) return
+    width=extra(1)/2
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready,padding=width)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,good)
+    call agree(good,ready)
+    if(.not.ready) return
+    count=size(tree%nodes);periodic=faces(1:6:2)=='periodic'
+    allocate(sources%fields(count),pending%fields(count),patches(count));valid=.true.;total=0
+    do p=1,count
+      if(owners(p)/=rank) cycle
+      n=tree%nodes(p)%shape
+      ! The sparse cell API checks all owned valid fields; inactive levels
+      ! carry zeros and are not transmitted unless explicitly requested.
+      allocate(sources%fields(p)%values(nv,n(1),n(2),n(3)),source=0._dp)
+      if(tree%nodes(p)%level/=depth.and.tree%nodes(p)%level/=depth+1) cycle
+      dims=n+2*width
+      if(.not.registers(p)%is_valid(nv,dims)) then
+        valid=.false.;exit
+      endif
+      call initialize_state_redist_tree_register_3d(tree,p,nv,width,expected,good,faces,registers(p)%scale)
+      if(.not.good) then
+        valid=.false.;exit
+      endif
+      if(allocated(expected%coarse_flags).neqv.allocated(registers(p)%coarse_flags)) then
+        valid=.false.;exit
+      endif
+      if(allocated(expected%fine_ghost).neqv.allocated(registers(p)%fine_ghost)) then
+        valid=.false.;exit
+      endif
+      if(.not.allocated(registers(p)%valid_cells)) then
+        valid=.false.;exit
+      endif
+      if(any(expected%valid_cells.neqv.registers(p)%valid_cells)) then
+        valid=.false.;exit
+      endif
+      if(allocated(expected%coarse_flags)) then
+        if(any(expected%coarse_flags/=registers(p)%coarse_flags)) then
+          valid=.false.;exit
+        endif
+      endif
+      if(allocated(expected%fine_ghost)) then
+        if(any(expected%fine_ghost.neqv.registers(p)%fine_ghost)) then
+          valid=.false.;exit
+        endif
+      endif
+      if(tree%nodes(p)%level==depth) then
+        allocate(pending%fields(p)%values(nv,dims(1),dims(2),dims(3)),source=0._dp)
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          idx=[i,j,k]+width
+          if(registers(p)%coarse_flags(idx(1),idx(2),idx(3))/=srd_coarse_boundary) cycle
+          sources%fields(p)%values(:,i,j,k)=registers(p)%coarse_delta(:,idx(1),idx(2),idx(3))
+        enddo
+        enddo
+        enddo
+      else
+        call restrict_state_redist_patch_source_3d(tree,p,geometry(p),registers(p),nv, &
+          patches(p)%target,patches(p)%value,good,faces)
+        if(.not.good) then
+          valid=.false.;exit
+        endif
+        total=total+int(size(patches(p)%target,2),int64)
+      endif
+    enddo
+    valid=valid.and.total<=int(huge(1)/max(4,nv),int64)
+    call agree(valid,ready)
+    if(.not.ready) return
+    allocate(requests(4,int(total)),contributions(nv,int(total)));offset=0
+    do p=1,count
+      if(.not.allocated(patches(p)%target)) cycle
+      query=size(patches(p)%target,2)
+      requests(:,offset+1:offset+query)=patches(p)%target
+      contributions(:,offset+1:offset+query)=patches(p)%value
+      offset=offset+query
+    enddo
+    ! Check remote targets from topology on the sender. No remote mask or
+    ! coarse payload must be replicated to establish boundary ownership.
+    do q=1,count
+      if(.not.any(requests(1,:)==q)) cycle
+      call initialize_state_redist_tree_register_3d(tree,q,nv,1,expected,good,faces)
+      if(.not.good) then
+        valid=.false.;exit
+      endif
+      do query=1,size(requests,2)
+        if(requests(1,query)/=q) cycle
+        idx=requests(2:4,query)+1
+        if(expected%coarse_flags(idx(1),idx(2),idx(3))/=srd_coarse_boundary) valid=.false.
+      enddo
+    enddo
+    call agree(valid,ready)
+    if(.not.ready) return
+    call add_mpi_amr_tree_cells_3d(tree,owners,sources,nv,requests,contributions,comm,ready)
+    if(.not.ready) return
+    total=0
+    do p=1,count
+      if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle
+      n=tree%nodes(p)%shape
+      do k=width,width+n(3)+1
+      do j=width,width+n(2)+1
+      do i=width,width+n(1)+1
+        call locate(p,[i,j,k],q,idx,inside)
+        if(inside) total=total+1
+      enddo
+      enddo
+      enddo
+    enddo
+    call agree(total<=int(huge(1)/max(4,nv),int64),ready)
+    if(.not.ready) return
+    allocate(images(4,int(total)));query=0
+    do p=1,count
+      if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle
+      n=tree%nodes(p)%shape
+      do k=width,width+n(3)+1
+      do j=width,width+n(2)+1
+      do i=width,width+n(1)+1
+        call locate(p,[i,j,k],q,idx,inside)
+        if(.not.inside) cycle
+        query=query+1;images(:,query)=[q,idx]
+      enddo
+      enddo
+      enddo
+    enddo
+    call fetch_mpi_amr_tree_cells_3d(tree,owners,sources,nv,images,values,comm,ready)
+    if(.not.ready) return
+    query=0
+    do p=1,count
+      if(owners(p)/=rank.or.tree%nodes(p)%level/=depth) cycle
+      n=tree%nodes(p)%shape
+      do k=width,width+n(3)+1
+      do j=width,width+n(2)+1
+      do i=width,width+n(1)+1
+        call locate(p,[i,j,k],q,idx,inside)
+        if(.not.inside) cycle
+        query=query+1;pending%fields(p)%values(:,i,j,k)=values(:,query)
+      enddo
+      enddo
+      enddo
+    enddo
+    call move_alloc(pending%fields,source_halos%fields);ok=.true.
+  contains
+    subroutine locate(p,image,q,index,inside)
+      integer, intent(in) :: p,image(3)
+      integer, intent(out) :: q,index(3)
+      logical, intent(out) :: inside
+      integer :: c,node
+      cell=origin(:,p)+int(image-width-1,int64);inside=.false.;q=0;index=0
+      do c=1,3
+        if(periodic(c)) then
+          cell(c)=modulo(cell(c),domain(c,depth+1))
+        else if(cell(c)<0.or.cell(c)>=domain(c,depth+1)) then
+          return
+        endif
+      enddo
+      do node=1,count
+        if(tree%nodes(node)%level/=depth) cycle
+        if(any(cell<origin(:,node)).or.any(cell>=origin(:,node)+int(tree%nodes(node)%shape,int64))) cycle
+        q=node;index=int(cell-origin(:,node))+1;inside=.true.;return
+      enddo
+    end subroutine
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine
+  end subroutine assemble_state_redist_mpi_interface_source_3d
+
+  ! Prepared state/RHS halos are owner-local. The shared patch backend computes
+  ! private stage outputs; every rank agrees before either output is published.
+  subroutine compute_state_redist_mpi_level_stage_3d(tree,owners,geometry,old_halos,rhs_halos,nv,depth,dt, &
+      rate,registers,comm,ok,boundary_faces,target_volume_fraction,max_order,register_scale,update_scales)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nv,depth
+    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(amr_tree_state_3d), intent(in) :: old_halos,rhs_halos
+    type(amr_tree_state_3d), optional, intent(in) :: update_scales
+    real(dp), intent(in) :: dt
+    type(amr_tree_state_3d), intent(inout) :: rate
+    type(state_redist_register_3d), allocatable, intent(inout) :: registers(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=*), optional, intent(in) :: boundary_faces(6)
+    real(dp), optional, intent(in) :: target_volume_fraction,register_scale
+    integer, optional, intent(in) :: max_order
+    type(amr_tree_state_3d) :: pending_rate
+    type(state_redist_register_3d), allocatable :: pending_registers(:)
+    character(len=32) :: faces(6)
+    real(dp) :: target,scale,values(3),low_values(3),high_values(3)
+    integer :: order,rank,status,p,width,extra(3),controls(13),low(13),high(13)
+    logical :: valid,ready
+    ok=.false.;faces='outflow';target=.5_dp;scale=1._dp;order=0
+    if(present(boundary_faces)) faces=boundary_faces
+    if(present(target_volume_fraction)) target=target_volume_fraction
+    if(present(register_scale)) scale=register_scale
+    if(present(max_order)) order=max_order
+    valid=ieee_is_finite(dt).and.ieee_is_finite(target).and.ieee_is_finite(scale)
+    valid=valid.and.valid_reactive_boundaries_3d(faces)
+    call agree(valid,ready)
+    if(.not.ready) return
+    controls(:6)=merge(1,0,faces=='periodic')+merge(2,0,faces=='inflow')+merge(3,0,faces=='slip_wall')+ &
+      merge(4,0,faces=='no_slip_wall')+merge(5,0,faces=='isothermal_wall')
+    controls(7:12)=[depth,order,merge(1,0,present(boundary_faces)),merge(1,0,present(max_order)), &
+      merge(1,0,present(target_volume_fraction)),merge(1,0,present(register_scale))]
+    controls(13)=merge(1,0,present(update_scales))
+    call MPI_Allreduce(controls,low,13,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,high,13,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    values=[dt,target,scale]
+    call MPI_Allreduce(values,low_values,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(values,high_values,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low_values/=high_values)) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,rate,nv,comm,ready)
+    if(.not.ready) return
+    valid=size(geometry)==size(tree%nodes)
+    call agree(valid,ready)
+    if(.not.ready) return
+    extra=[geometry(1)%nx,geometry(1)%ny,geometry(1)%nz]-tree%nodes(1)%shape
+    valid=all(extra>=10).and.all(modulo(extra,2)==0).and.all(extra==extra(1))
+    call agree(valid,ready)
+    if(.not.ready) return
+    width=extra(1)/2
+    call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready,padding=width)
+    if(.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    valid=allocated(old_halos%fields).and.allocated(rhs_halos%fields)
+    if(valid) valid=size(old_halos%fields)==size(tree%nodes).and.size(rhs_halos%fields)==size(tree%nodes)
+    if(valid) then
+      do p=1,size(tree%nodes)
+        if(tree%nodes(p)%level/=depth.or.owners(p)==rank) cycle
+        if(allocated(old_halos%fields(p)%values).or.allocated(rhs_halos%fields(p)%values)) valid=.false.
+      enddo
+    endif
+    if(present(update_scales)) then
+      valid=valid.and.allocated(update_scales%fields)
+      if(valid) valid=size(update_scales%fields)==size(tree%nodes)
+      if(valid) then
+        do p=1,size(tree%nodes)
+          if(tree%nodes(p)%level/=depth.or.owners(p)==rank) cycle
+          if(allocated(update_scales%fields(p)%values)) valid=.false.
+        enddo
+      endif
+    endif
+    call agree(valid,ready)
+    if(.not.ready) return
+    pending_rate=rate
+    if(allocated(registers)) pending_registers=registers
+    call compute_state_redist_level_stage_3d(tree,geometry,old_halos,rhs_halos,nv,depth,dt,pending_rate, &
+      pending_registers,valid,faces,target,order,scale,owners==rank,update_scales)
+    call agree(valid,ready)
+    if(.not.ready) return
+    rate=pending_rate
+    call move_alloc(pending_registers,registers)
+    ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if(ierr/=MPI_SUCCESS) result=.false.
+    end subroutine agree
+  end subroutine compute_state_redist_mpi_level_stage_3d
   ! Two sparse exchanges: neighbor rates for each owned cut leaf, followed by
   ! donor excess for each owned recipient. No gas/rate tree is gathered.
   subroutine redistribute_sdc_mpi_eb_tree_flux_rate_3d(tree,owners,geometry,rhs,nvar,rate,comm,ok,boundary_faces)
@@ -309,7 +743,10 @@ contains
     end subroutine agree
   end subroutine redistribute_sdc_mpi_eb_tree_level_rate_3d
   subroutine redistribute_sdc_mpi_eb_tree_state_level_rate_3d(tree,owners,geometry,state,rhs,nvar,depth,dt, &
-      rate,transfer,comm,ok,target_volume_fraction,boundary_faces)
+      rate,transfer,comm,ok,target_volume_fraction,boundary_faces,max_order, &
+      boundary_halos,boundary_geometry)
+    type(amr_tree_state_3d), optional, intent(in) :: boundary_halos
+    type(eb_geometry_3d), optional, intent(in) :: boundary_geometry(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nvar,depth
     type(eb_geometry_3d), intent(in) :: geometry(:)
@@ -317,14 +754,22 @@ contains
     real(dp), intent(in) :: dt
     type(amr_tree_state_3d), intent(inout) :: rate,transfer
     type(MPI_Comm), intent(in) :: comm
+    integer, optional, intent(in) :: max_order
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: target_volume_fraction
-    type(amr_tree_state_3d) :: selected,result,exchange,correction
-    integer :: p,rank,status,lower,upper
+    type(amr_tree_state_3d) :: selected,result,exchange,correction,provisional
+    integer :: p,rank,status,lower,upper,order,order_low,order_high,i,j,k,n(3)
     real(dp) :: dt_low,dt_high
     logical :: valid,ready
-    ok=.false.
+    ok=.false.;order=0
+    if(present(max_order)) order=max_order
+    call agree(order==0.or.order==2.or.order==4,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(order,order_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(order,order_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.order_low/=order_high) return
     valid=ieee_is_finite(dt)
     if(valid) valid=dt>0
     call agree(valid,ready)
@@ -348,6 +793,52 @@ contains
       if(owners(p)/=rank) cycle
       if(tree%nodes(p)%level/=depth) selected%fields(p)%values=0
     end do
+    if(order>0) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,ready)
+      if(.not.ready) return
+      call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nvar,comm,ready)
+      if(.not.ready) return
+      provisional=state;valid=.true.
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank) cycle
+        n=tree%nodes(p)%shape
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          provisional%fields(p)%values(:,i,j,k)=0
+          if(geometry(p)%volume_fraction(i,j,k)<=0) then
+            selected%fields(p)%values(:,i,j,k)=0;cycle
+          endif
+          if(any(.not.ieee_is_finite(state%fields(p)%values(:,i,j,k))).or. &
+            any(.not.ieee_is_finite(rhs%fields(p)%values(:,i,j,k)))) then
+            valid=.false.;cycle
+          endif
+          provisional%fields(p)%values(:,i,j,k)=state%fields(p)%values(:,i,j,k)+dt*rhs%fields(p)%values(:,i,j,k)
+        enddo
+        enddo
+        enddo
+      enddo
+      call agree(valid,ready)
+      if(.not.ready) return
+      call redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,provisional,nvar,correction,comm,ready, &
+        target_volume_fraction,boundary_faces,correction_depth=depth,max_order=order, &
+        boundary_halos=boundary_halos,boundary_geometry=boundary_geometry)
+      if(.not.ready) return
+      result=selected;exchange=correction;valid=.true.
+      do p=1,size(tree%nodes)
+        if(owners(p)/=rank) cycle
+        if(tree%nodes(p)%level==depth) then
+          result%fields(p)%values=result%fields(p)%values+correction%fields(p)%values/dt
+          exchange%fields(p)%values=0
+        endif
+        valid=valid.and.all(ieee_is_finite(result%fields(p)%values)).and. &
+          all(ieee_is_finite(exchange%fields(p)%values))
+      enddo
+      call agree(valid,ready)
+      if(.not.ready) return
+      call move_alloc(result%fields,rate%fields);call move_alloc(exchange%fields,transfer%fields)
+      ok=.true.;return
+    endif
     call redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,selected,nvar,result,comm,ready, &
       target_volume_fraction,boundary_faces)
     if(.not.ready) return
@@ -397,7 +888,10 @@ contains
   ! correction_depth returns signed displacements from neighborhoods at one
   ! collectively selected depth, rather than the full redistributed state.
   subroutine redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,input,nv,result,comm,ok, &
-      target_volume_fraction,boundary_faces,correction_depth)
+      target_volume_fraction,boundary_faces,correction_depth,max_order, &
+      boundary_halos,boundary_geometry)
+    type(amr_tree_state_3d), optional, intent(in) :: boundary_halos
+    type(eb_geometry_3d), optional, intent(in) :: boundary_geometry(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nv
     type(eb_geometry_3d), intent(in) :: geometry(:)
@@ -407,6 +901,7 @@ contains
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: target_volume_fraction
     character(len=*), optional, intent(in) :: boundary_faces(6)
+    integer, optional, intent(in) :: max_order
     integer, optional, intent(in) :: correction_depth
     integer :: depth,depth_low,depth_high
     type :: neighborhood
@@ -414,6 +909,7 @@ contains
     end type
     type(neighborhood), allocatable :: groups(:)
     type(amr_tree_state_3d) :: ids,candidate,averages
+    type(eb_geometry_3d) :: checked_geometry
     integer(int64), allocatable :: origin(:,:),domain(:,:),scale(:)
     integer, allocatable :: ratios(:),cells(:,:),receiver(:),memberships(:),queue(:),seen(:),neighbors(:),directions(:)
     real(dp), allocatable :: volume(:),target(:),beta(:),self(:),values(:,:),incoming(:,:),mean(:)
@@ -421,12 +917,35 @@ contains
     character(len=32) :: faces(6)
     integer :: p,n(3),i,j,k,child,lo(3),hi(3),nc,root,other,m,count,head,tail,current,allocation_status
     real(dp) :: fraction,total,weight,normal(3),score,best
+    logical, allocatable :: stencil_connected(:)
     logical :: valid,fallback,ready
     integer :: rank,status,q,request_count,controls(6),low(6),high(6)
     integer, allocatable :: requests(:,:),lookup(:),reverse_lookup(:)
     logical, allocatable :: needed(:)
     real(dp) :: fraction_low,fraction_high
+    real(dp), allocatable :: center(:,:),lattice(:,:),centroid(:,:),width(:,:),fraction_cell(:), &
+      stencil_centroid(:,:),stencil_center(:,:),stencil_width(:,:),positions(:,:),lower_bound(:),upper_bound(:), &
+      graph_values(:,:),root_slopes(:,:),local_bound(:)
+    real(dp), allocatable :: stencil_value(:,:),stencil_fraction(:),stencil_fit(:,:),ghost_value(:,:)
+    real(dp) :: ghost_point(3,125),ghost_fit(3,125),ghost_center(3,125),ghost_fraction(125),root_centroid(3)
+    logical :: ghost_near(125),extdir(6)
+    integer :: ghost_count,global_cell(3),global_dims(3),extdir_bounds(2,3),pool_size,halo_mode,halo_low,halo_high
+    integer :: selected_order,order_low,order_high,packet_nv
     ok=.false.;fraction=.5_dp;faces='outflow'
+    selected_order=0
+    if(present(max_order)) selected_order=max_order
+    call agree(selected_order==0.or.selected_order==2.or.selected_order==4,ready)
+    if(.not.ready) return
+    call MPI_Allreduce(selected_order,order_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(selected_order,order_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.order_low/=order_high) return
+    packet_nv=nv
+    if(selected_order>0) then
+      call agree(nv>0.and.nv<=huge(1)/4,ready)
+      if(.not.ready) return
+      packet_nv=4*nv
+    endif
     if(present(target_volume_fraction)) fraction=target_volume_fraction
     if(present(boundary_faces)) faces=boundary_faces
     valid=ieee_is_finite(fraction)
@@ -448,6 +967,44 @@ contains
     call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
     if(.not.ready) return
     call agree(periodic_eb_faces_match(geometry(1),faces),ready)
+    if(.not.ready) return
+    ! Presence and validation are collective, including idle ranks.
+    halo_mode=0
+    if(present(boundary_halos).neqv.present(boundary_geometry)) halo_mode=-1
+    if(present(boundary_halos).and.present(boundary_geometry)) halo_mode=1
+    call MPI_Allreduce(halo_mode,halo_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(halo_mode,halo_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.halo_low<0.or.halo_low/=halo_high) return
+    call MPI_Comm_rank(comm,rank,status)
+    if(status/=MPI_SUCCESS) return
+    valid=.true.
+    if(present(boundary_halos)) then
+      valid=allocated(boundary_halos%fields)
+      if(valid) valid=size(boundary_halos%fields)==size(tree%nodes).and.size(boundary_geometry)==size(tree%nodes)
+      if(valid) then
+        do p=1,size(tree%nodes)
+          if(owners(p)/=rank) cycle
+          if(.not.allocated(boundary_halos%fields(p)%values)) then
+            valid=.false.;cycle
+          endif
+          n=tree%nodes(p)%shape
+          if(any(shape(boundary_halos%fields(p)%values)/=[nv,n+4])) then
+            valid=.false.;cycle
+          endif
+          if(any(.not.ieee_is_finite(boundary_halos%fields(p)%values))) valid=.false.
+          if(any([boundary_geometry(p)%nx,boundary_geometry(p)%ny,boundary_geometry(p)%nz]/=n+4)) then
+            valid=.false.;cycle
+          endif
+          call extract_eb_geometry_3d(boundary_geometry(p),[3,3,3],n+2,checked_geometry,ready)
+          if(.not.ready) then
+            valid=.false.;cycle
+          endif
+          if(.not.matching_eb_metrics_3d(geometry(p),checked_geometry)) valid=.false.
+        enddo
+      endif
+    endif
+    call agree(valid,ready)
     if(.not.ready) return
     depth=-1
     if(present(correction_depth)) depth=correction_depth
@@ -478,6 +1035,13 @@ contains
     candidate=input;averages=input;nc=0;valid=.true.
     do p=1,size(tree%nodes)
       n=tree%nodes(p)%shape
+      allocation_status=0
+      if(owners(p)==rank.and.selected_order>0) then
+        deallocate(averages%fields(p)%values)
+        allocate(averages%fields(p)%values(packet_nv,n(1),n(2),n(3)),stat=allocation_status)
+      endif
+      call agree(allocation_status==0,ready)
+      if(.not.ready) return
       allocate(ids%fields(p)%values(1,n(1),n(2),n(3)),source=0._dp,stat=allocation_status)
       call agree(allocation_status==0,ready)
       if(.not.ready) return
@@ -585,7 +1149,7 @@ contains
     needed=.false.
     do root=1,nc
       if(owners(cells(1,root))/=rank) cycle
-      if(depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
+      if(selected_order==0.and.depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
       needed(root)=.true.
       if(fallback) then
         if(allocated(groups(root)%member)) needed(groups(root)%member)=.true.
@@ -601,7 +1165,7 @@ contains
     valid=.true.
     do root=1,nc
       if(owners(cells(1,root))/=rank) cycle
-      if(depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
+      if(selected_order==0.and.depth>=0.and.tree%nodes(cells(1,root))%level/=depth) cycle
       if(fallback) then
         count=1
         if(allocated(groups(root)%member)) count=size(groups(root)%member)
@@ -625,11 +1189,15 @@ contains
         valid=.false.;cycle
       end if
       p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
-      averages%fields(p)%values(:,i,j,k)=mean/total
+      averages%fields(p)%values(1:nv,i,j,k)=mean/total
       valid=valid.and.all(ieee_is_finite(averages%fields(p)%values(:,i,j,k)))
     end do
     call agree(valid,ready)
     if(.not.ready) return
+    if(selected_order>0) then
+      call reconstruct_owned_graph_slopes(ready)
+      if(.not.ready) return
+    endif
     ! Fetch neighborhood means whose scatter reaches an owned recipient.
     needed=.false.
     do root=1,nc
@@ -651,7 +1219,7 @@ contains
     end do
     call make_requests(reverse_lookup,ready)
     if(.not.ready) return
-    call fetch_mpi_amr_tree_cells_3d(tree,owners,averages,nv,requests,incoming,comm,ready)
+    call fetch_mpi_amr_tree_cells_3d(tree,owners,averages,packet_nv,requests,incoming,comm,ready)
     if(.not.ready) return
     do root=1,nc
       p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
@@ -668,31 +1236,36 @@ contains
           if(allocated(groups(root)%member)) other=groups(root)%member(m)
           p=cells(1,other);i=cells(2,other);j=cells(3,other);k=cells(4,other)
           if(owners(p)/=rank) cycle
-          mean=incoming(:,q)
+          call reconstructed_mean(root,other,q,mean)
           if(depth>=0) mean=mean-input%fields(p)%values(:,i,j,k)
-          candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
-            mean/real(memberships(other),dp)
+          if(selected_order==0) then
+            candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+mean/real(memberships(other),dp)
+          else
+            candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
+              (1._dp/real(memberships(other),dp))*mean
+          endif
         end do
       else
         p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
         if(owners(p)==rank) then
-          mean=incoming(:,q)
+          call reconstructed_mean(root,root,q,mean)
           if(depth>=0) mean=mean-input%fields(p)%values(:,i,j,k)
           candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
-            self(root)*real(memberships(root),dp)*mean
+            self(root)*real(merge(memberships(root),1,selected_order==0),dp)*mean
         end if
         other=receiver(root)
         if(other>0) then
           p=cells(1,other);i=cells(2,other);j=cells(3,other);k=cells(4,other)
           if(owners(p)==rank) then
-            mean=incoming(:,q)
+            call reconstructed_mean(root,other,q,mean)
             if(depth>=0) mean=mean-input%fields(p)%values(:,i,j,k)
-            candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+beta(root)*mean
+            candidate%fields(p)%values(:,i,j,k)=candidate%fields(p)%values(:,i,j,k)+ &
+              (beta(root)/real(merge(1,memberships(other),selected_order==0),dp))*mean
           end if
         end if
       end if
     end do
-    if(.not.fallback) then
+    if(.not.fallback.and.selected_order==0) then
       do root=1,nc
         p=cells(1,root);i=cells(2,root);j=cells(3,root);k=cells(4,root)
         if(owners(p)==rank) candidate%fields(p)%values(:,i,j,k)= &
@@ -708,6 +1281,197 @@ contains
     if(.not.ready) return
     call move_alloc(candidate%fields,result%fields);ok=.true.
   contains
+    function displacement(other,root) result(delta)
+      integer, intent(in) :: other,root
+      real(dp) :: delta(3),length
+      integer :: a
+      delta=center(:,other)-center(:,root)
+      do a=1,3
+        if(faces(2*a-1)/='periodic') cycle
+        length=real(domain(a,size(ratios)),dp)
+        delta(a)=modulo(delta(a)+.5_dp*length,length)-.5_dp*length
+      enddo
+    end function displacement
+    subroutine reconstructed_mean(root,other,q,mean)
+      integer, intent(in) :: root,other,q
+      real(dp), intent(out) :: mean(:)
+      real(dp) :: offset(3)
+      integer :: c
+      mean=incoming(1:nv,q)
+      if(selected_order==0) return
+      offset=displacement(other,root)-(centroid(:,root)-center(:,root))
+      do c=1,nv
+        mean(c)=mean(c)+dot_product(offset,incoming(nv+3*c-2:nv+3*c,q))
+      enddo
+    end subroutine reconstructed_mean
+    subroutine build_graph_stencil(r,last)
+      integer, intent(in) :: r
+      integer, intent(out) :: last
+      integer :: h,t,next,member_count
+      real(dp) :: offset(3),raw_offset(3)
+      seen=0
+      h=1;last=1;queue(1)=r;seen(r)=1
+        do while(h<=last)
+          current=queue(h);call adjacent(member_count)
+          do t=1,member_count
+            next=neighbors(t)
+            if(seen(next)==1) cycle
+            raw_offset=displacement(next,r)-(center(:,next)-lattice(:,next))+(center(:,r)-lattice(:,r))
+            if(any(abs(raw_offset/width(:,r))>2+512*epsilon(1._dp))) cycle
+            last=last+1;queue(last)=next;seen(next)=1
+          enddo
+          h=h+1
+        enddo
+        stencil_connected(:last)=.true.
+        ! Include noncovered leaf values for the grown AMReX stencil even
+        ! when an aperture path does not connect them to the root.
+        do next=1,nc
+          if(seen(next)==1) cycle
+          raw_offset=displacement(next,r)-(center(:,next)-lattice(:,next))+(center(:,r)-lattice(:,r))
+          if(any(abs(raw_offset/width(:,r))>2+512*epsilon(1._dp))) cycle
+          last=last+1;queue(last)=next;stencil_connected(last)=.false.
+        enddo
+        do t=1,last
+          next=queue(t);offset=displacement(next,r)
+          stencil_centroid(:,t)=(offset+centroid(:,next)-center(:,next))/width(:,r)
+          stencil_center(:,t)=(offset-(center(:,next)-lattice(:,next))+(center(:,r)-lattice(:,r)))/width(:,r)
+          stencil_width(:,t)=width(:,next)/width(:,r)
+        enddo
+    end subroutine build_graph_stencil
+    subroutine reconstruct_owned_graph_slopes(success)
+      logical, intent(out) :: success
+      integer :: r,t,last,next,nmember
+      real(dp) :: w,sum_weight,shift(3)
+      logical :: reconstructed,condition
+      success=.false.
+      call agree(nc<=huge(1)-125,condition)
+      if(.not.condition) return
+      pool_size=nc+125
+      allocate(stencil_value(nv,pool_size),stencil_fraction(pool_size),stencil_fit(3,pool_size), &
+        ghost_value(nv,125),stat=allocation_status)
+      call agree(allocation_status==0,condition)
+      if(.not.condition) return
+      allocate(center(3,nc),lattice(3,nc),centroid(3,nc),width(3,nc),fraction_cell(nc), &
+        stencil_centroid(3,pool_size),stencil_center(3,pool_size),stencil_width(3,pool_size), &
+        positions(3,nc),stencil_connected(pool_size), &
+        lower_bound(nv),upper_bound(nv),local_bound(nv),root_slopes(3,nv),stat=allocation_status)
+      call agree(allocation_status==0,condition)
+      if(.not.condition) return
+      do r=1,nc
+        p=cells(1,r);i=cells(2,r);j=cells(3,r);k=cells(4,r)
+        w=real(scale(tree%nodes(p)%level+1),dp)
+        width(:,r)=w;lattice(:,r)=(real(origin(:,p),dp)+real([i,j,k],dp)-.5_dp)*w
+        associate(g=>geometry(p))
+          center(:,r)=lattice(:,r)+w*[g%cell_centroid_x(i,j,k),g%cell_centroid_y(i,j,k),g%cell_centroid_z(i,j,k)]
+          fraction_cell(r)=g%volume_fraction(i,j,k)
+        end associate
+      enddo
+      do r=1,nc
+        shift=0;sum_weight=0
+        if(fallback) then
+          nmember=1
+          if(allocated(groups(r)%member)) nmember=size(groups(r)%member)
+          do t=1,nmember
+            next=r
+            if(allocated(groups(r)%member)) next=groups(r)%member(t)
+            w=volume(next)/real(memberships(next),dp)
+            shift=shift+w*displacement(next,r);sum_weight=sum_weight+w
+          enddo
+        else
+          sum_weight=self(r)*volume(r);next=receiver(r)
+          if(next>0) then
+            w=beta(r)*volume(next)/real(memberships(next),dp)
+            shift=w*displacement(next,r);sum_weight=sum_weight+w
+          endif
+        endif
+        if(sum_weight<=0) return
+        centroid(:,r)=center(:,r)+shift/sum_weight
+      enddo
+      local_bound=huge(1._dp)
+      do r=1,nc
+        p=cells(1,r);i=cells(2,r);j=cells(3,r);k=cells(4,r)
+        if(owners(p)/=rank) cycle
+        local_bound=min(local_bound,input%fields(p)%values(:,i,j,k))
+      enddo
+      call MPI_Allreduce(local_bound,lower_bound,nv,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      local_bound=-huge(1._dp)
+      do r=1,nc
+        p=cells(1,r);i=cells(2,r);j=cells(3,r);k=cells(4,r)
+        if(owners(p)/=rank) cycle
+        local_bound=max(local_bound,input%fields(p)%values(:,i,j,k))
+      enddo
+      call MPI_Allreduce(local_bound,upper_bound,nv,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS) return
+      ! Fetch only the weighted means in stencils rooted on this owner.
+      needed=.false.
+      do r=1,nc
+        if(owners(cells(1,r))/=rank) cycle
+        if(depth>=0.and.tree%nodes(cells(1,r))%level/=depth) cycle
+        call build_graph_stencil(r,last)
+        needed(queue(:last))=.true.
+      enddo
+      call make_requests(lookup,condition)
+      if(.not.condition) return
+      call fetch_mpi_amr_tree_cells_3d(tree,owners,averages,packet_nv,requests,graph_values,comm,condition)
+      if(.not.condition) return
+      condition=.true.
+      do r=1,nc
+        if(owners(cells(1,r))/=rank) cycle
+        if(depth>=0.and.tree%nodes(cells(1,r))%level/=depth) cycle
+        call build_graph_stencil(r,last)
+        stencil_value(:,:last)=graph_values(1:nv,lookup(queue(:last)))
+        stencil_fraction(:last)=fraction_cell(queue(:last));stencil_fit(:,:last)=stencil_centroid(:,:last)
+        extdir=.false.;extdir_bounds=0
+        if(present(boundary_halos)) then
+          p=cells(1,r);global_cell=int(origin(:,p))+cells(2:4,r)
+          global_dims=int(domain(:,tree%nodes(p)%level+1))
+          extdir=faces=='inflow';extdir_bounds(1,:)=1-global_cell;extdir_bounds(2,:)=global_dims-global_cell
+          call state_redistribution_boundary_nodes_3d(boundary_geometry(p),boundary_halos%fields(p)%values, &
+            cells(2:4,r)+2,global_cell,global_dims,faces,ghost_value,ghost_point,ghost_fit,ghost_center, &
+            ghost_fraction,ghost_near,ghost_count,reconstructed)
+          if(.not.reconstructed) then
+            condition=.false.;cycle
+          endif
+          root_centroid=(center(:,r)-lattice(:,r))/width(:,r)
+          do t=1,ghost_count
+            last=last+1;stencil_value(:,last)=ghost_value(:,t)
+            stencil_fraction(last)=ghost_fraction(t);stencil_connected(last)=ghost_near(t)
+            stencil_centroid(:,last)=ghost_point(:,t)-root_centroid
+            stencil_fit(:,last)=ghost_fit(:,t)-root_centroid
+            stencil_center(:,last)=ghost_center(:,t);stencil_width(:,last)=1
+          enddo
+        endif
+        call state_redistribution_graph_slopes_3d(stencil_value(:,:last),stencil_centroid(:,:last), &
+          stencil_center(:,:last),stencil_width(:,:last),stencil_fraction(:last),selected_order,root_slopes,reconstructed, &
+          near_connected=stencil_connected(:last),extdir_faces=extdir,extdir_bounds=extdir_bounds, &
+          fit_centroid=stencil_fit(:,:last))
+        if(.not.reconstructed) then
+          condition=.false.;cycle
+        endif
+        p=cells(1,r);i=cells(2,r);j=cells(3,r);k=cells(4,r)
+        if(fallback) then
+          nmember=1
+          if(allocated(groups(r)%member)) nmember=size(groups(r)%member)
+          do t=1,nmember
+            next=r
+            if(allocated(groups(r)%member)) next=groups(r)%member(t)
+            positions(:,t)=displacement(next,r)/width(:,r)
+          enddo
+        else
+          nmember=1;positions(:,1)=0;next=receiver(r)
+          if(next>0) then
+            nmember=2;positions(:,2)=displacement(next,r)/width(:,r)
+          endif
+        endif
+        shift=(centroid(:,r)-center(:,r))/width(:,r)
+        call limit_state_recipient_slopes(averages%fields(p)%values(1:nv,i,j,k),shift,root_slopes, &
+          positions(:,:nmember),lower_bound,upper_bound)
+        root_slopes=root_slopes/spread(width(:,r),2,nv)
+        averages%fields(p)%values(nv+1:packet_nv,i,j,k)=reshape(root_slopes,[3*nv])
+      enddo
+      call agree(condition,success)
+    end subroutine reconstruct_owned_graph_slopes
     subroutine agree(condition,result)
       logical, intent(in) :: condition
       logical, intent(out) :: result
@@ -809,7 +1573,10 @@ contains
   end subroutine redistribute_mpi_eb_tree_state_3d
   ! Affine SDC convention, matching S(U+dt*R)-U over dt in the serial kernel.
   subroutine redistribute_sdc_mpi_eb_tree_state_rate_3d(tree,owners,geometry,state,rhs,nv,dt, &
-      rate,comm,ok,target_volume_fraction,boundary_faces)
+      rate,comm,ok,target_volume_fraction,boundary_faces,max_order, &
+      boundary_halos,boundary_geometry)
+    type(amr_tree_state_3d), optional, intent(in) :: boundary_halos
+    type(eb_geometry_3d), optional, intent(in) :: boundary_geometry(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nv
     type(eb_geometry_3d), intent(in) :: geometry(:)
@@ -817,6 +1584,7 @@ contains
     real(dp), intent(in) :: dt
     type(amr_tree_state_3d), intent(inout) :: rate
     type(MPI_Comm), intent(in) :: comm
+    integer, optional, intent(in) :: max_order
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: target_volume_fraction
     character(len=*), optional, intent(in) :: boundary_faces(6)
@@ -861,7 +1629,8 @@ contains
     call agree(valid,ready)
     if(.not.ready) return
     call redistribute_mpi_eb_tree_state_3d(tree,owners,geometry,provisional,nv,candidate,comm,ready, &
-      target_volume_fraction,boundary_faces)
+      target_volume_fraction,boundary_faces,max_order=max_order, &
+      boundary_halos=boundary_halos,boundary_geometry=boundary_geometry)
     if(.not.ready) return
     do p=1,size(tree%nodes)
       if(owners(p)/=rank) cycle

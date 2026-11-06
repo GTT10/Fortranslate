@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 from check_mechanism_provenance import check
-from pelephysics_transport_import import regenerate_simple_transport
+from pinned_eos_reference import reference_eos_options, reference_fuel_temperature
 
 
 def main():
@@ -30,8 +30,8 @@ def main():
             or len(bundle['reactions']) != 268 or bundle['species'][0] != 'NC12H26'
             or bundle['source']['sha256'] != mechanism['files']['yaml']['sha256']):
         raise ValueError('Expected pinned Lu n-dodecane bundle')
-    if bundle.get('simple_transport') != regenerate_simple_transport(bundle, args.bundle.parent):
-        raise ValueError('Pinned Simple transport fits required')
+    eos = reference_eos_options(bundle, args.bundle.parent)
+    fuel_reference_temperature = reference_fuel_temperature(source['example.inp'])
     lines = source['roi.dat'].decode('ascii').splitlines()
     if lines[0] != 'Time [ms];Mass flow rate [g/s]':
         raise ValueError('Unexpected rate units')
@@ -57,6 +57,14 @@ def main():
     rho_coefficients = [1779.9145710513213, -6.848424883513244, .015016559178741312, -1.2149370117669905e-5]
     liquid_density = sum(a*363**i for i,a in enumerate(rho_coefficients))
     reference_volume = .1*(89e-6)**3  # SprayParticles.cpp: inject_ppp * average diameter cubed
+    # The byte-pinned PeleC input is in CGS; 1 g/(cm s) = 0.1 Pa s.
+    viscosity_rows = [line.split('=', 1)[1].split() for line in source['example.inp'].decode('ascii').splitlines()
+                      if line.split('=', 1)[0].strip() == 'particles.NC12H26_mu']
+    if len(viscosity_rows) != 1 or len(viscosity_rows[0]) != 4:
+        raise ValueError('Expected one pinned four-coefficient n-dodecane viscosity law')
+    viscosity_coefficients = [0.1*float(value) for value in viscosity_rows[0]]
+    if not all(math.isfinite(value) for value in viscosity_coefficients):
+        raise ValueError('Nonfinite pinned liquid viscosity coefficients')
     fmt = lambda v: format(v, '.17g')
     args.output.mkdir(parents=True, exist_ok=False)
     for name, data in source.items():
@@ -73,6 +81,9 @@ def main():
  time_step={fmt(dt)},final_time={fmt(end_time)},maximum_steps={math.ceil(end_time/dt)+args.events+2},maximum_step_retries=0,
  time_integrator='sdc',sdc_iterations=2,subcycling=.false.,automatic_timestep=.false.,
  chemistry_enabled=.false.,transport_enabled=.true.,simple_transport_enabled=.true.,
+ pinned_eos_extrapolation=.true.,
+ pinned_eos_temperature_min={fmt(eos['pinned_eos_temperature_min'])},
+ pinned_eos_temperature_max={fmt(eos['pinned_eos_temperature_max'])},
  hydro_method='plm_ctu',riemann_solver='pelec',
  boundary_faces='outflow','outflow','outflow','outflow','no_slip_wall','outflow',
  composition_count=3,composition_species='N2','H2O','CO2',composition_mole_fractions=.8971,.0377,.0652,
@@ -88,7 +99,7 @@ def main():
  mixture_density_models(1)='polynomial',
  mixture_density_coefficients(:,1)={','.join(map(fmt,rho_coefficients))},
  mixture_density_temperature_ranges(:,1)=300,658,
- reference_temperatures(1)=300,reference_pressures(1)=101325,latent_heats(1)=359411,
+ reference_temperatures(1)={fmt(fuel_reference_temperature)},reference_pressures(1)=101325,latent_heats(1)=359411,
  mixture_boiling_models(1)='pelemp-cap',
  mixture_critical_temperatures(1)=658,mixture_normal_boiling_temperatures(1)=489,
  mixture_molecular_weights(1)={fmt(weights['NC12H26'])},
@@ -103,9 +114,9 @@ def main():
  particle_options%khrt_b0=.61,particle_options%khrt_b1=7.3,particle_options%khrt_c3=5.3,
  particle_options%khrt_children=.true.,particle_options%khrt_parcel_factor=.5,
  particle_options%khrt_reference_diameter_cubed={fmt(reference_volume)},
- particle_options%liquid_viscosity_model='inverse-temperature',
- particle_options%liquid_viscosity_coefficients=-.0028611188933370675,3.940765272136905,-1812.5486152106896,302158.7187559424,
- particle_options%liquid_viscosity_temperature_range=300,658,
+ mixture_viscosity_models(1)='inverse-temperature',
+ mixture_viscosity_coefficients(:,1)={','.join(map(fmt,viscosity_coefficients))},
+ mixture_viscosity_temperature_ranges(:,1)=300,658,
 
 /
 &eb_spray_rate_files
@@ -117,12 +128,15 @@ def main():
 ''')
     (args.output/'preparation.json').write_text(json.dumps(dict(
         reference=manifest, bundle_sha256=hashlib.sha256(args.bundle.read_bytes()).hexdigest(),
+        eos=eos, fuel_reference_temperature_K=fuel_reference_temperature,
         initial_gas_temperature_K=900, initial_mole_fractions=composition, liquid_density_at_injection_kg_m3=liquid_density, breakup_model="KHRT", khrt_reference_weighted_diameter_cubed_m3=reference_volume, chemistry_enabled=False, initial_pressure_Pa=6e6,
+        liquid_viscosity=dict(model='inverse-temperature',coefficients_SI=viscosity_coefficients,
+                              temperature_range_K=[300,658],source_key='particles.NC12H26_mu',
+                              evaluation='component temperature capped at pressure-dependent boiling temperature'),
         event_masses_kg=masses, expected_injected_mass_kg=math.fsum(masses),
         event_speeds_m_s=[m/((b[0]-a[0])*liquid_density*math.pi*(4.5e-5)**2*.89) for m, (a, b) in zip(masses, intervals)],
         rate_points=len(points), injection_events=args.events, expected_parcels=4*args.events, final_time_s=end_time,
         adaptations=['4x4x8 all-fluid mesh without AMR', f'first {args.events} active rate intervals',
-                     'fuel reference temperature 300 K instead of out-of-range 298.15 K',
                      'nozzle center moved 1e-8 m inside lower-z boundary',
                      'four deterministic parcels per event instead of stochastic sampling',
                      'event-average rate-driven velocity and interval-integrated mass',

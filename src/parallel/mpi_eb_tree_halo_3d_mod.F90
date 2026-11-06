@@ -3,13 +3,19 @@ module mpi_eb_tree_halo_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use dual_energy_mod, only: initialize_nasa7_internal_energy_patch
   use nasa7_thermo_mod, only: nasa7_species
+  use rotating_frame_3d_mod, only: rotating_frame_3d,convert_rotating_energy_3d
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d,valid_reactive_boundaries_3d
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,periodic_eb_faces_match
-  use eb_reactive_transfer_3d_mod, only: face_metrics
-  use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d,validate_mpi_eb_tree_geometry_3d
+  use eb_reactive_transfer_3d_mod, only: face_metrics,recover_reactive_eb_cell_3d, &
+    plan_eb_linear_halo_3d,interpolate_eb_linear_halo_3d,reconstruct_eb_pressure_state_3d, &
+    interpolate_eb_pressure_time_3d
+  use mpi_eb_tree_transfer_3d_mod, only: average_down_mpi_eb_tree_3d,validate_mpi_eb_tree_geometry_3d, &
+    average_down_mpi_eb_tree_field_3d
+  use amr_patch_tree_remap_3d_mod, only: covered
   use mpi_amr_patch_tree_cells_3d_mod, only: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d
   implicit none
   private
@@ -26,32 +32,46 @@ contains
   subroutine fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,ghost,ghost_temperature,comm,ok, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
       inflow_mach,inflow_temperature,inflow_pressure,ghost_volume_fraction,halo_width,target_volume_fraction, &
-      boundary_faces,inflow_state,restrict_snapshot)
+      boundary_faces,inflow_state,restrict_snapshot,frame,internal_energy,ghost_internal_energy, &
+      ancestor_internal_energy_start,ancestor_internal_energy_end,coarse_geometry,separate_momentum, &
+      consistent_velocity,paired_pressure,pressure_level,connected_directions,preserve_temperature_seed)
+    logical, optional, intent(in) :: preserve_temperature_seed
+    integer, optional, intent(in) :: pressure_level
+    type(eb_geometry_3d), optional, intent(in) :: coarse_geometry(:)
+    logical, optional, intent(in) :: separate_momentum,consistent_velocity,paired_pressure,connected_directions
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(eb_geometry_3d), intent(in) :: geometry(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy,ancestor_internal_energy_start, &
+      ancestor_internal_energy_end
     type(amr_tree_state_3d), intent(inout) :: ghost,ghost_temperature
+    type(amr_tree_state_3d), optional, intent(inout) :: ghost_internal_energy
     type(amr_tree_state_3d), optional, intent(inout) :: ghost_volume_fraction
     logical, optional, intent(in) :: restrict_snapshot
     integer, optional, intent(in) :: halo_width
     type(amr_tree_state_3d), optional, intent(in) :: target_volume_fraction
-    type(amr_tree_state_3d) :: cv
+    type(amr_tree_state_3d) :: cv,pressure_field,temporal_pressure
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(in) :: ancestor_start,ancestor_end,temperature_start,temperature_end
     ! One fraction per ancestor depth (root first), length max tree level.
     real(dp), optional, intent(in) :: ancestor_fraction(:)
-    type(amr_tree_state_3d) :: snapshot,st,candidate,ct,interpolated,it
-    real(dp), allocatable :: fraction_min(:),fraction_max(:),temporal_values(:,:),temporal_t(:,:)
+    type(amr_tree_state_3d) :: snapshot,st,candidate,ct,interpolated,it,held_snapshot,held_candidate,held_interpolated
+    real(dp), allocatable :: fraction_min(:),fraction_max(:),temporal_values(:,:),temporal_t(:,:), &
+      held_values(:,:),temporal_held(:,:)
     integer, allocatable :: temporal_requests(:,:),temporal_index(:)
     integer :: supplied,minimum_supplied,maximum_supplied,temporal_count
+    integer :: held_controls(8),held_min(8),held_max(8)
     real(dp) :: fraction
     integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: node_shapes(:,:)
+    integer :: shape_node
     integer, allocatable :: ratios(:),requests(:,:),destination(:,:)
-    real(dp), allocatable :: values(:,:),guesses(:,:)
+    real(dp), allocatable :: values(:,:),guesses(:,:),donor_held
     real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed,metrics(3)
     integer(int64) :: maximum,faces,global(3),mapped(3),cell(3),offset(3)
     integer :: nv,rank,status,ios,node,target,n(3),level,depth,axis,side,first(3),last(3),idx(3),face(3)
@@ -59,11 +79,41 @@ contains
     real(dp) :: controls(30+6*reactive_nvar(size(species)))
     real(dp) :: low_controls(size(controls)),high_controls(size(controls)),inlet(reactive_nvar(size(species)))
     real(dp) :: inlet_t
+    real(dp) :: position(3),energy,frame_values(4),frame_min(4),frame_max(4)
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(in) :: inflow_state(:,:)
     integer :: inlet_face,momentum_sign(3)
-    logical :: valid,ready,full_halo,restrict_state
+    integer :: frame_present,frame_min_present,frame_max_present,axis_min,axis_max
+    logical :: valid,ready,full_halo,restrict_state,linear
+    character(len=16) :: linear_faces(6)
+    integer :: stencil(4,6),signs(3,6),stencil_count,r,h
+    integer, allocatable :: stencil_requests(:,:),stencil_index(:,:),stencil_signs(:,:,:)
+    real(dp), allocatable :: stencil_values(:,:),stencil_t(:,:),stencil_held(:,:),stencil_offsets(:,:)
+    real(dp) :: packed(reactive_nvar(size(species))+2),neighbors(reactive_nvar(size(species))+2,6),shift(3)
+    real(dp), allocatable :: pressures(:,:),stencil_pressures(:,:),time_pressures(:,:)
+    real(dp) :: target_pressure(1),pressure_neighbors(1,6),energy_delta
+    logical :: pressure_policy
     ok=.false.;nv=reactive_nvar(size(species))
+    pressure_policy=.false.
+    if(present(paired_pressure)) pressure_policy=paired_pressure
+    frame_present=merge(1,0,present(frame))
+    call MPI_Allreduce(frame_present,frame_min_present,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(frame_present,frame_max_present,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.frame_min_present/=frame_max_present) return
+    if(present(frame)) then
+      call agree(frame%is_valid(),ready)
+      if(.not.ready) return
+      call MPI_Allreduce(frame%axis,axis_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame%axis,axis_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS) return
+      frame_values=[frame%angular_speed,frame%axis_point]
+      call MPI_Allreduce(frame_values,frame_min,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame_values,frame_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.axis_min/=axis_max.or.any(frame_min/=frame_max)) return
+    end if
     restrict_state=.true.
     if(present(restrict_snapshot)) restrict_state=restrict_snapshot
     full_halo=present(ghost_volume_fraction)
@@ -101,9 +151,34 @@ contains
     valid=valid.and.width>=1.and.width<=huge(1)/4
     if(width>1) valid=valid.and.full_halo.and.present(target_volume_fraction)
     if(present(target_volume_fraction)) valid=valid.and.full_halo
+    held_controls=[merge(1,0,present(internal_energy)),merge(1,0,present(ghost_internal_energy)), &
+      merge(1,0,present(ancestor_internal_energy_start)),merge(1,0,present(ancestor_internal_energy_end)), &
+      merge(1,0,present(coarse_geometry)),0,-1,0]
+    if(present(preserve_temperature_seed)) held_controls(8)=merge(1,0,preserve_temperature_seed)
+    if(present(pressure_level)) held_controls(7)=pressure_level
+    if(present(separate_momentum)) held_controls(6)=merge(1,0,separate_momentum)
+    if(present(consistent_velocity)) held_controls(6)=held_controls(6)+merge(2,0,consistent_velocity)
+    if(present(paired_pressure)) held_controls(6)=held_controls(6)+merge(4,0,paired_pressure)
+    if(present(connected_directions)) held_controls(6)=held_controls(6)+merge(8,0,connected_directions)
+    valid=valid.and.iand(held_controls(6),3)/=2
+    if(btest(held_controls(6),3)) valid=valid.and.btest(held_controls(6),0)
+    if(btest(held_controls(6),2)) valid=valid.and.iand(held_controls(6),7)==7.and. &
+      .not.present(frame)
+    if(held_controls(6)>0) valid=valid.and.present(coarse_geometry)
+    if(present(coarse_geometry)) then
+      valid=valid.and.present(internal_energy).and.width>1.and.size(coarse_geometry)==size(owners)
+    endif
+    valid=valid.and.held_controls(1)==held_controls(2)
+    valid=valid.and.held_controls(3)==held_controls(4)
+    valid=valid.and.(held_controls(1)==1.or.held_controls(3)==0)
+    if(held_controls(1)==1) valid=valid.and.(present(ancestor_fraction).eqv.(held_controls(3)==1))
     valid=valid.and.all(ieee_is_finite(controls))
     call agree(valid,ready)
     if (.not.ready) return
+    call MPI_Allreduce(held_controls,held_min,size(held_controls),MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(held_controls,held_max,size(held_controls),MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(held_min/=held_max)) return
     valid=all(controls(:6)<=100).and.all(controls(13:18)>=0).and.all(controls(13:18)<=1e15_dp)
     valid=valid.and..not.any(controls(13:18)>0.and.controls(:6)<0)
     valid=valid.and..not.any(controls(7:12)<=0.and.controls(:6)>=0)
@@ -117,8 +192,20 @@ contains
     ! SDC stage snapshots retain provisional parent states. Both paths validate
     ! geometry, topology, owners and input shapes before donor exchange.
     snapshot=state;st=temperature
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,ready)
+      if(.not.ready) return
+      held_snapshot=internal_energy
+      allocate(donor_held,stat=ios)
+      call agree(ios==0,ready)
+      if(.not.ready) return
+    endif
     if(restrict_state) then
-      call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready)
+      if(present(internal_energy)) then
+        call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready,frame,held_snapshot)
+      else
+        call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,snapshot,st,comm,ready,frame)
+      endif
       if (.not.ready) return
     else
       call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
@@ -134,9 +221,44 @@ contains
     if(.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    allocate(node_shapes(3,size(tree%nodes)),stat=ios)
+    call agree(ios==0,ready)
+    if(.not.ready) return
+    do shape_node=1,size(tree%nodes)
+      node_shapes(:,shape_node)=tree%nodes(shape_node)%shape
+    enddo
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     call agree(valid,ready)
     if (.not.ready) return
+    if(pressure_policy) then
+      pressure_field=internal_energy
+      valid=.true.
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        n=tree%nodes(node)%shape
+        pressure_field%fields(node)%values=0
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(geometry(node)%volume_fraction(i,j,k)<=0) cycle
+          call reactive_conserved_to_primitive(species,state%fields(node)%values(:,i,j,k), &
+            temperature%fields(node)%values(1,i,j,k),primitive,recovered,speed,ready, &
+            internal_energy_density=internal_energy%fields(node)%values(1,i,j,k))
+          if(.not.ready) then
+            valid=.false.;cycle
+          endif
+          pressure_field%fields(node)%values(1,i,j,k)=primitive(5)
+        enddo
+        enddo
+        enddo
+      enddo
+      call agree(valid,ready)
+      if(.not.ready) return
+      if(held_controls(7)<0.and..not.present(ancestor_fraction)) then
+        call average_down_mpi_eb_tree_field_3d(tree,owners,geometry,pressure_field,1,comm,ready)
+        if(.not.ready) return
+      endif
+    endif
     supplied=sum(merge(1,0,[present(ancestor_start),present(ancestor_end),present(temperature_start), &
       present(temperature_end),present(ancestor_fraction)]))
     call MPI_Allreduce(supplied,minimum_supplied,1,MPI_INTEGER,MPI_MIN,comm,status)
@@ -168,9 +290,16 @@ contains
       if (.not.ready) return
       call validate_mpi_amr_tree_local_3d(tree,owners,temperature_end,1,comm,ready)
       if (.not.ready) return
+      if(present(internal_energy)) then
+        call validate_mpi_amr_tree_local_3d(tree,owners,ancestor_internal_energy_start,1,comm,ready)
+        if(.not.ready) return
+        call validate_mpi_amr_tree_local_3d(tree,owners,ancestor_internal_energy_end,1,comm,ready)
+        if(.not.ready) return
+      endif
       ! Endpoint fields share the supplied topology, owners and immutable geometry.
       ! Provisional ancestor updates must not be averaged from their descendants.
       interpolated=ancestor_start;it=temperature_start
+      if(present(internal_energy)) held_interpolated=ancestor_internal_energy_start
       do node=1,size(owners)
         if (owners(node)/=rank) cycle
         depth=tree%nodes(node)%level+1
@@ -180,14 +309,43 @@ contains
         if (fraction==1._dp) then
           interpolated%fields(node)%values=ancestor_end%fields(node)%values
           it%fields(node)%values=temperature_end%fields(node)%values
+          if(present(internal_energy)) held_interpolated%fields(node)%values= &
+            ancestor_internal_energy_end%fields(node)%values
         else
           interpolated%fields(node)%values=(1._dp-fraction)*ancestor_start%fields(node)%values+ &
             fraction*ancestor_end%fields(node)%values
           it%fields(node)%values=(1._dp-fraction)*temperature_start%fields(node)%values+ &
             fraction*temperature_end%fields(node)%values
+          if(present(internal_energy)) held_interpolated%fields(node)%values= &
+            (1._dp-fraction)*ancestor_internal_energy_start%fields(node)%values+ &
+            fraction*ancestor_internal_energy_end%fields(node)%values
         end if
       end do
     end if
+    if(pressure_policy.and.supplied==5) then
+      temporal_pressure=pressure_field;valid=.true.
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        depth=tree%nodes(node)%level+1
+        if(depth>size(ancestor_fraction)) cycle
+        n=tree%nodes(node)%shape
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(geometry(node)%volume_fraction(i,j,k)<=0) cycle
+          call interpolate_eb_pressure_time_3d(species,ancestor_start%fields(node)%values(:,i,j,k), &
+            ancestor_end%fields(node)%values(:,i,j,k),ancestor_internal_energy_start%fields(node)%values(1,i,j,k), &
+            ancestor_internal_energy_end%fields(node)%values(1,i,j,k),temperature_start%fields(node)%values(1,i,j,k), &
+            temperature_end%fields(node)%values(1,i,j,k),ancestor_fraction(depth), &
+            temporal_pressure%fields(node)%values(1,i,j,k),ready)
+          valid=valid.and.ready
+        enddo
+        enddo
+        enddo
+      enddo
+      call agree(valid,ready)
+      if(.not.ready) return
+    endif
     if(present(target_volume_fraction)) then
       valid=allocated(target_volume_fraction%fields)
       call agree(valid,ready)
@@ -260,6 +418,12 @@ contains
       valid=ios==0
     end if
     if (valid) then
+      if(present(internal_energy)) then
+        allocate(held_candidate%fields(size(owners)),stat=ios)
+        valid=ios==0
+      endif
+    endif
+    if (valid) then
       do node=1,size(owners)
         if (owners(node)/=rank) cycle
         n=tree%nodes(node)%shape
@@ -269,6 +433,14 @@ contains
           valid=.false.;exit
         end if
         candidate%fields(node)%values=0._dp;ct%fields(node)%values=0._dp
+        if(present(internal_energy)) then
+          allocate(held_candidate%fields(node)%values(1,1-width:n(1)+width,1-width:n(2)+width, &
+            1-width:n(3)+width),stat=ios)
+          if(ios/=0) then
+            valid=.false.;exit
+          endif
+          held_candidate%fields(node)%values=0
+        endif
         if(full_halo) then
           allocate(cv%fields(node)%values(1,1-width:n(1)+width,1-width:n(2)+width,1-width:n(3)+width),stat=ios)
           if(ios/=0) then
@@ -359,10 +531,80 @@ contains
     end do
     call agree(valid,ready)
     if (.not.ready) return
+    if(present(coarse_geometry)) then
+      call agree(count<=huge(1)/(6*(nv+2)),ready)
+      if(.not.ready) return
+      allocate(stencil_requests(4,6*count),stencil_index(6,count),stencil_signs(3,6,count), &
+        stencil_offsets(3,count),stat=ios)
+      call agree(ios==0,ready)
+      if(.not.ready) return
+      stencil_count=0;stencil_index=0;linear_faces='outflow'
+      if(present(boundary_faces)) linear_faces=boundary_faces
+      where(controls(:6)>=0) linear_faces='inflow'
+      do q=1,count
+        donor=requests(1,q);target=destination(1,q)
+        level=tree%nodes(target)%level+1
+        if(tree%nodes(donor)%level+1>=level) cycle
+        global=origin(:,target)+int(destination(2:4,q)-1,int64)
+        call map_wall_donor(global,momentum_sign)
+        global=max(0_int64,min(domain(:,level)-1,global))
+        call plan_eb_linear_halo_3d(tree%nodes%level,node_shapes,origin,domain,donor,requests(2:4,q),level,global, &
+          coarse_geometry(donor),width,linear_faces,stencil,signs,shift,linear,ready,connected_directions=connected_directions)
+        if(.not.ready) then
+          valid=.false.;exit
+        endif
+        if(.not.linear) cycle
+        stencil_offsets(:,q)=shift;stencil_signs(:,:,q)=signs
+        do r=1,6
+          stencil_count=stencil_count+1
+          stencil_requests(:,stencil_count)=stencil(:,r);stencil_index(r,q)=stencil_count
+        enddo
+      enddo
+      call agree(valid,ready)
+      if(.not.ready) return
+      if(pressure_policy) then
+        if(supplied==5) then
+          call fetch_mpi_amr_tree_cells_3d(tree,owners,temporal_pressure,1, &
+            stencil_requests(:,:stencil_count),stencil_pressures,comm,ready)
+        else
+          call fetch_mpi_amr_tree_cells_3d(tree,owners,pressure_field,1, &
+            stencil_requests(:,:stencil_count),stencil_pressures,comm,ready)
+        endif
+        if(.not.ready) return
+      endif
+      if(supplied==5) then
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,interpolated,nv, &
+          stencil_requests(:,:stencil_count),stencil_values,comm,ready)
+        if(.not.ready) return
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,it,1, &
+          stencil_requests(:,:stencil_count),stencil_t,comm,ready)
+        if(.not.ready) return
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,held_interpolated,1, &
+          stencil_requests(:,:stencil_count),stencil_held,comm,ready)
+      else
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,snapshot,nv, &
+          stencil_requests(:,:stencil_count),stencil_values,comm,ready)
+        if(.not.ready) return
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,st,1, &
+          stencil_requests(:,:stencil_count),stencil_t,comm,ready)
+        if(.not.ready) return
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,held_snapshot,1, &
+          stencil_requests(:,:stencil_count),stencil_held,comm,ready)
+      endif
+      if(.not.ready) return
+    endif
+    if(pressure_policy) then
+      call fetch_mpi_amr_tree_cells_3d(tree,owners,pressure_field,1,requests(:,:count),pressures,comm,ready)
+      if(.not.ready) return
+    endif
     call fetch_mpi_amr_tree_cells_3d(tree,owners,snapshot,nv,requests(:,:count),values,comm,ready)
     if (.not.ready) return
     call fetch_mpi_amr_tree_cells_3d(tree,owners,st,1,requests(:,:count),guesses,comm,ready)
     if (.not.ready) return
+    if(present(internal_energy)) then
+      call fetch_mpi_amr_tree_cells_3d(tree,owners,held_snapshot,1,requests(:,:count),held_values,comm,ready)
+      if(.not.ready) return
+    endif
     if (supplied==5) then
       allocate(temporal_requests(4,count),temporal_index(count),stat=ios)
       call agree(ios==0,ready)
@@ -380,23 +622,77 @@ contains
       call fetch_mpi_amr_tree_cells_3d(tree,owners,it,1, &
         temporal_requests(:,:temporal_count),temporal_t,comm,ready)
       if (.not.ready) return
+      if(present(internal_energy)) then
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,held_interpolated,1, &
+          temporal_requests(:,:temporal_count),temporal_held,comm,ready)
+        if(.not.ready) return
+      endif
+      if(pressure_policy) then
+        call fetch_mpi_amr_tree_cells_3d(tree,owners,temporal_pressure,1, &
+          temporal_requests(:,:temporal_count),time_pressures,comm,ready)
+        if(.not.ready) return
+        do q=1,temporal_count
+          pressures(:,temporal_index(q))=time_pressures(:,q)
+        enddo
+      endif
       do q=1,temporal_count
         values(:,temporal_index(q))=temporal_values(:,q)
         guesses(:,temporal_index(q))=temporal_t(:,q)
+        if(present(internal_energy)) held_values(:,temporal_index(q))=temporal_held(:,q)
       end do
     end if
     do q=1,count
+      if(pressure_policy) target_pressure=pressures(:,q)
+      if(present(coarse_geometry)) then
+        if(stencil_index(1,q)>0) then
+          packed=[values(:,q),guesses(1,q),held_values(1,q)]
+          do r=1,6
+            h=stencil_index(r,q)
+            neighbors(:,r)=[stencil_values(:,h),stencil_t(1,h),stencil_held(1,h)]
+            neighbors(2:4,r)=neighbors(2:4,r)*real(stencil_signs(:,r,q),dp)
+            if(pressure_policy) pressure_neighbors(:,r)=stencil_pressures(:,h)
+          enddo
+          call interpolate_eb_linear_halo_3d(packed,neighbors,stencil_offsets(:,q),ready,separate_momentum,consistent_velocity)
+          if(.not.ready) then
+            valid=.false.;cycle
+          endif
+          values(:,q)=packed(:nv);guesses(1,q)=packed(nv+1);held_values(1,q)=packed(nv+2)
+          if(pressure_policy) then
+            call interpolate_eb_linear_halo_3d(target_pressure,pressure_neighbors,stencil_offsets(:,q),ready)
+            if(.not.ready) then
+              valid=.false.;cycle
+            endif
+          endif
+        endif
+      endif
+      if(pressure_policy) then
+        donor=requests(1,q);target=destination(1,q)
+        if(tree%nodes(donor)%level<tree%nodes(target)%level.or.covered(tree,donor,requests(2:4,q))) then
+          call reconstruct_eb_pressure_state_3d(species,values(:,q),held_values(1,q),guesses(1,q), &
+            target_pressure(1),energy_delta,ready)
+          if(.not.ready) then
+            valid=.false.;cycle
+          endif
+        endif
+      endif
       if (.not.ieee_is_finite(guesses(1,q))) then
         valid=.false.;cycle
       end if
       if (guesses(1,q)<=0._dp) then
         valid=.false.;cycle
       end if
-      call reactive_conserved_to_primitive(species,values(:,q),guesses(1,q),primitive,recovered,speed,ready)
+      node=destination(1,q);i=destination(2,q);j=destination(3,q);k=destination(4,q)
+      if(present(internal_energy)) donor_held=held_values(1,q)
+      if(present(internal_energy)) then
+        call recover_reactive_eb_cell_3d(species,geometry(node),[i,j,k],values(:,q),guesses(1,q), &
+          primitive,recovered,speed,ready,frame,held_values(1,q))
+      else
+        call recover_reactive_eb_cell_3d(species,geometry(node),[i,j,k],values(:,q),guesses(1,q), &
+          primitive,recovered,speed,ready,frame)
+      endif
       if (.not.ready) then
         valid=.false.;cycle
       end if
-      node=destination(1,q);i=destination(2,q);j=destination(3,q);k=destination(4,q)
       level=tree%nodes(node)%level+1
       global=origin(:,node)+int([i,j,k]-1,int64);inlet_face=0
       do axis=1,3
@@ -411,38 +707,93 @@ contains
       end do
       if (inlet_face>0) then
         if(controls(22+inlet_face)==1) then
+          if(present(internal_energy)) then
+            values(:,q)=inflow_state(:,inlet_face);recovered=controls(6+inlet_face)
+            call gas_internal_energy(donor_held,ready)
+            if(.not.ready) then
+              valid=.false.;cycle
+            endif
+          endif
           call reactive_conserved_to_primitive(species,inflow_state(:,inlet_face),controls(6+inlet_face), &
-            primitive,recovered,speed,ready)
+            primitive,recovered,speed,ready,internal_energy_density=donor_held)
           if(.not.ready) then
             valid=.false.;cycle
           end if
           values(:,q)=inflow_state(:,inlet_face)
+          call boundary_energy(.true.,ready)
+          if(.not.ready) then
+            valid=.false.;cycle
+          end if
         else if (controls(inlet_face)>=0) then
+          call boundary_energy(.false.,ready)
+          if(.not.ready) then
+            valid=.false.;cycle
+          end if
           if (controls(12+inlet_face)>0) then
             call mach_inlet_ghost_3d(species,values(:,q),recovered,inlet_face,controls(6+inlet_face), &
-              controls(inlet_face),inlet,inlet_t,ready,inlet_pressure=controls(12+inlet_face))
+              controls(inlet_face),inlet,inlet_t,ready,inlet_pressure=controls(12+inlet_face), &
+              internal_energy_density=donor_held)
           else
             call mach_inlet_ghost_3d(species,values(:,q),recovered,inlet_face,controls(6+inlet_face), &
-              controls(inlet_face),inlet,inlet_t,ready)
+              controls(inlet_face),inlet,inlet_t,ready,internal_energy_density=donor_held)
           end if
           if (.not.ready) then
             valid=.false.;cycle
           end if
           values(:,q)=inlet;recovered=inlet_t
+          call boundary_energy(.true.,ready)
+          if(.not.ready) then
+            valid=.false.;cycle
+          end if
         end if
       end if
       call map_wall_donor(global,momentum_sign)
       values(2:4,q)=values(2:4,q)*real(momentum_sign,dp)
       candidate%fields(node)%values(:,i,j,k)=values(:,q)
+      ! Keep the validated interpolation seed for the native MOL clock.
+      if(held_controls(8)==1.and.inlet_face==0.and..not.pressure_policy) then
+        if(tree%nodes(requests(1,q))%level<tree%nodes(node)%level) recovered=guesses(1,q)
+      endif
       ct%fields(node)%values(1,i,j,k)=recovered
+      if(present(internal_energy)) then
+        if(inlet_face>0) then
+          if(controls(22+inlet_face)==1.or.controls(inlet_face)>=0) then
+            call gas_internal_energy(held_values(1,q),ready)
+            if(.not.ready) then
+              valid=.false.;cycle
+            endif
+          endif
+        endif
+        held_candidate%fields(node)%values(1,i,j,k)=held_values(1,q)
+      endif
     end do
     call agree(valid,ready)
     if (.not.ready) return
     call move_alloc(candidate%fields,ghost%fields)
     call move_alloc(ct%fields,ghost_temperature%fields)
     if(full_halo) call move_alloc(cv%fields,ghost_volume_fraction%fields)
+    if(present(ghost_internal_energy)) call move_alloc(held_candidate%fields,ghost_internal_energy%fields)
     ok=.true.
   contains
+    subroutine gas_internal_energy(rhoe,accepted)
+      real(dp), intent(out) :: rhoe
+      logical, intent(out) :: accepted
+      real(dp) :: cell(nv,1,1,1),temp(1,1,1),volume(1,1,1),scalar(1,1,1)
+      cell(:,1,1,1)=values(:,q);temp=recovered;volume=1;scalar=0
+      call initialize_nasa7_internal_energy_patch(species,cell,temp,volume,scalar,accepted)
+      rhoe=scalar(1,1,1)
+    end subroutine gas_internal_energy
+    subroutine boundary_energy(to_rotating,accepted)
+      logical, intent(in) :: to_rotating
+      logical, intent(out) :: accepted
+      accepted=.true.
+      if(.not.present(frame)) return
+      position=[geometry(node)%x_lower,geometry(node)%y_lower,geometry(node)%z_lower]+ &
+        (real([i,j,k],dp)-.5_dp)*[geometry(node)%dx,geometry(node)%dy,geometry(node)%dz]
+      energy=values(5,q)
+      call convert_rotating_energy_3d(frame,position,values(1,q),values(5,q),to_rotating,energy,accepted)
+      if(accepted) values(5,q)=energy
+    end subroutine boundary_energy
     subroutine map_wall_donor(position,signs)
       integer(int64), intent(inout) :: position(3)
       integer, intent(out) :: signs(3)
@@ -649,7 +1000,7 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,high,5,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
-    if(nvar<1.or.width<1.or.width>6) return
+    if(nvar<1.or.width<1.or.width>7) return
     if(controls(4)/=0.and.controls(4)/=3) return
     if(peers.and.controls(4)/=0) return
     faces='outflow'

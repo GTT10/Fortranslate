@@ -6,7 +6,10 @@ module sdc_test_source_mod
   integer :: sdc_calls=0
   integer :: halo_calls=0,source_halo_calls=0
 contains
-  subroutine sdc_test_halos(state,temp,time,width,viscous,ghost,gt,valid)
+  subroutine sdc_test_halos(state,temp,time,width,viscous,ghost,gt,valid, &
+      internal_energy_density,internal_energy_ghost)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), optional, intent(out) :: internal_energy_ghost(:,:,:)
     real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
     integer, intent(in) :: width
     logical, intent(in) :: viscous
@@ -16,7 +19,8 @@ contains
     halo_calls=halo_calls+1;valid=.false.;ghost=0;gt=0
     if(sdc_failure.and.time>0) return
     faces='periodic'
-    call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,valid,ghost_width=width,viscous_wall=viscous)
+    call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,valid,ghost_width=width,viscous_wall=viscous, &
+      internal_energy_density=internal_energy_density,internal_energy_ghost=internal_energy_ghost)
   end subroutine sdc_test_halos
   subroutine sdc_test_source_halos(source,time,ghost,valid)
     real(dp), intent(in) :: source(:,:,:,:),time
@@ -291,6 +295,7 @@ contains
     real(dp) :: cell(nv-5),zero_rates(nv-5),cell_t,rhoe,h,prior_ir(nv-4,4,4,4)
     real(dp) :: primitive(nv),initial(nv),initial_t,sound
     real(dp) :: stage_state(nv,1,1,1),stage_t(1,1,1),stage_ir(nv-4,1,1,1),stage_rates(nv,1,1,1)
+    real(dp) :: heat(4,4,4),stage_heat(1,1,1),prior_heat(4,4,4)
     integer :: count
     call load_h2o2_elementary_mechanism(active_reactions,ok)
     call require(ok,'SDC reaction mechanism')
@@ -313,7 +318,7 @@ contains
     call require(ok,'SDC independent cell integration')
     stage_state=old(:,1:1,1:1,1:1);stage_t=ot(1:1,1:1,1:1);stage_ir=0;stage_rates=0
     call react_sdc_state_3d(species,active_reactions,old(:,1:1,1:1,1:1),ot(1:1,1:1,1:1), &
-      stage_rates,h,1e-6_dp,1e-12_dp,stage_state,stage_t,stage_ir,ok)
+      stage_rates,h,1e-6_dp,1e-12_dp,stage_state,stage_t,stage_ir,ok,heat_release=stage_heat)
     call require(ok,'SDC standalone reaction stage')
     call require(maxval(abs(stage_state(6:,1,1,1)-cell))<1e-12_dp.and.abs(stage_t(1,1,1)-cell_t)<1e-6_dp, &
       'SDC standalone reaction matches full-interval cell integration')
@@ -324,17 +329,19 @@ contains
       'SDC reaction stage failure preserves all outputs')
     state=old;temp=ot;ir=0
     call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],h,0._dp, &
-      2,1,ok=ok,external_force=[0._dp,0._dp,0._dp],reactions=active_reactions,reaction_source=ir)
+      2,1,ok=ok,external_force=[0._dp,0._dp,0._dp],reactions=active_reactions,reaction_source=ir,heat_release=heat)
     call require(ok,'SDC reacting step')
+    call require(all(abs(heat-stage_heat(1,1,1))<=32*epsilon(1._dp)*max(1._dp,abs(stage_heat(1,1,1)))), &
+      'full SDC reports accepted reaction-stage heat release')
     call require(maxval(abs(state(6:,1,1,1)-cell))<1e-12_dp.and.abs(temp(1,1,1)-cell_t)<1e-6_dp, &
       'SDC uniform chemistry equals single interval without repeated reaction advancement')
     call require(maxval(abs(cell-old(6:,1,1,1)))>1e-14_dp,'SDC reaction is active')
     call require(maxval(abs(ir(:nv-5,1,1,1)-(cell-old(6:,1,1,1))/h))<1e-7_dp,'SDC reaction source inventory')
-    state=old;temp=ot;prior_ir=ir;sdc_failure=.true.
+    state=old;temp=ot;prior_ir=ir;prior_heat=heat;sdc_failure=.true.
     call advance_reactive_sdc_periodic_3d(species,state,temp,[.25_dp,.25_dp,.25_dp],h,0._dp, &
-      2,2,sdc_test_sources,ok,reactions=active_reactions,reaction_source=ir)
-    call require(.not.ok.and.all(state==old).and.all(temp==ot).and.all(ir==prior_ir), &
-      'SDC failure preserves state temperature and reaction source')
+      2,2,sdc_test_sources,ok,reactions=active_reactions,reaction_source=ir,heat_release=heat)
+    call require(.not.ok.and.all(state==old).and.all(temp==ot).and.all(ir==prior_ir).and.all(heat==prior_heat), &
+      'SDC failure preserves gas, source history and heat release')
     sdc_failure=.false.
   end subroutine check_sdc_reactions
 

@@ -26,6 +26,7 @@ def main():
     template = (args.source / 'cases/mpi_eb_spray_3d/tree.nml').read_text()
     template = template.replace("riemann_solver='hllc'", "riemann_solver='pelec',hydro_method='plm_ctu'")
     template = template.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.')
+    template = template.replace('time_step=1.e-8,final_time=2.e-8', 'time_step=1.e-7,final_time=4.e-7')
     template = template.replace("output_file='result.csv'", "output_file='result.csv',time_integrator='sdc',"
                                 "sdc_iterations=2,boundary_faces=6*'outflow'")
     template = template.replace('&eb_tree', '&eb_tree\n regular_density=1.,cut_density=1.,'
@@ -35,7 +36,7 @@ def main():
     spray = """&eb_spray
  nc=1,number=2,vapor_names(1)='H2O',fractions(1)=1.,particle_outflow=.true.,
  total_mass=1.e-10,center=.0015,.0025,.0015,
- axis=1.,0.,0.,speed=1000.,diameter=1.e-5,liquid_temperature=350.,
+ axis=1.,0.,0.,speed=500.,diameter=1.e-5,liquid_temperature=350.,
  particle_options%breakup_model='khrt',particle_options%khrt_children=.true.,
  particle_options%khrt_reference_diameter_cubed=1.e-25,
  particle_options%surface_tension=.072,particle_options%liquid_viscosity=.001,

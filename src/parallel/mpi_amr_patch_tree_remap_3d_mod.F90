@@ -69,7 +69,8 @@ contains
   end subroutine
 
   subroutine remap_mpi_amr_tree_reactive_3d(old_tree,old_owners,old_state,old_temperature,new_tree,new_owners, &
-      species,state,temperature,comm,ok)
+      species,state,temperature,comm,ok,old_reaction_source,reaction_source,old_heat_release,heat_release, &
+      old_internal_energy,internal_energy)
     type(amr_patch_tree_3d), intent(in) :: old_tree,new_tree
     integer, intent(in) :: old_owners(:),new_owners(:)
     type(amr_tree_state_3d), intent(in) :: old_state,old_temperature
@@ -77,10 +78,39 @@ contains
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: candidate,temps
-    integer :: rank,status,node
+    type(amr_tree_state_3d), optional, intent(in) :: old_reaction_source,old_heat_release
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source,heat_release
+    type(amr_tree_state_3d), optional, intent(in) :: old_internal_energy
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    type(amr_tree_state_3d) :: candidate,temps,rates,heat
+    type(amr_tree_state_3d), allocatable :: held
+    integer :: rank,status,node,flags,low,high
     logical :: valid,ready
     ok=.false.
+    flags=merge(1,0,present(old_reaction_source))+2*merge(1,0,present(reaction_source))+ &
+      4*merge(1,0,present(old_heat_release))+8*merge(1,0,present(heat_release))+ &
+      16*merge(1,0,present(old_internal_energy))+32*merge(1,0,present(internal_energy))
+    call MPI_Allreduce(flags,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low/=high) return
+    if(present(old_internal_energy).neqv.present(internal_energy)) return
+    if(present(old_internal_energy)) then
+      allocate(held)
+      call remap_mpi_amr_tree_3d(old_tree,old_owners,old_internal_energy,new_tree,new_owners,1,held,comm,ready)
+      if(.not.ready) return
+    endif
+    if(present(old_reaction_source).neqv.present(reaction_source)) return
+    if(present(old_heat_release).neqv.present(heat_release)) return
+    if(present(old_reaction_source)) then
+      call remap_mpi_amr_tree_3d(old_tree,old_owners,old_reaction_source,new_tree,new_owners, &
+        reactive_nvar(size(species))-4,rates,comm,ready)
+      if(.not.ready) return
+    end if
+    if(present(old_heat_release)) then
+      call remap_mpi_amr_tree_3d(old_tree,old_owners,old_heat_release,new_tree,new_owners,1,heat,comm,ready)
+      if(.not.ready) return
+    end if
     call validate_mpi_amr_tree_local_3d(old_tree,old_owners,old_temperature,1,comm,ready)
     if (.not.ready) return
     call MPI_Comm_rank(comm,rank,status)
@@ -101,10 +131,13 @@ contains
     if (.not.ready) return
     call remap_mpi_amr_tree_3d(old_tree,old_owners,old_temperature,new_tree,new_owners,1,temps,comm,ready)
     if (.not.ready) return
-    call recover_mpi_amr_tree_temperatures_3d(new_tree,new_owners,species,candidate,temps,comm,ready)
+    call recover_mpi_amr_tree_temperatures_3d(new_tree,new_owners,species,candidate,temps,comm,ready,internal_energy=held)
     if (.not.ready) return
     call move_alloc(candidate%fields,state%fields)
     call move_alloc(temps%fields,temperature%fields)
+    if(present(internal_energy)) call move_alloc(held%fields,internal_energy%fields)
+    if(present(reaction_source)) call move_alloc(rates%fields,reaction_source%fields)
+    if(present(heat_release)) call move_alloc(heat%fields,heat_release%fields)
     ok=.true.
   end subroutine
 

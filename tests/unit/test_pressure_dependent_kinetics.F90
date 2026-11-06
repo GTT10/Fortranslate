@@ -1,4 +1,5 @@
 program test_pressure_dependent_kinetics
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use elementary_kinetics_mod, only: &
     elementary_reaction, effective_third_body_concentration, &
@@ -8,8 +9,9 @@ program test_pressure_dependent_kinetics
   implicit none
 
   type(elementary_reaction), allocatable :: reactions(:)
+  type(elementary_reaction) :: extreme
   real(dp) :: concentrations(h2o2_full_nspecies), derivative(h2o2_full_nspecies)
-  real(dp) :: collider, factor, rate_low, rate_high
+  real(dp) :: collider, factor, rate_low, rate_high, expected
   logical :: ok
 
   call load_h2o2_full_mechanism(reactions, ok)
@@ -39,6 +41,28 @@ program test_pressure_dependent_kinetics
   if (any(derivative < 0.0_dp)) then
     error stop "Falloff concentration derivative became negative"
   end if
+
+  ! Lindemann high-pressure limit: a finite derivative must not overflow
+  ! merely because the intermediate (1+Pr)**2 is unrepresentable.
+  extreme=reactions(22)
+  extreme%troe%enabled=.false.
+  extreme%low_pressure_rate%pre_exponential=1.e180_dp
+  extreme%low_pressure_rate%temperature_exponent=0._dp
+  extreme%low_pressure_rate%activation_energy=0._dp
+  extreme%high_pressure_rate%pre_exponential=1.e10_dp
+  extreme%high_pressure_rate%temperature_exponent=0._dp
+  extreme%high_pressure_rate%activation_energy=0._dp
+  extreme%third_body_efficiencies=1._dp
+  concentrations=1._dp/real(h2o2_full_nspecies,dp)
+  collider=sum(concentrations)
+  call reaction_effective_forward_rate(extreme,1000._dp,concentrations,rate_high,derivative,ok)
+  if(.not.ok) error stop 'Representable high-pressure derivative refused'
+  if(.not.ieee_is_finite(rate_high).or.any(.not.ieee_is_finite(derivative))) &
+    error stop 'Nonfinite high-pressure coefficient or derivative'
+  expected=1.e-160_dp/collider**2
+  if(any(abs(derivative/expected-1._dp)>2.e-12_dp)) &
+    error stop 'High-pressure analytic Lindemann derivative mismatch'
+  call assert_close(rate_high,1.e10_dp,2.e-13_dp,'high-pressure limiting coefficient')
 
   write(*, '(a)') "test_pressure_dependent_kinetics: PASS"
 

@@ -53,3 +53,22 @@ separate MPI-enabled selected-mechanism configuration and run
 The one-rank integration check is recorded
 [here](../../docs/validation/nonreacting-particle-sdc-20260927.md); full reference
 trajectory parity remains pending.
+
+The preparer accepts `--eos-policy strict|pinned` and records the choice in
+`preparation.json`. The default `strict` preserves existing candidate input
+bytes. `pinned` enables the application's existing
+`pinned_eos_extrapolation=.true.` policy, including the pinned default Newton
+stopping behavior; it changes only candidate EOS configuration, not native
+inputs, coefficients or acceptance thresholds. Keep the two policies in
+separate output directories when comparing trajectories. The
+[current diagnostic record](../../docs/validation/evaporation-full-reference-20260927.md)
+shows why short two-step agreement alone does not identify the appropriate
+comparison policy or establish longer-time parity.
+
+The evaporation preparer and particle/gas diagnostic accept `--cells 4|8|16`
+(default4) for the same4mm periodic cube. Pass the same count to both tools.
+Parcel count, physical positions and total liquid mass remain fixed; finer
+meshes change the localized cell source and do not by themselves establish
+spatial convergence. The diagnostic accepts `--expected-time` in seconds
+(default2e-7), checks the native exported endpoint, and remains a diagnostic
+without a parity acceptance gate.

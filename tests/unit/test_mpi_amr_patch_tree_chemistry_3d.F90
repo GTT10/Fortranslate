@@ -146,59 +146,85 @@ program test_mpi_amr_patch_tree_chemistry_3d
 contains
   subroutine check_sdc()
     type(amr_tree_state_3d) :: rates,local_rates,old,old_t,ir,serial_ir,retained_ir
+    type(amr_tree_state_3d) :: serial_aux,local_aux,retained_aux
+    real(dp), allocatable :: forced(:,:,:,:)
     integer :: peer
     owners=mod([0,1,0],nranks);dt=1e-9_dp
-    rates=global
+    rates=global;serial_aux=reference
+    do peer=1,3
+      serial_aux%fields(peer)%values=10000
+    enddo
     do peer=1,3
       rates%fields(peer)%values=.1_dp*global%fields(peer)%values
     end do
     call react_sdc_amr_patch_tree_3d(tree,species,reactions,global,reference,rates,dt,1e-6_dp,1e-14_dp, &
-      oracle,oracle_t,serial_ir,ok)
+      oracle,oracle_t,serial_ir,ok,internal_energy=serial_aux)
     call require(ok,'serial SDC reaction reference')
-    allocate(old%fields(3),old_t%fields(3),local_rates%fields(3))
+    do peer=1,3
+      forced=global%fields(peer)%values+dt*rates%fields(peer)%values
+      call require(all(serial_aux%fields(peer)%values(1,:,:,:)== &
+        forced(5,:,:,:)-.5_dp*sum(forced(2:4,:,:,:)**2,dim=1)/forced(1,:,:,:)), &
+        'AMR reactor exports exact forced internal energy endpoint')
+    enddo
+    allocate(old%fields(3),old_t%fields(3),local_rates%fields(3),local_aux%fields(3))
     do peer=1,3
       if(owners(peer)/=rank) cycle
       old%fields(peer)=global%fields(peer);old_t%fields(peer)=reference%fields(peer)
       local_rates%fields(peer)=rates%fields(peer)
+      local_aux%fields(peer)=reference%fields(peer);local_aux%fields(peer)%values=10000
     end do
     call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,old_t,local_rates,dt,1e-6_dp,1e-14_dp, &
-      local,temperature,ir,MPI_COMM_WORLD,ok)
+      local,temperature,ir,MPI_COMM_WORLD,ok,internal_energy=local_aux)
     call require(ok,'owner-local SDC reaction')
     call compare_state()
     do peer=1,3
       call require(allocated(ir%fields(peer)%values).eqv.(owners(peer)==rank),'owner-local reaction estimates only')
+      call require(allocated(local_aux%fields(peer)%values).eqv.(owners(peer)==rank),'reaction scalar owned only')
       if(owners(peer)/=rank) cycle
+      call require(all(local_aux%fields(peer)%values==serial_aux%fields(peer)%values),'serial MPI reaction scalar exact')
       call require(all(ir%fields(peer)%values==serial_ir%fields(peer)%values),'serial SDC reaction estimates exact')
       if(tree%nodes(peer)%level==1) cycle
       local%fields(peer)%values(2,:,:,:)=local%fields(peer)%values(2,:,:,:)+1
       temperature%fields(peer)%values=temperature%fields(peer)%values+1
       ir%fields(peer)%values=ir%fields(peer)%values+1
+      local_aux%fields(peer)%values=local_aux%fields(peer)%values+1
     end do
-    saved=local;saved_t=temperature;retained_ir=ir
+    saved=local;saved_t=temperature;retained_ir=ir;retained_aux=local_aux
     call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,old_t,local_rates,dt,1e-6_dp,1e-14_dp, &
-      local,temperature,ir,MPI_COMM_WORLD,ok,target_depth=1)
+      local,temperature,ir,MPI_COMM_WORLD,ok,target_depth=1,internal_energy=local_aux)
     call require(ok,'MPI level-selective SDC reaction')
     do peer=1,3
       if(owners(peer)/=rank) cycle
       call require(all(local%fields(peer)%values==saved%fields(peer)%values),'other-level state retained')
       call require(all(temperature%fields(peer)%values==saved_t%fields(peer)%values),'other-level temperature retained')
       call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'other-level source retained')
+      call require(all(local_aux%fields(peer)%values==retained_aux%fields(peer)%values),'other-level scalar retained')
     end do
     if(rank==owners(3)) old%fields(3)%values(1,1,1,1)=-1
     call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,old_t,local_rates,dt,1e-6_dp,1e-14_dp, &
-      local,temperature,ir,MPI_COMM_WORLD,ok)
+      local,temperature,ir,MPI_COMM_WORLD,ok,internal_energy=local_aux)
     call require(.not.ok,'one-owner SDC failure rejected collectively')
     do peer=1,3
       if(owners(peer)/=rank) cycle
       call require(all(local%fields(peer)%values==saved%fields(peer)%values),'collective SDC state rollback')
       call require(all(temperature%fields(peer)%values==saved_t%fields(peer)%values),'collective SDC temperature rollback')
       call require(all(ir%fields(peer)%values==retained_ir%fields(peer)%values),'collective SDC source rollback')
+      call require(all(local_aux%fields(peer)%values==retained_aux%fields(peer)%values),'collective SDC scalar rollback')
       old%fields(peer)=global%fields(peer)
     end do
     if(rank==nranks-1) dt=2*dt
     call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,old_t,local_rates,dt,1e-6_dp,1e-14_dp, &
-      local,temperature,ir,MPI_COMM_WORLD,ok)
+      local,temperature,ir,MPI_COMM_WORLD,ok,internal_energy=local_aux)
     call require(.not.ok,'idle-rank interval disagreement rejected')
+    dt=1e-9_dp
+    if(rank==nranks-1) then
+      call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,old_t,local_rates,dt,1e-6_dp,1e-14_dp, &
+        local,temperature,ir,MPI_COMM_WORLD,ok)
+    else
+      call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old,old_t,local_rates,dt,1e-6_dp,1e-14_dp, &
+        local,temperature,ir,MPI_COMM_WORLD,ok,internal_energy=local_aux)
+    endif
+    call require(.not.ok,'rank-disagreeing reactor scalar presence rejected')
   end subroutine check_sdc
   subroutine compare_state()
     integer :: peer

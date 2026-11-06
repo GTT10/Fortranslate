@@ -8,7 +8,9 @@ module les_amr_subcycle_mod
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d, &
     average_down_amr_patch_tree_3d
-  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,compute_amr_patch_tree_les_timestep_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,compute_amr_patch_tree_les_timestep_3d, &
+    convert_amr_les_tree_energy_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   implicit none
   private
@@ -16,7 +18,10 @@ module les_amr_subcycle_mod
 contains
   subroutine compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure, &
+      frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -34,13 +39,15 @@ contains
     call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle=.true., &
-      inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+      inflow_mach=inflow_mach,inflow_pressure=inflow_pressure,frame=frame,domain_lower=domain_lower)
   end subroutine
 
-  subroutine advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temperature,spacing,dt,faces, &
+  recursive subroutine advance_amr_patch_tree_subcycle_les_3d(tree,species,state,temperature,spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,maximum_diffusivity,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure, &
-      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -60,14 +67,39 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6)
     integer(int64), optional, intent(inout) :: level_steps(:)
     type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint
+    type(amr_tree_state_3d) :: ordinary,ordinary_t
     type(amr_tree_flux_3d), allocatable :: integrated(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:),executed(:)
+    integer(int64), allocatable :: rotated_steps(:)
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: starts(:),finishes(:)
     real(dp) :: budget(size(boundary_change)),largest,diffusivity
     integer :: nvar,node,n(3)
     logical :: valid
+    real(dp) :: rotated_budget(size(boundary_change)),rotated_max,rotated_diffusivity
     ok=.false.
+    if(present(frame).neqv.present(domain_lower)) return
+    if(present(frame)) then
+      if(present(level_steps)) then
+        if(size(level_steps)/=tree%level_count()) return
+      endif
+      ordinary=state;ordinary_t=temperature
+      call convert_amr_les_tree_energy_3d(tree,ordinary,spacing,frame,domain_lower,.false.,valid)
+      if(.not.valid) return
+      allocate(rotated_steps(tree%level_count()))
+      rotated_steps=0
+      call advance_amr_patch_tree_subcycle_les_3d(tree,species,ordinary,ordinary_t,spacing,dt,faces, &
+        cs,prt,sct,rotated_budget,rotated_max,rotated_diffusivity,valid, &
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,rotated_steps,outlet_pressure, &
+        model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      if(.not.valid) return
+      call convert_amr_les_tree_energy_3d(tree,ordinary,spacing,frame,domain_lower,.true.,valid)
+      if(.not.valid) return
+      state=ordinary;temperature=ordinary_t;boundary_change=rotated_budget
+      maximum_correction=rotated_max;maximum_diffusivity=rotated_diffusivity
+      if(present(level_steps)) level_steps=rotated_steps
+      ok=.true.;return
+    endif
     call layout(tree,species,state,temperature,spacing,origin,domain,ratios,counts,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))

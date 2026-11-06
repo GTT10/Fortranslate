@@ -1,5 +1,6 @@
 module reactive_2d_application_mod
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -21,6 +22,8 @@ contains
     character(len=*), intent(in) :: bundle_sha256
     type(reactive_2d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: base_mole_fractions(:)
@@ -37,22 +40,24 @@ contains
     logical :: ok
     integer :: steps
 
-    if (size(species) < 2 .or. size(reactions) < 1 .or. &
-        size(transport) /= size(species) .or. &
-        size(base_mole_fractions) /= size(species)) then
+    call configure_reactive_2d_eos(species,config,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) error stop 'Invalid 2D application EOS policy'
+    if (size(eos_species) < 2 .or. size(reactions) < 1 .or. &
+        size(transport) /= size(eos_species) .or. &
+        size(base_mole_fractions) /= size(eos_species)) then
       error stop "Reactive 2D application data have incompatible dimensions"
     end if
     call simulate_reactive_2d( &
-      species, reactions, config, state, temperature, dx, dy, time, steps, &
+      eos_species, reactions, config, state, temperature, dx, dy, time, steps, &
       initial_integrals, final_integrals, minimum_theta, base_density, ok, &
       transport, minimum_transport_theta, base_mole_fractions, &
       chemistry_integrator=chemistry_integrator)
     if (.not. ok) error stop "Reactive 2D simulation failed"
     call write_reactive_2d_csv( &
-      config%output_file, species, config, state, temperature, dx, dy, time, ok)
+      config%output_file, eos_species, config, state, temperature, dx, dy, time, ok)
     if (.not. ok) error stop "Reactive 2D output failed"
     call reactive_extrema_2d( &
-      species, state, temperature, config%nx, config%ny, minimum_density, &
+      eos_species, state, temperature, config%nx, config%ny, minimum_density, &
       maximum_density, minimum_pressure, maximum_pressure, &
       minimum_temperature, maximum_temperature, maximum_speed, &
       maximum_closure_error, ok)

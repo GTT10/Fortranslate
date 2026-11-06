@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 from check_mechanism_provenance import check
-from pelephysics_transport_import import regenerate_simple_transport
+from pinned_eos_reference import reference_eos_options, reference_fuel_temperature
 
 
 def main():
@@ -30,8 +30,8 @@ def main():
             or bundle['reactions'] != [] or bundle['species'] != ['NC10H22', 'O2', 'N2']
             or bundle['source']['sha256'] != mechanism['files']['yaml']['sha256']):
         raise ValueError('Expected pinned reaction-free decane bundle')
-    if bundle.get('simple_transport') != regenerate_simple_transport(bundle, args.bundle.parent):
-        raise ValueError('Pinned Simple transport fits required')
+    eos = reference_eos_options(bundle, args.bundle.parent)
+    fuel_reference_temperature = reference_fuel_temperature(source['example.inp'])
     lines = source['roi.dat'].decode('ascii').splitlines()
     if lines[0] != 'Time [ms];Mass flow rate [g/s]':
         raise ValueError('Unexpected rate units')
@@ -68,6 +68,9 @@ def main():
  time_step={fmt(dt)},final_time={fmt(end_time)},maximum_steps={2*args.events+2},maximum_step_retries=0,
  time_integrator='sdc',sdc_iterations=2,subcycling=.false.,automatic_timestep=.false.,
  chemistry_enabled=.false.,transport_enabled=.true.,simple_transport_enabled=.true.,
+ pinned_eos_extrapolation=.true.,
+ pinned_eos_temperature_min={fmt(eos['pinned_eos_temperature_min'])},
+ pinned_eos_temperature_max={fmt(eos['pinned_eos_temperature_max'])},
  hydro_method='plm_ctu',riemann_solver='pelec',
  boundary_faces='outflow','outflow','no_slip_wall','outflow','outflow','outflow',
  composition_count=1,composition_species='N2',composition_mole_fractions=1,
@@ -80,7 +83,7 @@ def main():
  particle_options%mixture_time_scheme='euler',
  nc=1,number=4,vapor_names(1)='NC10H22',fractions(1)=1,
  densities(1)=640,heat_capacities(1)=2192.1,
- reference_temperatures(1)=300,reference_pressures(1)=101325,latent_heats(1)=358990,
+ reference_temperatures(1)={fmt(fuel_reference_temperature)},reference_pressures(1)=101325,latent_heats(1)=358990,
  mixture_vapor_pressure_models(1)='antoine',
  mixture_antoine_coefficients(:,1)=4.07857,1501.268,-78.67,1e5,
  mixture_antoine_temperature_ranges(:,1)=300,447.27,
@@ -99,12 +102,12 @@ def main():
 ''')
     (args.output/'preparation.json').write_text(json.dumps(dict(
         reference=manifest, bundle_sha256=hashlib.sha256(args.bundle.read_bytes()).hexdigest(),
+        eos=eos, fuel_reference_temperature_K=fuel_reference_temperature,
         initial_gas_temperature_K=440, initial_pressure_Pa=6e6,
         event_masses_kg=masses, expected_injected_mass_kg=math.fsum(masses),
         event_speeds_m_s=[m/((b[0]-a[0])*640*math.pi*(4.5e-5)**2*.89) for m, (a, b) in zip(masses, intervals)],
         rate_points=len(points), injection_events=args.events, expected_parcels=4*args.events, final_time_s=end_time,
         adaptations=['4x8x4 all-fluid mesh without AMR', f'first {args.events} active rate intervals',
-                     'fuel reference temperature 300 K instead of out-of-range 298.15 K',
                      'nozzle center moved 1e-8 m inside lower-y boundary',
                      'four deterministic parcels per event instead of stochastic sampling',
                      'event-average rate-driven velocity and interval-integrated mass'],

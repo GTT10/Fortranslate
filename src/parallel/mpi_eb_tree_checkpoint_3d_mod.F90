@@ -1,6 +1,8 @@
 module mpi_eb_tree_checkpoint_3d_mod
+  use dual_energy_mod, only: dual_energy_policy
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use mpi_f08
-  use, intrinsic :: iso_fortran_env, only: iostat_end,iostat_eor
+  use, intrinsic :: iso_fortran_env, only: iostat_end,iostat_eor,error_unit
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
@@ -10,7 +12,7 @@ module mpi_eb_tree_checkpoint_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
-  use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d
+  use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,checkpoint_held_restriction_matches_3d
   use reactive_eb_3d_checkpoint_mod, only: write_reactive_eb_3d_checkpoint
   use reactive_eb_3d_driver_mod, only: reactive_eb_integrals_3d,reactive_eb_element_integrals_3d, &
     reactive_eb_composition_integrals_3d
@@ -24,7 +26,8 @@ contains
   ! Only record sizes are reduced; payloads are written directly in node order.
   subroutine write_mpi_eb_tree_checkpoint_3d(path,prefix_unit,species,reactions,transport,config,tree,owners, &
       geometry,state,temperature,record,comm,ok,bundle_sha256,chemistry_integrator,base_mole_fractions, &
-      element_names,element_atoms)
+      element_names,element_atoms,frame)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     character(len=*), intent(in) :: path
     integer, intent(in) :: prefix_unit,owners(:)
     type(nasa7_species), intent(in) :: species(:)
@@ -39,7 +42,9 @@ contains
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: bundle_sha256,chemistry_integrator,element_names(:)
     real(dp), optional, intent(in) :: base_mole_fractions(:),element_atoms(:,:)
-    type(amr_tree_state_3d) :: averaged,at
+    type(amr_tree_state_3d) :: averaged,at,averaged_held
+    type(dual_energy_policy), allocatable :: patch_policy
+    real(dp), allocatable :: patch_held(:,:,:),patch_prefix
     type(reactive_eb_3d_config) :: cfg
     type(MPI_File) :: file
     type(MPI_Status) :: io_status
@@ -52,20 +57,57 @@ contains
     character(len=:), allocatable :: header,index_text
     character(len=21) :: index_line
     character(len=*), parameter :: ending='END_EB_TREE_CHECKPOINT'
-    logical :: valid,opened,sdc
+    integer :: redist_low,redist_high
+    logical :: valid,opened,sdc,with_heat,with_held
     ok=.false.;opened=.false.;nv=reactive_nvar(size(species));ne=3
+    valid=config%state_redist_max_order==0.or.config%state_redist_max_order==2.or.config%state_redist_max_order==4
+    call agree(valid)
+    if(.not.valid) return
+    call MPI_Allreduce(config%state_redist_max_order,redist_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(config%state_redist_max_order,redist_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.redist_low/=redist_high) return
     sdc=config%time_integrator=='sdc'
+    with_heat=allocated(record%heat_release%fields)
+    with_held=allocated(record%internal_energy%fields)
     if (present(element_names)) ne=size(element_names)
     allocate(current(nv),integral(nv),l1(nv),elements(ne))
     averaged=state;at=temperature
-    call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,averaged,at,comm,valid)
+    if(with_held) then
+      averaged_held=record%internal_energy
+      call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,averaged,at,comm,valid,frame,averaged_held, &
+        direct_children=.true.)
+    else
+      call average_down_mpi_eb_tree_3d(species,tree,owners,geometry,averaged,at,comm,valid,frame)
+    endif
     if (.not.valid) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
+      if(with_held) then
+        if(.not.checkpoint_held_restriction_matches_3d(species,tree,node,geometry(node), &
+          state%fields(node)%values,record%internal_energy%fields(node)%values, &
+          averaged%fields(node)%values,averaged_held%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
+          record%energy_policy,frame)) valid=.false.
+        cycle
+      endif
       if (any(abs(averaged%fields(node)%values-state%fields(node)%values)> &
-        2.e-12_dp*max(1._dp,abs(averaged%fields(node)%values)))) valid=.false.
+        2.e-12_dp*max(1._dp,abs(averaged%fields(node)%values)))) then
+        valid=.false.
+        write(error_unit,'(a,2(i0,1x),a,es24.16)') 'Checkpoint restriction mismatch rank/node ',rank,node, &
+          ' conserved scaled maximum ',maxval(abs(averaged%fields(node)%values-state%fields(node)%values)/ &
+          max(1._dp,abs(averaged%fields(node)%values)))
+      endif
+      if(with_held) then
+        if(any(abs(averaged_held%fields(node)%values-record%internal_energy%fields(node)%values)> &
+          2.e-12_dp*max(1._dp,abs(averaged_held%fields(node)%values)))) then
+          valid=.false.
+          write(error_unit,'(a,2(i0,1x),a,es24.16)') 'Checkpoint restriction mismatch rank/node ',rank,node, &
+            ' held scaled maximum ',maxval(abs(averaged_held%fields(node)%values- &
+            record%internal_energy%fields(node)%values)/max(1._dp,abs(averaged_held%fields(node)%values)))
+        endif
+      endif
     end do
     call agree(valid)
     if (.not.valid) return
@@ -78,10 +120,22 @@ contains
     if (.not.valid) return
     block
       character(len=128) :: control_text
-      write(control_text,*) config%time_integrator,config%chemistry_enabled,config%sdc_iterations,config%sdc_reactor
+      write(control_text,*) config%time_integrator,config%chemistry_enabled,config%sdc_iterations,config%sdc_reactor, &
+        with_heat,with_held
       call same_string(control_text,valid)
       if(.not.valid) return
     end block
+    if(with_held) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,record%internal_energy,1,comm,valid)
+      if(.not.valid) return
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        if(.not.all(ieee_is_finite(record%internal_energy%fields(node)%values))) valid=.false.
+      enddo
+      call agree(valid)
+      if(.not.valid) return
+      allocate(patch_policy,patch_prefix);patch_policy=record%energy_policy;patch_prefix=record%energy_correction
+    endif
     if(sdc.and.config%chemistry_enabled) then
       call validate_mpi_amr_tree_local_3d(tree,owners,record%reaction_source,nv-4,comm,valid)
       if(.not.valid) return
@@ -92,6 +146,16 @@ contains
       call agree(valid)
       if(.not.valid) return
     end if
+    if(with_heat) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,record%heat_release,1,comm,valid)
+      if(.not.valid) return
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        if(.not.all(ieee_is_finite(record%heat_release%fields(node)%values))) valid=.false.
+      enddo
+      call agree(valid)
+      if(.not.valid) return
+    endif
     allocate(local_bytes(size(owners)),bytes(size(owners)),offset(size(owners)),local_start(size(owners)))
     local_bytes=0
     open(newunit=stage,status='scratch',access='stream',form='unformatted',iostat=ios)
@@ -101,8 +165,15 @@ contains
       return
     end if
     ! Caller supplied only the application policy envelope; append tree metadata.
-    if(sdc) then
-      write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V4'
+    if(with_held) then
+      write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V10'
+      if(ios==0) write(prefix_unit,*,iostat=ios) merge(1,0,sdc),merge(1,0,with_heat)
+    else if(sdc) then
+      if(with_heat) then
+        write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V6'
+      else
+        write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V4'
+      endif
     else
       write(prefix_unit,'(a)',iostat=ios) 'PELEF_EB_TREE_CHECKPOINT_V2'
     end if
@@ -119,9 +190,16 @@ contains
       record%time,record%steps,record%minimum_dt,record%minimum_theta
     if (ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) &
       record%initial,record%scale,record%boundary,record%wall,record%chemical
+    if(ios==0.and.with_held) then
+      write(prefix_unit,'(3(i0,1x),3(es27.18e3,1x))',iostat=ios) &
+        merge(1,0,record%energy_policy%allow_small_energy),merge(1,0,record%energy_policy%allow_negative_energy), &
+        merge(1,0,record%energy_policy%update_total_from_internal),record%energy_policy%eta2,record%energy_correction, &
+          record%internal_energy_pressure_work
+    endif
     if(sdc) then
       if(ios==0) write(prefix_unit,*,iostat=ios) config%sdc_iterations, &
-          merge(1,0,config%chemistry_enabled)+merge(2,0,config%sdc_reactor=="cvode")
+          merge(1,0,config%chemistry_enabled)+merge(2,0,config%sdc_reactor=="cvode")+ &
+          merge(4,0,config%sdc_reactor=="cvode_full")
       if(ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) config%external_forcing
       if(ios==0) write(prefix_unit,'(*(es27.18e3,1x))',iostat=ios) record%forcing
     end if
@@ -143,6 +221,7 @@ contains
     if (.not.valid) go to 900
     do node=1,size(owners)
       if (owners(node)/=rank) cycle
+      if(with_held) patch_held=record%internal_energy%fields(node)%values(1,:,:,:)
       local_start(node)=cursor
       open(newunit=patch,status='scratch',form='formatted',iostat=ios)
       valid=ios==0
@@ -166,7 +245,8 @@ contains
       end if
       if (valid) call write_reactive_eb_3d_checkpoint('',species,reactions,transport,cfg,g,u,t, &
         record%time,record%steps,integral,l1,elements,record%minimum_dt,0._dp,record%minimum_theta,valid,message, &
-        bundle_sha256,chemistry_integrator,base_mole_fractions,patch,element_names,element_atoms,tree_patch=.true.)
+        bundle_sha256,chemistry_integrator,base_mole_fractions,patch,element_names,element_atoms,tree_patch=.true.,frame=frame, &
+        internal_energy_density=patch_held,energy_correction=patch_prefix,energy_policy=patch_policy)
       end associate
       if(valid.and.sdc.and.config%chemistry_enabled) then
         write(patch,'(a)',iostat=ios) 'SDC_REACTION_SOURCE'
@@ -180,6 +260,18 @@ contains
         end do
         valid=ios==0
       end if
+      if(valid.and.with_heat) then
+        write(patch,'(a)',iostat=ios) 'SDC_HEAT_RELEASE'
+        n=tree%nodes(node)%shape
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          if(ios==0) write(patch,'(es27.18e3)',iostat=ios) record%heat_release%fields(node)%values(1,i,j,k)
+        enddo
+        enddo
+        enddo
+        valid=ios==0
+      endif
       if (valid) call stage_formatted(patch,valid)
       close(patch,iostat=ios)
       valid=valid.and.ios==0
@@ -191,7 +283,7 @@ contains
     call MPI_Allreduce(local_bytes,bytes,size(owners),MPI_OFFSET,MPI_SUM,comm,status)
     valid=status==MPI_SUCCESS
     if (.not.valid) go to 900
-    ! V2/V4 lengths index each gas record plus its optional V4 reaction source.
+    ! The patch index includes gas, reaction rates and optional heat release.
     valid=all(bytes>0).and.size(owners)<=(huge(1)-len(header))/21
     call agree(valid)
     if (.not.valid) go to 900
@@ -298,6 +390,14 @@ contains
     logical function valid_record() result(good)
       real(dp) :: forcing(nv)
       good=.false.;forcing=0
+      if(.not.ieee_is_finite(record%internal_energy_pressure_work)) return
+      if(abs(record%internal_energy_pressure_work)>huge(1._dp)/8) return
+      if(.not.with_held.and.record%internal_energy_pressure_work/=0) return
+      if(with_held) then
+        if(.not.all(ieee_is_finite([record%energy_policy%eta2,record%energy_correction]))) return
+        if(abs(record%energy_correction)>huge(1._dp)/8) return
+      endif
+      if(with_heat.and..not.sdc) return
       if(.not.sdc.and.config%time_integrator/='split') return
       if(.not.all(ieee_is_finite(config%external_forcing))) return
       if(sdc) then
@@ -310,6 +410,14 @@ contains
         if(any(config%external_forcing/=0)) return
         if(allocated(record%forcing).or.allocated(record%reaction_source%fields)) return
       end if
+      if(with_held) then
+        if(forcing(5)>0.and.record%energy_correction>0) then
+          if(forcing(5)>huge(1._dp)-record%energy_correction) return
+        else if(forcing(5)<0.and.record%energy_correction<0) then
+          if(forcing(5)<-huge(1._dp)-record%energy_correction) return
+        endif
+        forcing(5)=forcing(5)+record%energy_correction
+      endif
       if (.not.allocated(record%initial).or..not.allocated(record%scale).or..not.allocated(record%boundary).or. &
         .not.allocated(record%wall).or..not.allocated(record%chemical)) return
       if (any([size(record%initial),size(record%scale),size(record%boundary),size(record%wall),size(record%chemical)]/=nv)) return

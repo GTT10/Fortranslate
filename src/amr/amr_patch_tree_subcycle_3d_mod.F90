@@ -13,7 +13,9 @@ module amr_patch_tree_subcycle_3d_mod
   private
   public :: compute_amr_patch_tree_subcycle_cfl_3d,advance_amr_patch_tree_subcycle_hydro_3d
 contains
-  subroutine compute_amr_patch_tree_subcycle_cfl_3d(tree,species,state,temperature,spacing,cfl,dt,ok)
+  subroutine compute_amr_patch_tree_subcycle_cfl_3d(tree,species,state,temperature,spacing,cfl,dt,ok,internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    real(dp), allocatable :: sampled_h(:,:,:)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -28,12 +30,20 @@ contains
     ok=.false.
     call layout(tree,species,state,temperature,spacing,origin,domain,ratios,counts,valid)
     if (.not.valid) return
+    if(present(internal_energy)) then
+      if(.not.internal_energy%is_valid(tree)) return
+      do node=1,size(tree%nodes)
+        if(size(internal_energy%fields(node)%values,1)/=1) return
+        if(.not.all(ieee_is_finite(internal_energy%fields(node)%values))) return
+      enddo
+    endif
     candidate=huge(1._dp)
     do node=1,size(tree%nodes)
       level=tree%nodes(node)%level+1;n=tree%nodes(node)%shape
       count_real=real(counts(level),dp);h=spacing/count_real
+      if(present(internal_energy)) sampled_h=internal_energy%fields(node)%values(1,:,:,:)
       call compute_reactive_cfl_timestep_3d(species,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
-        n(1),n(2),n(3),h(1),h(2),h(3),cfl,local_dt,valid)
+        n(1),n(2),n(3),h(1),h(2),h(3),cfl,local_dt,valid,internal_energy_density=sampled_h)
       if (.not.valid) return
       if (local_dt<=huge(1._dp)/count_real) candidate=min(candidate,local_dt*count_real)
     end do

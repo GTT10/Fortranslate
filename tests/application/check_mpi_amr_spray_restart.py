@@ -14,6 +14,13 @@ p.add_argument('--source', type=Path, required=True)
 p.add_argument('--work', type=Path, required=True)
 p.add_argument('--selected', action='store_true')
 p.add_argument('--ppm', action='store_true')
+p.add_argument('--sdc', action='store_true')
+p.add_argument('--mol', action='store_true')
+p.add_argument('--mol-lf', action='store_true')
+p.add_argument('--rotating', action='store_true')
+p.add_argument('--sdc-cvode', action='store_true')
+p.add_argument('--gas-force', action='store_true')
+p.add_argument('--reacting', action='store_true')
 p.add_argument('--difmag', action='store_true')
 p.add_argument('--multiport', action='store_true')
 p.add_argument('--adaptive', action='store_true')
@@ -31,18 +38,43 @@ p.add_argument('--dynamic-pressure', action='store_true')
 p.add_argument('--pressure', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--properties', action='store_true')
+p.add_argument('--pelemp-cap', action='store_true')
 p.add_argument('--sizes', action='store_true')
 p.add_argument('--rates', action='store_true')
 p.add_argument('--discharge', action='store_true')
 p.add_argument('--split', action='store_true')
 p.add_argument('--rate-files', action='store_true')
 a = p.parse_args()
+assert not (a.sdc and a.mol), 'Select one time integrator'
+staged = a.sdc or a.mol
+assert not a.mol_lf or a.mol
+assert not a.rotating or a.mol
 a.work.mkdir(parents=True, exist_ok=True)
 work = Path(tempfile.mkdtemp(prefix='restart_', dir=a.work.resolve()))
 case = a.source.resolve() / 'cases/mpi_amr_spray_3d'
 gas = (case / 'gas.nml').read_text()
 if a.ppm:
     gas = gas.replace("reconstruction='pcm'", "reconstruction='characteristic_ppm'")
+if staged:
+    gas = gas.replace("reconstruction='pcm'", "reconstruction='characteristic_ppm'")
+    gas = gas.replace("riemann_solver='hllc'", "riemann_solver='pelec',time_integrator='sdc',sdc_iterations=2")
+if a.mol:
+    gas = gas.replace("reconstruction='characteristic_ppm'", "reconstruction='characteristic_plm'")
+    gas = gas.replace("time_integrator='sdc'", "time_integrator='mol'")
+    if a.mol_lf:
+        gas = gas.replace("time_integrator='mol'", "time_integrator='mol',mol_lax_friedrichs=.true.")
+if a.rotating:
+    gas = gas.replace("boundary_condition='periodic'", "boundary_condition='physical',"
+                      "boundary_faces=4*'slip_wall',2*'periodic'")
+    gas += "\n&reactive_rotation enabled=.true.,axis=2,angular_speed=200.,axis_point=.002,.002,0. /\n"
+if a.sdc_cvode:
+    assert staged
+    gas = gas.replace("time_integrator='sdc'", "time_integrator='sdc',sdc_reactor='cvode'")
+if a.reacting or a.sdc_cvode:
+    gas = gas.replace('chemistry_enabled=.false.', 'chemistry_enabled=.true.')
+if a.gas_force:
+    assert staged
+    gas = gas.replace(' output_file=', ' external_forcing=100.,-200.,300.\n output_file=')
 if a.difmag:
     assert a.ppm
     gas = gas.replace("riemann_solver='hllc'", "riemann_solver='pelec',difmag=0.1")
@@ -151,6 +183,13 @@ if a.properties:
               " mixture_antoine_coefficients(:,1)=8.07131,1730.63,-39.724,133.322,\n"
               " mixture_antoine_temperature_ranges(:,1)=300.,450.\n/\n")
 
+if a.pelemp_cap:
+    spray = spray.replace('drop_temperature=350.', 'drop_temperature=400.')
+    spray += ("\n&amr_spray_properties\n"
+              " mixture_boiling_models='pelemp-cap','pelemp-cap',\n"
+              " mixture_critical_temperatures=647.,700.,\n"
+              " mixture_normal_boiling_temperatures=373.15,450.\n/\n")
+
 
 if a.sizes:
     assert a.multiport
@@ -194,10 +233,20 @@ if a.rate_files:
     spray += "\n&amr_spray_rate_files profile_files='rate1.dat','rate2.dat' /\n"
 
 
-def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False, changed_mach=None, changed_reconstruction=False, coefficient=None):
+def run(name, ranks, controls, good=True, changed=False, changed_boundary=False, changed_les=False, changed_pressure=False, changed_force=False, changed_properties=False, invalid_properties=False, changed_boiling=False, invalid_boiling=False, surface_cap=False, changed_sizes=False, invalid_sizes=False, changed_rates=False, invalid_rates=False, changed_discharge=False, invalid_discharge=False, changed_split=False, changed_subcycling=False, changed_mach=None, changed_reconstruction=False, coefficient=None, changed_sdc=None, changed_mol_lf=False, changed_rotation=False):
     folder = work / name
     folder.mkdir()
     local_gas = gas.replace("'outflow'", "'slip_wall'") if changed_boundary else gas
+    if changed_sdc == 'iterations':
+        local_gas = local_gas.replace('sdc_iterations=2', 'sdc_iterations=3')
+    elif changed_sdc == 'forcing':
+        local_gas = local_gas.replace('external_forcing=100.', 'external_forcing=101.')
+    elif changed_sdc == 'reactor':
+        local_gas = local_gas.replace("sdc_reactor='cvode'", "sdc_reactor='native'")
+    elif changed_sdc == 'integrator':
+        local_gas = local_gas.replace(f"time_integrator='{'mol' if a.mol else 'sdc'}'", "time_integrator='split'")
+    if changed_mol_lf:
+        local_gas = local_gas.replace('mol_lax_friedrichs=.true.', 'mol_lax_friedrichs=.false.')
     if coefficient is not None:
         local_gas = local_gas.replace('difmag=0.1', f'difmag={coefficient}')
     if changed_reconstruction:
@@ -209,6 +258,8 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
                     'temperature': ('inflow_temperature=1000.', 'inflow_temperature=1001.'),
                     'pressure': ('inflow_pressure=0.', 'inflow_pressure=120000.')}[changed_mach]
         local_gas = local_gas.replace(old, new)
+    if changed_rotation:
+        local_gas = local_gas.replace('angular_speed=200.', 'angular_speed=201.')
     (folder / 'gas.nml').write_text(local_gas)
     local_spray = spray
     if changed:
@@ -226,6 +277,13 @@ def run(name, ranks, controls, good=True, changed=False, changed_boundary=False,
         local_spray = local_spray.replace('1100.,-.2', '1101.,-.2')
     if invalid_properties:
         local_spray = local_spray.replace('1100.,-.2', '-1100.,0.')
+    if changed_boiling:
+        local_spray = local_spray.replace('373.15,450.', '374.15,450.')
+    if invalid_boiling:
+        local_spray = local_spray.replace('373.15,450.', '647.,450.')
+    if surface_cap:
+        local_spray = local_spray.replace("'pelemp-cap','pelemp-cap'", "'surface-cap','surface-cap'")
+        local_spray = local_spray.replace('373.15,450.', '0.,0.')
     if changed_sizes:
         local_spray = local_spray.replace('%std=2.e-6', '%std=3.e-6')
     if invalid_sizes:
@@ -288,6 +346,46 @@ for expected, actual in zip(read(full, 2), read(continued, 4)):
         for x, y in zip(left, right):
             assert math.isclose(x, y, rel_tol=2e-12, abs_tol=1e-25), (x, y)
 assert f'Injection events applied: {4 if a.multiport else 3}' in (continued / 'run.log').read_text()
+if staged:
+    assert f"Time integrator: {'mol' if a.mol else 'sdc'}" in (continued / 'run.log').read_text()
+    expected_reactor = 'cvode' if a.sdc_cvode else 'native'
+    assert f'SDC reactor: {expected_reactor}' in (continued / 'run.log').read_text()
+    saved_gas = (split / 'state.gas').read_text().splitlines()
+    if a.mol:
+        assert saved_gas[0] == 'PELEF_AMR_TREE_INTERNAL_ENERGY_V1'
+        assert math.isfinite(float(saved_gas[1]))
+        assert saved_gas[2] == 'PELEF_AMR_TREE_3D_CHECKPOINT_V6'
+        assert 'SPRAY_ACTUAL_UEINT_V1' in saved_gas
+    else:
+        assert saved_gas[0] == 'PELEF_AMR_TREE_3D_CHECKPOINT_V6'
+    with (continued / 'amr_spray.csv').open() as stream:
+        heat = [float(row['heat_release_W_m3']) for row in csv.DictReader(stream)]
+    assert heat and all(math.isfinite(value) for value in heat)
+    if not (a.reacting or a.sdc_cvode):
+        assert all(value == 0 for value in heat), 'Nonreacting stage heat must be zero'
+
+
+if a.rotating:
+    saved_rotation = (split / 'state.gas').read_text()
+    assert 'CHECKPOINT_ROTATION_V1' in saved_rotation
+    assert 'SPRAY_COORDINATE_ENERGY_V1' in saved_rotation
+    particle_lines = (split / 'state.particles').read_text().splitlines()
+    counter_index = particle_lines.index('SPRAY_COORDINATE_ENERGY_V1') + 1
+    saved_counter = float(particle_lines[counter_index])
+    assert math.isfinite(saved_counter) and saved_counter != 0
+    def coordinate_counter(folder):
+        line = next(line for line in (folder / 'run.log').read_text().splitlines()
+                    if line.startswith('Coordinate energy inventory:'))
+        return float(line.split(':', 1)[1])
+    assert math.isclose(coordinate_counter(full), coordinate_counter(continued), rel_tol=2e-12, abs_tol=1e-25)
+    run('changed_rotation', 2, f"restart_file='{checkpoint}'", good=False, changed_rotation=True)
+    corrupted = work / 'corrupt_coordinate_checkpoint'
+    shutil.copyfile(checkpoint, corrupted)
+    shutil.copyfile(split / 'state.gas', Path(str(corrupted) + '.gas'))
+    particle_lines[counter_index] = 'nan'
+    Path(str(corrupted) + '.particles').write_text('\n'.join(particle_lines) + '\n')
+    run('invalid_coordinate', 2, f"restart_file='{corrupted}'", good=False)
+
 particles = read(continued, 4)[1]
 assert len(particles) == (52 if a.split else 0 if a.films else 8 if a.physical else 16 if a.multiport else 12)
 if a.multiport and not a.films:
@@ -365,6 +463,14 @@ if a.sizes:
 if a.properties:
     run('changed_properties', 2, f"restart_file='{checkpoint}'", good=False, changed_properties=True)
     run('invalid_properties', 2, '', good=False, invalid_properties=True)
+if a.pelemp_cap:
+    run('changed_boiling', 2, f"restart_file='{checkpoint}'", good=False, changed_boiling=True)
+    run('invalid_boiling', 2, '', good=False, invalid_boiling=True)
+    surface_cap_case = run('surface_cap', 2, '', surface_cap=True)
+    pelemp_particles = read(full, 2)[1]
+    surface_particles = read(surface_cap_case, 2)[1]
+    assert max(abs(left[9] - right[9]) for left, right in zip(pelemp_particles, surface_particles)) > 1e-17, \
+        'PeleMP vapor state must change parcel mass'
 if a.force:
     def force_inventory(folder):
         line = next(x for x in (folder / 'run.log').read_text().splitlines() if x.startswith('Source inventory:'))
@@ -404,3 +510,15 @@ saved = {s: Path(str(checkpoint)+s).read_bytes() for s in ('', '.gas', '.particl
 run('overwrite', 2, f"checkpoint_file='{checkpoint}',checkpoint_time=1.e-8", good=False)
 assert all(Path(str(checkpoint)+s).read_bytes() == value for s, value in saved.items())
 print(f'PASS: 2-to-4 rank restart, event continuation, context/truncation/overwrite rejection; artifacts {work}')
+
+if staged:
+    run('changed_sdc_iterations', 2, f"restart_file='{checkpoint}'", good=False, changed_sdc='iterations')
+    if not (a.sdc_cvode or a.gas_force):
+        run('changed_sdc_integrator', 2, f"restart_file='{checkpoint}'", good=False, changed_sdc='integrator')
+if a.sdc_cvode:
+    run('changed_sdc_reactor', 2, f"restart_file='{checkpoint}'", good=False, changed_sdc='reactor')
+if a.gas_force:
+    run('changed_gas_forcing', 2, f"restart_file='{checkpoint}'", good=False, changed_sdc='forcing')
+if a.mol_lf:
+    run('changed_mol_lf', 2, f"restart_file='{checkpoint}'", good=False, changed_mol_lf=True)
+print('PASS: requested SDC/MOL restart controls checked')

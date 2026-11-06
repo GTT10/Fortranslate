@@ -4,7 +4,7 @@ module simulation_config_reactive_eb_3d_mod
   use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d, &
     extrude_eb_geometry_3d,build_level_set_eb_geometry_3d,periodic_eb_faces_match
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,valid_nasa7_eos_options
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
   use selected_composition_mod, only: &
     selected_composition_max_species, selected_composition_name_length, &
@@ -41,11 +41,14 @@ module simulation_config_reactive_eb_3d_mod
     real(dp) :: wall_temperature(6)=1000._dp
     character(len=32) :: time_integrator="split"
     character(len=16) :: sdc_reactor="native"
-    integer :: sdc_iterations=2
+    integer :: sdc_iterations=1 ! Pinned SDC/MOL default; explicit iterations remain configurable.
     real(dp) :: external_forcing(3)=0
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: redistribution = "state_redist"
     character(len=32) :: thermo_model = "elementary"
+    logical :: pinned_eos_extrapolation=.false.
+    real(dp) :: pinned_eos_temperature_min=0._dp,pinned_eos_temperature_max=0._dp
+    integer :: state_redist_max_order = 0
     real(dp) :: state_redist_target_volume_fraction = 0.5_dp
     logical :: chemistry_enabled = .false.
     real(dp) :: chemistry_relative_tolerance = 2.0e-7_dp
@@ -325,7 +328,8 @@ contains
 
   subroutine read_reactive_eb_3d_configuration( &
       path, config, ok, message, allow_selected, allow_difmag,allow_ctu,allow_boundaries,allow_inlet_composition,allow_sdc, &
-      allow_sdc_cvode)
+      allow_sdc_cvode, &
+      allow_pinned_eos)
     character(len=*), intent(in) :: path
     type(reactive_eb_3d_config), intent(out) :: config
     logical, intent(out) :: ok
@@ -341,6 +345,7 @@ contains
     integer :: unit, io_status
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
     real(dp) :: final_time, cfl, plane_position,difmag
+    integer :: state_redist_max_order
     real(dp) :: state_redist_target_volume_fraction
     real(dp) :: chemistry_relative_tolerance, chemistry_absolute_tolerance
     real(dp) :: transport_cfl
@@ -362,6 +367,9 @@ contains
     character(len=selected_composition_name_length) :: &
       composition_species(reactive_eb_3d_max_species)
     real(dp) :: composition_mole_fractions(reactive_eb_3d_max_species)
+    logical, optional, intent(in) :: allow_pinned_eos
+    real(dp) :: pinned_eos_temperature_min,pinned_eos_temperature_max
+    logical :: pinned_eos_extrapolation
     logical :: chemistry_enabled, transport_enabled, viscosity_enabled
     logical :: thermal_conduction_enabled, species_diffusion_enabled
     logical :: barodiffusion_enabled, stop_after_checkpoint
@@ -374,7 +382,8 @@ contains
       geometry_type,extrusion_axis,section_file,level_set_file, &
       inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
       boundary_faces,inflow_density,inflow_pressure,inflow_velocity,wall_temperature, &
-      redistribution, thermo_model, state_redist_target_volume_fraction, &
+      redistribution, thermo_model,pinned_eos_extrapolation, &
+      pinned_eos_temperature_min,pinned_eos_temperature_max, state_redist_target_volume_fraction,state_redist_max_order, &
       chemistry_enabled, chemistry_relative_tolerance, &
       chemistry_absolute_tolerance, &
       transport_enabled, viscosity_enabled, thermal_conduction_enabled, &
@@ -413,6 +422,10 @@ contains
     difmag=config%difmag
     redistribution = config%redistribution
     thermo_model = config%thermo_model
+    pinned_eos_extrapolation=config%pinned_eos_extrapolation
+    pinned_eos_temperature_min=config%pinned_eos_temperature_min
+    pinned_eos_temperature_max=config%pinned_eos_temperature_max
+    state_redist_max_order=config%state_redist_max_order
     state_redist_target_volume_fraction = &
       config%state_redist_target_volume_fraction
     chemistry_enabled = config%chemistry_enabled
@@ -460,6 +473,16 @@ contains
       return
     end if
 
+    if(.not.valid_nasa7_eos_options(pinned_eos_extrapolation, &
+        pinned_eos_temperature_min,pinned_eos_temperature_max)) then
+      ok=.false.;message='Invalid pinned EOS bounds: use zero/zero or a positive increasing pair';return
+    endif
+    if(pinned_eos_extrapolation) then
+      ok=.false.;message='Pinned Fuego EOS is not connected to this application'
+      if(.not.present(allow_pinned_eos)) return
+      if(.not.allow_pinned_eos) return
+    end if
+
     config%nx = nx
     config%ny = ny
     config%nz = nz
@@ -486,6 +509,10 @@ contains
     config%difmag=difmag
     config%redistribution = trim(redistribution)
     config%thermo_model = trim(thermo_model)
+    config%pinned_eos_extrapolation=pinned_eos_extrapolation
+    config%pinned_eos_temperature_min=pinned_eos_temperature_min
+    config%pinned_eos_temperature_max=pinned_eos_temperature_max
+    config%state_redist_max_order=state_redist_max_order
     config%state_redist_target_volume_fraction = &
       state_redist_target_volume_fraction
     config%chemistry_enabled = chemistry_enabled
@@ -652,6 +679,9 @@ contains
       return
     else if (config%cfl <= 0.0_dp .or. config%cfl > 1.0_dp) then
       message = "Reactive EB 3D cfl must be in (0,1]"
+      return
+    else if (config%state_redist_max_order/=0.and.config%state_redist_max_order/=2.and.config%state_redist_max_order/=4) then
+      message = "Reactive EB 3D StateRedist order must be 0, 2 or 4"
       return
     else if (config%state_redist_target_volume_fraction <= 0.0_dp .or. &
              config%state_redist_target_volume_fraction > 1.0_dp) then

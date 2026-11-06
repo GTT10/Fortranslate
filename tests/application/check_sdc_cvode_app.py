@@ -1,6 +1,7 @@
 """Explicit CVODE SDC input, fixed/selected agreement and capability rejection."""
 import argparse
 import csv
+import math
 import os
 from pathlib import Path
 import re
@@ -56,6 +57,14 @@ def main():
         actual = list(csv.DictReader(stream))
     with native.open() as stream:
         expected = list(csv.DictReader(stream))
+    for rows in (actual, expected):
+        heat = [float(row['heat_release_W_m3']) for row in rows]
+        assert heat and all(math.isfinite(value) for value in heat)
+        assert max(abs(value) for value in heat) > 0, 'Accepted-stage reaction heat must be active'
+    inert, _, _ = run('native_nonreacting', args.fixed,
+                      text.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.'))
+    with inert.open() as stream:
+        assert all(float(row['heat_release_W_m3']) == 0 for row in csv.DictReader(stream))
     temperature_delta = max(abs(float(a['temperature']) - float(b['temperature']))
                             for a, b in zip(actual, expected, strict=True))
     assert temperature_delta < 1e-4, temperature_delta

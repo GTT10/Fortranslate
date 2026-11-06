@@ -2,6 +2,8 @@ module amr_patch_tree_split_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d,rotating_momentum_source_3d
+  use dual_energy_mod, only: dual_energy_policy,reset_nasa7_dual_energy_cell
   use constant_volume_reactor_mod, only: forced_reactor_integrator
   use amr_patch_tree_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_hydro_3d
   use amr_patch_tree_transport_subcycle_3d_mod, only: advance_amr_patch_tree_subcycle_transport_3d
@@ -11,7 +13,8 @@ module amr_patch_tree_split_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
     average_down_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d,amr_tree_integer_layout_3d
   use amr_patch_tree_chemistry_3d_mod, only: advance_amr_patch_tree_chemistry_3d,react_sdc_amr_patch_tree_3d
-  use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d,compute_sdc_amr_patch_tree_hydro_3d
+  use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d, &
+    compute_sdc_amr_patch_tree_hydro_3d,compute_mol_amr_patch_tree_hydro_3d
   use amr_patch_tree_transport_3d_mod, only: advance_amr_patch_tree_transport_3d, &
     compute_sdc_amr_patch_tree_transport_3d
   use reactive_3d_mod, only: compute_reactive_external_source_3d,recover_reactive_temperatures_3d
@@ -21,9 +24,13 @@ module amr_patch_tree_split_3d_mod
   private
   public :: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d,advance_amr_patch_tree_sdc_subcycle_3d
   abstract interface
-    subroutine amr_sdc_diffusion_evaluator(state,temperature,depth,fractions,coarse_start,coarse_end,rates,flux,ok)
-      ! Return instantaneous rates and face flux density; the driver applies dt.
+    subroutine amr_sdc_diffusion_evaluator(state,temperature,depth,fractions,coarse_start,coarse_end,rates,flux,ok, &
+        internal_energy)
+      ! Return physical Nv rates/face flux density; the driver applies dt.
+      ! Optional independent UEINT is the native state at this evaluation time.
+      ! Coarse snapshots have gas Nv + temperature + optional actual UEINT.
       import :: dp,amr_tree_state_3d,amr_tree_flux_3d
+      type(amr_tree_state_3d), optional, intent(in) :: internal_energy
       type(amr_tree_state_3d), intent(in) :: state,temperature
       type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
       integer, intent(in) :: depth
@@ -32,13 +39,57 @@ module amr_patch_tree_split_3d_mod
       type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
       logical, intent(out) :: ok
     end subroutine amr_sdc_diffusion_evaluator
+    subroutine amr_sdc_auxiliary_source(state,temperature,interval,stage,depth,rate,ok)
+      import :: amr_tree_state_3d,dp
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      real(dp), intent(in) :: interval
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      logical, intent(out) :: ok
+    end subroutine
+    subroutine amr_sdc_recursive_source(state,temperature,interval,stage,depth,time,rate,ok)
+      import :: amr_tree_state_3d,dp
+      type(amr_tree_state_3d), intent(in) :: state,temperature
+      real(dp), intent(in) :: interval,time
+      integer, intent(in) :: stage,depth
+      type(amr_tree_state_3d), intent(inout) :: rate
+      logical, intent(out) :: ok
+    end subroutine
   end interface
   public :: amr_sdc_diffusion_evaluator
+  public :: amr_sdc_auxiliary_source,amr_sdc_recursive_source
 contains
   subroutine advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion,evaluate_reaction)
+      inflow_mach,inflow_pressure,difmag,level_steps,evaluate_diffusion,evaluate_reaction, &
+      constant_coefficients,auxiliary_source,auxiliary_change,heat_release,mol_mode,mol_order,mol_lax_friedrichs, &
+      subcycling,integrated_flux,old_predictor,new_predictor,internal_energy,energy_correction,energy_policy, &
+      internal_energy_integrated_flux,physical_integrated_flux,physical_internal_energy_integrated_flux, &
+      frame,domain_lower,internal_energy_pressure_work_change,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
+    logical, optional, intent(in) :: subcycling
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:),internal_energy_integrated_flux(:)
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: physical_integrated_flux(:)
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: physical_internal_energy_integrated_flux(:)
+    type(amr_tree_state_3d), optional, intent(inout) :: old_predictor,new_predictor
+    logical :: cycle_levels,preserve_mol_old,mol
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    ! Signed pressure-work increment; commit only with the outer gas/H transaction.
+    real(dp), optional, intent(inout) :: internal_energy_pressure_work_change
+    real(dp), optional, intent(inout) :: energy_correction
+    type(dual_energy_policy), optional, intent(in) :: energy_policy
+    type(dual_energy_policy) :: policy
+    logical :: stored
+    logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs
+    integer, optional, intent(in) :: mol_order
+    type(amr_tree_state_3d), optional, intent(inout) :: heat_release
+    type(amr_tree_state_3d), allocatable :: heat
+    procedure(amr_sdc_recursive_source), optional :: auxiliary_source
+    real(dp), optional, intent(inout) :: auxiliary_change(:)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -57,39 +108,105 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6),difmag
     integer(int64), optional, intent(inout) :: level_steps(:)
     type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint,source0,source1
-    type(amr_tree_state_3d), allocatable :: ir
-    type(amr_tree_flux_3d), allocatable :: integrated(:)
+    type(amr_tree_state_3d), allocatable :: ir,held
+    type(amr_tree_flux_3d), allocatable :: integrated(:),integrated_aux(:),integrated_physical(:),integrated_aux_physical(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:),executed(:)
     integer, allocatable :: ratios(:)
-    real(dp), allocatable :: starts(:),finishes(:)
+    real(dp), allocatable :: starts(:),finishes(:),frame_h(:,:)
     real(dp) :: budget(size(boundary_change)),volume(size(source_change)),largest,theta
+    real(dp) :: auxiliary(size(source_change)),active_time,step_auxiliary(size(source_change))
+    real(dp) :: energy_delta,reset_change
+    real(dp) :: pressure_delta
     integer :: nv,node,n(3),level
     logical :: valid
     ok=.false.;nv=5+size(species)
+    if(present(isothermal_slip_faces)) then
+      if(any(isothermal_slip_faces)) then
+        if(any(isothermal_slip_faces.and.faces/='slip_wall')) return
+        if(.not.transport_flags(2).or..not.present(wall_temperature)) return
+        if(size(wall_temperature)/=6) return
+        if(any(isothermal_slip_faces.and.(.not.ieee_is_finite(wall_temperature).or.wall_temperature<=0))) return
+      endif
+    endif
+    mol=.false.
+    if(present(mol_mode)) mol=mol_mode
+    stored=present(internal_energy)
+    if(stored.neqv.present(energy_correction)) return
+    if(present(energy_policy).and..not.stored) return
+    if(present(internal_energy_pressure_work_change).and..not.stored) return
+    policy=dual_energy_policy()
+    if(present(energy_policy)) policy=energy_policy
+    if(present(frame)) then
+      if(.not.present(mol_mode).or..not.present(domain_lower)) return
+      if(.not.mol_mode.or..not.frame%is_valid()) return
+      if(.not.all(ieee_is_finite(domain_lower))) return
+      if(present(auxiliary_source)) return
+    endif
+    if(stored) then
+      if(.not.internal_energy%is_valid(tree)) return
+      if(size(internal_energy%fields(1)%values,1)/=1) return
+      if(.not.ieee_is_finite(energy_correction)) return
+      if(.not.ieee_is_finite(policy%eta2).or.policy%eta2<0) return
+    endif
+    cycle_levels=.true.
+    if(present(subcycling)) cycle_levels=subcycling
     if(present(evaluate_reaction).and..not.chemistry) return
+    if(present(auxiliary_source).neqv.present(auxiliary_change)) return
+    if(present(auxiliary_change)) then
+      if(size(auxiliary_change)/=nv) return
+    endif
     if(.not.state%is_valid(tree).or..not.temperature%is_valid(tree)) return
     if(size(state%fields(1)%values,1)/=nv.or.size(temperature%fields(1)%values,1)/=1) return
     if(size(boundary_change)/=nv.or.size(source_change)/=nv) return
     if(.not.all(ieee_is_finite([spacing,dt])).or.minval(spacing)<=0.or.dt<=0) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(.not.valid) return
+    if(present(frame)) then
+      allocate(frame_h(3,size(tree%nodes)))
+      frame_h(:,1)=spacing
+      do node=2,size(tree%nodes)
+        frame_h(:,node)=frame_h(:,tree%nodes(node)%parent)/real(tree%nodes(node)%patch%refinement_ratio,dp)
+      enddo
+    endif
     allocate(counts(size(ratios)),executed(size(ratios)),starts(size(ratios)),finishes(size(ratios)))
     counts(1)=1
     do level=2,size(ratios)
       if(counts(level-1)>huge(1_int64)/int(ratios(level),int64)) return
-      counts(level)=counts(level-1)*int(ratios(level),int64)
+      counts(level)=counts(level-1)
+      if(cycle_levels) counts(level)=counts(level)*int(ratios(level),int64)
     end do
     if(present(level_steps)) then
       if(size(level_steps)/=size(counts)) return
     end if
+    if(present(heat_release)) then
+      if(.not.heat_release%is_valid(tree)) return
+      if(size(heat_release%fields(1)%values,1)/=1) return
+      allocate(heat);heat=heat_release
+    endif
     if(present(reaction_source)) then
       if(.not.chemistry.or..not.reaction_source%is_valid(tree)) return
       if(size(reaction_source%fields(1)%values,1)/=nv-4) return
     end if
-    candidate=state;temps=temperature
-    call average_down_amr_patch_tree_3d(tree,candidate,valid)
-    if(.not.valid) return
-    call recover_from(0,valid)
+    preserve_mol_old=.false.
+    if(present(mol_mode)) preserve_mol_old=mol_mode.and.stored.and..not.present(frame)
+    preserve_mol_old=preserve_mol_old.and.policy%update_total_from_internal
+    candidate=state;temps=temperature;energy_delta=0;pressure_delta=0
+    if(stored) then
+      allocate(held);held=internal_energy
+      if(.not.preserve_mol_old) then
+        call average_down_amr_patch_tree_3d(tree,held,valid)
+        if(.not.valid) return
+      endif
+    endif
+    if(preserve_mol_old) then
+      ! The old state is already synchronized. Restricting again would undo
+      ! the covered-cell energy reset performed after the previous reflux.
+      call validate_mol_old_state(species,tree,candidate,temps,held,valid)
+    else
+      call average_down_amr_patch_tree_3d(tree,candidate,valid)
+      if(.not.valid) return
+      call recover_from(0,valid)
+    endif
     if(.not.valid) return
     allocate(old_endpoint%fields(size(tree%nodes)),new_endpoint%fields(size(tree%nodes)))
     source0=state;source1=state
@@ -97,7 +214,7 @@ contains
     if(chemistry) allocate(ir%fields(size(tree%nodes)))
     do node=1,size(tree%nodes)
       n=tree%nodes(node)%shape
-      allocate(old_endpoint%fields(node)%values(nv+1,n(1),n(2),n(3)))
+      allocate(old_endpoint%fields(node)%values(nv+1+merge(1,0,stored),n(1),n(2),n(3)))
       old_endpoint%fields(node)%values=0
       new_endpoint%fields(node)%values=old_endpoint%fields(node)%values
       source0%fields(node)%values=0;source1%fields(node)%values=0
@@ -106,51 +223,156 @@ contains
       end if
     end do
     if(present(reaction_source)) ir=reaction_source
+    auxiliary=0;active_time=0
     starts=0;finishes=1;executed=0;budget=0;volume=0;largest=0;theta=1
-    call interval(0,0._dp,1._dp,integrated,valid)
+    call interval(0,0._dp,1._dp,integrated,valid,integrated_aux,integrated_physical,integrated_aux_physical)
     if(.not.valid.or.any(executed/=counts)) return
     if(.not.all(ieee_is_finite(budget)).or..not.all(ieee_is_finite(volume))) return
+    if(.not.all(ieee_is_finite(auxiliary))) return
+    if(present(mol_mode)) then
+      if(mol_mode) then
+        valid=.true.
+        do node=1,size(tree%nodes)
+          if(any(candidate%fields(node)%values(6:,:,:,:)<0._dp)) valid=.false.
+        enddo
+        if(.not.valid) return
+      endif
+    endif
+    if(stored) then
+      if(.not.ieee_is_finite(energy_correction+energy_delta)) return
+      internal_energy=held;energy_correction=energy_correction+energy_delta
+      if(present(internal_energy_integrated_flux)) internal_energy_integrated_flux=integrated_aux
+      if(present(physical_internal_energy_integrated_flux)) &
+        physical_internal_energy_integrated_flux=integrated_aux_physical
+    endif
+    if(present(internal_energy_pressure_work_change)) internal_energy_pressure_work_change=pressure_delta
     state=candidate;temperature=temps;boundary_change=budget;source_change=volume
+    if(present(auxiliary_change)) auxiliary_change=auxiliary
     maximum_correction=largest;minimum_theta=theta
+    if(present(heat_release)) heat_release=heat
     if(present(reaction_source)) reaction_source=ir
     if(present(level_steps)) level_steps=executed
+    if(present(integrated_flux)) integrated_flux=integrated
+    if(present(physical_integrated_flux)) physical_integrated_flux=integrated_physical
+    if(present(old_predictor)) old_predictor=source0
+    if(present(new_predictor)) new_predictor=source1
     ok=.true.
   contains
-    recursive subroutine interval(depth,begin_time,end_time,effective,success)
+    subroutine source_adapter(stage_state,stage_temperature,interval_dt,stage,depth,rate,success)
+      type(amr_tree_state_3d), intent(in) :: stage_state,stage_temperature
+      type(amr_tree_state_3d), intent(inout) :: rate
+      real(dp), intent(in) :: interval_dt
+      integer, intent(in) :: stage,depth
+      logical, intent(out) :: success
+      call auxiliary_source(stage_state,stage_temperature,interval_dt,stage,depth,active_time,rate,success)
+    end subroutine
+    recursive subroutine interval(depth,begin_time,end_time,effective,success,auxiliary_effective,physical_effective, &
+        auxiliary_physical_effective)
       integer, intent(in) :: depth
       real(dp), intent(in) :: begin_time,end_time
       type(amr_tree_flux_3d), allocatable, intent(out) :: effective(:)
+      type(amr_tree_flux_3d), allocatable, optional, intent(out) :: auxiliary_effective(:)
+      type(amr_tree_flux_3d), allocatable, intent(out) :: physical_effective(:)
+      type(amr_tree_flux_3d), allocatable, intent(out) :: auxiliary_physical_effective(:)
       logical, intent(out) :: success
-      type(amr_tree_flux_3d), allocatable :: total(:),child_flux(:)
-      type(amr_tree_state_3d) :: op,np
-      real(dp) :: fraction0(depth),fraction1(depth),change(nv),external(nv),correction(nv)
-      real(dp) :: max_change,local_theta,sub_begin,sub_end,local_dt
+      type(amr_tree_flux_3d), allocatable :: total(:),child_flux(:),total_aux(:),child_aux(:),effective_aux(:), &
+        total_physical(:),child_physical(:),total_aux_physical(:),child_aux_physical(:)
+      type(amr_tree_state_3d) :: op,np,registration_state,registered_held
+      real(dp), allocatable :: local_energy_delta
+      type(dual_energy_policy), allocatable :: local_policy
+      real(dp), allocatable :: local_pressure_delta
+      real(dp) :: fraction0(depth),fraction1(depth),change(nv),external(nv),correction(nv),registered_correction(nv)
+      real(dp) :: max_change,local_theta,sub_begin,sub_end,local_dt,scalar_correction(1),scalar_max,registered_max
       integer :: peer,ancestor,substep,ratio
       logical :: good
       success=.false.;local_dt=dt*(end_time-begin_time)
+      if(present(internal_energy_pressure_work_change)) allocate(local_pressure_delta,source=0._dp)
+      if(stored) then
+        allocate(local_energy_delta,source=0._dp);allocate(local_policy,source=policy)
+      endif
       if(end_time<=begin_time.or.local_dt<=0) return
       starts(depth+1)=begin_time;finishes(depth+1)=end_time
       do ancestor=1,depth
         fraction0(ancestor)=max(0._dp,min(1._dp,(begin_time-starts(ancestor))/(finishes(ancestor)-starts(ancestor))))
         fraction1(ancestor)=max(0._dp,min(1._dp,(end_time-starts(ancestor))/(finishes(ancestor)-starts(ancestor))))
       end do
+      active_time=dt*begin_time
       call pack_depth(depth,old_endpoint)
       if(depth==0) then
+        if(present(auxiliary_source)) then
         call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
           difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np, &
-          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction)
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+          constant_coefficients=constant_coefficients,auxiliary_source=source_adapter, &
+          auxiliary_change=step_auxiliary,heat_release=heat, &
+          mol_mode=mol_mode,mol_order=mol_order,mol_lax_friedrichs=mol_lax_friedrichs, &
+          internal_energy=held,energy_correction=local_energy_delta,energy_policy=local_policy, &
+          internal_energy_integrated_flux=total_aux,physical_integrated_flux=total_physical, &
+          physical_internal_energy_integrated_flux=total_aux_physical,frame=frame,domain_lower=domain_lower, &
+          internal_energy_pressure_work_change=local_pressure_delta, &
+          isothermal_slip_faces=isothermal_slip_faces)
+        else
+        call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
+          iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
+          ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+          difmag,target_depth=depth,integrated_flux=total,old_predictor=op,new_predictor=np, &
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+          constant_coefficients=constant_coefficients,heat_release=heat, &
+          mol_mode=mol_mode,mol_order=mol_order,mol_lax_friedrichs=mol_lax_friedrichs, &
+          internal_energy=held,energy_correction=local_energy_delta,energy_policy=local_policy, &
+          internal_energy_integrated_flux=total_aux,physical_integrated_flux=total_physical, &
+          physical_internal_energy_integrated_flux=total_aux_physical,frame=frame,domain_lower=domain_lower, &
+          internal_energy_pressure_work_change=local_pressure_delta, &
+          isothermal_slip_faces=isothermal_slip_faces)
+        endif
       else
+        if(present(auxiliary_source)) then
         call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
           iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
           ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
           difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
           fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
           integrated_flux=total,old_predictor=op,new_predictor=np, &
-          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction)
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+          constant_coefficients=constant_coefficients,auxiliary_source=source_adapter, &
+          auxiliary_change=step_auxiliary,heat_release=heat, &
+          mol_mode=mol_mode,mol_order=mol_order,mol_lax_friedrichs=mol_lax_friedrichs, &
+          internal_energy=held,energy_correction=local_energy_delta,energy_policy=local_policy, &
+          internal_energy_integrated_flux=total_aux,physical_integrated_flux=total_physical, &
+          physical_internal_energy_integrated_flux=total_aux_physical,frame=frame,domain_lower=domain_lower, &
+          internal_energy_pressure_work_change=local_pressure_delta, &
+          isothermal_slip_faces=isothermal_slip_faces)
+        else
+        call advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,candidate,temps,spacing,local_dt,faces, &
+          iterations,chemistry,transport_flags,force,rtol,atol,change,external,max_change,local_theta,good, &
+          ir,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+          difmag,target_depth=depth,coarse_start=old_endpoint,coarse_end=new_endpoint, &
+          fractions_start=fraction0,fractions_end=fraction1,source_start=source0,source_end=source1, &
+          integrated_flux=total,old_predictor=op,new_predictor=np, &
+          evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+          constant_coefficients=constant_coefficients,heat_release=heat, &
+          mol_mode=mol_mode,mol_order=mol_order,mol_lax_friedrichs=mol_lax_friedrichs, &
+          internal_energy=held,energy_correction=local_energy_delta,energy_policy=local_policy, &
+          internal_energy_integrated_flux=total_aux,physical_integrated_flux=total_physical, &
+          physical_internal_energy_integrated_flux=total_aux_physical,frame=frame,domain_lower=domain_lower, &
+          internal_energy_pressure_work_change=local_pressure_delta, &
+          isothermal_slip_faces=isothermal_slip_faces)
+        endif
       end if
       if(.not.good) return
+      if(stored) energy_delta=energy_delta+local_energy_delta
+      if(present(internal_energy_pressure_work_change)) then
+        if(.not.ieee_is_finite(local_pressure_delta)) return
+        if(local_pressure_delta>0) then
+          if(pressure_delta>huge(1._dp)-local_pressure_delta) return
+        else if(local_pressure_delta<0) then
+          if(pressure_delta< -huge(1._dp)-local_pressure_delta) return
+        endif
+        pressure_delta=pressure_delta+local_pressure_delta
+      endif
+      if(present(auxiliary_source)) auxiliary=auxiliary+step_auxiliary
       executed(depth+1)=executed(depth+1)+1
       theta=min(theta,local_theta);volume=volume+external
       if(depth==0) budget=budget+change
@@ -161,32 +383,98 @@ contains
         source1%fields(peer)%values=np%fields(peer)%values
       end do
       if(depth+1<size(counts)) then
-        ratio=ratios(depth+2);sub_begin=begin_time
+        ratio=1
+        if(cycle_levels) ratio=ratios(depth+2)
+        sub_begin=begin_time
         do substep=1,ratio
           sub_end=begin_time+(end_time-begin_time)*real(substep,dp)/real(ratio,dp)
           if(substep==ratio) sub_end=end_time
-          call interval(depth+1,sub_begin,sub_end,child_flux,good)
+          call interval(depth+1,sub_begin,sub_end,child_flux,good,child_aux,child_physical,child_aux_physical)
           if(.not.good) return
           do peer=1,size(tree%nodes)
             if(tree%nodes(peer)%level<=depth) cycle
             if(.not.allocated(total(peer)%x)) then
               total(peer)=child_flux(peer)
+              total_physical(peer)=child_physical(peer)
             else
               total(peer)%x=total(peer)%x+child_flux(peer)%x
               total(peer)%y=total(peer)%y+child_flux(peer)%y
               total(peer)%z=total(peer)%z+child_flux(peer)%z
+              total_physical(peer)%x=total_physical(peer)%x+child_physical(peer)%x
+              total_physical(peer)%y=total_physical(peer)%y+child_physical(peer)%y
+              total_physical(peer)%z=total_physical(peer)%z+child_physical(peer)%z
             end if
           end do
+          if(stored) then
+            do peer=1,size(tree%nodes)
+              if(tree%nodes(peer)%level<=depth) cycle
+              if(.not.allocated(total_aux(peer)%x)) then
+                total_aux(peer)=child_aux(peer)
+                total_aux_physical(peer)=child_aux_physical(peer)
+              else
+                total_aux(peer)%x=total_aux(peer)%x+child_aux(peer)%x
+                total_aux(peer)%y=total_aux(peer)%y+child_aux(peer)%y
+                total_aux(peer)%z=total_aux(peer)%z+child_aux(peer)%z
+                total_aux_physical(peer)%x=total_aux_physical(peer)%x+child_aux_physical(peer)%x
+                total_aux_physical(peer)%y=total_aux_physical(peer)%y+child_aux_physical(peer)%y
+                total_aux_physical(peer)%z=total_aux_physical(peer)%z+child_aux_physical(peer)%z
+              endif
+            enddo
+          endif
           sub_begin=sub_end
         end do
       end if
-      call reflux_amr_patch_tree_3d(tree,candidate,total,spacing,faces,correction,max_change,good, &
-        minimum_depth=depth,synchronized_flux=effective)
+      if(mol.and..not.chemistry.and.iterations>1) then
+        ! Reflux the accepted two-half-step state before canonicalizing the
+        ! pinned old-half register on a private copy for the parent interval.
+        if(stored) then
+        call reflux_amr_patch_tree_3d(tree,candidate,total_physical,spacing,faces,correction,max_change,good, &
+          minimum_depth=depth,synchronized_flux=physical_effective,first_species=6,last_species=nv, &
+          auxiliary_state=held,auxiliary_flux=total_aux_physical,auxiliary_synchronized_flux=auxiliary_physical_effective)
+        else
+        call reflux_amr_patch_tree_3d(tree,candidate,total_physical,spacing,faces,correction,max_change,good, &
+          minimum_depth=depth,synchronized_flux=physical_effective,first_species=merge(6,0,mol), &
+          last_species=merge(nv,0,mol))
+        endif
+        if(.not.good) return
+        registration_state=candidate
+        if(stored) then
+        registered_held=held
+        call reflux_amr_patch_tree_3d(tree,registration_state,total,spacing,faces,registered_correction, &
+          registered_max,good,minimum_depth=depth,synchronized_flux=effective,auxiliary_state=registered_held, &
+          auxiliary_flux=total_aux,auxiliary_synchronized_flux=effective_aux)
+        else
+        call reflux_amr_patch_tree_3d(tree,registration_state,total,spacing,faces,registered_correction, &
+          registered_max,good,minimum_depth=depth,synchronized_flux=effective)
+        endif
+      else
+        if(stored) then
+        call reflux_amr_patch_tree_3d(tree,candidate,total,spacing,faces,correction,max_change,good, &
+          minimum_depth=depth,synchronized_flux=effective,first_species=6,last_species=nv, &
+          auxiliary_state=held,auxiliary_flux=total_aux,auxiliary_synchronized_flux=effective_aux)
+        if(good) auxiliary_physical_effective=effective_aux
+        else
+        call reflux_amr_patch_tree_3d(tree,candidate,total,spacing,faces,correction,max_change,good, &
+          minimum_depth=depth,synchronized_flux=effective,first_species=merge(6,0,mol),last_species=merge(nv,0,mol))
+        endif
+        if(good) physical_effective=effective
+      endif
       if(.not.good) return
       largest=max(largest,max_change)
       if(depth==0) budget=budget+correction
+      if(stored) then
+        if(present(auxiliary_effective)) auxiliary_effective=effective_aux
+      endif
       call recover_from(depth,good)
       if(.not.good) return
+      if(chemistry.and.depth+1<tree%level_count()) then
+        call average_down_amr_patch_tree_3d(tree,ir,good,minimum_depth=depth)
+        if(.not.good) return
+      endif
+      if(present(heat_release).and.depth+1<tree%level_count()) then
+        call average_down_amr_patch_tree_3d(tree,heat,good,minimum_depth=depth)
+        if(.not.good) return
+      endif
       success=.true.
     end subroutine interval
     subroutine pack_depth(depth,packed)
@@ -197,20 +485,61 @@ contains
         if(tree%nodes(peer)%level/=depth) cycle
         packed%fields(peer)%values(:nv,:,:,:)=candidate%fields(peer)%values
         packed%fields(peer)%values(nv+1,:,:,:)=temps%fields(peer)%values(1,:,:,:)
+        if(stored) packed%fields(peer)%values(nv+2,:,:,:)=held%fields(peer)%values(1,:,:,:)
       end do
     end subroutine pack_depth
     subroutine recover_from(depth,success)
       integer, intent(in) :: depth
       logical, intent(out) :: success
-      real(dp), allocatable :: recovered(:,:,:)
-      integer :: peer,dims(3)
+      real(dp), allocatable :: recovered(:,:,:),potential(:,:,:)
+      real(dp) :: position(3)
+      integer :: peer,dims(3),i,j,k
       success=.false.
+      if(stored) then
+        call reset_tree_energy(species,tree,candidate,temps,held,spacing,policy,reset_change,success, &
+          minimum_depth=depth,frame=frame,domain_lower=domain_lower)
+        if(.not.success) return
+        if(present(frame)) then
+          call average_down_amr_patch_tree_3d(tree,candidate,success,minimum_depth=depth)
+          if(.not.success) return
+          call average_down_amr_patch_tree_3d(tree,held,success,minimum_depth=depth)
+          if(.not.success) return
+          do peer=1,size(tree%nodes)
+            if(tree%nodes(peer)%level<depth) cycle
+            dims=tree%nodes(peer)%shape
+            allocate(recovered(dims(1),dims(2),dims(3)))
+            call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
+              dims(1),dims(2),dims(3),recovered,success,internal_energy_density=held%fields(peer)%values(1,:,:,:))
+            if(.not.success) return
+            temps%fields(peer)%values(1,:,:,:)=recovered
+            deallocate(recovered)
+          enddo
+        endif
+        energy_delta=energy_delta+reset_change
+        return
+      endif
       do peer=1,size(tree%nodes)
         if(tree%nodes(peer)%level<depth) cycle
         dims=tree%nodes(peer)%shape
         allocate(recovered(dims(1),dims(2),dims(3)))
-        call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
-          dims(1),dims(2),dims(3),recovered,success)
+        if(present(frame)) then
+          allocate(potential(dims(1),dims(2),dims(3)))
+          do k=1,dims(3)
+          do j=1,dims(2)
+          do i=1,dims(1)
+            position=domain_lower+(real(origin(:,peer),dp)+real([i,j,k],dp)-.5_dp)*frame_h(:,peer)
+            call rotating_potential_3d(frame,position,potential(i,j,k),success)
+            if(.not.success) return
+          enddo
+          enddo
+          enddo
+          call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
+            dims(1),dims(2),dims(3),recovered,success,rotating_potential=potential)
+          deallocate(potential)
+        else
+          call recover_reactive_temperatures_3d(species,candidate%fields(peer)%values,temps%fields(peer)%values(1,:,:,:), &
+            dims(1),dims(2),dims(3),recovered,success)
+        endif
         if(.not.success) return
         temps%fields(peer)%values(1,:,:,:)=recovered
         deallocate(recovered)
@@ -221,11 +550,31 @@ contains
 
   ! Whole-tree or level-local SDC. Level mode exports fluxes without reflux;
   ! a recursive caller owns child intervals and final synchronization.
-  subroutine advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
+  recursive subroutine advance_amr_patch_tree_sdc_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
       inflow_mach,inflow_pressure,difmag,target_depth,coarse_start,coarse_end,fractions_start,fractions_end, &
-      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion,evaluate_reaction)
+      source_start,source_end,integrated_flux,old_predictor,new_predictor,evaluate_diffusion,evaluate_reaction, &
+      constant_coefficients,auxiliary_source,auxiliary_change,heat_release,mol_mode,mol_order,mol_lax_friedrichs, &
+      internal_energy,energy_correction,energy_policy,internal_energy_integrated_flux,physical_integrated_flux, &
+      physical_internal_energy_integrated_flux,frame,domain_lower,internal_energy_pressure_work_change,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    ! Signed pressure-work increment; commit only with the outer gas/H transaction.
+    real(dp), optional, intent(inout) :: internal_energy_pressure_work_change
+    real(dp), optional, intent(inout) :: energy_correction
+    type(dual_energy_policy), optional, intent(in) :: energy_policy
+    type(dual_energy_policy) :: policy
+    logical :: stored
+    logical, optional, intent(in) :: mol_mode,mol_lax_friedrichs
+    integer, optional, intent(in) :: mol_order
+    type(amr_tree_state_3d), optional, intent(inout) :: heat_release
+    type(amr_tree_state_3d), allocatable :: heat
+    procedure(amr_sdc_auxiliary_source), optional :: auxiliary_source
+    real(dp), optional, intent(inout) :: auxiliary_change(:)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -247,15 +596,76 @@ contains
     real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:)
     type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: integrated_flux(:)
     type(amr_tree_state_3d), optional, intent(inout) :: old_predictor,new_predictor
-    type(amr_tree_state_3d) :: old,ot,candidate,ct,old_ext,new_ext,old_tr,new_tr,hydro,rates,ir,op,np
+    type(amr_tree_state_3d) :: old,ot,candidate,ct,old_ext,new_ext,old_tr,new_tr,hydro,rates,ir,op,np,old_aux,new_aux
+    type(amr_tree_state_3d) :: mol_old_hydro,mol_new_hydro,old_arate,new_arate,predictor_gas,predictor_held,predictor_reset
+    type(amr_tree_state_3d), allocatable :: old_held,held,transport_start,transport_end
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: internal_energy_integrated_flux(:)
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: physical_integrated_flux(:)
+    type(amr_tree_flux_3d), allocatable, optional, intent(inout) :: physical_internal_energy_integrated_flux(:)
+    type(amr_tree_flux_3d), allocatable :: old_aflux(:),new_aflux(:),aflux(:),physical_aflux(:)
+    real(dp) :: initial_energy_delta,predictor_energy_delta,final_energy_delta,energy_delta
+    real(dp) :: pressure_delta,pressure_integral(1)
+    type(amr_tree_state_3d), allocatable :: pressure_work
+    type(amr_tree_flux_3d), allocatable :: mol_old_flux(:),mol_new_flux(:),registration(:)
+    type(amr_tree_flux_3d), allocatable :: effective_mol_flux(:),effective_mol_aux(:)
+    integer :: reconstruction_order
+    logical :: mol,lf
     real(dp), allocatable :: midpoint(:)
     type(amr_tree_flux_3d), allocatable :: flux(:),old_flux(:),new_flux(:)
+    integer(int64), allocatable :: frame_origin(:,:),frame_domain(:,:)
+    integer, allocatable :: frame_ratios(:)
+    real(dp), allocatable :: frame_spacing(:,:)
     real(dp) :: budget(size(boundary_change)),volume(size(source_change)),correction(size(boundary_change))
     real(dp) :: first(size(source_change)),last(size(source_change)),largest,theta,stage_theta
+    real(dp) :: auxiliary(size(source_change))
     integer :: nv,node,n(3),iteration,c,depth
     logical :: valid,do_transport
     ok=.false.;nv=5+size(species)
+    if(present(isothermal_slip_faces)) then
+      if(any(isothermal_slip_faces)) then
+        if(any(isothermal_slip_faces.and.faces/='slip_wall')) return
+        if(.not.transport_flags(2).or..not.present(wall_temperature)) return
+        if(size(wall_temperature)/=6) return
+        if(any(isothermal_slip_faces.and.(.not.ieee_is_finite(wall_temperature).or.wall_temperature<=0))) return
+      endif
+    endif
+    stored=present(internal_energy)
+    if(present(frame)) then
+      if(.not.present(mol_mode)) return
+      if(.not.mol_mode) return
+      if(.not.present(domain_lower)) return
+      if(.not.frame%is_valid().or..not.all(ieee_is_finite(domain_lower))) return
+      if(present(auxiliary_source)) return
+      call amr_tree_integer_layout_3d(tree,frame_origin,frame_domain,frame_ratios,valid)
+      if(.not.valid) return
+      allocate(frame_spacing(3,size(tree%nodes)))
+      frame_spacing(:,1)=spacing
+      do node=2,size(tree%nodes)
+        frame_spacing(:,node)=frame_spacing(:,tree%nodes(node)%parent)/ &
+          real(tree%nodes(node)%patch%refinement_ratio,dp)
+      enddo
+    endif
+    if(stored.neqv.present(energy_correction)) return
+    if(present(energy_policy).and..not.stored) return
+    if(present(internal_energy_pressure_work_change).and..not.stored) return
+    policy=dual_energy_policy()
+    if(present(energy_policy)) policy=energy_policy
+    if(stored) then
+      if(.not.internal_energy%is_valid(tree)) return
+      if(size(internal_energy%fields(1)%values,1)/=1) return
+      if(.not.ieee_is_finite(energy_correction)) return
+      if(.not.ieee_is_finite(policy%eta2).or.policy%eta2<0) return
+    endif
+    mol=.false.;lf=.false.;reconstruction_order=2
+    if(present(mol_mode)) mol=mol_mode
+    if(present(mol_order)) reconstruction_order=mol_order
+    if(present(mol_lax_friedrichs)) lf=mol_lax_friedrichs
+    if(reconstruction_order<1.or.reconstruction_order>2) return
     if(present(evaluate_reaction).and..not.chemistry) return
+    if(present(auxiliary_source).neqv.present(auxiliary_change)) return
+    if(present(auxiliary_change)) then
+      if(size(auxiliary_change)/=nv) return
+    endif
     if(.not.state%is_valid(tree).or..not.temperature%is_valid(tree)) return
     if(size(state%fields(1)%values,1)/=nv.or.size(temperature%fields(1)%values,1)/=1) return
     if(size(boundary_change)/=nv.or.size(source_change)/=nv.or.iterations<1) return
@@ -281,65 +691,273 @@ contains
       if(any(fractions_start<0).or.any(fractions_end>1).or.any(fractions_end<fractions_start)) return
       midpoint=.5_dp*(fractions_start+fractions_end)
     end if
+    if((mol.or.stored).and.depth<0) then
+      if(present(auxiliary_source)) then
+      call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
+        iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
+        ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+        inflow_mach,inflow_pressure,difmag,evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+        constant_coefficients=constant_coefficients,auxiliary_source=ordered_source_adapter,auxiliary_change=auxiliary_change, &
+        heat_release=heat_release,mol_mode=mol_mode,mol_order=mol_order,mol_lax_friedrichs=mol_lax_friedrichs, &
+        subcycling=.false.,integrated_flux=integrated_flux,old_predictor=old_predictor,new_predictor=new_predictor, &
+        internal_energy=internal_energy,energy_correction=energy_correction,energy_policy=energy_policy, &
+        internal_energy_integrated_flux=internal_energy_integrated_flux, &
+        physical_integrated_flux=physical_integrated_flux, &
+        physical_internal_energy_integrated_flux=physical_internal_energy_integrated_flux,frame=frame,domain_lower=domain_lower, &
+        internal_energy_pressure_work_change=internal_energy_pressure_work_change, &
+          isothermal_slip_faces=isothermal_slip_faces)
+      else
+      call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,state,temperature,spacing,dt,faces, &
+        iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
+        ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
+        inflow_mach,inflow_pressure,difmag,evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+        constant_coefficients=constant_coefficients,auxiliary_change=auxiliary_change, &
+        heat_release=heat_release,mol_mode=mol_mode,mol_order=mol_order,mol_lax_friedrichs=mol_lax_friedrichs, &
+        subcycling=.false.,integrated_flux=integrated_flux,old_predictor=old_predictor,new_predictor=new_predictor, &
+        internal_energy=internal_energy,energy_correction=energy_correction,energy_policy=energy_policy, &
+        internal_energy_integrated_flux=internal_energy_integrated_flux, &
+        physical_integrated_flux=physical_integrated_flux, &
+        physical_internal_energy_integrated_flux=physical_internal_energy_integrated_flux,frame=frame,domain_lower=domain_lower, &
+        internal_energy_pressure_work_change=internal_energy_pressure_work_change, &
+          isothermal_slip_faces=isothermal_slip_faces)
+      endif
+      return
+    endif
+    if(present(coarse_start)) then
+      allocate(transport_start,transport_end)
+      allocate(transport_start%fields(size(tree%nodes)),transport_end%fields(size(tree%nodes)))
+      if(.not.allocated(coarse_start%fields).or..not.allocated(coarse_end%fields)) return
+      if(size(coarse_start%fields)/=size(tree%nodes).or.size(coarse_end%fields)/=size(tree%nodes)) return
+      do node=1,size(tree%nodes)
+        if(tree%nodes(node)%level>=depth) then
+          if(.not.allocated(coarse_start%fields(node)%values).or..not.allocated(coarse_end%fields(node)%values)) cycle
+        endif
+        if(.not.allocated(coarse_start%fields(node)%values).or..not.allocated(coarse_end%fields(node)%values)) return
+        if(any(shape(coarse_start%fields(node)%values)/=[nv+1+merge(1,0,stored),tree%nodes(node)%shape])) return
+        if(any(shape(coarse_end%fields(node)%values)/=[nv+1+merge(1,0,stored),tree%nodes(node)%shape])) return
+        transport_start%fields(node)%values=coarse_start%fields(node)%values
+        transport_end%fields(node)%values=coarse_end%fields(node)%values
+      enddo
+    endif
     do_transport=any(transport_flags(:3));theta=1
-    old=state;ot=temperature
+    old=state;ot=temperature;energy_delta=0
+    pressure_delta=0
+    if(present(internal_energy_pressure_work_change).and..not.mol) allocate(pressure_work)
+    initial_energy_delta=0;predictor_energy_delta=0;final_energy_delta=0
+    if(stored) then
+      allocate(old_held,held);old_held=internal_energy
+    endif
     if(depth<0) then
       call average_down_amr_patch_tree_3d(tree,old,valid)
       if(.not.valid) return
     end if
-    call recover(old,ot,valid)
+    if(stored) then
+      if(mol.and..not.present(frame).and.policy%update_total_from_internal) then
+        call validate_mol_old_state(species,tree,old,ot,old_held,valid,target_depth=depth)
+      else
+        call recover(old,ot,valid,old_held,initial_energy_delta)
+      endif
+      energy_delta=initial_energy_delta
+      held=old_held
+    else
+      call recover(old,ot,valid)
+    endif
     if(.not.valid) return
     allocate(ir%fields(size(tree%nodes)))
     do node=1,size(tree%nodes)
       n=tree%nodes(node)%shape
       allocate(ir%fields(node)%values(nv-4,n(1),n(2),n(3)));ir%fields(node)%values=0
     end do
+    if(present(heat_release)) then
+      if(.not.heat_release%is_valid(tree)) return
+      if(size(heat_release%fields(1)%values,1)/=1) return
+      allocate(heat);heat=heat_release
+    endif
+    if(present(heat_release).and..not.chemistry) then
+      do node=1,size(tree%nodes)
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+        heat%fields(node)%values=0
+      enddo
+    endif
     if(present(reaction_source)) then
       if(.not.chemistry.or..not.reaction_source%is_valid(tree)) return
       if(size(reaction_source%fields(1)%values,1)/=nv-4) return
       ir=reaction_source
     end if
-    call sources(old,ot,old_ext,old_tr,old_flux,valid,fractions_start)
+    call sources(old,ot,old_ext,old_tr,old_flux,valid,old_aux,0,fractions_start)
     if(.not.valid) return
-    call predictor(old_ext,old_tr,op)
-    new_ext=old_ext;new_tr=old_tr;candidate=old;ct=ot
-    do iteration=1,iterations
+    call predictor(old_ext,old_tr,old_aux,op)
+    if(mol) then
+      if(stored) then
+      call compute_mol_amr_patch_tree_hydro_3d(tree,species,old,ot,spacing,dt,faces,mol_old_hydro,mol_old_flux,valid, &
+        inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure, &
+        target_depth,coarse_start,coarse_end,fractions_start,reconstruction_order,lf, &
+        internal_energy=old_held,internal_energy_rate=old_arate,internal_energy_integrated_flux=old_aflux, &
+        frame=frame,domain_lower=domain_lower)
+      else
+      call compute_mol_amr_patch_tree_hydro_3d(tree,species,old,ot,spacing,dt,faces,mol_old_hydro,mol_old_flux,valid, &
+        inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure, &
+        target_depth,coarse_start,coarse_end,fractions_start,reconstruction_order,lf,frame=frame,domain_lower=domain_lower)
+      endif
+      if(.not.valid) return
+    endif
+    new_ext=old_ext;new_tr=old_tr;new_aux=old_aux;candidate=old;ct=ot
+    do iteration=1,merge(iterations,1,chemistry.or..not.mol)
+      if(.not.mol.or.iteration==1) then
       call average_rates()
       do node=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         rates%fields(node)%values(6:,:,:,:)=rates%fields(node)%values(6:,:,:,:)+ir%fields(node)%values(:nv-5,:,:,:)
         rates%fields(node)%values(5,:,:,:)=rates%fields(node)%values(5,:,:,:)+ir%fields(node)%values(nv-4,:,:,:)
       end do
+      if(mol) then
+        hydro=mol_old_hydro
+      else
+      if(stored) then
+        call compute_sdc_amr_patch_tree_hydro_3d(tree,species,old,ot,rates,spacing,dt,faces,hydro,flux,valid, &
+          inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag, &
+          target_depth,coarse_start,coarse_end,fractions_start,source_start,source_end,midpoint, &
+          internal_energy=old_held,internal_energy_rate=old_arate,internal_energy_integrated_flux=old_aflux, &
+          internal_energy_pressure_work=pressure_work)
+      else
       call compute_sdc_amr_patch_tree_hydro_3d(tree,species,old,ot,rates,spacing,dt,faces,hydro,flux,valid, &
         inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure,difmag, &
         target_depth,coarse_start,coarse_end,fractions_start,source_start,source_end,midpoint)
+      endif
       if(.not.valid) return
+      endif
       do node=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         candidate%fields(node)%values=old%fields(node)%values+dt*(rates%fields(node)%values+hydro%fields(node)%values)
       end do
-      call recover(candidate,ct,valid)
+      if(stored) then
+        do node=1,size(tree%nodes)
+          if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+          held%fields(node)%values=old_held%fields(node)%values+dt*old_arate%fields(node)%values
+        enddo
+        call recover(candidate,ct,valid,held,predictor_energy_delta,predictor_reset)
+        predictor_gas=candidate;predictor_held=held
+      else
+        call recover(candidate,ct,valid)
+      endif
       if(.not.valid) return
-      call sources(candidate,ct,new_ext,new_tr,new_flux,valid,fractions_end)
+      endif
+      call sources(candidate,ct,new_ext,new_tr,new_flux,valid,new_aux,iteration,fractions_end)
       if(.not.valid) return
+      if(mol) then
+        if(stored) then
+        call compute_mol_amr_patch_tree_hydro_3d(tree,species,candidate,ct,spacing,dt,faces,mol_new_hydro,mol_new_flux,valid, &
+          inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure, &
+          target_depth,coarse_start,coarse_end,fractions_end,reconstruction_order,lf, &
+          internal_energy=held,internal_energy_rate=new_arate,internal_energy_integrated_flux=new_aflux, &
+          frame=frame,domain_lower=domain_lower)
+        else
+        call compute_mol_amr_patch_tree_hydro_3d(tree,species,candidate,ct,spacing,dt,faces,mol_new_hydro,mol_new_flux,valid, &
+          inflow_state,inflow_temperature,outlet_pressure,inflow_mach,inflow_pressure, &
+          target_depth,coarse_start,coarse_end,fractions_end,reconstruction_order,lf,frame=frame,domain_lower=domain_lower)
+        endif
+        if(.not.valid) return
+        hydro=mol_old_hydro;flux=mol_old_flux
+        do node=1,size(tree%nodes)
+          if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+          hydro%fields(node)%values=.5_dp*(mol_old_hydro%fields(node)%values+mol_new_hydro%fields(node)%values)
+          flux(node)%x=.5_dp*(mol_old_flux(node)%x+mol_new_flux(node)%x)
+          flux(node)%y=.5_dp*(mol_old_flux(node)%y+mol_new_flux(node)%y)
+          flux(node)%z=.5_dp*(mol_old_flux(node)%z+mol_new_flux(node)%z)
+          if(iteration>1) new_ext%fields(node)%values=0
+        enddo
+      endif
       call average_rates()
       do node=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
         rates%fields(node)%values=rates%fields(node)%values+hydro%fields(node)%values
       end do
+      if(mol.and.chemistry.and.iteration==1) then
+        do node=1,size(tree%nodes)
+          if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+          ! Match the first pinned-PeleC MOL corrector: form the updated state
+          ! before recovering its nonreacting source. Later iterations average
+          ! source terms directly; these forms differ at floating-point precision.
+          rates%fields(node)%values=.5_dp*candidate%fields(node)%values+.5_dp*old%fields(node)%values
+          rates%fields(node)%values=rates%fields(node)%values+(.5_dp*dt)*( &
+            mol_new_hydro%fields(node)%values+new_ext%fields(node)%values+ &
+            new_tr%fields(node)%values+new_aux%fields(node)%values)
+          rates%fields(node)%values(6:,:,:,:)=rates%fields(node)%values(6:,:,:,:)+ &
+            (.5_dp*dt)*ir%fields(node)%values(:nv-5,:,:,:)
+          rates%fields(node)%values(5,:,:,:)=rates%fields(node)%values(5,:,:,:)+ &
+            (.5_dp*dt)*ir%fields(node)%values(nv-4,:,:,:)
+          rates%fields(node)%values=(1._dp/dt)*rates%fields(node)%values+(-1._dp/dt)*old%fields(node)%values
+          rates%fields(node)%values(6:,:,:,:)=rates%fields(node)%values(6:,:,:,:)-ir%fields(node)%values(:nv-5,:,:,:)
+          rates%fields(node)%values(5,:,:,:)=rates%fields(node)%values(5,:,:,:)-ir%fields(node)%values(nv-4,:,:,:)
+        enddo
+      endif
+      if(stored.and.mol.and.iteration==1.and..not.chemistry) then
+        do node=1,size(tree%nodes)
+          if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+          rates%fields(node)%values(5,:,:,:)=rates%fields(node)%values(5,:,:,:)+ &
+            .5_dp*predictor_reset%fields(node)%values(1,:,:,:)/dt
+        enddo
+      endif
       if(chemistry) then
         call react_sdc_amr_patch_tree_3d(tree,species,reactions,old,ot,rates,dt,rtol,atol,candidate,ct,ir,valid, &
-          target_depth,evaluate_reaction)
+          target_depth,evaluate_reaction,heat_release=heat,internal_energy=held, &
+          frame=frame,domain_lower=domain_lower,root_spacing=spacing,old_internal_energy=old_held)
+        if(.not.valid) return
+        if(stored) call recover(candidate,ct,valid,held,final_energy_delta)
         if(.not.valid) return
       else
         do node=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+          if(stored.and.mol) then
+            candidate%fields(node)%values=.5_dp*(old%fields(node)%values+predictor_gas%fields(node)%values)+ &
+              .5_dp*dt*(mol_new_hydro%fields(node)%values+new_ext%fields(node)%values+ &
+              new_tr%fields(node)%values+new_aux%fields(node)%values)
+            held%fields(node)%values=.5_dp*(old_held%fields(node)%values+predictor_held%fields(node)%values)+ &
+              .5_dp*dt*new_arate%fields(node)%values
+          else
           candidate%fields(node)%values=old%fields(node)%values+dt*rates%fields(node)%values
+          if(stored) held%fields(node)%values=old_held%fields(node)%values+dt*old_arate%fields(node)%values
+          endif
         end do
-        call recover(candidate,ct,valid)
+        if(stored) then
+          call recover(candidate,ct,valid,held,final_energy_delta)
+        else
+          call recover(candidate,ct,valid)
+        endif
         if(.not.valid) return
       end if
     end do
+    if(allocated(pressure_work)) then
+      call composite_integrals_amr_patch_tree_3d(tree,pressure_work,spacing,pressure_integral,valid)
+      if(.not.valid) return
+      if(dt>1) then
+        if(abs(pressure_integral(1))>huge(1._dp)/dt) return
+      endif
+      pressure_delta=-dt*pressure_integral(1)
+      if(.not.ieee_is_finite(pressure_delta)) return
+    endif
+    if(stored) then
+      energy_delta=energy_delta+final_energy_delta
+      if(mol.and.(.not.chemistry.or.iterations==1)) energy_delta=energy_delta+.5_dp*predictor_energy_delta
+      aflux=old_aflux;physical_aflux=old_aflux
+      if(mol) then
+      do node=1,size(tree%nodes)
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+        physical_aflux(node)%x=.5_dp*(old_aflux(node)%x+new_aflux(node)%x)
+        physical_aflux(node)%y=.5_dp*(old_aflux(node)%y+new_aflux(node)%y)
+        physical_aflux(node)%z=.5_dp*(old_aflux(node)%z+new_aflux(node)%z)
+        if(.not.chemistry.and.iterations>1) then
+          aflux(node)%x=.5_dp*old_aflux(node)%x
+          aflux(node)%y=.5_dp*old_aflux(node)%y
+          aflux(node)%z=.5_dp*old_aflux(node)%z
+        else
+          aflux(node)%x=.5_dp*(old_aflux(node)%x+new_aflux(node)%x)
+          aflux(node)%y=.5_dp*(old_aflux(node)%y+new_aflux(node)%y)
+          aflux(node)%z=.5_dp*(old_aflux(node)%z+new_aflux(node)%z)
+        endif
+      enddo
+      endif
+    endif
     if(do_transport.or.present(evaluate_diffusion)) then
       do node=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
@@ -348,21 +966,64 @@ contains
         flux(node)%z=flux(node)%z+.5_dp*(old_flux(node)%z+new_flux(node)%z)
       end do
     end if
+    registration=flux
+    if(mol.and..not.chemistry.and.iterations>1) then
+      ! The fixed reference registers only the old half when no reacting
+      ! iteration exists to register the final new half. Keep physical flux
+      ! for boundary accounting and the actual register for synchronization.
+      do node=1,size(tree%nodes)
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+        registration(node)%x=.5_dp*mol_old_flux(node)%x
+        registration(node)%y=.5_dp*mol_old_flux(node)%y
+        registration(node)%z=.5_dp*mol_old_flux(node)%z
+        if(do_transport.or.present(evaluate_diffusion)) then
+          registration(node)%x=registration(node)%x+.5_dp*old_flux(node)%x
+          registration(node)%y=registration(node)%y+.5_dp*old_flux(node)%y
+          registration(node)%z=registration(node)%z+.5_dp*old_flux(node)%z
+        endif
+      enddo
+    endif
     budget=0;largest=0
     if(depth<=0) then
       n=tree%nodes(1)%shape
+      ! Subtract opposing faces before summing to retain small net impulses.
       do c=1,nv
-        budget(c)=(sum(flux(1)%x(c,1,:,:))-sum(flux(1)%x(c,n(1)+1,:,:)))*spacing(2)*spacing(3)+ &
-          (sum(flux(1)%y(c,:,1,:))-sum(flux(1)%y(c,:,n(2)+1,:)))*spacing(1)*spacing(3)+ &
-          (sum(flux(1)%z(c,:,:,1))-sum(flux(1)%z(c,:,:,n(3)+1)))*spacing(1)*spacing(2)
+        budget(c)=sum(flux(1)%x(c,1,:,:)-flux(1)%x(c,n(1)+1,:,:))*spacing(2)*spacing(3)+ &
+          sum(flux(1)%y(c,:,1,:)-flux(1)%y(c,:,n(2)+1,:))*spacing(1)*spacing(3)+ &
+          sum(flux(1)%z(c,:,:,1)-flux(1)%z(c,:,:,n(3)+1))*spacing(1)*spacing(2)
       end do
     end if
     if(depth<0) then
-      call reflux_amr_patch_tree_3d(tree,candidate,flux,spacing,faces,correction,largest,valid)
-      if(.not.valid) return
-      budget=budget+correction
-      call recover(candidate,ct,valid)
-      if(.not.valid) return
+    if(stored) then
+    call reflux_amr_patch_tree_3d(tree,candidate,registration,spacing,faces,correction,largest,valid, &
+      first_species=6,last_species=nv,synchronized_flux=effective_mol_flux,auxiliary_state=held,auxiliary_flux=aflux, &
+      auxiliary_synchronized_flux=effective_mol_aux)
+    else if(mol) then
+    call reflux_amr_patch_tree_3d(tree,candidate,registration,spacing,faces,correction,largest,valid, &
+      first_species=6,last_species=nv,synchronized_flux=effective_mol_flux)
+    else
+    call reflux_amr_patch_tree_3d(tree,candidate,registration,spacing,faces,correction,largest,valid)
+    endif
+    if(.not.valid) return
+    if(mol.or.stored) then
+      ! Add the synchronization change to the physical two-half-step flux,
+      ! retaining the pinned distinction between that flux and its register.
+      do node=1,size(tree%nodes)
+        flux(node)%x=flux(node)%x+(effective_mol_flux(node)%x-registration(node)%x)
+        flux(node)%y=flux(node)%y+(effective_mol_flux(node)%y-registration(node)%y)
+        flux(node)%z=flux(node)%z+(effective_mol_flux(node)%z-registration(node)%z)
+        if(stored) then
+          physical_aflux(node)%x=physical_aflux(node)%x+(effective_mol_aux(node)%x-aflux(node)%x)
+          physical_aflux(node)%y=physical_aflux(node)%y+(effective_mol_aux(node)%y-aflux(node)%y)
+          physical_aflux(node)%z=physical_aflux(node)%z+(effective_mol_aux(node)%z-aflux(node)%z)
+        endif
+      enddo
+      registration=effective_mol_flux
+      if(stored) aflux=effective_mol_aux
+    endif
+    budget=budget+correction
+    call recover(candidate,ct,valid)
+    if(.not.valid) return
     end if
     call composite_integrals_amr_patch_tree_3d(tree,old_ext,spacing,first,valid)
     if(.not.valid) return
@@ -370,29 +1031,74 @@ contains
     if(.not.valid) return
     volume=.5_dp*dt*(first+last)
     if(.not.all(ieee_is_finite(budget)).or..not.all(ieee_is_finite(volume))) return
+    if(present(auxiliary_source)) then
+      call composite_integrals_amr_patch_tree_3d(tree,old_aux,spacing,first,valid)
+      if(.not.valid) return
+      call composite_integrals_amr_patch_tree_3d(tree,new_aux,spacing,last,valid)
+      if(.not.valid) return
+      auxiliary=.5_dp*dt*(first+last)
+      if(.not.all(ieee_is_finite(auxiliary))) return
+    endif
     if(present(old_predictor)) then
       if(.not.op%is_valid(tree)) return
     end if
     if(present(new_predictor)) then
-      call predictor(new_ext,new_tr,np)
+      call predictor(new_ext,new_tr,new_aux,np)
       if(.not.np%is_valid(tree)) return
     end if
+    if(present(reaction_source).and.depth<0) then
+      call average_down_amr_patch_tree_3d(tree,ir,valid)
+      if(.not.valid) return
+    endif
+    if(present(heat_release).and.depth<0) then
+      call average_down_amr_patch_tree_3d(tree,heat,valid)
+      if(.not.valid) return
+    endif
+    if(mol) then
+      valid=.true.
+      do node=1,size(tree%nodes)
+        if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+        if(any(candidate%fields(node)%values(6:,:,:,:)<0._dp)) valid=.false.
+      enddo
+      if(.not.valid) return
+    endif
+    if(stored) then
+      if(.not.ieee_is_finite(energy_correction+energy_delta)) return
+      if(.not.held%is_valid(tree)) return
+      internal_energy=held;energy_correction=energy_correction+energy_delta
+      if(present(internal_energy_integrated_flux)) internal_energy_integrated_flux=aflux
+      if(present(physical_internal_energy_integrated_flux)) &
+        physical_internal_energy_integrated_flux=physical_aflux
+    endif
+    if(present(internal_energy_pressure_work_change)) internal_energy_pressure_work_change=pressure_delta
     state=candidate;temperature=ct;boundary_change=budget;source_change=volume
     maximum_correction=largest;minimum_theta=theta
+    if(present(auxiliary_change)) auxiliary_change=auxiliary
+    if(present(heat_release)) heat_release=heat
     if(present(reaction_source)) reaction_source=ir
-    if(present(integrated_flux)) integrated_flux=flux
+    if(present(integrated_flux)) integrated_flux=registration
+    if(present(physical_integrated_flux)) physical_integrated_flux=flux
     if(present(old_predictor)) old_predictor=op
     if(present(new_predictor)) new_predictor=np
     ok=.true.
   contains
-    subroutine predictor(external,diffusive,result)
-      type(amr_tree_state_3d), intent(in) :: external,diffusive
+    subroutine ordered_source_adapter(stage_state,stage_temperature,interval_dt,stage,depth,time,rate,success)
+      type(amr_tree_state_3d), intent(in) :: stage_state,stage_temperature
+      type(amr_tree_state_3d), intent(inout) :: rate
+      real(dp), intent(in) :: interval_dt,time
+      integer, intent(in) :: stage,depth
+      logical, intent(out) :: success
+      call auxiliary_source(stage_state,stage_temperature,interval_dt,stage,depth,rate,success)
+    end subroutine ordered_source_adapter
+    subroutine predictor(external,diffusive,aux,result)
+      type(amr_tree_state_3d), intent(in) :: external,diffusive,aux
       type(amr_tree_state_3d), intent(out) :: result
       integer :: peer
       result=external
       do peer=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
         result%fields(peer)%values=result%fields(peer)%values+diffusive%fields(peer)%values
+        if(present(auxiliary_source)) result%fields(peer)%values=result%fields(peer)%values+aux%fields(peer)%values
         result%fields(peer)%values(6:,:,:,:)=result%fields(peer)%values(6:,:,:,:)+ir%fields(peer)%values(:nv-5,:,:,:)
         result%fields(peer)%values(5,:,:,:)=result%fields(peer)%values(5,:,:,:)+ir%fields(peer)%values(nv-4,:,:,:)
       end do
@@ -404,33 +1110,61 @@ contains
         rates%fields(peer)%values=.5_dp*new_ext%fields(peer)%values+.5_dp*old_ext%fields(peer)%values
         rates%fields(peer)%values=rates%fields(peer)%values+.5_dp*new_tr%fields(peer)%values
         rates%fields(peer)%values=rates%fields(peer)%values+.5_dp*old_tr%fields(peer)%values
+        if(present(auxiliary_source)) rates%fields(peer)%values=rates%fields(peer)%values+ &
+          .5_dp*(old_aux%fields(peer)%values+new_aux%fields(peer)%values)
       end do
     end subroutine
-    subroutine recover(u,t,good)
-      type(amr_tree_state_3d), intent(in) :: u
-      type(amr_tree_state_3d), intent(inout) :: t
+    subroutine recover(u,t,good,held_energy,change,delta)
+      type(amr_tree_state_3d), intent(inout) :: u,t
+      type(amr_tree_state_3d), optional, intent(inout) :: held_energy
+      real(dp), optional, intent(out) :: change
+      type(amr_tree_state_3d), optional, intent(out) :: delta
       logical, intent(out) :: good
-      real(dp), allocatable :: recovered(:,:,:)
-      integer :: peer,dims(3)
+      real(dp), allocatable :: recovered(:,:,:),potential(:,:,:)
+      real(dp) :: position(3)
+      integer :: peer,dims(3),i,j,k
+      if(present(held_energy)) then
+        call reset_tree_energy(species,tree,u,t,held_energy,spacing,policy,change,good, &
+          target_depth=depth,delta=delta,frame=frame,domain_lower=domain_lower)
+        return
+      endif
       do peer=1,size(tree%nodes)
         if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
         dims=tree%nodes(peer)%shape
         allocate(recovered(dims(1),dims(2),dims(3)))
-        call recover_reactive_temperatures_3d(species,u%fields(peer)%values,t%fields(peer)%values(1,:,:,:), &
-          dims(1),dims(2),dims(3),recovered,good)
+        if(present(frame)) then
+          allocate(potential(dims(1),dims(2),dims(3)))
+          do k=1,dims(3)
+          do j=1,dims(2)
+          do i=1,dims(1)
+            position=domain_lower+(real(frame_origin(:,peer),dp)+real([i,j,k],dp)-.5_dp)*frame_spacing(:,peer)
+            call rotating_potential_3d(frame,position,potential(i,j,k),good)
+            if(.not.good) return
+          enddo
+          enddo
+          enddo
+          call recover_reactive_temperatures_3d(species,u%fields(peer)%values,t%fields(peer)%values(1,:,:,:), &
+            dims(1),dims(2),dims(3),recovered,good,rotating_potential=potential)
+          deallocate(potential)
+        else
+          call recover_reactive_temperatures_3d(species,u%fields(peer)%values,t%fields(peer)%values(1,:,:,:), &
+            dims(1),dims(2),dims(3),recovered,good)
+        endif
         if(.not.good) return
         t%fields(peer)%values(1,:,:,:)=recovered
         deallocate(recovered)
       end do
       good=.true.
     end subroutine
-    subroutine sources(u,t,external,diffusive,face_flux,good,fractions)
+    subroutine sources(u,t,external,diffusive,face_flux,good,aux,stage,fractions)
       type(amr_tree_state_3d), intent(in) :: u,t
-      type(amr_tree_state_3d), intent(inout) :: external,diffusive
+      type(amr_tree_state_3d), intent(inout) :: external,diffusive,aux
       type(amr_tree_flux_3d), allocatable, intent(inout) :: face_flux(:)
       logical, intent(out) :: good
       real(dp), optional, intent(in) :: fractions(:)
-      integer :: peer,cells(3)
+      integer :: peer,cells(3),stage,i,j,k
+      real(dp) :: position(3),rotation_source(3)
+      type(amr_tree_state_3d), allocatable :: stage_held
       type(amr_tree_state_3d) :: extra
       type(amr_tree_flux_3d), allocatable :: extra_flux(:)
       external=u;diffusive=u
@@ -439,19 +1173,65 @@ contains
         if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
         call compute_reactive_external_source_3d(u%fields(peer)%values,force,external%fields(peer)%values,good)
         if(.not.good) return
+        if(present(frame)) then
+          cells=tree%nodes(peer)%shape
+          do k=1,cells(3)
+          do j=1,cells(2)
+          do i=1,cells(1)
+            position=domain_lower+(real(frame_origin(:,peer),dp)+real([i,j,k],dp)-.5_dp)*frame_spacing(:,peer)
+            call rotating_momentum_source_3d(frame,position,u%fields(peer)%values(1,i,j,k), &
+              u%fields(peer)%values(2:4,i,j,k),rotation_source,good)
+            if(.not.good) return
+            external%fields(peer)%values(2:4,i,j,k)=external%fields(peer)%values(2:4,i,j,k)+rotation_source
+          enddo
+          enddo
+          enddo
+        endif
         diffusive%fields(peer)%values=0
       end do
+      aux=diffusive
+      if(present(auxiliary_source)) then
+        ! Later reacting MOL iterations rebuild spatial rates only, matching
+        ! the pinned native advance and the MPI source ordering.
+        if(.not.(mol.and.stage>1)) then
+          call auxiliary_source(u,t,dt,stage,depth,aux,good)
+          if(.not.good) return
+        endif
+        if(.not.aux%is_valid(tree)) then
+          good=.false.;return
+        endif
+        do peer=1,size(tree%nodes)
+          if(size(aux%fields(peer)%values,1)/=nv) then
+            good=.false.;return
+          endif
+          if(depth>=0.and.tree%nodes(peer)%level/=depth) aux%fields(peer)%values=0
+          if(.not.all(ieee_is_finite(aux%fields(peer)%values))) then
+            good=.false.;return
+          endif
+        enddo
+      endif
+      if(stored) then
+        allocate(stage_held)
+        if(stage==0) then
+          stage_held=old_held
+        else
+          stage_held=held
+        endif
+      endif
       if(do_transport) then
         stage_theta=1
         call compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,u,t,spacing,dt,faces,transport_flags, &
           diffusive,face_flux,stage_theta,good,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-          outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,fractions)
+          outlet_pressure,inflow_mach,inflow_pressure,target_depth,transport_start,transport_end,fractions, &
+          constant_coefficients=constant_coefficients,frame=frame,domain_lower=domain_lower, &
+          internal_energy=stage_held,total_energy_primitives=mol.and..not.present(frame), &
+          isothermal_slip_faces=isothermal_slip_faces)
         if(.not.good) return
         theta=min(theta,stage_theta)
       end if
       if(present(evaluate_diffusion)) then
         extra=u
-        call evaluate_diffusion(u,t,depth,fractions,coarse_start,coarse_end,extra,extra_flux,good)
+        call evaluate_diffusion(u,t,depth,fractions,transport_start,transport_end,extra,extra_flux,good,internal_energy=stage_held)
         if(.not.good) return
         good=extra%is_valid(tree).and.allocated(extra_flux)
         if(.not.good) return
@@ -470,6 +1250,11 @@ contains
           good=all(ieee_is_finite(extra%fields(peer)%values)).and.all(ieee_is_finite(extra_flux(peer)%x)).and. &
             all(ieee_is_finite(extra_flux(peer)%y)).and.all(ieee_is_finite(extra_flux(peer)%z))
           if(.not.good) return
+          if(present(frame)) then
+            good=all(extra%fields(peer)%values(1,:,:,:)==0).and.all(extra_flux(peer)%x(1,:,:,:)==0).and. &
+              all(extra_flux(peer)%y(1,:,:,:)==0).and.all(extra_flux(peer)%z(1,:,:,:)==0)
+            if(.not.good) return
+          endif
           diffusive%fields(peer)%values=diffusive%fields(peer)%values+extra%fields(peer)%values
           extra_flux(peer)%x=dt*extra_flux(peer)%x
           extra_flux(peer)%y=dt*extra_flux(peer)%y
@@ -485,6 +1270,116 @@ contains
       good=.true.
     end subroutine
   end subroutine advance_amr_patch_tree_sdc_3d
+
+  ! Check both thermodynamic representations without resetting accepted old
+  ! data. All caller-owned state remains untouched on rejection.
+  subroutine validate_mol_old_state(species,tree,state,temperature,held,ok,target_depth)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(in) :: state,temperature,held
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth
+    real(dp), allocatable :: recovered(:,:,:)
+    integer :: peer,n(3)
+    logical :: valid
+    ok=.false.
+    do peer=1,size(tree%nodes)
+      if(present(target_depth)) then
+        if(target_depth>=0.and.tree%nodes(peer)%level/=target_depth) cycle
+      endif
+      n=tree%nodes(peer)%shape
+      if(.not.all(ieee_is_finite(state%fields(peer)%values))) return
+      if(.not.all(ieee_is_finite(temperature%fields(peer)%values))) return
+      if(any(temperature%fields(peer)%values<=0)) return
+      if(any(state%fields(peer)%values(6:,:,:,:)<0)) return
+      allocate(recovered(n(1),n(2),n(3)))
+      call recover_reactive_temperatures_3d(species,state%fields(peer)%values,temperature%fields(peer)%values(1,:,:,:), &
+        n(1),n(2),n(3),recovered,valid)
+      if(.not.valid) return
+      call recover_reactive_temperatures_3d(species,state%fields(peer)%values,temperature%fields(peer)%values(1,:,:,:), &
+        n(1),n(2),n(3),recovered,valid,internal_energy_density=held%fields(peer)%values(1,:,:,:))
+      if(.not.valid) return
+      deallocate(recovered)
+    enddo
+    ok=.true.
+  end subroutine validate_mol_old_state
+
+  subroutine reset_tree_energy(species,tree,state,temperature,internal_energy,spacing,policy,change,ok, &
+      target_depth,minimum_depth,delta,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
+    type(nasa7_species), intent(in) :: species(:)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(inout) :: state,temperature,internal_energy
+    real(dp), intent(in) :: spacing(3)
+    type(dual_energy_policy), intent(in) :: policy
+    real(dp), optional, intent(out) :: change
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: target_depth,minimum_depth
+    type(amr_tree_state_3d), optional, intent(out) :: delta
+    type(amr_tree_state_3d) :: corrections
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: recovered(:,:,:)
+    real(dp) :: cell_change,integral(1),position(3),potential,h(3)
+    integer :: peer,n(3),i,j,k,depth,floor_depth,ancestor
+    logical :: valid
+    ok=.false.;depth=-1;floor_depth=0
+    if(present(target_depth)) depth=target_depth
+    if(present(minimum_depth)) floor_depth=minimum_depth
+    if(present(frame)) then
+      if(.not.present(domain_lower)) return
+      call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+      if(.not.valid) return
+    endif
+    corrections=internal_energy
+    do peer=1,size(tree%nodes)
+      corrections%fields(peer)%values=0
+      if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
+      if(tree%nodes(peer)%level<floor_depth) cycle
+      n=tree%nodes(peer)%shape
+      if(present(frame)) then
+        h=spacing
+        ancestor=peer
+        do while(ancestor>1)
+          h=h/real(tree%nodes(ancestor)%patch%refinement_ratio,dp)
+          ancestor=tree%nodes(ancestor)%parent
+        enddo
+      endif
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        cell_change=0
+        if(present(frame)) then
+          position=domain_lower+(real(origin(:,peer),dp)+real([i,j,k],dp)-.5_dp)*h
+          call rotating_potential_3d(frame,position,potential,valid)
+          if(.not.valid) return
+          call reset_nasa7_dual_energy_cell(species,state%fields(peer)%values(:,i,j,k), &
+            internal_energy%fields(peer)%values(1,i,j,k),temperature%fields(peer)%values(1,i,j,k), &
+            policy,cell_change,valid,potential=potential)
+        else
+          call reset_nasa7_dual_energy_cell(species,state%fields(peer)%values(:,i,j,k), &
+            internal_energy%fields(peer)%values(1,i,j,k),temperature%fields(peer)%values(1,i,j,k), &
+            policy,cell_change,valid)
+        endif
+        if(.not.valid) return
+        corrections%fields(peer)%values(1,i,j,k)=cell_change
+      enddo
+      enddo
+      enddo
+      allocate(recovered(n(1),n(2),n(3)))
+      call recover_reactive_temperatures_3d(species,state%fields(peer)%values,temperature%fields(peer)%values(1,:,:,:), &
+        n(1),n(2),n(3),recovered,valid,internal_energy_density=internal_energy%fields(peer)%values(1,:,:,:))
+      if(.not.valid) return
+      temperature%fields(peer)%values(1,:,:,:)=recovered
+      deallocate(recovered)
+    enddo
+    call composite_integrals_amr_patch_tree_3d(tree,corrections,spacing,integral,valid)
+    if(.not.valid) return
+    if(present(change)) change=integral(1)
+    if(present(delta)) delta=corrections
+    ok=.true.
+  end subroutine reset_tree_energy
 
   ! R/2 - T/2 - H - T/2 - R/2, over one coarse interval, with optional recursive flow/transport steps.
   ! Disabled operators are skipped. All stage outputs remain private until

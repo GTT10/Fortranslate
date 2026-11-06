@@ -72,18 +72,21 @@ program test_mpi_amr_patch_tree_ghost_3d
       faces='periodic';faces(1:2)='no_slip_wall';velocity=0
       velocity(2,1)=1;velocity(2,2)=3
     end if
-    do scheme=1,3
+    do scheme=1,5
       if (allocated(limiter)) deallocate(limiter)
       if (scheme==2) limiter='mc'
       if (scheme==3) limiter='minmod'
+      if (scheme>=4) limiter='linear'
       call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
-        viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity,coarse_limiter=limiter,species_count=2)
+        viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity,coarse_limiter=limiter,species_count=2, &
+        limit_internal_energy=scheme==5)
       call require(ok,'collective halo fill')
       do node=1,4
         call require(allocated(ghosts%fields(node)%values).eqv.(owners(node)==rank),'only owned halos')
         if (owners(node)/=rank) cycle
         call fill_amr_patch_tree_ghosts_3d(tree,global,node,faces,oracle,ok,viscous_wall=mode>=3, &
-          inflow_state=inlet,wall_velocity=velocity,coarse_limiter=limiter,species_count=2)
+          inflow_state=inlet,wall_velocity=velocity,coarse_limiter=limiter,species_count=2, &
+        limit_internal_energy=scheme==5)
         call require(ok,'serial oracle')
         call require(all(shape(oracle)==shape(ghosts%fields(node)%values)),'halo shape')
         call require(all(oracle==ghosts%fields(node)%values),'exact serial halo parity')
@@ -91,20 +94,20 @@ program test_mpi_amr_patch_tree_ghost_3d
       block
         call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
           viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity, &
-          coarse_limiter=limiter,species_count=2,ghost_width=7)
+          coarse_limiter=limiter,species_count=2,ghost_width=7,limit_internal_energy=scheme==5)
         call require(ok,'wide collective halo fill')
         do node=1,4
           call require(allocated(ghosts%fields(node)%values).eqv.(owners(node)==rank),'only owned wide halos')
           if(owners(node)/=rank) cycle
           call fill_amr_patch_tree_ghosts_3d(tree,global,node,faces,oracle,ok, &
             viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity, &
-            coarse_limiter=limiter,species_count=2,ghost_width=7)
+            coarse_limiter=limiter,species_count=2,ghost_width=7,limit_internal_energy=scheme==5)
           call require(ok.and.all(oracle==ghosts%fields(node)%values),'wide exact serial halo parity')
         end do
         saved=ghosts
         call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
           viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity, &
-          coarse_limiter=limiter,species_count=2,ghost_width=7+rank)
+          coarse_limiter=limiter,species_count=2,ghost_width=7+rank,limit_internal_energy=scheme==5)
         call require(.not.ok,'rank-disagreeing halo width rejected')
         do node=1,4
           if(owners(node)/=rank) cycle
@@ -112,10 +115,11 @@ program test_mpi_amr_patch_tree_ghost_3d
         end do
       end block
     end do
-    do scheme=1,3
+    do scheme=1,5
       if (allocated(limiter)) deallocate(limiter)
       if (scheme==2) limiter='mc'
       if (scheme==3) limiter='minmod'
+      if (scheme>=4) limiter='linear'
     do active=-1,2
       levels=2
       if (active>=0) levels=active
@@ -124,7 +128,7 @@ program test_mpi_amr_patch_tree_ghost_3d
         if (blend==1) fractions=[.25_dp,.75_dp]
         call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
           viscous_wall=mode>=3,inflow_state=inlet,wall_velocity=velocity,coarse_limiter=limiter,species_count=2, &
-          coarse_future=local_future,coarse_fractions=fractions(:levels),depth=active)
+          coarse_future=local_future,coarse_fractions=fractions(:levels),depth=active,limit_internal_energy=scheme==5)
         call require(ok,'collective temporal halo fill')
         do node=1,4
           call require(allocated(ghosts%fields(node)%values).eqv. &
@@ -132,7 +136,7 @@ program test_mpi_amr_patch_tree_ghost_3d
           if (.not.allocated(ghosts%fields(node)%values)) cycle
           call fill_amr_patch_tree_ghosts_3d(tree,global,node,faces,oracle,ok,viscous_wall=mode>=3, &
             inflow_state=inlet,wall_velocity=velocity,coarse_limiter=limiter,species_count=2, &
-            coarse_future=future,coarse_fractions=fractions(:tree%nodes(node)%level))
+            coarse_future=future,coarse_fractions=fractions(:tree%nodes(node)%level),limit_internal_energy=scheme==5)
           call require(ok,'serial temporal oracle')
           call require(all(oracle==ghosts%fields(node)%values),'exact temporal serial halo parity')
         end do
@@ -140,6 +144,10 @@ program test_mpi_amr_patch_tree_ghost_3d
     end do
     end do
     saved=ghosts
+    call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
+      inflow_state=inlet,coarse_limiter='linear',limit_internal_energy=rank==nranks-1)
+    call require(.not.ok,'rank-disagreeing auxiliary energy limiter rejected')
+    call unchanged()
     bad_fractions=fractions
     if (rank==nranks-1) bad_fractions(1)=.5_dp
     call fill_mpi_amr_tree_ghosts_3d(tree,owners,local,7,faces,ghosts,MPI_COMM_WORLD,ok, &
@@ -181,10 +189,68 @@ program test_mpi_amr_patch_tree_ghost_3d
     call unchanged()
     deallocate(local%fields,local_future%fields)
   end do
+  call stored_internal_checks()
   call mach_checks()
   if (rank==0) print *, 'PASS: MPI PCM/PLM halos match serial, physical walls, empty owners and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine stored_internal_checks()
+    type(amr_tree_state_3d) :: packed,endpoint,owned,owned_endpoint,result,kept
+    real(dp), allocatable :: serial(:,:,:,:)
+    real(dp) :: fraction(1),expected
+    integer :: owner(4),peer,extent(3),distribution,blend_id
+    character(len=32) :: bc(6)
+    logical :: success
+    allocate(packed%fields(4),endpoint%fields(4))
+    do peer=1,4
+      extent=tree%nodes(peer)%shape
+      allocate(packed%fields(peer)%values(9,extent(1),extent(2),extent(3)))
+      packed%fields(peer)%values(:7,:,:,:)=global%fields(peer)%values
+      packed%fields(peer)%values(8,:,:,:)=300
+      packed%fields(peer)%values(9,:,:,:)=10
+    enddo
+    endpoint%fields(1)=packed%fields(1)
+    endpoint%fields(1)%values(9,:,:,:)=30
+    bc='periodic'
+    do distribution=1,2
+      owner=[0,1,0,1]
+      if(distribution==2) owner=0
+      allocate(owned%fields(4),owned_endpoint%fields(4))
+      do peer=1,4
+        if(owner(peer)/=rank) cycle
+        owned%fields(peer)=packed%fields(peer)
+        owned_endpoint%fields(peer)=endpoint%fields(peer)
+      enddo
+      do blend_id=0,2
+        fraction=.5_dp*blend_id;expected=10+20*fraction(1)
+        call fill_mpi_amr_tree_ghosts_3d(tree,owner,owned,9,bc,result,MPI_COMM_WORLD,success, &
+          coarse_limiter='linear',species_count=2,coarse_future=owned_endpoint,coarse_fractions=fraction, &
+          depth=1,ghost_width=1,limit_internal_energy=.true.,stored_internal_energy=.true.)
+        call require(success,'stored rhoe sparse collective interpolation')
+        do peer=2,3
+          if(owner(peer)/=rank) cycle
+          call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,bc,serial,success, &
+            coarse_limiter='linear',species_count=2,coarse_future=endpoint,coarse_fractions=fraction, &
+            ghost_width=1,limit_internal_energy=.true.,stored_internal_energy=.true.)
+          call require(success.and.all(serial==result%fields(peer)%values),'stored rhoe exact serial/MPI ghosts')
+          ! Both level1 patches end at fine y=4; this halo has a root donor.
+          call require(abs(result%fields(peer)%values(9,2,6,2)-expected)<1e-13_dp, &
+            'stored rhoe endpoints blend rather than deriving E-KE')
+          call require(result%fields(peer)%values(9,2,2,2)==10,'same-level rhoe retained exactly')
+        enddo
+      enddo
+      kept=result
+      call fill_mpi_amr_tree_ghosts_3d(tree,owner,owned,9,bc,result,MPI_COMM_WORLD,success, &
+        coarse_limiter='linear',species_count=2,ghost_width=1,limit_internal_energy=.true., &
+        stored_internal_energy=rank==nranks-1)
+      call require(.not.success,'rank-disagreeing stored rhoe layout rejects collectively')
+      do peer=1,4
+        if(.not.allocated(kept%fields(peer)%values)) cycle
+        call require(all(result%fields(peer)%values==kept%fields(peer)%values),'stored-layout disagreement rollback')
+      enddo
+      deallocate(owned%fields,owned_endpoint%fields)
+    enddo
+  end subroutine stored_internal_checks
   subroutine mach_checks()
     type(nasa7_species), allocatable :: thermo(:)
     real(dp) :: q(12),sound,ma(6),tin(6),pin(6),bad_ma(6),bad_t(6),bad_p(6)

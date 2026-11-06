@@ -122,6 +122,7 @@ program pelef_reactive_eb_2d_selected
       requested_temperature_maximum, config%embedded_wall_temperature, &
       reflected_temperature_maximum)
   end if
+  if(.not.config%flow%pinned_eos_extrapolation) then
   call validate_selected_temperature_range( &
     "Selected reactive EB 2D", requested_temperature_minimum, &
     requested_temperature_maximum, common_temperature_minimum, &
@@ -129,6 +130,8 @@ program pelef_reactive_eb_2d_selected
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
+  end if
+
   end if
 
   call resolve_reactive_2d_selected_composition( &

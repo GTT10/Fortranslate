@@ -19,6 +19,21 @@ program test_nasa7_thermo
   call load_gri30_thermo_subset(species, ok)
   if (.not. ok) error stop "Failed to load NASA7 database subset"
 
+  block
+    type(nasa7_species) :: boundary_species
+    real(dp) :: cp_r,h_rt,s_r,mid
+    boundary_species=species(gri_h2_index)
+    boundary_species%low_coefficients=0;boundary_species%low_coefficients(1)=3
+    boundary_species%high_coefficients=0;boundary_species%high_coefficients(1)=4
+    mid=boundary_species%temperature_mid
+    call nasa7_dimensionless_properties(boundary_species,nearest(mid,-1._dp),cp_r,h_rt,s_r,ok)
+    if(.not.ok.or.cp_r/=3) error stop 'NASA midpoint lower neighbor selects low fit'
+    call nasa7_dimensionless_properties(boundary_species,mid,cp_r,h_rt,s_r,ok)
+    if(.not.ok.or.cp_r/=4) error stop 'NASA midpoint selects pinned high fit'
+    call nasa7_dimensionless_properties(boundary_species,nearest(mid,1._dp),cp_r,h_rt,s_r,ok)
+    if(.not.ok.or.cp_r/=4) error stop 'NASA midpoint upper neighbor selects high fit'
+  end block
+
   call nasa7_mass_properties( &
     species(gri_h2_index), 300.0_dp, cp, cv, enthalpy, &
     internal_energy, entropy, ok)
@@ -133,6 +148,7 @@ contains
       coefficient_index = conversion_coefficients(test_case)
       synthetic_species%low_coefficients(coefficient_index) = &
         oversized_coefficient
+      synthetic_species%high_coefficients=synthetic_species%low_coefficients
       call nasa7_dimensionless_properties( &
         synthetic_species, 1.0_dp, cp_over_r, h_over_rt, s_over_r, local_ok)
       if (.not. local_ok) &

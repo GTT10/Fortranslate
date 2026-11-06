@@ -7,7 +7,7 @@ module mixture_transport_mod
   use mixture_thermo_mod, only: &
     valid_mixture_composition, mole_fractions_from_mass_fractions
   use gas_transport_mod, only: &
-    gas_transport_species, compatible_transport_database
+    gas_transport_species, compatible_transport_database,constant_transport_values
   implicit none
   private
 
@@ -824,7 +824,9 @@ contains
     logical, intent(out) :: ok
 
     real(dp) :: binary(size(species),size(species))
-    logical :: local_ok
+    logical :: local_ok,constant_enabled
+    real(dp) :: constant_values(4),gas_constant,density
+    integer :: component
     real(dp) :: candidate_viscosity, candidate_conductivity
     real(dp), allocatable :: candidate_diffusion(:)
 
@@ -832,13 +834,51 @@ contains
     conductivity = 0.0_dp
     diffusion_coefficients = 0.0_dp
     ok = .false.
-    if (.not. valid_transport_inputs(species, transport)) return
+    if(size(species)<1.or.size(transport)/=size(species)) return
+    call constant_transport_values(transport,constant_values,constant_enabled,local_ok)
+    if(.not.local_ok) return
+    if(constant_enabled) then
+      do component=1,size(species)
+        if(.not.valid_nasa7_species(species(component))) return
+        if(trim(species(component)%name)/=trim(transport(component)%name)) return
+      enddo
+    else
+      if(.not.valid_transport_inputs(species,transport)) return
+    endif
     if (size(diffusion_coefficients) /= size(species)) return
     if (.not. valid_mixture_composition(species, mass_fractions)) return
     if (.not. ieee_is_finite(temperature)) return
     if (temperature <= 0.0_dp) return
     if (.not. ieee_is_finite(pressure)) return
     if (pressure <= 0.0_dp) return
+    if(constant_enabled) then
+      if(constant_values(4)>=0) then
+        gas_constant=sum(mass_fractions*[(nasa7_specific_gas_constant(species(component)), &
+          component=1,size(species))])
+        if(.not.ieee_is_finite(gas_constant).or.gas_constant<=0) return
+        if(temperature<1) then
+          if(pressure>huge(1._dp)*temperature) return
+        endif
+        density=pressure/temperature
+        if(gas_constant<1) then
+          if(density>huge(1._dp)*gas_constant) return
+        endif
+        density=density/gas_constant
+        if(.not.ieee_is_finite(density).or.density<=0) return
+        if(density<1) then
+          if(constant_values(4)>huge(1._dp)*density) return
+        endif
+        diffusion_coefficients=constant_values(4)/density
+        if(.not.all(ieee_is_finite(diffusion_coefficients))) then
+          diffusion_coefficients=0;return
+        endif
+      else
+        call mixture_averaged_diffusion_coefficients(species,transport,mass_fractions,temperature,pressure, &
+          diffusion_coefficients,local_ok)
+        if(.not.local_ok) return
+      endif
+      viscosity=constant_values(1);conductivity=constant_values(2);ok=.true.;return
+    endif
     if(allocated(transport(1)%simple_binary)) then
       call simple_transport_from_records(species,transport,mass_fractions,temperature,pressure, &
         viscosity,conductivity,diffusion_coefficients,binary,ok)

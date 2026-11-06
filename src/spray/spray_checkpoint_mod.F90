@@ -85,13 +85,19 @@ contains
   subroutine write_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
       source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
-      retired_parent_state,chemistry_totals,split_created_total,external_totals)
+      retired_parent_state,chemistry_totals,split_created_total,external_totals, &
+      reaction_source,heat_release,heat_available,potential,previous_timestep)
+    real(dp), optional, intent(in) :: reaction_source(:,:,:,:),heat_release(:,:,:)
+    logical, optional, intent(in) :: heat_available
+    real(dp), optional, intent(in) :: potential(:,:,:)
+    real(dp), optional, intent(in) :: previous_timestep
+    logical :: has_heat
     integer(int64), intent(in), optional :: split_created_total
     integer(int64), intent(in), optional :: last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical, intent(in), optional :: retired_parent_state
-    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired
-    character(len=128) :: expected_magic
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired,has_initial_count
+    character(len=256) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -123,6 +129,8 @@ contains
     if (present(khrt_state)) has_khrt=khrt_state
     expected_magic=spray_checkpoint_magic(present(boundary_totals),has_breakup,has_split,has_khrt)
     ok=.false.; message='Invalid spray checkpoint state'
+    has_heat=present(heat_release)
+    if(present(heat_available)) has_heat=has_heat.and.heat_available
     if (present(wall_films).and..not.has_films) then
       if (size(wall_films)>0) return
     end if
@@ -159,6 +167,9 @@ contains
       if (.not.present(last_id).or..not.has_split) return
       expected_magic=trim(expected_magic)//'_SCOUNT_V1'
     end if
+    ! Retained splash birth counts are independent of aerodynamic shedding.
+    ! Add their payload only when needed, preserving legacy zero-count files.
+    has_initial_count=has_films.and..not.has_shedding
     if ((has_split.or.has_khrt).and..not.has_breakup) return
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) return
@@ -167,6 +178,11 @@ contains
     if (present(source_totals)) then
       if (.not.all(ieee_is_finite(source_totals))) return
     end if
+    if(present(previous_timestep)) then
+      if(.not.ieee_is_finite(previous_timestep)) return
+      if(previous_timestep<0.or.previous_timestep>time) return
+      if((steps==0).neqv.(previous_timestep==0)) return
+    endif
     if (len_trim(path)==0 .or. len_trim(context)==0 .or. len_trim(context)>spray_checkpoint_context_capacity) return
     if (size(state,1)/=reactive_nvar(size(species)) .or. size(species)<2) return
     if (present(chemistry_totals)) then
@@ -205,7 +221,10 @@ contains
       if (.not. valid_spray_parcel(parcels(p))) return
       if (.not.has_materials.and.parcels(p)%material_id/=1) return
       if (.not.(has_split.or.has_films).and.parcels(p)%parent_id/=0) return
-      if (.not.has_shedding.and.(parcels(p)%khrt_initial_count/=0.or.parcels(p)%khrt_shed_volume/=0)) return
+      if (.not.has_shedding) then
+        if(parcels(p)%khrt_shed_volume/=0) return
+        if(.not.has_initial_count.and.parcels(p)%khrt_initial_count/=0) return
+      end if
       if (.not.has_khrt.and.parcels(p)%rt_time/=-1.0_dp) return
       if (parcels(p)%parent_id>0.and..not.has_retired) then
         if (.not.parent_exists(parcels,p)) return
@@ -217,13 +236,26 @@ contains
         if (parcels(p)%id<=parcels(p-1)%id) return
       end if
     end do
+    has_initial_count=has_initial_count.and.any(parcels%khrt_initial_count/=0)
+    if(has_initial_count) expected_magic=trim(expected_magic)//'_N0_V1'
+    if(present(reaction_source)) expected_magic=trim(expected_magic)//'_IR_V1'
+    if(has_heat) expected_magic=trim(expected_magic)//'_HEAT_V1'
     if(present(external_totals)) then
       if(.not.all(ieee_is_finite(external_totals))) return
     end if
     dims=shape(temperature)
     if (any(dims<2) .or. any(shape(state(1,:,:,:))/=dims)) return
+    if(present(reaction_source)) then
+      if(any(shape(reaction_source)/=[size(state,1)-4,dims])) return
+      if(.not.all(ieee_is_finite(reaction_source))) return
+    endif
+    if(has_heat) then
+      if(any(shape(heat_release)/=dims)) return
+      if(.not.all(ieee_is_finite(heat_release))) return
+    endif
     allocate(check,mold=temperature)
-    call recover_reactive_temperatures_3d(species,state,temperature,dims(1),dims(2),dims(3),check,local_ok)
+    call recover_reactive_temperatures_3d(species,state,temperature,dims(1),dims(2),dims(3),check,local_ok, &
+      rotating_potential=potential)
     if (.not. local_ok) return
     if (any(abs(check-temperature)>1.0e-9_dp*max(1.0_dp,abs(temperature)))) return
     inquire(file=trim(path),exist=exists)
@@ -235,7 +267,9 @@ contains
     if (ios/=0) then
       message='Cannot create checkpoint temporary file'; return
     end if
-    write(unit,'(a)',iostat=ios) trim(expected_magic)
+    ios=0
+    if(present(previous_timestep)) write(unit,'(a)',iostat=ios) 'PELEF_SPRAY_TIMESTEP_HISTORY_V1'
+    if(ios==0) write(unit,'(a)',iostat=ios) trim(expected_magic)
     if (ios==0) write(unit,'(a)',iostat=ios) trim(context)
     if (ios==0) write(unit,*,iostat=ios) size(state,1),dims,size(parcels)
     if (present(component_mass)) then
@@ -248,6 +282,7 @@ contains
       if (ios==0) write(unit,'(i0)',iostat=ios) split_created_total
     end if
     if (ios==0) write(unit,'(es26.17e3,2(1x,i0))',iostat=ios) time,steps,event
+    if(present(previous_timestep).and.ios==0) write(unit,'(es26.17e3)',iostat=ios) previous_timestep
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) reference_totals
     if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) injected_totals
     if (present(boundary_totals)) then
@@ -283,6 +318,7 @@ contains
       if (has_khrt.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%rt_time
       if (has_shedding.and.ios==0) write(unit,'(2es26.17e3)',iostat=ios) &
         parcels(p)%khrt_initial_count,parcels(p)%khrt_shed_volume
+      if (has_initial_count.and.ios==0) write(unit,'(es26.17e3)',iostat=ios) parcels(p)%khrt_initial_count
       if (present(component_mass)) then
         if (ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) component_mass(:,p)
       end if
@@ -299,6 +335,24 @@ contains
         end if
       end do
     end if
+    if(present(reaction_source)) then
+      do k=1,dims(3)
+      do j=1,dims(2)
+      do i=1,dims(1)
+        if(ios==0) write(unit,'(*(es26.17e3,1x))',iostat=ios) reaction_source(:,i,j,k)
+      enddo
+      enddo
+      enddo
+    endif
+    if(has_heat) then
+      do k=1,dims(3)
+      do j=1,dims(2)
+      do i=1,dims(1)
+        if(ios==0) write(unit,'(es26.17e3)',iostat=ios) heat_release(i,j,k)
+      enddo
+      enddo
+      enddo
+    endif
     if (ios==0) write(unit,'(a)',iostat=ios) 'END_PELEF_SPRAY_CHECKPOINT'
     close(unit,iostat=close_status)
     if (ios/=0 .or. close_status/=0) then
@@ -319,15 +373,22 @@ contains
   subroutine read_spray_checkpoint(path,context,species,state,temperature,parcels,time,steps,event, &
       reference_totals,injected_totals,ok,message,boundary_totals,breakup_state,split_state,khrt_state, &
       source_totals,material_state,film_state,wall_films,shedding_state,component_mass,film_component_mass,last_id, &
-      retired_parent_state,chemistry_totals,split_created_total,external_totals)
+      retired_parent_state,chemistry_totals,split_created_total,external_totals, &
+      reaction_source,heat_release,heat_available,potential,previous_timestep)
+    real(dp), optional, intent(inout) :: reaction_source(:,:,:,:),heat_release(:,:,:)
+    logical, optional, intent(inout) :: heat_available
+    real(dp), optional, intent(in) :: potential(:,:,:)
+    real(dp), optional, intent(inout) :: previous_timestep
+    logical :: has_ir,has_heat
+    real(dp), allocatable :: ir(:,:,:,:),heat(:,:,:)
     integer(int64), intent(inout), optional :: split_created_total
     integer(int64) :: candidate_split_created
     integer(int64), intent(inout), optional :: last_id
     integer(int64) :: candidate_last_id
     logical, intent(in), optional :: breakup_state,split_state,khrt_state,material_state,film_state,shedding_state
     logical, intent(in), optional :: retired_parent_state
-    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired
-    character(len=128) :: expected_magic
+    logical :: has_breakup,has_split,has_khrt,has_materials,has_films,has_shedding,has_retired,has_initial_count
+    character(len=256) :: expected_magic
     character(len=*), intent(in) :: path,context
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),time,reference_totals(:),injected_totals(:)
@@ -346,6 +407,7 @@ contains
     real(dp) :: boundary(size(state,1))
     real(dp), allocatable :: candidate(:,:,:,:),temp(:,:,:),check(:,:,:)
     type(spray_parcel), allocatable :: drops(:)
+    real(dp) :: last_interval
     real(dp) :: next_time,ref(size(state,1)),injected(size(state,1)),row(max(11,size(state,1)+1))
     character(len=64) :: tokens(12)
     integer :: unit,ios,i,j,k,p,dims(3),got(5),next_steps,next_event
@@ -411,11 +473,40 @@ contains
     if (size(reference_totals)/=size(state,1) .or. size(injected_totals)/=size(state,1)) return
     dims=shape(temperature)
     if (any(shape(state(1,:,:,:))/=dims)) return
+    if(present(reaction_source)) then
+      if(any(shape(reaction_source)/=[size(state,1)-4,dims])) return
+    endif
+    if(present(heat_release)) then
+      if(any(shape(heat_release)/=dims)) return
+    endif
     open(newunit=unit,file=trim(path),status='old',action='read',iostat=ios)
     if (ios/=0) return
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
-    if (trim(line)/=trim(expected_magic)) goto 900
+    if(trim(line)=='PELEF_SPRAY_TIMESTEP_HISTORY_V1') then
+      if(.not.present(previous_timestep)) goto 900
+      read(unit,'(a)',iostat=ios) line
+      if(ios/=0) goto 900
+    else if(present(previous_timestep)) then
+      goto 900
+    endif
+    has_initial_count=.false.
+    if(has_films.and..not.has_shedding) then
+      if(index(trim(line),trim(expected_magic)//'_N0_V1')==1) then
+        has_initial_count=.true.
+        expected_magic=trim(expected_magic)//'_N0_V1'
+      endif
+    endif
+    has_ir=.false.;has_heat=.false.
+    if(trim(line)==trim(expected_magic)//'_IR_V1') then
+      has_ir=.true.
+    else if(trim(line)==trim(expected_magic)//'_HEAT_V1') then
+      has_heat=.true.
+    else if(trim(line)==trim(expected_magic)//'_IR_V1_HEAT_V1') then
+      has_ir=.true.;has_heat=.true.
+    else if(trim(line)/=trim(expected_magic)) then
+      goto 900
+    endif
     if (present(boundary_totals)) then
       if (size(boundary_totals)/=size(state,1)) goto 900
     end if
@@ -459,6 +550,13 @@ contains
     if (ios/=0) goto 900
     if (.not. ieee_is_finite(next_time)) goto 900
     if (next_time<0.0_dp .or. next_steps<0 .or. next_event<0) goto 900
+    if(present(previous_timestep)) then
+      call read_real_row(unit,row(1:1),ios)
+      if(ios/=0.or..not.ieee_is_finite(row(1))) goto 900
+      last_interval=row(1)
+      if(last_interval<0.or.last_interval>next_time) goto 900
+      if((next_steps==0).neqv.(last_interval==0)) goto 900
+    endif
     call read_real_row(unit,ref,ios)
     if (ios/=0) goto 900
     call read_real_row(unit,injected,ios)
@@ -537,6 +635,11 @@ contains
         if (ios/=0) goto 900
         drops(p)%khrt_initial_count=row(1);drops(p)%khrt_shed_volume=row(2)
       end if
+      if (has_initial_count) then
+        call read_real_row(unit,row(1:1),ios)
+        if (ios/=0) goto 900
+        drops(p)%khrt_initial_count=row(1)
+      end if
       if (present(component_mass)) then
         call read_real_row(unit,mass_candidate(:,p),ios)
         if (ios/=0) goto 900
@@ -574,6 +677,29 @@ contains
         end if
       end do
     end if
+    if(has_ir) then
+      allocate(ir(size(state,1)-4,dims(1),dims(2),dims(3)))
+      do k=1,dims(3)
+      do j=1,dims(2)
+      do i=1,dims(1)
+        call read_real_row(unit,ir(:,i,j,k),ios)
+        if(ios/=0) goto 900
+      enddo
+      enddo
+      enddo
+    endif
+    if(has_heat) then
+      allocate(heat(dims(1),dims(2),dims(3)))
+      do k=1,dims(3)
+      do j=1,dims(2)
+      do i=1,dims(1)
+        call read_real_row(unit,row(1:1),ios)
+        if(ios/=0) goto 900
+        heat(i,j,k)=row(1)
+      enddo
+      enddo
+      enddo
+    endif
     read(unit,'(a)',iostat=ios) line
     if (ios/=0) goto 900
     if (trim(line)/='END_PELEF_SPRAY_CHECKPOINT') goto 900
@@ -581,7 +707,8 @@ contains
     if (ios>=0) goto 900
     close(unit)
     if (.not. all(ieee_is_finite(temp))) return
-    call recover_reactive_temperatures_3d(species,candidate,temp,dims(1),dims(2),dims(3),check,local_ok)
+    call recover_reactive_temperatures_3d(species,candidate,temp,dims(1),dims(2),dims(3),check,local_ok, &
+      rotating_potential=potential)
     if (.not. local_ok) return
     if (any(abs(check-temp)>1.0e-9_dp*max(1.0_dp,abs(temp)))) return
     if (present(last_id)) then
@@ -589,6 +716,16 @@ contains
       last_id=candidate_last_id
     end if
     if (present(split_created_total)) split_created_total=candidate_split_created
+    if(present(reaction_source)) then
+      reaction_source=0
+      if(has_ir) reaction_source=ir
+    endif
+    if(present(heat_release)) then
+      heat_release=0
+      if(has_heat) heat_release=heat
+    endif
+    if(present(heat_available)) heat_available=has_heat
+    if(present(previous_timestep)) previous_timestep=last_interval
     state=candidate; temperature=temp; parcels=drops; time=next_time; steps=next_steps; event=next_event
     if (present(boundary_totals)) boundary_totals=boundary
     if (present(source_totals)) source_totals=source

@@ -30,7 +30,8 @@ program test_les_mpi_models
   do k=1,4
     do j=1,4
       do i=1,8
-        q=0;q(1)=.3_dp;q(5)=101325;q(15)=1
+        ! Vary temperature at fixed pressure, retaining admissible outlet donors.
+        q=0;q(1)=.3_dp*(1+.02_dp*i+.01_dp*j);q(5)=101325;q(15)=1
         q(2)=10*sin(2*acos(-1._dp)*(j-.5_dp)/4)
         q(3)=10*sin(2*acos(-1._dp)*(i-.5_dp)/8)
         call reactive_primitive_to_conserved(species,q,initial(:,i,j,k),initial_t(i,j,k),sound,ok)

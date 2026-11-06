@@ -105,7 +105,7 @@ contains
   end subroutine
 
   subroutine remap_amr_patch_tree_reactive_3d(old_tree,old_state,old_temperature,new_tree,species,state,temperature,ok, &
-      old_reaction_source,reaction_source)
+      old_reaction_source,reaction_source,old_heat_release,heat_release,old_internal_energy,internal_energy)
     type(amr_patch_tree_3d), intent(in) :: old_tree,new_tree
     type(amr_tree_state_3d), intent(in) :: old_state,old_temperature
     type(nasa7_species), intent(in) :: species(:)
@@ -113,11 +113,31 @@ contains
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(in) :: old_reaction_source
     type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
-    type(amr_tree_state_3d) :: candidate,temps,rates
+    type(amr_tree_state_3d), optional, intent(in) :: old_heat_release
+    type(amr_tree_state_3d), optional, intent(inout) :: heat_release
+    type(amr_tree_state_3d), optional, intent(in) :: old_internal_energy
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    type(amr_tree_state_3d) :: candidate,temps,rates,heat
+    type(amr_tree_state_3d), allocatable :: held
     real(dp), allocatable :: recovered(:,:,:)
     integer :: node,n(3)
     logical :: valid
     ok=.false.
+    if(present(old_internal_energy).neqv.present(internal_energy)) return
+    if(present(old_internal_energy)) then
+      if(.not.old_internal_energy%is_valid(old_tree)) return
+      if(size(old_internal_energy%fields(1)%values,1)/=1) return
+      allocate(held)
+      call remap_amr_patch_tree_3d(old_tree,old_internal_energy,new_tree,held,valid)
+      if(.not.valid) return
+    endif
+    if(present(old_heat_release).neqv.present(heat_release)) return
+    if(present(old_heat_release)) then
+      if(.not.old_heat_release%is_valid(old_tree)) return
+      if(size(old_heat_release%fields(1)%values,1)/=1) return
+      call remap_amr_patch_tree_3d(old_tree,old_heat_release,new_tree,heat,valid)
+      if(.not.valid) return
+    end if
     if (present(old_reaction_source).neqv.present(reaction_source)) return
     if (present(old_reaction_source)) then
       if (.not.old_reaction_source%is_valid(old_tree)) return
@@ -140,14 +160,21 @@ contains
     if (.not.valid) return
     do node=1,size(new_tree%nodes)
       n=new_tree%nodes(node)%shape;allocate(recovered(n(1),n(2),n(3)))
+      if(allocated(held)) then
+        call recover_reactive_temperatures_3d(species,candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:), &
+          n(1),n(2),n(3),recovered,valid,internal_energy_density=held%fields(node)%values(1,:,:,:))
+      else
       call recover_reactive_temperatures_3d(species,candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:), &
         n(1),n(2),n(3),recovered,valid)
+      endif
       if (.not.valid) return
       temps%fields(node)%values(1,:,:,:)=recovered
       deallocate(recovered)
     end do
     state=candidate;temperature=temps
+    if(present(internal_energy)) internal_energy=held
     if (present(reaction_source)) reaction_source=rates
+    if(present(heat_release)) heat_release=heat
     ok=.true.
   end subroutine
 

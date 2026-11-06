@@ -6,7 +6,8 @@ module reactive_3d_mod
   use constants_mod, only: density_floor, pressure_floor
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
-  use constant_volume_reactor_mod, only: advance_forced_reactor_interval,forced_reactor_integrator
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval,forced_reactor_integrator, &
+    reaction_source_heat_release
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
@@ -19,6 +20,7 @@ module reactive_3d_mod
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d,reactive_transport_fluxes_3d, &
     physical_transport_fluxes_3d,physical_transport_budget_3d,physical_transport_ghosted_fluxes_3d
+  use reactive_transport_3d_mod, only: valid_constant_transport_coefficients
   implicit none
   private
 
@@ -29,6 +31,7 @@ module reactive_3d_mod
   public :: construct_reactive_sdc_state_3d,advance_reactive_sdc_periodic_3d
   public :: reactive_sdc_source_evaluator
   public :: reactive_sdc_halo_filler,reactive_sdc_source_halo_filler
+  public :: reactive_sdc_stage_agreement
   public :: advance_reactive_sdc_3d
   public :: compute_reactive_ppm_halo_ctu_fluxes_3d
   public :: advance_reactive_euler_ppm_ctu_3d
@@ -52,14 +55,23 @@ module reactive_3d_mod
   public :: reactive_extrema_3d
 
   abstract interface
+    subroutine reactive_sdc_stage_agreement(local_ok,all_ok)
+      logical, intent(in) :: local_ok
+      logical, intent(out) :: all_ok
+    end subroutine
     subroutine reactive_sdc_source_evaluator(state,temperature,time,sources,ok)
       import dp
       real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time
       real(dp), intent(out) :: sources(:,:,:,:,:)
       logical, intent(out) :: ok
     end subroutine reactive_sdc_source_evaluator
-    subroutine reactive_sdc_halo_filler(state,temperature,time,width,viscous,ghost,ghost_temperature,ok)
+    subroutine reactive_sdc_halo_filler(state,temperature,time,width,viscous,ghost,ghost_temperature,ok, &
+        internal_energy_density,internal_energy_ghost)
       import dp
+      real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+      real(dp), optional, intent(out) :: internal_energy_ghost(:,:,:)
+      ! Separate actual UEINT input/output; same donor, geometry and time as
+      ! gas/T. If supplied, both are present; physical gas width stays Nv.
       real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),time
       integer, intent(in) :: width
       logical, intent(in) :: viscous
@@ -85,8 +97,14 @@ contains
       transport,transport_flags,minimum_transport_theta,reactions,reaction_source, &
       chemistry_relative_tolerance,chemistry_absolute_tolerance,boundary_faces,boundary_change,outlet_pressure, &
       inflow_state,inflow_temperature,inflow_mach,inflow_pressure,wall_temperature,wall_velocity,flux_x,flux_y,flux_z, &
-      fill_halos,fill_source_halos,new_source_estimate,evaluate_reaction,constant_coefficients)
-    real(dp), optional, intent(in) :: constant_coefficients(2)
+      fill_halos,fill_source_halos,new_source_estimate,evaluate_reaction,constant_coefficients,heat_release,agree_stage, &
+      physical_faces)
+    ! Distributed callers must agree optional presence, source families,
+    ! iteration count and boundary modes before entry. This callback keeps
+    ! local data/physics failures from leaving peers in the next halo exchange.
+    procedure(reactive_sdc_stage_agreement), optional :: agree_stage
+    logical, optional, intent(in) :: physical_faces(6)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:)
@@ -107,6 +125,7 @@ contains
     logical, optional, intent(in) :: transport_flags(4)
     type(elementary_reaction), optional, intent(in) :: reactions(:)
     real(dp), optional, intent(inout) :: reaction_source(:,:,:,:)
+    real(dp), optional, intent(inout) :: heat_release(:,:,:)
     real(dp), optional, intent(in) :: chemistry_relative_tolerance,chemistry_absolute_tolerance
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
@@ -117,6 +136,9 @@ contains
     real(dp), optional, intent(out) :: flux_x(:,:,:,:),flux_y(:,:,:,:),flux_z(:,:,:,:)
     real(dp), allocatable :: old_tx(:,:,:,:),old_ty(:,:,:,:),old_tz(:,:,:,:)
     character(len=16) :: faces(6)
+    character(len=16) :: transport_faces(6)
+    logical :: physical(6)
+    real(dp), allocatable :: local_pressure(:)
     real(dp), allocatable :: ghost(:,:,:,:),ghost_t(:,:,:),source_ghost(:,:,:,:)
     integer :: index(3),a
     real(dp) :: boundary_inventory(size(state,1))
@@ -128,60 +150,74 @@ contains
     real(dp), allocatable :: tx(:,:,:,:),ty(:,:,:,:),tz(:,:,:,:)
     real(dp), allocatable :: old_sources(:,:,:,:,:),new_sources(:,:,:,:,:),predictor(:,:,:,:),zero(:,:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),hydro(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp), allocatable :: heat(:,:,:)
     real(dp) :: theta,inventory(size(state,1))
     integer :: n(3),nv,iteration,i,j,k,component,family
     logical :: valid
     ok=.false.;n=shape(temperature);nv=reactive_nvar(size(species))
-    if(present(fill_halos).neqv.present(fill_source_halos)) return
+    if(stage_failed(present(fill_halos).neqv.present(fill_source_halos))) return
     if(present(new_source_estimate)) then
-      if(any(shape(new_source_estimate)/=[nv,n,source_count])) return
-      if(.not.all(ieee_is_finite(new_source_estimate))) return
+      if(stage_failed(any(shape(new_source_estimate)/=[nv,n,source_count]))) return
+      if(.not.stage_ready(all(ieee_is_finite(new_source_estimate)))) return
     end if
     if(present(flux_x)) flux_x=0
     if(present(flux_y)) flux_y=0
     if(present(flux_z)) flux_z=0
-    if((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z))) return
+    if(stage_failed((present(flux_x).neqv.present(flux_y)).or.(present(flux_x).neqv.present(flux_z)))) return
     if(present(flux_x)) then
-      if(any(shape(flux_x)/=[nv,n(1)+1,n(2),n(3)]).or. &
-        any(shape(flux_y)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(flux_z)/=[nv,n(1),n(2),n(3)+1])) return
+      valid=all(shape(flux_x)==[nv,n(1)+1,n(2),n(3)]).and. &
+        all(shape(flux_y)==[nv,n(1),n(2)+1,n(3)]).and.all(shape(flux_z)==[nv,n(1),n(2),n(3)+1])
+      if(.not.stage_ready(valid)) return
     end if
     faces='periodic'
     if(present(boundary_faces)) faces=boundary_faces
+    physical=.true.
+    if(present(physical_faces)) physical=physical_faces
+    if(stage_failed(any(.not.physical).and..not.present(fill_halos))) return
+    transport_faces=faces
+    where(.not.physical) transport_faces='interior'
+    if(present(outlet_pressure)) then
+      allocate(local_pressure(6));local_pressure=outlet_pressure
+      where(.not.physical) local_pressure=0
+    endif
     if(present(constant_coefficients)) then
-      if(.not.present(transport).or.present(fill_halos).or.any(faces/='periodic')) return
-      if(.not.all(ieee_is_finite(constant_coefficients))) return
-      if(any(constant_coefficients<0)) return
+      if(.not.stage_ready(present(transport))) return
+      if(.not.stage_ready(valid_constant_transport_coefficients(constant_coefficients))) return
     end if
     if(present(boundary_change)) then
       boundary_change=0
-      if(size(boundary_change)/=nv) return
+      if(stage_failed(size(boundary_change)/=nv)) return
     end if
-    if(.not.valid_reactive_boundaries_3d(faces)) return
-    if(present(inflow_pressure).and..not.present(inflow_mach)) return
+    if(.not.stage_ready(valid_reactive_boundaries_3d(faces))) return
+    if(stage_failed(present(inflow_pressure).and..not.present(inflow_mach))) return
     if(present(outlet_pressure)) then
-      if(.not.all(ieee_is_finite(outlet_pressure))) return
-      if(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp)) return
-      if(any(outlet_pressure>0.and.faces/='outflow')) return
+      if(.not.stage_ready(all(ieee_is_finite(outlet_pressure)))) return
+      if(stage_failed(any(outlet_pressure<0).or.any(outlet_pressure>1e15_dp))) return
+      if(stage_failed(any(outlet_pressure>0.and.faces/='outflow'))) return
     end if
     transport_rate=0;old_transport_rate=0;new_transport_rate=0
     rtol=1e-6_dp;atol=1e-12_dp
     if(present(chemistry_relative_tolerance)) rtol=chemistry_relative_tolerance
     if(present(chemistry_absolute_tolerance)) atol=chemistry_absolute_tolerance
-    if(.not.all(ieee_is_finite([rtol,atol])).or.min(rtol,atol)<=0) return
-    if(present(reaction_source).and..not.present(reactions)) return
-    if(present(evaluate_reaction).and..not.present(reactions)) return
+    if(stage_failed(.not.all(ieee_is_finite([rtol,atol])).or.min(rtol,atol)<=0)) return
+    if(stage_failed(present(reaction_source).and..not.present(reactions))) return
+    if(stage_failed(present(evaluate_reaction).and..not.present(reactions))) return
     allocate(ir(nv-4,n(1),n(2),n(3)));ir=0
+    if(present(heat_release)) then
+      if(stage_failed(any(shape(heat_release)/=n))) return
+      allocate(heat(n(1),n(2),n(3)),source=0._dp)
+    endif
     if(present(reaction_source)) then
-      if(any(shape(reaction_source)/=shape(ir))) return
-      if(.not.all(ieee_is_finite(reaction_source))) return
+      if(stage_failed(any(shape(reaction_source)/=shape(ir)))) return
+      if(.not.stage_ready(all(ieee_is_finite(reaction_source)))) return
       ir=reaction_source
     end if
     flags=.true.;source_theta=1
     if(present(transport_flags)) flags=transport_flags
     if(present(minimum_transport_theta)) minimum_transport_theta=1
     if(present(transport)) then
-      if(size(transport)/=size(species)) return
-      if(present(evaluate_sources).and.source_count<2) return
+      if(stage_failed(size(transport)/=size(species))) return
+      if(stage_failed(present(evaluate_sources).and.source_count<2)) return
       if(all(faces=='periodic').and..not.present(fill_halos)) then
         allocate(tx,mold=state);allocate(ty,mold=state);allocate(tz,mold=state)
       else
@@ -190,15 +226,16 @@ contains
     end if
     if(present(source_change)) then
       source_change=0
-      if(size(source_change)/=nv) return
+      if(stage_failed(size(source_change)/=nv)) return
     end if
-    if(present(evaluate_sources).eqv.present(external_force)) return
+    if(stage_failed(present(evaluate_sources).eqv.present(external_force))) return
     if(present(external_force)) then
-      if(source_count/=merge(2,1,present(transport)).or..not.all(ieee_is_finite(external_force))) return
+      if(stage_failed(source_count/=merge(2,1,present(transport)).or..not.all(ieee_is_finite(external_force)))) return
     end if
-    if(any(n<2).or.any(shape(state)/=[nv,n]).or.iterations<1.or.source_count<0) return
-    if(.not.all(ieee_is_finite([spacing,dt,time]))) return
-    if(any(spacing<=0).or.dt<=0) return
+    if(stage_failed(any(n<1).or.any(shape(state)/=[nv,n]).or.iterations<1.or.source_count<0)) return
+    if(stage_failed(any(n<2).and..not.present(fill_halos))) return
+    if(.not.stage_ready(all(ieee_is_finite([spacing,dt,time])))) return
+    if(stage_failed(any(spacing<=0).or.dt<=0)) return
     allocate(old_sources(nv,n(1),n(2),n(3),source_count),new_sources(nv,n(1),n(2),n(3),source_count))
     allocate(predictor,mold=state);allocate(zero,mold=state);zero=0
     allocate(candidate,mold=state);allocate(ct,mold=temperature);allocate(recovered,mold=temperature);allocate(hydro,mold=state)
@@ -215,15 +252,15 @@ contains
         call fill_reactive_boundary_ghosts_3d(state,temperature,faces,ghost,ghost_t,valid, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=4)
       end if
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       if(.not.present(fill_halos)) &
         call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,ghost_t,valid,ghost_width=4)
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
     end if
     call recover_reactive_temperatures_3d(species,state,temperature,n(1),n(2),n(3),ct,valid)
-    if(.not.valid) return
+    if(.not.stage_ready(valid)) return
     call builtin_sources(state,ct,time,old_sources,valid)
-    if(.not.valid) return
+    if(.not.stage_ready(valid)) return
     new_sources=old_sources
     if(present(new_source_estimate)) new_sources=new_source_estimate
     old_transport_rate=transport_rate
@@ -233,14 +270,14 @@ contains
     do iteration=1,iterations
       ! Hydro.cpp sums half new then half old rates, without including hydro itself.
       call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,reaction_source=ir)
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       if(all(faces=='periodic').and..not.present(fill_halos)) then
         call compute_reactive_ppm_ctu_fluxes_3d(species,state,temperature,spacing,dt,.false.,.true.,'pelec', &
           fx,fy,fz,theta,valid,difmag=difmag,conserved_source=predictor)
       else
         if(present(fill_source_halos)) then
           call fill_source_halos(predictor,time+.5_dp*dt,source_ghost,valid)
-          if(.not.valid) return
+          if(.not.stage_ready(valid)) return
         else
         ! Physical source rates extrapolate; periodic axes wrap.
         do k=-3,n(3)+4
@@ -260,12 +297,13 @@ contains
         end do
         end if
         call compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,ghost_t,n,spacing,dt,.false.,.true.,'pelec', &
-          fx,fy,fz,theta,valid,difmag=difmag,conserved_source=source_ghost,outflow_faces=faces=='outflow', &
-          outlet_pressure=outlet_pressure,inflow_faces=faces=='inflow', &
-          no_slip_faces=faces=='no_slip_wall'.or.faces=='isothermal_wall', &
-          reflecting_faces=faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall')
+          fx,fy,fz,theta,valid,difmag=difmag,conserved_source=source_ghost, &
+          outflow_faces=physical.and.faces=='outflow',outlet_pressure=local_pressure, &
+          inflow_faces=physical.and.faces=='inflow', &
+          no_slip_faces=physical.and.(faces=='no_slip_wall'.or.faces=='isothermal_wall'), &
+          reflecting_faces=physical.and.(faces=='slip_wall'.or.faces=='no_slip_wall'.or.faces=='isothermal_wall'))
       end if
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       do k=1,n(3)
       do j=1,n(2)
       do i=1,n(1)
@@ -275,26 +313,26 @@ contains
       end do
       end do
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro,ir)
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       call recover_reactive_temperatures_3d(species,candidate,temperature,n(1),n(2),n(3),ct,valid)
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       call builtin_sources(candidate,ct,time+dt,new_sources,valid)
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       new_transport_rate=transport_rate
       call construct_reactive_sdc_state_3d(state,dt,old_sources,new_sources,candidate,valid,hydro)
-      if(.not.valid) return
+      if(.not.stage_ready(valid)) return
       if(present(reactions)) then
         ! React.cpp builds rates without I_R, then integrates from the old state.
         call construct_reactive_sdc_state_3d(zero,1._dp,old_sources,new_sources,predictor,valid,hydro)
-        if(.not.valid) return
+        if(.not.stage_ready(valid)) return
         call react_sdc_state_3d(species,reactions,state,temperature,predictor,dt,rtol,atol, &
-          candidate,ct,ir,valid,evaluate_reaction)
-        if(.not.valid) return
+          candidate,ct,ir,valid,evaluate_reaction,heat_release=heat)
+        if(.not.stage_ready(valid)) return
       end if
       if(.not.present(reactions)) then
         call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid)
         ct=recovered
-        if(.not.valid) return
+        if(.not.stage_ready(valid)) return
       end if
     end do
     inventory=0
@@ -304,16 +342,16 @@ contains
         (sum(new_sources(component,:,:,:,family))+sum(old_sources(component,:,:,:,family)))
     end do
     end do
-    if(.not.all(ieee_is_finite(inventory))) return
+    if(.not.stage_ready(all(ieee_is_finite(inventory)))) return
     do component=1,nv
       boundary_inventory(component)=dt*((sum(fx(component,0,:,:))-sum(fx(component,n(1),:,:)))*spacing(2)*spacing(3)+ &
         (sum(fy(component,:,0,:))-sum(fy(component,:,n(2),:)))*spacing(1)*spacing(3)+ &
         (sum(fz(component,:,:,0))-sum(fz(component,:,:,n(3))))*spacing(1)*spacing(2))
     end do
-    if(.not.all(ieee_is_finite(boundary_inventory))) return
+    if(.not.stage_ready(all(ieee_is_finite(boundary_inventory)))) return
     boundary_inventory=boundary_inventory+.5_dp*dt*(old_transport_rate+new_transport_rate)
     inventory=inventory-.5_dp*dt*(old_transport_rate+new_transport_rate)
-    if(.not.all(ieee_is_finite(boundary_inventory)).or..not.all(ieee_is_finite(inventory))) return
+    if(stage_failed(.not.all(ieee_is_finite(boundary_inventory)).or..not.all(ieee_is_finite(inventory)))) return
     if(present(flux_x)) then
       if(present(transport)) then
         if(all(faces=='periodic').and..not.present(fill_halos)) then
@@ -327,7 +365,7 @@ contains
           fx=fx+.5_dp*(old_tx+tx);fy=fy+.5_dp*(old_ty+ty);fz=fz+.5_dp*(old_tz+tz)
         end if
       end if
-      if(.not.all(ieee_is_finite(fx)).or..not.all(ieee_is_finite(fy)).or..not.all(ieee_is_finite(fz))) return
+      if(stage_failed(.not.all(ieee_is_finite(fx)).or..not.all(ieee_is_finite(fy)).or..not.all(ieee_is_finite(fz)))) return
       flux_x=fx;flux_y=fy;flux_z=fz
     end if
     if(present(boundary_change)) boundary_change=boundary_inventory
@@ -336,7 +374,17 @@ contains
     if(present(reaction_source)) reaction_source=ir
     if(present(new_source_estimate)) new_source_estimate=new_sources
     state=candidate;temperature=ct;ok=.true.
+    if(present(heat_release)) heat_release=heat
   contains
+    logical function stage_failed(local_failed) result(failed)
+      logical, intent(in) :: local_failed
+      failed=.not.stage_ready(.not.local_failed)
+    end function stage_failed
+    logical function stage_ready(local_ok) result(ready)
+      logical, intent(in) :: local_ok
+      ready=local_ok
+      if(present(agree_stage)) call agree_stage(local_ok,ready)
+    end function stage_ready
     subroutine builtin_sources(u,t,stage_time,rates,good)
       real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),stage_time
       real(dp), intent(out) :: rates(:,:,:,:,:)
@@ -352,27 +400,30 @@ contains
       else
         call compute_reactive_external_source_3d(u,external_force,rates(:,:,:,:,1),good)
       end if
-      if(.not.good.or..not.present(transport)) return
+      if(.not.stage_ready(good)) return
+      if(.not.present(transport)) return
       if(all(faces=='periodic').and..not.present(fill_halos)) then
         call reactive_transport_fluxes_3d(species,transport,u,t,n(1),n(2),n(3), &
           spacing(1),spacing(2),spacing(3),dt,flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good, &
           constant_coefficients=constant_coefficients)
-        if(.not.good) return
+        if(.not.stage_ready(good)) return
         call reactive_flux_divergence_3d(tx,ty,tz,n(1),n(2),n(3),spacing(1),spacing(2),spacing(3),rates(:,:,:,:,source_count),good)
       else
         if(present(fill_halos)) then
           allocate(tg(nv,n(1)+4,n(2)+4,n(3)+4),tgt(n(1)+4,n(2)+4,n(3)+4))
           call fill_halos(u,t,stage_time,2,.true.,tg,tgt,good)
-          if(.not.good) return
-          call physical_transport_ghosted_fluxes_3d(species,transport,u,t,tg,tgt,n,spacing,dt,faces, &
-            flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,wall_temperature,wall_velocity)
+          if(.not.stage_ready(good)) return
+          call physical_transport_ghosted_fluxes_3d(species,transport,u,t,tg,tgt,n,spacing,dt,transport_faces, &
+            flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good, &
+            wall_temperature,wall_velocity,constant_coefficients)
         else
         call physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
           flags(1),flags(2),flags(3),flags(4),tx,ty,tz,transport_theta,good,outlet_pressure=outlet_pressure, &
           inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_mach=inflow_mach, &
-          inflow_pressure=inflow_pressure,wall_temperature=wall_temperature,wall_velocity=wall_velocity)
+          inflow_pressure=inflow_pressure,wall_temperature=wall_temperature,wall_velocity=wall_velocity, &
+          constant_coefficients=constant_coefficients)
         end if
-        if(.not.good) return
+        if(.not.stage_ready(good)) return
         do kk=1,n(3)
         do jj=1,n(2)
         do ii=1,n(1)
@@ -390,7 +441,8 @@ contains
   ! React.cpp cell update, exposed separately for hierarchy stage coordination.
   ! Nonreacting rates include hydro and averaged external/transport sources.
   subroutine react_sdc_state_3d(species,reactions,old_state,old_temperature,nonreacting_rates,dt,rtol,atol, &
-      state,temperature,reaction_source,ok,evaluate_reaction,rotating_potential)
+      state,temperature,reaction_source,ok,evaluate_reaction,rotating_potential,heat_release,internal_energy_density, &
+      old_internal_energy_density)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -398,8 +450,11 @@ contains
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),reaction_source(:,:,:,:)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: rotating_potential(:,:,:)
+    real(dp), optional, intent(inout) :: heat_release(:,:,:),internal_energy_density(:,:,:)
+    real(dp), optional, intent(in) :: old_internal_energy_density(:,:,:)
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),recovered(:,:,:),ir(:,:,:,:)
-    real(dp) :: rhoe_old,rhoe_new,rhoy(size(species)),react_t,nonreact_energy
+    real(dp), allocatable :: heat(:,:,:),auxiliary(:,:,:)
+    real(dp) :: rhoe_old,rhoe_new,rhoe_reactor,rhoy(size(species)),react_t,nonreact_energy,nonreact_species(size(species))
     integer :: n(3),nv,i,j,k,steps
     logical :: valid
     ok=.false.;n=shape(old_temperature);nv=reactive_nvar(size(species))
@@ -407,6 +462,19 @@ contains
     if(any(shape(old_state)/=[nv,n]).or.any(shape(nonreacting_rates)/=[nv,n])) return
     if(any(shape(state)/=[nv,n]).or.any(shape(temperature)/=n)) return
     if(any(shape(reaction_source)/=[nv-4,n])) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      allocate(auxiliary,mold=internal_energy_density)
+    endif
+    if(present(old_internal_energy_density)) then
+      if(.not.present(internal_energy_density)) return
+      if(any(shape(old_internal_energy_density)/=n)) return
+      if(.not.all(ieee_is_finite(old_internal_energy_density))) return
+    endif
+    if(present(heat_release)) then
+      if(any(shape(heat_release)/=n)) return
+      allocate(heat(n(1),n(2),n(3)),source=0._dp)
+    endif
     if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
     if(.not.all(ieee_is_finite(nonreacting_rates))) return
     if(present(rotating_potential)) then
@@ -414,7 +482,8 @@ contains
       if(.not.all(ieee_is_finite(rotating_potential)).or.any(rotating_potential<0)) return
     end if
     allocate(ct,mold=old_temperature);allocate(recovered,mold=old_temperature)
-    call recover_reactive_temperatures_3d(species,old_state,old_temperature,n(1),n(2),n(3),ct,valid,rotating_potential)
+    call recover_reactive_temperatures_3d(species,old_state,old_temperature,n(1),n(2),n(3),ct,valid, &
+      rotating_potential,old_internal_energy_density)
     if(.not.valid) return
     candidate=old_state+dt*nonreacting_rates
     if(.not.all(ieee_is_finite(candidate)).or.any(candidate(1,:,:,:)<=0)) return
@@ -429,30 +498,45 @@ contains
         rhoe_new=rhoe_new+candidate(1,i,j,k)*rotating_potential(i,j,k)
       end if
       if(.not.all(ieee_is_finite([rhoe_old,rhoe_new]))) return
+      ! Pinned React.cpp packs old UEINT into the reactor independently of
+      ! the total/momentum projection used for external energy and unpacking.
+      ! Keep those authorities separate when a held old scalar is supplied.
+      rhoe_reactor=rhoe_old
+      if(present(old_internal_energy_density)) rhoe_reactor=old_internal_energy_density(i,j,k)
       rhoy=old_state(6:,i,j,k);react_t=old_temperature(i,j,k)
       if(present(evaluate_reaction)) then
-        call evaluate_reaction(species,reactions,rhoe_old,nonreacting_rates(6:,i,j,k), &
+        call evaluate_reaction(species,reactions,rhoe_reactor,nonreacting_rates(6:,i,j,k), &
           (rhoe_new-rhoe_old)/dt,dt,rtol,atol*old_state(1,i,j,k),rhoy,react_t,steps,valid)
       else
-      call advance_forced_reactor_interval(species,reactions,rhoe_old,nonreacting_rates(6:,i,j,k), &
+      call advance_forced_reactor_interval(species,reactions,rhoe_reactor,nonreacting_rates(6:,i,j,k), &
         (rhoe_new-rhoe_old)/dt,dt,rtol,atol*old_state(1,i,j,k),rhoy,react_t,steps,valid)
       endif
       if(.not.valid) return
-      nonreact_energy=candidate(5,i,j,k)
+      if(allocated(auxiliary)) auxiliary(i,j,k)=rhoe_new
+      nonreact_energy=candidate(5,i,j,k);nonreact_species=candidate(6:,i,j,k)
       candidate(1,i,j,k)=sum(rhoy);candidate(6:,i,j,k)=rhoy
       candidate(5,i,j,k)=rhoe_new+.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
       if(present(rotating_potential)) candidate(5,i,j,k)= &
         candidate(5,i,j,k)-candidate(1,i,j,k)*rotating_potential(i,j,k)
-      ir(:nv-5,i,j,k)=(rhoy-old_state(6:,i,j,k))/dt-nonreacting_rates(6:,i,j,k)
+      ! Subtract the forced endpoint before dividing. In the inert limit
+      ! the reactor returns this exact endpoint, so IR stays exactly zero
+      ! instead of introducing a division-rounding chemical trace source.
+      ir(:nv-5,i,j,k)=(rhoy-nonreact_species)/dt
       ir(nv-4,i,j,k)=(candidate(5,i,j,k)-nonreact_energy)/dt
+      if(present(heat_release)) then
+        call reaction_source_heat_release(species,react_t,ir(:nv-5,i,j,k),heat(i,j,k),valid)
+        if(.not.valid) return
+      endif
       ct(i,j,k)=react_t
     end do
     end do
     end do
     if(.not.all(ieee_is_finite(ir))) return
-    call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid,rotating_potential)
+    call recover_reactive_temperatures_3d(species,candidate,ct,n(1),n(2),n(3),recovered,valid,rotating_potential,auxiliary)
     if(.not.valid) return
     state=candidate;temperature=recovered;reaction_source=ir;ok=.true.
+    if(present(internal_energy_density)) internal_energy_density=auxiliary
+    if(present(heat_release)) heat_release=heat
   end subroutine react_sdc_state_3d
 
   ! Pinned Advance.cpp::construct_Snew. Source-list order and new-before-old
@@ -527,7 +611,8 @@ contains
   ! Positive coefficients zero closed faces; zero retains the identity policy.
   ! Fluxes remain intensive; the finite-volume caller supplies face areas.
   subroutine adjust_reactive_artificial_viscosity_3d(state,n,spacing,difmag, &
-      no_slip_faces,xflux,yflux,zflux,ok,volume_fraction,open_x,open_y,open_z,boundary_lower,boundary_upper)
+      no_slip_faces,xflux,yflux,zflux,ok,volume_fraction,open_x,open_y,open_z,boundary_lower,boundary_upper, &
+      internal_energy_state,internal_energy_xflux,internal_energy_yflux,internal_energy_zflux)
     integer, intent(in) :: n(3)
     ! Physical face indices may lie inside an extended working region.
     integer, optional, intent(in) :: boundary_lower(3),boundary_upper(3)
@@ -538,11 +623,32 @@ contains
     ! EB inputs are an all-or-none group; covered states are never read.
     real(dp), optional, intent(in) :: volume_fraction(0:,0:,0:)
     logical, optional, intent(in) :: open_x(0:,:,:),open_y(:,0:,:),open_z(:,:,0:)
+    ! UEINT is an independent conserved component, excluded from species
+    ! normalization. All four optional members form one atomic source family.
+    real(dp), optional, intent(in) :: internal_energy_state(0:,0:,0:)
+    real(dp), optional, intent(inout) :: internal_energy_xflux(0:,:,:),internal_energy_yflux(:,0:,:), &
+      internal_energy_zflux(:,:,0:)
+    real(dp), allocatable :: hx(:,:,:),hy(:,:,:),hz(:,:,:)
+    real(dp) :: held_jump,held_candidate,held_high,held_low
+    integer :: held_options
+    logical :: held
     real(dp), allocatable :: velocity(:,:,:,:),divergence(:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
     real(dp) :: derivatives(3),factor,total,candidate(size(state,1)),jump(size(state,1))
     integer :: nv,i,j,k,a,b,c,s,t,point(3),low(3),high(3),limit(3),normal,wall_lo(3),wall_hi(3)
     logical :: wall,eb,opened
     ok=.false.;nv=size(state,1)
+    held_options=count([present(internal_energy_state),present(internal_energy_xflux), &
+      present(internal_energy_yflux),present(internal_energy_zflux)])
+    if(held_options/=0.and.held_options/=4) return
+    held=held_options==4
+    if(held) then
+      if(any(shape(internal_energy_state)/=n+2)) return
+      if(any(shape(internal_energy_xflux)/=[n(1)+1,n(2),n(3)]).or. &
+        any(shape(internal_energy_yflux)/=[n(1),n(2)+1,n(3)]).or. &
+        any(shape(internal_energy_zflux)/=[n(1),n(2),n(3)+1])) return
+      if(.not.all(ieee_is_finite(internal_energy_xflux)).or. &
+        .not.all(ieee_is_finite(internal_energy_yflux)).or..not.all(ieee_is_finite(internal_energy_zflux))) return
+    endif
     if (nv<6.or.any(n<1).or.any(shape(state)/=[nv,n+2])) return
     if (any(shape(xflux)/=[nv,n(1)+1,n(2),n(3)]).or. &
         any(shape(yflux)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(zflux)/=[nv,n(1),n(2),n(3)+1])) return
@@ -568,11 +674,17 @@ contains
       do i=0,n(1)+1
         if(volume_fraction(i,j,k)==0) cycle
         if(.not.all(ieee_is_finite(state(:,i,j,k))).or.state(1,i,j,k)<=density_floor) return
+        if(held) then
+          if(.not.ieee_is_finite(internal_energy_state(i,j,k))) return
+        endif
       end do
       end do
       end do
     else
       if (.not.all(ieee_is_finite(state)).or.any(state(1,:,:,:)<=density_floor)) return
+      if(held) then
+        if(.not.all(ieee_is_finite(internal_energy_state))) return
+      endif
     end if
     if (.not.all(ieee_is_finite(xflux)).or..not.all(ieee_is_finite(yflux)).or. &
         .not.all(ieee_is_finite(zflux))) return
@@ -617,6 +729,10 @@ contains
     if (.not.all(ieee_is_finite(divergence))) return
     allocate(fx(nv,0:n(1),n(2),n(3)),fy(nv,n(1),0:n(2),n(3)),fz(nv,n(1),n(2),0:n(3)))
     fx=xflux;fy=yflux;fz=zflux
+    if(held) then
+      allocate(hx(0:n(1),n(2),n(3)),hy(n(1),0:n(2),n(3)),hz(n(1),n(2),0:n(3)))
+      hx=internal_energy_xflux;hy=internal_energy_yflux;hz=internal_energy_zflux
+    endif
     do a=1,3
       b=merge(2,1,a==1);c=merge(2,3,a==3)
       limit=n;limit(a)=n(a)+1
@@ -636,6 +752,13 @@ contains
             case(2);fy(:,low(1),low(2),low(3))=0
             case(3);fz(:,low(1),low(2),low(3))=0
             end select
+            if(held) then
+              select case(a)
+              case(1);hx(low(1),low(2),low(3))=0
+              case(2);hy(low(1),low(2),low(3))=0
+              case(3);hz(low(1),low(2),low(3))=0
+              end select
+            endif
             cycle
           end if
           if(volume_fraction(low(1),low(2),low(3))==0.or.volume_fraction(high(1),high(2),high(3))==0) return
@@ -651,6 +774,37 @@ contains
         factor=spacing(a)*difmag*min(0._dp,.25_dp*total)
         high=low;high(a)=high(a)+1
         jump=factor*(state(:,high(1),high(2),high(3))-state(:,low(1),low(2),low(3)))
+        if(held) then
+          held_high=internal_energy_state(high(1),high(2),high(3))
+          held_low=internal_energy_state(low(1),low(2),low(3))
+          if(held_low<0) then
+            if(held_high>huge(1._dp)+held_low) return
+          else if(held_low>0) then
+            if(held_high< -huge(1._dp)+held_low) return
+          endif
+          held_jump=held_high-held_low
+          if(abs(factor)>1) then
+            if(abs(held_jump)>huge(1._dp)/abs(factor)) return
+          endif
+          held_jump=factor*held_jump
+          select case(a)
+          case(1);held_candidate=hx(low(1),low(2),low(3))
+          case(2);held_candidate=hy(low(1),low(2),low(3))
+          case(3);held_candidate=hz(low(1),low(2),low(3))
+          end select
+          if(held_jump>0) then
+            if(held_candidate>huge(1._dp)-held_jump) return
+          else if(held_jump<0) then
+            if(held_candidate< -huge(1._dp)-held_jump) return
+          endif
+          held_candidate=held_candidate+held_jump
+          if(.not.ieee_is_finite(held_candidate)) return
+          select case(a)
+          case(1);hx(low(1),low(2),low(3))=held_candidate
+          case(2);hy(low(1),low(2),low(3))=held_candidate
+          case(3);hz(low(1),low(2),low(3))=held_candidate
+          end select
+        endif
         normal=low(a)
         wall=(normal==wall_lo(a).and.no_slip_faces(2*a-1)).or.(normal==wall_hi(a).and.no_slip_faces(2*a))
         if (wall) then
@@ -673,7 +827,11 @@ contains
       end do
       end do
     end do
-    xflux=fx;yflux=fy;zflux=fz;ok=.true.
+    xflux=fx;yflux=fy;zflux=fz
+    if(held) then
+      internal_energy_xflux=hx;internal_energy_yflux=hy;internal_energy_zflux=hz
+    endif
+    ok=.true.
   end subroutine adjust_reactive_artificial_viscosity_3d
 
 
@@ -1010,7 +1168,16 @@ contains
   ! or ghost filling occurs here. Corner solves are bounded to their consumers.
   subroutine compute_reactive_ppm_halo_ctu_fluxes_3d(species,ghost,gt,n,spacing,dt, &
       steepening,flattening,solver,xflux,yflux,zflux,minimum_theta,ok,pressure_tracing,inflow_faces,difmag,no_slip_faces, &
-      reflecting_faces,outflow_faces,outlet_pressure,primitive_source,energy_source,conserved_source)
+      reflecting_faces,outflow_faces,outlet_pressure,primitive_source,energy_source,conserved_source, &
+      internal_energy_ghost,internal_energy_xflux,internal_energy_yflux,internal_energy_zflux, &
+      internal_energy_pressure_work)
+    real(dp), optional, intent(in) :: internal_energy_ghost(-3:,-3:,-3:)
+    real(dp), optional, intent(inout) :: internal_energy_xflux(0:,:,:),internal_energy_yflux(:,0:,:), &
+      internal_energy_zflux(:,:,0:),internal_energy_pressure_work(:,:,:)
+    real(dp), allocatable :: face_held(:,:,:),final_held(:,:,:,:),final_face(:,:,:,:,:),held_visc(:,:,:),pdiv(:,:,:)
+    real(dp) :: held_flux,face_pressure,face_velocity,pm,pv,vm,vv,weighted,velocity_jump,term,pwork_sum,dxinv
+    integer :: held_options
+    logical :: capture_held,capture_aux
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     real(dp), intent(in) :: ghost(:,-3:,-3:,-3:),gt(-3:,-3:,-3:),spacing(3),dt
@@ -1041,9 +1208,34 @@ contains
     integer :: nv,i,j,k,a,b,c,offset,idx(3),donor(3),lo(3),hi(3),lower(3),upper(3)
     logical :: valid
     ok=.false.;xflux=0;yflux=0;zflux=0;minimum_theta=0
+    if(any(n<1)) return
+    if(.not.all(ieee_is_finite(spacing)).or..not.ieee_is_finite(dt)) return
+    if(any(spacing<=0).or.dt<0) return
     trace_pressure=solver=="pelec"
     if (present(pressure_tracing)) trace_pressure=pressure_tracing
     if (trace_pressure.and.solver/="pelec") return
+    held_options=count([present(internal_energy_xflux),present(internal_energy_yflux),present(internal_energy_zflux)])
+    if(held_options/=0.and.held_options/=3) return
+    capture_held=held_options==3
+    capture_aux=capture_held.or.present(internal_energy_pressure_work)
+    if(capture_aux.and..not.trace_pressure) return
+    if(present(internal_energy_ghost)) then
+      if(any(shape(internal_energy_ghost)/=n+8)) return
+      if(.not.all(ieee_is_finite(internal_energy_ghost))) return
+    endif
+    if(capture_held) then
+      if(any(shape(internal_energy_xflux)/=[n(1)+1,n(2),n(3)]).or. &
+        any(shape(internal_energy_yflux)/=[n(1),n(2)+1,n(3)]).or. &
+        any(shape(internal_energy_zflux)/=[n(1),n(2),n(3)+1])) return
+      allocate(face_held(0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+        final_held(0:n(1)+1,0:n(2)+1,0:n(3)+1,3),source=0._dp)
+    endif
+    if(capture_aux) allocate(final_face(2,0:n(1)+1,0:n(2)+1,0:n(3)+1,3),source=0._dp)
+    if(present(internal_energy_pressure_work)) then
+      if(any(shape(internal_energy_pressure_work)/=n)) return
+      if(any(spacing<1._dp/huge(1._dp))) return
+      allocate(pdiv(n(1),n(2),n(3)),source=0._dp)
+    endif
     viscosity=.1_dp
     if (present(difmag)) viscosity=difmag
     if (.not.ieee_is_finite(viscosity).or.viscosity<0) return
@@ -1086,7 +1278,12 @@ contains
     do i=-3,n(1)+4
       idx=[i,j,k]
       if (count(idx<0.or.idx>n+1)>1) cycle
-      call reactive_conserved_to_primitive(species,ghost(:,i,j,k),gt(i,j,k),q(:,i,j,k),recovered,speed,valid)
+      if(present(internal_energy_ghost)) then
+        call reactive_conserved_to_primitive(species,ghost(:,i,j,k),gt(i,j,k),q(:,i,j,k),recovered,speed,valid, &
+          internal_energy_density=internal_energy_ghost(i,j,k))
+      else
+        call reactive_conserved_to_primitive(species,ghost(:,i,j,k),gt(i,j,k),q(:,i,j,k),recovered,speed,valid)
+      endif
       if (.not.valid) return
       if (all(idx>=0.and.idx<=n+1)) sound(i,j,k)=speed
     end do
@@ -1213,15 +1410,34 @@ contains
       upper(a)=n(a)
       call solve_faces(a,final(:,:,:,:,a),valid)
       if (.not.valid) return
+      if(capture_aux) final_face(:,:,:,:,a)=face_result
+      if(capture_held) final_held(:,:,:,a)=face_held
     end do
     if (trace_pressure.and.present(inflow_faces)) then
       call replace_inflow_fluxes(valid)
       if (.not.valid) return
     end if
     if (viscosity>0) then
+      if(capture_held) then
+        allocate(held_visc(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+        if(present(internal_energy_ghost)) then
+          held_visc=internal_energy_ghost(0:n(1)+1,0:n(2)+1,0:n(3)+1)
+        else
+          held_visc=ghost(5,0:n(1)+1,0:n(2)+1,0:n(3)+1)- &
+            .5_dp*sum(ghost(2:4,0:n(1)+1,0:n(2)+1,0:n(3)+1)**2,dim=1)/ &
+            ghost(1,0:n(1)+1,0:n(2)+1,0:n(3)+1)
+        endif
+        call adjust_reactive_artificial_viscosity_3d(ghost(:,0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+          n,spacing,viscosity,walls,final(:,0:n(1),1:n(2),1:n(3),1), &
+          final(:,1:n(1),0:n(2),1:n(3),2),final(:,1:n(1),1:n(2),0:n(3),3),valid, &
+          internal_energy_state=held_visc,internal_energy_xflux=final_held(0:n(1),1:n(2),1:n(3),1), &
+          internal_energy_yflux=final_held(1:n(1),0:n(2),1:n(3),2), &
+          internal_energy_zflux=final_held(1:n(1),1:n(2),0:n(3),3))
+      else
       call adjust_reactive_artificial_viscosity_3d(ghost(:,0:n(1)+1,0:n(2)+1,0:n(3)+1), &
         n,spacing,viscosity,walls,final(:,0:n(1),1:n(2),1:n(3),1), &
         final(:,1:n(1),0:n(2),1:n(3),2),final(:,1:n(1),1:n(2),0:n(3),3),valid)
+      endif
       if (.not.valid) return
     end if
     if(trace_pressure.and.viscosity==0) then
@@ -1239,6 +1455,53 @@ contains
       end do
       if(.not.all(ieee_is_finite(final))) return
     end if
+    if(present(internal_energy_pressure_work)) then
+      ! Pinned regular-cell pdivu has the sign of the velocity divergence:
+      ! subtract this term from the UEINT conservative residual.
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        idx=[i,j,k];pwork_sum=0
+        do a=1,3
+          lo=idx;lo(a)=lo(a)-1
+          pm=final_face(1,lo(1),lo(2),lo(3),a);pv=final_face(1,i,j,k,a)
+          vm=final_face(2,lo(1),lo(2),lo(3),a);vv=final_face(2,i,j,k,a)
+          if(.not.all(ieee_is_finite([pm,pv,vm,vv]))) return
+          if(pm<0.or.pv<0.or.pv>huge(1._dp)-pm) return
+          weighted=pm+pv
+          if(vm<0) then
+            if(vv>huge(1._dp)+vm) return
+          else if(vm>0) then
+            if(vv< -huge(1._dp)+vm) return
+          endif
+          velocity_jump=vv-vm
+          if(abs(velocity_jump)>1) then
+            if(abs(weighted)>huge(1._dp)/abs(velocity_jump)) return
+          endif
+          term=weighted*velocity_jump;dxinv=1/spacing(a)
+          if(dxinv>1) then
+            if(abs(term)>huge(1._dp)/dxinv) return
+          endif
+          term=term*dxinv
+          if(term>0) then
+            if(pwork_sum>huge(1._dp)-term) return
+          else if(term<0) then
+            if(pwork_sum< -huge(1._dp)-term) return
+          endif
+          pwork_sum=pwork_sum+term
+        enddo
+        pdiv(i,j,k)=.5_dp*pwork_sum
+      enddo
+      enddo
+      enddo
+    endif
+    if(capture_held) then
+      if(.not.all(ieee_is_finite(final_held))) return
+      internal_energy_xflux=final_held(0:n(1),1:n(2),1:n(3),1)
+      internal_energy_yflux=final_held(1:n(1),0:n(2),1:n(3),2)
+      internal_energy_zflux=final_held(1:n(1),1:n(2),0:n(3),3)
+    endif
+    if(present(internal_energy_pressure_work)) internal_energy_pressure_work=pdiv
     xflux=final(:,0:n(1),1:n(2),1:n(3),1)
     yflux=final(:,1:n(1),0:n(2),1:n(3),2)
     zflux=final(:,1:n(1),1:n(2),0:n(3),3)
@@ -1293,8 +1556,16 @@ contains
             if (.not.good) return
           end do
           point=[ii,jj,kk];point(direction)=point(direction)+1
+          if(capture_aux) then
+            call reactive_pelec_primitive_flux_x(species,left,right, &
+              .5_dp*(sound(ii,jj,kk)+sound(point(1),point(2),point(3))),rotated,good,passive_upwind=.true., &
+              interface_pressure=face_pressure,interface_velocity=face_velocity,internal_energy_flux=held_flux)
+            final_face(:,ii,jj,kk,direction)=[face_pressure,face_velocity]
+            if(capture_held) final_held(ii,jj,kk,direction)=held_flux
+          else
           call reactive_pelec_primitive_flux_x(species,left,right, &
             .5_dp*(sound(ii,jj,kk)+sound(point(1),point(2),point(3))),rotated,good,passive_upwind=.true.)
+          endif
           if (.not.good) return
           swap=rotated(2);rotated(2)=rotated(direction+1);rotated(direction+1)=swap
           final(:,ii,jj,kk,direction)=rotated
@@ -1400,6 +1671,7 @@ contains
       logical, intent(out) :: good
       good=.false.;flux=0
       if (trace_pressure) face_result=0
+      if(capture_held) face_held=0
       do k=lower(3),upper(3)
       do j=lower(2),upper(2)
       do i=lower(1),upper(1)
@@ -1409,9 +1681,15 @@ contains
           call correct_boundary_states(direction,[i,j,k],qm,qp)
           swap=qm(2);qm(2)=qm(direction+1);qm(direction+1)=swap
           swap=qp(2);qp(2)=qp(direction+1);qp(direction+1)=swap
+          if(capture_held) then
+            call reactive_pelec_primitive_flux_x(species,qm,qp,.5_dp*(sound(i,j,k)+sound(hi(1),hi(2),hi(3))), &
+              flux(:,i,j,k),good,interface_velocity=face_result(2,i,j,k), &
+              interface_pressure=face_result(1,i,j,k),passive_upwind=.true.,internal_energy_flux=face_held(i,j,k))
+          else
           call reactive_pelec_primitive_flux_x(species,qm,qp,.5_dp*(sound(i,j,k)+sound(hi(1),hi(2),hi(3))), &
             flux(:,i,j,k),good,interface_velocity=face_result(2,i,j,k), &
             interface_pressure=face_result(1,i,j,k),passive_upwind=.true.)
+          endif
           if (.not.good) return
           swap=flux(2,i,j,k);flux(2,i,j,k)=flux(direction+1,i,j,k);flux(direction+1,i,j,k)=swap
           cycle
@@ -1485,13 +1763,15 @@ contains
   end subroutine advance_reactive_euler_ppm_ctu_3d
 
   subroutine compute_reactive_cfl_timestep_3d( &
-      species, state, temperature, nx, ny, nz, dx, dy, dz, cfl, dt, ok)
+      species, state, temperature, nx, ny, nz, dx, dy, dz, cfl, dt, ok,internal_energy_density)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
     real(dp), intent(in) :: dx, dy, dz, cfl
     real(dp), intent(out) :: dt
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: auxiliary_cell
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: local_temperature, sound_speed, rate, maximum_rate
@@ -1504,18 +1784,25 @@ contains
     if (.not. valid_reactive_3d_shapes( &
           state, temperature, nvar, nx, ny, nz)) return
     if (.not. all(ieee_is_finite([dx, dy, dz, cfl]))) return
-    if (nx < 2 .or. ny < 2 .or. nz < 2 .or. &
+    ! The signal-speed bound is cell local, including one-cell MPI tiles.
+    if (nx < 1 .or. ny < 1 .or. nz < 1 .or. &
         dx <= 0.0_dp .or. dy <= 0.0_dp .or. dz <= 0.0_dp .or. &
         cfl <= 0.0_dp .or. cfl > 1.0_dp) return
 
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=[nx,ny,nz])) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(auxiliary_cell)
+    endif
     allocate(primitive(reactive_nprim(size(species))))
     maximum_rate = 0.0_dp
     do k = 1, nz
       do j = 1, ny
         do i = 1, nx
+          if(allocated(auxiliary_cell)) auxiliary_cell=internal_energy_density(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature(i, j, k), primitive, &
-            local_temperature, sound_speed, cell_ok)
+            local_temperature, sound_speed, cell_ok,internal_energy_density=auxiliary_cell)
           if (.not. cell_ok) return
           rate = (abs(primitive(2)) + sound_speed) / dx + &
             (abs(primitive(3)) + sound_speed) / dy + &
@@ -2557,7 +2844,9 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, &
       minimum_transport_theta, ok, reconstruction, limiter, chemistry_integrator, boundary_faces, &
       boundary_change, inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,conserved_source,external_force,source_change)
+      inflow_mach,inflow_pressure,difmag,conserved_source,external_force,source_change, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     ! Frozen source rates with four supplied ghost layers for physical boundaries.
     real(dp), optional, intent(in) :: conserved_source(:,-3:,-3:,-3:)
     real(dp), optional, intent(in) :: external_force(3)
@@ -2595,6 +2884,9 @@ contains
     character(len=32) :: selected_reconstruction, selected_limiter
 
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     source_inventory=0
     if(present(source_change)) then
       source_change=0
@@ -2681,7 +2973,8 @@ contains
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
         inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
-        inflow_mach,inflow_pressure)
+        inflow_mach,inflow_pressure, &
+        constant_coefficients=constant_coefficients)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -2753,7 +3046,8 @@ contains
         thermal_conduction_enabled, species_diffusion_enabled, &
         barodiffusion_enabled, stage_transport_theta, local_ok, faces, transport_change, &
         inflow_state, inflow_temperature, wall_temperature,wall_velocity,outlet_pressure, &
-        inflow_mach,inflow_pressure)
+        inflow_mach,inflow_pressure, &
+        constant_coefficients=constant_coefficients)
       if (.not. local_ok) return
       change = change + transport_change
       minimum_transport_theta = min( &
@@ -3010,14 +3304,15 @@ contains
   end subroutine advance_reactive_boundary_hydro_3d
 
   subroutine recover_reactive_temperatures_3d( &
-      species, state, temperature_guess, nx, ny, nz, temperature, ok,rotating_potential)
+      species, state, temperature_guess, nx, ny, nz, temperature, ok,rotating_potential,internal_energy_density)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature_guess(:, :, :)
     integer, intent(in) :: nx, ny, nz
     real(dp), intent(out) :: temperature(:, :, :)
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: rotating_potential(:,:,:)
-    real(dp), allocatable :: potential_cell
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: potential_cell,auxiliary_cell
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: sound_speed
@@ -3037,14 +3332,20 @@ contains
       if(.not.all(ieee_is_finite(rotating_potential)).or.any(rotating_potential<0)) return
       allocate(potential_cell)
     end if
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=[nx,ny,nz])) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(auxiliary_cell)
+    endif
     allocate(primitive(reactive_nprim(size(species))))
     do k = 1, nz
       do j = 1, ny
         do i = 1, nx
           if(allocated(potential_cell)) potential_cell=rotating_potential(i,j,k)
+          if(allocated(auxiliary_cell)) auxiliary_cell=internal_energy_density(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature_guess(i, j, k), &
-            primitive, temperature(i, j, k), sound_speed, cell_ok,potential_cell)
+            primitive, temperature(i, j, k), sound_speed, cell_ok,potential_cell,auxiliary_cell)
           if (.not. cell_ok) then
             temperature = 0.0_dp
             return
@@ -3091,7 +3392,7 @@ contains
       species, state, temperature, nx, ny, nz, &
       minimum_density, maximum_density, minimum_pressure, maximum_pressure, &
       minimum_temperature, maximum_temperature, maximum_speed, &
-      maximum_closure_error, ok)
+      maximum_closure_error, ok,internal_energy_density)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
@@ -3100,6 +3401,8 @@ contains
     real(dp), intent(out) :: minimum_temperature, maximum_temperature
     real(dp), intent(out) :: maximum_speed, maximum_closure_error
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: auxiliary_cell
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: local_temperature, sound_speed, closure, speed
@@ -3120,12 +3423,18 @@ contains
           state, temperature, nvar, nx, ny, nz)) return
 
     allocate(primitive(reactive_nprim(size(species))))
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=[nx,ny,nz])) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(auxiliary_cell)
+    endif
     do k = 1, nz
       do j = 1, ny
         do i = 1, nx
+          if(allocated(auxiliary_cell)) auxiliary_cell=internal_energy_density(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature(i, j, k), primitive, &
-            local_temperature, sound_speed, cell_ok)
+            local_temperature, sound_speed, cell_ok,internal_energy_density=auxiliary_cell)
           if (.not. cell_ok) return
           minimum_density = min(minimum_density, primitive(1))
           maximum_density = max(maximum_density, primitive(1))

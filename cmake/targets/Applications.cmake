@@ -127,13 +127,19 @@ endif()
 
 add_executable(pelef_reactive_eb_tree_3d app/pelef_reactive_eb_tree_3d.F90)
 target_link_libraries(pelef_reactive_eb_tree_3d PRIVATE pelef_core)
+if(PELEF_ENABLE_SPRAY)
+  target_compile_definitions(pelef_reactive_eb_tree_3d PRIVATE PELEF_SERIAL_EB_LES)
+  target_link_libraries(pelef_reactive_eb_tree_3d PRIVATE pelef_spray_tree_runtime)
+endif()
 if(PELEF_ENABLE_SUNDIALS)
   target_compile_definitions(pelef_reactive_eb_tree_3d PRIVATE PELEF_SDC_CVODE)
   target_link_libraries(pelef_reactive_eb_tree_3d PRIVATE pelef_fixed_forced_cvode_runtime)
-  if(TARGET pelef_mpi_eb_spray_3d)
-    target_compile_definitions(pelef_mpi_eb_spray_3d PRIVATE PELEF_SDC_CVODE)
-    target_link_libraries(pelef_mpi_eb_spray_3d PRIVATE pelef_fixed_forced_cvode_runtime)
-  endif()
+  foreach(spray_target IN ITEMS pelef_mpi_eb_spray_3d pelef_mpi_amr_spray_3d)
+    if(TARGET ${spray_target})
+      target_compile_definitions(${spray_target} PRIVATE PELEF_SDC_CVODE)
+      target_link_libraries(${spray_target} PRIVATE pelef_fixed_forced_cvode_runtime)
+    endif()
+  endforeach()
 endif()
 
 add_executable(pelef_reactive_eb_two_level_3d app/pelef_reactive_eb_two_level_3d.F90)
@@ -200,4 +206,3 @@ install(
     pelef_transport_probe
   RUNTIME DESTINATION bin
 )
-

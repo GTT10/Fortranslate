@@ -1,4 +1,5 @@
 program test_spray_mpi_eb_sample
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use mpi_f08
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mpi_amr_step_mod, only: kick_mpi_amr_mixture_halo, &
@@ -7,6 +8,7 @@ program test_spray_mpi_eb_sample
   use spray_mpi_amr_film_step_mod, only: kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage,spray_sdc_film_stage, &
     advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level,append_mpi_eb_film_births
   use spray_mpi_amr_film_mod, only: spray_level_film_population,initialize_mpi_eb_film_levels
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,advance_mixture_wall_film_frozen
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use spray_mpi_amr_tree_mod, only: spray_level_population,initialize_mpi_amr_sdc_populations
@@ -59,6 +61,11 @@ program test_spray_mpi_eb_sample
   call require(ok,'root geometry')
   call extract_eb_geometry_3d(finest,[1,1,1],[4,8,8],g(2),ok)
   call require(ok,'child geometry')
+  if(mode=='held') then
+    call check_held_sampling()
+    call MPI_Finalize(ierr)
+    stop
+  endif
   position=[1.9_dp,1.3_dp,1.5_dp]
   if(any(periodic)) position=[3.9_dp,1.3_dp,3.9_dp]
   call run()
@@ -114,6 +121,180 @@ program test_spray_mpi_eb_sample
   if(rank==0) print *, 'PASS: owner-local MPI EB composite particle sampling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_held_sampling()
+    type(nasa7_species), allocatable :: species(:)
+    type(gas_transport_species), allocatable :: transport(:)
+    type(spray_liquid) :: liquid(1)
+    type(spray_options) :: options
+    type(spray_wall_options) :: walls
+    type(amr_tree_state_3d) :: gas,temp,held,metrics,centroids,halo,halo_t,halo_h,volume,thermal,bad
+    type(amr_tree_state_3d) :: rate,leftover,control,control_leftover,previous
+    type(spray_parcel), allocatable :: drops(:),reference(:),initial(:)
+    type(spray_wall_film), allocatable :: films(:),reference_films(:),initial_films(:)
+    type(spray_level_population) :: groups(3)
+    type(spray_level_film_population) :: film_groups(3)
+    type(spray_sdc_population_stage) :: work,saved_work
+    type(spray_sdc_film_stage) :: film_work,saved_film_work
+    real(dp), allocatable :: mass(:,:),control_mass(:,:),film_mass(:,:),control_film_mass(:,:),probes(:,:)
+    real(dp), allocatable :: prim(:),cold(:),hot(:),y(:),outside(:)
+    integer, allocatable :: nodes(:)
+    integer :: nv,p,a,b,c,n(3),count,population
+    real(dp) :: r,t,sound,h(3),lower(3),vf,internal,wall(5),control_wall(5),nan
+    real(dp), parameter :: interval=1e-10_dp
+    character(len=16) :: faces(6)='slip_wall'
+    logical :: valid,equal
+    call load_h2o2_full_thermo(species,valid);call require(valid,'held sampling thermo')
+    call load_h2o2_full_transport(transport,valid);call require(valid,'held sampling transport')
+    nv=reactive_nvar(size(species));allocate(prim(nv),cold(nv),hot(nv),y(size(species)),outside(nv))
+    y=0
+    do p=1,size(species)
+      if(species(p)%name=='N2') y(p)=1
+    enddo
+    r=mixture_specific_gas_constant(species,y,valid);call require(valid,'held N2 mixture')
+    prim=0;prim(1)=1;prim(2:4)=[1._dp,2._dp,-.5_dp];prim(6:)=y;prim(5)=r*700
+    call reactive_primitive_to_conserved(species,prim,cold,t,sound,valid);call require(valid,'actual 700K thermal state')
+    internal=cold(5)-.5_dp*sum(cold(2:4)**2)/cold(1)
+    prim(5)=r*900
+    call reactive_primitive_to_conserved(species,prim,hot,t,sound,valid);call require(valid,'independent 900K Eden state')
+    allocate(gas%fields(2),temp%fields(2),held%fields(2),metrics%fields(2),centroids%fields(2))
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      n=tree%nodes(p)%shape;h=[g(p)%dx,g(p)%dy,g(p)%dz]
+      allocate(gas%fields(p)%values(nv,n(1),n(2),n(3)),temp%fields(p)%values(1,n(1),n(2),n(3)), &
+        held%fields(p)%values(1,n(1),n(2),n(3)))
+      gas%fields(p)%values=0;temp%fields(p)%values=900;held%fields(p)%values=0
+      do c=1,n(3)
+      do b=1,n(2)
+      do a=1,n(1)
+        if(g(p)%volume_fraction(a,b,c)<=0) cycle
+        gas%fields(p)%values(:,a,b,c)=hot;held%fields(p)%values(1,a,b,c)=internal
+      enddo
+      enddo
+      enddo
+      allocate(metrics%fields(p)%values(1,0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+        centroids%fields(p)%values(3,0:n(1)+1,0:n(2)+1,0:n(3)+1))
+      do c=0,n(3)+1
+      do b=0,n(2)+1
+      do a=0,n(1)+1
+        lower=[g(p)%x_lower,g(p)%y_lower,g(p)%z_lower]+real([a,b,c]-1,dp)*h
+        vf=max(0._dp,min(1._dp,(lower(2)+h(2)-1.25_dp)/h(2)))
+        metrics%fields(p)%values(1,a,b,c)=vf;centroids%fields(p)%values(:,a,b,c)=lower+.5_dp*h
+        if(vf>0) centroids%fields(p)%values(2,a,b,c)=lower(2)+h(2)-.5_dp*vf*h(2)
+      enddo
+      enddo
+      enddo
+      metrics%fields(p)%values(1,1:n(1),1:n(2),1:n(3))=g(p)%volume_fraction
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,tree,owners,g,gas,temp,halo,halo_t,MPI_COMM_WORLD,valid, &
+      ghost_volume_fraction=volume,halo_width=1,target_volume_fraction=metrics,boundary_faces=faces, &
+      restrict_snapshot=.false.,internal_energy=held,ghost_internal_energy=halo_h)
+    call require(valid,'owner/ancestor halo carries actual UEINT separately from Eden')
+    thermal=halo
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      do c=lbound(halo%fields(p)%values,4),ubound(halo%fields(p)%values,4)
+      do b=lbound(halo%fields(p)%values,3),ubound(halo%fields(p)%values,3)
+      do a=lbound(halo%fields(p)%values,2),ubound(halo%fields(p)%values,2)
+        if(volume%fields(p)%values(1,a,b,c)<=0) cycle
+        thermal%fields(p)%values(5,a,b,c)=halo_h%fields(p)%values(1,a,b,c)+ &
+          .5_dp*sum(halo%fields(p)%values(2:4,a,b,c)**2)/halo%fields(p)%values(1,a,b,c)
+      enddo
+      enddo
+      enddo
+    enddo
+    call initialize_spray_liquid(species,'H2O',1000._dp,4184._dp,373.15_dp,101325._dp,2.257e6_dp,liquid(1),valid)
+    call require(valid,'held sample water liquid')
+    count=merge(1,0,rank==owners(2));allocate(initial(count),nodes(count),mass(1,count),probes(3,count))
+    if(count>0) then
+      initial(1)=spray_parcel(id=1_int64,position=[.75_dp,1.6_dp,1.25_dp],velocity=zero, &
+        mass=1e-9_dp,temperature=330._dp,multiplicity=1._dp)
+      nodes=2;mass=1e-9_dp;probes(:,1)=initial(1)%position
+    endif
+    reference=initial;control_mass=mass;wall=0;control_wall=0
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,thermal,halo_t, &
+      1,nodes,reference,control_mass,zero,spacing,periodic,interval,control,valid,volume,phi,centroids, &
+      target_level=1,level_source=rate,source_remainder=leftover,eb_geometry=g,containing_cell=.true.)
+    call require(valid,'700K ordinary particle control')
+    drops=initial
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,halo,halo_t, &
+      1,nodes,drops,mass,zero,spacing,periodic,interval,rate,valid,volume,phi,centroids, &
+      target_level=1,level_source=leftover,source_remainder=control_leftover,eb_geometry=g, &
+      containing_cell=.true.,internal_energy_halo=halo_h)
+    call require(valid,'independent UEINT drives particle primitive interpolation')
+    equal=all(mass==control_mass)
+    do p=1,count
+      equal=equal.and.drops(p)%temperature==reference(p)%temperature.and.all(drops(p)%velocity==reference(p)%velocity)
+    enddo
+    call require(equal,'particle exchange matches actual 700K rather than 900K Eden')
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      call require(all(rate%fields(p)%values==control%fields(p)%values),'particle deposited gas source exact control')
+    enddo
+    previous=rate;bad=halo_h;nan=ieee_value(0._dp,ieee_quiet_nan)
+    if(rank==owners(2)) bad%fields(2)%values(1,1,3,1)=nan
+    call kick_mpi_amr_mixture_halo(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,halo,halo_t, &
+      1,nodes,drops,mass,zero,spacing,periodic,interval,rate,valid,volume,phi,centroids, &
+      target_level=1,level_source=leftover,source_remainder=control_leftover,eb_geometry=g, &
+      containing_cell=.true.,internal_energy_halo=bad)
+    call require(.not.valid,'malformed UEINT refuses collectively before particle exchange')
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      call require(all(rate%fields(p)%values==previous%fields(p)%values),'bad UEINT retains deposited source')
+    enddo
+    allocate(initial_films(count),film_mass(1,count))
+    if(count>0) then
+      initial_films(1)=spray_wall_film([.75_dp,1.25_dp,1.25_dp],[0._dp,1._dp,0._dp], &
+        1e-9_dp,330._dp,.001_dp,1e-6_dp,1_int64)
+      film_mass=1e-9_dp
+    endif
+    walls%enabled=.true.;walls%evolve=.true.;walls%temperature=400;walls%liquid_conductivity=.6_dp
+    walls%minimum_height=1e-15_dp;reference_films=initial_films;control_film_mass=film_mass
+    call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,walls,tree,owners,g, &
+      thermal,halo_t,1,1,nodes,probes,reference_films,control_film_mass,zero,spacing,periodic,interval, &
+      volume,phi,centroids,control,control_leftover,control_wall,valid)
+    call require(valid,'700K ordinary film control')
+    films=initial_films
+    call kick_mpi_eb_film_halo(MPI_COMM_WORLD,species,transport,liquid,options,walls,tree,owners,g, &
+      halo,halo_t,1,1,nodes,probes,films,film_mass,zero,spacing,periodic,interval, &
+      volume,phi,centroids,rate,leftover,wall,valid,internal_energy_halo=halo_h)
+    call require(valid,'film sample carries independent actual UEINT')
+    equal=all(film_mass==control_film_mass).and.all(wall==control_wall)
+    do p=1,count
+      equal=equal.and.films(p)%temperature==reference_films(p)%temperature
+    enddo
+    call require(equal,'film exchange matches 700K control with unchanged background Eden')
+    do p=1,2
+      if(owners(p)/=rank) cycle
+      call require(all(rate%fields(p)%values==control%fields(p)%values),'film deposition exact control')
+    enddo
+    do population=1,3
+      allocate(groups(population)%parcels(0),groups(population)%component_mass(1,0),groups(population)%nodes(0))
+      allocate(film_groups(population)%films(0),film_groups(population)%component_mass(1,0), &
+        film_groups(population)%nodes(0),film_groups(population)%probes(3,0))
+    enddo
+    groups(1)%parcels=initial;groups(1)%component_mass=control_mass;groups(1)%component_mass=1e-9_dp;groups(1)%nodes=nodes
+    film_groups(1)%films=initial_films;film_groups(1)%component_mass=control_film_mass;film_groups(1)%component_mass=1e-9_dp
+    film_groups(1)%nodes=nodes;film_groups(1)%probes=probes
+    call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g, &
+      gas,temp,1,1,2,100,groups,work,0._dp,interval,0,2,faces,rate,leftover,wall,outside,valid,phi,centroids,metrics, &
+      internal_energy=held)
+    call require(valid.and.work%has_internal_energy,'old particle stage retains actual UEINT policy')
+    saved_work=work
+    call advance_mpi_eb_population_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,tree,owners,g, &
+      gas,temp,1,1,2,100,groups,work,0._dp,interval,1,2,faces,rate,leftover,wall,outside,valid,phi,centroids,metrics)
+    call require(.not.valid.and.work%next_stage==saved_work%next_stage,'particle intermediate stage rejects UEINT mode change')
+    call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,walls,tree,owners,g, &
+      halo,halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,interval,0,2, &
+      volume,phi,centroids,rate,leftover,wall,valid,internal_energy_halo=halo_h)
+    call require(valid.and.film_work%has_internal_energy,'old film stage retains actual UEINT policy')
+    saved_film_work=film_work
+    call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,walls,tree,owners,g, &
+      halo,halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,interval,1,2, &
+      volume,phi,centroids,rate,leftover,wall,valid)
+    call require(.not.valid.and.film_work%next_stage==saved_film_work%next_stage, &
+      'film intermediate stage rejects UEINT mode change')
+    if(rank==0) print *, 'PASS: independent UEINT particle/film sampling, source/control equality and staged policy rollback'
+  end subroutine check_held_sampling
   subroutine check_temporal_particle_gas()
     type(nasa7_species), allocatable :: species(:)
     type(amr_tree_state_3d) :: gas,temp,ending,metrics,centroids,source,remainder,old_source
@@ -123,6 +304,7 @@ contains
     type(spray_wall_options) :: film_options
     type(spray_level_film_population) :: film_groups(3),old_film_groups(3)
     type(spray_sdc_film_stage) :: film_work,depletion_work,film_clocks(2),birth_work
+    type(rotating_frame_3d) :: frame
     type(spray_level_film_population), allocatable :: film_physical(:),film_virtuals(:),film_ghosts(:)
     type(spray_level_film_population) :: root_finished_film
     type(amr_tree_state_3d) :: expected_film_source,expected_film_remainder,expected_physical_film
@@ -697,6 +879,26 @@ contains
         film_halo,film_halo_t,1,1,film_nodes,probes,reference_films,reference_film_mass,zero,spacing,periodic,1e-10_dp, &
         film_volume,phi,centroids,expected_film_source,expected_film_remainder,old_film_wall,ok,expected_physical_film)
       call require(ok,'single-population old film half-step reference')
+      frame%axis=3;frame%angular_speed=120._dp;frame%axis_point=[.001_dp,.001_dp,.001_dp]
+      wall=19
+      if(rank==0) then
+        call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+          film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,0,2, &
+          film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source,frame)
+      else
+        call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+          film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,0,2, &
+          film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
+      end if
+      call require(.not.ok.and.film_work%next_stage==0.and.all(wall==19), &
+        'film stage rejects mixed rotating frame presence without publication')
+      if(rank/=0) frame%angular_speed=121._dp
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,0,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source,frame)
+      call require(.not.ok.and.film_work%next_stage==0.and.all(wall==19), &
+        'film stage rejects different rotating speed across ranks')
+      frame%angular_speed=120._dp
       call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
         film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,0,2, &
         film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source)
@@ -714,6 +916,19 @@ contains
           'physical film rates exclude virtual and ghost copies')
       end do
       old_group_source=group_source;old_group_remainder=group_remainder;old_physical_source=physical_source
+      wall=19
+      call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
+        film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,1,2, &
+        film_volume,phi,centroids,group_source,group_remainder,wall,ok,physical_source,frame)
+      call require(.not.ok.and.film_work%next_stage==1.and.all(wall==19), &
+        'intermediate film stage rejects changed rotating frame')
+      do p=1,2
+        if(owners(p)/=rank) cycle
+        call require(all(group_source%fields(p)%values==old_group_source%fields(p)%values).and. &
+          all(group_remainder%fields(p)%values==old_group_remainder%fields(p)%values).and. &
+          all(physical_source%fields(p)%values==old_physical_source%fields(p)%values), &
+          'changed frame retains cached film sources')
+      end do
       if(count>0) film_work%midpoint(3)%films(2)%material_id=17
       call advance_mpi_eb_film_sdc_stage(MPI_COMM_WORLD,species,transport,liquid,options,film_options,tree,owners,g, &
         film_halo,film_halo_t,1,1,film_groups,film_work,zero,spacing,periodic,0._dp,2e-10_dp,1,2, &

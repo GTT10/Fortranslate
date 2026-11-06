@@ -3,11 +3,13 @@ program test_spray_eb_drift
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_parcel_mod, only: spray_parcel
   use spray_eb_drift_mod, only: drift_spray_level_set
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   implicit none
   type(spray_parcel) :: p(2),saved(2)
+  type(rotating_frame_3d) :: frame
   real(dp) :: phi(0:2,0:2,0:2),lo(3)=0,hi(3)=2,change(5),normal(3),v(3),expected(3)
   real(dp) :: small_phi(0:8,0:8,0:8)
-  real(dp) :: exterior(5),energy(2)=10
+  real(dp) :: exterior(5),energy(2)=10,coordinate_energy
   character(len=16) :: faces(6)
   integer :: i,j,k,hits
   logical :: ok,contact(2)
@@ -73,6 +75,10 @@ program test_spray_eb_drift
   call require(contact(1).and..not.contact(2),'EB contact mask')
   call require(abs(change(2)-.06_dp)<1e-14_dp.and.abs(exterior(2)+.03_dp)<1e-14_dp,'separate wall and outflow impulse')
   call require(abs(exterior(1)+.03_dp)<1e-14_dp.and.abs(exterior(5)+.315_dp)<1e-14_dp,'outflow mass and liquid energy')
+  p=saved;frame%axis=3;frame%angular_speed=2._dp
+  call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior,contact,frame,coordinate_energy)
+  call require(ok.and.abs(exterior(5)+.015_dp)<1e-14_dp,'outflow rotating energy at exit point')
+  call require(abs(coordinate_energy-.3_dp)<1e-14_dp,'direct exit coordinate conversion')
   ! Same earliest-event ordering with exterior specular reflection.
   p=saved;faces(2)='slip_wall'
   call drift_spray_level_set(phi,lo,hi,2._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
@@ -101,9 +107,11 @@ program test_spray_eb_drift
   change=42;exterior=43;hits=17
   ! A later solid start rolls back an earlier outflow.
   faces='outflow';p=saved;p(1)%position(1)=1.9_dp;p(1)%velocity=[1._dp,0._dp,0._dp]
-  p(2)=p(1);p(2)%id=2;p(2)%position(1)=.1_dp;saved=p
-  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior,contact)
-  call require(.not.ok.and.p(1)%mass==saved(1)%mass.and.all(exterior==43),'late invalid start preserves escaped parcel')
+  p(2)=p(1);p(2)%id=2;p(2)%position(1)=.1_dp;saved=p;coordinate_energy=45
+  call drift_spray_level_set(phi,lo,hi,1._dp,8,p,change,hits,ok,faces,energy,exterior,contact, &
+    frame,coordinate_energy)
+  call require(.not.ok.and.coordinate_energy==45.and.p(1)%mass==saved(1)%mass.and.all(exterior==43), &
+    'late invalid start preserves escaped parcel')
   print *, 'PASS: transactional EB and exterior parcel drift'
 contains
   subroutine require(condition,label)

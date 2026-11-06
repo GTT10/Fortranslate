@@ -11,12 +11,12 @@ program pelef_reactive_1d
   use h2o2_elementary_mechanism_mod, only: load_h2o2_elementary_mechanism
   use h2o2_full_mechanism_mod, only: load_h2o2_full_mechanism
   use simulation_config_reactive_1d_mod, only: &
-    reactive_1d_config, read_reactive_1d_configuration
+    reactive_1d_config, read_reactive_1d_configuration, configure_reactive_1d_eos
   use reactive_1d_mod, only: simulate_reactive_1d, write_reactive_1d_csv
   implicit none
 
   type(reactive_1d_config) :: config
-  type(nasa7_species), allocatable :: species(:)
+  type(nasa7_species), allocatable :: species(:), eos_species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: state(:, :), temperature(:)
@@ -54,10 +54,12 @@ program pelef_reactive_1d
   case default
     error stop "Unknown chemistry model"
   end select
-  call simulate_reactive_1d(species, reactions, config, state, temperature, &
+  call configure_reactive_1d_eos(species, config, eos_species, ok)
+  if (.not. ok) error stop "Invalid reactive 1D EOS policy"
+  call simulate_reactive_1d(eos_species, reactions, config, state, temperature, &
     dx, time, steps, initial_integrals, final_integrals, ok, transport)
   if (.not. ok) error stop "Reactive 1D simulation failed"
-  call write_reactive_1d_csv(config%output_file, species, config, state, &
+  call write_reactive_1d_csv(config%output_file, eos_species, config, state, &
     temperature, dx, time, ok)
   if (.not. ok) error stop "Reactive 1D output failed"
   conservation_error = abs(final_integrals - initial_integrals) / &

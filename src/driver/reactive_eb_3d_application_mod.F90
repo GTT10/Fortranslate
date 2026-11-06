@@ -6,7 +6,7 @@ module reactive_eb_3d_application_mod
   use constant_volume_reactor_mod, only: forced_reactor_integrator
   use constants_mod, only: pelef_version
   use state_indices_mod, only: ncons, imx, imy, imz
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive,reactive_primitive_to_conserved
@@ -43,6 +43,8 @@ contains
     character(len=*), intent(in) :: bundle_sha256
     type(reactive_eb_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in), optional :: base_mole_fractions(:)
@@ -64,7 +66,8 @@ contains
     real(dp), allocatable :: initial_l1_integrals(:), final_l1_integrals(:)
     real(dp), allocatable :: initial_element_integrals(:),final_element_integrals(:),element_roundoff(:)
     real(dp), allocatable :: boundary(:),wall(:),chemical(:),step_boundary(:),step_wall(:),step_chemical(:)
-    real(dp), allocatable :: forcing(:),step_forcing(:),ir(:,:,:,:),checkpoint_source(:)
+    real(dp), allocatable :: forcing(:),step_forcing(:),ir(:,:,:,:),checkpoint_source(:),heat(:,:,:)
+    logical :: heat_known
     real(dp), allocatable :: external_elements(:)
     real(dp) :: element_residual,component_roundoff
     real(dp) :: time, dt, hydro_dt, transport_dt, minimum_dt
@@ -81,8 +84,12 @@ contains
     logical :: ok, restarted, stopped_after_checkpoint, selected_context
     integer :: step, nvar, component, normal_momentum,element_count,e
 
-    if (size(species) < 2 .or. size(reactions) < 1 .or. &
-        size(transport) /= size(species)) then
+    eos_species=species
+    call configure_nasa7_eos_policy(eos_species,config%pinned_eos_extrapolation,eos_policy_ok, &
+      config%pinned_eos_temperature_min,config%pinned_eos_temperature_max)
+    if(.not.eos_policy_ok) error stop 'Invalid application EOS policy'
+    if (size(eos_species) < 2 .or. size(reactions) < 1 .or. &
+        size(transport) /= size(eos_species)) then
       error stop "Reactive EB 3D application data have incompatible dimensions"
     end if
     selected_context = len_trim(bundle_sha256) > 0
@@ -96,7 +103,7 @@ contains
       error stop "Reactive EB 3D fixed runtime received selected context"
     end if
     if (present(base_mole_fractions)) then
-      if (size(base_mole_fractions) /= size(species)) then
+      if (size(base_mole_fractions) /= size(eos_species)) then
         error stop "Reactive EB 3D composition has incompatible dimensions"
       end if
     end if
@@ -106,9 +113,9 @@ contains
       if (.not.selected_context) error stop 'Element metadata requires selected EB context'
       element_count=size(element_names)
       if (element_count<1) error stop 'Empty EB element metadata'
-      if (any(shape(element_atoms)/=[element_count,size(species)])) error stop 'Invalid EB element metadata shape'
+      if (any(shape(element_atoms)/=[element_count,size(eos_species)])) error stop 'Invalid EB element metadata shape'
     else if (config%chemistry_enabled) then
-      if (.not.reactive_eb_element_species_supported_3d(species)) &
+      if (.not.reactive_eb_element_species_supported_3d(eos_species)) &
         error stop "Reactive EB 3D chemistry requires supported H/O/N species"
     end if
     allocate(initial_element_integrals(element_count),final_element_integrals(element_count),element_roundoff(element_count))
@@ -121,7 +128,7 @@ contains
       if(.not.ok) error stop 'Failed to extend CTU EB geometry'
     end if
 
-    nvar = reactive_nvar(size(species))
+    nvar = reactive_nvar(size(eos_species))
     allocate(state(nvar, config%nx, config%ny, config%nz))
     allocate(new_state(nvar, config%nx, config%ny, config%nz))
     allocate(temperature(config%nx, config%ny, config%nz))
@@ -131,21 +138,26 @@ contains
     allocate(external_elements(element_count))
     boundary=0._dp;wall=0._dp;chemical=0._dp
     allocate(forcing(nvar),step_forcing(nvar));forcing=0;step_forcing=0
+    heat_known=.false.
+    if(config%time_integrator=='sdc') then
+      allocate(heat(config%nx,config%ny,config%nz),source=0._dp)
+      heat_known=.true.
+    endif
     if(config%time_integrator=='sdc') allocate(checkpoint_source(nvar),source=0._dp)
     if(config%time_integrator=='sdc'.and.config%chemistry_enabled) then
       allocate(ir(nvar-4,config%nx,config%ny,config%nz));ir=0
     end if
     allocate(initial_l1_integrals(nvar), final_l1_integrals(nvar))
     call initialize_reactive_eb_density_sheet_3d( &
-      species, config, geometry, state, temperature, ok, base_mole_fractions)
+      eos_species, config, geometry, state, temperature, ok, base_mole_fractions)
     if (.not. ok) error stop "Failed to initialize public 3D EB state"
     if(any(config%boundary_faces/='legacy')) then
       allocate(boundary_faces,source=config%boundary_faces)
       if(any(boundary_faces=='isothermal_wall')) allocate(wall_t,source=config%wall_temperature)
-      allocate(inlet(nvar,6),inlet_t(6),primitive(reactive_nprim(size(species))))
+      allocate(inlet(nvar,6),inlet_t(6),primitive(reactive_nprim(size(eos_species))))
       allocate(ghost(nvar,0:config%nx+1,0:config%ny+1,0:config%nz+1), &
         ghost_t(0:config%nx+1,0:config%ny+1,0:config%nz+1))
-      call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1), &
+      call reactive_conserved_to_primitive(eos_species,state(:,1,1,1),temperature(1,1,1), &
         primitive,inlet_temp,inlet_sound,ok)
       if(.not.ok) error stop 'Failed to obtain EB inlet composition'
       seed_mass=primitive(6:)
@@ -156,17 +168,17 @@ contains
         if(config%inflow_composition_count(face)/=0) then
           call resolve_selected_composition('EB inlet',config%inflow_composition_count(face), &
             config%inflow_composition_species(:,face),config%inflow_composition_mole_fractions(:,face), &
-            species,inlet_mole,ok,message)
+            eos_species,inlet_mole,ok,message)
           if(.not.ok) then
             write(*,'(a)') trim(message)
             error stop 'Invalid EB inlet composition'
           end if
-          call mass_fractions_from_mole_fractions(species,inlet_mole,primitive(6:),ok)
+          call mass_fractions_from_mole_fractions(eos_species,inlet_mole,primitive(6:),ok)
           if(.not.ok) error stop 'Invalid EB inlet mass fractions'
         end if
         primitive(1)=config%inflow_density(face);primitive(2:4)=config%inflow_velocity(:,face)
         primitive(5)=config%inflow_pressure(face)
-        call reactive_primitive_to_conserved(species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
+        call reactive_primitive_to_conserved(eos_species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
         if(.not.ok) error stop 'Invalid prescribed EB inlet thermodynamic state'
       end do
     end if
@@ -176,9 +188,9 @@ contains
     initial_element_integrals = 0.0_dp
     if (config%chemistry_enabled.or.present(element_atoms)) then
       if (present(element_atoms)) then
-        call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,initial_element_integrals,ok)
+        call reactive_eb_composition_integrals_3d(eos_species,state,geometry,element_atoms,initial_element_integrals,ok)
       else
-        call reactive_eb_element_integrals_3d(species,state,geometry,initial_element_integrals,ok)
+        call reactive_eb_element_integrals_3d(eos_species,state,geometry,initial_element_integrals,ok)
       end if
       if (.not. ok) error stop "Failed to integrate initial EB elements"
     end if
@@ -195,7 +207,7 @@ contains
     if (len_trim(config%restart_file) > 0) then
       if (selected_context) then
         call read_reactive_eb_3d_checkpoint( &
-          trim(config%restart_file), species, reactions, transport, config, &
+          trim(config%restart_file), eos_species, reactions, transport, config, &
           geometry, state, temperature, time, step, initial_integrals, &
           initial_l1_integrals, initial_element_integrals, minimum_dt, &
           maximum_transport_diffusivity, minimum_transport_theta, ok, &
@@ -203,15 +215,15 @@ contains
           chemistry_integrator=chemistry_integrator, &
           base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms, &
           boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
-          source_change=checkpoint_source,reaction_source=ir)
+          source_change=checkpoint_source,reaction_source=ir,heat_release=heat,heat_available=heat_known)
       else
         call read_reactive_eb_3d_checkpoint( &
-          trim(config%restart_file), species, reactions, transport, config, &
+          trim(config%restart_file), eos_species, reactions, transport, config, &
           geometry, state, temperature, time, step, initial_integrals, &
           initial_l1_integrals, initial_element_integrals, minimum_dt, &
           maximum_transport_diffusivity, minimum_transport_theta, ok, &
           message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
-          source_change=checkpoint_source,reaction_source=ir)
+          source_change=checkpoint_source,reaction_source=ir,heat_release=heat,heat_available=heat_known)
       end if
       if (.not. ok) then
         write(*, '(a)') trim(message)
@@ -230,12 +242,12 @@ contains
         error stop "Maximum step count reached before 3D EB final_time"
       end if
       call compute_reactive_eb_cfl_timestep_3d( &
-        species, state, temperature, geometry, config%cfl, hydro_dt, ok)
+        eos_species, state, temperature, geometry, config%cfl, hydro_dt, ok)
       if (.not. ok) error stop "Failed to compute public 3D EB timestep"
       dt = hydro_dt
       if (config%transport_enabled) then
         call reactive_eb_transport_timestep_3d( &
-          species, transport, state, temperature, geometry, &
+          eos_species, transport, state, temperature, geometry, &
           config%transport_cfl, config%viscosity_enabled, &
           config%thermal_conduction_enabled, &
           config%species_diffusion_enabled, transport_dt, &
@@ -251,7 +263,7 @@ contains
         call fill_reactive_boundary_ghosts_3d(state,temperature,boundary_faces,ghost,ghost_t,ok, &
           viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,ghost_width=1)
         if(.not.ok) error stop 'Failed to prepare EB timestep boundary donors'
-        call reactive_eb_halo_bounds_3d(species,transport,geometry,ghost,ghost_t,config%transport_enabled, &
+        call reactive_eb_halo_bounds_3d(eos_species,transport,geometry,ghost,ghost_t,config%transport_enabled, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           donor_speeds,donor_diffusivity,ok)
         if(.not.ok) error stop 'Failed to compute EB boundary timestep bounds'
@@ -266,7 +278,7 @@ contains
         end if
       end if
       if(allocated(wall_t)) then
-        call reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,geometry, &
+        call reactive_eb_isothermal_timestep_3d(eos_species,transport,state,temperature,geometry, &
           boundary_faces,wall_t,config%transport_cfl,wall_dt,ok)
         if(.not.ok) error stop 'Failed to compute EB isothermal wall timestep'
         dt=min(dt,wall_dt)
@@ -274,7 +286,7 @@ contains
       dt = min(dt, config%final_time - time)
       if(config%time_integrator=='sdc') then
         new_state=state;new_temperature=temperature
-        call advance_reactive_eb_sdc_3d(species,reactions,transport,new_state,new_temperature,geometry, &
+        call advance_reactive_eb_sdc_3d(eos_species,reactions,transport,new_state,new_temperature,geometry, &
           extended_geometry,dt,config%sdc_iterations,config%chemistry_enabled, &
           config%transport_enabled.and.[config%viscosity_enabled,config%thermal_conduction_enabled, &
           config%species_diffusion_enabled,config%barodiffusion_enabled],config%external_forcing, &
@@ -282,10 +294,11 @@ contains
           boundary_faces,step_boundary,step_wall,step_forcing,step_transport_theta,ok,reaction_source=ir, &
           difmag=config%difmag,target_volume_fraction=config%state_redist_target_volume_fraction, &
           inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t,chemistry_change=step_chemical, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction, &
+      state_redist_max_order=config%state_redist_max_order,heat_release=heat)
       else
       call advance_reactive_eb_full_3d( &
-        species, reactions, transport, state, temperature, geometry, &
+        eos_species, reactions, transport, state, temperature, geometry, &
         config%riemann_solver, config%redistribution, dt, &
         config%chemistry_enabled, config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, config%transport_enabled, &
@@ -294,7 +307,8 @@ contains
         new_state, new_temperature, step_transport_theta, ok, &
         config%state_redist_target_volume_fraction, chemistry_integrator, &
         step_boundary,step_wall,step_chemical,difmag=config%difmag,extended_geometry=extended_geometry, &
-        boundary_faces=boundary_faces,inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
+        boundary_faces=boundary_faces,inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t, &
+      state_redist_max_order=config%state_redist_max_order)
       end if
       if (.not. ok) error stop "Public 3D EB update rejected its candidate"
       boundary=boundary+step_boundary
@@ -302,6 +316,7 @@ contains
       chemical=chemical+step_chemical;forcing=forcing+step_forcing
       minimum_transport_theta = min( &
         minimum_transport_theta, step_transport_theta)
+      if(config%time_integrator=='sdc') heat_known=.true.
       state = new_state
       temperature = new_temperature
       time = time + dt
@@ -313,7 +328,7 @@ contains
           call check_inventory()
           if (selected_context) then
             call write_reactive_eb_3d_checkpoint( &
-              trim(config%checkpoint_file), species, reactions, transport, &
+              trim(config%checkpoint_file), eos_species, reactions, transport, &
               config, geometry, state, temperature, time, step, &
               initial_integrals, initial_l1_integrals, &
               initial_element_integrals, minimum_dt, &
@@ -322,16 +337,16 @@ contains
               chemistry_integrator=chemistry_integrator, &
               base_mole_fractions=base_mole_fractions,element_names=element_names,element_atoms=element_atoms, &
           boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
-          source_change=checkpoint_source,reaction_source=ir)
+          source_change=checkpoint_source,reaction_source=ir,heat_release=heat,heat_available=heat_known)
           else
             call write_reactive_eb_3d_checkpoint( &
-              trim(config%checkpoint_file), species, reactions, transport, &
+              trim(config%checkpoint_file), eos_species, reactions, transport, &
               config, geometry, state, temperature, time, step, &
               initial_integrals, initial_l1_integrals, &
               initial_element_integrals, minimum_dt, &
               maximum_transport_diffusivity, minimum_transport_theta, &
               ok, message,boundary_change=boundary,wall_change=wall,chemistry_change=chemical, &
-          source_change=checkpoint_source,reaction_source=ir)
+          source_change=checkpoint_source,reaction_source=ir,heat_release=heat,heat_available=heat_known)
           end if
           if (.not. ok) then
             write(*, '(a)') trim(message)
@@ -361,9 +376,14 @@ contains
         initial_integrals(component),final_integrals(component),boundary(component),wall(component),chemical(component), &
         final_integrals(component)-initial_integrals(component)-boundary(component)-wall(component)-chemical(component)
     end do
+    if(heat_known) then
+      call write_reactive_eb_3d_csv(trim(config%output_file),eos_species,geometry,state,temperature,time,ok,message, &
+        heat_release=heat)
+    else
     call write_reactive_eb_3d_csv( &
-      trim(config%output_file), species, geometry, state, temperature, &
+      trim(config%output_file), eos_species, geometry, state, temperature, &
       time, ok, message)
+    endif
     if (.not. ok) then
       write(*, '(a)') trim(message)
       error stop 3
@@ -463,16 +483,16 @@ contains
       if (.not. ok) error stop "Failed to integrate final 3D EB state"
       element_conservation_error = 0.0_dp
       if (config%chemistry_enabled) then
-        call reactive_eb_element_amounts_3d(species,boundary+wall,external_elements,ok,element_atoms)
+        call reactive_eb_element_amounts_3d(eos_species,boundary+wall,external_elements,ok,element_atoms)
         if (.not.ok) error stop "Failed to project external EB exchanges"
         if (present(element_atoms)) then
-          call reactive_eb_composition_integrals_3d(species,state,geometry,element_atoms,final_element_integrals,ok)
+          call reactive_eb_composition_integrals_3d(eos_species,state,geometry,element_atoms,final_element_integrals,ok)
           if (.not.ok) error stop 'Failed to integrate final EB elements'
           ! Preserve the relative gate and separately account for roundoff of
           ! initially absent elements from species mass closure and summation.
           do e=1,element_count
             element_roundoff(e)=64._dp*epsilon(1._dp)*real(max(1,step),dp)*sum(abs(initial_integrals(6:)))* &
-              maxval(element_atoms(e,:)/species%molecular_weight)
+              maxval(element_atoms(e,:)/eos_species%molecular_weight)
             element_residual=max(0._dp,abs(final_element_integrals(e)-initial_element_integrals(e)-external_elements(e)) &
               -element_roundoff(e))
             element_conservation_error=max(element_conservation_error, &
@@ -480,7 +500,7 @@ contains
           end do
           if (.not.ieee_is_finite(element_conservation_error)) error stop 'Nonfinite elemental conservation error'
         else
-          call reactive_eb_element_integrals_3d(species,state,geometry,final_element_integrals,ok)
+          call reactive_eb_element_integrals_3d(eos_species,state,geometry,final_element_integrals,ok)
           if (.not.ok) error stop 'Failed to integrate final EB elements'
           element_conservation_error=maxval(abs(final_element_integrals-initial_element_integrals-external_elements)/ &
             max(1.e-30_dp,abs(initial_element_integrals)))
@@ -520,7 +540,7 @@ contains
       normal_momentum_change = &
         final_integrals(normal_momentum) - initial_integrals(normal_momentum)
       call reactive_eb_extrema_3d( &
-        species, state, temperature, geometry, minimum_density, &
+        eos_species, state, temperature, geometry, minimum_density, &
         maximum_density, minimum_pressure, maximum_pressure, &
         minimum_temperature, maximum_temperature, maximum_speed, &
         maximum_closure_error, ok)

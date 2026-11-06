@@ -27,7 +27,10 @@ program test_mpi_amr_patch_tree_transport_level_3d
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   character(len=32) :: faces(6),reconstruction
   integer :: rank,nranks,ierr,node,n(3),i,j,k,mode,owners(3),depth
+  real(dp), allocatable :: coefficients(:)
+  character(len=16) :: test_mode
   logical :: ok
+  call get_command_argument(1,test_mode)
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -35,6 +38,10 @@ program test_mpi_amr_patch_tree_transport_level_3d
   call require(ok,'thermo')
   call load_h2o2_elementary_transport(transport,ok)
   call require(ok,'transport')
+  if(test_mode=='constant') then
+    coefficients=[1.e-5_dp,.02_dp,3.e-5_dp,2.e-5_dp]
+    transport%diameter=0
+  endif
   call initialize_amr_patch_3d(4,4,4,1,2,1,2,1,2,2,patches(1),ok)
   call require(ok,'child')
   call initialize_amr_patch_3d(4,4,4,2,2,2,2,2,2,3,patches(2),ok)
@@ -104,13 +111,15 @@ program test_mpi_amr_patch_tree_transport_level_3d
         .true.,.true.,.true.,.true.,oracle_flux,serial_theta,ok,coarse_start,coarse_end, &
         start_fraction(:depth),end_fraction(:depth), &
         inflow_state=inlet,inflow_temperature=inlet_t, &
-        wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter=coarse_limiter)
+        wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter=coarse_limiter, &
+        constant_coefficients=coefficients)
       call require(ok,'serial level RK2')
       call advance_mpi_amr_tree_transport_level_3d(tree,owners,species,transport,local,temperature,depth,spacing,dt,faces, &
         .true.,.true.,.true.,.true.,flux,theta,MPI_COMM_WORLD,ok,start_local,end_local,start_fraction(:depth), &
         end_fraction(:depth), &
         inflow_state=inlet,inflow_temperature=inlet_t, &
-        wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter=coarse_limiter)
+        wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter=coarse_limiter, &
+        constant_coefficients=coefficients)
       call require(ok,'MPI level RK2')
       call require(theta==serial_theta,'exact limiter diagnostic')
       do node=1,3
@@ -129,6 +138,15 @@ program test_mpi_amr_patch_tree_transport_level_3d
         call require(all(flux(node)%z==oracle_flux(node)%z),'exact z integrated flux')
       end do
       saved=local;saved_t=temperature;saved_flux=flux;saved_theta=theta
+      if(allocated(coefficients)) then
+        if(rank==nranks-1) coefficients(3)=2*coefficients(3)
+        call advance_mpi_amr_tree_transport_level_3d(tree,owners,species,transport,local,temperature,depth, &
+          spacing,dt,faces,.true.,.true.,.true.,.true.,flux,theta,MPI_COMM_WORLD,ok, &
+          constant_coefficients=coefficients)
+        call require(.not.ok,'constant idle-rank mismatch rejected')
+        call unchanged()
+        coefficients(3)=3.e-5_dp
+      endif
       bad=transport
       if (rank==owners(depth+1)) bad(1)%diameter=-1
       call advance_mpi_amr_tree_transport_level_3d(tree,owners,species,bad,local,temperature,depth,spacing,dt,faces, &
@@ -144,7 +162,8 @@ program test_mpi_amr_patch_tree_transport_level_3d
         call advance_mpi_amr_tree_transport_level_3d(tree,owners,species,transport,local,temperature,depth,spacing,dt,faces, &
           .true.,.true.,.true.,.true.,flux,theta,MPI_COMM_WORLD,ok,start_local,end_local, &
           start_fraction(:depth),wrong_fraction(:depth),inflow_state=inlet,inflow_temperature=inlet_t, &
-        wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter=coarse_limiter)
+        wall_temperature=wall_t,wall_velocity=wall_v,coarse_limiter=coarse_limiter, &
+          constant_coefficients=coefficients)
         call require(.not.ok,'second-stage endpoint disagreement rejected')
         call unchanged()
       end if

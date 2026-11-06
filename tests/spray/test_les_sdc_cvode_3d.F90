@@ -8,6 +8,7 @@ program test_les_sdc_cvode_3d
   use mixture_thermo_mod, only: mixture_density
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use les_sdc_3d_mod, only: advance_les_sdc_3d
+  use constant_volume_reactor_mod, only: reaction_source_heat_release
   use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
   implicit none
   integer, parameter :: n=4,nv=12
@@ -15,6 +16,7 @@ program test_les_sdc_cvode_3d
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   real(dp) :: initial(nv,n,n,n),it(n,n,n),u(nv,n,n,n),t(n,n,n),native(nv,n,n,n)
+  real(dp) :: heat(n,n,n),expected_heat
   real(dp) :: ir(nv-4,n,n,n),q(nv),sound,h(3),boundary(nv),source(nv),diffusion
   real(dp) :: fx(nv,n+1,n,n),fy(nv,n,n+1,n),fz(nv,n,n,n+1),estimate(nv,n,n,n,3)
   real(dp) :: before(nv),after(nv),residual,delta,maximum
@@ -60,6 +62,15 @@ program test_les_sdc_cvode_3d
     call run_step()
     call require(ok.and.calls==2*n**3,'CVODE visits every cell twice')
     call require(diffusion>0.and.maxval(abs(ir))>0,'active LES and reaction history')
+    call require(maxval(abs(heat))>0,'active accepted-stage heat')
+    do k=1,n
+    do j=1,n
+    do i=1,n
+      call reaction_source_heat_release(species,t(i,j,k),ir(:nv-5,i,j,k),expected_heat,ok)
+      call require(ok.and.heat(i,j,k)==expected_heat,'accepted-temperature chemical heat excludes forcing')
+    enddo
+    enddo
+    enddo
     delta=max(delta,maxval(abs(u-native)/max(1._dp,abs(native))))
     call require(maxval(abs(u-native)/max(1._dp,abs(native)))<2e-7_dp,'early-time native comparison')
     do c=1,nv
@@ -69,12 +80,13 @@ program test_les_sdc_cvode_3d
     maximum=max(maximum,residual)
     call require(residual<3e-12_dp,'Euler inventory including forcing')
     u=initial;t=it;ir=0;estimate=0;calls=0;fail=.true.
-    boundary=42;source=43;diffusion=44;fx=45;fy=46;fz=47
+    boundary=42;source=43;diffusion=44;fx=45;fy=46;fz=47;heat=48
     call run_step()
     call require(.not.ok.and.calls==n**3+1,'second-iteration reactor rejection')
     call require(all(u==initial).and.all(t==it).and.all(ir==0).and.all(estimate==0),'state and history rollback')
     call require(all(boundary==42).and.all(source==43).and.diffusion==44,'inventory rollback')
     call require(all(fx==45).and.all(fy==46).and.all(fz==47),'face flux rollback')
+    call require(all(heat==48),'late reactor heat rollback')
   end do
   print *, 'PASS: four LES closures with CVODE and rollback; native difference, conservation:',delta,maximum
 contains
@@ -83,7 +95,7 @@ contains
       model=trim(models(mode)),transport=transport,reactions=reactions,reaction_source=ir, &
       external_force=[10._dp,-20._dp,30._dp], &
       chemistry_relative_tolerance=1e-10_dp,chemistry_absolute_tolerance=1e-13_dp, &
-      flux_x=fx,flux_y=fy,flux_z=fz,new_source_estimate=estimate,evaluate_reaction=reactor)
+      flux_x=fx,flux_y=fy,flux_z=fz,new_source_estimate=estimate,evaluate_reaction=reactor,heat_release=heat)
   end subroutine
   subroutine reactor(sp,rx,e0,external_y,external_e,duration,rtol,atol,densities,temp,count,good,maximum_steps)
     type(nasa7_species), intent(in) :: sp(:)

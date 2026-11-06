@@ -11,6 +11,7 @@ module spray_mpi_amr_film_mod
   implicit none
   private
   public :: migrate_mpi_amr_wall_films,initialize_mpi_eb_film_levels,refresh_mpi_eb_film_copies
+  public :: initialize_mpi_amr_film_levels,refresh_mpi_amr_film_copies
   type, public :: spray_level_film_population
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: component_mass(:,:),probes(:,:)
@@ -19,6 +20,20 @@ module spray_mpi_amr_film_mod
 contains
   ! Rebuild a level's virtual films and the next level's incoming ghost films.
   ! Selection follows logical physical levels; neither output changes the input.
+  subroutine refresh_mpi_amr_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow,maximum_films, &
+      virtuals,next_ghosts,ok,periodic)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),target_level,grow,maximum_films
+    type(spray_level_film_population), intent(in) :: physical(:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    type(spray_level_film_population), intent(inout) :: virtuals,next_ghosts
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
+    call refresh_mpi_eb_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow,maximum_films, &
+      virtuals=virtuals,next_ghosts=next_ghosts,ok=ok,periodic=periodic)
+  end subroutine refresh_mpi_amr_film_copies
+
   subroutine refresh_mpi_eb_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow,maximum_films, &
       nodal_phi,virtuals,next_ghosts,ok,periodic)
     logical, optional, intent(in) :: periodic(3)
@@ -27,7 +42,8 @@ contains
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),target_level,grow,maximum_films
     type(spray_level_film_population), intent(in) :: physical(:)
-    real(dp), intent(in) :: lower(3),spacing(3),nodal_phi(0:,0:,0:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(spray_level_film_population), intent(inout) :: virtuals,next_ghosts
     logical, intent(out) :: ok
     type(spray_level_film_population) :: coarse_copy,fine_copy
@@ -92,7 +108,8 @@ contains
       maximum_films,valid,nodal_phi,maximum_level=target_level,nodes=coarse_copy%nodes,probes=coarse_copy%probes,periodic=wrap)
     if(.not.valid) return
     upper=lower+spacing*real(tree%nodes(1)%shape,dp)
-    probe_offset=max(1e-8_dp*minval((upper-lower)/real(shape(nodal_phi)-1,dp)), &
+    probe_offset=0
+    if(present(nodal_phi)) probe_offset=max(1e-8_dp*minval((upper-lower)/real(shape(nodal_phi)-1,dp)), &
       128*epsilon(1._dp)*maxval(abs([lower,upper])))
     valid=.true.
     do level=1,levels
@@ -178,6 +195,21 @@ contains
   end subroutine refresh_mpi_eb_film_copies
 
   ! Build physical level populations without modifying the flat input films.
+  subroutine initialize_mpi_amr_film_levels(comm,tree,owners,films,component_mass,lower,spacing,maximum_films, &
+      physical,ok,periodic)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),maximum_films
+    type(spray_wall_film), allocatable, intent(in) :: films(:)
+    real(dp), allocatable, intent(in) :: component_mass(:,:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    type(spray_level_film_population), allocatable, intent(inout) :: physical(:)
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
+    call initialize_mpi_eb_film_levels(comm,tree,owners,films,component_mass,lower,spacing,maximum_films, &
+      physical=physical,ok=ok,periodic=periodic)
+  end subroutine initialize_mpi_amr_film_levels
+
   subroutine initialize_mpi_eb_film_levels(comm,tree,owners,films,component_mass,lower,spacing,maximum_films, &
       nodal_phi,physical,ok,periodic)
     logical, optional, intent(in) :: periodic(3)
@@ -186,7 +218,8 @@ contains
     integer, intent(in) :: owners(:),maximum_films
     type(spray_wall_film), allocatable, intent(in) :: films(:)
     real(dp), allocatable, intent(in) :: component_mass(:,:)
-    real(dp), intent(in) :: lower(3),spacing(3),nodal_phi(0:,0:,0:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     type(spray_level_film_population), allocatable, intent(inout) :: physical(:)
     logical, intent(out) :: ok
     type(spray_wall_film), allocatable :: candidate(:)

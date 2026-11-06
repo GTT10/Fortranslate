@@ -1,5 +1,6 @@
 module mpi_reactive_transport_1d_mod
   use mpi_f08
+  use mpi_reactive_eos_policy_mod, only: agree_mpi_reactive_eos_1d
   use precision_mod, only: dp
   use mpi_domain_1d_mod, only: &
     mpi_domain_1d, exchange_periodic_halo_1d, global_minimum_1d
@@ -40,6 +41,11 @@ contains
     ok = valid_local_shape(domain, species, state, temperature)
     call collective_logical_and(domain, ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if
@@ -92,6 +98,11 @@ contains
       valid_local_shape(domain, species, state, temperature)
     call collective_logical_and(domain, ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if
@@ -175,6 +186,11 @@ contains
       valid_local_shape(domain, species, state, temperature)
     call collective_logical_and(domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if

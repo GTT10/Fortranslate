@@ -4,7 +4,7 @@ module amr_reactive_1d_application_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config, configure_reactive_1d_eos
   use amr_reactive_1d_mod, only: &
     amr_reactive_solution_1d, simulate_amr_reactive_1d, &
     write_amr_reactive_1d_csv
@@ -40,10 +40,13 @@ contains
     real(dp) :: conservation_error(5)
     logical :: ok, multilevel_run, multipatch_run
     integer :: patch
+    type(nasa7_species), allocatable :: eos_species(:)
 
-    if (.not. config%amr_enabled .or. size(species) < 2 .or. &
-        size(reactions) < 1 .or. size(transport) /= size(species) .or. &
-        size(base_mole_fractions) /= size(species)) then
+    call configure_reactive_1d_eos(species, config, eos_species, ok)
+    if (.not. ok) error stop "Invalid AMR reactive 1D EOS policy"
+    if (.not. config%amr_enabled .or. size(eos_species) < 2 .or. &
+        size(reactions) < 1 .or. size(transport) /= size(eos_species) .or. &
+        size(base_mole_fractions) /= size(eos_species)) then
       error stop "AMR reactive 1D application data are incompatible"
     end if
 
@@ -54,30 +57,30 @@ contains
       trim(config%amr_reconstruction) == "characteristic_ppm")
     if (multipatch_run) then
       call simulate_multipatch_reactive_1d( &
-        species, reactions, config, multipatch_solution, initial_integrals, &
+        eos_species, reactions, config, multipatch_solution, initial_integrals, &
         final_integrals, ok, transport, base_mole_fractions, &
         chemistry_integrator=chemistry_integrator)
       if (.not. ok) error stop "Multipatch AMR reactive simulation failed"
       call write_multipatch_reactive_1d_csv( &
-        config%output_file, species, multipatch_solution, ok)
+        config%output_file, eos_species, multipatch_solution, ok)
       if (.not. ok) error stop "Multipatch AMR reactive output failed"
     else if (multilevel_run) then
       call simulate_multilevel_reactive_1d( &
-        species, reactions, config, multilevel_solution, initial_integrals, &
+        eos_species, reactions, config, multilevel_solution, initial_integrals, &
         final_integrals, ok, transport, base_mole_fractions, &
         chemistry_integrator=chemistry_integrator)
       if (.not. ok) error stop "Multilevel AMR reactive simulation failed"
       call write_multilevel_reactive_1d_csv( &
-        config%output_file, species, multilevel_solution, ok)
+        config%output_file, eos_species, multilevel_solution, ok)
       if (.not. ok) error stop "Multilevel AMR reactive output failed"
     else
       call simulate_amr_reactive_1d( &
-        species, reactions, config, solution, initial_integrals, &
+        eos_species, reactions, config, solution, initial_integrals, &
         final_integrals, ok, transport, base_mole_fractions, &
         chemistry_integrator=chemistry_integrator)
       if (.not. ok) error stop "AMR reactive 1D simulation failed"
       call write_amr_reactive_1d_csv( &
-        config%output_file, species, solution, ok)
+        config%output_file, eos_species, solution, ok)
       if (.not. ok) error stop "AMR reactive 1D output failed"
     end if
 
@@ -87,7 +90,7 @@ contains
       "PeleF " // pelef_version // " " // trim(application_label)
     if (len_trim(bundle_sha256) > 0) then
       write(*, '(a,1x,a)') "Bundle SHA-256:", trim(bundle_sha256)
-      write(*, '(a,i0)') "Species: ", size(species)
+      write(*, '(a,i0)') "Species: ", size(eos_species)
       write(*, '(a,i0)') "Reactions: ", size(reactions)
       if (present(chemistry_integrator)) then
         write(*, '(a,1x,a)') "Chemistry integrator:", &

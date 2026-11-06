@@ -677,6 +677,7 @@ if(PELEF_ENABLE_TESTS)
       $<TARGET_FILE:pelef_mpi_reactive_eb_patch_tree_2d>
       $<TARGET_FILE:pelef_mpi_amr_reactive_1d>
       $<TARGET_FILE:pelef_mpi_amr_reactive_3d>
+      $<TARGET_FILE:test_mpi_reactive_eos_policy>
       $<TARGET_FILE:test_mpi_reactive_integrator_policy>
       $<TARGET_FILE:test_mpi_amr_sparse_integrator_policy>
       $<TARGET_FILE:test_mpi_amr_eb_sparse_integrator_policy>

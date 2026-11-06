@@ -10,17 +10,22 @@ module les_mpi_amr_subcycle_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
+  use les_amr_patch_tree_mod, only: convert_amr_les_tree_energy_3d
+  use les_mpi_amr_tree_mod, only: agree_les_frame_3d
   use les_mpi_amr_level_mod, only: advance_mpi_amr_tree_les_level_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   implicit none
   private
   public :: advance_mpi_amr_tree_subcycle_les_3d
 contains
-  subroutine advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,state,temperature,spacing,dt,faces, &
+  recursive subroutine advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,state,temperature,spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,maximum_diffusivity,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure, &
-      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -40,15 +45,47 @@ contains
     integer, optional, intent(in) :: test_ratio,grid_ratio
     logical, optional, intent(in) :: harmonic_mean
     integer(int64), optional, intent(inout) :: level_steps(:)
-    type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint
+    type(amr_tree_state_3d) :: candidate,temps,old_endpoint,new_endpoint,ordinary,ordinary_t
     type(amr_tree_flux_3d), allocatable :: integrated(:)
     integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:),executed(:)
+    integer(int64), allocatable :: rotated_steps(:)
     integer, allocatable :: ratios(:)
     real(dp), allocatable :: starts(:),finishes(:)
     real(dp) :: budget(size(boundary_change)),largest,diffusivity,dt_low,dt_high
     integer :: nvar,node,n(3),rank,status,ios
     logical :: valid
+    real(dp) :: rotated_budget(size(boundary_change)),rotated_max,rotated_diffusivity
     ok=.false.
+    call agree_les_frame_3d(frame,domain_lower,comm,valid)
+    if(.not.valid) return
+    if(present(frame)) then
+      valid=.true.
+      if(present(level_steps)) valid=size(level_steps)==tree%level_count()
+      call agree(comm,valid)
+      if(.not.valid) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,reactive_nvar(size(species)),comm,valid)
+      if(.not.valid) return
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      ordinary=state;ordinary_t=temperature
+      call convert_amr_les_tree_energy_3d(tree,ordinary,spacing,frame,domain_lower,.false.,valid,owners,rank)
+      call agree(comm,valid)
+      if(.not.valid) return
+      allocate(rotated_steps(tree%level_count()))
+      rotated_steps=0
+      call advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,ordinary,ordinary_t,spacing,dt,faces, &
+        cs,prt,sct,rotated_budget,rotated_max,rotated_diffusivity,comm,valid, &
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,rotated_steps,outlet_pressure, &
+        model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      if(.not.valid) return
+      call convert_amr_les_tree_energy_3d(tree,ordinary,spacing,frame,domain_lower,.true.,valid,owners,rank)
+      call agree(comm,valid)
+      if(.not.valid) return
+      state=ordinary;temperature=ordinary_t;boundary_change=rotated_budget
+      maximum_correction=rotated_max;maximum_diffusivity=rotated_diffusivity
+      if(present(level_steps)) level_steps=rotated_steps
+      ok=.true.;return
+    endif
     call layout(tree,owners,species,state,temperature,spacing,origin,domain,ratios,counts,comm,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))

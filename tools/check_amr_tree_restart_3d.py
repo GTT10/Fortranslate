@@ -3,6 +3,8 @@
 import argparse
 from pathlib import Path
 import subprocess
+import re
+from amr_tree_checkpoint_test_support import checkpoint_records
 
 
 def main():
@@ -52,7 +54,8 @@ def main():
             assert (result.returncode == 0) == success, log
             return log
 
-        run('continuous', config)
+        continuous_log = run('continuous', config)
+        continuous_steps = re.search(r'Steps: (\d+)', continuous_log).group(1)
         baseline = [p.read_bytes() for p in outputs]
         for interval in ([1] if args.subcycling or args.pressure_outlet or args.mach_inlet else [1, 2, 3]):
             controls = (f"\n&amr_tree_checkpoint checkpoint_file='tree.chk', checkpoint_interval_steps={interval},"
@@ -62,7 +65,7 @@ def main():
             assert [p.read_bytes() for p in outputs] == baseline
             restart = "\n&amr_tree_checkpoint restart_file='tree.chk' /\n"
             log = run(f'restart{interval}', config + restart)
-            assert 'Regrids: 3' in log and 'Steps: 3' in log, log
+            assert 'Regrids: 3' in log and f'Steps: {continuous_steps} ' in log, log
             assert [p.read_bytes() for p in outputs] == baseline
         saved = (directory / 'tree.chk').read_bytes()
         if args.pressure_outlet:
@@ -86,20 +89,18 @@ def main():
         run('truncated', config + restart, False)
         (directory / 'tree.chk').write_bytes(saved)
         # Locate the scalar metadata after the exact byte-counted context and geometry header.
-        first, length, rest = saved.split(b'\n', 2)
-        context_size = int(length)
-        context, records = rest[:context_size], rest[context_size:].splitlines(keepends=True)
+        prefix, records, ledger_index, _ = checkpoint_records(saved)
         original_metadata = records[1]
         fields = original_metadata.split()
         fields[-1] = b'0'  # final-time topology cannot have zero consumed schedule events
         records[1] = b' '.join(fields) + b'\n'
-        (directory / 'tree.chk').write_bytes(first + b'\n' + length + b'\n' + context + b''.join(records))
+        (directory / 'tree.chk').write_bytes(prefix + b''.join(records))
         run('wrong_schedule_position', config + restart, False)
         records[1] = original_metadata
-        ledger = records[2].split()
+        ledger = records[ledger_index].split()
         ledger[len(ledger) // 2] = b'1.0'  # finite but inconsistent mass boundary ledger
-        records[2] = b' '.join(ledger) + b'\n'
-        (directory / 'tree.chk').write_bytes(first + b'\n' + length + b'\n' + context + b''.join(records))
+        records[ledger_index] = b' '.join(ledger) + b'\n'
+        (directory / 'tree.chk').write_bytes(prefix + b''.join(records))
         run('wrong_ledger', config + restart, False)
         (directory / 'tree.chk').write_bytes(saved)
         run('alias', config + "\n&amr_tree_checkpoint checkpoint_file='./tree_hotspot.csv', "

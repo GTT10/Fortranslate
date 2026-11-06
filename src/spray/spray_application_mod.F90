@@ -3,7 +3,7 @@ module spray_application_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use constants_mod, only: pelef_version,mechanism_species_capacity
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy,nasa7_eos_policy_identity
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species, compatible_transport_database
   use mixture_thermo_mod, only: mass_fractions_from_mole_fractions, mixture_specific_gas_constant
@@ -18,8 +18,10 @@ module spray_application_mod
   use spray_parcel_mod
   use spray_coupling_3d_mod, only: spray_system_totals, mixture_system_totals, valid_spray_boundary_faces
   use les_filter_3d_mod, only: les_filter_weights
-  use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available
+  use spray_reactive_3d_mod, only: advance_spray_reactive_3d, spray_cvode_available,advance_spray_reactive_sdc_3d
   use spray_checkpoint_mod, only: write_spray_checkpoint, read_spray_checkpoint
+  use reactive_3d_application_mod, only: read_constant_transport
+  use gas_transport_mod, only: set_constant_transport_coefficients
   implicit none
   private
   public :: run_spray_application
@@ -27,6 +29,9 @@ contains
   subroutine run_spray_application(input_path,species,reactions,transport,mechanism_id)
     character(len=*), intent(in) :: input_path,mechanism_id
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: pinned_eos_extrapolation
+    real(dp) :: pinned_eos_temperature_min,pinned_eos_temperature_max
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     integer :: mixture_count
@@ -34,6 +39,12 @@ contains
     real(dp) :: mixture_fractions(16),mixture_densities(16),mixture_cps(16),mixture_reference_temperatures(16)
     real(dp) :: mixture_reference_pressures(16),mixture_latent_heats(16),port_mixture_fractions(16,16)
     character(len=16) :: mixture_density_models(16),mixture_cp_models(16)
+    character(len=16) :: mixture_conductivity_models(16)='supplied'
+    character(len=24) :: mixture_viscosity_models(16)='supplied'
+    real(dp) :: mixture_conductivities(16)=0,mixture_conductivity_coefficients(4,16)=0
+    real(dp) :: mixture_viscosities(16)=0,mixture_viscosity_coefficients(4,16)=0
+    real(dp) :: mixture_conductivity_temperature_ranges(2,16)=0
+    real(dp) :: mixture_viscosity_temperature_ranges(2,16)=0
     character(len=16) :: mixture_vapor_pressure_models(16),mixture_boiling_models(16)
     real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
     real(dp) :: mixture_cp_coefficients(4,16),mixture_cp_temperature_ranges(2,16)
@@ -108,7 +119,7 @@ contains
     type(spray_nozzle_model), allocatable :: port_nozzle_models(:)
     logical :: port_nozzle_overrides
     logical :: khrt_children
-    real(dp) :: khrt_parcel_factor
+    real(dp) :: khrt_parcel_factor,etab_parcel_factor
     real(dp) :: khrt_reference_diameter_cubed
     logical :: velocity_from_rate
     real(dp) :: discharge_coefficient,port_discharge_coefficients(16),event_speed
@@ -128,15 +139,28 @@ contains
     real(dp) :: les_ci
     logical :: les_harmonic_mean
     real(dp), allocatable :: les_weights(:)
+    real(dp) :: initial_timestep_factor,maximum_timestep_growth,previous_timestep,initial_dt,fixed_dt
     real(dp) :: final_time,maximum_dt,cfl,rtol,atol,smagorinsky_constant,turbulent_prandtl,turbulent_schmidt
+    type(spray_liquid), allocatable :: sdc_components(:)
+    real(dp), allocatable :: sdc_masses(:,:),sdc_film_masses(:,:)
+    real(dp) :: sdc_wall(5),sdc_particle_force(5)
+    real(dp), allocatable :: sdc_gas_source(:),sdc_exchange(:),sdc_outside(:)
+    logical :: stage_integrator,mol_lax_friedrichs
+    character(len=16) :: time_integrator
+    integer :: sdc_iterations
+    real(dp) :: maximum_injection_speed,particle_dt
     real(dp) :: max_fractional_change,particle_cfl,minimum_diameter,time,dt,cfl_dt,next_event,tolerance,amount
     real(dp) :: spacing(3),sound,local_temperature,gas_constant,totals5(5),volume
     real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),x(:),y(:),primitive(:)
+    real(dp), allocatable :: sdc_reaction_source(:,:,:,:),sdc_heat_release(:,:,:)
+    logical :: heat_known
     real(dp), allocatable :: reference_totals(:),injected_totals(:),totals(:),expected_initial(:)
     type(spray_parcel), allocatable :: parcels(:),new_parcels(:)
     type(spray_liquid) :: liquid
     type(spray_options) :: options
+    character(len=16) :: mixture_time_scheme
     character(len=24) :: drag_model
+    logical :: fixed_parts
     logical :: chemistry_enabled,transport_enabled,drag_enabled,heat_enabled,evaporation_enabled,abramzon_sirignano
     real(dp), allocatable :: boundary_totals(:),boundary_step(:)
     character(len=8) :: breakup_model
@@ -165,19 +189,30 @@ contains
     character(len=24) :: mole_names(mechanism_species_capacity),vapor_name,chemistry_method,hydro_reconstruction,riemann_solver
     character(len=1024) :: output_prefix,checkpoint_file,restart_file,message
     real(dp) :: difmag
+    type(gas_transport_species), allocatable :: property_transport(:)
+    real(dp), allocatable :: constant_coefficients(:),hit_transport_parameters(:)
+    character(len=256) :: constant_line
     character(len=16384) :: context
     character(len=1050), allocatable :: paths(:)
-    integer(int64) :: first_id
-    namelist /spray/ port_mixture_fractions,mixture_count,mixture_vapor_names,mixture_fractions,mixture_densities,mixture_cps, &
+    integer(int64) :: first_id,sdc_start_id
+    integer(int64), allocatable :: sdc_last_id,sdc_created_total
+    namelist /spray/ pinned_eos_extrapolation, &
+      pinned_eos_temperature_min,pinned_eos_temperature_max, &
+      port_mixture_fractions,mixture_count,mixture_vapor_names,mixture_fractions,mixture_densities,mixture_cps, &
       mixture_reference_temperatures,mixture_reference_pressures,mixture_latent_heats, &
       mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
-      mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
+      mixture_cp_models, &
+      mixture_viscosity_models,mixture_viscosities,mixture_viscosity_coefficients, &
+      mixture_viscosity_temperature_ranges, &
+      mixture_conductivity_models,mixture_conductivities,mixture_conductivity_coefficients, &
+      mixture_conductivity_temperature_ranges,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
       mixture_boiling_models,mixture_molecular_weights, &
       mixture_normal_boiling_temperatures, &
       mixture_critical_temperatures, &
       cells,domain_length,boundary_faces,wall_temperature,wall_velocity,acceleration,outlet_pressure,inflow_mach, &
       breakup_model,surface_tension,liquid_viscosity,khrt_children,khrt_reference_diameter_cubed,khrt_parcel_factor, &
+      etab_parcel_factor,fixed_parts,mixture_time_scheme, &
       liquid_viscosity_model,liquid_viscosity_coefficients,liquid_viscosity_temperature_range, &
       maximum_multiplicity,maximum_parcels,khrt_b0,khrt_b1,khrt_c3, &
       inflow_temperature,inflow_pressure,inflow_velocity,inflow_composition_count, &
@@ -215,11 +250,16 @@ contains
       injection_profile_points,injection_profile_times,injection_profile_rates, &
       port_profile_points,port_profile_times,port_profile_rates, &
       mass_flow_rate,injection_start,injection_end,injection_interval,final_time,maximum_dt,cfl,maximum_steps, &
-      chemistry_enabled,transport_enabled,chemistry_method,rtol,atol,drag_model,drag_enabled,heat_enabled,evaporation_enabled, &
+      initial_timestep_factor,maximum_timestep_growth,initial_dt,fixed_dt, &
+      chemistry_enabled,transport_enabled,chemistry_method,time_integrator,sdc_iterations,mol_lax_friedrichs,rtol,atol,drag_model, &
+      drag_enabled,heat_enabled,evaporation_enabled, &
       abramzon_sirignano,max_fractional_change,particle_cfl,minimum_diameter,maximum_substeps,smagorinsky_constant,les_model, &
       les_test_filter,les_test_ratio,les_grid_ratio,les_harmonic_mean,les_ci, &
       turbulent_prandtl,turbulent_schmidt,output_prefix,checkpoint_file,restart_file,stop_after_steps
 
+    allocate(eos_species,source=species)
+    pinned_eos_extrapolation=.false.;pinned_eos_temperature_min=0;pinned_eos_temperature_max=0
+    property_transport=transport
     wall_conductivity_model='constant';wall_conductivity_coefficients=0;wall_conductivity_temperature_range=0
     port_wall_conductivities=-1;port_wall_conductivity_models=''
     port_wall_conductivity_coefficients=0;port_wall_conductivity_temperature_ranges=0
@@ -261,6 +301,10 @@ contains
     port_profile_points=0;port_profile_times=0;port_profile_rates=0
     injection_profile_points=0;injection_profile_times=0;injection_profile_rates=0
     mixture_density_models='constant';mixture_cp_models='constant'
+    mixture_conductivity_models='supplied';mixture_conductivities=0
+    mixture_viscosity_models='supplied';mixture_viscosities=0
+    mixture_conductivity_coefficients=0;mixture_conductivity_temperature_ranges=0
+    mixture_viscosity_coefficients=0;mixture_viscosity_temperature_ranges=0
     mixture_vapor_pressure_models='clausius';mixture_boiling_models='reject'
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
@@ -270,7 +314,7 @@ contains
     port_mixture_fractions=0
     mixture_count=0;mixture_vapor_names='';mixture_fractions=0;mixture_densities=0;mixture_cps=0
     mixture_reference_temperatures=0;mixture_reference_pressures=101325;mixture_latent_heats=0
-    khrt_children=.false.;khrt_reference_diameter_cubed=0;khrt_parcel_factor=-1
+    khrt_children=.false.;khrt_reference_diameter_cubed=0;khrt_parcel_factor=-1;etab_parcel_factor=-1
     velocity_from_rate=.false.;discharge_coefficient=1;port_discharge_coefficients=-1
     nozzle_profile='legacy';swirl_angle=0;hollow_spread=0
     port_nozzle_profiles='';port_swirl_angles=-999;port_hollow_spreads=-1
@@ -286,11 +330,14 @@ contains
     injection_port_count=0;injection_port_centers=0;injection_port_axes=0;injection_port_fractions=0
     injection_center=0.0015_dp; injection_axis=[0.0_dp,0.0_dp,1.0_dp]; injection_speed=10.0_dp; cone_angle=0.1_dp
     mass_flow_rate=0.0_dp; injection_start=0.0_dp; injection_end=1.0e-5_dp; injection_interval=1.0e-6_dp
+    initial_timestep_factor=1;maximum_timestep_growth=1.1_dp;previous_timestep=0;initial_dt=0;fixed_dt=0
     final_time=1.0e-5_dp; maximum_dt=1.0e-7_dp; cfl=0.3_dp; maximum_steps=100000; stop_after_steps=0
+    time_integrator='split';sdc_iterations=2;mol_lax_friedrichs=.false.
     chemistry_enabled=.true.; transport_enabled=.true.; chemistry_method='implicit'; rtol=1.0e-7_dp; atol=1.0e-12_dp
     drag_model="schiller-naumann"
+    fixed_parts=.false.;mixture_time_scheme="conservative"
     drag_enabled=.true.; heat_enabled=.true.; evaporation_enabled=.true.; abramzon_sirignano=.true.
-    max_fractional_change=0.05_dp; particle_cfl=0.25_dp; minimum_diameter=1.0e-9_dp; maximum_substeps=100000
+    max_fractional_change=0.05_dp; particle_cfl=0.5_dp; minimum_diameter=1.0e-9_dp; maximum_substeps=100000
     les_ci=0
     les_model='smagorinsky';les_test_filter='box';les_test_ratio=2;les_grid_ratio=1;les_harmonic_mean=.false.
     smagorinsky_constant=0.0_dp; turbulent_prandtl=0.7_dp; turbulent_schmidt=0.7_dp
@@ -299,12 +346,24 @@ contains
     if (ios/=0) call fail('Cannot open spray input')
     read(unit,nml=spray,iostat=ios,iomsg=message)
     if (ios/=0) call fail('Invalid spray namelist: '//trim(message))
+    call configure_nasa7_eos_policy(eos_species,pinned_eos_extrapolation,ok, &
+      pinned_eos_temperature_min,pinned_eos_temperature_max)
+    if(.not.ok) call fail('Invalid spray EOS policy')
+    call read_constant_transport(input_path,constant_coefficients,hit_transport_parameters)
+    if(allocated(constant_coefficients)) then
+      call set_constant_transport_coefficients(property_transport,constant_coefficients,ok)
+      if(.not.ok) call fail('Invalid particle constant transport controls')
+    endif
+    if(allocated(hit_transport_parameters)) call fail('HIT transport requires initialized regular HIT scales')
+    if(allocated(constant_coefficients).and..not.transport_enabled) &
+      call fail('Constant gas transport requires enabled transport')
     if(chemistry_enabled.and.size(reactions)==0) call fail('Nonreacting spray mechanism requires chemistry disabled')
     profile_file='';profile_files=''
     rewind(unit)
     read(unit,nml=spray_rate_files,iostat=ios)
     if(ios>0) call fail('Invalid spray_rate_files namelist')
     close(unit)
+    stage_integrator=time_integrator=='sdc'.or.time_integrator=='mol'
     if(injection_port_count<0.or.injection_port_count>16) call fail('Invalid injection port count')
     if(any(profile_files(injection_port_count+1:)/='')) call fail('Unused rate files')
     if(len_trim(profile_file)>0) then
@@ -366,9 +425,9 @@ contains
       if (.not.ieee_is_finite(wall_temperature(face))) call fail('Invalid wall temperature')
       if (wall_temperature(face)<=0) call fail('Invalid wall temperature')
     end do
-    nvar=reactive_nvar(size(species))
+    nvar=reactive_nvar(size(eos_species))
     if (nvar<7) call fail('Spray requires 2--128 gas species')
-    if (.not. compatible_transport_database(species,transport)) call fail('Incompatible gas transport database')
+    if (.not. compatible_transport_database(eos_species,property_transport)) call fail('Incompatible gas transport database')
     if (trim(hydro_reconstruction)/='pcm' .and. trim(hydro_reconstruction)/='characteristic_plm' .and. &
         trim(hydro_reconstruction)/='characteristic_ppm') &
       call fail('Invalid hydro reconstruction')
@@ -391,6 +450,12 @@ contains
     if (gas_temperature<1.0_dp .or. gas_temperature>1.0e5_dp .or. gas_pressure<1.0_dp .or. &
         gas_pressure>1.0e10_dp .or. maxval(abs(gas_velocity))>1.0e5_dp .or. &
         abs(shear_velocity)>1.0e5_dp) call fail('Invalid gas state')
+    if(.not.all(ieee_is_finite([initial_timestep_factor,maximum_timestep_growth]))) &
+      call fail('Invalid automatic timestep controls')
+    if(initial_timestep_factor<=0.or.initial_timestep_factor>1.or.maximum_timestep_growth<1) &
+      call fail('Invalid automatic timestep controls')
+    if(.not.all(ieee_is_finite([initial_dt,fixed_dt]))) call fail('Nonfinite prescribed timestep')
+    if(fixed_dt>maximum_dt) call fail('Fixed timestep exceeds maximum timestep')
     if (maximum_dt<1.0e-15_dp .or. maximum_dt>1.0_dp .or. final_time<=0.0_dp .or. &
         final_time>1000.0_dp .or. cfl<=0.0_dp .or. cfl>0.5_dp .or. maximum_steps<1 .or. &
         maximum_steps>10000000 .or. stop_after_steps<0) call fail('Invalid time controls')
@@ -578,7 +643,7 @@ contains
           any(port_injection_intervals/=0)) call fail('Port schedules require independent mode')
     end if
     parcels_per_event=parcel_count*max(1,injection_port_count)
-    if (mixture_count<0.or.mixture_count>min(16,size(species))) call fail('Invalid mixture component count')
+    if (mixture_count<0.or.mixture_count>min(16,size(eos_species))) call fail('Invalid mixture component count')
     if (any(mixture_vapor_names(mixture_count+1:)/='').or.any(mixture_fractions(mixture_count+1:)/=0).or. &
         any(mixture_densities(mixture_count+1:)/=0).or.any(mixture_cps(mixture_count+1:)/=0).or. &
         any(mixture_reference_temperatures(mixture_count+1:)/=0).or. &
@@ -586,6 +651,14 @@ contains
       call fail('Unused mixture component entries')
     if (any(mixture_density_models(mixture_count+1:)/='constant')) call fail('Unused mixture property entries')
     if (any(mixture_cp_models(mixture_count+1:)/='constant')) call fail('Unused mixture property entries')
+    if(any(mixture_conductivity_models(mixture_count+1:)/='supplied')) call fail('Unused mixture conductivity entries')
+    if(any(mixture_viscosity_models(mixture_count+1:)/='supplied')) call fail('Unused mixture viscosity entries')
+    if(any(mixture_conductivities(mixture_count+1:)/=0)) call fail('Unused mixture conductivity entries')
+    if(any(mixture_viscosities(mixture_count+1:)/=0)) call fail('Unused mixture viscosity entries')
+    if(any(mixture_conductivity_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture conductivity entries')
+    if(any(mixture_viscosity_coefficients(:,mixture_count+1:)/=0)) call fail('Unused mixture viscosity entries')
+    if(any(mixture_conductivity_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture conductivity entries')
+    if(any(mixture_viscosity_temperature_ranges(:,mixture_count+1:)/=0)) call fail('Unused mixture viscosity entries')
     if (any(mixture_vapor_pressure_models(mixture_count+1:)/='clausius')) call fail('Unused mixture property entries')
     if (any(mixture_boiling_models(mixture_count+1:)/='reject')) call fail('Unused mixture property entries')
     if (any(mixture_critical_temperatures(mixture_count+1:)/=0)) call fail('Unused mixture property entries')
@@ -610,7 +683,7 @@ contains
           vapor_pressure_model/='clausius') call fail('Use component property models in mixture mode')
       allocate(mixture_components(mixture_count))
       do i=1,mixture_count
-        call initialize_spray_liquid(species,trim(mixture_vapor_names(i)),mixture_densities(i),mixture_cps(i), &
+        call initialize_spray_liquid(eos_species,trim(mixture_vapor_names(i)),mixture_densities(i),mixture_cps(i), &
           mixture_reference_temperatures(i),mixture_reference_pressures(i),mixture_latent_heats(i),mixture_components(i),ok, &
           mixture_vapor_pressure_models(i),mixture_antoine_coefficients(:,i),mixture_antoine_temperature_ranges(:,i))
         if (.not.ok) call fail('Invalid mixture component properties')
@@ -620,6 +693,14 @@ contains
         mixture_components(i)%heat_capacity_model=mixture_cp_models(i)
         mixture_components(i)%heat_capacity_coefficients=mixture_cp_coefficients(:,i)
         mixture_components(i)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,i)
+        mixture_components(i)%conductivity_model=mixture_conductivity_models(i)
+        mixture_components(i)%viscosity_model=mixture_viscosity_models(i)
+        mixture_components(i)%conductivity=mixture_conductivities(i)
+        mixture_components(i)%viscosity=mixture_viscosities(i)
+        mixture_components(i)%conductivity_coefficients=mixture_conductivity_coefficients(:,i)
+        mixture_components(i)%viscosity_coefficients=mixture_viscosity_coefficients(:,i)
+        mixture_components(i)%conductivity_temperature_range=mixture_conductivity_temperature_ranges(:,i)
+        mixture_components(i)%viscosity_temperature_range=mixture_viscosity_temperature_ranges(:,i)
         mixture_components(i)%boiling_model=mixture_boiling_models(i)
         mixture_components(i)%critical_temperature=mixture_critical_temperatures(i)
         mixture_components(i)%normal_boiling_temperature=mixture_normal_boiling_temperatures(i)
@@ -628,7 +709,7 @@ contains
       end do
       liquid=mixture_injection_liquid(drop_temperature)
     else
-    call initialize_spray_liquid(species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
+    call initialize_spray_liquid(eos_species,trim(vapor_name),liquid_density,liquid_cp,reference_temperature, &
       reference_pressure,latent_heat,liquid,ok,vapor_pressure_model,antoine_coefficients,antoine_temperature_range)
     if (.not. ok) call fail('Invalid liquid/vapor thermodynamics')
     end if
@@ -710,7 +791,7 @@ contains
         if (port_reference_temperatures(port)==-1) port_reference_temperatures(port)=reference_temperature
         if (port_reference_pressures(port)==-1) port_reference_pressures(port)=reference_pressure
         if (port_latent_heats(port)==-1) port_latent_heats(port)=latent_heat
-        call initialize_spray_liquid(species,trim(port_vapor_names(port)),port_liquid_densities(port), &
+        call initialize_spray_liquid(eos_species,trim(port_vapor_names(port)),port_liquid_densities(port), &
           port_liquid_cps(port),port_reference_temperatures(port),port_reference_pressures(port), &
           port_latent_heats(port),materials(port),ok,port_vapor_pressure_models(port), &
           port_antoine_coefficients(:,port),port_antoine_temperature_ranges(:,port))
@@ -730,6 +811,7 @@ contains
     end if
     options%maximum_multiplicity=maximum_multiplicity;options%maximum_parcels=maximum_parcels
     options%khrt_parcel_factor=khrt_parcel_factor
+    options%etab_parcel_factor=etab_parcel_factor
     options%khrt_children=khrt_children;options%khrt_reference_diameter_cubed=khrt_reference_diameter_cubed
     split_enabled=maximum_multiplicity>0.or.khrt_children
     lineage_enabled=split_enabled.or.impact_enabled
@@ -741,9 +823,20 @@ contains
     options%liquid_viscosity_temperature_range=liquid_viscosity_temperature_range
     options%liquid_viscosity=liquid_viscosity; breakup_enabled=trim(breakup_model)/="none"
     options%drag_model=drag_model
+    options%mixture_time_scheme=mixture_time_scheme
+    if(mixture_count==0.and.mixture_time_scheme/="conservative".and..not.stage_integrator) &
+      call fail("Mixture time scheme requires mixture_count or particle SDC")
+    options%fixed_parts=fixed_parts
     options%drag=drag_enabled; options%heat=heat_enabled; options%evaporation=evaporation_enabled
     options%abramzon_sirignano=abramzon_sirignano; options%max_fractional_change=max_fractional_change
     options%particle_cfl=particle_cfl; options%minimum_diameter=minimum_diameter; options%maximum_substeps=maximum_substeps
+    if(mixture_count>0) then
+      if(all(mixture_components%viscosity_model/='supplied')) then
+        call apply_mixture_breakup_viscosity(mixture_components,mixture_fractions(:mixture_count), &
+          drop_temperature,options,ok,gas_pressure,eos_species(mixture_components%vapor_index)%molecular_weight)
+        if(.not.ok) call fail('Invalid component viscosity at injection')
+      end if
+    end if
     if (.not. valid_spray_options(options)) call fail('Invalid parcel integration controls')
     if (port_breakup_properties) then
       allocate(breakup_options(injection_port_count))
@@ -788,7 +881,7 @@ contains
     call inject_ports(1.0e-12_dp,1,1_int64,new_parcels,ok)
     if (.not. ok) call fail('Invalid parcel injection geometry or material state')
     deallocate(new_parcels)
-    allocate(x(size(species)),y(size(species)),primitive(reactive_nprim(size(species))))
+    allocate(x(size(eos_species)),y(size(eos_species)),primitive(reactive_nprim(size(eos_species))))
     x=0.0_dp
     if (any(mole_amounts<0.0_dp) .or. maxval(mole_amounts)>1.0e10_dp) call fail('Invalid gas mole amounts')
     do i=1,size(mole_names)
@@ -797,8 +890,8 @@ contains
         cycle
       end if
       s=0
-      do j=1,size(species)
-        if (trim(species(j)%name)==trim(mole_names(i))) s=j
+      do j=1,size(eos_species)
+        if (trim(eos_species(j)%name)==trim(mole_names(i))) s=j
       end do
       if (s==0) call fail('Unknown gas species: '//trim(mole_names(i)))
       if (count(mole_names==mole_names(i))/=1) call fail('Duplicate input species name')
@@ -806,14 +899,20 @@ contains
     end do
     if (sum(x)<=0.0_dp) call fail('Gas mole amounts sum to zero')
     x=x/sum(x)
-    call mass_fractions_from_mole_fractions(species,x,y,ok)
+    call mass_fractions_from_mole_fractions(eos_species,x,y,ok)
     if (.not. ok) call fail('Invalid gas composition')
-    gas_constant=mixture_specific_gas_constant(species,y,ok)
+    gas_constant=mixture_specific_gas_constant(eos_species,y,ok)
     if (.not. ok) call fail('Invalid gas molecular weight')
     spacing=domain_length/real(cells,dp); volume=product(spacing)
     allocate(state(nvar,cells(1),cells(2),cells(3)),temperature(cells(1),cells(2),cells(3)))
+    heat_known=.false.
+    if(stage_integrator) then
+      allocate(sdc_heat_release(cells(1),cells(2),cells(3)),source=0._dp)
+      heat_known=.true.
+      if(chemistry_enabled) allocate(sdc_reaction_source(nvar-4,cells(1),cells(2),cells(3)),source=0._dp)
+    endif
     allocate(reference_totals(nvar),injected_totals(nvar),totals(nvar))
-    if (any(acceleration/=0)) then
+    if (any(acceleration/=0).or.fixed_parts) then
       allocate(source_totals(nvar),source_step(nvar));source_totals=0;source_step=0
     end if
     allocate(boundary_totals(nvar),boundary_step(nvar)); boundary_totals=0; boundary_step=0
@@ -823,13 +922,13 @@ contains
       do j=1,cells(2)
         primitive(2)=gas_velocity(1)+shear_velocity*sin(2.0_dp*acos(-1.0_dp)*(real(j,dp)-0.5_dp)/real(cells(2),dp))
         do i=1,cells(1)
-          call reactive_primitive_to_conserved(species,primitive,state(:,i,j,k),local_temperature,sound,ok)
+          call reactive_primitive_to_conserved(eos_species,primitive,state(:,i,j,k),local_temperature,sound,ok)
           if (.not. ok) call fail('Initial gas state is outside the mechanism thermodynamic range')
           temperature(i,j,k)=local_temperature
         end do
       end do
     end do
-    allocate(inflow_state(nvar,6),inlet_x(size(species)),inlet_y(size(species)),inlet_cube(nvar,2,2,2))
+    allocate(inflow_state(nvar,6),inlet_x(size(eos_species)),inlet_y(size(eos_species)),inlet_cube(nvar,2,2,2))
     inflow_state=0;inflow_t=inflow_temperature;inlet_dt=huge(1.0_dp);inlet_x=x
     mach_pressure=merge(inflow_pressure,0._dp,inflow_mach>=0)
     if (any(inflow_mach>=0)) then
@@ -839,12 +938,12 @@ contains
     if (any(boundary_faces=='inflow')) then
       if (inflow_composition_count/=0) then
         call resolve_selected_composition('Spray inflow',inflow_composition_count,inflow_composition_species, &
-          inflow_composition_mole_fractions,species,inlet_x,ok,message)
+          inflow_composition_mole_fractions,eos_species,inlet_x,ok,message)
         if (.not.ok) call fail(trim(message))
       end if
-      call mass_fractions_from_mole_fractions(species,inlet_x,inlet_y,ok)
+      call mass_fractions_from_mole_fractions(eos_species,inlet_x,inlet_y,ok)
       if (.not.ok) call fail('Invalid inlet composition')
-      gas_constant=mixture_specific_gas_constant(species,inlet_y,ok)
+      gas_constant=mixture_specific_gas_constant(eos_species,inlet_y,ok)
       if (.not.ok) call fail('Invalid inlet gas constant')
       do face=1,6
         if (boundary_faces(face)/='inflow') cycle
@@ -861,7 +960,7 @@ contains
         primitive=0
         primitive(1)=inflow_pressure(face)/(gas_constant*inflow_temperature(face))
         primitive(2:4)=inflow_velocity(:,face);primitive(5)=inflow_pressure(face);primitive(6:)=inlet_y
-        call reactive_primitive_to_conserved(species,primitive,inflow_state(:,face),inflow_t(face),sound,ok)
+        call reactive_primitive_to_conserved(eos_species,primitive,inflow_state(:,face),inflow_t(face),sound,ok)
         if (.not.ok) call fail('Invalid inlet thermodynamics')
         inlet_dt=min(inlet_dt,cfl/sum((abs(primitive(2:4))+sound)/spacing))
         if (transport_enabled) then
@@ -873,8 +972,9 @@ contains
             end do
           end do
           inlet_temperature=inflow_t(face)
-          call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2, &
-            spacing(1),spacing(2),spacing(3),.2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok)
+          call reactive_transport_timestep_3d(eos_species,property_transport,inlet_cube,inlet_temperature,2,2,2, &
+            spacing(1),spacing(2),spacing(3),.2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok, &
+            constant_coefficients=constant_coefficients)
           if (.not.ok) call fail('Invalid inlet transport timestep')
           inlet_dt=min(inlet_dt,face_dt)
         end if
@@ -891,15 +991,54 @@ contains
         component_mass(:,i)=parcels(i)%mass*injection_composition(parcels(i)%material_id)
       end do
     end if
+    if(time_integrator/='split'.and.time_integrator/='sdc'.and.time_integrator/='mol') call fail('Invalid spray time integrator')
+    if(mol_lax_friedrichs.and.time_integrator/='mol') call fail('MOL LF requires MOL integration')
+    if(sdc_iterations<1.or.sdc_iterations>100) call fail('Invalid spray SDC iterations')
+    if(stage_integrator) then
+      if(time_integrator=='mol') then
+        if(hydro_reconstruction/='characteristic_plm'.or.riemann_solver/='pelec') &
+          call fail('Serial particle MOL requires characteristic_plm and pelec hydro')
+      else
+        if(hydro_reconstruction/='characteristic_ppm'.or.riemann_solver/='pelec') &
+          call fail('Serial particle SDC requires characteristic_ppm and pelec hydro')
+      endif
+      if(chemistry_method=='explicit') call fail('Serial particle SDC requires an implicit forced reactor')
+      allocate(sdc_gas_source(size(state,1)),sdc_exchange(size(state,1)),sdc_outside(size(state,1)))
+      allocate(sdc_last_id,sdc_created_total)
+      sdc_last_id=0;sdc_created_total=0
+      if(size(parcels)>0) sdc_last_id=maxval(parcels%id)
+      if(mixture_count>0) then
+        sdc_components=mixture_components
+      else if(multi_material) then
+        sdc_components=materials
+      else
+        sdc_components=[liquid]
+      endif
+    endif
     call current_totals(reference_totals)
     expected_initial=reference_totals
     ! The checkpoint contract includes every physical, injection and step-control
     ! input. Paths, requested stop time/count and output scheduling are not physics.
     write(context,'(a,1x,a,1x,*(i0,1x))',iostat=ios) &
-      'spray-v4-heat-iteration/'//pelef_version,trim(mechanism_id),cells,parcel_count,maximum_substeps
+      'spray-v9-gas-only-skin/'//pelef_version,trim(mechanism_id),cells,parcel_count,maximum_substeps
     if (ios/=0) call fail('Cannot encode checkpoint context')
-    do i=1,size(species)
-      context=trim(context)//' '//trim(species(i)%name)
+    call append_reals([initial_timestep_factor,maximum_timestep_growth,initial_dt,fixed_dt])
+    if(stage_integrator) then
+      if(time_integrator=='mol') then
+        context=trim(context)//' SERIAL_PARTICLE_MOL_V1'
+        call append_reals([real(merge(1,0,mol_lax_friedrichs),dp)])
+      else
+        context=trim(context)//' SERIAL_PARTICLE_SDC_V4_NATIVE_CFL'
+      endif
+      call append_reals([real(sdc_iterations,dp)])
+    endif
+    if(allocated(constant_coefficients)) then
+      write(constant_line,'(a,1x,*(es27.18e3,1x))') 'constant-gas-particle-transport-v1',constant_coefficients
+      if(len_trim(context)+1+len_trim(constant_line)>len(context)) call fail('Constant transport context too long')
+      context=trim(context)//' '//trim(constant_line)
+    endif
+    do i=1,size(eos_species)
+      context=trim(context)//' '//trim(eos_species(i)%name)
     end do
     call append_reals([domain_length,gas_temperature,gas_pressure,gas_velocity,shear_velocity,x,liquid_density,liquid_cp, &
       reference_temperature,reference_pressure,latent_heat,drop_temperature,drop_diameter, &
@@ -909,6 +1048,9 @@ contains
       max_fractional_change,particle_cfl,minimum_diameter])
     context=trim(context)//' '//trim(vapor_name)//' '//trim(chemistry_method)// &
       ' '//trim(hydro_reconstruction)//' '//trim(riemann_solver)
+    context=trim(context)//' PARTICLE_TIMESTEP_V1'
+    if(etab_parcel_factor>=0.or.khrt_parcel_factor>=0) context=trim(context)//' REF_BREAKUP_N0_V1'
+    if(impact_enabled) context=trim(context)//' SPLASH_N0_V2'
     if (hydro_reconstruction=='characteristic_ppm') then
       context=trim(context)//' ppm-difmag-v1'
       call append_reals([difmag])
@@ -1026,6 +1168,8 @@ contains
       context=trim(context)//' antoine-v1'
       call append_reals([antoine_coefficients,antoine_temperature_range])
     end if
+    if(fixed_parts) context=trim(context)//' fixed-particles-constraint-v2'
+    if(mixture_time_scheme/='conservative') context=trim(context)//' mixture-time-scheme-v1 '//trim(mixture_time_scheme)
     if (allocated(source_totals)) then
       context=trim(context)//' uniform-acceleration-v1'
       call append_reals(acceleration)
@@ -1035,7 +1179,7 @@ contains
         context=trim(context)//' khrt-representative-v1'
         call append_reals([khrt_b0,khrt_b1,khrt_c3])
       else
-      context=trim(context)//' etab-size-deformation-v1/'//trim(breakup_model)
+        context=trim(context)//' etab-size-deformation-minmass-v2/'//trim(breakup_model)
       end if
       call append_reals([surface_tension,liquid_viscosity])
       if (trim(liquid_viscosity_model)=='inverse-temperature') then
@@ -1046,12 +1190,16 @@ contains
     if (split_enabled) then
       context=trim(context)//' computational-split-lineage-v1'
       call append_reals([maximum_multiplicity,real(maximum_parcels,dp)])
+      if(etab_parcel_factor>=0) then
+        context=trim(context)//' etab-reference-xorshift64-v1'
+        call append_reals([etab_parcel_factor])
+      endif
     end if
     if (khrt_children) then
       context=trim(context)//' khrt-shed-children-v1'
       call append_reals([khrt_reference_diameter_cubed])
       if(khrt_parcel_factor>=0) then
-        context=trim(context)//' khrt-reference-xorshift64-v1'
+        context=trim(context)//' khrt-reference-xorshift64-minmass-v2'
         call append_reals([khrt_parcel_factor])
       endif
     end if
@@ -1068,6 +1216,16 @@ contains
         context=trim(context)//' '//trim(mixture_vapor_names(i))
         call append_reals([mixture_fractions(i),mixture_densities(i),mixture_cps(i), &
           mixture_reference_temperatures(i),mixture_reference_pressures(i),mixture_latent_heats(i)])
+        if(mixture_conductivity_models(i)/='supplied') then
+          context=trim(context)//' component-conductivity-v1 '//trim(mixture_conductivity_models(i))
+          call append_reals([mixture_conductivities(i),mixture_conductivity_coefficients(:,i), &
+            mixture_conductivity_temperature_ranges(:,i)])
+        endif
+        if(mixture_viscosity_models(i)/='supplied') then
+          context=trim(context)//' component-viscosity-v1 '//trim(mixture_viscosity_models(i))
+          call append_reals([mixture_viscosities(i),mixture_viscosity_coefficients(:,i), &
+            mixture_viscosity_temperature_ranges(:,i)])
+        endif
         if (mixture_density_models(i)/='constant'.or.mixture_cp_models(i)/='constant'.or. &
             mixture_vapor_pressure_models(i)/='clausius'.or.mixture_boiling_models(i)/='reject') then
           context=trim(context)//' component-properties-v1 '//trim(mixture_density_models(i))//' '// &
@@ -1162,6 +1320,14 @@ contains
           call append_reals([inflow_temperature(face),inflow_pressure(face),inflow_velocity(:,face)])
       end do
     end if
+    if(pinned_eos_extrapolation) then
+      block
+        character(len=128) :: policy_identity
+        policy_identity=nasa7_eos_policy_identity(eos_species)
+        if(.not.(len_trim(context)+1+len_trim(policy_identity)<=len(context))) call fail('EOS context too long')
+        context=trim(context)//' '//trim(policy_identity)
+      end block
+    endif
     if (len_trim(restart_file)>0) then
       if (mixture_count>0) then
         if (impact_enabled) then
@@ -1258,9 +1424,16 @@ contains
             expected_batches=expected_batches+1
         end do
       end if
+      if(allocated(sdc_last_id)) then
+        if(sdc_last_id-sdc_created_total/=int(expected_batches,int64)* &
+          int(merge(parcel_count,parcels_per_event,independent_port_schedules),int64)+ &
+          int(merge(parcels_per_event,0,initial_liquid_mass>0._dp),int64)) &
+          call fail('Restart original particle ID ledger mismatch')
+      else
       if (int(count(parcels%parent_id==0_int64),int64)/=int(expected_batches,int64)*&
           int(merge(parcel_count,parcels_per_event,independent_port_schedules),int64)+ &
           int(merge(parcels_per_event,0,initial_liquid_mass>0.0_dp),int64)) call fail('Restart parcel/event count mismatch')
+      endif
       call current_totals(totals)
       if (allocated(source_totals)) totals=totals-source_totals
       if (abs(totals(1)-reference_totals(1)-injected_totals(1)-boundary_totals(1))> &
@@ -1270,7 +1443,9 @@ contains
         call fail('Restart energy ledger mismatch')
       if (any(parcels%id<1_int64)) call fail('Invalid restart parcel IDs')
       do i=1,size(parcels)
-        if (parcels(i)%id/=int(i,int64)) call fail('Restart parcel IDs are not canonical')
+        if(.not.allocated(sdc_last_id)) then
+          if (parcels(i)%id/=int(i,int64)) call fail('Restart parcel IDs are not canonical')
+        endif
         if (any(parcels(i)%position<0.0_dp) .or. any(parcels(i)%position>=domain_length)) &
           call fail('Restart parcel outside domain')
       end do
@@ -1323,6 +1498,10 @@ contains
           if (size(parcels)+parcel_count>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
+          if(allocated(sdc_last_id)) then
+            if(sdc_last_id==huge(sdc_last_id)) call fail('Particle ID space exhausted')
+            first_id=sdc_last_id+1_int64
+          endif
           material=liquid
           if (multi_material) material=materials(selected_port)
           event_speed=injection_port_speeds(selected_port)
@@ -1334,7 +1513,8 @@ contains
             new_parcels,ok,port_sizes(selected_port)%shape,port_sizes(selected_port)%minimum, &
             port_sizes(selected_port)%maximum,port_sizes(selected_port)%weighting, &
             port_sizes(selected_port)%distribution,port_sizes(selected_port)%std,port_nozzle_radii(selected_port), &
-            port_nozzle_models(selected_port))
+            port_nozzle_models(selected_port), &
+            reference_breakup=options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0)
           if (.not.ok) call fail('Independent port injection failed')
           if (multi_material) new_parcels%material_id=selected_port
           call append_injected()
@@ -1352,6 +1532,10 @@ contains
           if (size(parcels)+parcels_per_event>maximum_parcels) call fail('Parcel storage limit reached')
           first_id=1_int64
           if (size(parcels)>0) first_id=parcels(size(parcels))%id+1_int64
+          if(allocated(sdc_last_id)) then
+            if(sdc_last_id==huge(sdc_last_id)) call fail('Particle ID space exhausted')
+            first_id=sdc_last_id+1_int64
+          endif
           call inject_ports(amount,parcel_count,first_id,new_parcels,ok, &
             amount/min(injection_interval,injection_end-next_event))
           if (.not. ok) call fail('Scheduled parcel injection failed')
@@ -1362,39 +1546,125 @@ contains
           if (next_event>=injection_end) next_event=huge(1.0_dp)
         end if
       end if
-      call compute_reactive_cfl_timestep_3d(species,state,temperature,cells(1),cells(2),cells(3), &
-        spacing(1),spacing(2),spacing(3),cfl,cfl_dt,ok)
-      if (.not. ok) call fail('Cannot compute gas CFL step')
-      if (any(inflow_mach>=0)) then
-        call fill_mach_inlet_boundary_ghosts_3d(species,state,temperature,boundary_faces,inflow_mach, &
-          inlet_ghost,inlet_ghost_t,ok,inflow_state=inflow_state,inflow_temperature=inflow_t, &
-          inflow_pressure=mach_pressure,viscous_wall=.true.,wall_velocity=wall_velocity)
-        if (.not.ok) call fail('Cannot construct Mach inlet timestep states')
-        call compute_reactive_cfl_timestep_3d(species,inlet_ghost,inlet_ghost_t,cells(1)+4,cells(2)+4,cells(3)+4, &
-          spacing(1),spacing(2),spacing(3),cfl,inlet_dt,ok)
-        if (.not.ok) call fail('Cannot compute Mach inlet CFL step')
-        if (transport_enabled) then
-          call reactive_transport_timestep_3d(species,transport,inlet_ghost,inlet_ghost_t, &
-            cells(1)+4,cells(2)+4,cells(3)+4,spacing(1),spacing(2),spacing(3), &
-            .2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok)
-          if (.not.ok) call fail('Cannot compute Mach inlet transport step')
-          inlet_dt=min(inlet_dt,face_dt)
+      if(steps==0.and.initial_dt>0) then
+        dt=initial_dt
+      else if(fixed_dt>0) then
+        dt=fixed_dt
+      else
+        call compute_reactive_cfl_timestep_3d(eos_species,state,temperature,cells(1),cells(2),cells(3), &
+          spacing(1),spacing(2),spacing(3),cfl,cfl_dt,ok)
+        if (.not. ok) call fail('Cannot compute gas CFL step')
+        if (any(inflow_mach>=0)) then
+          call fill_mach_inlet_boundary_ghosts_3d(eos_species,state,temperature,boundary_faces,inflow_mach, &
+            inlet_ghost,inlet_ghost_t,ok,inflow_state=inflow_state,inflow_temperature=inflow_t, &
+            inflow_pressure=mach_pressure,viscous_wall=.true.,wall_velocity=wall_velocity)
+          if (.not.ok) call fail('Cannot construct Mach inlet timestep states')
+          call compute_reactive_cfl_timestep_3d(eos_species,inlet_ghost,inlet_ghost_t,cells(1)+4,cells(2)+4,cells(3)+4, &
+            spacing(1),spacing(2),spacing(3),cfl,inlet_dt,ok)
+          if (.not.ok) call fail('Cannot compute Mach inlet CFL step')
+          if (transport_enabled) then
+            call reactive_transport_timestep_3d(eos_species,property_transport,inlet_ghost,inlet_ghost_t, &
+              cells(1)+4,cells(2)+4,cells(3)+4,spacing(1),spacing(2),spacing(3), &
+              .2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok, &
+              constant_coefficients=constant_coefficients)
+            if (.not.ok) call fail('Cannot compute Mach inlet transport step')
+            inlet_dt=min(inlet_dt,face_dt)
+          end if
         end if
-      end if
-      dt=min(maximum_dt,cfl_dt,inlet_dt,final_time-time)
-      if (any(acceleration/=0)) dt=min(dt,0.5_dp*cfl_dt,sqrt(cfl*minval(spacing)/maxval(abs(acceleration))))
-      if (any(boundary_faces=='isothermal_wall')) then
-        call reactive_isothermal_timestep_3d(species,transport,state,temperature,spacing, &
-          boundary_faces,wall_temperature,0.1_dp,wall_dt,ok)
-        if (.not.ok) call fail('Invalid isothermal wall timestep')
-        dt=min(dt,wall_dt)
-      end if
+        maximum_injection_speed=peak_injection_speed()
+        call compute_spray_timestep(parcels,spacing,options%particle_cfl,options%fixed_parts, &
+          maximum_injection_speed,particle_dt,ok)
+        if(.not.ok) call fail("Invalid particle timestep")
+        dt=min(maximum_dt,cfl_dt,inlet_dt,particle_dt)
+        if(allocated(constant_coefficients)) then
+          call reactive_transport_timestep_3d(eos_species,property_transport,state,temperature,cells(1),cells(2),cells(3), &
+            spacing(1),spacing(2),spacing(3),.2_dp,.true.,.true.,.true.,face_dt,face_diffusivity,ok, &
+            constant_coefficients=constant_coefficients)
+          if(.not.ok) call fail('Cannot compute constant gas transport step')
+          dt=min(dt,face_dt)
+        endif
+        if (any(acceleration/=0)) dt=min(dt,0.5_dp*cfl_dt,sqrt(cfl*minval(spacing)/maxval(abs(acceleration))))
+        if (any(boundary_faces=='isothermal_wall')) then
+          call reactive_isothermal_timestep_3d(eos_species,property_transport,state,temperature,spacing, &
+            boundary_faces,wall_temperature,0.1_dp,wall_dt,ok, &
+            constant_coefficients=constant_coefficients)
+          if (.not.ok) call fail('Invalid isothermal wall timestep')
+          dt=min(dt,wall_dt)
+        end if
+      endif
+      if(steps==0) then
+        if(initial_dt<=0) dt=initial_timestep_factor*dt
+      else if(fixed_dt<=0) then
+        if(previous_timestep<dt/maximum_timestep_growth) dt=maximum_timestep_growth*previous_timestep
+      endif
+      if(final_time-time-dt<.001_dp*dt) dt=final_time-time
+      dt=min(dt,final_time-time)
       if (next_event>time) dt=min(dt,next_event-time)
       ! Avoid a spurious vanishing final step from accumulated roundoff.
       if (abs(final_time-(time+dt)) <= 8.0_dp*epsilon(1.0_dp)*max(abs(final_time),abs(time))) dt=final_time-time
       do retry=1,30
-        if (mixture_count>0) then
-        call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
+        if(stage_integrator) then
+          sdc_start_id=sdc_last_id
+          sdc_gas_source=0;sdc_exchange=0;sdc_outside=0;sdc_wall=0;sdc_particle_force=0
+          if(mixture_count>0) then
+            sdc_masses=component_mass
+          else if(multi_material) then
+            ! Pure liquids share the mixture transfer machinery, with exactly
+            ! one active component selected by the persistent material ID.
+            if(allocated(sdc_masses)) deallocate(sdc_masses)
+            allocate(sdc_masses(size(sdc_components),size(parcels)),source=0._dp)
+            do i=1,size(parcels)
+              if(parcels(i)%material_id<1.or.parcels(i)%material_id>size(sdc_components)) &
+                call fail('Invalid SDC parcel material ID')
+              sdc_masses(parcels(i)%material_id,i)=parcels(i)%mass
+            enddo
+          else
+            ! A single-component parcel's mass is its complete liquid inventory.
+            ! Derive this private payload each attempt, including injected and
+            ! restarted particles; the public checkpoint remains single-component.
+            sdc_masses=reshape(parcels%mass,[1,size(parcels)])
+          endif
+          if(mixture_count>0) then
+            sdc_film_masses=film_component_mass
+          else
+            if(allocated(sdc_film_masses)) deallocate(sdc_film_masses)
+            allocate(sdc_film_masses(size(sdc_components),size(wall_films)),source=0._dp)
+            do i=1,size(wall_films)
+              port=1
+              if(multi_material) port=wall_films(i)%material_id
+              if(port<1.or.port>size(sdc_components)) call fail('Invalid SDC film material ID')
+              sdc_film_masses(port,i)=wall_films(i)%mass
+            enddo
+          endif
+          call advance_spray_reactive_sdc_3d(eos_species,reactions,property_transport,sdc_components,options, &
+            state,temperature,parcels,sdc_masses,[0._dp,0._dp,0._dp],spacing,dt,time,sdc_iterations, &
+            chemistry_enabled,[transport_enabled,transport_enabled,transport_enabled,.false.],acceleration, &
+            smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,rtol,atol,boundary_faces, &
+            boundary_step,sdc_gas_source,sdc_exchange,sdc_wall,sdc_outside,sdc_particle_force,ok, &
+            acceleration=acceleration,last_id=sdc_last_id,chemistry_method=chemistry_method,model=les_model,ci=les_ci, &
+            test_filter=les_test_filter,test_ratio=les_test_ratio,grid_ratio=les_grid_ratio, &
+            harmonic_mean=les_harmonic_mean,inflow_state=inflow_state,inflow_temperature=inflow_t, &
+            inflow_mach=inflow_mach,inflow_pressure=mach_pressure,outlet_pressure=outlet_pressure, &
+            wall_temperature=wall_temperature,wall_velocity=wall_velocity,difmag=difmag, &
+            constant_coefficients=constant_coefficients,breakup_properties=breakup_options, &
+            wall_options=wall_options,wall_films=wall_films,film_component_mass=sdc_film_masses, &
+            reaction_source=sdc_reaction_source,heat_release=sdc_heat_release, &
+            mol_mode=time_integrator=='mol',mol_lax_friedrichs=mol_lax_friedrichs)
+          if(ok) then
+            heat_known=.true.
+            sdc_created_total=sdc_created_total+(sdc_last_id-sdc_start_id)
+            if(mixture_count>0) then
+              call move_alloc(sdc_masses,component_mass)
+              call move_alloc(sdc_film_masses,film_component_mass)
+            endif
+            boundary_step=boundary_step+sdc_outside;boundary_step(:5)=boundary_step(:5)+sdc_wall
+            if(allocated(source_totals)) then
+              source_step=sdc_gas_source;source_step(:5)=source_step(:5)+sdc_particle_force
+            endif
+          endif
+          message='Serial particle SDC update failed'
+        else if (mixture_count>0) then
+        call advance_spray_reactive_3d(eos_species,reactions,property_transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step, &
@@ -1402,16 +1672,18 @@ contains
           wall_options=wall_options,wall_films=wall_films,film_component_mass=film_component_mass,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
           les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=mach_pressure,difmag=difmag)
+          inflow_mach=inflow_mach,inflow_pressure=mach_pressure,difmag=difmag, &
+          constant_coefficients=constant_coefficients)
         else
-        call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,parcels, &
+        call advance_spray_reactive_3d(eos_species,reactions,property_transport,liquid,options,state,temperature,parcels, &
           [0.0_dp,0.0_dp,0.0_dp],spacing,dt,chemistry_enabled,transport_enabled,trim(chemistry_method),rtol,atol, &
           smagorinsky_constant,turbulent_prandtl,turbulent_schmidt,ok,message,hydro_reconstruction,riemann_solver, &
           boundary_faces,boundary_step,inflow_state,inflow_t,wall_temperature,wall_velocity,acceleration,source_step,materials, &
           breakup_options,wall_options,wall_films,les_model=les_model, &
           les_test_filter=les_test_filter,les_test_ratio=les_test_ratio,les_grid_ratio=les_grid_ratio, &
           les_harmonic_mean=les_harmonic_mean,les_ci=les_ci,outlet_pressure=outlet_pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=mach_pressure,difmag=difmag)
+          inflow_mach=inflow_mach,inflow_pressure=mach_pressure,difmag=difmag, &
+          constant_coefficients=constant_coefficients)
         end if
         if (ok) exit
         dt=0.5_dp*dt
@@ -1420,7 +1692,7 @@ contains
       if (.not. ok) call fail('Coupled step failed with rollback: '//trim(message))
       if (allocated(source_totals)) source_totals=source_totals+source_step
       boundary_totals=boundary_totals+boundary_step
-      time=time+dt; steps=steps+1
+      previous_timestep=dt;time=time+dt; steps=steps+1
       call write_history()
     end do
     close(history_unit,iostat=ios)
@@ -1443,29 +1715,53 @@ contains
     subroutine load_checkpoint(checkpoint_mass,checkpoint_film_mass)
       real(dp), allocatable, intent(inout), optional :: checkpoint_mass(:,:),checkpoint_film_mass(:,:)
       if (physical_boundaries) then
-      call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
+      call read_spray_checkpoint(trim(restart_file),trim(context),eos_species,state,temperature,parcels,time,steps,event, &
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled.or.stage_integrator, &
+        split_state=split_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        khrt_state=khrt_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        shedding_state=khrt_children.or.etab_parcel_factor>=0.or.stage_integrator, &
+        source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass, &
+        last_id=sdc_last_id,split_created_total=sdc_created_total,retired_parent_state=stage_integrator, &
+        reaction_source=sdc_reaction_source,heat_release=sdc_heat_release,heat_available=heat_known, &
+        previous_timestep=previous_timestep)
       else
-      call read_spray_checkpoint(trim(restart_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
+      call read_spray_checkpoint(trim(restart_file),trim(context),eos_species,state,temperature,parcels,time,steps,event, &
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled.or.stage_integrator, &
+        split_state=split_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        khrt_state=khrt_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        shedding_state=khrt_children.or.etab_parcel_factor>=0.or.stage_integrator, &
+        source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass, &
+        last_id=sdc_last_id,split_created_total=sdc_created_total,retired_parent_state=stage_integrator, &
+        reaction_source=sdc_reaction_source,heat_release=sdc_heat_release,heat_available=heat_known, &
+        previous_timestep=previous_timestep)
       end if
     end subroutine
     subroutine save_checkpoint(checkpoint_mass,checkpoint_film_mass)
       real(dp), allocatable, intent(in), optional :: checkpoint_mass(:,:),checkpoint_film_mass(:,:)
       if (physical_boundaries) then
-      call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
+      call write_spray_checkpoint(trim(checkpoint_file),trim(context),eos_species,state,temperature,parcels,time,steps,event, &
+        reference_totals,injected_totals,ok,message,boundary_totals,breakup_state=breakup_enabled.or.stage_integrator, &
+        split_state=split_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        khrt_state=khrt_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        shedding_state=khrt_children.or.etab_parcel_factor>=0.or.stage_integrator, &
+        source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass, &
+        last_id=sdc_last_id,split_created_total=sdc_created_total,retired_parent_state=stage_integrator, &
+        reaction_source=sdc_reaction_source,heat_release=sdc_heat_release,heat_available=heat_known, &
+        previous_timestep=previous_timestep)
       else
-      call write_spray_checkpoint(trim(checkpoint_file),trim(context),species,state,temperature,parcels,time,steps,event, &
-        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled,split_state=split_enabled, &
-        khrt_state=khrt_enabled,shedding_state=khrt_children,source_totals=source_totals,material_state=multi_material, &
-        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass)
+      call write_spray_checkpoint(trim(checkpoint_file),trim(context),eos_species,state,temperature,parcels,time,steps,event, &
+        reference_totals,injected_totals,ok,message,breakup_state=breakup_enabled.or.stage_integrator, &
+        split_state=split_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        khrt_state=khrt_enabled.or.etab_parcel_factor>=0.or.stage_integrator, &
+        shedding_state=khrt_children.or.etab_parcel_factor>=0.or.stage_integrator, &
+        source_totals=source_totals,material_state=multi_material, &
+        film_state=impact_enabled,wall_films=wall_films,component_mass=checkpoint_mass,film_component_mass=checkpoint_film_mass, &
+        last_id=sdc_last_id,split_created_total=sdc_created_total,retired_parent_state=stage_integrator, &
+        reaction_source=sdc_reaction_source,heat_release=sdc_heat_release,heat_available=heat_known, &
+        previous_timestep=previous_timestep)
       end if
     end subroutine
     function injection_composition(port_id) result(fractions)
@@ -1561,6 +1857,9 @@ contains
         end if
       end do
       if (mixture_count>0) call move_alloc(updated,component_mass)
+      if(allocated(sdc_last_id)) then
+        if(size(new_parcels)>0) sdc_last_id=maxval(new_parcels%id)
+      endif
       parcels=[parcels,new_parcels];deallocate(new_parcels)
     end subroutine
     subroutine next_port_event(event_time,event_port)
@@ -1608,6 +1907,31 @@ contains
       valid=all(center-extent>=0).and.all(center+extent<domain_length)
     end function
 
+    real(dp) function peak_injection_speed() result(peak)
+      real(dp) :: rate,port_rate
+      integer :: index,q
+      peak=injection_speed
+      if(injection_port_count>0) peak=maxval(injection_port_speeds(:injection_port_count))
+      if(.not.velocity_from_rate) return
+      rate=mass_flow_rate
+      if(injection_profile_points>0) rate=maxval(injection_profile_rates(:injection_profile_points))
+      if(injection_port_count==0) then
+        peak=rate_velocity(rate,0)
+      else
+        peak=0
+        do index=1,injection_port_count
+          if(independent_port_schedules) then
+            port_rate=port_mass_flow_rates(index)
+          else
+            port_rate=rate*injection_port_fractions(index)/sum(injection_port_fractions(:injection_port_count))
+          endif
+          q=port_profile_points(index)
+          if(q>0) port_rate=maxval(port_profile_rates(:q,index))
+          peak=max(peak,rate_velocity(port_rate,index))
+        enddo
+      endif
+    end function peak_injection_speed
+
     real(dp) function rate_velocity(rate,index) result(speed)
       real(dp), intent(in) :: rate
       integer, intent(in) :: index
@@ -1653,7 +1977,8 @@ contains
       if (injection_port_count==0) then
         call inject_cone_parcels(liquid,mass,number,id,injection_center,injection_axis,speed, &
           cone_angle,drop_diameter,drop_temperature,result,success,diameter_shape,diameter_min,diameter_max, &
-          diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
+          diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model, &
+          reference_breakup=options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0)
       else
         call inject_cone_ports(liquid,mass,number,id,injection_port_centers(:,:injection_port_count), &
           injection_port_axes(:,:injection_port_count),injection_port_fractions(:injection_port_count), &
@@ -1661,7 +1986,8 @@ contains
           port_speeds(:injection_port_count),injection_port_diameters(:injection_port_count), &
           injection_port_temperatures(:injection_port_count),injection_port_cone_angles(:injection_port_count), &
           materials,diameter_weighting,diameter_distribution,diameter_std,port_sizes,nozzle_radius, &
-          port_nozzle_radii(:injection_port_count),nozzle_model,port_nozzle_models)
+          port_nozzle_radii(:injection_port_count),nozzle_model,port_nozzle_models, &
+          reference_breakup=options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0)
       end if
     end subroutine inject_ports
     subroutine fail(text)
@@ -1713,20 +2039,31 @@ contains
     subroutine write_snapshots()
       integer :: p
       character(len=2048) :: header
+      if(heat_known) then
+        if(.not.all(ieee_is_finite(sdc_heat_release))) call fail('Nonfinite accepted-stage heat')
+      endif
       open(newunit=gas_unit,file=trim(paths(2)),status='new',action='write',iostat=ios)
       if (ios/=0) call fail('Cannot create gas snapshot')
       header='x,y,z,temperature,rho,rhou,rhov,rhow,rhoE'
-      do p=1,size(species)
-        header=trim(header)//',rhoY_'//trim(species(p)%name)
+      do p=1,size(eos_species)
+        header=trim(header)//',rhoY_'//trim(eos_species(p)%name)
       end do
+      if(heat_known) header=trim(header)//',heat_release_W_m3'
       write(gas_unit,'(a)',iostat=ios) trim(header)
       if (ios/=0) call fail('Gas header write failed')
       do k=1,cells(3)
         do j=1,cells(2)
           do i=1,cells(1)
-            write(gas_unit,'(*(es26.17e3,:,a))',iostat=ios) &
+            write(gas_unit,'(*(es26.17e3,:,a))',advance='no',iostat=ios) &
               (real(i,dp)-0.5_dp)*spacing(1),',',(real(j,dp)-0.5_dp)*spacing(2),',', &
               (real(k,dp)-0.5_dp)*spacing(3),',',temperature(i,j,k),',',(state(p,i,j,k),',',p=1,nvar-1),state(nvar,i,j,k)
+            if(ios==0) then
+              if(heat_known) then
+                write(gas_unit,'(a,es26.17e3)',iostat=ios) ',',sdc_heat_release(i,j,k)
+              else
+                write(gas_unit,'(a)',iostat=ios) ''
+              endif
+            endif
             if (ios/=0) call fail('Gas snapshot write failed')
           end do
         end do

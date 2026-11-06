@@ -1,5 +1,6 @@
 module reactive_eb_amr_2d_application_mod
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -28,6 +29,8 @@ contains
     character(len=*), intent(in) :: application_label, bundle_sha256
     type(reactive_eb_amr_2d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in), optional :: base_mole_fractions(:)
@@ -49,12 +52,14 @@ contains
     logical :: fine_active, ok, selected_context
     integer :: child, regrids, steps
 
-    if (size(species) < 2 .or. size(reactions) < 1 .or. &
-        size(transport) /= size(species)) then
+    call configure_reactive_2d_eos(species,config%eb%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) error stop 'Invalid 2D application EOS policy'
+    if (size(eos_species) < 2 .or. size(reactions) < 1 .or. &
+        size(transport) /= size(eos_species)) then
       error stop "Reactive EB AMR 2D application data have incompatible dimensions"
     end if
     if (present(base_mole_fractions)) then
-      if (size(base_mole_fractions) /= size(species)) then
+      if (size(base_mole_fractions) /= size(eos_species)) then
         error stop "Reactive EB AMR 2D composition has incompatible dimensions"
       end if
     end if
@@ -76,7 +81,7 @@ contains
     if (config%three_level_enabled) then
       if (selected_context) then
         call simulate_three_level_reactive_eb_amr_2d( &
-          species, reactions, config, coarse_state, coarse_temperature, &
+          eos_species, reactions, config, coarse_state, coarse_temperature, &
           coarse_geometry, fine_state, fine_temperature, fine_geometry, &
           patch, level_two_state, level_two_temperature, level_two_geometry, &
           level_two_patch, time, steps, regrids, initial_integrals, &
@@ -85,7 +90,7 @@ contains
           chemistry_integrator, bundle_sha256)
       else
         call simulate_three_level_reactive_eb_amr_2d( &
-          species, reactions, config, coarse_state, coarse_temperature, &
+          eos_species, reactions, config, coarse_state, coarse_temperature, &
           coarse_geometry, fine_state, fine_temperature, fine_geometry, &
           patch, level_two_state, level_two_temperature, level_two_geometry, &
           level_two_patch, time, steps, regrids, initial_integrals, &
@@ -96,14 +101,14 @@ contains
     else if (config%multipatch_enabled) then
       if (selected_context) then
         call simulate_reactive_eb_amr_patch_set_2d( &
-          species, reactions, config, coarse_state, coarse_temperature, &
+          eos_species, reactions, config, coarse_state, coarse_temperature, &
           coarse_geometry, patch_set, time, steps, regrids, &
           initial_integrals, final_integrals, minimum_dt, base_density, ok, &
           message, transport, minimum_transport_theta, base_mole_fractions, &
           chemistry_integrator, bundle_sha256)
       else
         call simulate_reactive_eb_amr_patch_set_2d( &
-          species, reactions, config, coarse_state, coarse_temperature, &
+          eos_species, reactions, config, coarse_state, coarse_temperature, &
           coarse_geometry, patch_set, time, steps, regrids, &
           initial_integrals, final_integrals, minimum_dt, base_density, ok, &
           message, transport, minimum_transport_theta)
@@ -112,7 +117,7 @@ contains
     else
       if (selected_context) then
         call simulate_reactive_eb_amr_2d( &
-          species, reactions, config, coarse_state, coarse_temperature, &
+          eos_species, reactions, config, coarse_state, coarse_temperature, &
           coarse_geometry, fine_state, fine_temperature, fine_geometry, &
           patch, fine_active, time, steps, regrids, initial_integrals, &
           final_integrals, minimum_dt, base_density, ok, transport, &
@@ -120,7 +125,7 @@ contains
           chemistry_integrator, bundle_sha256, message)
       else
         call simulate_reactive_eb_amr_2d( &
-          species, reactions, config, coarse_state, coarse_temperature, &
+          eos_species, reactions, config, coarse_state, coarse_temperature, &
           coarse_geometry, fine_state, fine_temperature, fine_geometry, &
           patch, fine_active, time, steps, regrids, initial_integrals, &
           final_integrals, minimum_dt, base_density, ok, transport, &
@@ -139,7 +144,7 @@ contains
     end if
 
     call write_reactive_eb_2d_csv( &
-      config%eb%flow%output_file, species, config%eb, coarse_state, &
+      config%eb%flow%output_file, eos_species, config%eb, coarse_state, &
       coarse_temperature, coarse_geometry, time, ok)
     if (.not. ok) error stop "Reactive EB AMR coarse output failed"
     if (config%three_level_enabled) then
@@ -152,7 +157,7 @@ contains
       fine_output_config%flow%y_upper = fine_geometry%y_upper
       fine_output_config%flow%output_file = trim(config%fine_output_file)
       call write_reactive_eb_2d_csv( &
-        config%fine_output_file, species, fine_output_config, fine_state, &
+        config%fine_output_file, eos_species, fine_output_config, fine_state, &
         fine_temperature, fine_geometry, time, ok)
       if (.not. ok) error stop "Reactive EB AMR middle output failed"
     else if (config%multipatch_enabled) then
@@ -172,7 +177,7 @@ contains
           patch_set%children(child)%geometry%y_upper
         fine_output_config%flow%output_file = trim(patch_output_file)
         call write_reactive_eb_2d_csv( &
-          patch_output_file, species, fine_output_config, &
+          patch_output_file, eos_species, fine_output_config, &
           patch_set%children(child)%state, &
           patch_set%children(child)%temperature, &
           patch_set%children(child)%geometry, time, ok)
@@ -188,7 +193,7 @@ contains
       fine_output_config%flow%y_upper = fine_geometry%y_upper
       fine_output_config%flow%output_file = trim(config%fine_output_file)
       call write_reactive_eb_2d_csv( &
-        config%fine_output_file, species, fine_output_config, fine_state, &
+        config%fine_output_file, eos_species, fine_output_config, fine_state, &
         fine_temperature, fine_geometry, time, ok)
       if (.not. ok) error stop "Reactive EB AMR fine output failed"
     end if
@@ -202,7 +207,7 @@ contains
       fine_output_config%flow%y_upper = level_two_geometry%y_upper
       fine_output_config%flow%output_file = trim(config%level_two_output_file)
       call write_reactive_eb_2d_csv( &
-        config%level_two_output_file, species, fine_output_config, &
+        config%level_two_output_file, eos_species, fine_output_config, &
         level_two_state, level_two_temperature, level_two_geometry, time, ok)
       if (.not. ok) error stop "Reactive EB AMR level-two output failed"
     end if

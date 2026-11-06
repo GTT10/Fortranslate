@@ -1,6 +1,7 @@
 program test_les_mpi_amr_tree
   use mpi_f08
-  use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d,compute_mpi_amr_tree_les_timestep_3d
+  use les_mpi_amr_tree_mod, only: advance_mpi_amr_tree_les_3d,compute_mpi_amr_tree_les_timestep_3d, &
+    compute_mpi_amr_tree_les_rhs_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -8,7 +9,11 @@ program test_les_mpi_amr_tree
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
-  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d,compute_amr_patch_tree_les_timestep_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use reactive_mol_3d_mod, only: convert_regular_energy_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_3d,compute_amr_patch_tree_les_timestep_3d, &
+    compute_amr_patch_tree_les_rhs_3d
   use les_smagorinsky_3d_mod, only: advance_les_ssprk2_3d,compute_les_rhs_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -22,6 +27,9 @@ program test_les_mpi_amr_tree
   integer :: i,j,k,mode,geometry,node,m
   character(len=32) :: faces(6),model
   type(amr_tree_state_3d) :: local,local_t,before,before_t
+  type(amr_tree_state_3d) :: rhs_plain,rhs_rotated
+  type(amr_tree_flux_3d), allocatable :: flux_plain(:),flux_rotated(:)
+  type(rotating_frame_3d) :: frame,trial_frame
   integer, allocatable :: owners(:)
   integer :: rank,nranks,ierr,owner_mode
   real(dp) :: mpi_budget(12),mpi_largest,trial_ci
@@ -43,6 +51,73 @@ program test_les_mpi_amr_tree
       end do
     end do
   end do
+  frame%axis=3;frame%angular_speed=400._dp;frame%axis_point=[.001_dp,-.002_dp,0._dp]
+  faces='outflow'
+  call initialize_amr_patch_tree_3d([4,4,4],[integer::],patches(:0),tree,ok)
+  call require(ok,'MPI rotating LES root topology')
+  call prolong_amr_patch_tree_3d(tree,root,state,ok)
+  call require(ok,'MPI rotating LES root state')
+  call prolong_amr_patch_tree_3d(tree,rt,temperature,ok)
+  call require(ok,'MPI rotating LES root temperature')
+  diffusivity=-1
+  call compute_amr_patch_tree_les_rhs_3d(tree,species,state,temperature,spacing,faces,.17_dp,.7_dp,.7_dp, &
+    rhs_plain,flux_plain,diffusivity,ok)
+  call require(ok.and.diffusivity>0,'MPI rotating LES oracle')
+  allocate(owners(1),local%fields(1),local_t%fields(1))
+  owners=0
+  if(rank==0) then
+    local%fields(1)%values=state%fields(1)%values
+    local_t%fields(1)%values=temperature%fields(1)%values
+    call convert_regular_energy_3d(frame,[0._dp,0._dp,0._dp],spacing,local%fields(1)%values,0,.true.,ok)
+    call require(ok,'MPI rotating LES storage')
+  endif
+  reference_diff=-1
+  call compute_mpi_amr_tree_les_rhs_3d(tree,owners,species,local,local_t,spacing,faces,.17_dp,.7_dp,.7_dp, &
+    rhs_rotated,flux_rotated,reference_diff,MPI_COMM_WORLD,ok,frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok.and.reference_diff>0,'MPI rotating LES RHS')
+  if(rank==0) then
+    call require(maxval(abs(rhs_rotated%fields(1)%values-rhs_plain%fields(1)%values)/ &
+      max(1._dp,abs(rhs_plain%fields(1)%values)))<2e-12_dp,'MPI rotating LES RHS parity')
+    call require(maxval(abs(flux_rotated(1)%x-flux_plain(1)%x)/max(1._dp,abs(flux_plain(1)%x)))<2e-12_dp, &
+      'MPI rotating LES x flux parity')
+  endif
+  chosen=-1;diffusivity=-1
+  call compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,spacing,.05_dp,faces, &
+    .17_dp,.7_dp,.7_dp,chosen,diffusivity,ok)
+  call require(ok.and.chosen>0,'MPI rotating LES timestep oracle')
+  half_dt=-1;reference_diff=-1
+  call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,.05_dp,faces, &
+    .17_dp,.7_dp,.7_dp,half_dt,reference_diff,MPI_COMM_WORLD,ok, &
+    frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok.and.half_dt==chosen.and.reference_diff==diffusivity,'MPI rotating LES timestep parity')
+  trial_frame=frame
+  if(rank==nranks-1) trial_frame%angular_speed=trial_frame%angular_speed+1._dp
+  half_dt=-7;reference_diff=-9
+  call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,local,local_t,spacing,.05_dp,faces, &
+    .17_dp,.7_dp,.7_dp,half_dt,reference_diff,MPI_COMM_WORLD,ok, &
+    frame=trial_frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(.not.ok.and.half_dt==-7.and.reference_diff==-9,'MPI rotating LES frame disagreement rollback')
+  dt=min(chosen,1e-9_dp)
+  call advance_amr_patch_tree_les_3d(tree,species,state,temperature,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,budget,largest,ok)
+  call require(ok,'MPI rotating LES step oracle')
+  call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,mpi_budget,mpi_largest,MPI_COMM_WORLD,ok, &
+    frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'MPI rotating LES step')
+  if(rank==0) then
+    call convert_regular_energy_3d(frame,[0._dp,0._dp,0._dp],spacing,local%fields(1)%values,0,.false.,ok)
+    call require(ok,'MPI rotating LES step energy recovery')
+    call require(maxval(abs(local%fields(1)%values-state%fields(1)%values)/ &
+      max(1._dp,abs(state%fields(1)%values)))<2e-12_dp,'MPI rotating LES step state parity')
+  endif
+  call require(maxval(abs(mpi_budget-budget))<1e-12_dp,'MPI rotating LES step budget parity')
+  mpi_budget=-17;mpi_largest=-19
+  call advance_mpi_amr_tree_les_3d(tree,owners,species,local,local_t,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,mpi_budget,mpi_largest,MPI_COMM_WORLD,ok, &
+    frame=trial_frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(.not.ok.and.all(mpi_budget==-17).and.mpi_largest==-19,'MPI rotating LES frame step rollback')
+  deallocate(owners,local%fields,local_t%fields)
   call initialize_amr_patch_3d(4,4,4,1,2,2,3,1,4,2,patches(1),ok)
   call initialize_amr_patch_3d(4,4,4,3,4,2,3,1,4,2,patches(2),ok)
   call initialize_amr_patch_3d(4,4,8,3,4,1,2,1,2,2,patches(3),ok)

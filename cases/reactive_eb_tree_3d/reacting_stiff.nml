@@ -1,0 +1,22 @@
+! Bounded H2/O2/N2 application gate; not an ignition or PeleC parity case.
+! Selected h2o2_full runtime, CVODE reacting MOL, molecular transport.
+! Collapse the child at step 1, then recreate it at step 2.
+&eb_tree
+ dual_energy_enabled=.true.,dual_energy_eta2=2,allow_negative_energy=.false.,
+ time_integrator='sdc',sdc_reactor='cvode',sdc_iterations=2,mol_mode=.true.,
+ hydro_method='plm_ctu',riemann_solver='pelec',boundary_faces=6*'outflow',
+ root_shape=4,4,4,child_count=1,parent=1,ratio=2,
+ lower(:,1)=1,1,2,upper(:,1)=2,2,3,
+ regular_density=.31,cut_density=.35,initial_pressure=250000,
+ geometry_type='plane',plane_axis='z',plane_position=.31,
+ time_step=1.e-7,final_time=3.e-7,maximum_steps=20,
+ automatic_timestep=.true.,external_forcing=20000,-30000,40000,
+ chemistry_enabled=.true.,transport_enabled=.true.,
+ composition_count=3,composition_species='H2','O2','N2',
+ composition_mole_fractions=2,1,3.76,
+ subcycling=.false.,
+ regrid_count=2,regrid_times=1.e-7,2.e-7,regrid_child_count=0,1,
+ regrid_parent(1,2)=1,regrid_ratio(1,2)=2,
+ regrid_lower(:,1,2)=1,1,2,regrid_upper(:,1,2)=2,2,3,
+ output_file='result.csv',
+/

@@ -1,5 +1,7 @@
 """Check cut-cell CVODE SDC and reactor-specific checkpoint continuation."""
 import argparse
+import csv
+import math
 import os
 from pathlib import Path
 import re
@@ -60,7 +62,32 @@ def main():
         assert 'SDC_CVODE_SOURCES' in (folder / 'cvode.chk').read_text()
         resumed, resumed_log = run('resumed', cvode, "restart_file='cvode.chk',")
         assert resumed == baseline, 'CVODE checkpoint continuation differs'
+        rows = list(csv.DictReader(baseline.decode().splitlines()))
+        heat = [float(row['heat_release_W_m3']) for row in rows]
+        assert heat and all(math.isfinite(value) for value in heat)
+        assert max(abs(value) for value in heat) > 0
+        assert all(float(row['heat_release_W_m3']) == 0 for row in rows
+                   if float(row['volume_fraction']) == 0)
+        assert 'HEAT_RELEASE_W_M3_V1' in (folder / 'cvode.chk').read_text()
         assert 'Restarted from checkpoint:' in resumed_log
+        records = (folder / 'cvode.chk').read_text().splitlines()
+        heat_start = records.index('HEAT_RELEASE_W_M3_V1')
+        assert len(records) - heat_start == 66, 'Expected 4x4x4 scalar payload and footer'
+        schema = records[1].split()
+        schema[0] = str(int(schema[0]) - 12)
+        records[1] = ' '.join(schema)
+        legacy = records[:heat_start] + [records[-1]]
+        (folder / 'legacy_cvode.chk').write_text('\n'.join(legacy) + '\n')
+        legacy_resumed, _ = run('legacy_resumed', cvode, "restart_file='legacy_cvode.chk',")
+        assert legacy_resumed == baseline, 'Legacy stored IR continuation differs'
+        stop_time = float(records[records.index('DIAGNOSTICS') + 1].split()[0])
+        restore_only = re.sub(r'final_time=[^,]+', f'final_time={stop_time:.18e}', cvode)
+        legacy_only, _ = run('legacy_only', restore_only, "restart_file='legacy_cvode.chk',")
+        assert 'heat_release_W_m3' not in csv.DictReader(legacy_only.decode().splitlines()).fieldnames
+        inert, _ = run('native_nonreacting', text.replace('chemistry_enabled=.true.', 'chemistry_enabled=.false.'))
+        assert all(float(row['heat_release_W_m3']) == 0
+                   for row in csv.DictReader(inert.decode().splitlines()))
+
         run('changed_native', text, "restart_file='cvode.chk',", 'Failed to restart public 3D EB state')
         run('native_stop', text, "checkpoint_file='native.chk',checkpoint_interval_steps=1,stop_after_checkpoint=.true.,")
         assert 'SDC_SOURCES' in (folder / 'native.chk').read_text()

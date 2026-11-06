@@ -12,6 +12,13 @@ mpiexec -n 2 /path/to/build/pelef_mpi_amr_spray_3d \
 
 The standard `reactive_3d` gas namelist controls the gas initial condition,
 domain and per-face gas boundaries, chemistry/transport, numerical scheme, CFL and final time.
+A separate `&reactive_constant_transport` group in the gas input sets constant
+gas viscosity/conductivity and optional bulk viscosity and rhoD (kg/(m s)).
+It requires enabled gas transport. Constants reach both common and recursive
+split gas stages, face/wall fluxes and timestep bounds; the coupled restart
+context includes their resolved values. The resolved coefficients also reach parcel and film skin transport evaluation,
+including the pinned fuel molecular-weight conversion for a full rhoD override.
+
 The topology file uses the existing tree format: child count followed by
 `parent ilo ihi jlo jhi klo khi ratio` records, with parents before children.
 Patch owners are assigned round-robin; ranks without gas patches are supported.
@@ -531,3 +538,18 @@ PCM/PLM context is unchanged. Shared non-PPM gas input and context checks are
 [recorded separately](../../docs/validation/nonppm-difmag-input-20260925.md);
 coupled non-PPM AMR spray restart has not been independently rerun. See
 [PPM input and restart evidence](../../docs/validation/difmag-amr-input-20260925.md).
+
+The MOL frontend accepts the existing gas rotation group in `gas.nml`:
+
+```fortran
+&reactive_rotation
+ enabled=.true.,axis=2,angular_speed=200.,axis_point=.002,.002,0.
+/
+```
+
+Axis numbering is zero-based. Frame settings and physical cell coordinates bind
+restart identity. Checkpoints retain rotating total energy; gas CSVs use ordinary
+energy for EOS output. `Coordinate energy inventory` reports the cumulative
+particle/film storage conversion separately from `Source inventory`. Keep those
+terms separate in a combined rotating-energy balance. The bounded fixed and
+selected LF/LES continuation checks do not establish reference trajectories.

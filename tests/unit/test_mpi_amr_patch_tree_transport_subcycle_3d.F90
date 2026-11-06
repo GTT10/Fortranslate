@@ -93,6 +93,7 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
     call compute_mpi_amr_tree_subcycle_transport_timestep_3d(tree,owners,species,transport,local,temperature,spacing, &
       .15_dp,.true.,.true.,.true.,dt,diffusivity,MPI_COMM_WORLD,ok,faces,wall_t)
     call require(ok.and.dt==expected_dt.and.diffusivity==serial_diffusivity,'exact scaled transport bound')
+    if(mode==1) call check_thermal_slip_bound()
     oracle=global;oracle_t=reference;dt=1.e-9_dp
     call advance_amr_patch_tree_subcycle_transport_3d(tree,species,transport,oracle,oracle_t,spacing,dt,faces, &
       .true.,.true.,.true.,.true.,serial_budget,serial_largest,serial_theta,ok, &
@@ -154,6 +155,42 @@ program test_mpi_amr_patch_tree_transport_subcycle_3d
   if (rank==0) print *, 'PASS: MPI recursive transport: 1/4/36 steps, scaled bound, exact state/budget, empty ranks and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_thermal_slip_bound()
+    character(len=32) :: thermal_faces(6)
+    logical :: mask(6),valid
+    real(dp) :: serial_dt,serial_dmax,parallel_dt,parallel_dmax,wall_dt,unheated_dt
+    integer :: face
+    thermal_faces='outflow'
+    call compute_amr_patch_tree_subcycle_transport_timestep_3d(tree,species,transport,global,reference,spacing, &
+      .15_dp,.false.,.true.,.false.,unheated_dt,serial_dmax,valid,thermal_faces,wall_t)
+    call require(valid,'adiabatic conduction bound')
+    do face=1,6
+      thermal_faces='outflow';thermal_faces(face)='isothermal_wall'
+      call compute_amr_patch_tree_subcycle_transport_timestep_3d(tree,species,transport,global,reference,spacing, &
+        .15_dp,.false.,.true.,.false.,wall_dt,serial_dmax,valid,thermal_faces,wall_t)
+      call require(valid,'six-face thermal no-slip bound')
+      thermal_faces(face)='slip_wall';mask=.false.;mask(face)=.true.
+      call compute_amr_patch_tree_subcycle_transport_timestep_3d(tree,species,transport,global,reference,spacing, &
+        .15_dp,.false.,.true.,.false.,serial_dt,serial_dmax,valid,thermal_faces,wall_t,isothermal_slip_faces=mask)
+      call require(valid.and.serial_dt==wall_dt.and.serial_dt<=unheated_dt,'thermal slip exact wall bound')
+      call compute_mpi_amr_tree_subcycle_transport_timestep_3d(tree,owners,species,transport,local,temperature,spacing, &
+        .15_dp,.false.,.true.,.false.,parallel_dt,parallel_dmax,MPI_COMM_WORLD,valid,thermal_faces,wall_t, &
+        isothermal_slip_faces=mask)
+      call require(valid.and.parallel_dt==serial_dt.and.parallel_dmax==serial_dmax,'thermal slip MPI exact bound')
+      if(rank==0) mask(face)=.false.
+      parallel_dt=-23;parallel_dmax=-29
+      call compute_mpi_amr_tree_subcycle_transport_timestep_3d(tree,owners,species,transport,local,temperature,spacing, &
+        .15_dp,.false.,.true.,.false.,parallel_dt,parallel_dmax,MPI_COMM_WORLD,valid,thermal_faces,wall_t, &
+        isothermal_slip_faces=mask)
+      call require(.not.valid.and.parallel_dt==-23.and.parallel_dmax==-29,'thermal mask disagreement rollback')
+      mask(face)=.true.
+      call compute_mpi_amr_tree_subcycle_transport_timestep_3d(tree,owners,species,transport,local,temperature,spacing, &
+        .15_dp,.false.,.false.,.false.,parallel_dt,parallel_dmax,MPI_COMM_WORLD,valid,thermal_faces,wall_t, &
+        isothermal_slip_faces=mask)
+      call require(.not.valid.and.parallel_dt==-23.and.parallel_dmax==-29,'thermal disabled conduction rollback')
+    enddo
+  end subroutine check_thermal_slip_bound
+
   subroutine unchanged()
     integer :: peer
     do peer=1,3

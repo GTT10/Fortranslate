@@ -7,6 +7,34 @@ All rows use PeleC commit
 `references/pelec_baseline.json` unless a row or validation record names a
 more specific reference.
 
+
+## Current implementation routing
+
+The milestone tables below describe bounded application paths at their recorded
+scope. Their statements that dynamic 3D AMR, EB trees, physical boundaries or
+selected MPI restart are "open" must not be read as project-wide absence.
+Use this routing table for the current implementation, and the
+[completion gates](completion_roadmap.md) for acceptance. Implementation,
+fixed-reference trajectory agreement and physical validation remain distinct.
+
+| Responsibility | Current entry point | Evidence boundary |
+| --- | --- | --- |
+| Regular 3D tree stepping and topology | `src/amr/amr_patch_tree_split_3d_mod.F90`, `src/amr/amr_patch_tree_subcycle_3d_mod.F90`, serial/MPI application modules; [tree case](../cases/amr_tree_reactive_3d/README.md) | Common/recursive SDC, scheduled/adaptive regridding and restart are implemented; individual combinations require their own reference evidence. |
+| 3D EB reacting tree, serial and MPI | Shared `app/pelef_reactive_eb_tree_3d.F90` (`PELEF_MPI_EB_TREE`), `src/eb/eb_reactive_patch_tree_3d_mod.F90`, `src/parallel/mpi_eb_tree_full_3d_mod.F90`; [EB tree case](../cases/reactive_eb_tree_3d/README.md) | Owner-local stepping, regridding and rank-changing restart exist. Focused equivalence does not close arbitrary-geometry, mesh/time-convergence or fixed-PeleC gates. Cell-stage CSV tracing is currently serial-only and explicitly refused in MPI. |
+| Selected chemistry and full-coordinate forced CVODE | `src/driver/selected_mechanism_runtime_mod.F90`, `src/chemistry/sundials_forced_reactor_mod.F90` | Generated fixed/selected mechanisms and opt-in `cvode_full` are connected. Native-activation compatibility and diagnostic arithmetic variants are explicit variants, not the canonical mechanism or replacement PeleC baselines. |
+| Physical boundary controls | `src/driver/simulation_config_reactive_3d_mod.F90`, `src/reactive/reactive_3d_mod.F90`; [boundary case](../cases/reactive_boundaries_3d/README.md), regular/EB tree input guides | Wall, inflow and outlet controls are path-specific. Existence of a control is not qualification of every AMR/EB/chemistry combination. |
+| Molecular transport in regular/EB trees | `src/transport/gas_transport_mod.F90`, tree transport modules, `src/eb/eb_reactive_transport_3d_mod.F90` | Native Simple transport is exercised by the reacting EB reference case; imported transport, wall models and other mechanisms retain their own contracts. |
+| Persistence | `src/io/eb_reactive_tree_checkpoint_3d_mod.F90`, MPI EB checkpoint modules and regular-tree checkpoint modules | Context checks and rank-neutral continuation are implemented on declared paths; this does not establish scalable or crash-atomic I/O. |
+
+The current EB trajectory and conditioning results are in the
+[dated application evidence](validation/eb-full-cvode-application-20261024.md).
+The n32 short-step reference/convergence failure remains open even though
+its shared-limiter amplification is localized. This routing update does not
+close C0: the complete release case/configuration matrix still needs an
+explicit scope freeze and source-bound qualification.
+
+## Earlier bounded-path mappings
+
 | PeleC reference | PeleF implementation | Status |
 |---|---|---|
 | `Source/main.cpp` | serial `app/pelef*.F90` and distributed `app/pelef_mpi*.F90` drivers | Separate constant-gamma, reactive, and MPI verification applications |

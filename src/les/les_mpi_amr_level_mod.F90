@@ -6,6 +6,9 @@ module les_mpi_amr_level_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use les_amr_patch_tree_mod, only: convert_amr_les_tree_energy_3d
+  use les_mpi_amr_tree_mod, only: agree_les_frame_3d
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
   use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_ghosted_3d
   use les_filter_3d_mod, only: les_filter_weights
@@ -20,11 +23,13 @@ module les_mpi_amr_level_mod
   private
   public :: advance_mpi_amr_tree_les_level_3d
 contains
-  subroutine advance_mpi_amr_tree_les_level_3d(tree,owners,species,state,temperature,depth,root_spacing,dt,faces, &
+  recursive subroutine advance_mpi_amr_tree_les_level_3d(tree,owners,species,state,temperature,depth,root_spacing,dt,faces, &
       cs,prt,sct,integrated_flux,maximum_diffusivity,comm,ok, &
       coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,coarse_limiter,outlet_pressure, &
-      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -54,7 +59,10 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6),mach(6),tin(6),pin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
-    type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature
+    type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature,ordinary,ordinary_t, &
+      ordinary_start,ordinary_end
+    type(amr_tree_flux_3d), allocatable :: rotated_flux(:)
+    real(dp) :: rotated_diffusivity
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_diffusivity,second_diffusivity
     integer :: node,nvar,rank,status,ios,parent
@@ -68,6 +76,54 @@ contains
     logical :: valid
     ok=.false.
     nvar=reactive_nvar(size(species))
+    call agree_les_frame_3d(frame,domain_lower,comm,valid)
+    if(.not.valid) return
+    if(present(frame)) then
+      endpoint_flags(1:2)=[merge(1,0,present(coarse_start)),merge(1,0,present(coarse_end))]
+      call MPI_Allreduce(endpoint_flags(1:2),minimum_flags(1:2),2,MPI_INTEGER,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(endpoint_flags(1:2),maximum_flags(1:2),2,MPI_INTEGER,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS) return
+      if(any(minimum_flags(1:2)/=maximum_flags(1:2)).or.endpoint_flags(1)/=endpoint_flags(2)) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
+      if(.not.valid) return
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      ordinary=state;ordinary_t=temperature
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.false.,valid,owners,rank)
+      call agree(valid)
+      if(.not.valid) return
+      if(present(coarse_start)) then
+        ordinary_start=coarse_start;ordinary_end=coarse_end
+        call convert_amr_les_tree_energy_3d(tree,ordinary_start,root_spacing,frame,domain_lower,.false.,valid, &
+          owners,rank,maximum_depth=depth-1)
+        call agree(valid)
+        if(.not.valid) return
+        call convert_amr_les_tree_energy_3d(tree,ordinary_end,root_spacing,frame,domain_lower,.false.,valid, &
+          owners,rank,maximum_depth=depth-1)
+        call agree(valid)
+        if(.not.valid) return
+        call advance_mpi_amr_tree_les_level_3d(tree,owners,species,ordinary,ordinary_t,depth,root_spacing,dt,faces, &
+          cs,prt,sct,rotated_flux,rotated_diffusivity,comm,valid, &
+          ordinary_start,ordinary_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
+          wall_temperature,wall_velocity,coarse_limiter,outlet_pressure, &
+          model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      else
+        call advance_mpi_amr_tree_les_level_3d(tree,owners,species,ordinary,ordinary_t,depth,root_spacing,dt,faces, &
+          cs,prt,sct,rotated_flux,rotated_diffusivity,comm,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+          wall_temperature=wall_temperature,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter, &
+          outlet_pressure=outlet_pressure,model=model,ci=ci,test_model=test_model,test_ratio=test_ratio, &
+          grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+      endif
+      if(.not.valid) return
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.true.,valid,owners,rank)
+      call agree(valid)
+      if(.not.valid) return
+      state=ordinary;temperature=ordinary_t;maximum_diffusivity=rotated_diffusivity
+      call move_alloc(rotated_flux,integrated_flux)
+      ok=.true.;return
+    endif
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)

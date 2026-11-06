@@ -3,12 +3,14 @@ program test_les_amr_level
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
+  use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
-    initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d
+    initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d,average_down_amr_patch_tree_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,advance_amr_patch_tree_les_3d, &
     compute_amr_patch_tree_les_timestep_3d
+  use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_3d
   use les_amr_subcycle_mod, only: compute_amr_patch_tree_subcycle_les_timestep_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -73,7 +75,7 @@ program test_les_amr_level
       call require(ok.and.sub_dt>=common_dt.and.sub_dt<=4*common_dt,'subcycle interval bounds')
       call require(sub_diff==common_diff,'subcycling preserves diffusivity diagnostic')
       if(geometry==0) call require(sub_dt==common_dt,'root interval equality')
-      if(geometry==1.and.m==4) call require(sub_dt>common_dt,'dynamic fine-grid bound is relaxed by subcycling')
+      if(geometry==1.and.m==4) call require(sub_dt==common_dt,'root-limited dynamic interval stays unchanged')
       call compute_amr_patch_tree_subcycle_les_timestep_3d(tree,species,state,temps,h,.025_dp,faces, &
         .17_dp,.7_dp,.7_dp,half_dt,half_diff,ok,model=model)
       call require(ok.and.half_dt==.5_dp*sub_dt.and.half_diff==sub_diff,'subcycle CFL scaling')
@@ -134,8 +136,68 @@ program test_les_amr_level
       end if
     end do
   end do
+  call check_fine_limited_timestep()
   print '(a)','test_les_amr_level: PASS'
 contains
+  subroutine check_fine_limited_timestep()
+    type(amr_patch_tree_3d) :: fine_tree
+    type(amr_patch_3d) :: full_patch(1)
+    type(amr_tree_state_3d) :: field,thermal
+    real(dp) :: fine(12,8,8,8),ft(8,8,8),coarse_rhs(12,4,4,4),fine_rhs(12,8,8,8)
+    real(dp) :: v(4),primitive(12),local_t,speed,coarse_d,fine_d,root_bound,fine_bound
+    real(dp) :: ordinary,recursive,diagnostic,recursive_d,coarse_t(4,4,4)
+    integer :: a,b,c
+    logical :: valid
+    ! Four fine cells resolve a velocity mode whose restriction is an
+    ! alternating coarse mode with zero centered gradient. Thus the fine
+    ! viscous constraint controls, instead of the old root-limited fixture.
+    v=[100._dp,0._dp,-100._dp,0._dp]
+    call initialize_amr_patch_3d(4,4,4,1,4,1,4,1,4,2,full_patch(1),valid)
+    call require(valid,'fine-limited patch')
+    call initialize_amr_patch_tree_3d([4,4,4],[1],full_patch,fine_tree,valid)
+    call require(valid,'fine-limited tree')
+    do c=1,8
+      do b=1,8
+        do a=1,8
+          primitive=0;primitive(1)=.3_dp;primitive(2)=v(modulo(b-1,4)+1)
+          primitive(3)=v(modulo(a-1,4)+1);primitive(5)=101325;primitive(12)=1
+          call reactive_primitive_to_conserved(species,primitive,fine(:,a,b,c),local_t,speed,valid)
+          call require(valid,'fine-limited initial gas');ft(a,b,c)=local_t
+        enddo
+      enddo
+    enddo
+    call prolong_amr_patch_tree_3d(fine_tree,root,field,valid)
+    call require(valid,'fine-limited field allocation')
+    call prolong_amr_patch_tree_3d(fine_tree,temperature,thermal,valid)
+    call require(valid,'fine-limited temperature allocation')
+    field%fields(2)%values=fine;thermal%fields(2)%values(1,:,:,:)=ft
+    call average_down_amr_patch_tree_3d(fine_tree,field,valid)
+    call require(valid,'fine-limited restriction')
+    call recover_reactive_temperatures_3d(species,field%fields(1)%values,thermal%fields(1)%values(1,:,:,:), &
+      4,4,4,coarse_t,valid)
+    call require(valid,'fine-limited restricted caloric state')
+    thermal%fields(1)%values(1,:,:,:)=coarse_t
+    ! Compute the two local bounds independently of either timestep selector.
+    call compute_dynamic_les_rhs_3d(species,field%fields(1)%values,thermal%fields(1)%values(1,:,:,:), &
+      h,'box',2,coarse_rhs,valid,maximum_diffusivity=coarse_d)
+    call require(valid,'fine-limited root operator')
+    call compute_dynamic_les_rhs_3d(species,fine,ft,h/2,'box',2,fine_rhs,valid,maximum_diffusivity=fine_d)
+    call require(valid.and.fine_d>0,'fine-limited fine operator active')
+    root_bound=1.e6_dp
+    if(coarse_d>0) root_bound=.05_dp/(coarse_d*sum(1._dp/h**2))
+    fine_bound=.05_dp/(fine_d*sum(1._dp/(h/2)**2))
+    call require(4*fine_bound<root_bound,'fine bound remains controlling after four substeps')
+    call compute_amr_patch_tree_les_timestep_3d(fine_tree,species,field,thermal,h,.05_dp,faces, &
+      .17_dp,.7_dp,.7_dp,ordinary,diagnostic,valid,model='dynamic')
+    call require(valid,'fine-limited common selector')
+    call compute_amr_patch_tree_subcycle_les_timestep_3d(fine_tree,species,field,thermal,h,.05_dp,faces, &
+      .17_dp,.7_dp,.7_dp,recursive,recursive_d,valid,model='dynamic')
+    call require(valid,'fine-limited recursive selector')
+    print *, 'fine-limited bounds/dt:',root_bound,fine_bound,ordinary,recursive
+    call require(abs(ordinary-fine_bound)<=32*epsilon(1._dp)*fine_bound,'common selector uses fine local bound')
+    call require(abs(recursive-4*fine_bound)<=32*epsilon(1._dp)*4*fine_bound,'recursive selector scales fine bound by four')
+    call require(recursive>ordinary.and.diagnostic==recursive_d,'fine-limited global interval relaxes')
+  end subroutine check_fine_limited_timestep
   subroutine require(condition,label)
     logical, intent(in) :: condition
     character(len=*), intent(in) :: label

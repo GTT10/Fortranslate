@@ -14,6 +14,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--eos-policy', choices=('strict', 'pinned'), default='strict',
+                        help='Candidate temperature inversion policy; native reference stays unchanged')
+    parser.add_argument('--cells', type=int, choices=(4, 8, 16), default=4,
+                        help='Cells per side in the fixed 4 mm periodic cube')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     bundle = json.loads(args.bundle.read_text())
@@ -36,12 +40,17 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     text = (root / 'cases/spray_reference/evaporation.inp.in').read_text()
     text = text.replace('@O2@', format(oxygen, '.17g')).replace('@N2@', format(1-oxygen, '.17g'))
+    text = text.replace('amr.n_cell = 4 4 4', f'amr.n_cell = {args.cells} {args.cells} {args.cells}')
+    text = text.replace('amr.max_grid_size = 4', f'amr.max_grid_size = {args.cells}')
     (args.output / 'reference.inp').write_text(text)
     tree = (root / 'cases/spray_reference/tree.nml.in').read_text().replace('@DENSITY@', format(density, '.17g'))
     tree = tree.replace('@SIMPLE_TRANSPORT@', '.true.' if simple_transport else '.false.')
+    if args.eos_policy == 'pinned':
+        tree = tree.replace('&eb_tree', '&eb_tree\n pinned_eos_extrapolation=.true.,', 1)
+    tree = tree.replace('root_shape=4,4,4', f'root_shape={args.cells},{args.cells},{args.cells}')
     (args.output / 'tree.nml').write_text(tree)
     (args.output / 'spray.nml').write_bytes((root / 'cases/spray_reference/spray.nml').read_bytes())
-    (args.output / 'level_set.dat').write_text('4 4 4\n' + '1.0\n' * 5**3)
+    (args.output / 'level_set.dat').write_text(f'{args.cells} {args.cells} {args.cells}\n' + '1.0\n' * (args.cells+1)**3)
     # 3 positions + 11 SprayComps real values: velocity, T, diameter,
     # composition, current/initial multiplicity, breakup state and film height.
     row = [.15,.15,.15,0,0,200,310,.002,1,multiplicity,multiplicity,0,0,0]
@@ -50,6 +59,7 @@ def main():
         reference=manifest, gas_temperature=400, liquid_temperature=310,
         total_liquid_mass_kg=1e-10, multiplicity=multiplicity,simple_transport_enabled=simple_transport,
         gas_mass_fractions=dict(O2=oxygen,N2=1-oxygen),
+        candidate_eos_policy=args.eos_policy,cells_per_side=args.cells,domain_length_m=.004,
         note='3D periodic in-range adaptation; time-integrator parity not established'), indent=2)+'\n')
     print(args.output.resolve())
 

@@ -6,6 +6,44 @@ single-component point parcels, molecular transport, a deviatoric Smagorinsky
 closure and native or CVODE cell chemistry. It does not replace the existing
 AMR/EB/MPI applications or claim those features are connected to particles.
 
+## Pinned EOS policy in spray applications
+
+`pinned_eos_extrapolation=.true.` connects the pinned default Fuego inversion
+and positive-temperature polynomial evaluation through the per-run gas,
+particle/film property, transport and LES callbacks. Select it in `spray` for
+regular serial, `mpi_spray` for regular MPI, `reactive_3d` for MPI regular AMR,
+or `reactive_eb_3d` for single-EB spray. Fixed and selected frontends share the
+same owning library policy. The existing EB-tree `eb_tree` option also remains
+available. Defaults retain the strict fitted-range policy.
+
+`pinned_eos_temperature_min/max` defaults to zero/zero, selecting common fitted
+inverse bounds. An explicit positive increasing pair records mechanism.H
+exceptions without changing coefficients, fit metadata or mechanism SHA.
+Active effective mode/bounds are part of restart identity; changed mode or
+bounds are rejected before output. MPI regular input broadcasts all three
+controls, and MPI regular/AMR applications agree on their normalized policy
+before gas or particle evaluation. Public library input tables remain intact.
+
+Eight frontend checks complete 40 bounded runs/restarts and 16 isolated
+checkpoint-policy refusals, with heating enabled and cold/hot gas. AMR checks
+include two-level particle coupling and 2-to-4-rank continuation. Existing
+regular serial/MPI checkpoint files match saved strict-mode binaries byte for
+byte. Fixed/selected AMR component data also match exactly after accounting
+only for each checkpoint transaction's fresh timestamp/system-clock generation
+and its declared context-length dependency. This is bounded integration
+and restart evidence, not full particle trajectory or physical validation
+(`build/pinned-eos-spray-bindings-20261007`). Four fixed-frontend EOS application
+regressions are registered with CTest.
+
+The Spray-A, Jet, Multijet and Spray-EB preparers now derive explicit inverse
+bounds from both temperature-inversion definitions in the SHA/blob-pinned
+Simple header. Generated cases enable this EOS policy and retain the pinned
+fuel reference temperature: 298.15 K for A/Jet/Multijet and 300 K for EB. The
+thermo coefficients, liquid-property ranges and other prepared input bytes
+are unchanged. Four preparation comparisons and six malformed/provenance
+refusals pass (`build/reference-preparer-eos-20261007`); these are preparation
+checks, not application runs or full reference trajectories.
+
 ## LES in particle SDC
 
 The Spray-Jet gas mechanism is available with
@@ -55,6 +93,74 @@ transactional rejection ([evidence](validation/les-particle-sdc-20260927.md)).
 The MPI EB spray application accepts optional `eb_spray_les` controls for this
 fully regular geometry route, limits the timestep and binds enabled settings to
 checkpoint identity ([application evidence](validation/les-particle-app-20260927.md)).
+
+## Retained internal energy and pressure work in regular AMR spray
+
+The fixed and selected regular MPI AMR spray applications retain signed
+`rho e` for both Godunov SDC and MOL. Gas EOS, particle/film sampling, coarse
+old/new endpoints, remapping and changed-rank restart use this scalar.
+`advance_mpi_amr_spray_sdc` accepts optional
+`internal_energy_pressure_work_change` with retained internal energy; it returns
+the accepted interval's signed `-dt integral(p div u) dV` in joules over
+composite leaf clocks. MOL returns zero. Gas, scalar, numerical correction,
+pressure work, particles and films publish together after final collection,
+migration and splitting succeed; failure preserves caller outputs.
+
+The application accumulates this increment only after a complete successful
+step and reports `Internal energy pressure work` separately from the total-energy
+boundary/source budget. The coupled checkpoint API uses the same optional name
+for the **cumulative** history, stores it in the gas payload's retained-energy V2
+metadata, and binds its presence through `SPRAY_UEINT_PRESSURE_WORK_V1`.
+Reads reject missing or nonfinite history and publish it only after the particle
+and film payloads pass their checks. Library callers that omit this history keep
+the preceding format; application checkpoints now require it. The pinned
+reference's `Setup.cpp` requires MOL for rotating calculations; rotating Godunov
+would be a separate extension, whose completion scope awaits the user's decision.
+Full reacting/transport/trajectory qualification remains open.
+
+## Rotating particle energy accounting
+
+The regular MPI AMR SDC/MOL wrapper and the common/recursive MPI EB wrappers
+export optional `frame_energy_change` in joules. This records the change caused
+by storing total energy as `E_rot = E - M*Phi`. It is separate from ordinary
+physical particle-force work; the particle velocity update retains drag and the
+specified external acceleration, as in the pinned `Spray/Drag.H` update.
+
+Let `P` be the sum of `M*Phi` over owned physical parcels and films. The
+coordinate contribution to a combined gas/liquid energy budget is
+
+```
+C_frame = -sum(delta_rho_gas * Phi_cell * fluid_volume)
+          + P_before - P_after - sum(M_out * Phi_exit).
+```
+
+The gas term uses the physical deposited source, independently of the gas
+background. Liquid terms use actual particle/film positions. The exterior term
+uses the flight exit point. Virtual and ghost populations do not enter these
+inventories. Old and final particle/film half kicks contribute once; intermediate
+SDC stages retain cached terms and reject changed frame settings. Add `C_frame`
+to the existing boundary, wall and physical-force budget when comparing combined
+`E_rot` inventories. Gas-only feedback accounting remains in its converted
+source field.
+
+The converter's optional `energy_change` similarly returns its integrated signed
+storage conversion on exposed valid cells. It excludes halos and covered cells,
+uses fluid volume for EB geometry, and honors an optional depth ceiling. Conversion,
+liquid inventory, exterior flight and outer wrappers publish their new scalars
+only on success. Analytic source/drift/exit checks and the regular coupled
+`1e-19` exchange gate pass. This library accounting does not establish particle
+trajectory parity with the pinned solver. The EB application emits a separate
+`coordinate_energy` budget column and includes it in the residual; its coupled
+checkpoint retains the cumulative value. Pre-ledger rotating checkpoints reject
+rather than assuming a zero history. The regular AMR spray application accepts
+`&reactive_rotation`, forwards the frame through MOL/LES, remapping and timestep
+selection, and reports `Coordinate energy inventory` separately from external
+sources. Its checkpoint stores native `E_rot`, binds frame and coordinate
+settings, and validates EOS using an ordinary-energy copy. Gas CSV energy remains
+in the ordinary convention for pressure/temperature output. Fixed and selected
+LF/LES changed-rank restart checks cover the new cumulative history and rejection
+of changed frames or nonfinite values. Broader trajectory/boundary comparisons
+remain required.
 
 ## Particle source export for SDC integration
 
@@ -1564,6 +1670,27 @@ the final pulse uses the remaining window duration so injected mass is exact.
 The fluid time step is clipped to injection events. This is a prescribed
 particle source in a periodic box, **not** a resolved nozzle or open inlet.
 
+Regular serial `/spray/` and MPI `/mpi_spray/` inputs accept
+`initial_timestep_factor` (default 1, range `(0,1]`) and
+`maximum_timestep_growth` (default 1.1, at least 1). The first physical timestep
+estimate receives the factor; later estimates are capped by growth times the
+last accepted interval. Final-time and injection-event caps are applied afterward.
+The application checkpoint wraps its existing state format with
+`PELEF_SPRAY_TIMESTEP_HISTORY_V1` and stores the accepted interval. Restart
+requires this history and matching controls; low-level callers that omit the
+optional history retain their existing checkpoint format.
+Both regular particle frontends also accept `initial_dt=0` and `fixed_dt=0`;
+nonpositive values disable the prescribed mode. Positive `initial_dt` overrides
+the first physical estimate, factor and maximum cap. Positive `fixed_dt`
+bypasses physical timestep estimates and subsequent growth caps, but must not
+exceed serial `maximum_dt` or MPI `dt_max`. Without positive `initial_dt`, the
+first fixed step still receives `initial_timestep_factor`. Injection events and
+final time cap every mode; all four controls bind restart identity. Existing
+transactional step retries remain, and history records the interval actually
+accepted, including an event-capped or retried interval. Prescribed intervals
+require a stable user choice.
+
+
 `stop_after_steps` plus `checkpoint_file` writes a coupled checkpoint;
 `restart_file` resumes into a **new** output prefix. The file contains gas and
 liquid state, time/step/event counters and original/injected budgets. It embeds
@@ -1642,8 +1769,10 @@ The deformation oscillator and ETAB child-size law follow the pinned
 Breakup decreases a representative droplet's mass and increases its multiplicity
 at constant parcel inventory, velocity and temperature. It preserves system
 mass, momentum and the existing thermal/kinetic energy convention, which omits
-surface energy. Child radii are bounded by `minimum_diameter/2`; an excessive
-substep count or invalid state rejects the complete coupling step.
+surface energy. The pinned minimum-mass rule stops breakup when the incoming
+radius is below `4*(3*1e-16 kg/(4*pi*rho_liquid))**(1/3)`; an ETAB child radius
+is not clamped to that threshold. An excessive substep count or invalid state
+rejects the complete coupling step.
 
 `deformation` and `deformation_rate` are included in breakup-enabled parcel CSVs
 and checkpoint V3 (periodic) or V4 (with physical-boundary inventory). Material
@@ -2145,8 +2274,11 @@ This inventory remains included in the parent until release. The reference's
 3% jet threshold and 90% parent threshold select partial or full release;
 partial release also requires a resolved child radius and sufficient child count.
 The volume denominator's numerical epsilon is converted from cm³ to m³.
-The configured `minimum_diameter` supplies the radius floor, rather than the
-reference's density-dependent minimum-mass rule.
+The reference child policy (`khrt_parcel_factor` in [0,1]) uses the upstream
+density-dependent minimum radius, `4*(3*1e-16 kg/(4*pi*rho_liquid))**(1/3)`.
+The default symmetric child policy retains the configured `minimum_diameter/2`
+floor. The reference representative radius can shrink below its minimum radius
+after a KH event; subsequent breakup then stops, as in the pinned source.
 
 By default, each release creates four equal-weight children in opposite transverse pairs,
 with speed `0.188 * omega_KH * lambda_KH`. They inherit the parent's position,
@@ -4074,6 +4206,22 @@ coupling and recursive particle stepping remain open. See the [acceleration chec
 The boundary/splitting extension is recorded in the
 [focused checks](validation/spray-sdc-boundaries-split-20260927.md).
 
+### Regular serial MOL
+
+The serial spray application accepts `time_integrator='mol'` with
+`hydro_reconstruction='characteristic_plm'` and `riemann_solver='pelec'`.
+`sdc_iterations` selects reacting MOL iterations; nonreacting gas takes one
+trapezoidal pass. `mol_lax_friedrichs=.true.` selects LF instead of acoustic
+fluxes. Both controls are bound to checkpoint identity. The library APIs
+`advance_spray_reactive_sdc_3d` and `advance_les_sdc_3d` expose corresponding
+optional `mol_mode` and `mol_lax_friedrichs` arguments. Molecular transport,
+LES, particle MKD/MK, wall impact and film half kicks reach this route.
+Later reacting passes omit new auxiliary sources; an explicit correction
+retains the completed physical particle/film exchange. This conservation
+extension has bounded native reaction and exact restart checks, but does not
+establish pinned PeleC trajectory parity. Selected/CVODE and full-duration
+comparisons remain open.
+
 ### Film source export for SDC
 
 `advance_mpi_amr_film_coupling` now accepts optional `gas_change`, an owner-local
@@ -4112,7 +4260,23 @@ feedback on levels other than the one being advanced. Only uncovered fluid
 cells on those levels contribute. Old/final-new increments wait in private
 buffers until the interval at `min(source depth,target depth)` closes; they
 are then applied after flux synchronization, followed by EOS recovery and
-restriction. The auxiliary inventory includes these increments once.
+restriction. The auxiliary inventory includes these increments once. Reacting MOL routing
+uses the same accepted nonspatial weights as the selected level: old/new halves
+on its first pass and only the old half on subsequent Picard passes. MPI MOL
+interval history retains the off-level impulses; a private conservative interval
+replay repeats completed descendant closures and leaves the current parent's
+unapplied bucket for its original closure.
 The default keeps the previous selected-level masking. This supplies source
 routing, not the remaining per-particle recursive schedule. See
 [cross-level checks](validation/sdc-cross-level-source-20260927.md).
+
+## Constant gas transport input
+
+A separate `&reactive_constant_transport` group in the same input sets constant
+gas viscosity/conductivity and optional bulk viscosity and rhoD (kg/(m s)).
+It requires enabled gas transport, reaches gas stages and timestep bounds,
+and is included in restart matching. The same resolved coefficients reach parcel/film skin transport evaluation.
+Full rhoD overrides use the pinned Drag.H molecular-weight conversion.
+Zero rhoD is accepted by skin-property evaluation and by free-particle drag/heating
+when evaporation is disabled. Active evaporation still requires positive diffusivity;
+zero viscosity/conductivity transfer correlations remain unsupported.

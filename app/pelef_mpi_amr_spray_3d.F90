@@ -15,7 +15,16 @@ program pelef_mpi_amr_spray_3d
     reactive_3d_config, read_reactive_3d_configuration, &
     reactive_3d_mole_fractions
   use spray_mpi_amr_application_mod, only: run_mpi_amr_spray_application
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
+#ifdef PELEF_SDC_CVODE
+  use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
+#endif
   implicit none
+#ifdef PELEF_SDC_CVODE
+  logical, parameter :: cvode_available=.true.
+#else
+  logical, parameter :: cvode_available=.false.
+#endif
 
   type(reactive_3d_config) :: config
   type(nasa7_species), allocatable :: species(:)
@@ -36,7 +45,10 @@ program pelef_mpi_amr_spray_3d
   call get_command_argument(2, topology_path)
   call read_reactive_3d_configuration( &
     trim(input_path), config, ok, message,&
-    allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true.)
+    allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true., &
+    allow_sdc=.true.,allow_mol=.true.,allow_sdc_cvode=cvode_available,allow_external_forcing=.true., &
+    allow_dual_energy=.true.,allow_godunov_dual_energy=.true., &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     call fatal('Invalid MPI tree command or input')
@@ -64,10 +76,22 @@ program pelef_mpi_amr_spray_3d
     config, size(species), mole_fractions, ok)
   if (.not. ok) call fatal('Failed to resolve fixed 3D AMR composition')
   call get_command_argument(3,schedule_path)
-  call run_mpi_amr_spray_application(trim(input_path),trim(topology_path),trim(schedule_path), &
-    config,species,reactions,transport,mole_fractions,MPI_COMM_WORLD)
+#ifdef PELEF_SDC_CVODE
+  if(config%sdc_reactor=='cvode') then
+    call run(advance_forced_reactor_cvode)
+  else
+    call run()
+  endif
+#else
+  call run()
+#endif
   call MPI_Finalize(ierr)
 contains
+  subroutine run(evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
+  call run_mpi_amr_spray_application(trim(input_path),trim(topology_path),trim(schedule_path), &
+    config,species,reactions,transport,mole_fractions,MPI_COMM_WORLD,evaluate_reaction=evaluate_reaction)
+  end subroutine run
   subroutine fatal(reason)
     character(len=*), intent(in) :: reason
     integer :: status

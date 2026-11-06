@@ -18,6 +18,7 @@ add_library(
   src/physics/h2o2_full_thermo_mod.F90
   src/physics/mixture_thermo_mod.F90
   src/physics/rotating_frame_3d_mod.F90
+    src/physics/dual_energy_mod.F90
   src/transport/gas_transport_mod.F90
   src/transport/transport_database_mod.F90
   src/transport/mixture_transport_mod.F90
@@ -43,6 +44,7 @@ add_library(
   src/eb/eb_reactive_redistribution_3d_mod.F90
   src/eb/eb_reactive_transfer_3d_mod.F90
   src/eb/eb_reactive_reflux_3d_mod.F90
+  src/eb/eb_held_funding_queue_3d_mod.F90
   src/amr/amr_reactive_1d_mod.F90
   src/amr/amr_eb_hierarchy_2d_mod.F90
   src/amr/amr_eb_patch_tree_2d_mod.F90
@@ -61,12 +63,15 @@ add_library(
   src/reactive/reactive_3d_mod.F90
   src/eb/eb_reactive_hydro_3d_mod.F90
   src/eb/eb_mol_hydro_3d_mod.F90
+  src/reactive/reactive_mol_3d_mod.F90
   src/eb/eb_reactive_two_level_3d_mod.F90
   src/eb/eb_reactive_patch_tree_3d_mod.F90
   src/amr/amr_hierarchy_3d_mod.F90
   src/amr/amr_patch_tree_3d_mod.F90
   src/amr/amr_patch_tree_ghost_3d_mod.F90
   src/amr/amr_patch_tree_reflux_3d_mod.F90
+  src/amr/conservative_reflux_budget_mod.F90
+  src/amr/amr_tree_reflux_graph_3d_mod.F90
   src/amr/amr_patch_tree_hydro_3d_mod.F90
   src/amr/amr_patch_tree_subcycle_3d_mod.F90
   src/amr/amr_patch_tree_chemistry_3d_mod.F90
@@ -78,6 +83,7 @@ add_library(
   src/driver/amr_patch_tree_application_3d_mod.F90
   src/amr/amr_reactive_3d_mod.F90
   src/amr/amr_reactive_transport_3d_mod.F90
+  src/io/reactive_checkpoint_context_mod.F90
   src/io/amr_reactive_3d_checkpoint_mod.F90
   src/io/amr_patch_tree_checkpoint_3d_mod.F90
   src/driver/amr_reactive_3d_application_mod.F90
@@ -149,6 +155,7 @@ add_library(
   src/io/csv_io_2d_mod.F90
   src/io/csv_io_3d_mod.F90
   src/io/reactive_csv_io_3d_mod.F90
+  src/io/reactive_3d_checkpoint_mod.F90
   src/driver/reactive_3d_application_mod.F90
   src/io/csv_io_multispecies_mod.F90
 )

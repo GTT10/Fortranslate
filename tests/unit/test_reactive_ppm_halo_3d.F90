@@ -409,6 +409,25 @@ contains
           call require(valid.and.abs(gradient(1)-expected)<1e-14_dp,'EB PLM covered-stencil order fallback')
         end do
       end do
+      ! Captured positive trace species at a local minimum. Multiplying
+      ! its opposite gradients underflows to -0 and must not admit a slope.
+      line(1,:)=[1.9669864606043052e-139_dp,2.1381619906164792e-183_dp, &
+        2.6355762378475875e-210_dp,4.2460545799637185e-166_dp,2.9072126599529596e-132_dp]
+      do order=2,4,2
+        call compute_pelec_plm_slopes(line,1._dp,order,gradient,valid)
+        call require(valid.and.gradient(1)==0,'tiny opposite gradients retain zero extremum slope')
+      enddo
+      eb_stencil=0;eb_stencil(1,:)=.8789777620797411_dp;eb_stencil(5,:)=101325._dp
+      eb_stencil(2,:)=-3.97416485187974e-59_dp
+      eb_stencil(6,:)=line(1,:);eb_stencil(nv,:)=1
+      call reconstruct_pelec_plm_cell(eb_stencil,400.6282744963411_dp,2.5e-5_dp,1._dp, &
+        qm,qp,valid,face_open=[.true.,.false.],normalize_species=.false.)
+      call require(valid.and.qm(6)==eb_stencil(6,0).and.all(qm(6:)>=0), &
+        'captured trace-species minimum reconstructs a nonnegative face')
+      line(1,:)=[1._dp,2._dp,3._dp,4._dp,5._dp]*1e-200_dp
+      call compute_pelec_plm_slopes(line,1._dp,4,gradient,valid)
+      call require(valid.and.abs(gradient(1)/1e-200_dp-1)<8*epsilon(1._dp), &
+        'tiny same-sign gradients retain their linear slope')
       covered=.false.;covered(-2)=.true.
       eb_stencil=stencil(:,-2:2)
       eb_stencil(:,-2)=ieee_value(0._dp,ieee_quiet_nan)

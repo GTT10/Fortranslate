@@ -22,6 +22,9 @@ program test_spray_mpi_amr_film_checkpoint
   type(amr_patch_3d) :: patches(2)
   type(amr_patch_tree_3d) :: tree
   type(amr_tree_state_3d) :: gas,temp,saved,saved_t,expected,expected_t,local,local_t
+  type(amr_tree_state_3d) :: rates,heat,saved_rates,saved_heat,held,saved_held
+  real(dp) :: energy_correction=3.5_dp,work_change=-.25_dp,saved_correction=3.5_dp,saved_work=-.25_dp
+  logical :: heat_known
   type(gas_transport_species), allocatable :: transport(:)
   type(spray_liquid) :: liquids(2)
   type(spray_options) :: options
@@ -93,11 +96,15 @@ program test_spray_mpi_amr_film_checkpoint
   call initialize_spray_liquid(species,'H2O2',800._dp,2000._dp,350._dp,101325._dp,1e6_dp,liquids(2),ok)
   call require(ok,'peroxide liquid')
   owners=[0,1,nranks-1]
-  allocate(local%fields(3),local_t%fields(3))
+  allocate(local%fields(3),local_t%fields(3),rates%fields(3),heat%fields(3))
+  heat_known=.true.
   do node=1,3
     if (owners(node)/=rank) cycle
     local%fields(node)%values=gas%fields(node)%values
     local_t%fields(node)%values=temp%fields(node)%values
+    n=tree%nodes(node)%shape
+    allocate(rates%fields(node)%values(nv-4,n(1),n(2),n(3)),source=-real(node,dp))
+    allocate(heat%fields(node)%values(1,n(1),n(2),n(3)),source=real((-1)**node*node,dp)*1.e9_dp)
   end do
   allocate(drops(merge(2,0,rank==nranks-1)),masses(2,merge(2,0,rank==nranks-1)))
   do p=1,size(drops)
@@ -126,16 +133,27 @@ program test_spray_mpi_amr_film_checkpoint
   allocate(parcels(0),parcel_mass(2,0),injected(nv),boundary(nv))
   injected=0;boundary=0;boundary(5)=.125_dp
   time=1e-8_dp;steps=2;event=3;regridded=.false.;last_id=17;capacity=100
+  held=local_t
+  do node=1,size(owners)
+    if(owners(node)/=rank) cycle
+    held%fields(node)%values(1,:,:,:)=local%fields(node)%values(5,:,:,:)
+  enddo
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses
+  saved_rates=rates;saved_heat=heat;saved_held=held
   call checkpoint(MPI_COMM_WORLD,.true.,.true.)
   call require(ok,'distributed film checkpoint write')
   call checkpoint(MPI_COMM_WORLD,.true.,.true.)
   call require(.not.ok,'immutable overwrite rejection');call unchanged()
+  saved_correction=10;saved_work=-7;energy_correction=saved_correction;work_change=saved_work
   capacity=0;time=99;boundary=123
   call checkpoint(MPI_COMM_WORLD,.false.,.true.)
   call require(.not.ok.and.time==99.and.all(boundary==123),'late film capacity read preserves metadata')
   call unchanged()
   capacity=100
+  call checkpoint(MPI_COMM_WORLD,.false.,.true.,rank/=nranks-1)
+  call require(.not.ok.and.time==99,'rank-disagreed pressure history presence rejects');call unchanged()
+  call checkpoint(MPI_COMM_WORLD,.false.,.true.,.false.)
+  call require(.not.ok.and.time==99,'omitted pressure history mode rejects');call unchanged()
   call checkpoint(MPI_COMM_WORLD,.false.,rank/=nranks-1)
   call require(.not.ok.and.time==99,'rank-disagreed film presence rejects');call unchanged()
   call checkpoint(MPI_COMM_WORLD,.false.,.false.)
@@ -145,9 +163,13 @@ program test_spray_mpi_amr_film_checkpoint
   call require(ok.and.all(owners==0).and.size(drops)==2,'changed-rank film restoration')
   call require(time==1e-8_dp.and.steps==2.and.event==3.and.last_id==17,'restart metadata')
   call require(boundary(5)==.125_dp.and.count(boundary/=0)==1,'cumulative boundary restoration')
+  call require(energy_correction==3.5_dp.and.work_change==-.25_dp,'signed UEINT histories restored')
   do node=1,size(tree%nodes)
     call require(all(local%fields(node)%values==gas%fields(node)%values),'exact restored gas')
+    call require(all(held%fields(node)%values(1,:,:,:)==gas%fields(node)%values(5,:,:,:)),'actual H restored')
     call require(all(local_t%fields(node)%values==temp%fields(node)%values),'exact restored temperature')
+    call require(all(rates%fields(node)%values==-real(node,dp)),'exact restored signed reaction rates')
+    call require(all(heat%fields(node)%values==real((-1)**node*node,dp)*1.e9_dp),'exact restored signed heat')
   end do
   do p=1,2
     call require(drops(p)%mass==1e-9_dp.and.drops(p)%temperature==330.and. &
@@ -158,7 +180,9 @@ program test_spray_mpi_amr_film_checkpoint
   end do
   call checkpoint(MPI_COMM_WORLD,.false.,.true.)
   call require(ok,'restore distributed owners and film payload')
+  saved_correction=energy_correction;saved_work=work_change
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses
+  saved_rates=rates;saved_heat=heat;saved_held=held
   ! Trailing data must not be silently accepted after the film records/footer.
   if (rank==0) then
     open(newunit=unit,file=trim(path)//'.particles',status='old',position='append')
@@ -173,22 +197,34 @@ program test_spray_mpi_amr_film_checkpoint
   if (rank==0) print *, 'PASS: MPI AMR film checkpoint; artifacts ',trim(path)
   call MPI_Finalize(ierr)
 contains
-  subroutine checkpoint(comm,writing,with_films)
+  subroutine checkpoint(comm,writing,with_films,with_work)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing,with_films
+    logical, optional, intent(in) :: with_work
+    real(dp), allocatable :: private_work
+    logical :: requested
+    requested=.true.
+    if(present(with_work)) requested=with_work
+    if(requested) allocate(private_work,source=work_change)
     if (with_films) then
       call mpi_amr_spray_checkpoint(comm,writing,trim(path),'film-test',species,tree,owners,local,local_t, &
         parcels,parcel_mass,time,steps,event,regridded,last_id,injected,zero,spacing,100,ok, &
-        [.false.,.true.,.true.],boundary,drops,masses,capacity)
+        [.false.,.true.,.true.],boundary,drops,masses,capacity, &
+        reaction_source=rates,heat_release=heat,heat_available=heat_known, &
+        internal_energy=held,energy_correction=energy_correction,internal_energy_pressure_work_change=private_work)
     else
       call mpi_amr_spray_checkpoint(comm,writing,trim(path),'film-test',species,tree,owners,local,local_t, &
         parcels,parcel_mass,time,steps,event,regridded,last_id,injected,zero,spacing,100,ok, &
-        [.false.,.true.,.true.],boundary)
+        [.false.,.true.,.true.],boundary, &
+        reaction_source=rates,heat_release=heat,heat_available=heat_known, &
+        internal_energy=held,energy_correction=energy_correction,internal_energy_pressure_work_change=private_work)
     end if
+    if(allocated(private_work)) work_change=private_work
   end subroutine
   subroutine unchanged()
     integer :: a
     call require(size(drops)==size(saved_drops),'film count rollback')
+    call require(energy_correction==saved_correction.and.work_change==saved_work,'UEINT histories rollback')
     call require(all(masses==saved_mass),'component rollback')
     do a=1,size(drops)
       call require(all(drops(a)%position==saved_drops(a)%position).and. &
@@ -200,6 +236,10 @@ contains
       if (owners(a)/=rank) cycle
       call require(all(local%fields(a)%values==saved%fields(a)%values),'gas rollback')
       call require(all(local_t%fields(a)%values==saved_t%fields(a)%values),'temperature rollback')
+      call require(all(held%fields(a)%values==saved_held%fields(a)%values),'actual H rollback')
+      call require(all(rates%fields(a)%values==saved_rates%fields(a)%values),'late film failure rate rollback')
+      call require(all(heat%fields(a)%values==saved_heat%fields(a)%values),'late film failure heat rollback')
+      call require(heat_known,'late film failure availability retained')
     end do
   end subroutine
   subroutine require(condition,label)

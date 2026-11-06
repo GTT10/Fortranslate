@@ -9,7 +9,8 @@ program test_spray_eb_step
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_level_set_eb_geometry_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties
-  use spray_eb_step_mod, only: advance_eb_mixture_coupling
+  use spray_eb_step_mod, only: advance_eb_mixture_coupling,advance_eb_mixture_coupling_allocated
+  use, intrinsic :: iso_fortran_env, only: int64
   implicit none
   type(eb_geometry_3d) :: g
   type(nasa7_species), allocatable :: species(:)
@@ -77,8 +78,132 @@ program test_spray_eb_step
   call require(drops(1)%velocity(1)>0.and.drops(1)%velocity(2)<10,'reflection and drag')
   call require(ledger(2)>0.and.drops(1)%position(1)>.00125_dp,'wall impulse and fluid endpoint')
   call require(all(state(:,1,:,:)==0).and.all(temperature(1,:,:)==42),'covered cells unchanged')
+  call check_fixed()
+  call check_reference_etab()
   print *, 'PASS: EB mixture coupling with heat, evaporation, drag and reflection'
 contains
+  subroutine check_fixed()
+    real(dp) :: constraint(5),initial(nv),final(nv),external(nv)
+    type(spray_options) :: old_options
+    integer :: attempt
+    old_options=options;options%fixed_parts=.true.;options%mixture_time_scheme='euler'
+    state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass
+    call inventory(initial)
+    do attempt=1,2
+      constraint=37;ledger=42
+      options%maximum_substeps=merge(1,100000,attempt==1)
+      call advance_eb_mixture_coupling(species,transport,liquids,options,g,phi,state,temperature, &
+        drops,masses,interval,steps,ledger,ok,force_change=constraint)
+      if(attempt==1) then
+        call require(.not.ok.and.all(constraint==37).and.all(ledger==42),'fixed EB rejected ledger rollback')
+        call require(all(state==saved).and.all(temperature==saved_t).and.all(masses==saved_mass), &
+          'fixed EB rejected gas and mass rollback')
+        call require(all(drops(1)%position==saved_drop%position).and.all(drops(1)%velocity==saved_drop%velocity), &
+          'fixed EB rejected motion rollback')
+      else
+        call require(ok.and.steps>1,'fixed EB accepted substeps')
+      end if
+    end do
+    call inventory(final);external=0;external(:5)=constraint+ledger
+    call require(all(abs(final-initial-external)<=3e-12_dp*max(abs(initial),abs(final),1e-30_dp)), &
+      'fixed EB gas parcel constraint closure')
+    call require(all(drops(1)%position==saved_drop%position).and.all(drops(1)%velocity==0), &
+      'fixed EB stationary particle')
+    call require(drops(1)%temperature>350.and.drops(1)%mass<saved_drop%mass,'fixed EB thermal and mass exchange')
+    options=old_options
+  end subroutine check_fixed
+  subroutine check_reference_etab()
+    type(spray_parcel), allocatable :: particles(:),original(:)
+    real(dp), allocatable :: composition(:,:),original_mass(:,:),grid(:,:,:,:),grid_t(:,:,:)
+    real(dp) :: wall_change(5),initial(nv),final(nv)
+    integer(int64) :: watermark
+    integer :: count,q
+    logical :: accepted,dispersed
+    particles=[spray_parcel(1_int64,[.0025_dp,.0015_dp,.0015_dp], &
+      [50._dp,0._dp,0._dp],1e-12_dp,350._dp,16._dp)]
+    allocate(composition(2,1));composition(:,1)=particles(1)%mass*[.25_dp,.75_dp]
+    original=particles;original_mass=composition;grid=saved;grid_t=saved_t
+    options%breakup_model='etab';options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+    options%maximum_multiplicity=1;options%etab_parcel_factor=.5_dp;options%maximum_parcels=3
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    watermark=1;wall_change=42
+    call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,grid,grid_t, &
+      particles,composition,1e-9_dp,count,wall_change,accepted,last_id=watermark)
+    call require(.not.accepted.and.watermark==1.and.all(grid==saved).and. &
+      all(grid_t==saved_t).and.all(particles%id==original%id).and.all(composition==original_mass), &
+      'EB reference ETAB capacity rollback')
+    options%maximum_parcels=10;wall_change=0
+    call eb_inventory(grid,particles,composition,initial)
+    call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,grid,grid_t, &
+      particles,composition,1e-9_dp,count,wall_change,accepted,last_id=watermark)
+    call require(accepted.and.size(particles)==4.and.watermark==5, &
+      'EB reference ETAB child replacement')
+    call require(all(particles%id==[2_int64,3_int64,4_int64,5_int64]).and. &
+      all(particles%parent_id==1_int64),'EB reference ETAB child lineage')
+    call eb_inventory(grid,particles,composition,final)
+    call require(all(abs(final-initial-wall_change)<=3e-12_dp*max(abs(initial),abs(final),1e-30_dp)), &
+      'EB reference ETAB gas and child conservation')
+    particles=original;particles(1)%deformation=1.1_dp
+    composition=original_mass;grid=saved;grid_t=saved_t
+    options%maximum_parcels=10000;watermark=1;wall_change=0
+    call eb_inventory(grid,particles,composition,initial)
+    call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,grid,grid_t, &
+      particles,composition,1e-9_dp,count,wall_change,accepted,last_id=watermark)
+    call require(accepted.and.size(particles)>1.and.watermark>int(size(particles),int64), &
+      'EB active ETAB parent replacement')
+    dispersed=.false.
+    do q=2,size(particles)
+      dispersed=dispersed.or.any(abs(particles(q)%velocity-particles(1)%velocity)>1e-6_dp)
+    enddo
+    call require(dispersed,'EB active ETAB transverse dispersion')
+    call eb_inventory(grid,particles,composition,final)
+    call require(all(abs(final-initial-wall_change)<=3e-12_dp*max(abs(initial),abs(final),1e-30_dp)), &
+      'EB active ETAB compensation conservation')
+    particles=original;particles(1)%deformation=1.1_dp
+    composition=original_mass;grid=saved;grid_t=saved_t
+    options%etab_parcel_factor=0;watermark=1;wall_change=0
+    call eb_inventory(grid,particles,composition,initial)
+    call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,grid,grid_t, &
+      particles,composition,1e-9_dp,count,wall_change,accepted,last_id=watermark)
+    call require(accepted.and.size(particles)>1.and.watermark==1+int(size(particles),int64), &
+      'EB active ETAB factor-zero replacement')
+    dispersed=.false.
+    do q=2,size(particles)
+      dispersed=dispersed.or.any(abs(particles(q)%velocity-particles(1)%velocity)>1e-6_dp)
+    enddo
+    call require(dispersed,'EB active ETAB factor-zero transverse dispersion')
+    call eb_inventory(grid,particles,composition,final)
+    call require(all(abs(final-initial-wall_change)<=3e-12_dp*max(abs(initial),abs(final),1e-30_dp)), &
+      'EB active ETAB factor-zero compensation conservation')
+  end subroutine
+  subroutine eb_inventory(grid,particles,composition,total)
+    real(dp), intent(in) :: grid(:,:,:,:),composition(:,:)
+    type(spray_parcel), intent(in) :: particles(:)
+    real(dp), intent(out) :: total(:)
+    real(dp) :: rho,cp,e,amount
+    integer :: ii,jj,kk,q,c
+    total=0
+    do kk=1,g%nz
+    do jj=1,g%ny
+    do ii=1,g%nx
+      total=total+grid(:,ii,jj,kk)*g%volume_fraction(ii,jj,kk)*g%dx*g%dy*g%dz
+    enddo
+    enddo
+    enddo
+    do q=1,size(particles)
+      if(particles(q)%mass<=0) cycle
+      call liquid_mixture_properties(liquids,composition(:,q)/particles(q)%mass, &
+        particles(q)%temperature,rho,cp,e,ok)
+      call require(ok,'EB ETAB liquid inventory')
+      amount=particles(q)%mass*particles(q)%multiplicity
+      total(1)=total(1)+amount;total(2:4)=total(2:4)+amount*particles(q)%velocity
+      total(5)=total(5)+amount*(e+.5_dp*sum(particles(q)%velocity**2))
+      do c=1,size(liquids)
+        total(5+liquids(c)%vapor_index)=total(5+liquids(c)%vapor_index)+ &
+          composition(c,q)*particles(q)%multiplicity
+      enddo
+    enddo
+  end subroutine
   subroutine advance()
     call advance_eb_mixture_coupling(species,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,steps,ledger,ok)

@@ -1,14 +1,19 @@
 module spray_mpi_amr_application_mod
+  use dual_energy_mod, only: dual_energy_policy
   use les_filter_3d_mod, only: les_filter_weights
-  use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d
+  use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_timestep_3d,compute_mpi_amr_tree_les_rhs_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
+  use amr_patch_tree_split_3d_mod, only: amr_sdc_diffusion_evaluator
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
-  use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
+  use spray_mixture_mod, only: apply_mixture_breakup_viscosity, liquid_mixture_properties,mixture_evolution_id
   use mpi_f08
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: iso_c_binding, only: c_char,c_size_t,c_ptr,c_associated,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy,nasa7_eos_policy_identity
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
@@ -35,10 +40,13 @@ module spray_mpi_amr_application_mod
   use spray_parcel_mod
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options,valid_wall_options
   use spray_mpi_mod, only: inject_mpi_cone_parcels
+  use spray_mpi_amr_step_mod, only: compute_mpi_amr_spray_timestep,convert_mpi_amr_tree_rotating_energy
   use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels
-  use spray_mpi_amr_reactive_mod, only: advance_mpi_amr_spray_reactive
+  use spray_mpi_amr_reactive_mod, only: advance_mpi_amr_spray_reactive,advance_mpi_amr_spray_sdc
   use spray_mpi_amr_remap_mod, only: remap_mpi_amr_spray
   use simulation_config_reactive_3d_mod, only: resolved_reactive_difmag_3d
+  use reactive_3d_application_mod, only: read_constant_transport,read_reactive_rotation_controls
+  use gas_transport_mod, only: set_constant_transport_coefficients
   implicit none
   private
   public :: run_mpi_amr_spray_application
@@ -52,24 +60,38 @@ module spray_mpi_amr_application_mod
   end interface
 contains
   subroutine run_mpi_amr_spray_application(input_path,topology_path,spray_path,config,species,reactions, &
-      transport,mole_fractions,comm,chemistry_integrator)
+      transport,mole_fractions,comm,chemistry_integrator,evaluate_reaction)
     character(len=*), intent(in) :: input_path,topology_path,spray_path
     character(len=*), optional, intent(in) :: chemistry_integrator
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(reactive_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    character(len=128) :: eos_identity,root_eos_identity
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: mole_fractions(:)
     type(MPI_Comm), intent(in) :: comm
+    type(gas_transport_species), allocatable :: property_transport(:)
+    real(dp), allocatable :: constant_coefficients(:),hit_transport_parameters(:)
     type(reactive_3d_config) :: local
     type(amr_patch_tree_3d) :: tree,target,tagged
-    type(amr_tree_state_3d) :: state,temperature
+    type(amr_tree_state_3d) :: state,temperature,ordinary
+    type(rotating_frame_3d), allocatable :: frame
+    real(dp), allocatable :: rotation_lower(:),coordinate_total
+    real(dp) :: frame_energy_step=0._dp
+    type(amr_tree_state_3d), allocatable :: reaction_source,heat_release,internal_energy
+    type(dual_energy_policy), allocatable :: energy_policy
+    real(dp), allocatable :: energy_correction,pressure_work_change,step_pressure_work
+    logical :: heat_known
     type(spray_parcel), allocatable :: parcels(:)
     type(spray_liquid), allocatable :: liquids(:)
     type(spray_options) :: options
     type(spray_wall_options) :: walls
     type(spray_wall_film), allocatable :: films(:)
     real(dp), allocatable :: film_mass(:,:)
+    real(dp), allocatable :: sdc_boundary(:),sdc_external(:),sdc_exchange(:),sdc_outside(:)
+    real(dp) :: sdc_wall(5),sdc_particle_force(5)
     real(dp) :: les_cs,les_prt,les_sct,les_ci,les_cfl,les_dt
     character(len=16) :: les_model
     character(len=64) :: les_test_model
@@ -85,6 +107,12 @@ contains
     real(dp), allocatable :: force_total(:),force_change(:)
     namelist /amr_spray_force/ acceleration
     character(len=16) :: mixture_density_models(16),mixture_cp_models(16)
+    character(len=16) :: mixture_conductivity_models(16)='supplied'
+    character(len=24) :: mixture_viscosity_models(16)='supplied'
+    real(dp) :: mixture_conductivities(16)=0,mixture_conductivity_coefficients(4,16)=0
+    real(dp) :: mixture_viscosities(16)=0,mixture_viscosity_coefficients(4,16)=0
+    real(dp) :: mixture_conductivity_temperature_ranges(2,16)=0
+    real(dp) :: mixture_viscosity_temperature_ranges(2,16)=0
     character(len=16) :: mixture_vapor_pressure_models(16),mixture_boiling_models(16)
     real(dp) :: mixture_density_coefficients(4,16),mixture_density_temperature_ranges(2,16)
     real(dp) :: mixture_cp_coefficients(4,16),mixture_cp_temperature_ranges(2,16)
@@ -93,7 +121,11 @@ contains
     real(dp) :: mixture_normal_boiling_temperatures(16)
     real(dp) :: mixture_critical_temperatures(16)
     logical :: properties_present
-    namelist /amr_spray_properties/ mixture_density_models,mixture_cp_models,mixture_vapor_pressure_models, &
+    namelist /amr_spray_properties/ mixture_density_models,mixture_cp_models, &
+      mixture_viscosity_models,mixture_viscosities,mixture_viscosity_coefficients, &
+      mixture_viscosity_temperature_ranges, &
+      mixture_conductivity_models,mixture_conductivities,mixture_conductivity_coefficients, &
+      mixture_conductivity_temperature_ranges,mixture_vapor_pressure_models, &
       mixture_boiling_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
       mixture_cp_coefficients,mixture_cp_temperature_ranges,mixture_antoine_coefficients, &
       mixture_antoine_temperature_ranges,mixture_molecular_weights, &
@@ -122,6 +154,7 @@ contains
     real(dp) :: profile_times(64,16),profile_rates(64,16),event_end_times(maximum_events),integrated_mass
     logical :: rate_velocity(16),velocity_present
     real(dp) :: discharge_coefficients(16),event_speeds(maximum_events),rate_denominator,liquid_rho,liquid_heat,liquid_energy
+    real(dp) :: maximum_injection_speed,particle_dt
     namelist /amr_spray_velocity/ rate_velocity,discharge_coefficients
     character(len=1024) :: profile_files(16)
     namelist /amr_spray_rate_files/ profile_files
@@ -139,7 +172,7 @@ contains
     real(dp) :: fractions(16),liquid_density(16),liquid_cp(16),reference_temperature(16), &
       reference_pressure(16),latent_heat(16)
     real(dp) :: total_mass,center(3),axis(3),speed,half_angle,diameter,drop_temperature,regrid_time,local_mass
-    logical :: ok,subcycling,regridded
+    logical :: ok,subcycling,regridded,sdc,mol
     character(len=32) :: faces(6)
     character(len=1024) :: regrid_topology,particle_path
     character(len=24) :: suffix
@@ -155,8 +188,28 @@ contains
       port_speeds,port_half_angles,port_diameters,port_temperatures,port_fractions,port_radii,port_nozzles, &
       adaptation_interval,refinement_levels,refinement_ratios,tile_shape,tag_buffer,maximum_nodes,temperature_thresholds, &
       rebalance_interval,rebalance_minimum_gain,walls
+    allocate(eos_species,source=species)
     call MPI_Comm_rank(comm,rank,ierr)
     call MPI_Comm_size(comm,nranks,ierr)
+    call configure_nasa7_eos_policy(eos_species,config%pinned_eos_extrapolation,ok, &
+      config%pinned_eos_temperature_min,config%pinned_eos_temperature_max)
+    if(.not.ok) call fatal('Invalid AMR spray EOS policy')
+    eos_identity=nasa7_eos_policy_identity(eos_species);root_eos_identity=eos_identity
+    call MPI_Bcast(root_eos_identity,len(root_eos_identity),MPI_CHARACTER,0,comm,ierr)
+    if(.not.(ierr==MPI_SUCCESS)) call fatal('Spray EOS policy broadcast failed')
+    if(.not.(root_eos_identity==eos_identity)) call fatal('Spray EOS policy differs by rank')
+    call read_reactive_rotation_controls(input_path,config%time_integrator,frame)
+    if(allocated(frame)) then
+      allocate(rotation_lower(3),coordinate_total)
+      rotation_lower=[config%x_lower,config%y_lower,config%z_lower];coordinate_total=0
+    endif
+    mol=config%time_integrator=='mol'
+    sdc=config%time_integrator=='sdc'.or.mol
+    if(config%sdc_reactor=='cvode'.and..not.present(evaluate_reaction)) &
+      call fatal('SDC CVODE callback is unavailable')
+    if(.not.sdc.and.any(config%external_forcing/=0)) &
+      call fatal('AMR spray gas forcing requires SDC or MOL')
+    property_transport=transport
     faces=resolved_reactive_boundaries_3d(config)
     periodic=faces([1,3,5])=='periodic'
     ! Inputs are shared files, as for the existing MPI tree applications.
@@ -165,6 +218,7 @@ contains
     reference_pressure=101325;latent_heat=2.257e6_dp
     parcel_count=1;total_mass=1e-10_dp;center=0;axis=[1._dp,0._dp,0._dp]
     speed=10;half_angle=0;diameter=1e-5_dp;drop_temperature=350;maximum_parcels=100000
+    options=spray_options();options%particle_cfl=.5_dp
     subcycling=.false.;regrid_time=-1;regrid_topology='';regridded=.false.
     rebalance_interval=0;rebalance_minimum_gain=.1_dp
     adaptation_interval=0;refinement_levels=1;refinement_ratios=2;tile_shape=4;tag_buffer=1;maximum_nodes=4096
@@ -173,6 +227,10 @@ contains
     port_count=0;port_centers=0;port_axes=0;port_axes(1,:)=1;port_speeds=10;port_half_angles=0
     port_diameters=1e-5_dp;port_temperatures=350;port_fractions=-1;port_radii=0
     mixture_density_models='constant';mixture_cp_models='constant'
+    mixture_conductivity_models='supplied';mixture_conductivities=0
+    mixture_viscosity_models='supplied';mixture_viscosities=0
+    mixture_conductivity_coefficients=0;mixture_conductivity_temperature_ranges=0
+    mixture_viscosity_coefficients=0;mixture_viscosity_temperature_ranges=0
     mixture_vapor_pressure_models='clausius';mixture_boiling_models='reject'
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
@@ -186,6 +244,14 @@ contains
     acceleration=0
     les_test_model='box';les_test_ratio=2;les_grid_ratio=1;les_harmonic_mean=.false.
     les_cs=0;les_prt=.7_dp;les_sct=.7_dp;les_ci=0;les_cfl=.1_dp;les_model='smagorinsky'
+    call read_constant_transport(input_path,constant_coefficients,hit_transport_parameters)
+    if(allocated(constant_coefficients)) then
+      call set_constant_transport_coefficients(property_transport,constant_coefficients,ok)
+      if(.not.ok) call fatal('Invalid particle constant transport controls')
+    endif
+    if(allocated(hit_transport_parameters)) call fatal('HIT transport requires initialized regular HIT scales')
+    if(allocated(constant_coefficients).and..not.config%transport_enabled) &
+      call fatal('AMR spray constant gas transport requires enabled transport')
     open(newunit=unit,file=spray_path,status='old',action='read',iostat=ios)
     if (ios/=0) call fatal('Cannot open AMR spray input')
     read(unit,nml=amr_spray,iostat=ios)
@@ -343,22 +409,25 @@ contains
     write(suffix,'(i0)') rank
     call check_output(trim(config%output_file)//'.particles.'//trim(suffix)//'.csv')
     options%maximum_parcels=maximum_parcels
-    if (.not.valid_spray_options(options)) call fatal('Invalid spray options')
     if (.not.valid_wall_options(walls,faces)) call fatal('Invalid wall impact/film options')
     wall_active=any(walls%enabled)
     if (walls%evolve.and..not.wall_active) call fatal('Film evolution requires enabled walls')
     if (wall_active) then
       if (options%surface_tension<1e-8_dp.or.options%surface_tension>1e3_dp) call fatal('Impact needs surface tension')
-      do i=1,port_count
-        if (liquid_viscosity_at_temperature(options,port_temperatures(i))<=0) &
-          call fatal('Impact needs valid liquid viscosity at each port temperature')
-      end do
       allocate(films(0),film_mass(component_count,0))
       write(suffix,'(i0)') rank
       call check_output(trim(config%output_file)//'.films.'//trim(suffix)//'.csv')
     end if
     if(any(mixture_density_models(component_count+1:)/='constant')) call fatal('Unused mixture property entries')
     if(any(mixture_cp_models(component_count+1:)/='constant')) call fatal('Unused mixture property entries')
+    if(any(mixture_conductivity_models(component_count+1:)/='supplied')) call fatal('Unused mixture conductivity entries')
+    if(any(mixture_viscosity_models(component_count+1:)/='supplied')) call fatal('Unused mixture viscosity entries')
+    if(any(mixture_conductivities(component_count+1:)/=0)) call fatal('Unused mixture conductivity entries')
+    if(any(mixture_viscosities(component_count+1:)/=0)) call fatal('Unused mixture viscosity entries')
+    if(any(mixture_conductivity_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture conductivity entries')
+    if(any(mixture_viscosity_coefficients(:,component_count+1:)/=0)) call fatal('Unused mixture viscosity entries')
+    if(any(mixture_conductivity_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture conductivity entries')
+    if(any(mixture_viscosity_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture viscosity entries')
     if(any(mixture_vapor_pressure_models(component_count+1:)/='clausius')) call fatal('Unused mixture property entries')
     if(any(mixture_boiling_models(component_count+1:)/='reject')) call fatal('Unused mixture property entries')
     if(any(mixture_critical_temperatures(component_count+1:)/=0)) call fatal('Unused mixture property entries')
@@ -372,7 +441,7 @@ contains
     if(any(mixture_antoine_temperature_ranges(:,component_count+1:)/=0)) call fatal('Unused mixture property entries')
     allocate(liquids(component_count),parcels(0),masses(component_count,0))
     do i=1,component_count
-      call initialize_spray_liquid(species,trim(vapor_names(i)),liquid_density(i),liquid_cp(i), &
+      call initialize_spray_liquid(eos_species,trim(vapor_names(i)),liquid_density(i),liquid_cp(i), &
         reference_temperature(i),reference_pressure(i),latent_heat(i),liquids(i),ok,mixture_vapor_pressure_models(i), &
         mixture_antoine_coefficients(:,i),mixture_antoine_temperature_ranges(:,i))
       if (.not.ok) call fatal('Invalid liquid properties/species')
@@ -382,12 +451,32 @@ contains
       liquids(i)%heat_capacity_model=mixture_cp_models(i)
       liquids(i)%heat_capacity_coefficients=mixture_cp_coefficients(:,i)
       liquids(i)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,i)
+      liquids(i)%conductivity_model=mixture_conductivity_models(i)
+      liquids(i)%viscosity_model=mixture_viscosity_models(i)
+      liquids(i)%conductivity=mixture_conductivities(i)
+      liquids(i)%viscosity=mixture_viscosities(i)
+      liquids(i)%conductivity_coefficients=mixture_conductivity_coefficients(:,i)
+      liquids(i)%viscosity_coefficients=mixture_viscosity_coefficients(:,i)
+      liquids(i)%conductivity_temperature_range=mixture_conductivity_temperature_ranges(:,i)
+      liquids(i)%viscosity_temperature_range=mixture_viscosity_temperature_ranges(:,i)
       liquids(i)%boiling_model=mixture_boiling_models(i)
       liquids(i)%critical_temperature=mixture_critical_temperatures(i)
       liquids(i)%normal_boiling_temperature=mixture_normal_boiling_temperatures(i)
       liquids(i)%molecular_weight=mixture_molecular_weights(i)
       if(.not.valid_spray_liquid(liquids(i))) call fatal('Invalid mixture component property model')
     end do
+    if(all(liquids%viscosity_model/='supplied')) then
+      call apply_mixture_breakup_viscosity(liquids,fractions(:component_count),drop_temperature,options,ok, &
+        config%initial_pressure,eos_species(liquids%vapor_index)%molecular_weight)
+      if(.not.ok) call fatal('Invalid component viscosity at injection')
+    end if
+    if (.not.valid_spray_options(options)) call fatal('Invalid spray options')
+    if(wall_active) then
+      do i=1,port_count
+        if (liquid_viscosity_at_temperature(options,port_temperatures(i))<=0) &
+          call fatal('Impact needs valid liquid viscosity at each port temperature')
+      end do
+    end if
     if (any(rate_velocity(port_count+1:)).or.any(discharge_coefficients(port_count+1:)/=1)) &
       call fatal('Unused velocity controls')
     do i=1,port_count
@@ -416,6 +505,20 @@ contains
       if (event_mass(i)>1e7_dp*rate_denominator) call fatal('Rate-driven speed exceeds bounds')
       event_speeds(i)=event_mass(i)/rate_denominator
     end do
+    maximum_injection_speed=maxval(event_speeds(:injection_events))
+    ! Rate-file jets retain their peak speed even between injection events.
+    do i=1,port_count
+      if(.not.rate_velocity(i)) then
+        maximum_injection_speed=max(maximum_injection_speed,port_speeds(i))
+        cycle
+      endif
+      call liquid_mixture_properties(liquids,port_fractions(:component_count,i),port_temperatures(i), &
+        liquid_rho,liquid_heat,liquid_energy,ok)
+      if(.not.ok) call fatal('Invalid peak rate-driven liquid state')
+      rate_denominator=liquid_rho*acos(-1._dp)*port_radii(i)**2*discharge_coefficients(i)
+      maximum_injection_speed=max(maximum_injection_speed, &
+        maxval(profile_rates(:profile_points(i),i))/rate_denominator)
+    enddo
     call read_topology(topology_path,tree)
     if (regrid_time>=0) call read_topology(trim(regrid_topology),target)
     open(newunit=unit,status='scratch',form='formatted',iostat=ios)
@@ -452,6 +555,18 @@ contains
       if (ios/=0) call fatal('Cannot serialize rate velocity context')
     end if
     rewind(unit);spray_context=mixture_evolution_id//achar(10)
+    spray_context=spray_context//'PARTICLE_TIMESTEP_V1'//achar(10)
+    spray_context=spray_context//'POPULATION_PRIMITIVE_V1'//achar(10)
+    spray_context=spray_context//'POPULATION_NATIVE_CFL_V1'//achar(10)
+    if(allocated(frame)) then
+      write(context_line,'(i0,4(1x,es27.18e3))') frame%axis,frame%angular_speed,frame%axis_point
+      spray_context=spray_context//'ROTATING_PARTICLE_ENERGY_V1 '//trim(context_line)//achar(10)
+    endif
+    if(options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0) &
+      spray_context=spray_context//'REF_BREAKUP_N0_V1'//achar(10)
+    if(any(walls%enabled)) spray_context=spray_context//'SPLASH_N0_V2'//achar(10)
+    if(options%breakup_model=='etab') spray_context=spray_context//'ETAB_MINMASS_V2'//achar(10)
+    if(options%khrt_parcel_factor>=0) spray_context=spray_context//'KHRT_MINMASS_V2'//achar(10)
     do
       read(unit,'(a)',iostat=ios) context_line
       if (ios<0) exit
@@ -460,11 +575,25 @@ contains
       spray_context=spray_context//trim(context_line)//achar(10)
     end do
     close(unit)
+    if(allocated(constant_coefficients)) then
+      spray_context=spray_context//'CONSTANT_GAS_PARTICLE_TRANSPORT_V1'//achar(10)
+      do node=1,size(constant_coefficients)
+        write(context_line,'(es27.18e3)') constant_coefficients(node)
+        spray_context=spray_context//trim(context_line)//achar(10)
+      enddo
+    endif
+    if(sdc) then
+      spray_context=spray_context//'REGULAR_GAS_PARTICLE_FILM_SDC_V1'//achar(10)//trim(config%sdc_reactor)//achar(10)
+      write(context_line,'(i0)') config%sdc_iterations
+      spray_context=spray_context//trim(context_line)//achar(10)
+      write(context_line,'(*(es27.18e3,1x))') config%external_forcing
+      spray_context=spray_context//trim(context_line)//achar(10)
+    endif
     spray_context=spray_context//tree_key(tree)
     if (regrid_time>=0) spray_context=spray_context//tree_key(target)
     method='explicit'
     if (present(chemistry_integrator)) method=chemistry_integrator
-    call build_amr_tree_checkpoint_context_3d(config,species,reactions,transport,mole_fractions, &
+    call build_amr_tree_checkpoint_context_3d(config,eos_species,reactions,property_transport,mole_fractions, &
       'AMR_SPRAY_V1:'//trim(config%thermo_model),method,spray_context,context,ok)
     if (.not.ok) call fatal('Cannot bind AMR spray checkpoint context')
     owners=[(modulo(node-1,nranks),node=1,size(tree%nodes))]
@@ -472,23 +601,29 @@ contains
     if (.not.ok) call fatal('Invalid tree coordinate layout')
     lower=[config%x_lower,config%y_lower,config%z_lower]
     spacing=([config%x_upper,config%y_upper,config%z_upper]-lower)/real(tree%nodes(1)%shape,dp)
-    nv=reactive_nvar(size(species))
+    nv=reactive_nvar(size(eos_species))
     allocate(force_change(nv));force_change=0
-    if (any(acceleration/=0)) then
+    allocate(sdc_boundary(nv),sdc_external(nv),sdc_exchange(nv),sdc_outside(nv))
+    if (any(acceleration/=0).or.options%fixed_parts.or.sdc) then
       allocate(force_total(nv));force_total=0
     end if
-    allocate(state%fields(size(tree%nodes)),temperature%fields(size(tree%nodes)),mf(size(species)))
-    allocate(ledger(nv),global_ledger(nv),boundary(nv),change(nv),inlet(nv,6),inlet_x(size(species)), &
+    allocate(state%fields(size(tree%nodes)),temperature%fields(size(tree%nodes)),mf(size(eos_species)))
+    heat_known=.false.
+    if(sdc) then
+      call initialize_stage_fields()
+      heat_known=.true.
+    end if
+    allocate(ledger(nv),global_ledger(nv),boundary(nv),change(nv),inlet(nv,6),inlet_x(size(eos_species)), &
       q(nv),inlet_cube(nv,2,2,2))
     inlet=0;inlet_t=0;mach_pressure=0
     where(config%inflow_mach>=0) mach_pressure=config%inflow_pressure
-    call mass_fractions_from_mole_fractions(species,mole_fractions,mf,ok)
+    call mass_fractions_from_mole_fractions(eos_species,mole_fractions,mf,ok)
     if (.not.ok) call fatal('Invalid default inlet composition')
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
       call resolve_selected_composition('Inflow',config%inflow_composition_count,config%inflow_composition_species, &
-        config%inflow_composition_mole_fractions,species,inlet_x,ok,message)
+        config%inflow_composition_mole_fractions,eos_species,inlet_x,ok,message)
       if (.not.ok) call fatal('Invalid inflow composition')
-      call mass_fractions_from_mole_fractions(species,inlet_x,mf,ok)
+      call mass_fractions_from_mole_fractions(eos_species,inlet_x,mf,ok)
       if (.not.ok) call fatal('Invalid inflow mass fractions')
     end if
     do face=1,6
@@ -497,10 +632,10 @@ contains
         inlet_t(face)=config%inflow_temperature(face)
         cycle
       end if
-      q=0;q(1)=mixture_density(species,mf,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      q=0;q(1)=mixture_density(eos_species,mf,config%inflow_pressure(face),config%inflow_temperature(face),ok)
       if (.not.ok) call fatal('Invalid inflow density')
       q(2:4)=config%inflow_velocity(:,face);q(5)=config%inflow_pressure(face);q(6:)=mf
-      call reactive_primitive_to_conserved(species,q,inlet(:,face),inlet_t(face),sound,ok)
+      call reactive_primitive_to_conserved(eos_species,q,inlet(:,face),inlet_t(face),sound,ok)
       if (.not.ok) call fatal('Invalid inflow state')
     end do
     do node=1,size(tree%nodes)
@@ -512,14 +647,39 @@ contains
       z=[(lower(3)+(real(origin(3,node),dp)+i-.5_dp)*h(3),i=1,n(3))]
       allocate(state%fields(node)%values(nv,n(1),n(2),n(3)),temperature%fields(node)%values(1,n(1),n(2),n(3)))
       local=config;local%nx=n(1);local%ny=n(2);local%nz=n(3)
-      call initialize_reactive_problem_3d(species,local,x,y,z,state%fields(node)%values, &
+      call initialize_reactive_problem_3d(eos_species,local,x,y,z,state%fields(node)%values, &
         temperature%fields(node)%values(1,:,:,:),density,mf,ok,mole_fractions)
       if (.not.ok) call fatal('Gas initialization failed')
     end do
+    if(allocated(frame)) then
+      call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,state,lower,spacing,frame,.true.,ok)
+      if(.not.ok) call fatal("Initial rotating energy conversion failed")
+    endif
     call average_down_mpi_amr_tree_3d(tree,owners,state,nv,comm,ok)
     if (.not.ok) call fatal('Initial parent synchronization failed')
-    call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok)
+    ordinary=state
+    if(allocated(frame)) then
+      call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,ordinary,lower,spacing,frame,.false.,ok)
+      if(.not.ok) call fatal("Initial rotating EOS conversion failed")
+    endif
+    call recover_mpi_amr_tree_temperatures_3d(tree,owners,eos_species,ordinary,temperature,comm,ok)
     if (.not.ok) call fatal('Initial gas recovery failed')
+    if(sdc) then
+      allocate(internal_energy,energy_policy,energy_correction,pressure_work_change,step_pressure_work)
+      pressure_work_change=0;step_pressure_work=0
+      internal_energy=temperature;energy_correction=0
+      energy_policy%allow_small_energy=config%allow_small_energy
+      energy_policy%allow_negative_energy=config%allow_negative_energy
+      energy_policy%update_total_from_internal=config%dual_energy_update_E_from_e
+      energy_policy%eta2=config%dual_energy_eta2
+      ! Initial gas has one thermodynamic energy. Subsequent native steps,
+      ! remaps and restart retain this separate signed scalar independently.
+      do node=1,size(tree%nodes)
+        if(owners(node)/=rank) cycle
+        internal_energy%fields(node)%values(1,:,:,:)=ordinary%fields(node)%values(5,:,:,:)- &
+          .5_dp*sum(ordinary%fields(node)%values(2:4,:,:,:)**2,dim=1)/ordinary%fields(node)%values(1,:,:,:)
+      enddo
+    endif
     time=0;step=0;event=1;last_id=0;global_ledger=0;boundary=0
     expected_tree=tree_key(tree)
     if (len_trim(restart_file)>0) then
@@ -547,12 +707,16 @@ contains
         if (time==regrid_time) then
           assigned=[(modulo(node-1,nranks),node=1,size(target%nodes))]
           if (wall_active) then
-            call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,target,assigned, &
+            call remap_mpi_amr_spray(comm,eos_species,tree,owners,state,temperature,parcels,masses,target,assigned, &
               lower,spacing,periodic,maximum_parcels,ok, &
-              wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+              wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films, &
+              reaction_source=reaction_source,heat_release=heat_release,frame=frame, &
+              internal_energy=internal_energy)
           else
-            call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,target,assigned, &
-              lower,spacing,periodic,maximum_parcels,ok)
+            call remap_mpi_amr_spray(comm,eos_species,tree,owners,state,temperature,parcels,masses,target,assigned, &
+              lower,spacing,periodic,maximum_parcels,ok, &
+              reaction_source=reaction_source,heat_release=heat_release,frame=frame, &
+              internal_energy=internal_energy)
           end if
           if (.not.ok) call fatal('Coupled regrid failed')
           regridded=.true.
@@ -567,12 +731,16 @@ contains
             if (tree_key(tagged)/=tree_key(tree)) then
               assigned=[(modulo(node-1,nranks),node=1,size(tagged%nodes))]
               if (wall_active) then
-                call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
+                call remap_mpi_amr_spray(comm,eos_species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
                   lower,spacing,periodic,maximum_parcels,ok, &
-                  wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+                  wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films, &
+              reaction_source=reaction_source,heat_release=heat_release,frame=frame, &
+              internal_energy=internal_energy)
               else
-                call remap_mpi_amr_spray(comm,species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
-                  lower,spacing,periodic,maximum_parcels,ok)
+                call remap_mpi_amr_spray(comm,eos_species,tree,owners,state,temperature,parcels,masses,tagged,assigned, &
+                  lower,spacing,periodic,maximum_parcels,ok, &
+              reaction_source=reaction_source,heat_release=heat_release,frame=frame, &
+              internal_energy=internal_energy)
               end if
               if (.not.ok) call fatal('Adaptive gas/particle remap failed')
             end if
@@ -603,24 +771,35 @@ contains
       if (event<=injection_events) stop_time=min(stop_time,injection_times(event))
       if (.not.regridded.and.regrid_time>time) stop_time=min(stop_time,regrid_time)
       ! Finest-level bounds also safely bound recursive gas stepping.
-      call compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,spacing,config%cfl,dt,comm,ok)
+      ordinary=state
+      if(allocated(frame)) then
+        call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,ordinary,lower,spacing,frame,.false.,ok)
+        if(.not.ok) call fatal("Rotating timestep conversion failed")
+      endif
+      call compute_mpi_amr_tree_cfl_3d(tree,owners,eos_species,ordinary,temperature,spacing,config%cfl,dt,comm,ok, &
+        internal_energy=internal_energy)
       if (.not.ok) call fatal('Gas CFL calculation failed')
       call inlet_timestep()
-      dt=min(dt,inlet_dt,stop_time-time)
+      call compute_mpi_amr_spray_timestep(comm,tree,parcels,lower,spacing,periodic,options, &
+        maximum_injection_speed,subcycling,particle_dt,ok)
+      if(.not.ok) call fatal('Particle CFL calculation failed')
+      dt=min(dt,inlet_dt,particle_dt,stop_time-time)
       if (config%transport_enabled) then
-        call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,species,transport,state,temperature,spacing, &
+        call compute_mpi_amr_tree_transport_timestep_3d(tree,owners,eos_species,property_transport,ordinary,temperature,spacing, &
           config%transport_cfl,config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
-          transport_dt,diffusivity,comm,ok,faces,config%wall_temperature)
+          transport_dt,diffusivity,comm,ok,faces,config%wall_temperature, &
+          constant_coefficients=constant_coefficients,internal_energy=internal_energy)
         if (.not.ok) call fatal('Transport timestep failed')
         dt=min(dt,transport_dt)
       end if
       if (les_cs>0.or.les_ci>0.or.les_model=='dynamic') then
-        call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,spacing,les_cfl,faces, &
+        call compute_mpi_amr_tree_les_timestep_3d(tree,owners,eos_species,state,temperature,spacing,les_cfl,faces, &
           les_cs,les_prt,les_sct,les_dt,diffusivity,comm,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
           wall_temperature=config%wall_temperature,wall_velocity=config%wall_velocity,model=les_model,ci=les_ci, &
           outlet_pressure=config%outlet_pressure,test_model=dynamic_filter,test_ratio=dynamic_ratio, &
           grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic,subcycle=subcycling, &
-          inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure)
+          inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,frame=frame,domain_lower=rotation_lower, &
+      internal_energy=internal_energy)
         if (.not.ok) call fatal('LES timestep failed')
         dt=min(dt,les_dt)
       end if
@@ -634,8 +813,14 @@ contains
           if (.not.ok) call fatal('Cannot start gas work sampling')
         end if
         correction=0;theta=1
-        if (wall_active) then
-          call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
+        if(sdc) then
+          if(les_cs>0) then
+            call advance_sdc(evaluate_les)
+          else
+            call advance_sdc()
+          endif
+        else if (wall_active) then
+          call advance_mpi_amr_spray_reactive(comm,tree,owners,eos_species,reactions,property_transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
             config%chemistry_enabled,config%transport_enabled.and.config%viscosity_enabled, &
             config%transport_enabled.and.config%thermal_conduction_enabled, &
@@ -650,9 +835,10 @@ contains
             les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
             les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
-          difmag=resolved_reactive_difmag_3d(config))
+          difmag=resolved_reactive_difmag_3d(config), &
+            constant_coefficients=constant_coefficients)
         else
-          call advance_mpi_amr_spray_reactive(comm,tree,owners,species,reactions,transport,liquids,options, &
+          call advance_mpi_amr_spray_reactive(comm,tree,owners,eos_species,reactions,property_transport,liquids,options, &
             state,temperature,parcels,masses,lower,spacing,dt,config%reconstruction,config%limiter,config%riemann_solver, &
             config%chemistry_enabled,config%transport_enabled.and.config%viscosity_enabled, &
             config%transport_enabled.and.config%thermal_conduction_enabled, &
@@ -666,7 +852,8 @@ contains
             les_test_model=dynamic_filter,les_test_ratio=dynamic_ratio, &
             les_grid_ratio=dynamic_grid,les_harmonic_mean=dynamic_harmonic, &
             inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure, &
-          difmag=resolved_reactive_difmag_3d(config))
+          difmag=resolved_reactive_difmag_3d(config), &
+            constant_coefficients=constant_coefficients)
         end if
         if (sample_work) call end_tree_work(measured_cost)
         if (ok) exit
@@ -678,27 +865,60 @@ contains
         if (any(abs(force_total)>huge(1._dp)-abs(force_change))) call fatal('Source ledger overflow')
         force_total=force_total+force_change
       end if
+      ! Commit the UEINT volume-work history only for an accepted whole spray step.
+      ! It is separate from the total-energy boundary/source inventory.
+      if(allocated(pressure_work_change)) then
+        if(.not.ieee_is_finite(step_pressure_work)) call fatal("Nonfinite internal energy pressure work")
+        if(step_pressure_work>0) then
+          if(pressure_work_change>huge(1._dp)-step_pressure_work) call fatal("Pressure-work history overflow")
+        else
+          if(pressure_work_change< -huge(1._dp)-step_pressure_work) call fatal("Pressure-work history overflow")
+        endif
+        pressure_work_change=pressure_work_change+step_pressure_work
+      endif
       boundary=boundary+change
       if (dt==stop_time-time) then
         time=stop_time
       else
         time=time+dt
       end if
+      if(allocated(coordinate_total)) then
+        if(.not.ieee_is_finite(frame_energy_step)) call fatal('Nonfinite coordinate energy increment')
+        if(frame_energy_step>0) then
+          if(coordinate_total>huge(1._dp)-frame_energy_step) call fatal('Coordinate energy ledger overflow')
+        else
+          if(coordinate_total< -huge(1._dp)-frame_energy_step) call fatal('Coordinate energy ledger overflow')
+        endif
+        coordinate_total=coordinate_total+frame_energy_step
+      endif
       step=step+1
       if (sample_work) then
         if (wall_active) then
           call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
             periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok, &
-            wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films)
+            wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films, &
+              reaction_source=reaction_source,heat_release=heat_release,internal_energy=internal_energy)
         else
           call rebalance_mpi_amr_spray(comm,tree,owners,nv,state,temperature,parcels,masses,lower,spacing, &
-            periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok)
+            periodic,measured_cost,rebalance_minimum_gain,maximum_parcels,redistributed,ok, &
+              reaction_source=reaction_source,heat_release=heat_release,internal_energy=internal_energy)
         end if
         if (.not.ok) call fatal('Coupled gas/particle rebalance failed')
         if (rank==0) write(*,'(a,i0,a,l1)') 'Rebalance step: ',step,' Migrated: ',redistributed
       end if
     end do
-    call write_mpi_amr_tree_csv_3d(trim(config%output_file),tree,owners,species,state,temperature,lower,spacing,time,comm,ok)
+    ordinary=state
+    if(allocated(frame)) then
+      call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,ordinary,lower,spacing,frame,.false.,ok)
+      if(.not.ok) call fatal("Rotating output EOS conversion failed")
+    endif
+    if(heat_known) then
+      call write_mpi_amr_tree_csv_3d(trim(config%output_file),tree,owners,eos_species,ordinary,temperature,lower,spacing,time, &
+        comm,ok,heat_release,internal_energy=internal_energy)
+    else
+    call write_mpi_amr_tree_csv_3d(trim(config%output_file),tree,owners,eos_species,ordinary,temperature,lower,spacing,time, &
+      comm,ok,internal_energy=internal_energy)
+    end if
     if (.not.ok) call fatal('Gas CSV output failed')
     write(suffix,'(i0)') rank
     particle_path=trim(config%output_file)//'.particles.'//trim(suffix)//'.csv'
@@ -722,49 +942,149 @@ contains
     if (wall_active) call write_films()
     if (rank==0) then
       write(*,'(a,i0,a,es24.16,a,i0)') 'Steps: ',step,' Final time: ',time,' Last particle ID: ',last_id
+      if(sdc) then
+        write(*,'(a)') 'Time integrator: '//trim(config%time_integrator)
+        write(*,'(a)') 'SDC reactor: '//trim(config%sdc_reactor)
+      endif
       write(*,'(a,l1)') 'Regridded: ',regridded
       write(*,'(a,i0)') 'Injection events applied: ',event-1
       write(*,'(a,*(es24.16,1x))') 'Injected inventory: ',global_ledger
       write(*,'(a,*(es24.16,1x))') 'Boundary inventory: ',boundary
       if (allocated(force_total)) write(*,'(a,*(es24.16,1x))') 'Source inventory: ',force_total
+      if(allocated(coordinate_total)) write(*,'(a,es24.16)') 'Coordinate energy inventory: ',coordinate_total
+      if(allocated(energy_correction)) write(*,'(a,es24.16)') 'Numerical energy correction: ',energy_correction
+      if(allocated(pressure_work_change)) write(*,'(a,es24.16)') 'Internal energy pressure work: ',pressure_work_change
     end if
   contains
+    subroutine initialize_stage_fields()
+      integer :: peer,n(3)
+      allocate(heat_release)
+      allocate(heat_release%fields(size(tree%nodes)))
+      if(config%chemistry_enabled) then
+        allocate(reaction_source)
+        allocate(reaction_source%fields(size(tree%nodes)))
+      end if
+      do peer=1,size(tree%nodes)
+        if(owners(peer)/=rank) cycle
+        n=tree%nodes(peer)%shape
+        allocate(heat_release%fields(peer)%values(1,n(1),n(2),n(3)),source=0._dp)
+        if(allocated(reaction_source)) &
+          allocate(reaction_source%fields(peer)%values(nv-4,n(1),n(2),n(3)),source=0._dp)
+      end do
+    end subroutine initialize_stage_fields
+    subroutine advance_sdc(evaluate_diffusion)
+      procedure(amr_sdc_diffusion_evaluator), optional :: evaluate_diffusion
+      sdc_boundary=0;sdc_external=0;sdc_exchange=0;sdc_wall=0;sdc_outside=0;sdc_particle_force=0;frame_energy_step=0
+      if(wall_active) then
+        call advance_mpi_amr_spray_sdc(comm,tree,owners,eos_species,reactions,property_transport,liquids,options, &
+        state,temperature,parcels,masses,lower,spacing,dt,config%sdc_iterations,config%chemistry_enabled, &
+        config%transport_enabled.and.[config%viscosity_enabled,config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled,config%barodiffusion_enabled], &
+        config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,faces, &
+        sdc_boundary,sdc_external,sdc_exchange,sdc_wall,sdc_outside,correction,theta,last_id,ok, &
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
+        constant_coefficients=constant_coefficients,particle_acceleration=acceleration, &
+        particle_force_change=sdc_particle_force,subcycling=subcycling, &
+        evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+        wall_films=films,film_mass=film_mass,film_settings=walls, &
+        reaction_source=reaction_source,heat_release=heat_release, &
+        mol_mode=mol,mol_lax_friedrichs=config%mol_lax_friedrichs,frame=frame,frame_energy_change=frame_energy_step, &
+        internal_energy=internal_energy,energy_correction=energy_correction,energy_policy=energy_policy, &
+        internal_energy_pressure_work_change=step_pressure_work)
+      else
+        call advance_mpi_amr_spray_sdc(comm,tree,owners,eos_species,reactions,property_transport,liquids,options, &
+        state,temperature,parcels,masses,lower,spacing,dt,config%sdc_iterations,config%chemistry_enabled, &
+        config%transport_enabled.and.[config%viscosity_enabled,config%thermal_conduction_enabled, &
+          config%species_diffusion_enabled,config%barodiffusion_enabled], &
+        config%external_forcing,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance,faces, &
+        sdc_boundary,sdc_external,sdc_exchange,sdc_wall,sdc_outside,correction,theta,last_id,ok, &
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure, &
+        inflow_mach=config%inflow_mach,inflow_pressure=mach_pressure,difmag=resolved_reactive_difmag_3d(config), &
+        constant_coefficients=constant_coefficients,particle_acceleration=acceleration, &
+        particle_force_change=sdc_particle_force,subcycling=subcycling, &
+        evaluate_diffusion=evaluate_diffusion,evaluate_reaction=evaluate_reaction, &
+        reaction_source=reaction_source,heat_release=heat_release, &
+        mol_mode=mol,mol_lax_friedrichs=config%mol_lax_friedrichs,frame=frame,frame_energy_change=frame_energy_step, &
+        internal_energy=internal_energy,energy_correction=energy_correction,energy_policy=energy_policy, &
+        internal_energy_pressure_work_change=step_pressure_work)
+      endif
+      if(.not.ok) return
+      if(ok) heat_known=.true.
+      change=sdc_boundary+sdc_outside;change(:5)=change(:5)+sdc_wall
+      force_change=sdc_external;force_change(:5)=force_change(:5)+sdc_particle_force
+    end subroutine advance_sdc
+    subroutine evaluate_les(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good, &
+      internal_energy)
+      type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+      type(amr_tree_state_3d), intent(in) :: u,t
+      type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
+      integer, intent(in) :: depth
+      real(dp), optional, intent(in) :: fractions(:)
+      type(amr_tree_state_3d), intent(inout) :: rates
+      type(amr_tree_flux_3d), allocatable, intent(inout) :: flux(:)
+      logical, intent(out) :: good
+      real(dp) :: largest
+      largest=0
+      call compute_mpi_amr_tree_les_rhs_3d(tree,owners,eos_species,u,t,spacing,faces,les_cs,les_prt,les_sct, &
+        rates,flux,largest,comm,good,model=les_model,ci=les_ci,test_model=dynamic_filter, &
+        test_ratio=dynamic_ratio,grid_ratio=dynamic_grid,harmonic_mean=dynamic_harmonic, &
+        inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=config%wall_temperature, &
+        wall_velocity=config%wall_velocity,outlet_pressure=config%outlet_pressure,inflow_mach=config%inflow_mach, &
+        inflow_pressure=mach_pressure,target_depth=depth,coarse_start=coarse_start,coarse_end=coarse_end,fractions=fractions, &
+        frame=frame,domain_lower=rotation_lower, &
+        internal_energy=internal_energy)
+    end subroutine evaluate_les
     subroutine limit_mach_step()
       type(amr_tree_state_3d) :: packed,halos
       real(dp) :: bound,dmax,local_bound,global_bound,local_h(3)
-      integer :: peer,dims(3),nv,status,width
+      integer :: peer,dims(3),nv,np,status,width
       character(len=:), allocatable :: donor_limiter
+      real(dp), allocatable :: sampled_h(:,:,:)
       nv=size(q)
+      np=nv+1+merge(1,0,allocated(internal_energy))
       if(config%reconstruction/='pcm') donor_limiter=config%limiter
+      if(allocated(internal_energy)) donor_limiter='linear'
       width=2
       if(config%reconstruction=='characteristic_ppm') width=4
       allocate(packed%fields(size(tree%nodes)))
       do peer=1,size(tree%nodes)
         if(owners(peer)/=rank) cycle
         dims=tree%nodes(peer)%shape
-        allocate(packed%fields(peer)%values(nv+1,dims(1),dims(2),dims(3)))
+        allocate(packed%fields(peer)%values(np,dims(1),dims(2),dims(3)))
         packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
         packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+        if(allocated(internal_energy)) packed%fields(peer)%values(np:np,:,:,:)=internal_energy%fields(peer)%values
       end do
-      call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nv+1,faces,halos,comm,ok,viscous_wall=.true., &
+      call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,np,faces,halos,comm,ok,viscous_wall=.true., &
         inflow_state=inlet_with_temperature(),wall_velocity=config%wall_velocity,coarse_limiter=donor_limiter, &
-        species_count=size(species),ghost_width=width,species=species,inflow_mach=config%inflow_mach, &
-        inflow_temperature=inlet_t,inflow_pressure=mach_pressure)
+        species_count=size(eos_species),ghost_width=width,species=eos_species,inflow_mach=config%inflow_mach, &
+        inflow_temperature=inlet_t,inflow_pressure=mach_pressure,frame=frame,domain_lower=rotation_lower, &
+        root_spacing=spacing,stored_internal_energy=allocated(internal_energy), &
+        limit_internal_energy=allocated(internal_energy))
       if(.not.ok) call fatal('Invalid MPI tree Mach inlet donors')
+      if(allocated(frame)) then
+        call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,halos,lower,spacing,frame,.false.,ok,halo_width=width)
+        if(.not.ok) call fatal('Invalid rotating Mach inlet EOS donors')
+      endif
       local_bound=dt
       do peer=1,size(tree%nodes)
         if(owners(peer)/=rank) cycle
         associate(ghost=>halos%fields(peer)%values)
+        if(allocated(internal_energy)) sampled_h=ghost(np,:,:,:)
         dims=shape(ghost(1,:,:,:))
         local_h=spacing*real(domain(:,1),dp)/real(domain(:,tree%nodes(peer)%level+1),dp)
-        call compute_reactive_cfl_timestep_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
-          dims(1),dims(2),dims(3),local_h(1),local_h(2),local_h(3),config%cfl,bound,ok)
+        call compute_reactive_cfl_timestep_3d(eos_species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
+          dims(1),dims(2),dims(3),local_h(1),local_h(2),local_h(3),config%cfl,bound,ok,internal_energy_density=sampled_h)
         if(.not.ok) call fatal('Invalid MPI tree Mach hydro timestep')
         local_bound=min(local_bound,bound)
         if(config%transport_enabled) then
-          call reactive_transport_timestep_3d(species,transport,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
+          call reactive_transport_timestep_3d(eos_species,property_transport,ghost(:nv,:,:,:),ghost(nv+1,:,:,:), &
             dims(1),dims(2),dims(3),local_h(1),local_h(2),local_h(3),config%transport_cfl, &
-            config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled,bound,dmax,ok)
+            config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled,bound,dmax,ok, &
+            constant_coefficients=constant_coefficients,internal_energy_density=sampled_h)
           if(.not.ok) call fatal('Invalid MPI tree Mach transport timestep')
           local_bound=min(local_bound,bound)
         end if
@@ -775,8 +1095,18 @@ contains
       dt=global_bound
     end subroutine
     function inlet_with_temperature() result(packed_inlet)
-      real(dp) :: packed_inlet(size(q)+1,6)
+      real(dp), allocatable :: packed_inlet(:,:)
+      integer :: face,np
+      np=size(q)+1+merge(1,0,allocated(internal_energy))
+      allocate(packed_inlet(np,6))
       packed_inlet(:size(q),:)=inlet;packed_inlet(size(q)+1,:)=inlet_t
+      if(allocated(internal_energy)) then
+        packed_inlet(np,:)=0
+        do face=1,6
+          if(inlet(1,face)<=0) cycle
+          packed_inlet(np,face)=inlet(5,face)-.5_dp*sum(inlet(2:4,face)**2)/inlet(1,face)
+        enddo
+      endif
     end function
     subroutine write_films()
       integer :: f,c,out,status
@@ -812,7 +1142,7 @@ contains
         ! Recover sound speed from the already resolved reservoir composition.
         q=0;q(1)=inlet(1,face);q(2:4)=config%inflow_velocity(:,face)
         q(5)=config%inflow_pressure(face);q(6:)=inlet(6:,face)/inlet(1,face)
-        call reactive_primitive_to_conserved(species,q,change,inlet_t(face),sound,ok)
+        call reactive_primitive_to_conserved(eos_species,q,change,inlet_t(face),sound,ok)
         if (.not.ok) call fatal('Invalid inlet CFL state')
         inlet_dt=min(inlet_dt,config%cfl/sum((abs(q(2:4))+sound)/min_h))
         if (.not.config%transport_enabled) cycle
@@ -824,9 +1154,10 @@ contains
           end do
         end do
         inlet_temperature=inlet_t(face)
-        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2, &
+        call reactive_transport_timestep_3d(eos_species,property_transport,inlet_cube,inlet_temperature,2,2,2, &
           min_h(1),min_h(2),min_h(3),config%transport_cfl,config%viscosity_enabled, &
-          config%thermal_conduction_enabled,config%species_diffusion_enabled,face_dt,diffusivity,ok)
+          config%thermal_conduction_enabled,config%species_diffusion_enabled,face_dt,diffusivity,ok, &
+          constant_coefficients=constant_coefficients)
         if (.not.ok) call fatal('Invalid inlet transport bound')
         inlet_dt=min(inlet_dt,face_dt)
       end do
@@ -835,12 +1166,20 @@ contains
       logical, intent(in) :: writing
       character(len=*), intent(in) :: path
       if (wall_active) then
-        call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
+        call mpi_amr_spray_checkpoint(comm,writing,path,context,eos_species,tree,owners,state,temperature,parcels,masses, &
           time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary, &
-          wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,source=force_total)
+          wall_films=films,film_mass=film_mass,maximum_films=walls%maximum_films,source=force_total, &
+          reaction_source=reaction_source,heat_release=heat_release,heat_available=heat_known, &
+          frame=frame,coordinate_energy=coordinate_total, &
+          internal_energy=internal_energy,energy_correction=energy_correction, &
+          internal_energy_pressure_work_change=pressure_work_change)
       else
-        call mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature,parcels,masses, &
-          time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary,source=force_total)
+        call mpi_amr_spray_checkpoint(comm,writing,path,context,eos_species,tree,owners,state,temperature,parcels,masses, &
+          time,step,event,regridded,last_id,global_ledger,lower,spacing,maximum_parcels,ok,periodic,boundary,source=force_total, &
+          reaction_source=reaction_source,heat_release=heat_release,heat_available=heat_known, &
+          frame=frame,coordinate_energy=coordinate_total, &
+          internal_energy=internal_energy,energy_correction=energy_correction, &
+          internal_energy_pressure_work_change=pressure_work_change)
       end if
       if (.not.ok) call fatal('AMR spray checkpoint operation failed')
     end subroutine
@@ -862,7 +1201,7 @@ contains
     subroutine inject_event()
       type(spray_parcel), allocatable :: candidate(:)
       real(dp), allocatable :: candidate_mass(:,:)
-      real(dp) :: added(nv),next_ledger(nv)
+      real(dp) :: added(nv),next_ledger(nv),potential
       integer(int64) :: next_id
       integer :: outlet,old_count,born
       outlet=event_ports(event);old_count=size(parcels)
@@ -877,10 +1216,16 @@ contains
         nozzle_radius=port_radii(outlet),nozzle_model=port_nozzles(outlet), &
         diameter_shape=port_sizes(outlet)%shape,diameter_min=port_sizes(outlet)%minimum, &
         diameter_max=port_sizes(outlet)%maximum,diameter_weighting=port_sizes(outlet)%weighting, &
-        diameter_distribution=port_sizes(outlet)%distribution,diameter_std=port_sizes(outlet)%std)
+        diameter_distribution=port_sizes(outlet)%distribution,diameter_std=port_sizes(outlet)%std, &
+        reference_breakup=options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0)
       if (.not.ok) call fatal('Scheduled injection failed')
       do born=old_count+1,size(candidate)
         candidate(born)%material_id=outlet
+        if(allocated(frame)) then
+          call rotating_potential_3d(frame,candidate(born)%position,potential,ok)
+          if(.not.ok) call fatal("Invalid rotating injection potential")
+          ledger(5)=ledger(5)-candidate(born)%mass*candidate(born)%multiplicity*potential
+        endif
       end do
       call migrate_amr_tree_spray_parcels(comm,tree,owners,candidate,lower,spacing,periodic, &
         maximum_parcels,ok,candidate_mass)

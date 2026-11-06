@@ -6,7 +6,7 @@ module spray_eb_application_mod
   use simulation_config_selected_reactor_mod, only: selected_reactor_paths_alias_lexically
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy,nasa7_eos_policy_identity
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
   use reactive_1d_mod, only: reactive_nvar,reactive_nprim, &
@@ -21,7 +21,7 @@ module spray_eb_application_mod
     reactive_eb_halo_bounds_3d,reactive_eb_isothermal_timestep_3d
   use spray_parcel_mod
   use spray_injection_profile_mod, only: integrate_spray_injection_profile,read_spray_injection_profile
-  use spray_mixture_mod, only: liquid_mixture_properties,mixture_evolution_id
+  use spray_mixture_mod, only: apply_mixture_breakup_viscosity, liquid_mixture_properties,mixture_evolution_id
   use spray_eb_reactive_mod, only: advance_eb_spray_reactive_allocated
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_wall_impact_mod, only: spray_wall_film
@@ -47,6 +47,7 @@ contains
     character(len=*), intent(in) :: input_path,spray_path
     type(reactive_eb_3d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), optional, intent(in) :: mole_fractions(:)
@@ -67,6 +68,12 @@ contains
     type(spray_size_options) :: sizes,port_sizes(16)
     type(spray_nozzle_model) :: port_nozzles(16)
     character(len=16) :: mixture_density_models(16)='constant',mixture_cp_models(16)='constant'
+    character(len=16) :: mixture_conductivity_models(16)='supplied'
+    character(len=24) :: mixture_viscosity_models(16)='supplied'
+    real(dp) :: mixture_conductivities(16)=0,mixture_conductivity_coefficients(4,16)=0
+    real(dp) :: mixture_viscosities(16)=0,mixture_viscosity_coefficients(4,16)=0
+    real(dp) :: mixture_conductivity_temperature_ranges(2,16)=0
+    real(dp) :: mixture_viscosity_temperature_ranges(2,16)=0
     character(len=16) :: mixture_vapor_pressure_models(16)='clausius',mixture_boiling_models(16)='reject'
     real(dp) :: mixture_density_coefficients(4,16)=0,mixture_density_temperature_ranges(2,16)=0
     real(dp) :: mixture_cp_coefficients(4,16)=0,mixture_cp_temperature_ranges(2,16)=0
@@ -81,6 +88,7 @@ contains
     namelist /eb_spray_rate_files/ profile_file,profile_files
     real(dp) :: injection_profile_times(64)=0,injection_profile_rates(64)=0,injection_end_times(1024)=-1
     logical :: velocity_from_rate=.false.
+    real(dp) :: maximum_injection_speed,particle_dt
     real(dp) :: discharge_coefficient=1,event_masses(1024),event_speeds(1024),profile_mass,denominator
     type(spray_options) :: options
     type(spray_eb_wall_options) :: walls
@@ -93,7 +101,11 @@ contains
       reference_pressures,latent_heats,fractions,total_mass,center,axis,speed,half_angle,diameter, &
       liquid_temperature,maximum_dt,options,injection_events,injection_times,injection_scales,wall_impacts,walls, &
       nozzle_radius,nozzle,sizes,mixture_density_models,mixture_density_coefficients,mixture_density_temperature_ranges, &
-      mixture_cp_models,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
+      mixture_cp_models, &
+      mixture_viscosity_models,mixture_viscosities,mixture_viscosity_coefficients, &
+      mixture_viscosity_temperature_ranges, &
+      mixture_conductivity_models,mixture_conductivities,mixture_conductivity_coefficients, &
+      mixture_conductivity_temperature_ranges,mixture_cp_coefficients,mixture_cp_temperature_ranges, &
       mixture_vapor_pressure_models,mixture_antoine_coefficients,mixture_antoine_temperature_ranges, &
       mixture_boiling_models,mixture_molecular_weights, &
       mixture_normal_boiling_temperatures, &
@@ -126,6 +138,10 @@ contains
     character(len=24) :: component_label
     character(len=:), allocatable :: header
     ! Configuration and namelist objects are local to one invocation.
+    allocate(eos_species,source=species)
+    call configure_nasa7_eos_policy(eos_species,config%pinned_eos_extrapolation,ok, &
+      config%pinned_eos_temperature_min,config%pinned_eos_temperature_max)
+    if(.not.ok) error stop 'Invalid EB spray EOS policy'
     port_profile_points=-1;port_profile_times=0;port_profile_rates=0;port_radii=-1;port_discharge_coefficients=-1
     port_nozzles=spray_nozzle_model(profile='inherit',swirl=huge(1._dp),spread=-1._dp)
     port_sizes=spray_size_options(distribution='inherit',weighting='inherit',std=-1._dp, &
@@ -137,8 +153,12 @@ contains
     vapor_names='H2O';densities=1000;heat_capacities=4184;reference_temperatures=373.15_dp
     reference_pressures=101325;latent_heats=2.257e6_dp;total_mass=1e-10_dp;center=0
     axis=[1._dp,0._dp,0._dp];speed=1;half_angle=0;diameter=1e-5_dp;liquid_temperature=350
-    maximum_dt=1e-8_dp;options=spray_options();walls=spray_eb_wall_options();wall_impacts=.false.
+    maximum_dt=1e-8_dp;options=spray_options();options%particle_cfl=.5_dp;walls=spray_eb_wall_options();wall_impacts=.false.
     mixture_density_models='constant';mixture_cp_models='constant'
+    mixture_conductivity_models='supplied';mixture_conductivities=0
+    mixture_viscosity_models='supplied';mixture_viscosities=0
+    mixture_conductivity_coefficients=0;mixture_conductivity_temperature_ranges=0
+    mixture_viscosity_coefficients=0;mixture_viscosity_temperature_ranges=0
     mixture_vapor_pressure_models='clausius';mixture_boiling_models='reject'
     mixture_density_coefficients=0;mixture_density_temperature_ranges=0
     mixture_cp_coefficients=0;mixture_cp_temperature_ranges=0
@@ -188,7 +208,6 @@ contains
     if(maximum_dt<=0.or.maximum_dt>1e6_dp) error stop 'Invalid EB spray maximum_dt'
     if(.not.all(ieee_is_finite(fractions)).or.any(fractions<0)) error stop 'Invalid liquid fractions'
     if(abs(sum(fractions(:nc))-1)>1e-12_dp.or.any(fractions(nc+1:)/=0)) error stop 'Liquid fractions must sum to one'
-    if(.not.valid_spray_options(options)) error stop 'Unsupported EB spray options'
     if(options%maximum_multiplicity>0) then
       allocate(split_created_total);split_created_total=0
     end if
@@ -212,6 +231,14 @@ contains
     end if
     if(any(mixture_density_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
     if(any(mixture_cp_models(nc+1:)/='constant')) error stop 'Unused mixture property entries'
+    if(any(mixture_conductivity_models(nc+1:)/='supplied')) error stop 'Unused mixture conductivity entries'
+    if(any(mixture_viscosity_models(nc+1:)/='supplied')) error stop 'Unused mixture viscosity entries'
+    if(any(mixture_conductivities(nc+1:)/=0)) error stop 'Unused mixture conductivity entries'
+    if(any(mixture_viscosities(nc+1:)/=0)) error stop 'Unused mixture viscosity entries'
+    if(any(mixture_conductivity_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture conductivity entries'
+    if(any(mixture_viscosity_coefficients(:,nc+1:)/=0)) error stop 'Unused mixture viscosity entries'
+    if(any(mixture_conductivity_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture conductivity entries'
+    if(any(mixture_viscosity_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture viscosity entries'
     if(any(mixture_vapor_pressure_models(nc+1:)/='clausius')) error stop 'Unused mixture property entries'
     if(any(mixture_boiling_models(nc+1:)/='reject')) error stop 'Unused mixture property entries'
     if(any(mixture_critical_temperatures(nc+1:)/=0)) error stop 'Unused mixture property entries'
@@ -225,7 +252,7 @@ contains
     if(any(mixture_antoine_temperature_ranges(:,nc+1:)/=0)) error stop 'Unused mixture property entries'
     allocate(liquids(nc))
     do n=1,nc
-      call initialize_spray_liquid(species,vapor_names(n),densities(n),heat_capacities(n),reference_temperatures(n), &
+      call initialize_spray_liquid(eos_species,vapor_names(n),densities(n),heat_capacities(n),reference_temperatures(n), &
         reference_pressures(n),latent_heats(n),liquids(n),ok,mixture_vapor_pressure_models(n), &
         mixture_antoine_coefficients(:,n),mixture_antoine_temperature_ranges(:,n))
       if(.not.ok) error stop 'Invalid liquid properties'
@@ -235,12 +262,26 @@ contains
       liquids(n)%heat_capacity_model=mixture_cp_models(n)
       liquids(n)%heat_capacity_coefficients=mixture_cp_coefficients(:,n)
       liquids(n)%heat_capacity_temperature_range=mixture_cp_temperature_ranges(:,n)
+      liquids(n)%conductivity_model=mixture_conductivity_models(n)
+      liquids(n)%viscosity_model=mixture_viscosity_models(n)
+      liquids(n)%conductivity=mixture_conductivities(n)
+      liquids(n)%viscosity=mixture_viscosities(n)
+      liquids(n)%conductivity_coefficients=mixture_conductivity_coefficients(:,n)
+      liquids(n)%viscosity_coefficients=mixture_viscosity_coefficients(:,n)
+      liquids(n)%conductivity_temperature_range=mixture_conductivity_temperature_ranges(:,n)
+      liquids(n)%viscosity_temperature_range=mixture_viscosity_temperature_ranges(:,n)
       liquids(n)%boiling_model=mixture_boiling_models(n)
       liquids(n)%critical_temperature=mixture_critical_temperatures(n)
       liquids(n)%normal_boiling_temperature=mixture_normal_boiling_temperatures(n)
       liquids(n)%molecular_weight=mixture_molecular_weights(n)
       if(.not.valid_spray_liquid(liquids(n))) error stop 'Invalid mixture component property model'
     end do
+    if(all(liquids%viscosity_model/='supplied')) then
+      call apply_mixture_breakup_viscosity(liquids,fractions(:nc),liquid_temperature,options,ok, &
+        config%initial_pressure,eos_species(liquids%vapor_index)%molecular_weight)
+      if(.not.ok) error stop 'Invalid component viscosity at injection'
+    end if
+    if(.not.valid_spray_options(options)) error stop 'Unsupported EB spray options'
     if(port_count<1.or.port_count>16) error stop 'Invalid injection port count'
     if(any(event_ports(:injection_events)<1).or.any(event_ports(:injection_events)>port_count)) &
       error stop 'Invalid injection event port'
@@ -334,25 +375,40 @@ contains
         end if
       end if
     end do
+    maximum_injection_speed=maxval(event_speeds(:injection_events))
+    do port=1,port_count
+      if(.not.velocity_from_rate) then
+        maximum_injection_speed=max(maximum_injection_speed,port_speeds(port))
+        cycle
+      endif
+      n=port_profile_points(port)
+      denominator=port_liquids(port)%density*acos(-1._dp)*port_radii(port)**2*port_discharge_coefficients(port)
+      maximum_injection_speed=max(maximum_injection_speed,maxval(port_profile_rates(:n,port))/denominator)
+      do p=1,injection_events
+        if(event_ports(p)/=port) cycle
+        maximum_injection_speed=max(maximum_injection_speed, &
+          maxval(port_profile_rates(:n,port))*injection_scales(p)/denominator)
+      enddo
+    enddo
     allocate(drops(0),masses(nc,0),films(0),film_mass(nc,0))
-    nv=reactive_nvar(size(species))
+    nv=reactive_nvar(size(eos_species))
     allocate(state(nv,g%nx,g%ny,g%nz),temperature(g%nx,g%ny,g%nz))
     if(.not.all(ieee_is_finite(acceleration))) error stop 'Invalid EB acceleration'
     if(any(abs(acceleration)>1e6_dp)) error stop 'Invalid EB acceleration'
     allocate(sf(nv));sf=0
-    if(any(acceleration/=0)) then
+    if(any(acceleration/=0).or.options%fixed_parts) then
       allocate(force(nv));force=0
     end if
     allocate(boundary(nv),wall(nv),chemical(nv),sb(nv),sw(nv),sc(nv),injected(nv),initial(nv))
-    call initialize_reactive_eb_density_sheet_3d(species,config,g,state,temperature,ok,mole_fractions)
+    call initialize_reactive_eb_density_sheet_3d(eos_species,config,g,state,temperature,ok,mole_fractions)
     if(.not.ok) error stop 'Invalid EB initial gas'
     if(any(config%boundary_faces/='legacy')) then
       allocate(boundary_faces,source=config%boundary_faces)
       if(any(boundary_faces=='isothermal_wall')) allocate(wall_t,source=config%wall_temperature)
-      allocate(inlet(nv,6),inlet_t(6),primitive(reactive_nprim(size(species))))
+      allocate(inlet(nv,6),inlet_t(6),primitive(reactive_nprim(size(eos_species))))
       allocate(ghost(nv,0:config%nx+1,0:config%ny+1,0:config%nz+1), &
         ghost_t(0:config%nx+1,0:config%ny+1,0:config%nz+1))
-      call reactive_conserved_to_primitive(species,state(:,1,1,1),temperature(1,1,1), &
+      call reactive_conserved_to_primitive(eos_species,state(:,1,1,1),temperature(1,1,1), &
         primitive,inlet_temp,inlet_sound,ok)
       if(.not.ok) error stop 'Failed to obtain EB inlet composition'
       seed_mass=primitive(6:)
@@ -363,17 +419,17 @@ contains
         if(config%inflow_composition_count(face)/=0) then
           call resolve_selected_composition('EB spray inlet',config%inflow_composition_count(face), &
             config%inflow_composition_species(:,face),config%inflow_composition_mole_fractions(:,face), &
-            species,inlet_mole,ok,message)
+            eos_species,inlet_mole,ok,message)
           if(.not.ok) then
             write(*,'(a)') trim(message)
             error stop 'Invalid EB spray inlet composition'
           end if
-          call mass_fractions_from_mole_fractions(species,inlet_mole,primitive(6:),ok)
+          call mass_fractions_from_mole_fractions(eos_species,inlet_mole,primitive(6:),ok)
           if(.not.ok) error stop 'Invalid EB spray inlet mass fractions'
         end if
         primitive(1)=config%inflow_density(face);primitive(2:4)=config%inflow_velocity(:,face)
         primitive(5)=config%inflow_pressure(face)
-        call reactive_primitive_to_conserved(species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
+        call reactive_primitive_to_conserved(eos_species,primitive,inlet(:,face),inlet_t(face),inlet_sound,ok)
         if(.not.ok) error stop 'Invalid prescribed EB inlet thermodynamic state'
       end do
     end if
@@ -381,7 +437,7 @@ contains
     if (wall_impacts) then
       if (options%surface_tension<1e-8_dp.or.liquid_viscosity_at_temperature(options,liquid_temperature)<=0) &
         error stop 'EB wall impacts require positive surface tension and viscosity'
-      call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,state,temperature, &
+      call advance_eb_mixture_coupling_allocated(eos_species,transport,liquids,options,g,phi,state,temperature, &
         drops,masses,0._dp,particle_steps,sw(:5),ok,walls,films,film_mass,last_id)
       if (.not.ok) error stop 'Invalid EB impact configuration'
     end if
@@ -390,7 +446,7 @@ contains
     time=0;step=0;boundary=0;wall=0;chemical=0;injected=0;last_checkpoint_step=0
     if(config%checkpoint_interval_steps>0.or.len_trim(config%restart_file)>0) call build_context()
     if(len_trim(config%restart_file)>0) then
-      call read_spray_checkpoint(config%restart_file,context,species,state,temperature,drops,time,step,next_event, &
+      call read_spray_checkpoint(config%restart_file,context,eos_species,state,temperature,drops,time,step,next_event, &
         initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
         breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
         component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
@@ -413,7 +469,7 @@ contains
           write(component_label,'(i0)') step
           checkpoint_path=trim(config%checkpoint_file)//'.step'//trim(component_label)
           call check_checkpoint_path(checkpoint_path)
-          call write_spray_checkpoint(checkpoint_path,context,species,state,temperature,drops,time,step,next_event, &
+          call write_spray_checkpoint(checkpoint_path,context,eos_species,state,temperature,drops,time,step,next_event, &
             initial,injected,ok,message,boundary_totals=boundary,source_totals=wall,chemistry_totals=chemical, &
             breakup_state=.true.,split_state=.true.,khrt_state=.true.,material_state=.true.,shedding_state=.true., &
             component_mass=masses,last_id=last_id,film_state=.true.,wall_films=films,film_component_mass=film_mass, &
@@ -428,12 +484,15 @@ contains
       end if
       if(time>=config%final_time) exit
       if(step>=config%maximum_steps) error stop 'EB spray maximum_steps exhausted'
-      call compute_reactive_eb_cfl_timestep_3d(species,state,temperature,g,config%cfl,hydro_dt,ok)
+      call compute_reactive_eb_cfl_timestep_3d(eos_species,state,temperature,g,config%cfl,hydro_dt,ok)
       if(.not.ok) error stop 'Invalid EB gas CFL bound'
-      dt=min(hydro_dt,maximum_dt,config%final_time-time)
+      call compute_spray_timestep(drops,[g%dx,g%dy,g%dz],options%particle_cfl,options%fixed_parts, &
+        maximum_injection_speed,particle_dt,ok)
+      if(.not.ok) error stop "Invalid EB particle timestep"
+      dt=min(hydro_dt,maximum_dt,particle_dt,config%final_time-time)
       if(next_event<=injection_events) dt=min(dt,injection_times(next_event)-time)
       if(config%transport_enabled) then
-        call reactive_eb_transport_timestep_3d(species,transport,state,temperature,g,config%transport_cfl, &
+        call reactive_eb_transport_timestep_3d(eos_species,transport,state,temperature,g,config%transport_cfl, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           transport_dt,diffusivity,ok)
         if(.not.ok) error stop 'Invalid EB transport bound'
@@ -443,7 +502,7 @@ contains
         call fill_reactive_boundary_ghosts_3d(state,temperature,boundary_faces,ghost,ghost_t,ok, &
           viscous_wall=.true.,inflow_state=inlet,inflow_temperature=inlet_t,ghost_width=1)
         if(.not.ok) error stop 'Failed to prepare EB timestep boundary donors'
-        call reactive_eb_halo_bounds_3d(species,transport,g,ghost,ghost_t,config%transport_enabled, &
+        call reactive_eb_halo_bounds_3d(eos_species,transport,g,ghost,ghost_t,config%transport_enabled, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           donor_speeds,donor_diffusivity,ok)
         if(.not.ok) error stop 'Failed to compute EB boundary timestep bounds'
@@ -457,7 +516,7 @@ contains
         end if
       end if
       if(allocated(wall_t)) then
-        call reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,g, &
+        call reactive_eb_isothermal_timestep_3d(eos_species,transport,state,temperature,g, &
           boundary_faces,wall_t,config%transport_cfl,wall_dt,ok)
         if(.not.ok) error stop 'Invalid EB spray wall thermal timestep'
         dt=min(dt,wall_dt)
@@ -467,17 +526,18 @@ contains
         if(dt<=0.or.time+dt<=time) exit
         theta=1;sb=0;sw=0;sc=0
         if (wall_impacts) then
-        call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+        call advance_eb_spray_reactive_allocated(eos_species,reactions,transport,liquids,options,g,phi,state,temperature, &
           drops,masses,dt,config%riemann_solver,config%redistribution,config%chemistry_enabled,config%transport_enabled, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
           particle_steps,theta,sb,sw,sc,ok,config%state_redist_target_volume_fraction,integrator, &
           walls,films,film_mass,last_id,model_rejected,step_split_created,particle_outflow,acceleration,sf, &
           difmag=config%difmag,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
-          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t, &
+          state_redist_max_order=config%state_redist_max_order)
           if(model_rejected) error stop 'EB impact correlation outside admissible mass/velocity range'
         else
-        call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+        call advance_eb_spray_reactive_allocated(eos_species,reactions,transport,liquids,options,g,phi,state,temperature, &
           drops,masses,dt,config%riemann_solver,config%redistribution,config%chemistry_enabled,config%transport_enabled, &
           config%viscosity_enabled,config%thermal_conduction_enabled,config%species_diffusion_enabled, &
           config%barodiffusion_enabled,config%chemistry_relative_tolerance,config%chemistry_absolute_tolerance, &
@@ -485,7 +545,8 @@ contains
           last_id=last_id,split_created=step_split_created,particle_outflow=particle_outflow, &
           acceleration=acceleration,source_change=sf, &
           difmag=config%difmag,extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
-          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t)
+          inflow_state=inlet,inflow_temperature=inlet_t,wall_temperature=wall_t, &
+          state_redist_max_order=config%state_redist_max_order)
         end if
         if(ok) exit
         dt=.5_dp*dt
@@ -495,7 +556,7 @@ contains
       if(allocated(force)) force=force+sf
       time=time+dt;step=step+1;boundary=boundary+sb;wall=wall+sw;chemical=chemical+sc
     end do
-    call write_reactive_eb_3d_csv(config%output_file,species,g,state,temperature,time,ok,message)
+    call write_reactive_eb_3d_csv(config%output_file,eos_species,g,state,temperature,time,ok,message)
     if(.not.ok) error stop 'Cannot write EB spray gas CSV'
     open(newunit=unit,file=trim(config%output_file)//'.particles.csv',status='replace',action='write',iostat=status)
     if(status/=0) error stop 'Cannot write EB spray particle CSV'
@@ -540,7 +601,7 @@ contains
       integer :: scratch,ios,j,k,length
       character(len=spray_checkpoint_context_capacity) :: line
       character(len=32) :: method
-      real(dp) :: composition(size(species))
+      real(dp) :: composition(size(eos_species))
       canonical=config
       canonical%final_time=0;canonical%maximum_steps=0;canonical%output_file=''
       canonical%checkpoint_interval_steps=0;canonical%checkpoint_file='';canonical%restart_file=''
@@ -568,6 +629,8 @@ contains
         canonical%initial_velocity_z,canonical%composition_count,canonical%composition_species, &
         canonical%composition_mole_fractions,canonical%checkpoint_interval_steps,canonical%stop_after_checkpoint, &
         canonical%checkpoint_file,canonical%restart_file,canonical%output_file
+      if(ios==0.and.config%state_redist_max_order/=0) &
+        write(scratch,'(a,1x,i0)',iostat=ios) 'state-redist-order-v1',config%state_redist_max_order
       if(ios==0.and.config%difmag>0) &
         write(scratch,'(a,1x,es27.18e3)',iostat=ios) 'difmag-v1',config%difmag
       if(ios==0.and.config%hydro_method/='pcm') &
@@ -591,8 +654,12 @@ contains
       if(ios==0.and.allocated(wall_t)) &
         write(scratch,'(a,6(1x,es27.18e3))',iostat=ios) 'wall-v1',wall_t
       if(ios==0) write(scratch,nml=eb_spray,iostat=ios)
-      do j=1,size(species)
-        if(ios==0) write(scratch,*,iostat=ios) species(j)
+      do j=1,size(eos_species)
+        if(ios==0) write(scratch,*,iostat=ios) eos_species(j)%name,eos_species(j)%molecular_weight,eos_species(j)%temperature_min, &
+          eos_species(j)%temperature_mid,eos_species(j)%temperature_max, &
+          eos_species(j)%low_coefficients,eos_species(j)%high_coefficients
+        if(ios==0.and.eos_species(j)%pinned_eos_extrapolation) &
+          write(scratch,'(a)',iostat=ios) trim(nasa7_eos_policy_identity(eos_species))
         if(ios==0) call write_transport_context(scratch,transport(j),ios)
       end do
       if(ios==0) call write_selected_checkpoint_context(scratch,reactions,'EB_SPRAY_V1',method,composition, &
@@ -605,7 +672,9 @@ contains
       if(ios/=0) error stop 'Cannot serialize EB checkpoint context'
       rewind(scratch,iostat=ios)
       if(ios/=0) error stop 'Cannot rewind EB checkpoint context'
-      context=''
+      context='PARTICLE_TIMESTEP_V1|'
+      if(options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0) context=context//'REF_BREAKUP_N0_V1|'
+      if(wall_impacts) context=context//'SPLASH_N0_V2|'
       do
         read(scratch,'(a)',iostat=ios) line
         if(ios<0) exit
@@ -616,6 +685,16 @@ contains
         context=context//trim(line)//'|'
       end do
       close(scratch)
+      if(options%breakup_model=='etab') then
+        if(len(context)+len('ETAB_MINMASS_V2|')>spray_checkpoint_context_capacity) &
+          error stop 'EB checkpoint context exceeds capacity'
+        context=context//'ETAB_MINMASS_V2|'
+      endif
+      if(options%khrt_parcel_factor>=0) then
+        if(len(context)+len('KHRT_MINMASS_V2|')>spray_checkpoint_context_capacity) &
+          error stop 'EB checkpoint context exceeds capacity'
+        context=context//'KHRT_MINMASS_V2|'
+      endif
     end subroutine
     subroutine validate_restart()
       integer :: q,expected_count,cells(3,8)
@@ -668,7 +747,7 @@ contains
         if(.not.valid) error stop 'Restart parcel outside fluid'
       end do
       if (wall_impacts) then
-        call advance_eb_film_coupling(species,transport,liquids,options,walls,g,phi,state,temperature, &
+        call advance_eb_film_coupling(eos_species,transport,liquids,options,walls,g,phi,state,temperature, &
           films,film_mass,0._dp,particle_steps,sw(:5),valid,config%boundary_faces(1:6:2)=='periodic')
         if(.not.valid) error stop 'Invalid restart EB films'
       end if
@@ -698,7 +777,8 @@ contains
         diameter_shape=port_sizes(port)%shape,diameter_min=port_sizes(port)%minimum,diameter_max=port_sizes(port)%maximum, &
         diameter_weighting=port_sizes(port)%weighting,diameter_distribution=port_sizes(port)%distribution, &
         diameter_std=port_sizes(port)%std, &
-        nozzle_radius=port_radii(port),nozzle_model=port_nozzles(port))
+        nozzle_radius=port_radii(port),nozzle_model=port_nozzles(port), &
+        reference_breakup=options%etab_parcel_factor>=0.or.options%khrt_parcel_factor>=0)
       if(.not.valid) error stop 'Invalid scheduled EB injection'
       change=0;cells=0;weights=0;volumes=0
       allocate(candidate(old_count+nadd),candidate_mass(nc,old_count+nadd),stat=ios)

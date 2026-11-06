@@ -1,5 +1,6 @@
 module mpi_amr_sparse_patch_1d_mod
   use mpi_f08
+  use mpi_reactive_eos_policy_mod, only: agree_mpi_reactive_eos_1d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -119,6 +120,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
 
     local_dt = huge(1.0_dp)
     scale = 1.0_dp
@@ -200,6 +203,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     backup = solution
 
     do level = 1, size(solution%levels)
@@ -295,6 +300,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     backup = solution
 
     allocate(left_integral(solution%nvar), right_integral(solution%nvar))
@@ -577,6 +584,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     backup = solution
 
     allocate(left_integral(solution%nvar), right_integral(solution%nvar))
@@ -670,6 +679,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     backup = solution
 
     if (config%chemistry_enabled) then
@@ -2004,6 +2015,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, old_distribution%comm, accepted)
+    if (.not. accepted) return
     backup = solution
 
     call initialize_patch_tree_1d( &
@@ -2500,6 +2513,8 @@ contains
     call all_ranks_accept_sparse_1d( &
       old_distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, old_distribution%comm, accepted)
+    if (.not. accepted) return
     backup = solution
     planning_solution = solution
 

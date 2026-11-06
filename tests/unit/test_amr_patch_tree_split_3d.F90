@@ -1,5 +1,6 @@
 program test_amr_patch_tree_split_3d
   use, intrinsic :: iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan,ieee_is_nan
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
   use amr_patch_tree_split_3d_mod, only: advance_amr_patch_tree_split_3d,advance_amr_patch_tree_sdc_3d, &
     advance_amr_patch_tree_sdc_subcycle_3d
@@ -7,6 +8,8 @@ program test_amr_patch_tree_split_3d
   use amr_patch_tree_hydro_3d_mod, only: advance_amr_patch_tree_hydro_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use precision_mod, only: dp
+  use dual_energy_mod, only: dual_energy_policy
+  use reactive_mol_3d_mod, only: advance_reactive_mol_3d
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -32,7 +35,7 @@ program test_amr_patch_tree_split_3d
   integer :: node,mode
   character(len=32) :: faces(6),integrator
   character(len=16) :: argument
-  logical :: ok
+  logical :: ok,fail_auxiliary_stage=.false.
   call load_h2o2_elementary_thermo(species,ok)
   call require(ok,'thermo')
   call load_h2o2_elementary_transport(transport,ok)
@@ -53,6 +56,11 @@ program test_amr_patch_tree_split_3d
   call initialize_amr_patch_tree_3d([2,2,2],[1,1,2],patches,tree,ok)
   call require(ok,'three-level branched tree')
   call get_command_argument(1,argument)
+  if(trim(argument)=='auxiliary') then
+    call check_auxiliary_mol_time()
+    print *, 'test_amr_stored_auxiliary_mol_time: PASS'
+    stop
+  endif
   if(trim(argument)=='sdc') then
     call check_sdc()
     print *, 'test_amr_patch_tree_sdc_3d: PASS'
@@ -143,6 +151,208 @@ program test_amr_patch_tree_split_3d
     call same_as_reference()
   end do
 contains
+  subroutine check_auxiliary_mol_time()
+    type(amr_patch_tree_3d) :: single
+    type(amr_tree_state_3d) :: u,t,held,old_u,old_t,old_held,source0,source1
+    type(amr_tree_flux_3d), allocatable :: flux(:),aflux(:),old_flux(:),old_aflux(:)
+    type(dual_energy_policy) :: policy
+    real(dp) :: seed(12,2,2,2),seed_t(1,2,2,2),prim(12),c,aux_seed(1,2,2,2)
+    real(dp) :: regular(12,2,2,2),regular_t(2,2,2),regular_aux(2,2,2),ledger,regular_ledger
+    real(dp) :: bound(12),external(12),aux_change(12),maximum,minimum,before(12),after(12)
+    real(dp) :: expected_change,scalar_before(1),scalar_after(1)
+    integer(int64) :: steps(3)
+    integer :: peer,mode,cycle
+    logical :: cycling,transport_flags(4)
+    procedure(inert_reactor), pointer :: reactor
+    character(len=32) :: periodic(6)
+    periodic='periodic';prim=0;prim(1)=.3_dp;prim(5)=202650;prim(12)=1
+    call reactive_primitive_to_conserved(species,prim,seed(:,1,1,1),seed_t(1,1,1,1),c,ok)
+    call require(ok,'auxiliary uniform N2 initial state')
+    do peer=1,12
+      seed(peer,:,:,:)=seed(peer,1,1,1)
+    enddo
+    seed_t=seed_t(1,1,1,1);aux_seed(1,:,:,:)=seed(5,:,:,:)-100
+    call initialize_amr_patch_tree_3d([2,2,2],[integer::],patches(:0),single,ok)
+    call require(ok,'auxiliary root-only topology')
+    call prolong_amr_patch_tree_3d(single,seed,u,ok)
+    call require(ok,'auxiliary root state')
+    call prolong_amr_patch_tree_3d(single,seed_t,t,ok)
+    call require(ok,'auxiliary root temperature')
+    call prolong_amr_patch_tree_3d(single,aux_seed,held,ok)
+    call require(ok,'auxiliary root retained field')
+    ! Ordinary MOL must reject invalid old thermodynamics without committing
+    ! state, temperature, held energy or scalar diagnostics.
+    old_u=u;old_t=t;old_held=held
+    policy%eta2=2;policy%update_total_from_internal=.true.;policy%allow_negative_energy=.false.
+    do mode=1,4
+      u=old_u;t=old_t;held=old_held
+      select case(mode)
+      case(1)
+        u%fields(1)%values(1,1,1,1)=-1
+      case(2)
+        u%fields(1)%values(5,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+      case(3)
+        held%fields(1)%values(1,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+      case(4)
+        t%fields(1)%values(1,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+      end select
+      ledger=-7;bound=-3;external=-4;maximum=-5;minimum=-6
+      call advance_amr_patch_tree_sdc_subcycle_3d(single,species,reactions,transport,u,t,spacing,dt,periodic, &
+        1,.false.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],2e-7_dp,1e-12_dp, &
+        bound,external,maximum,minimum,ok,mol_mode=.true.,internal_energy=held, &
+        energy_correction=ledger,energy_policy=policy)
+      call require(.not.ok,'ordinary MOL rejects invalid old state')
+      call require(ledger==-7.and.all(bound==-3).and.all(external==-4).and.maximum==-5.and.minimum==-6, &
+        'ordinary MOL admission diagnostic rollback')
+      select case(mode)
+      case(1)
+        call require(u%fields(1)%values(1,1,1,1)==-1,'invalid density preserved on refusal')
+        u%fields(1)%values(1,1,1,1)=old_u%fields(1)%values(1,1,1,1)
+      case(2)
+        call require(ieee_is_nan(u%fields(1)%values(5,1,1,1)),'invalid total energy preserved on refusal')
+        u%fields(1)%values(5,1,1,1)=old_u%fields(1)%values(5,1,1,1)
+      case(3)
+        call require(ieee_is_nan(held%fields(1)%values(1,1,1,1)),'invalid held energy preserved on refusal')
+        held=old_held
+      case(4)
+        call require(ieee_is_nan(t%fields(1)%values(1,1,1,1)),'invalid temperature preserved on refusal')
+        t=old_t
+      end select
+      call require(all(u%fields(1)%values==old_u%fields(1)%values).and. &
+        all(t%fields(1)%values==old_t%fields(1)%values).and. &
+        all(held%fields(1)%values==old_held%fields(1)%values),'ordinary MOL admission field rollback')
+    enddo
+    u=old_u;t=old_t;held=old_held
+    policy%eta2=1;policy%update_total_from_internal=.false.;policy%allow_negative_energy=.false.
+    regular=seed;regular_t=seed_t(1,:,:,:);regular_aux=aux_seed(1,:,:,:);regular_ledger=0;ledger=0
+    call advance_reactive_mol_3d(species,regular,regular_t,spacing,dt,0._dp,1,.false.,2e-7_dp,1e-12_dp,ok, &
+      internal_energy_density=regular_aux,energy_correction=regular_ledger,energy_policy=policy)
+    call require(ok,'auxiliary standalone regular MOL oracle')
+    call advance_amr_patch_tree_sdc_3d(single,species,reactions,transport,u,t,spacing,dt,periodic,1,.false., &
+      [.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],2e-7_dp,1e-12_dp,bound,external,maximum,minimum,ok, &
+      mol_mode=.true.,internal_energy=held,energy_correction=ledger,energy_policy=policy, &
+      integrated_flux=flux,internal_energy_integrated_flux=aflux)
+    call require(ok,'auxiliary root MOL time integration')
+    call require(all(u%fields(1)%values==regular),'auxiliary root state matches regular MOL')
+    call require(all(t%fields(1)%values(1,:,:,:)==regular_t),'auxiliary root temperature matches regular MOL')
+    call require(all(held%fields(1)%values(1,:,:,:)==regular_aux).and.ledger==regular_ledger, &
+      'auxiliary root retained scalar and correction match regular MOL')
+    call require(all(held%fields(1)%values==aux_seed),'independent scalar survives MOL stage reset policy')
+    ! A pressure perturbation crosses the finest coarse/fine interface. The
+    ! independently stored scalar must conserve through actual nonzero fluxes.
+    call prolong_amr_patch_tree_3d(tree,seed,u,ok);call require(ok,'nonuniform auxiliary state')
+    call prolong_amr_patch_tree_3d(tree,seed_t,t,ok);call require(ok,'nonuniform auxiliary temperature')
+    call prolong_amr_patch_tree_3d(tree,aux_seed,held,ok);call require(ok,'nonuniform auxiliary scalar')
+    prim(5)=1.02_dp*prim(5)
+    peer=size(tree%nodes)
+    call reactive_primitive_to_conserved(species,prim,u%fields(peer)%values(:,1,1,1), &
+      t%fields(peer)%values(1,1,1,1),c,ok)
+    call require(ok,'finest pressure perturbation')
+    held%fields(peer)%values(1,1,1,1)=u%fields(peer)%values(5,1,1,1)-100
+    old_held=held
+    call composite_integrals_amr_patch_tree_3d(tree,held,spacing,scalar_before,ok)
+    call require(ok,'nonuniform scalar initial integral')
+    ledger=0
+    call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,u,t,spacing,dt,periodic, &
+      1,.false.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],2e-7_dp,1e-12_dp, &
+      bound,external,maximum,minimum,ok,mol_mode=.true.,subcycling=.true., &
+      internal_energy=held,energy_correction=ledger,energy_policy=policy,internal_energy_integrated_flux=aflux)
+    call require(ok,'nonuniform scalar recursive transport and reflux')
+    call composite_integrals_amr_patch_tree_3d(tree,held,spacing,scalar_after,ok)
+    call require(ok.and.abs(scalar_after(1)-scalar_before(1))<1e-13_dp,'nonuniform scalar composite conservation')
+    call require(maxval(abs(held%fields(peer)%values-old_held%fields(peer)%values))>1e-8_dp, &
+      'nonuniform scalar flux changes finest state')
+    call require(ledger==0,'nonuniform scalar retained policy makes no total energy repair')
+    policy%update_total_from_internal=.true.;aux_seed(1,:,:,:)=seed(5,:,:,:)
+    expected_change=10*8*product(spacing)
+    do cycle=0,1
+      cycling=cycle==1
+      do mode=1,3
+        call prolong_amr_patch_tree_3d(tree,seed,u,ok);call require(ok,'auxiliary nested state')
+        call prolong_amr_patch_tree_3d(tree,seed_t,t,ok);call require(ok,'auxiliary nested temperature')
+        call prolong_amr_patch_tree_3d(tree,aux_seed,held,ok);call require(ok,'auxiliary nested held field')
+        call composite_integrals_amr_patch_tree_3d(tree,u,spacing,before,ok)
+        call require(ok,'auxiliary nested initial inventory')
+        call composite_integrals_amr_patch_tree_3d(tree,held,spacing,scalar_before,ok)
+        call require(ok,'auxiliary scalar initial inventory')
+        ledger=0;steps=-1;nullify(reactor)
+        transport_flags=cycling.and.mode==1
+        if(mode>1) reactor=>inert_reactor
+        call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,u,t,spacing,dt,periodic, &
+          merge(2,1,mode==3),mode>1,transport_flags,[0._dp,0._dp,0._dp],2e-7_dp,1e-12_dp, &
+          bound,external,maximum,minimum,ok,mol_mode=.true.,subcycling=cycling,level_steps=steps, &
+          internal_energy=held,energy_correction=ledger,energy_policy=policy, &
+          auxiliary_source=energy_source_recursive,auxiliary_change=aux_change,evaluate_reaction=reactor, &
+          integrated_flux=flux,internal_energy_integrated_flux=aflux)
+        call require(ok,'auxiliary nested MOL common/recursive forced integration')
+        call require(all(steps==merge([1_int64,2_int64,4_int64],[1_int64,1_int64,1_int64],cycling)), &
+          'auxiliary nested MOL level schedule')
+        call composite_integrals_amr_patch_tree_3d(tree,u,spacing,after,ok)
+        call require(ok,'auxiliary final conserved inventory')
+        call composite_integrals_amr_patch_tree_3d(tree,held,spacing,scalar_after,ok)
+        call require(ok,'auxiliary final scalar inventory')
+        call require(abs(after(5)-before(5)-bound(5)-external(5)-aux_change(5)-ledger)<1e-13_dp, &
+          'auxiliary composite total energy plus correction ledger')
+        if(mode==1) then
+          call require(abs(ledger-expected_change)<1e-13_dp,'leaf-volume weighted predictor/final corrections')
+          call require(abs(scalar_after(1)-scalar_before(1))<1e-13_dp,'auxiliary scalar conservative reflux')
+        else
+          call require(abs(scalar_after(1)-after(5))<1e-13_dp,'reactor endpoint scalar and total energy agree')
+        endif
+        old_u=u;old_t=t;old_held=held;old_flux=flux;old_aflux=aflux
+        fail_auxiliary_stage=.true.;bound=-3;external=-4;maximum=-5;minimum=-6;ledger=-7;aux_change=-8;steps=-9
+        call advance_amr_patch_tree_sdc_subcycle_3d(tree,species,reactions,transport,u,t,spacing,dt,periodic, &
+          1,.false.,[.false.,.false.,.false.,.false.],[0._dp,0._dp,0._dp],2e-7_dp,1e-12_dp, &
+          bound,external,maximum,minimum,ok,mol_mode=.true.,subcycling=cycling,level_steps=steps, &
+          internal_energy=held,energy_correction=ledger,energy_policy=policy, &
+          auxiliary_source=energy_source_recursive,auxiliary_change=aux_change, &
+          integrated_flux=flux,internal_energy_integrated_flux=aflux)
+        fail_auxiliary_stage=.false.
+        call require(.not.ok.and.ledger==-7.and.all(bound==-3).and.all(external==-4).and. &
+          maximum==-5.and.minimum==-6.and.all(aux_change==-8).and.all(steps==-9),'auxiliary late stage ledger rollback')
+        do peer=1,size(tree%nodes)
+          call require(all(u%fields(peer)%values==old_u%fields(peer)%values).and. &
+            all(t%fields(peer)%values==old_t%fields(peer)%values).and. &
+            all(held%fields(peer)%values==old_held%fields(peer)%values),'auxiliary late stage field rollback')
+          call require(all(flux(peer)%x==old_flux(peer)%x).and.all(aflux(peer)%x==old_aflux(peer)%x), &
+            'auxiliary late stage flux rollback')
+        enddo
+      enddo
+    enddo
+  end subroutine check_auxiliary_mol_time
+
+  subroutine energy_source_recursive(gas,temp,interval,stage,depth,time,rate,success)
+    type(amr_tree_state_3d), intent(in) :: gas,temp
+    type(amr_tree_state_3d), intent(inout) :: rate
+    real(dp), intent(in) :: interval,time
+    integer, intent(in) :: stage,depth
+    logical, intent(out) :: success
+    integer :: peer
+    success=.false.
+    if(fail_auxiliary_stage.and.stage>0) return
+    rate=gas
+    do peer=1,size(tree%nodes)
+      rate%fields(peer)%values=0
+      if(tree%nodes(peer)%level/=depth) cycle
+      rate%fields(peer)%values(5,:,:,:)=-10/dt
+    enddo
+    success=.true.
+  end subroutine energy_source_recursive
+
+  subroutine inert_reactor(sp,rx,rhoe,external_y,external_e,duration,rtol,atol,densities,temp,count,good,maximum_steps)
+    type(nasa7_species), intent(in) :: sp(:)
+    type(elementary_reaction), intent(in) :: rx(:)
+    real(dp), intent(in) :: rhoe,external_y(:),external_e,duration,rtol,atol
+    real(dp), intent(inout) :: densities(:),temp
+    integer, intent(out) :: count
+    logical, intent(out) :: good
+    integer, optional, intent(in) :: maximum_steps
+    densities=densities+duration*external_y
+    ! The shared SDC adapter recovers accepted temperature from the forced
+    ! energy endpoint after this inert callback returns unchanged chemistry.
+    count=1;good=.true.
+  end subroutine inert_reactor
+
   subroutine check_sdc()
     type(amr_tree_state_3d) :: u,t,previous,previous_t,sync,coarse0,coarse1,op,np,ir
     type(amr_tree_flux_3d), allocatable :: flux(:)

@@ -1,5 +1,6 @@
 program pelef_reactive_eb_patch_tree_2d
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -21,7 +22,7 @@ program pelef_reactive_eb_patch_tree_2d
 
   type(reactive_eb_amr_2d_config) :: config
   type(reactive_amr_eb_patch_tree_2d) :: solution
-  type(nasa7_species), allocatable :: species(:)
+  type(nasa7_species), allocatable :: species(:),eos_species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   real(dp), allocatable :: initial_integrals(:), final_integrals(:)
@@ -68,8 +69,10 @@ program pelef_reactive_eb_patch_tree_2d
     error stop "Unknown chemistry model"
   end select
 
+  call configure_reactive_2d_eos(species,config%eb%flow,eos_species,ok)
+  if(.not.ok) error stop 'Invalid patch-tree 2D EOS policy'
   call simulate_reactive_amr_eb_patch_tree_2d( &
-    species, reactions, transport, config, solution, time, steps, regrids, &
+    eos_species, reactions, transport, config, solution, time, steps, regrids, &
     initial_integrals, final_integrals, minimum_dt, base_density, ok, &
     message, minimum_transport_theta, chemistry_level_advances, &
     transport_level_advances, hydro_level_advances, &
@@ -79,7 +82,7 @@ program pelef_reactive_eb_patch_tree_2d
     error stop "Reactive EB patch-tree 2D simulation failed"
   end if
   call write_reactive_amr_eb_patch_tree_2d_csv( &
-    config%eb%flow%output_file, species, solution, time, ok)
+    config%eb%flow%output_file, eos_species, solution, time, ok)
   if (.not. ok) error stop "Reactive EB patch-tree composite output failed"
 
   conservation_error = maxval(abs(final_integrals - initial_integrals) / &

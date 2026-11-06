@@ -3,6 +3,8 @@ program test_amr_reactive_3d_config
     reactive_3d_config, validate_reactive_3d_configuration
   use simulation_config_amr_reactive_3d_mod, only: &
     amr_reactive_3d_config, validate_amr_reactive_3d_configuration
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use precision_mod, only: dp
   implicit none
 
   type(reactive_3d_config) :: base
@@ -10,6 +12,7 @@ program test_amr_reactive_3d_config
   character(len=256) :: message
   logical :: ok
 
+  call check_energy_input()
   base = reactive_3d_config()
   base%nx = 8
   base%ny = 8
@@ -159,6 +162,33 @@ program test_amr_reactive_3d_config
   write(*, '(a)') "test_amr_reactive_3d_config: PASS"
 
 contains
+  subroutine check_energy_input()
+    type(reactive_3d_config) :: c
+    logical :: valid
+    character(len=256) :: reason
+    c=reactive_3d_config()
+    c%time_integrator='mol';c%reconstruction='characteristic_plm';c%riemann_solver='pelec'
+    c%allow_negative_energy=.false.;c%dual_energy_eta2=1
+    call validate_reactive_3d_configuration(c,valid,reason)
+    call require(.not.valid.and.index(reason,'regular MOL')>0,'unconnected application rejects energy controls')
+    call validate_reactive_3d_configuration(c,valid,reason,allow_dual_energy=.true.)
+    call require(valid,'regular MOL energy controls accepted')
+    c%time_integrator='sdc'
+    call validate_reactive_3d_configuration(c,valid,reason,allow_dual_energy=.true.)
+    call require(.not.valid.and.index(reason,'regular MOL')>0,'unconnected SDC rejects energy controls')
+    c%reconstruction='characteristic_ppm'
+    call validate_reactive_3d_configuration(c,valid,reason,allow_dual_energy=.true.,allow_godunov_dual_energy=.true.)
+    call require(valid,'connected tree Godunov accepts energy controls')
+    call validate_reactive_3d_configuration(c,valid,reason,allow_godunov_dual_energy=.true.)
+    call require(.not.valid,'Godunov controls also require the retained-energy capability')
+    c%reconstruction='characteristic_plm'
+    c%time_integrator='mol';c%dual_energy_eta2=-1
+    call validate_reactive_3d_configuration(c,valid,reason,allow_dual_energy=.true.)
+    call require(.not.valid.and.index(reason,'finite and nonnegative')>0,'negative eta rejected')
+    c%dual_energy_eta2=ieee_value(0._dp,ieee_quiet_nan)
+    call validate_reactive_3d_configuration(c,valid,reason,allow_dual_energy=.true.)
+    call require(.not.valid.and.index(reason,'finite and nonnegative')>0,'nonfinite eta rejected')
+  end subroutine check_energy_input
 
   subroutine require(condition, label)
     logical, intent(in) :: condition

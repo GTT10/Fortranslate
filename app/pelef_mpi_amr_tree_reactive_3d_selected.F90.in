@@ -61,7 +61,9 @@ program pelef_mpi_amr_tree_reactive_3d_selected
   call read_reactive_3d_configuration( &
     trim(input_path), config, ok, message, allow_selected=.true., &
     allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true., &
-    allow_sdc=.true.,allow_external_forcing=.true.,allow_sdc_cvode=cvode_available)
+    allow_sdc=.true.,allow_mol=.true.,allow_external_forcing=.true.,allow_sdc_cvode=cvode_available, &
+    allow_dual_energy=.true.,allow_godunov_dual_energy=.true., &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     call fatal('Invalid selected MPI tree input or mechanism')
@@ -106,13 +108,15 @@ program pelef_mpi_amr_tree_reactive_3d_selected
     requested_temperature_maximum = config%initial_temperature / &
       (1.0_dp - config%density_wave_amplitude)
   end select
-  call validate_selected_temperature_range( &
-    "Selected 3D AMR tree", requested_temperature_minimum, &
-    requested_temperature_maximum, common_temperature_minimum, &
-    common_temperature_maximum, ok, message)
-  if (.not. ok) then
-    write(*, '(a)') trim(message)
-    call fatal('Invalid selected MPI tree input or mechanism')
+  if(.not.config%pinned_eos_extrapolation) then
+    call validate_selected_temperature_range( &
+      "Selected 3D AMR tree", requested_temperature_minimum, &
+      requested_temperature_maximum, common_temperature_minimum, &
+      common_temperature_maximum, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      call fatal('Invalid selected MPI tree input or mechanism')
+    end if
   end if
 
   call resolve_reactive_3d_selected_composition( &

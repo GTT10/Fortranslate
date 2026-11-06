@@ -20,7 +20,7 @@ program test_reactive_eb_hydro_3d
     eb_plm_face_prediction_3d,eb_plm_boundary_3d,apply_reactive_eb_transverse_3d,compute_reactive_eb_flattening_3d, &
     advance_reactive_eb_euler_3d,advance_reactive_eb_outflow_ctu_3d,advance_reactive_eb_boundary_ctu_3d, &
     advance_reactive_eb_redistributed_euler_3d, &
-    advance_reactive_eb_state_redistributed_euler_3d
+    advance_reactive_eb_state_redistributed_euler_3d,limit_reactive_eb_flux_correction_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
   implicit none
@@ -83,6 +83,8 @@ program test_reactive_eb_hydro_3d
   call verify_normal_fluxes()
   call verify_transverse_prediction()
   call verify_ctu_fluxes()
+  call verify_conservative_flux_budget()
+  call verify_peer_flux_budget()
   call verify_ctu_update()
   call verify_flattening()
   call verify_physical_fluxes()
@@ -563,7 +565,8 @@ contains
     real(dp) :: initial(nvar,2,2,2),q(nvar,2,2,2),t(2,2,2),saved(nvar,2,2,2),saved_t(2,2,2)
     real(dp) :: boundary(nvar),wall(nvar),change,scale,vel(3),cs,position,nan_value
     real(dp) :: rates(nvar,2,2,2),source(nvar,8,8,8),stage_boundary(nvar),stage_wall(nvar),saved_rates(nvar,2,2,2)
-    type(eb_integrated_flux_3d) :: stage_flux
+    type(eb_integrated_flux_3d) :: stage_flux,baseline,saved_baseline
+    type(eb_plm_face_prediction_3d) :: low_prediction(3)
     integer :: cut,mode,ii,jj,kk,c,idx(3),inside(3)
     character(len=1), parameter :: axes(3)=['x','y','z']
     character(len=12), parameter :: methods(3)=[character(len=12)::'none','flux_redist','state_redist']
@@ -613,8 +616,19 @@ contains
         if(mode==1) then
           source=0;rates=-31;stage_boundary=32;stage_wall=33
           call compute_sdc_eb_hydro_3d(species,working,ghost,gt,vf,1e-8_dp,flat,source,rates,stage_flux, &
-            stage_boundary,stage_wall,valid)
+            stage_boundary,stage_wall,valid,baseline_flux=baseline)
           call require(valid,'SDC EB hydro source stage')
+          call compute_reactive_eb_plm_normal_fluxes_3d(species,working,ghost,gt,vf,1e-8_dp,flat, &
+            low_prediction,valid,order=1)
+          call require(valid,'independent first-order normal baseline')
+          call require(all(baseline%x==1e-8_dp*low_prediction(1)%flux(:,3:5,4:5,4:5)).and. &
+            all(baseline%y==1e-8_dp*low_prediction(2)%flux(:,4:5,3:5,4:5)).and. &
+            all(baseline%z==1e-8_dp*low_prediction(3)%flux(:,4:5,4:5,3:5)), &
+            'SDC physical baseline matches independent normal donor faces exactly')
+          call require(all(lbound(baseline%x)==lbound(stage_flux%x)).and. &
+            all(lbound(baseline%y)==lbound(stage_flux%y)).and. &
+            all(lbound(baseline%z)==lbound(stage_flux%z)), 'SDC baseline shares final physical face indices')
+          saved_baseline=baseline
           call require(all(q==initial+1e-8_dp*rates),'zero-source SDC rates reproduce Euler update exactly')
           call require(all(stage_flux%x==integral%x).and.all(stage_flux%y==integral%y).and. &
             all(stage_flux%z==integral%z),'SDC integrated flux exact')
@@ -626,11 +640,13 @@ contains
           end do
           saved_rates=rates
           call compute_sdc_eb_hydro_3d(species,working,ghost,gt,vf,1e-8_dp,flat,source,rates,stage_flux, &
-            stage_boundary,stage_wall,valid,difmag=-1._dp)
+            stage_boundary,stage_wall,valid,difmag=-1._dp,baseline_flux=baseline)
           call require(.not.valid.and.all(rates==saved_rates).and.all(stage_boundary==boundary).and. &
             all(stage_wall==wall),'SDC hydro failure keeps rates and inventories')
           call require(all(stage_flux%x==integral%x).and.all(stage_flux%y==integral%y).and. &
             all(stage_flux%z==integral%z),'SDC hydro failure keeps fluxes')
+          call require(all(baseline%x==saved_baseline%x).and.all(baseline%y==saved_baseline%y).and. &
+            all(baseline%z==saved_baseline%z),'SDC failure preserves baseline output')
         end if
         saved=q;saved_t=t;saved_flux=integral
         if(cut==0.and.mode==1) then
@@ -650,9 +666,168 @@ contains
       end do
     end do
   end subroutine verify_ctu_update
+  subroutine verify_conservative_flux_budget()
+    type(eb_geometry_3d) :: g
+    type(eb_integrated_flux_3d) :: baseline,flux,saved
+    real(dp) :: u(nvar,3,3,3),forcing(nvar,3,3,3),dt,volume,area,budget,f(nvar),after(nvar,2),theta
+    real(dp), allocatable :: alpha(:,:,:,:),saved_alpha(:,:,:,:)
+    integer :: axis,cut,donor(3),receiver(3)
+    logical :: valid
+    character(len=1), parameter :: axes(3)=['x','y','z']
+    dt=.1_dp
+    allocate(baseline%x(nvar,0:3,3,3),baseline%y(nvar,3,0:3,3),baseline%z(nvar,3,3,0:3))
+    baseline%x=0;baseline%y=0;baseline%z=0
+    do axis=1,3
+    do cut=0,1
+      call build_axis_plane_eb_geometry_3d(3,3,3,0._dp,3._dp,0._dp,3._dp,0._dp,3._dp, &
+        axes(axis),merge(1.4_dp,-.1_dp,cut==1),g,valid)
+      call require(valid,'conservative correction geometry')
+      donor=2;receiver=donor;receiver(axis)=3
+      volume=g%dx*g%dy*g%dz
+      select case(axis)
+      case(1);area=g%dy*g%dz*g%x_face_fraction(2,2,2)
+      case(2);area=g%dx*g%dz*g%y_face_fraction(2,2,2)
+      case(3);area=g%dx*g%dy*g%z_face_fraction(2,2,2)
+      end select
+      u=0;u(1,:,:,:)=1;u(6,:,:,:)=.25_dp;u(7,:,:,:)=.75_dp
+      forcing=0;forcing(6,2,2,2)=.25_dp/dt;forcing(7,2,2,2)=-.25_dp/dt
+      budget=.5_dp*volume*g%volume_fraction(2,2,2)
+      f=0;f(1)=2*budget/(dt*area);f(2:5)=f(1)*[2._dp,-3._dp,4._dp,7._dp];f(6)=f(1)
+      flux=baseline
+      select case(axis)
+      case(1);flux%x(:,2,2,2)=f
+      case(2);flux%y(:,2,2,2)=f
+      case(3);flux%z(:,2,2,2)=f
+      end select
+      call limit_reactive_eb_flux_correction_3d(g,u,baseline,flux,dt,valid,forcing,alpha)
+      call require(valid,'conservative correction with explicit source budget')
+      theta=.5_dp*(1-16*epsilon(1._dp))
+      select case(axis)
+      case(1);f=flux%x(:,2,2,2)
+      case(2);f=flux%y(:,2,2,2)
+      case(3);f=flux%z(:,2,2,2)
+      end select
+      call require(abs(alpha(2,2,2,2)-theta)<1e-15_dp,'source credits retained in donor allowance')
+      call require(maxval(abs(f(2:5)-f(1)*[2._dp,-3._dp,4._dp,7._dp]))<1e-13_dp, &
+        'one face factor preserves all conserved corrections')
+      call require(f(1)==sum(f(6:)),'limited face preserves mass/species closure')
+      after(:,1)=u(:,2,2,2)+dt*forcing(:,2,2,2)-dt*area*f/(volume*g%volume_fraction(2,2,2))
+      after(:,2)=u(:,receiver(1),receiver(2),receiver(3))+ &
+        dt*area*f/(volume*g%volume_fraction(receiver(1),receiver(2),receiver(3)))
+      call require(all(after(6:,:)>=0).and.all(after(1,:)>0),'cut and regular donor/receiver positivity')
+      call require(maxval(abs(volume*g%volume_fraction(2,2,2)*(after(:,1)-u(:,2,2,2)-dt*forcing(:,2,2,2))+ &
+        volume*g%volume_fraction(receiver(1),receiver(2),receiver(3))* &
+        (after(:,2)-u(:,receiver(1),receiver(2),receiver(3)))))<1e-14_dp,'shared correction conserves inventory')
+      saved=flux;saved_alpha=alpha;forcing(6,2,2,2)=-1/dt
+      call limit_reactive_eb_flux_correction_3d(g,u,baseline,flux,dt,valid,forcing,alpha)
+      call require(.not.valid.and.all(flux%x==saved%x).and.all(flux%y==saved%y).and.all(flux%z==saved%z).and. &
+        all(alpha==saved_alpha),'inadmissible baseline rejects with full rollback')
+      forcing(6,2,2,2)=ieee_value(0._dp,ieee_quiet_nan)
+      call limit_reactive_eb_flux_correction_3d(g,u,baseline,flux,dt,valid,forcing,alpha)
+      call require(.not.valid.and.all(flux%x==saved%x).and.all(flux%y==saved%y).and.all(flux%z==saved%z).and. &
+        all(alpha==saved_alpha),'invalid source rejects with full rollback')
+      flux=baseline;forcing=0
+      call limit_reactive_eb_flux_correction_3d(g,u,baseline,flux,dt,valid,forcing,alpha)
+      call require(valid.and.all(flux%x==baseline%x).and.all(flux%y==baseline%y).and.all(flux%z==baseline%z).and. &
+        all(alpha==1),'identical baseline/correction is exact identity')
+    enddo
+    enddo
+    call build_axis_plane_eb_geometry_3d(3,3,3,0._dp,3._dp,0._dp,3._dp,0._dp,3._dp, &
+      'x',-.1_dp,g,valid)
+    call require(valid,'multiple-face budget geometry')
+    ! Three simultaneous outflows must share one donor budget. A nonzero
+    ! baseline already removes part of that budget before correction.
+    baseline%x([1,6],2,2,2)=.1_dp
+    flux=baseline
+    flux%x([1,6],2,2,2)=1.1_dp;flux%y([1,6],2,2,2)=1;flux%z([1,6],2,2,2)=1
+    forcing=0;u=0;u(1,:,:,:)=1;u(6,:,:,:)=.25_dp;u(7,:,:,:)=.75_dp
+    call limit_reactive_eb_flux_correction_3d(g,u,baseline,flux,dt,valid,alpha_output=alpha)
+    call require(valid,'three-face conservative budget')
+    theta=(.25_dp-dt*.1_dp)/(3*dt)*(1-16*epsilon(1._dp))
+    call require(abs(flux%x(6,2,2,2)-(.1_dp+theta))<1e-15_dp.and. &
+      abs(flux%y(6,2,2,2)-theta)<1e-15_dp.and.abs(flux%z(6,2,2,2)-theta)<1e-15_dp, &
+      'all outgoing faces share remaining baseline budget')
+    call require(.25_dp-dt*(flux%x(6,2,2,2)+flux%y(6,2,2,2)+flux%z(6,2,2,2))>=0, &
+      'multiple-face endpoint remains nonnegative')
+    ! A lower domain face has its interior donor on the right. Signed flux
+    ! therefore consumes the same allowance as an upper-face outflow.
+    baseline%x=0;flux=baseline;flux%x([1,6],0,2,2)=-10
+    call limit_reactive_eb_flux_correction_3d(g,u,baseline,flux,dt,valid,alpha_output=alpha)
+    call require(valid.and.flux%x(6,0,2,2)<0.and..25_dp+dt*flux%x(6,0,2,2)>=0, &
+      'lower boundary outflow uses the right donor budget')
+  end subroutine verify_conservative_flux_budget
+
+  subroutine verify_peer_flux_budget()
+    type(eb_geometry_3d) :: g
+    type(eb_integrated_flux_3d) :: baseline,raw_left,raw_right,left_flux,right_flux,saved
+    real(dp) :: left_state(nvar,3,3,3),right_state(nvar,3,3,3),dt,f(nvar),fl(nvar),fr(nvar),theta
+    real(dp) :: halo_left(nvar-4,0:4,0:4,0:4),halo_right(nvar-4,0:4,0:4,0:4),after(nvar,2)
+    real(dp), allocatable :: left_alpha(:,:,:,:),right_alpha(:,:,:,:),saved_alpha(:,:,:,:)
+    integer :: axis,left_cell(3),right_cell(3),remote_left(3),remote_right(3)
+    logical :: valid
+    dt=.1_dp
+    call build_axis_plane_eb_geometry_3d(3,3,3,0._dp,3._dp,0._dp,3._dp,0._dp,3._dp, &
+      'x',-.1_dp,g,valid)
+    call require(valid,'peer allowance geometry')
+    allocate(baseline%x(nvar,0:3,3,3),baseline%y(nvar,3,0:3,3),baseline%z(nvar,3,3,0:3))
+    baseline%x=0;baseline%y=0;baseline%z=0
+    left_state=0;left_state(1,:,:,:)=1;left_state(6,:,:,:)=.25_dp;left_state(7,:,:,:)=.75_dp
+    right_state=0;right_state(1,:,:,:)=1;right_state(6,:,:,:)=.96_dp;right_state(7,:,:,:)=.04_dp
+    ! Opposing species corrections have different donors on the same face.
+    ! The left patch has enough species 6; the right patch bounds species 7.
+    f=0;f(2:5)=[2._dp,-3._dp,4._dp,7._dp];f(6)=1;f(7)=-1
+    do axis=1,3
+      left_cell=2;left_cell(axis)=3;right_cell=2;right_cell(axis)=1
+      remote_left=left_cell;remote_left(axis)=4;remote_right=right_cell;remote_right(axis)=0
+      raw_left=baseline;raw_right=baseline
+      select case(axis)
+      case(1);raw_left%x(:,3,2,2)=f;raw_right%x(:,0,2,2)=f
+      case(2);raw_left%y(:,2,3,2)=f;raw_right%y(:,2,0,2)=f
+      case(3);raw_left%z(:,2,2,3)=f;raw_right%z(:,2,2,0)=f
+      end select
+      left_flux=raw_left;right_flux=raw_right
+      call limit_reactive_eb_flux_correction_3d(g,left_state,baseline,left_flux,dt,valid,alpha_output=left_alpha)
+      call require(valid,'left patch allowance preparation')
+      call limit_reactive_eb_flux_correction_3d(g,right_state,baseline,right_flux,dt,valid,alpha_output=right_alpha)
+      call require(valid,'right patch allowance preparation')
+      halo_left=1;halo_right=1
+      halo_left(:,remote_left(1),remote_left(2),remote_left(3))= &
+        right_alpha(:,right_cell(1),right_cell(2),right_cell(3))
+      halo_right(:,remote_right(1),remote_right(2),remote_right(3))= &
+        left_alpha(:,left_cell(1),left_cell(2),left_cell(3))
+      ! Apply to the original correction, not the locally limited first pass.
+      left_flux=raw_left;right_flux=raw_right
+      call limit_reactive_eb_flux_correction_3d(g,left_state,baseline,left_flux,dt,valid, &
+        alpha_output=left_alpha,peer_alpha=halo_left)
+      call require(valid,'left patch consumes remote donor allowance')
+      call limit_reactive_eb_flux_correction_3d(g,right_state,baseline,right_flux,dt,valid, &
+        alpha_output=right_alpha,peer_alpha=halo_right)
+      call require(valid,'right patch consumes remote donor allowance')
+      select case(axis)
+      case(1);fl=left_flux%x(:,3,2,2);fr=right_flux%x(:,0,2,2)
+      case(2);fl=left_flux%y(:,2,3,2);fr=right_flux%y(:,2,0,2)
+      case(3);fl=left_flux%z(:,2,2,3);fr=right_flux%z(:,2,2,0)
+      end select
+      theta=(.04_dp/dt)*(1-16*epsilon(1._dp))
+      call require(all(fl==fr).and.maxval(abs(fl-theta*f))<1e-15_dp,'opposite peer faces share one correction factor')
+      after(:,1)=left_state(:,left_cell(1),left_cell(2),left_cell(3))-dt*fl
+      after(:,2)=right_state(:,right_cell(1),right_cell(2),right_cell(3))+dt*fr
+      call require(all(after(6:,:)>=0),'both peer donors retain nonnegative species')
+      call require(maxval(abs(after(:,1)+after(:,2)- &
+        left_state(:,left_cell(1),left_cell(2),left_cell(3))- &
+        right_state(:,right_cell(1),right_cell(2),right_cell(3))))<1e-15_dp,'peer inventory conservation')
+      saved=left_flux;saved_alpha=left_alpha
+      halo_left(3,remote_left(1),remote_left(2),remote_left(3))=-1
+      call limit_reactive_eb_flux_correction_3d(g,left_state,baseline,left_flux,dt,valid, &
+        alpha_output=left_alpha,peer_alpha=halo_left)
+      call require(.not.valid.and.all(left_flux%x==saved%x).and.all(left_flux%y==saved%y).and. &
+        all(left_flux%z==saved%z).and.all(left_alpha==saved_alpha),'invalid peer allowance rolls back both outputs')
+    enddo
+  end subroutine verify_peer_flux_budget
+
   subroutine verify_ctu_fluxes()
     type(eb_geometry_3d) :: shape
-    type(eb_plm_face_prediction_3d) :: result(3),saved(3)
+    type(eb_plm_face_prediction_3d) :: result(3),saved(3),normal_export(3),normal_control(3),saved_normal(3)
     real(dp) :: ghost(nvar,-2:11,-2:11,-2:11),gt(-2:11,-2:11,-2:11),vf(-2:11,-2:11,-2:11)
     real(dp) :: flat(0:9,0:9,0:9),source(nvar,8,8,8),esource(8,8,8),conserved(nvar,8,8,8)
     real(dp) :: vel(3),rho,cs,tc,position,expected(nvar),u(nvar),dt,face_rho,coord(3),nan_value
@@ -679,8 +854,37 @@ contains
       end do
       end do
       end do
-      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid)
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid, &
+        normal_prediction=normal_export)
       call require(valid,'EB twelve-solve CTU flux pipeline')
+      call compute_reactive_eb_plm_normal_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,normal_control,valid)
+      call require(valid,'independent normal flux baseline')
+      do axis=1,3
+        call require(all(lbound(normal_export(axis)%flux)==lbound(result(axis)%flux)).and. &
+          all(ubound(normal_export(axis)%flux)==ubound(result(axis)%flux)), &
+          'CTU normal and final exports share face bounds')
+        lo=3;lo(axis)=2;hi=6
+        call require(all(normal_export(axis)%flux==normal_control(axis)%flux(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))), &
+          'CTU normal flux export matches independent donor slice')
+        call require(all(normal_export(axis)%left==normal_control(axis)%left(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))).and. &
+          all(normal_export(axis)%right==normal_control(axis)%right(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))), &
+          'CTU normal state export matches independent donor slice')
+        call require(all(lbound(normal_export(axis)%energy_left)==lo-2).and. &
+          all(ubound(normal_export(axis)%energy_left)==hi-2).and. &
+          all(lbound(normal_export(axis)%energy_right)==lo-2).and. &
+          all(ubound(normal_export(axis)%energy_right)==hi-2).and. &
+          all(lbound(normal_export(axis)%pressure)==lo-2).and. &
+          all(ubound(normal_export(axis)%pressure)==hi-2).and. &
+          all(lbound(normal_export(axis)%velocity)==lo-2).and. &
+          all(ubound(normal_export(axis)%velocity)==hi-2),'CTU normal auxiliary face bounds')
+        call require( &
+          all(normal_export(axis)%energy_left==normal_control(axis)%energy_left(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))).and. &
+          all(normal_export(axis)%energy_right==normal_control(axis)%energy_right(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))).and. &
+          all(normal_export(axis)%pressure==normal_control(axis)%pressure(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))).and. &
+          all(normal_export(axis)%velocity==normal_control(axis)%velocity(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))), &
+          'CTU normal auxiliary export matches independent donor slice')
+      enddo
+      saved_normal=normal_export
       do axis=1,3
         lo=1;lo(axis)=0;hi=4
         call require(all(lbound(result(axis)%flux)==[1,lo]).and.all(ubound(result(axis)%flux)==[nvar,hi]), &
@@ -738,8 +942,18 @@ contains
       end do
       saved=result
       conserved(2,8,8,8)=nan_value
-      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid,conserved_source=conserved)
+      call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,dt,flat,result,valid,conserved_source=conserved, &
+        normal_prediction=normal_export)
       call require(.not.valid,'invalid active conserved source rejected')
+      do axis=1,3
+        call require(all(normal_export(axis)%flux==saved_normal(axis)%flux).and. &
+          all(normal_export(axis)%left==saved_normal(axis)%left).and. &
+          all(normal_export(axis)%right==saved_normal(axis)%right).and. &
+          all(normal_export(axis)%energy_left==saved_normal(axis)%energy_left).and. &
+          all(normal_export(axis)%energy_right==saved_normal(axis)%energy_right).and. &
+          all(normal_export(axis)%pressure==saved_normal(axis)%pressure).and. &
+          all(normal_export(axis)%velocity==saved_normal(axis)%velocity),'failed CTU stage preserves normal export')
+      enddo
       call compute_reactive_eb_plm_ctu_fluxes_3d(species,shape,ghost,gt,vf,1._dp,flat,result,valid)
       call require(.not.valid,'CTU failed stage rejects')
       do axis=1,3

@@ -5,7 +5,7 @@ module mpi_amr_reactive_3d_application_mod
   use elementary_kinetics_mod, only: plog_capacity, chebyshev_capacity
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
-  use nasa7_thermo_mod, only: nasa7_species, valid_nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy,nasa7_eos_policy_identity, valid_nasa7_species
   use elementary_kinetics_mod, only: &
     elementary_reaction, valid_elementary_reaction
   use gas_transport_mod, only: &
@@ -62,6 +62,7 @@ contains
     character(len=*), intent(in), optional :: bundle_sha256
     character(len=*), intent(in), optional :: chemistry_integrator
 
+    type(nasa7_species), allocatable :: eos_species(:)
     type(reactive_3d_config) :: fine_config
     type(amr_patch_3d) :: patch, next_patch
     type(mpi_amr_sparse_distribution_3d) :: distribution
@@ -102,6 +103,13 @@ contains
     call MPI_Comm_size(comm, nranks, ierr)
     if (ierr /= MPI_SUCCESS) call abort_run("MPI_Comm_size failed", 2)
 
+    allocate(eos_species,source=species)
+    call configure_nasa7_eos_policy(eos_species,config%pinned_eos_extrapolation,ok, &
+      config%pinned_eos_temperature_min,config%pinned_eos_temperature_max)
+    call collective_require(ok,'Invalid sparse MPI 3D AMR EOS policy',2)
+    call consensus_character_vector(comm,[nasa7_eos_policy_identity(eos_species)],ok)
+    call collective_require(ok,'Sparse MPI 3D AMR EOS policy differs by rank',2)
+
     selected_context = present(bundle_sha256) .or. &
       present(chemistry_integrator)
     call MPI_Allreduce( &
@@ -130,13 +138,13 @@ contains
     call collective_require(ok,'MPI regrid/load-balance policy differs by rank',2)
     call consensus_real_vector(comm,[amr_config%regrid_temperature_threshold],ok)
     call collective_require(ok,'MPI regrid threshold differs by rank',2)
-    ok = size(species) > 0 .and. size(reactions) > 0
-    if (ok) ok = size(base_mole_fractions) == size(species)
-    if (ok) ok = size(transport) == size(species)
+    ok = size(eos_species) > 0 .and. size(reactions) > 0
+    if (ok) ok = size(base_mole_fractions) == size(eos_species)
+    if (ok) ok = size(transport) == size(eos_species)
     if (ok) ok = all(ieee_is_finite(base_mole_fractions))
     if (ok) ok = minval(base_mole_fractions) >= 0.0_dp
     if (ok) ok = abs(sum(base_mole_fractions) - 1.0_dp) <= 5.0e-10_dp
-    if (ok) ok = compatible_transport_database(species, transport)
+    if (ok) ok = compatible_transport_database(eos_species, transport)
     call collective_require( &
       ok, "Sparse MPI 3D AMR application data are incompatible", 2)
     transport_enabled = config%transport_enabled
@@ -148,7 +156,7 @@ contains
     end if
     if (transport_enabled) then
       call validate_mpi_amr_transport_context_3d( &
-        comm, config, species, transport, ok)
+        comm, config, eos_species, transport, ok)
       call collective_require( &
         ok, "Sparse MPI 3D AMR transport context mismatch", 3)
     end if
@@ -168,7 +176,7 @@ contains
         comm, bundle_sha256, chemistry_integrator, &
         config%chemistry_relative_tolerance, &
         config%chemistry_absolute_tolerance, base_mole_fractions, &
-        species, reactions, transport, ok)
+        eos_species, reactions, transport, ok)
       call collective_require( &
         ok, "Selected sparse MPI 3D AMR rank context mismatch", 3)
     end if
@@ -186,13 +194,13 @@ contains
     call collective_require( &
       ok, "Failed to distribute sparse MPI 3D AMR slabs", 2)
 
-    nvar = reactive_nvar(size(species))
+    nvar = reactive_nvar(size(eos_species))
     allocate(x(config%nx), y(config%ny), z(config%nz))
     allocate(xf(patch%fine_nx()), yf(patch%fine_ny()), zf(patch%fine_nz()))
     restarted = len_trim(amr_config%restart_file) > 0
-    allocate(mass_fractions(size(species)))
+    allocate(mass_fractions(size(eos_species)))
     allocate(initial_integrals(nvar), final_integrals(nvar))
-    allocate(boundary_total(nvar),step_boundary(nvar),inflow_state(nvar,6),inflow_x(size(species)),inflow_y(size(species)))
+    allocate(boundary_total(nvar),step_boundary(nvar),inflow_state(nvar,6),inflow_x(size(eos_species)),inflow_y(size(eos_species)))
     allocate(inlet_cube(nvar,2,2,2))
     boundary_total=0;step_boundary=0;inflow_state=0;inflow_t=0
     faces=resolved_reactive_boundaries_3d(config)
@@ -215,13 +223,13 @@ contains
     maximum_diffusivity = 0.0_dp
     minimum_transport_theta = 1.0_dp
     restarted = len_trim(amr_config%restart_file) > 0
-    element_diagnostics = supports_hon_element_diagnostics(species)
+    element_diagnostics = supports_hon_element_diagnostics(eos_species)
     initial_elements = 0.0_dp
     if (restarted) then
       if (selected_context) then
         if (transport_enabled) then
           call read_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-            trim(amr_config%restart_file), species, config, &
+            trim(amr_config%restart_file), eos_species, config, &
             amr_config, patch, time, step, &
             initial_integrals, maximum_reflux, root_ok, message, &
             bundle_sha256=bundle_sha256, &
@@ -233,7 +241,7 @@ contains
             boundary_change=boundary_total)
         else
           call read_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-            trim(amr_config%restart_file), species, config, &
+            trim(amr_config%restart_file), eos_species, config, &
             amr_config, patch, time, step, &
             initial_integrals, maximum_reflux, root_ok, message, &
             bundle_sha256=bundle_sha256, &
@@ -245,7 +253,7 @@ contains
       else
         if (transport_enabled) then
           call read_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-            trim(amr_config%restart_file), species, config, &
+            trim(amr_config%restart_file), eos_species, config, &
             amr_config, patch, time, step, &
             initial_integrals, maximum_reflux, root_ok, message, &
             transport=transport, &
@@ -254,7 +262,7 @@ contains
             boundary_change=boundary_total)
         else
           call read_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-            trim(amr_config%restart_file), species, config, &
+            trim(amr_config%restart_file), eos_species, config, &
             amr_config, patch, time, step, &
             initial_integrals, maximum_reflux, root_ok, message,regrid_count=regrid_count, &
             boundary_change=boundary_total)
@@ -265,7 +273,7 @@ contains
       allocate(xf(patch%fine_nx()),yf(patch%fine_ny()),zf(patch%fine_nz()))
       call fine_patch_centers(patch,config,dx,dy,dz,xf,yf,zf)
       if (element_diagnostics) then
-        call element_integrals_from_reactive_integrals_3d(species,initial_integrals,initial_elements,ok)
+        call element_integrals_from_reactive_integrals_3d(eos_species,initial_integrals,initial_elements,ok)
         call collective_require(ok,'Invalid restarted MPI element inventory',3)
       end if
     end if
@@ -299,23 +307,23 @@ contains
     call collective_require(ierr==MPI_SUCCESS,'Failed to broadcast AMR boundary ledger',3)
     inflow_state=0.0_dp; inflow_t=0.0_dp
     inlet_dt=huge(1.0_dp); inlet_transport_dt=huge(1.0_dp)
-    call mass_fractions_from_mole_fractions(species,base_mole_fractions,inflow_y,ok)
+    call mass_fractions_from_mole_fractions(eos_species,base_mole_fractions,inflow_y,ok)
     call collective_require(ok,'Invalid base inflow composition',3)
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
       call resolve_selected_composition('Inflow',config%inflow_composition_count, &
-        config%inflow_composition_species,config%inflow_composition_mole_fractions,species,inflow_x,ok,message)
+        config%inflow_composition_species,config%inflow_composition_mole_fractions,eos_species,inflow_x,ok,message)
       call collective_require(ok,'Invalid inflow composition',3)
-      call mass_fractions_from_mole_fractions(species,inflow_x,inflow_y,ok)
+      call mass_fractions_from_mole_fractions(eos_species,inflow_x,inflow_y,ok)
       call collective_require(ok,'Invalid inflow mass fractions',3)
     end if
     do face=1,6
       if (faces(face)/='inflow') cycle
       primitive=0.0_dp
-      primitive(1)=mixture_density(species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      primitive(1)=mixture_density(eos_species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
       call collective_require(ok,'Invalid inflow density',3)
       primitive(2:4)=config%inflow_velocity(:,face); primitive(5)=config%inflow_pressure(face)
       primitive(6:)=inflow_y
-      call reactive_primitive_to_conserved(species,primitive,inflow_state(:,face),inflow_t(face),sound_speed,ok)
+      call reactive_primitive_to_conserved(eos_species,primitive,inflow_state(:,face),inflow_t(face),sound_speed,ok)
       call collective_require(ok,'Invalid inflow thermodynamics',3)
       inlet_dt=min(inlet_dt,config%cfl/sum((abs(primitive(2:4))+sound_speed)/[dx,dy,dz]))
       if (config%transport_enabled) then
@@ -327,7 +335,7 @@ contains
           end do
         end do
         inlet_temperature=inflow_t(face)
-        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2,dx,dy,dz, &
+        call reactive_transport_timestep_3d(eos_species,transport,inlet_cube,inlet_temperature,2,2,2,dx,dy,dz, &
           config%transport_cfl,config%viscosity_enabled,config%thermal_conduction_enabled, &
           config%species_diffusion_enabled,face_dt,face_diffusivity,ok)
         call collective_require(ok,'Invalid inflow transport timestep',3)
@@ -340,7 +348,7 @@ contains
       call distributed_final_diagnostics()
       initial_integrals=final_integrals
       if (element_diagnostics) then
-        call element_integrals_from_reactive_integrals_3d(species,initial_integrals,initial_elements,ok)
+        call element_integrals_from_reactive_integrals_3d(eos_species,initial_integrals,initial_elements,ok)
         call collective_require(ok,'Invalid initial MPI element inventory',3)
       end if
     end if
@@ -351,7 +359,7 @@ contains
         trim(application_label)
       if (selected_context) then
         write(*, '(a,1x,a)') "Bundle SHA-256:", trim(bundle_sha256)
-        write(*, '(a,i0)') "Species: ", size(species)
+        write(*, '(a,i0)') "Species: ", size(eos_species)
         write(*, '(a,i0)') "Reactions: ", size(reactions)
         write(*, '(a,1x,a)') "Chemistry integrator:", &
           trim(chemistry_integrator)
@@ -397,10 +405,10 @@ contains
           call collective_require(ok,'Failed distributed MPI temperature tagging',4)
           if (patch_changed) then
             if (any(config%outlet_pressure>0)) then
-              call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok, &
+              call regrid_mpi_amr_sparse_3d(distribution,eos_species,patch,hierarchy,next_patch,ok, &
                 config%reconstruction,config%limiter,faces,inflow_state,inflow_t,config%outlet_pressure)
             else
-            call regrid_mpi_amr_sparse_3d(distribution,species,patch,hierarchy,next_patch,ok, &
+            call regrid_mpi_amr_sparse_3d(distribution,eos_species,patch,hierarchy,next_patch,ok, &
               config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
             end if
             call collective_require(ok,'Failed distributed conservative MPI regrid',4)
@@ -418,13 +426,13 @@ contains
       call collective_require( &
         ok, "Maximum step count reached before MPI 3D AMR final_time", 4)
       call compute_mpi_amr_sparse_cfl_timestep_3d( &
-        distribution, species, patch, hierarchy, &
+        distribution, eos_species, patch, hierarchy, &
         dx, dy, dz, config%cfl, hydro_dt, ok)
       call collective_require(ok, "Failed to compute MPI 3D AMR timestep", 4)
       dt = min(hydro_dt,inlet_dt)
       if (transport_enabled) then
         call compute_mpi_amr_sparse_transport_timestep_3d( &
-          distribution, species, transport, patch, hierarchy, &
+          distribution, eos_species, transport, patch, hierarchy, &
           dx, dy, dz, config%transport_cfl, config%viscosity_enabled, &
           config%thermal_conduction_enabled, &
           config%species_diffusion_enabled, transport_dt, &
@@ -436,7 +444,7 @@ contains
           wall_faces=faces;wall_faces(1:2)='outflow'
           if (distribution%coarse_first==1.and.faces(1)=='isothermal_wall') wall_faces(1)=faces(1)
           if (distribution%coarse_last==config%nx.and.faces(2)=='isothermal_wall') wall_faces(2)=faces(2)
-          call reactive_isothermal_timestep_3d(species,transport,hierarchy%coarse_state, &
+          call reactive_isothermal_timestep_3d(eos_species,transport,hierarchy%coarse_state, &
             hierarchy%coarse_temperature,[dx,dy,dz],wall_faces,config%wall_temperature, &
             config%transport_cfl,local_wall_dt,ok)
           call collective_require(ok,'Invalid MPI AMR wall thermal timestep',4)
@@ -450,7 +458,7 @@ contains
               if (touched(face)) fine_faces(face)=faces(face)
             end do
             if (any(fine_faces=='isothermal_wall')) then
-              call reactive_isothermal_timestep_3d(species,transport,hierarchy%fine_state, &
+              call reactive_isothermal_timestep_3d(eos_species,transport,hierarchy%fine_state, &
                 hierarchy%fine_temperature,[dx,dy,dz]/real(patch%refinement_ratio,dp), &
                 fine_faces,config%wall_temperature,config%transport_cfl,fine_wall_dt,ok)
               local_wall_dt=min(local_wall_dt,real(patch%refinement_ratio,dp)**2*fine_wall_dt)
@@ -467,7 +475,7 @@ contains
       dt = min(dt, config%final_time - time)
       if (present(chemistry_integrator)) then
         call advance_mpi_amr_sparse_full_3d( &
-          distribution, species, reactions, transport, patch, hierarchy, &
+          distribution, eos_species, reactions, transport, patch, hierarchy, &
           dx, dy, dz, dt, config%riemann_solver, config%reconstruction, &
           config%limiter, config%chemistry_enabled, &
           config%chemistry_relative_tolerance, &
@@ -481,7 +489,7 @@ contains
           difmag=resolved_reactive_difmag_3d(config))
       else
         call advance_mpi_amr_sparse_full_3d( &
-          distribution, species, reactions, transport, patch, hierarchy, &
+          distribution, eos_species, reactions, transport, patch, hierarchy, &
           dx, dy, dz, dt, config%riemann_solver, config%reconstruction, &
           config%limiter, config%chemistry_enabled, &
           config%chemistry_relative_tolerance, &
@@ -507,7 +515,7 @@ contains
           if (selected_context) then
             if (transport_enabled) then
               call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, time, step, &
                 initial_integrals, maximum_reflux, root_ok, message, &
                 bundle_sha256=bundle_sha256, &
@@ -519,7 +527,7 @@ contains
                 boundary_change=boundary_total)
             else
               call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, time, step, &
                 initial_integrals, maximum_reflux, root_ok, message, &
                 bundle_sha256=bundle_sha256, &
@@ -531,7 +539,7 @@ contains
           else
             if (transport_enabled) then
               call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, time, step, &
                 initial_integrals, maximum_reflux, root_ok, message, &
                 transport=transport, &
@@ -540,7 +548,7 @@ contains
                 boundary_change=boundary_total)
             else
               call write_mpi_amr_checkpoint_3d(distribution,hierarchy, &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, time, step, &
                 initial_integrals, maximum_reflux, root_ok, message,regrid_count=regrid_count, &
                 boundary_change=boundary_total)
@@ -581,10 +589,10 @@ contains
       elemental_conservation_error = 0.0_dp
       final_elements = 0.0_dp
       if (root_ok .and. element_diagnostics) then
-        call element_integrals_from_reactive_integrals_3d(species,final_integrals,final_elements,root_ok)
+        call element_integrals_from_reactive_integrals_3d(eos_species,final_integrals,final_elements,root_ok)
       end if
       if (root_ok .and. element_diagnostics) then
-        call element_integrals_from_reactive_integrals_3d(species,boundary_total,boundary_elements,root_ok)
+        call element_integrals_from_reactive_integrals_3d(eos_species,boundary_total,boundary_elements,root_ok)
       end if
       if (root_ok .and. element_diagnostics) then
         elemental_conservation_error = maxval(abs( &
@@ -605,7 +613,7 @@ contains
     end if
     call root_require(root_ok, message, 6)
 
-    call write_mpi_amr_sparse_csv_3d(distribution,species,patch,hierarchy,trim(coarse_output),trim(fine_output), &
+    call write_mpi_amr_sparse_csv_3d(distribution,eos_species,patch,hierarchy,trim(coarse_output),trim(fine_output), &
       x,y,z,xf,yf,zf,time,ok)
     call collective_require(ok,'Failed distributed MPI AMR CSV output',7)
     if (rank == 0) then
@@ -662,12 +670,12 @@ contains
       allocate(hierarchy%fine_state(nvar,distribution%fine_count,patch%fine_ny(),patch%fine_nz()))
       allocate(hierarchy%fine_temperature(distribution%fine_count,patch%fine_ny(),patch%fine_nz()))
       fine_config=config;fine_config%nx=distribution%coarse_count
-      call initialize_reactive_problem_3d(species,fine_config,x(distribution%coarse_first:distribution%coarse_last), &
+      call initialize_reactive_problem_3d(eos_species,fine_config,x(distribution%coarse_first:distribution%coarse_last), &
         y,z,hierarchy%coarse_state,hierarchy%coarse_temperature,base_density,mass_fractions,ok,base_mole_fractions)
       call collective_require(ok,'Failed rank-local coarse initialization',3)
       if (distribution%fine_count>0) then
         fine_config%nx=distribution%fine_count;fine_config%ny=patch%fine_ny();fine_config%nz=patch%fine_nz()
-        call initialize_reactive_problem_3d(species,fine_config,xf(distribution%fine_first:distribution%fine_last), &
+        call initialize_reactive_problem_3d(eos_species,fine_config,xf(distribution%fine_first:distribution%fine_last), &
           yf,zf,hierarchy%fine_state,hierarchy%fine_temperature,fine_base_density,mass_fractions,ok,base_mole_fractions)
       end if
       call collective_require(ok,'Failed rank-local fine initialization',3)
@@ -692,7 +700,7 @@ contains
         end do
       end do
       allocate(recovered_temperature,mold=hierarchy%coarse_temperature)
-      call recover_reactive_temperatures_3d(species,hierarchy%coarse_state,hierarchy%coarse_temperature, &
+      call recover_reactive_temperatures_3d(eos_species,hierarchy%coarse_state,hierarchy%coarse_temperature, &
         distribution%coarse_count,config%ny,config%nz,recovered_temperature,ok)
       call collective_require(ok,'Failed rank-local initial temperature recovery',3)
       hierarchy%coarse_temperature=recovered_temperature
@@ -747,10 +755,10 @@ contains
           end do
         end do
       end do
-      call level_extrema(species,hierarchy%coarse_state,hierarchy%coarse_temperature,local_max(3),local_ok)
+      call level_extrema(eos_species,hierarchy%coarse_state,hierarchy%coarse_temperature,local_max(3),local_ok)
       call collective_require(local_ok,'Invalid final coarse MPI thermodynamics',6)
       if (distribution%fine_count>0) &
-        call level_extrema(species,hierarchy%fine_state,hierarchy%fine_temperature,local_max(4),local_ok)
+        call level_extrema(eos_species,hierarchy%fine_state,hierarchy%fine_temperature,local_max(4),local_ok)
       call collective_require(local_ok,'Invalid final fine MPI thermodynamics',6)
       call collective_require(all(ieee_is_finite(sums)).and.all(ieee_is_finite(local_max)), &
         'Invalid final MPI reductions',6)

@@ -73,7 +73,7 @@ class IngestHelpersTest(unittest.TestCase):
             ("3.2.0", {"length": "cm", "quantity": "mol"}),
         )
 
-    def test_rejects_unsupported_rate_families(self) -> None:
+    def test_rejects_unsupported_rate_overrides(self) -> None:
         base = {
             "equation": "A <=> B",
             "reactants": {"A": 1.0},
@@ -81,11 +81,6 @@ class IngestHelpersTest(unittest.TestCase):
             "reversible": True,
         }
         unsupported = (
-            ({"type": "pressure-dependent-Arrhenius", "rate-constants": []}, "PLOG"),
-            ({"type": "Chebyshev", "data": []}, "Chebyshev"),
-            ({"type": "falloff", "SRI": {}}, "SRI"),
-            ({"type": "falloff", "Tsang": {}}, "Tsang"),
-            ({"type": "chemically-activated"}, "chemically-activated"),
             ({"type": "elementary", "orders": {"A": 0.5}}, "custom reaction"),
             ({"type": "elementary", "reverse-rate-constant": {}}, "reverse rates"),
         )
@@ -100,6 +95,27 @@ class IngestHelpersTest(unittest.TestCase):
             with self.subTest(label=label):
                 with self.assertRaisesRegex(ValueError, label):
                     ingest._reaction_kind(reaction, reaction.input_data, base["equation"])
+
+    def test_supported_rate_families_still_require_complete_records(self) -> None:
+        for raw, expected in (
+            ({"type": "pressure-dependent-Arrhenius", "rate-constants": []}, "plog"),
+            ({"type": "Chebyshev", "data": []}, "chebyshev"),
+            ({"type": "falloff", "SRI": {}}, "falloff"),
+            ({"type": "falloff", "Tsang": {}}, "falloff"),
+            ({"type": "chemically-activated"}, "chemically-activated"),
+        ):
+            reaction = SimpleNamespace(
+                input_data=raw, equation="A <=> B",
+                reactants={"A": 1.0}, products={"B": 1.0},
+                reversible=True, duplicate=False,
+                rate=SimpleNamespace(temperature_range=(300., 2500.),
+                                     pressure_range=(1.e4, 1.e6), data=[]),
+                reaction_type=raw["type"], third_body=None,
+            )
+            with self.subTest(kind=expected, raw=raw):
+                self.assertEqual(ingest._reaction_kind(reaction, raw, reaction.equation), expected)
+                with self.assertRaises(ValueError):
+                    ingest._reaction_record(reaction, ["A", "B"], 0)
 
     def test_rejects_unclassified_falloff_without_troe(self) -> None:
         reaction = SimpleNamespace(
@@ -120,7 +136,7 @@ class IngestHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Lindemann"):
             ingest._reaction_record(reaction, ["A", "B"], 0)
 
-    def test_rejects_api_level_custom_orders_and_chemically_activated_rate(self) -> None:
+    def test_api_level_custom_orders_reject_and_chemical_activation_classifies(self) -> None:
         raw = {"type": "elementary"}
         ordered = SimpleNamespace(
             rate=SimpleNamespace(sub_type=""),
@@ -141,8 +157,10 @@ class IngestHelpersTest(unittest.TestCase):
             allow_negative_orders=False,
             allow_nonreactant_orders=False,
         )
-        with self.assertRaisesRegex(ValueError, "chemically-activated"):
-            ingest._reaction_kind(activated, {"type": "falloff"}, "A <=> B")
+        self.assertEqual(
+            ingest._reaction_kind(activated, {"type": "falloff"}, "A <=> B"),
+            "chemically-activated",
+        )
 
     def test_rejects_nasa9_and_missing_transport(self) -> None:
         nasa9 = SimpleNamespace(

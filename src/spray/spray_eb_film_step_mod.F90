@@ -98,8 +98,12 @@ contains
         trial=patches;next_mass=masses;change=0;next_ledger=0;valid=.true.
         do p=1,np
           if (patches(p)%mass<=0) cycle
+          call reactive_conserved_to_primitive(species,samples(:nvar,p),samples(nvar+1,p),primitive,tg,sound,valid)
+          if (.not.valid) exit
           call advance_mixture_wall_film_exchange(trial(p),components,next_mass(:,p),rates(:,p)*dt,hv(:,p), &
-            qg(p)*dt,qw(p)*dt,walls%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true.)
+            qg(p)*dt,qw(p)*dt,walls%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true., &
+            pressure=primitive(5),gas_molecular_weights=species(components%vapor_index)%molecular_weight, &
+            euler_temperature=options%mixture_time_scheme=='euler')
           if (.not.valid) exit
           next_ledger=next_ledger-wall_energy
         end do

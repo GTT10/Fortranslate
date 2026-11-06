@@ -1,4 +1,5 @@
 program test_spray_mpi
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use mpi_f08
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d,fill_mach_inlet_boundary_ghosts_3d
   use precision_mod, only: dp
@@ -30,12 +31,16 @@ program test_spray_mpi
   type(spray_options) :: options
   real(dp) :: local_totals(15),before(15),after(15)
   integer :: steps,checkpoint_event,checkpoint_unit
-  real(dp) :: checkpoint_time
+  real(dp) :: checkpoint_time,checkpoint_interval
   character(len=80) :: checkpoint_path
   real(dp) :: fractions(2),ledger(15),direction(3)
   type(spray_parcel), allocatable :: parcels(:),saved(:)
+  type(spray_parcel), allocatable :: etab_parcels(:)
   real(dp), allocatable :: masses(:,:),saved_mass(:,:)
+  real(dp), allocatable :: etab_masses(:,:),etab_positions(:,:),etab_feedback(:,:)
+  real(dp) :: etab_birth_positions(3,2),etab_birth_intervals(2)
   integer :: rank,nranks,ierr,p,target,first(3),dims(3),cells(3),i,j,k,n,indices(3,8)
+  integer :: global_children,global_parents
   real(dp), allocatable :: field(:,:,:,:),positions(:,:),samples(:,:),saved_samples(:,:)
   real(dp), allocatable :: contributions(:,:),reference(:,:,:,:),saved_field(:,:,:,:)
   real(dp), allocatable :: temperature(:,:,:),saved_temperature(:,:,:),reference_temperature(:,:,:)
@@ -45,9 +50,19 @@ program test_spray_mpi
   character(len=16) :: faces(6)
   integer(int64) :: last_id,first_id,saved_last
   logical :: ok
+  real(dp), allocatable :: constant_coefficients(:)
+  character(len=16) :: test_mode
+  call get_command_argument(1,test_mode)
+  if(test_mode=='constant') constant_coefficients=[1.e-5_dp,.02_dp,3.e-5_dp,2.e-5_dp]
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+  if(test_mode=='history') then
+    call check_interval_checkpoint()
+    call MPI_Finalize(ierr)
+    stop
+  endif
+  call check_particle_timestep()
   call check_film_migration()
   call check_film_query()
   allocate(parcels(2),masses(2,2))
@@ -93,6 +108,51 @@ program test_spray_mpi
   call require(all(parcels(3:4)%id==2*nranks+saved%id),'split IDs follow global parent ordering')
   call require(all(parcels(3:4)%parent_id==saved%id),'split lineage')
   call require(sum(parcels%multiplicity)==sum(saved%multiplicity),'split multiplicity conserved')
+  etab_parcels=saved;etab_masses=saved_mass
+  etab_parcels%khrt_initial_count=0;etab_parcels%khrt_shed_volume=0
+  last_id=int(2*nranks,int64)
+  call split_mpi_reference_etab_parcels(MPI_COMM_WORLD,etab_parcels,etab_masses,50._dp,19,.5_dp, &
+    [5._dp,5._dp],1e-3_dp,last_id,etab_positions,etab_feedback,ok)
+  call require(.not.ok.and.size(etab_parcels)==2.and.last_id==2*nranks, &
+    'MPI ETAB capacity rollback')
+  etab_birth_positions(:,1)=[.125_dp,.25_dp,.375_dp]
+  etab_birth_positions(:,2)=[.5_dp,.625_dp,.75_dp]
+  etab_birth_intervals=[1e-6_dp,0._dp]
+  if(rank==0) then
+    call split_mpi_reference_etab_parcels(MPI_COMM_WORLD,etab_parcels,etab_masses,50._dp,100,.5_dp, &
+      [5._dp,5._dp],1e-3_dp,last_id,etab_positions,etab_feedback,ok,birth_positions=etab_birth_positions)
+  else
+    call split_mpi_reference_etab_parcels(MPI_COMM_WORLD,etab_parcels,etab_masses,50._dp,100,.5_dp, &
+      [5._dp,5._dp],1e-3_dp,last_id,etab_positions,etab_feedback,ok)
+  endif
+  call require(.not.ok.and.size(etab_parcels)==2.and.last_id==2*nranks, &
+    'MPI ETAB birth policy disagreement preserves parents and IDs')
+  call split_mpi_reference_etab_parcels(MPI_COMM_WORLD,etab_parcels,etab_masses,50._dp,100,.5_dp, &
+    [5._dp,5._dp],1e-3_dp,last_id,etab_positions,etab_feedback,ok, &
+    birth_positions=etab_birth_positions,birth_intervals=[ieee_value(0._dp,ieee_quiet_nan),0._dp])
+  call require(.not.ok.and.size(etab_parcels)==2.and.last_id==2*nranks, &
+    'MPI ETAB nonfinite birth clock rejects without FPE or publication')
+  call split_mpi_reference_etab_parcels(MPI_COMM_WORLD,etab_parcels,etab_masses,50._dp,100,.5_dp, &
+    [5._dp,5._dp],1e-3_dp,last_id,etab_positions,etab_feedback,ok, &
+    birth_positions=etab_birth_positions,birth_intervals=etab_birth_intervals)
+  call require(ok.and.size(etab_parcels)==20.and.last_id==22*nranks, &
+    'MPI ETAB replacement and global ID reserve')
+  call require(etab_parcels(1)%id==2*nranks+1+10*rank.and. &
+    etab_parcels(11)%id==2*nranks+1+10*(nranks+rank), &
+    'MPI ETAB children ordered by global parent ID')
+  call require(all(etab_parcels%khrt_initial_count==etab_parcels%multiplicity).and. &
+    all(etab_parcels%khrt_shed_volume==0),'MPI ETAB children retain native N0 and separate shedding state')
+  call require(all(shape(etab_feedback)==[4,2]).and.all(shape(etab_positions)==[3,2]), &
+    'MPI ETAB feedback follows old parent order')
+  call require(all(etab_positions==etab_birth_positions),'MPI ETAB feedback uses old-time birth position')
+  do p=1,size(etab_parcels)
+    source=findloc(saved%id,etab_parcels(p)%parent_id,dim=1)
+    call require(source>0,'MPI ETAB birth parent exists')
+    call require(all(etab_parcels(p)%position==etab_birth_positions(:,source)+ &
+      etab_birth_intervals(source)*etab_parcels(p)%velocity),'MPI ETAB per-parent birth clock and origin')
+  enddo
+  call require(abs(sum(etab_parcels%mass*etab_parcels%multiplicity)- &
+    sum(saved%mass*saved%multiplicity))<1e-22_dp,'MPI ETAB liquid mass closure')
   call require(sum(parcels%khrt_initial_count)==sum(saved%khrt_initial_count),'split KH count conserved')
   call require(abs(sum(parcels%khrt_shed_volume)-sum(saved%khrt_shed_volume))<1e-28_dp,'split KH volume conserved')
   do p=1,4
@@ -130,7 +190,8 @@ program test_spray_mpi
   fractions=[.2_dp+.1_dp*rank,.8_dp-.1_dp*rank]
   call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),1e-10_dp*rank,rank, &
     [rank+.25_dp,.25_dp,.25_dp],[0.0_dp,0.0_dp,1.0_dp],10.0_dp,0.0_dp,2e-5_dp,330.0_dp, &
-    100,last_id,parcels,ledger,ok,liquids,fractions,masses)
+    100,last_id,parcels,ledger,ok,liquids,fractions,masses,reference_breakup=.true.)
+  call require(ok.and.all(parcels%khrt_initial_count==parcels%multiplicity),'collective injection native N0')
   call require(ok.and.size(parcels)==rank.and.last_id==nranks*(nranks-1)/2,'collective mixture injection')
   call require(abs(ledger(1)-1e-10_dp*rank)<1e-24_dp,'injected total mass')
   call require(abs(ledger(5+liquids(1)%vapor_index)-ledger(1)*fractions(1))<1e-24_dp,'injected component ledger')
@@ -145,6 +206,15 @@ program test_spray_mpi
     100,last_id,parcels,ledger,ok,liquids,fractions,masses)
   call require(.not.ok.and.last_id==saved_last.and.all(ledger==0),'injection failure restores global IDs and ledger')
   call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'injection failure preserves local inventories')
+  if(nranks>1) then
+    call inject_mpi_cone_parcels(MPI_COMM_WORLD,liquids(1),0._dp,0, &
+      [0._dp,0._dp,0._dp],[0._dp,0._dp,1._dp],10._dp,0._dp,2e-5_dp,330._dp, &
+      100,last_id,parcels,ledger,ok,liquids,fractions,masses,reference_breakup=rank==0)
+    call require(.not.ok.and.last_id==saved_last.and.all(ledger==0), &
+      'collective reference injection setting mismatch rejects before ID reservation')
+    call require(all(parcels%khrt_initial_count==saved%khrt_initial_count).and.all(masses==saved_mass), &
+      'reference injection setting mismatch preserves N0 and mass')
+  endif
   cells=[2*nranks+1,3,2];faces='slip_wall';faces(1:2)='periodic'
   call spray_cartesian_block(cells,[nranks,1,1],rank,first,dims,ok)
   call require(ok,'distributed field block')
@@ -252,6 +322,11 @@ program test_spray_mpi
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'negative species rolls back all owners')
   call load_h2o2_full_transport(transport,ok);call require(ok,'coupling transport')
+  if(test_mode=='fixed') then
+    call check_fixed_periodic()
+    call MPI_Finalize(ierr)
+    stop
+  endif
   call check_kh_release()
   call check_reference_kh_release()
   call check_film_coupling()
@@ -315,6 +390,37 @@ program test_spray_mpi
     call require(all(abs(after-before)<2e-12_dp*max(1e-12_dp,abs(before))),'breakup preserves coupled totals')
   end do
   parcels=saved;masses=saved_mass;field=saved_field;temperature=saved_temperature
+  options%breakup_model='etab';options%maximum_multiplicity=1._dp
+  options%etab_parcel_factor=.5_dp;options%maximum_parcels=1000
+  last_id=1000_int64
+  do p=1,size(parcels)
+    parcels(p)%velocity=[1000._dp,0._dp,0._dp];parcels(p)%deformation=1.1_dp
+  enddo
+  call mixture_system_totals(field,[1._dp,1._dp,1._dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'MPI reference ETAB coupled initial totals')
+  call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,field,temperature, &
+    parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells,[nranks,1,1], &
+    1e-8_dp,steps,ok,last_id)
+  call MPI_Allreduce(size(parcels),global_children,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call MPI_Allreduce(size(saved),global_parents,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(ok.and.global_children>global_parents.and.last_id>1000, &
+    'MPI reference ETAB coupled parent replacement')
+  call require(all(parcels%id>1000).and.size(masses,2)==size(parcels), &
+    'MPI reference ETAB coupled IDs and component columns')
+  do p=1,size(parcels)
+    source=findloc(saved%id,parcels(p)%parent_id,dim=1)
+    call require(source>0,'MPI coupled ETAB old-time parent exists')
+    direction=modulo(saved(source)%position+1e-8_dp*parcels(p)%velocity,real(cells,dp))
+    call require(maxval(abs(parcels(p)%position-direction))<1e-14_dp,'MPI coupled ETAB saved origin drift')
+  enddo
+  call mixture_system_totals(field,[1._dp,1._dp,1._dp],parcels,liquids,masses,local_totals,ok)
+  call require(ok,'MPI reference ETAB coupled final totals')
+  call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+  call require(all(abs(after-before)<2e-12_dp*max(1e-12_dp,abs(before))), &
+    'MPI reference ETAB coupled conservation')
+  options%etab_parcel_factor=-1;options%maximum_multiplicity=0
+  parcels=saved;masses=saved_mass;field=saved_field;temperature=saved_temperature
   options%breakup_model='none';options%drag=.true.;options%surface_tension=0;options%liquid_viscosity=0
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'restore pre-breakup totals')
@@ -349,7 +455,8 @@ program test_spray_mpi
   if (rank==nranks-1) bad_reactions(1)%forward_rate%pre_exponential=-1
   call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,bad_reactions,transport,liquids,options, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
-    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok)
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok, &
+    constant_coefficients=constant_coefficients)
   call require(.not.ok.and.steps==0,'one-rank chemistry failure rejects split update')
   call require(all(field==saved_field).and.all(temperature==saved_temperature).and.all(masses==saved_mass), &
     'reaction failure rolls back gas and liquid composition')
@@ -363,7 +470,8 @@ program test_spray_mpi
   call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
-    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok)
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok, &
+    constant_coefficients=constant_coefficients)
   call require(ok.and.steps>=2,'MPI split particle reaction update')
   call require(maxval(abs(field(6,:,:,:)-saved_field(6,:,:,:)))>1e-12_dp,'gas reaction advances hydrogen')
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
@@ -411,7 +519,8 @@ program test_spray_mpi
   call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
-    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok,'hllc','mc')
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok,'hllc','mc', &
+    constant_coefficients=constant_coefficients)
   call require(ok.and.steps>=2,'MPI particle reaction hydro split')
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'full MPI split final budgets')
@@ -455,22 +564,35 @@ program test_spray_mpi
   call require(maxval(abs(field-saved_field))>1e-6_dp,'SGS changes the gas')
   saved_field=field
   call advance_reactive_transport_3d(species,transport,reference,reference_temperature,cells(1),3,3, &
-    .001_dp,.001_dp,.001_dp,1e-6_dp,.true.,.true.,.true.,.true.,serial_theta,ok)
+    .001_dp,.001_dp,.001_dp,1e-6_dp,.true.,.true.,.true.,.true.,serial_theta,ok, &
+    constant_coefficients=constant_coefficients)
   call require(ok,'serial transport reference')
   call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,field,temperature,[.001_dp,.001_dp,.001_dp], &
-    cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok)
+    cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok, &
+    constant_coefficients=constant_coefficients)
   call require(ok.and.abs(mpi_theta-serial_theta)<1e-14_dp,'MPI transport limiter matches serial')
   call require(all(abs(field-reference(:,first(1)+1:first(1)+dims(1),:,:))< &
     2e-12_dp*max(1.0_dp,abs(reference(:,first(1)+1:first(1)+dims(1),:,:)))),'MPI transport matches serial fields')
   call require(maxval(abs(temperature-reference_temperature(first(1)+1:first(1)+dims(1),:,:)))<1e-8_dp, &
     'MPI transport matches serial temperatures')
   call require(maxval(abs(field-saved_field))>1e-6_dp,'transport changes the gas')
+  if(allocated(constant_coefficients)) then
+    saved_field=field;saved_temperature=temperature
+    if(rank==nranks-1) constant_coefficients(3)=2*constant_coefficients(3)
+    call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,field,temperature, &
+      [.001_dp,.001_dp,.001_dp],cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok, &
+      constant_coefficients=constant_coefficients)
+    call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
+      'MPI constant transport rank disagreement rolls back')
+    constant_coefficients(3)=3.e-5_dp
+  endif
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'transport split initial budgets')
   call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
   call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,options, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1], &
-    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok,'hllc','mc',[.true.,.true.,.true.,.true.])
+    1e-7_dp,1e-7_dp,1e-12_dp,'implicit',steps,ok,'hllc','mc',[.true.,.true.,.true.,.true.], &
+    constant_coefficients=constant_coefficients)
   call require(ok,'MPI particles chemistry transport hydro split')
   call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],parcels,liquids,masses,local_totals,ok)
   call require(ok,'transport split final budgets')
@@ -484,35 +606,52 @@ program test_spray_mpi
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'one rank invalid hydro state rolls back collectively')
   call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,field,temperature,[.001_dp,.001_dp,.001_dp], &
-    cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok)
+    cells,1e-6_dp,[.true.,.true.,.true.,.true.],mpi_theta,ok, &
+    constant_coefficients=constant_coefficients)
   call require(.not.ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'one rank invalid transport state rolls back collectively')
   field=reference(:,first(1)+1:first(1)+dims(1),:,:)
   temperature=reference_temperature(first(1)+1:first(1)+dims(1),:,:)
   checkpoint_time=1e-8_dp;steps=3;checkpoint_event=2;last_id=huge(0_int64)-19
   write(checkpoint_path,'(a,i0,a)') 'mpi-spray-checkpoint-',nranks,'.chk'
+  checkpoint_interval=2e-9_dp
+  if(nranks>1) then
+    if(rank==nranks-1) checkpoint_interval=1e-9_dp
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
+      field,temperature,parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells, &
+      checkpoint_time,steps,checkpoint_event,last_id,before,after,ok, &
+      breakup_state=.true.,khrt_state=.true.,shedding_state=.true.,previous_timestep=checkpoint_interval)
+    call require(.not.ok,'rank-disagreeing accepted interval refuses checkpoint publication')
+    checkpoint_interval=2e-9_dp
+  endif
   call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
-    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok, &
+    breakup_state=.true.,khrt_state=.true.,shedding_state=.true.,previous_timestep=checkpoint_interval)
   call require(ok,'collective checkpoint write')
+  checkpoint_interval=53
   saved_field=field;saved_temperature=temperature;saved=parcels;saved_mass=masses
   call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(checkpoint_path),'wrong-context',species, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
-    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok, &
+    breakup_state=.true.,khrt_state=.true.,shedding_state=.true.,previous_timestep=checkpoint_interval)
   call require(.not.ok.and.all(field==saved_field).and.all(masses==saved_mass).and.all(parcels%id==saved%id), &
     'checkpoint read failure preserves all ranks')
+  call require(checkpoint_interval==53,'failed read preserves interval history')
   ! Each rank now reads the same distributed checkpoint on a one-rank communicator.
   ! This tests a changed decomposition without requiring a second mpiexec process.
   field=reference*0;temperature=reference_temperature*0;checkpoint_time=0;steps=0;checkpoint_event=0;last_id=0
   deallocate(parcels,masses);allocate(parcels(0),masses(2,0))
   call mpi_spray_checkpoint(MPI_COMM_SELF,.false.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
-    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok, &
+    breakup_state=.true.,khrt_state=.true.,shedding_state=.true.,previous_timestep=checkpoint_interval)
   call require(ok.and.all(field==reference).and.all(temperature==reference_temperature), &
     'changed-rank checkpoint exact gas recovery')
   call require(size(parcels)==nranks*(nranks-1)/2.and.last_id==huge(0_int64)-19, &
     'changed-rank particle collection and ID reservation recovery')
   call require(checkpoint_time==1e-8_dp.and.steps==3.and.checkpoint_event==2,'checkpoint metadata recovery')
+  call require(checkpoint_interval==2e-9_dp,'changed-rank accepted interval exact recovery')
   do p=1,size(parcels)
     call require(parcels(p)%id==p,'checkpoint global particle ordering')
     call require(abs(sum(masses(:,p))-parcels(p)%mass)<1e-24_dp,'checkpoint component recovery')
@@ -521,14 +660,17 @@ program test_spray_mpi
     i=int(saved(p)%id)
     call require(all(parcels(i)%position==saved(p)%position).and.all(parcels(i)%velocity==saved(p)%velocity).and. &
       parcels(i)%mass==saved(p)%mass.and.parcels(i)%temperature==saved(p)%temperature.and. &
-      parcels(i)%multiplicity==saved(p)%multiplicity.and.all(masses(:,i)==saved_mass(:,p)), &
+      parcels(i)%multiplicity==saved(p)%multiplicity.and.all(masses(:,i)==saved_mass(:,p)).and. &
+      parcels(i)%khrt_initial_count==saved(p)%khrt_initial_count.and. &
+      parcels(i)%khrt_shed_volume==saved(p)%khrt_shed_volume, &
       'changed-rank checkpoint exact local particle payload')
   end do
   field=saved_field*0;temperature=saved_temperature*0
   deallocate(parcels,masses);allocate(parcels(0),masses(2,0))
   call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,trim(checkpoint_path),'mpi-checkpoint-context',species, &
     field,temperature,parcels,masses,[0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells, &
-    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok)
+    checkpoint_time,steps,checkpoint_event,last_id,before,after,ok, &
+    breakup_state=.true.,khrt_state=.true.,shedding_state=.true.,previous_timestep=checkpoint_interval)
   call require(ok.and.all(field==saved_field).and.all(temperature==saved_temperature), &
     'checkpoint scatters exact owner blocks')
   call require(all(parcels%id==saved%id).and.all(masses==saved_mass),'checkpoint redistributes owner particles')
@@ -540,6 +682,161 @@ program test_spray_mpi
   end if
   call MPI_Finalize(ierr)
 contains
+  subroutine check_interval_checkpoint()
+    real(dp),allocatable :: gas(:,:,:,:),temp(:,:,:),external(:)
+    real(dp) :: last_dt,clock,initial(15),injected(15)
+    integer :: count,event,unit,mode,owner_mode
+    logical :: exists
+    integer(int64) :: reserve
+    call load_h2o2_full_thermo(species,ok)
+    call require(ok,'history thermo')
+    primitive=0;primitive(1)=1;primitive(15)=1
+    primitive(5)=800._dp*mixture_specific_gas_constant(species,primitive(6:),ok)
+    call reactive_primitive_to_conserved(species,primitive,gas_cell,gas_t,sound,ok)
+    call require(ok,'history gas')
+    allocate(gas(15,2,2,2),temp(2,2,2),parcels(0),masses(2,0))
+    do k=1,2;do j=1,2;do i=1,2
+      gas(:,i,j,k)=gas_cell
+    enddo;enddo;enddo
+    temp=gas_t;clock=1e-8_dp;count=3;event=0;reserve=0;initial=0;injected=0
+    last_dt=2e-9_dp
+    if(nranks>1) then
+      ! Presence disagreement must be rejected before any optional collective.
+      do owner_mode=0,1
+        if((rank==0).eqv.(owner_mode==0)) then
+          allocate(external(15));external=7
+        endif
+        do mode=1,2
+          call mpi_spray_checkpoint(MPI_COMM_WORLD,mode==1,'presence-rejected.chk','history',species, &
+            gas,temp,parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],[2*nranks,2,2], &
+            clock,count,event,reserve,initial,injected,ok,external_totals=external,previous_timestep=last_dt)
+          call require(.not.ok,'external ledger presence disagreement refuses read/write')
+          call require(clock==1e-8_dp.and.count==3.and.event==0.and.reserve==0.and.last_dt==2e-9_dp, &
+            'presence refusal preserves clock, event, ID and timestep')
+          call require(all(initial==0).and.all(injected==0).and.all(temp==gas_t), &
+            'presence refusal preserves ledgers and temperature')
+          call require(size(parcels)==0.and.all(shape(masses)==[2,0]),'presence refusal preserves particles')
+          do k=1,2;do j=1,2;do i=1,2
+            call require(all(gas(:,i,j,k)==gas_cell),'presence refusal preserves gas')
+          enddo;enddo;enddo
+          if(allocated(external)) call require(all(external==7),'presence refusal preserves external ledger')
+          inquire(file='presence-rejected.chk',exist=exists)
+          call require(.not.exists,'presence refusal does not publish checkpoint')
+        enddo
+        if(allocated(external)) deallocate(external)
+      enddo
+    endif
+    last_dt=2e-9_dp
+    if(rank==nranks-1.and.nranks>1) last_dt=1e-9_dp
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,'interval-history.chk','history',species, &
+      gas,temp,parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],[2*nranks,2,2], &
+      clock,count,event,reserve,initial,injected,ok,previous_timestep=last_dt)
+    call require(ok.eqv.(nranks==1),'history rank disagreement refuses publication')
+    if(nranks==1) then
+      open(newunit=unit,file='interval-history.chk',status='old');close(unit,status='delete')
+    endif
+    last_dt=2e-9_dp
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.true.,'interval-history.chk','history',species, &
+      gas,temp,parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],[2*nranks,2,2], &
+      clock,count,event,reserve,initial,injected,ok,previous_timestep=last_dt)
+    call require(ok,'history write')
+    last_dt=53
+    call mpi_spray_checkpoint(MPI_COMM_WORLD,.false.,'interval-history.chk','wrong',species, &
+      gas,temp,parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],[2*nranks,2,2], &
+      clock,count,event,reserve,initial,injected,ok,previous_timestep=last_dt)
+    call require(.not.ok.and.last_dt==53,'history failed read preserves caller')
+    deallocate(gas,temp);allocate(gas(15,2*nranks,2,2),temp(2*nranks,2,2))
+    gas=0;temp=0
+    call mpi_spray_checkpoint(MPI_COMM_SELF,.false.,'interval-history.chk','history',species, &
+      gas,temp,parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],[2*nranks,2,2], &
+      clock,count,event,reserve,initial,injected,ok,previous_timestep=last_dt)
+    call require(ok.and.last_dt==2e-9_dp.and.all(temp==gas_t),'history changed-rank restore')
+    do k=1,2;do j=1,2;do i=1,2*nranks
+      call require(all(gas(:,i,j,k)==gas_cell),'history exact global state')
+    enddo;enddo;enddo
+    call MPI_Barrier(MPI_COMM_WORLD,ierr)
+    if(rank==0) then
+      open(newunit=unit,file='interval-history.chk',status='old');close(unit,status='delete')
+    endif
+  end subroutine check_interval_checkpoint
+  subroutine check_particle_timestep()
+    type(spray_parcel), allocatable :: particles(:)
+    real(dp) :: bound,jet
+    logical :: good
+    allocate(particles(0))
+    call compute_mpi_spray_timestep(MPI_COMM_WORLD,particles,[.01_dp,.02_dp,.04_dp],.5_dp,.false.,100._dp,bound,good)
+    call require(good.and.abs(bound-5.e-5_dp)<1.e-18_dp,'future jet bounds empty particle timestep')
+    deallocate(particles)
+    allocate(particles(merge(1,0,rank==0)))
+    if(rank==0) particles(1)=spray_parcel(1_int64,[0._dp,0._dp,0._dp], &
+      [0._dp,400._dp,0._dp],1e-9_dp,350._dp,1._dp)
+    call compute_mpi_spray_timestep(MPI_COMM_WORLD,particles,[.01_dp,.02_dp,.04_dp],.5_dp,.false.,100._dp,bound,good)
+    call require(good.and.abs(bound-2.5e-5_dp)<1.e-18_dp,'anisotropic particle speed bounds every rank')
+    call compute_mpi_spray_timestep(MPI_COMM_WORLD,particles,[.01_dp,.02_dp,.04_dp],.5_dp,.true.,100._dp,bound,good)
+    call require(good.and.bound==huge(1._dp),'fixed particle timestep ignores motion and jets')
+    jet=100._dp
+    if(rank==0) jet=200._dp
+    call compute_mpi_spray_timestep(MPI_COMM_WORLD,particles,[.01_dp,.02_dp,.04_dp],.5_dp,.false.,jet,bound,good)
+    call require(.not.good.and.bound==0,'rank-disagreeing jet speed rejects collectively')
+  end subroutine check_particle_timestep
+
+  subroutine check_fixed_periodic()
+    type(spray_options) :: opts
+    type(spray_parcel), allocatable :: initial(:)
+    real(dp), allocatable :: initial_mass(:,:),initial_gas(:,:,:,:),initial_temp(:,:,:)
+    real(dp) :: force(5),source_ledger(15)
+    integer :: scheme,q
+    do q=1,size(parcels)
+      parcels(q)%position=[.75_dp,.8_dp,.9_dp]
+      parcels(q)%velocity=[20._dp,10._dp,5._dp]
+    enddo
+    initial=parcels;initial_mass=masses;initial_gas=field;initial_temp=temperature
+    do scheme=1,2
+      parcels=initial;masses=initial_mass;field=initial_gas;temperature=initial_temp
+      opts=spray_options();opts%fixed_parts=.true.;opts%heat=.false.;opts%evaporation=.false.
+      if(scheme==2) opts%mixture_time_scheme='euler'
+      call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,opts,field,temperature, &
+        parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells,[nranks,1,1],1e-4_dp,steps,ok)
+      call require(.not.ok.and.steps==0,'fixed requires constraint ledger')
+      call require(all(field==initial_gas).and.all(masses==initial_mass),'fixed missing ledger rollback')
+      force=37
+      if(rank==0) opts%fixed_parts=.false.
+      call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,opts,field,temperature, &
+        parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells,[nranks,1,1],1e-4_dp,steps,ok,force_change=force)
+      call require(.not.ok.and.all(force==37).and.all(field==initial_gas),'rank fixed option mismatch rollback')
+      opts%fixed_parts=.true.
+      call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,opts,field,temperature, &
+        parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells,[nranks,1,1],-1._dp,steps,ok,force_change=force)
+      call require(.not.ok.and.all(force==37),'fixed rejected interval preserves ledger')
+      call mixture_system_totals(field,[1._dp,1._dp,1._dp],parcels,liquids,masses,local_totals,ok)
+      call require(ok,'fixed initial totals')
+      call MPI_Allreduce(local_totals,before,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call advance_mpi_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,opts,field,temperature, &
+        parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells,[nranks,1,1],1e-4_dp,steps,ok,force_change=force)
+      call require(ok,'fixed periodic accepted')
+      do q=1,size(parcels)
+        call require(all(parcels(q)%position==[.75_dp,.8_dp,.9_dp]),'fixed periodic position')
+        call require(all(parcels(q)%velocity==0),'fixed periodic stationary')
+      enddo
+      call mixture_system_totals(field,[1._dp,1._dp,1._dp],parcels,liquids,masses,local_totals,ok)
+      call require(ok,'fixed final totals')
+      call MPI_Allreduce(local_totals,after,15,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(all(abs(after(:5)-before(:5)-force)<2e-12_dp*max(1e-12_dp,abs(before(:5)))), &
+        'fixed periodic constraint closes conserved totals')
+      call require(force(5)<0.and.any(force(2:4)/=0),'fixed removal recorded')
+      parcels=initial;masses=initial_mass;field=initial_gas;temperature=initial_temp
+      call load_h2o2_full_mechanism(reactions,ok);call require(ok,'fixed reaction mechanism')
+      source_ledger=37
+      call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,opts,field,temperature, &
+        parcels,masses,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],cells,[nranks,1,1],1e-4_dp, &
+        1e-6_dp,1e-12_dp,'explicit',steps,ok,source_change=source_ledger, &
+        constant_coefficients=constant_coefficients)
+      call require(ok,'fixed periodic reaction accepted')
+      call require(all(source_ledger(:5)==force).and.all(source_ledger(6:)==0),'two halfsteps count constraint once')
+      if(allocated(reactions)) deallocate(reactions)
+    enddo
+    if(rank==0) print *, 'fixed periodic constraint checks passed'
+  end subroutine
   subroutine check_parent_order()
     type(spray_parcel), allocatable :: trial(:)
     real(dp), allocatable :: components(:,:)
@@ -602,7 +899,8 @@ contains
     call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,settings,u,t,drops,cm, &
       [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-5_dp,1e-7_dp,1e-12_dp, &
       'implicit',nstep,ok,'hllc','mc',[.true.,.true.,.true.,.true.],mark,[.1_dp,.7_dp,.7_dp], &
-      boundary,ledger,wall_temperature=wall_t,inflow_mach=mach,inflow_temperature=inlet_t)
+      boundary,ledger,wall_temperature=wall_t,inflow_mach=mach,inflow_temperature=inlet_t, &
+      constant_coefficients=constant_coefficients)
     call require(.not.ok.and.nstep==0.and.all(u==u0).and.all(t==t0).and.mark==17.and.all(ledger==0), &
       'late boundary transport failure rolls back whole split gas ID and ledger')
     call require(size(drops)==np,'late boundary failure restores escaped particle')
@@ -615,7 +913,8 @@ contains
     call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,reactions,transport,liquids,settings,u,t,drops,cm, &
       [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-5_dp,1e-7_dp,1e-12_dp, &
       'implicit',nstep,ok,'hllc','mc',[.true.,.true.,.true.,.true.],mark,[.1_dp,.7_dp,.7_dp], &
-      boundary,ledger,wall_temperature=wall_t,inflow_mach=mach,inflow_temperature=inlet_t)
+      boundary,ledger,wall_temperature=wall_t,inflow_mach=mach,inflow_temperature=inlet_t, &
+      constant_coefficients=constant_coefficients)
     call require(ok.and.nstep>=2.and.size(drops)==0.and.mark==17,'complete nonperiodic split with escaped parcel')
     call mixture_system_totals(u,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,local_after,ok)
     call require(ok,'boundary split final inventory')
@@ -699,11 +998,13 @@ contains
       inventory=sum(sum(sum(abs(serial_u),dim=4),dim=3),dim=2)
       call advance_reactive_transport_3d(species,transport,serial_u,serial_t,cells(1),3,3, &
         .001_dp,.001_dp,.001_dp,step,.true.,.true.,.true.,.true.,theta_serial,ok, &
-        boundaries,serial_change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin)
+        boundaries,serial_change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin, &
+        constant_coefficients=constant_coefficients)
       call require(ok,'serial physical-boundary transport reference')
       call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,local_u,local_temp, &
         [.001_dp,.001_dp,.001_dp],cells,step,[.true.,.true.,.true.,.true.],theta_mpi,ok, &
-        boundaries,change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin)
+        boundaries,change,inlet,inlet_t,wall_t,velocity,inflow_mach=mach,inflow_pressure=pin, &
+        constant_coefficients=constant_coefficients)
       call require(ok,'MPI physical-boundary transport')
       call require(maxval(abs(local_u-serial_u(:,first(1)+1:first(1)+dims(1),:,:))/ &
         max(1.0_dp,abs(serial_u(:,first(1)+1:first(1)+dims(1),:,:))))<2e-12_dp, &
@@ -745,7 +1046,8 @@ contains
     if (rank==0) wall_t(4)=-1
     call advance_mpi_spray_transport(MPI_COMM_WORLD,species,transport,local_u,local_temp, &
       [.001_dp,.001_dp,.001_dp],cells,1e-5_dp,[.true.,.true.,.true.,.true.],theta_mpi,ok, &
-      boundaries,change,inlet,inlet_t,wall_t,velocity)
+      boundaries,change,inlet,inlet_t,wall_t,velocity, &
+      constant_coefficients=constant_coefficients)
     call require(.not.ok.and.all(local_u==u).and.all(local_temp==t).and.all(change==0), &
       'MPI invalid wall thermal data rolls back transport')
     call advance_mpi_spray_les(MPI_COMM_WORLD,species,local_u,local_temp,[.001_dp,.001_dp,.001_dp],cells, &
@@ -891,7 +1193,7 @@ contains
     type(spray_parcel) :: expected_parent
     type(spray_wall_film), allocatable :: patches(:),empty_films(:)
     type(spray_wall_film) :: expected_film
-    type(spray_options) :: settings
+    type(spray_options) :: settings,materials(2)
     type(spray_wall_options) :: walls
     real(dp), allocatable :: cm(:,:),fm(:,:),previous(:,:),press(:),child_mass(:,:)
     logical, allocatable :: hits(:)
@@ -938,6 +1240,60 @@ contains
       call require(all(fm(:,1)==film_components),'MPI deposited components match serial')
       call require(drops(2)%mass==1e-9_dp.and.drops(2)%position(3)==.05_dp,'uncrossed particle unchanged')
     end if
+    ! Euler planar rebound uses endpoint overshoot, without a diameter offset.
+    settings%mixture_time_scheme='euler';walls%temperature=600;press=1e6_dp
+    deallocate(patches,fm);allocate(patches(0),fm(2,0))
+    do q=1,np
+      drops(q)=spray_parcel(int(2*rank+q,int64),[.3_dp,.25_dp,-.1_dp], &
+        [.1_dp,0._dp,-1._dp],1e-9_dp,330._dp,100._dp)
+      cm(:,q)=drops(q)%mass*[.25_dp,.75_dp]
+    enddo
+    if(np>0) drops(2)%position(3)=.05_dp
+    call impact_mpi_planar_walls(MPI_COMM_WORLD,liquids,settings,walls,face_names,mw,press,previous, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],drops,cm,patches,fm,mark,hits,wall,ok)
+    call require(ok.and.mark==2*nranks.and.size(patches)==0,'Euler planar MPI rebound allocates no children or films')
+    if(np>0) then
+      call require(abs(drops(1)%position(3)-.1_dp*drops(1)%velocity(3))<1e-15_dp.and. &
+        drops(1)%position(1)==.3_dp,'Euler MPI rebound position matches fixed formula')
+      call require(drops(1)%mass==1e-9_dp,'Euler MPI rebound retains parent mass')
+    endif
+    ! Material two has an independent viscosity model. The ordinary default
+    ! controls cannot evaluate the out-of-range table, so a one-rank hit must
+    ! reject collectively without changing particles, components, films or IDs.
+    settings%mixture_time_scheme='conservative';walls%temperature=300;press=101325
+    materials=settings;materials(2)%breakup_model='etab'
+    materials(2)%surface_tension=.05_dp;materials(2)%liquid_viscosity_model='inverse-temperature'
+    materials(2)%liquid_viscosity_coefficients=[.002_dp,0._dp,0._dp,0._dp]
+    materials(2)%liquid_viscosity_temperature_range=[340._dp,350._dp]
+    deallocate(patches,fm);allocate(patches(0),fm(2,0))
+    do q=1,np
+      drops(q)=spray_parcel(int(2*rank+q,int64),[.25_dp,.25_dp,-.1_dp], &
+        [.1_dp,0._dp,-1._dp],1e-9_dp,330._dp,100._dp)
+      drops(q)%material_id=2;cm(:,q)=drops(q)%mass*[.25_dp,.75_dp]
+    enddo
+    if(np>0) drops(2)%position(3)=.05_dp
+    call impact_mpi_planar_walls(MPI_COMM_WORLD,liquids,settings,walls,face_names,mw,press,previous, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],drops,cm,patches,fm,mark,hits,wall,ok,materials)
+    call require(.not.ok.and.mark==2*nranks.and.size(patches)==0,'material viscosity evaluation failure rollback')
+    if(np>0) call require(drops(1)%mass==1e-9_dp.and.drops(1)%position(3)==-.1_dp.and. &
+      all(cm(:,1)==1e-9_dp*[.25_dp,.75_dp]),'failed material wall impact retains endpoint and composition')
+    materials(2)%liquid_viscosity_temperature_range=[320._dp,340._dp]
+    serial_wall=0
+    if(np>0) then
+      expected_parent=drops(1);parent_mass=cm(:,1);film_components=0
+      call mixture_impact_at_planar_wall(expected_parent,previous(:,1),liquids,parent_mass,materials(2),mw,press(1), &
+        [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],walls,empty_films,mark+1,children,child_mass, &
+        expected_film,film_components,serial_wall,serial_hit,ok)
+      call require(ok.and.serial_hit,'material-specific serial wall oracle')
+    endif
+    call MPI_Allreduce(serial_wall,global_wall,5,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call impact_mpi_planar_walls(MPI_COMM_WORLD,liquids,settings,walls,face_names,mw,press,previous, &
+      [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],drops,cm,patches,fm,mark,hits,wall,ok,materials)
+    call require(ok.and.mark==2*nranks,'material-specific MPI wall impact')
+    call require(all(abs(wall-global_wall)<1e-13_dp*max(1e-12_dp,abs(global_wall))), &
+      'material-specific MPI wall ledger matches serial')
+    if(np>0) call require(drops(1)%mass==expected_parent%mass.and.all(cm(:,1)==parent_mass).and. &
+      size(patches)==1.and.patches(1)%height==expected_film%height,'material-specific parent and film oracle')
   end subroutine
 
   subroutine check_film_query()
@@ -1085,7 +1441,11 @@ contains
     integer :: step,event,q,unit
     integer(int64) :: mark
     character(len=80) :: path
-    allocate(patches(1),cm(2,1),drops(0),pm(2,0))
+    allocate(patches(1),cm(2,1),drops(1),pm(2,1))
+    drops(1)=spray_parcel(int(rank+1,int64),[real(first(1),dp)+.5_dp,.5_dp,.5_dp], &
+      [0.0_dp,0.0_dp,1.0_dp],1e-10_dp,330.0_dp,100.0_dp)
+    drops(1)%khrt_initial_count=drops(1)%multiplicity
+    pm(:,1)=drops(1)%mass*[.25_dp,.75_dp]
     patches(1)=spray_wall_film([real(first(1),dp)+.5_dp,0.0_dp,.5_dp],[0.0_dp,1.0_dp,0.0_dp], &
       1e-9_dp,330.0_dp+rank,.001_dp,1e-6_dp,rank+1)
     cm(:,1)=patches(1)%mass*[.25_dp,.75_dp]
@@ -1111,6 +1471,8 @@ contains
       wall_films=patches,film_mass=cm,wall_totals=wall)
     call require(ok.and.size(patches)==nranks.and.wall(5)==1.25_dp,'film changed-rank restart and wall budget')
     call require(all(gas==reference).and.all(temp==reference_temperature),'film checkpoint exact gas')
+    call require(size(drops)==nranks.and.all(drops%khrt_initial_count==100.0_dp).and. &
+      all(drops%khrt_shed_volume==0),'film changed-rank retained birth counts')
     do q=1,nranks
       call require(patches(q)%temperature==329+q.and.patches(q)%material_id==q,'film restored source order/material')
       call require(all(cm(:,q)==patches(q)%mass*[.25_dp,.75_dp]),'film restored component inventory')
@@ -1121,6 +1483,8 @@ contains
       wall_films=patches,film_mass=cm,wall_totals=wall)
     call require(ok.and.size(patches)==1,'film restart redistributes from root')
     call require(patches(1)%temperature==330+rank,'film restart recovers original owner')
+    call require(size(drops)==1.and.drops(1)%id==rank+1.and.drops(1)%khrt_initial_count==100, &
+      'film restart recovers birth count on original particle owner')
     call MPI_Barrier(MPI_COMM_WORLD,ierr)
     if (rank==0) then
       open(newunit=unit,file=trim(path),status='old');close(unit,status='delete')
@@ -1180,7 +1544,8 @@ contains
     call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,faulty,transport,liquids,settings,gas,temp,empty,empty_cm, &
       [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-8_dp,1e-7_dp,1e-12_dp, &
       'implicit',count_steps,ok,boundary_faces=film_faces,boundary_change=boundary, &
-      wall_films=patches,film_mass=cm,film_settings=walls)
+      wall_films=patches,film_mass=cm,film_settings=walls, &
+      constant_coefficients=constant_coefficients)
     call require(.not.ok.and.count_steps==0.and.all(boundary==0),'late chemistry failure clears film split outputs')
     call require(all(gas==field).and.all(temp==temperature).and.all(cm==original_cm).and. &
       all(patches%mass==original%mass).and.all(patches%temperature==original%temperature), &
@@ -1188,7 +1553,8 @@ contains
     call advance_mpi_mixture_reaction(MPI_COMM_WORLD,species,film_reactions,transport,liquids,settings,gas,temp,empty,empty_cm, &
       [0.0_dp,0.0_dp,0.0_dp],[1.0_dp,1.0_dp,1.0_dp],cells,[nranks,1,1],1e-8_dp,1e-7_dp,1e-12_dp, &
       'implicit',count_steps,ok,boundary_faces=film_faces,boundary_change=boundary, &
-      wall_films=patches,film_mass=cm,film_settings=walls)
+      wall_films=patches,film_mass=cm,film_settings=walls, &
+      constant_coefficients=constant_coefficients)
     call require(ok.and.count_steps>=4.and.boundary(5)>0,'symmetric film particle chemistry split')
     if (rank==0) call require(patches(1)%temperature>330.and.patches(1)%mass<1e-9_dp,'split film heats and evaporates')
     call mixture_system_totals(gas,[1.0_dp,1.0_dp,1.0_dp],empty,liquids,empty_cm,finish,ok,patches,cm)
@@ -1244,29 +1610,34 @@ contains
   end subroutine
 
   subroutine check_reference_kh_release()
-    type(spray_parcel), allocatable :: drops(:),serial(:),original(:)
-    real(dp), allocatable :: cm(:,:),scm(:,:),original_cm(:,:),energy(:),momentum(:,:),se(:),sm(:,:)
+    type(spray_parcel), allocatable :: drops(:),serial(:),original(:),serial_original(:)
+    real(dp), allocatable :: cm(:,:),scm(:,:),original_cm(:,:),serial_original_cm(:,:),energy(:),momentum(:,:),se(:),sm(:,:)
     real(dp), allocatable :: density(:),velocity(:,:),reynolds(:),sd(:),sv(:,:),sr(:)
+    real(dp), allocatable :: birth_positions(:,:)
     type(spray_options) :: settings
+    type(spray_liquid) :: saved_liquids(2)
     real(dp) :: initial(15),final(15),y(2)
     integer :: np,p,j,source
     integer(int64) :: mark,serial_mark
+    saved_liquids=liquids
+    liquids%viscosity_model='constant';liquids(1)%viscosity=.0008_dp;liquids(2)%viscosity=.0012_dp
     np=merge(1,0,rank<nranks-1)
     allocate(serial(nranks-1),scm(2,nranks-1),sd(nranks-1),sv(3,nranks-1),sr(nranks-1))
     y=[.25_dp,.75_dp]
     do p=1,nranks-1
       serial(p)=spray_parcel(int(p,int64),[.25_dp,.25_dp,.25_dp], &
         [1._dp,2._dp,3._dp],1e-9_dp,330._dp,100._dp*p*p)
-      scm(:,p)=serial(p)%mass*y
+      serial(p)%khrt_initial_count=serial(p)%multiplicity
+      scm(:,p)=serial(p)%mass*merge(y,y(2:1:-1),mod(p,2)==1)
     enddo
     allocate(drops(np),cm(2,np),density(np),velocity(3,np),reynolds(np),energy(1),momentum(3,1))
     energy=123;momentum=456;source=nranks-1-rank
     if(np>0) then
       drops(1)=serial(source);cm(:,1)=scm(:,source)
     endif
-    original=drops;original_cm=cm
-    density=10;velocity=0;velocity(1,:)=300;reynolds=2000
-    sd=10;sv=0;sv(1,:)=300;sr=2000
+    original=drops;original_cm=cm;serial_original=serial;serial_original_cm=scm
+    density=10;velocity=0;velocity(1,:)=150;reynolds=2000
+    sd=10;sv=0;sv(1,:)=150;sr=2000
     settings%breakup_model='khrt';settings%khrt_children=.true.
     settings%surface_tension=.072_dp;settings%liquid_viscosity=.001_dp
     settings%khrt_reference_diameter_cubed=1e-25_dp;settings%maximum_parcels=10000
@@ -1312,6 +1683,90 @@ contains
     final(2:4)=final(2:4)+sum(momentum,dim=2);final(5)=final(5)+sum(energy)
     call require(all(abs(final-initial)<2e-12_dp*max(1e-12_dp,abs(initial))), &
       'reference KH mass momentum energy species conservation')
+    ! Parent flight is disabled, but SpraySB.cpp still assigns each newborn
+    ! loc0 + sub_dt*pvel. Exercise that rule with an idle MPI rank.
+    drops=original;cm=original_cm;serial=serial_original;scm=serial_original_cm
+    do p=1,size(drops)
+      drops(p)%velocity=0
+    enddo
+    do p=1,size(serial)
+      serial(p)%velocity=0
+    enddo
+    settings%fixed_parts=.true.;mark=int(nranks,int64);serial_mark=mark
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum)
+    call require(.not.ok.and.mark==nranks.and.all(drops%mass==original%mass).and.all(cm==original_cm), &
+      'reference stationary parent direction is singular and rolls back')
+    call advance_mixture_khrt_shedding(liquids,settings,serial,scm,sd,sv,sr,1e-6_dp,serial_mark,se,ok, &
+      gas_momentum=sm)
+    call require(ok,'stationary KH serial release')
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,gas_momentum=momentum)
+    call require(ok.and.mark==serial_mark,'stationary KH MPI release')
+    do p=1,size(drops)
+      j=findloc(serial%id,drops(p)%id,dim=1)
+      call require(j>0,'stationary KH ID exists in serial')
+      call require(all(drops(p)%position==serial(j)%position),'stationary KH MPI birth positions match serial')
+      if(drops(p)%parent_id>0) then
+        call require(all(drops(p)%position==.25_dp+1e-6_dp*drops(p)%velocity),'stationary KH child birth offset')
+      else
+        call require(all(drops(p)%position==.25_dp),'stationary KH parent stays fixed')
+      endif
+    enddo
+    if(np>0) call require(energy(1)==se(source).and.all(momentum(:,1)==sm(:,source)), &
+      'stationary KH feedback matches serial')
+    drops=original;cm=original_cm;mark=int(nranks,int64);serial_mark=mark
+    se=energy;sm=momentum
+    if(rank==0) settings%fixed_parts=.false.
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,gas_momentum=momentum)
+    call require(.not.ok.and.mark==serial_mark.and.all(energy==se).and.all(momentum==sm), &
+      'stationary KH rank option disagreement preserves ID and feedback')
+    ! A moved parent retains its endpoint; newborns use the saved loc0 from
+    ! before its flight (SpraySB.cpp), then drift with their own velocity.
+    settings%fixed_parts=.false.;settings%maximum_parcels=10000
+    drops=original;cm=original_cm;mark=int(nranks,int64)
+    allocate(birth_positions(3,np));birth_positions=.125_dp
+    do p=1,np
+      drops(p)%position=.75_dp
+    enddo
+    if(rank==nranks-1) then
+      call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+        1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum)
+    else
+      call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+        1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum,birth_positions=birth_positions)
+    endif
+    call require(.not.ok.and.mark==nranks.and.all(energy==se).and.all(momentum==sm), &
+      'KH birth origin presence disagreement rolls back on idle rank')
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum,birth_positions=birth_positions)
+    call require(ok.and.(np==0.or.size(drops)>np),'KH saved birth origin release')
+    do p=1,size(drops)
+      if(drops(p)%parent_id>0) then
+        call require(all(drops(p)%position==.125_dp+1e-6_dp*drops(p)%velocity),'KH newborn uses old origin and own drift')
+      else
+        call require(all(drops(p)%position==.75_dp),'KH birth construction preserves moved parent endpoint')
+      endif
+    enddo
+
+    ! The EB/halo caller performs the flight after release. Preserve loc0
+    ! here while the breakup clock remains a nonzero half-kick interval.
+    drops=original;cm=original_cm;mark=int(nranks,int64)
+    se=energy;sm=momentum
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum, &
+      child_drift_dt=ieee_value(0._dp,ieee_quiet_nan))
+    call require(.not.ok.and.mark==nranks.and.all(energy==se).and.all(momentum==sm), &
+      'KH invalid independent flight interval rolls back')
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,reference_factor=.8_dp,gas_momentum=momentum,child_drift_dt=0._dp)
+    call require(ok.and.(np==0.or.size(drops)>np),'KH pre-flight release')
+    do p=1,size(drops)
+      call require(all(drops(p)%position==.25_dp),'KH pre-flight release has no premature movement')
+    enddo
+
+    liquids=saved_liquids
   end subroutine
 
   subroutine check_kh_release()
@@ -1341,6 +1796,17 @@ contains
     call require(.not.ok.and.mark==nranks.and.all(energy==123),'KH capacity rollback includes IDs/energy')
     call require(all(drops%mass==original%mass).and.all(cm==original_cm),'KH capacity rollback includes composition')
     settings%maximum_parcels=100
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,make_new_drops=rank==nranks-1)
+    call require(.not.ok.and.mark==nranks.and.all(energy==123).and.all(cm==original_cm), &
+      'KH birth policy rank mismatch preserves ID energy and composition')
+    call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &
+      1e-6_dp,mark,energy,ok,make_new_drops=.false.)
+    call require(ok.and.size(drops)==np.and.mark==nranks.and.all(energy==0), &
+      'KH no-birth policy suppresses threshold release and ID reservation')
+    if(np>0) call require(drops(1)%mass>0.and.drops(1)%mass<original(1)%mass.and. &
+      drops(1)%khrt_shed_volume>0,'KH no-birth policy updates radius and accumulated shedding')
+    drops=original;cm=original_cm
     call mixture_system_totals(field,[1.0_dp,1.0_dp,1.0_dp],drops,liquids,cm,initial,ok)
     call require(ok,'KH initial inventory')
     call advance_mpi_khrt_shedding(MPI_COMM_WORLD,liquids,settings,drops,cm,density,velocity,reynolds, &

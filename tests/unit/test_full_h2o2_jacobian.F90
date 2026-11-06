@@ -1,10 +1,11 @@
 program test_full_h2o2_jacobian
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_dimensionless_properties,universal_gas_constant
   use mixture_thermo_mod, only: &
     mass_fractions_from_mole_fractions, mixture_density, &
     mixture_mass_properties
-  use elementary_kinetics_mod, only: elementary_reaction
+  use elementary_kinetics_mod, only: elementary_reaction,reaction_equilibrium_constant,reaction_progress_rate, &
+    reaction_effective_forward_rate,elementary_production_rates_from_concentrations,elementary_production_jacobian
   use h2o2_full_thermo_mod, only: full_nspecies, load_h2o2_full_thermo
   use h2o2_full_mechanism_mod, only: &
     load_h2o2_full_mechanism, h2o2_full_mass_fraction_jacobian
@@ -166,4 +167,110 @@ program test_full_h2o2_jacobian
   write(*, '(a,es24.16,a,es24.16)') &
     "test_full_h2o2_jacobian: PASS, max|J|=", maxval(abs(jacobian)), &
     ", directional error=", maximum_directional_error
+  call check_inverse_equilibrium_range()
+contains
+  subroutine check_inverse_equilibrium_range()
+    type(nasa7_species), allocatable :: table(:)
+    type(elementary_reaction), allocatable :: mechanism(:)
+    type(elementary_reaction) :: counter(1)
+    real(dp) :: y(10),c(10),plus(10),minus(10),rates(10),fp(10),fm(10),jac(10,10),fd(10),expected(10)
+    real(dp) :: temperatures(3)=[100._dp,80._dp,20._dp],qf,qr,q,kc,kf,unused(10),g(10)
+    real(dp) :: cp,h,s,log_kc,log_coefficient,wanted,residual,mass_residual
+    real(dp), parameter :: step=2e-7_dp
+    integer :: thermal,signed,sp,cases
+    logical :: good,kc_good
+    call load_h2o2_full_thermo(table,good);call range_require(good,'pinned thermo')
+    call load_h2o2_full_mechanism(mechanism,good);call range_require(good,'pinned mechanism')
+    table%pinned_eos_extrapolation=.true.;cases=0
+    y=1e-9_dp;y(1)=.028_dp;y(4)=.224_dp;y(10)=1-sum(y(:9))
+    do thermal=1,size(temperatures)
+      do signed=0,1
+        c=y/table%molecular_weight
+        if(signed==1) c(2)=-1e-14_dp
+        call elementary_production_rates_from_concentrations(table,mechanism,temperatures(thermal),c,rates,good, &
+          signed_concentrations=signed==1)
+        call range_require(good,'finite cold physical/signed progress despite unrepresentable Kc')
+        call elementary_production_jacobian(table,mechanism,temperatures(thermal),c,jac,good, &
+          signed_concentrations=signed==1)
+        call range_require(good,'finite cold physical/signed progress Jacobian')
+        plus=c*(1+step);minus=c*(1-step)
+        call elementary_production_rates_from_concentrations(table,mechanism,temperatures(thermal),plus,fp,good, &
+          signed_concentrations=signed==1)
+        call range_require(good,'positive concentration perturbation')
+        call elementary_production_rates_from_concentrations(table,mechanism,temperatures(thermal),minus,fm,good, &
+          signed_concentrations=signed==1)
+        call range_require(good,'negative concentration perturbation')
+        fd=(fp-fm)/(2*step);expected=matmul(jac,c)
+        residual=maxval(abs(fd-expected))/max(maxval(abs(fd)),maxval(abs(expected)),1e-30_dp)
+        mass_residual=abs(sum(table%molecular_weight*rates))/max(sum(abs(table%molecular_weight*rates)),1e-30_dp)
+        print *, 'Inverse-equilibrium cold coordinate:',temperatures(thermal),signed,residual,mass_residual
+        call range_require(residual<=2e-6_dp,'independent directional RHS/Jacobian comparison')
+        call range_require(mass_residual<=3e-12_dp,'physical/signed reaction mass balance')
+        cases=cases+1
+      enddo
+    enddo
+    c=y/table%molecular_weight
+    do sp=1,10
+      call nasa7_dimensionless_properties(table(sp),80._dp,cp,h,s,good)
+      call range_require(good,'independent Gibbs query');g(sp)=h-s
+    enddo
+    call range_require(mechanism(1)%reactant_stoich(3)==2.and.mechanism(1)%product_stoich(4)==1, &
+      'counterfactual uses declared2O+M=O2+M ordering')
+    log_kc=2*g(3)-g(4)-log(101325._dp/(universal_gas_constant*80._dp))
+    kc=reaction_equilibrium_constant(table,mechanism(1),80._dp,kc_good)
+    call range_require(.not.kc_good.and.kc==0,'standalone overflowing Kc still refuses')
+    call reaction_effective_forward_rate(mechanism(1),80._dp,c,kf,unused,good)
+    call range_require(good.and.kf>0,'independent forward coefficient')
+    call reaction_progress_rate(table,mechanism(1),80._dp,c,qf,qr,q,good)
+    call range_require(good,'finite inverse-equilibrium progress')
+    wanted=exp(log(kf)+log(c(4))-log_kc)
+    call range_require(wanted>0.and.abs(qr/wanted-1)<=2e-11_dp,'nonzero small reverse contribution retained')
+    c(4)=0
+    call reaction_progress_rate(table,mechanism(1),80._dp,c,qf,qr,q,good)
+    call range_require(good.and.qr==0,'absent reverse product remains exact zero')
+    c(4)=-1e-14_dp
+    call reaction_progress_rate(table,mechanism(1),80._dp,c,qf,qr,q,good,signed_concentrations=.true.)
+    call range_require(good.and.qr==0,'true small reverse underflow remains zero')
+    c(4)=-.5_dp*y(4)/table(4)%molecular_weight
+    call reaction_progress_rate(table,mechanism(1),80._dp,c,qf,qr,q,good,signed_concentrations=.true.)
+    call range_require(good.and.qr<0,'signed reverse product sign retained')
+    call reaction_progress_rate(table,mechanism(1),80._dp,c,qf,qr,q,good)
+    call range_require(.not.good.and.qf==0.and.qr==0.and.q==0,'ordinary negative concentrations still refuse')
+    ! Reverse the declared stoichiometry solely as an arithmetic countercase.
+    ! Kc and its reciprocal cannot be formed here, and c(O)**2 underflows,
+    ! while the actual reverse progress and its derivative are representable.
+    counter(1)=mechanism(1)
+    counter(1)%reactant_stoich=mechanism(1)%product_stoich
+    counter(1)%product_stoich=mechanism(1)%reactant_stoich
+    c=y/table%molecular_weight
+    call reaction_effective_forward_rate(counter(1),80._dp,c,kf,unused,good)
+    call range_require(good.and.kf>0,'countercase forward coefficient')
+    log_coefficient=log(kf)+log_kc
+    c(3)=exp(-.55_dp*log_coefficient)
+    call reaction_effective_forward_rate(counter(1),80._dp,c,kf,unused,good)
+    call range_require(good.and.kf>0,'countercase changed collider')
+    log_coefficient=log(kf)+log_kc
+    wanted=exp(log_coefficient+2*log(c(3)))
+    call range_require(c(3)*c(3)==0.and.wanted>0,'representable progress with underflowing activity product')
+    kc=reaction_equilibrium_constant(table,counter(1),80._dp,kc_good)
+    call range_require(.not.kc_good.and.kc==0,'standalone microscopic Kc still refuses')
+    call reaction_progress_rate(table,counter(1),80._dp,c,qf,qr,q,good)
+    call range_require(good.and.abs(qr/wanted-1)<=2e-11_dp,'log action preserves finite reverse progress')
+    call elementary_production_jacobian(table,counter,80._dp,c,jac,good)
+    call range_require(good,'log activity derivative remains finite')
+    c(3)=exp(.5_dp*(log(huge(1._dp))-2-log_coefficient))
+    call reaction_progress_rate(table,counter(1),80._dp,c,qf,qr,q,good)
+    call range_require(good,'large countercase progress is finite')
+    call elementary_production_jacobian(table,counter,80._dp,c,jac,good)
+    call range_require(.not.good,'true derivative overflow refuses without an FPE or clipping')
+    print *, 'PASS: inverse-equilibrium finite progress/Jacobian:',cases,'cold physical/signed cases and range controls'
+  end subroutine check_inverse_equilibrium_range
+  subroutine range_require(condition,label)
+    logical, intent(in) :: condition
+    character(len=*), intent(in) :: label
+    if(.not.condition) then
+      print *, 'FAIL:',label
+      error stop 1
+    endif
+  end subroutine range_require
 end program test_full_h2o2_jacobian

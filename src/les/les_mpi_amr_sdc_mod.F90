@@ -7,6 +7,7 @@ module les_mpi_amr_sdc_mod
   use gas_transport_mod, only: gas_transport_species
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use mpi_amr_patch_tree_split_3d_mod, only: advance_mpi_amr_tree_sdc_3d,advance_mpi_amr_tree_sdc_subcycle_3d
   use les_mpi_amr_tree_mod, only: compute_mpi_amr_tree_les_rhs_3d
   implicit none
@@ -17,7 +18,9 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,cs,prt,sct,boundary_change,source_change, &
       maximum_correction,minimum_theta,maximum_diffusivity,comm,ok,reaction_source,model,ci, &
       test_model,test_ratio,grid_ratio,harmonic_mean,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      outlet_pressure,inflow_mach,inflow_pressure,difmag,subcycling,level_steps)
+      outlet_pressure,inflow_mach,inflow_pressure,difmag,subcycling,level_steps,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     logical, optional, intent(in) :: subcycling
     integer(int64), optional, intent(inout) :: level_steps(:)
     logical :: recursive_steps,valid,agreed
@@ -58,17 +61,21 @@ contains
       call advance_mpi_amr_tree_sdc_subcycle_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
         iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
         comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-        inflow_mach,inflow_pressure,difmag,level_steps,evaluate)
+        inflow_mach,inflow_pressure,difmag,level_steps,evaluate,mol_mode=present(frame), &
+        frame=frame,domain_lower=domain_lower)
     else
     call advance_mpi_amr_tree_sdc_3d(tree,owners,species,reactions,transport,state,temperature,spacing,dt,faces, &
       iterations,chemistry,transport_flags,force,rtol,atol,boundary_change,source_change,maximum_correction,minimum_theta, &
       comm,ok,reaction_source,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure,difmag,evaluate_diffusion=evaluate)
+      inflow_mach,inflow_pressure,difmag,evaluate_diffusion=evaluate,mol_mode=present(frame), &
+      frame=frame,domain_lower=domain_lower)
     if(ok.and.present(level_steps)) level_steps=1
     end if
     if(ok) maximum_diffusivity=largest
   contains
-    subroutine evaluate(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good)
+    subroutine evaluate(u,t,depth,fractions,coarse_start,coarse_end,rates,flux,good, &
+      internal_energy)
+      type(amr_tree_state_3d), optional, intent(in) :: internal_energy
       type(amr_tree_state_3d), intent(in) :: u,t
       type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
       integer, intent(in) :: depth
@@ -82,7 +89,9 @@ contains
         model=model,ci=ci,test_model=test_model,test_ratio=test_ratio,grid_ratio=grid_ratio,harmonic_mean=harmonic_mean, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
         wall_velocity=wall_velocity,outlet_pressure=outlet_pressure,inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
-        target_depth=depth,coarse_start=coarse_start,coarse_end=coarse_end,fractions=fractions)
+        target_depth=depth,coarse_start=coarse_start,coarse_end=coarse_end,fractions=fractions, &
+        frame=frame,domain_lower=domain_lower, &
+        internal_energy=internal_energy)
       if(good) largest=max(largest,diffusion)
     end subroutine evaluate
   end subroutine advance_mpi_amr_tree_les_sdc_3d

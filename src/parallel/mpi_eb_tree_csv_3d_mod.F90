@@ -13,12 +13,13 @@ module mpi_eb_tree_csv_3d_mod
   private
   public :: write_mpi_eb_tree_csv_3d
 contains
-  subroutine write_mpi_eb_tree_csv_3d(path,tree,owners,species,state,temperature,geometry,comm,ok)
+  subroutine write_mpi_eb_tree_csv_3d(path,tree,owners,species,state,temperature,geometry,comm,ok,heat_release,internal_energy)
     character(len=*), intent(in) :: path
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
+    type(amr_tree_state_3d), optional, intent(in) :: heat_release,internal_energy
     type(eb_geometry_3d), intent(in) :: geometry(:)
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
@@ -28,9 +29,24 @@ contains
     integer(MPI_OFFSET_KIND) :: total,position
     character(len=:), allocatable :: header,row,buffer
     real(dp) :: volume
-    integer :: rank,status,ios,node,pass,i,j,k,n(3),used,length,written,c,nv
+    integer :: rank,status,ios,node,pass,i,j,k,n(3),used,length,written,c,nv,heat_flag,heat_min,heat_max,held_flag,flags
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
+    held_flag=merge(1,0,present(internal_energy))
+    heat_flag=merge(1,0,present(heat_release))
+    flags=heat_flag+2*held_flag
+    call MPI_Allreduce(flags,heat_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,heat_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.heat_min/=heat_max) return
+    if(present(heat_release)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,heat_release,1,comm,valid)
+      if(.not.valid) return
+    end if
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+    endif
     call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,state,reactive_nvar(size(species)),comm,valid)
@@ -48,13 +64,15 @@ contains
     do c=1,size(species)
       header=header//',rhoY_'//trim(species(c)%name)
     end do
+    if(present(heat_release)) header=header//',heat_release_W_m3'
+    if(present(internal_energy)) header=header//',rho_internal_energy_J_m3'
     header=header//new_line('a')
     call same_string(header,valid)
     if (.not.valid) return
     allocate(local_bytes(size(owners)),bytes(size(owners)),offset(size(owners)),stat=ios)
     valid=ios==0;call agree(valid)
     if (.not.valid) return
-    allocate(character(len=60+27*(nv+2))::row,stat=ios)
+    allocate(character(len=60+27*(nv+2+heat_flag+held_flag))::row,stat=ios)
     valid=ios==0;call agree(valid)
     if (.not.valid) return
     allocate(character(len=32*(len(row)+1))::buffer,stat=ios)
@@ -80,11 +98,27 @@ contains
               end associate
               valid=ieee_is_finite(volume).and.ieee_is_finite(temperature%fields(node)%values(1,i,j,k)).and. &
                 all(ieee_is_finite(state%fields(node)%values(:,i,j,k)))
+              if(present(heat_release)) valid=valid.and.ieee_is_finite(heat_release%fields(node)%values(1,i,j,k))
+              if(present(internal_energy)) valid=valid.and.ieee_is_finite(internal_energy%fields(node)%values(1,i,j,k))
               if (.not.valid) exit nodes
               write(row,'(i0,4(",",i0),*(:,",",es26.17e3))',iostat=ios) node,tree%nodes(node)%level,i,j,k, &
                 volume,temperature%fields(node)%values(1,i,j,k),state%fields(node)%values(:,i,j,k)
               valid=ios==0
               if (.not.valid) exit nodes
+              if(present(heat_release)) then
+                length=len_trim(row)
+                write(row(length+1:),'(",",es26.17e3)',iostat=ios) heat_release%fields(node)%values(1,i,j,k)
+                if(ios/=0) then
+                  valid=.false.;exit nodes
+                end if
+              end if
+              if(present(internal_energy)) then
+                length=len_trim(row)
+                write(row(length+1:),'(",",es26.17e3)',iostat=ios) internal_energy%fields(node)%values(1,i,j,k)
+                if(ios/=0) then
+                  valid=.false.;exit nodes
+                endif
+              endif
               length=len_trim(row)+1
               if (pass==1) then
                 if (local_bytes(node)>huge(total)-int(length,MPI_OFFSET_KIND)) then

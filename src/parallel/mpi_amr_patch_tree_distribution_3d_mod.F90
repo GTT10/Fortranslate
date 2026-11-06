@@ -13,7 +13,7 @@ contains
   ! Rebalance an additional signed cell field atomically with gas and temperature.
   ! Packing reuses the whole-patch transfer and never interpolates source estimates.
   subroutine rebalance_mpi_amr_tree_with_field_3d(tree,owners,nvar,state,temperature,nfield,field, &
-      local_cost,minimum_gain,comm,changed,ok)
+      local_cost,minimum_gain,comm,changed,ok,heat_release,internal_energy)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(inout) :: owners(:)
     integer, intent(in) :: nvar,nfield
@@ -21,41 +21,84 @@ contains
     real(dp), intent(in) :: local_cost(:),minimum_gain
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: changed,ok
-    type(amr_tree_state_3d) :: packed,temps,gas,extra
+    type(amr_tree_state_3d), optional, intent(inout) :: heat_release,internal_energy
+    type(amr_tree_state_3d) :: packed,temps,gas,extra,heat,held
     integer, allocatable :: next_owners(:)
-    integer :: rank,status,node,n(3),ios
+    integer :: rank,status,node,n(3),ios,heat_flag,heat_min,heat_max,total,held_flag,flags,flags_min,flags_max
     logical :: valid,ready,moved
     changed=.false.;ok=.false.
+    held_flag=merge(1,0,present(internal_energy))
+    flags=held_flag+2*merge(1,0,present(heat_release))
+    call MPI_Allreduce(flags,flags_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,flags_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.flags_min/=flags_max) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,ready)
+      if(.not.ready) return
+    endif
+    heat_flag=merge(1,0,present(heat_release))
+    call MPI_Allreduce(heat_flag,heat_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(heat_flag,heat_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.heat_min/=heat_max) return
+    if(present(heat_release)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,heat_release,1,comm,ready)
+      if(.not.ready) return
+    end if
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,ready)
     if(.not.ready) return
     call validate_mpi_amr_tree_local_3d(tree,owners,field,nfield,comm,ready)
     if(.not.ready) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,ready)
     if(.not.ready) return
-    if(nfield>huge(1)-nvar) return
+    if(nfield>huge(1)-nvar-heat_flag-held_flag) return
+    total=nvar+nfield+heat_flag+held_flag
     call MPI_Comm_rank(comm,rank,status)
     if(status/=MPI_SUCCESS) return
     allocate(packed%fields(size(owners)),gas%fields(size(owners)),extra%fields(size(owners)),stat=ios)
     valid=ios==0
     call agree(valid,ready)
     if(.not.ready) return
+    if(present(heat_release)) then
+      allocate(heat%fields(size(owners)),stat=ios)
+      call agree(ios==0,ready)
+      if(.not.ready) return
+    end if
+    if(present(internal_energy)) then
+      allocate(held%fields(size(owners)),stat=ios)
+      call agree(ios==0,ready)
+      if(.not.ready) return
+    endif
     do node=1,size(owners)
       if(owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
       if(.not.all(ieee_is_finite(field%fields(node)%values))) then
         valid=.false.;exit
       end if
-      allocate(packed%fields(node)%values(nvar+nfield,n(1),n(2),n(3)),stat=ios)
+      if(present(heat_release)) then
+        if(.not.all(ieee_is_finite(heat_release%fields(node)%values))) then
+          valid=.false.;exit
+        end if
+      end if
+      if(present(internal_energy)) then
+        if(.not.all(ieee_is_finite(internal_energy%fields(node)%values))) then
+          valid=.false.;exit
+        endif
+      endif
+      allocate(packed%fields(node)%values(total,n(1),n(2),n(3)),stat=ios)
       if(ios/=0) then
         valid=.false.;exit
       end if
       packed%fields(node)%values(:nvar,:,:,:)=state%fields(node)%values
-      packed%fields(node)%values(nvar+1:,:,:,:)=field%fields(node)%values
+      packed%fields(node)%values(nvar+1:nvar+nfield,:,:,:)=field%fields(node)%values
+      if(present(heat_release)) packed%fields(node)%values(nvar+nfield+1:nvar+nfield+1,:,:,:)=heat_release%fields(node)%values
+      if(present(internal_energy)) packed%fields(node)%values(total:total,:,:,:)=internal_energy%fields(node)%values
     end do
     call agree(valid,ready)
     if(.not.ready) return
     temps=temperature;next_owners=owners
-    call rebalance_mpi_amr_tree_3d(tree,next_owners,nvar+nfield,packed,temps,local_cost,minimum_gain,comm,moved,ready)
+    call rebalance_mpi_amr_tree_3d(tree,next_owners,total,packed,temps,local_cost,minimum_gain,comm,moved,ready)
     if(.not.ready) return
     if(.not.moved) then
       ok=.true.;return
@@ -63,7 +106,11 @@ contains
     do node=1,size(owners)
       if(next_owners(node)/=rank) cycle
       allocate(gas%fields(node)%values,source=packed%fields(node)%values(:nvar,:,:,:),stat=ios)
-      if(ios==0) allocate(extra%fields(node)%values,source=packed%fields(node)%values(nvar+1:,:,:,:),stat=ios)
+      if(ios==0) allocate(extra%fields(node)%values,source=packed%fields(node)%values(nvar+1:nvar+nfield,:,:,:),stat=ios)
+      if(ios==0.and.present(heat_release)) &
+        allocate(heat%fields(node)%values,source=packed%fields(node)%values(nvar+nfield+1:nvar+nfield+1,:,:,:),stat=ios)
+      if(ios==0.and.present(internal_energy)) &
+        allocate(held%fields(node)%values,source=packed%fields(node)%values(total:total,:,:,:),stat=ios)
       if(ios/=0) then
         valid=.false.;exit
       end if
@@ -73,6 +120,8 @@ contains
     call move_alloc(gas%fields,state%fields)
     call move_alloc(temps%fields,temperature%fields)
     call move_alloc(extra%fields,field%fields)
+    if(present(heat_release)) call move_alloc(heat%fields,heat_release%fields)
+    if(present(internal_energy)) call move_alloc(held%fields,internal_energy%fields)
     owners=next_owners;changed=.true.;ok=.true.
   contains
     subroutine agree(condition,result)

@@ -1,0 +1,34 @@
+{
+  "case": "Pinned TGReact: LiDryer, periodic nonuniform reacting flow, recursive two-level MOL2, no transport",
+  "steps": 3,
+  "dt_s": 1e-07,
+  "root_shape": [
+    4,
+    4,
+    4
+  ],
+  "domain_m": [
+    0.01,
+    0.01,
+    0.01
+  ],
+  "acceptance": {
+    "initial_scaled": 1e-11,
+    "temperature_absolute_K": 0.001,
+    "species_mass_fraction_absolute": 1e-07,
+    "density_scaled": 1e-08,
+    "energy_scaled": 1e-08,
+    "momentum_absolute_kg_m2_s": 1e-06,
+    "inventory_relative": 1e-10,
+    "energy_budget_relative": 1e-08,
+    "minimum_H2_consumption_fraction": 1e-06,
+    "H2_consumption_relative": 0.001,
+    "minimum_initial_temperature_span_K": 10,
+    "minimum_initial_speed_m_s": 1
+  },
+  "input_sha256": {
+    "profile.csv": "cb9d6f058f23430399d8d75b2448ace3897b4d716b62eb5ca9b4dbbc556334ef",
+    "grids.dat": "21b525c415a61bbff744c2ceb7975588d486637a92737433c2c03a544c90e739",
+    "inputs": "a9fd701f772b07bf59baf7c910691d2cec16cc213d8faf2870cb8212c9dc443c"
+  }
+}

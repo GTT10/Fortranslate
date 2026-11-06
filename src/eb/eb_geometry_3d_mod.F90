@@ -61,9 +61,59 @@ module eb_geometry_3d_mod
 
   public :: build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,build_level_set_eb_geometry_3d
 
+  public :: eb_cell_connectivity_3d
   public :: coarsen_eb_geometry_3d,extract_eb_geometry_3d,periodic_eb_faces_match
 
 contains
+  ! AMReX build_cellflag_from_ap: axial open faces, either monotone
+  ! two-face edge path, then any three-face corner path. Longer detours
+  ! inside the 27-cell cube do not set a connection bit.
+  subroutine eb_cell_connectivity_3d(g,cell,connected,ok)
+    type(eb_geometry_3d), intent(in) :: g
+    integer, intent(in) :: cell(3)
+    logical, intent(inout) :: connected(3,3,3)
+    logical, intent(out) :: ok
+    logical :: candidate(3,3,3)
+    integer :: dims(3),i,j,k,distance,a,offset(3),previous(3),from(3),face(3)
+    real(dp) :: aperture
+    ok=.false.;dims=[g%nx,g%ny,g%nz]
+    if(any(cell<2).or.any(cell>dims-1)) return
+    if(.not.allocated(g%cell_type).or..not.allocated(g%x_face_fraction).or. &
+      .not.allocated(g%y_face_fraction).or..not.allocated(g%z_face_fraction)) return
+    if(any(shape(g%cell_type)/=dims).or.any(shape(g%x_face_fraction)/=dims+[1,0,0]).or. &
+      any(shape(g%y_face_fraction)/=dims+[0,1,0]).or.any(shape(g%z_face_fraction)/=dims+[0,0,1])) return
+    candidate=.false.
+    if(g%cell_type(cell(1),cell(2),cell(3))==eb_covered_cell_3d) then
+      connected=candidate;ok=.true.;return
+    endif
+    candidate(2,2,2)=.true.
+    do distance=1,3
+    do k=-1,1
+    do j=-1,1
+    do i=-1,1
+      offset=[i,j,k]
+      if(sum(abs(offset))/=distance) cycle
+      do a=1,3
+        if(offset(a)==0) cycle
+        previous=offset;previous(a)=0
+        if(.not.candidate(previous(1)+2,previous(2)+2,previous(3)+2)) cycle
+        from=cell+previous;face=from;face(a)=min(from(a),cell(a)+offset(a))
+        select case(a)
+        case(1);aperture=g%x_face_fraction(face(1),face(2),face(3))
+        case(2);aperture=g%y_face_fraction(face(1),face(2),face(3))
+        case(3);aperture=g%z_face_fraction(face(1),face(2),face(3))
+        end select
+        if(.not.ieee_is_finite(aperture)) return
+        if(aperture<0.or.aperture>1) return
+        if(aperture>0) candidate(i+2,j+2,k+2)=.true.
+      enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    connected=candidate;ok=.true.
+  end subroutine eb_cell_connectivity_3d
+
 
   ! Check domain seams and, when supplied, wrapped metric donors in the halo.
   pure logical function periodic_eb_faces_match(g,faces,halo) result(valid)
@@ -471,6 +521,10 @@ contains
           fraction=total_v/product(h)
           if (fraction< -classification_tolerance.or.fraction>1._dp+classification_tolerance) return
           candidate%volume_fraction(i,j,k)=max(0._dp,min(1._dp,fraction))
+          ! All eight positive nodes make every tetrahedron entirely fluid.
+          ! Preserve the exact regular metric rather than the rounded sum of
+          ! six tetrahedral volumes; genuine cut cells retain their clipping.
+          if(all(active)) candidate%volume_fraction(i,j,k)=1._dp
           if (fraction<=classification_tolerance) then
             candidate%cell_type(i,j,k)=eb_covered_cell_3d
           else if (fraction>=1._dp-classification_tolerance) then
@@ -501,19 +555,23 @@ contains
             do side=0,1
               bits=0;bits(d,:)=side;bits(a,2:3)=1;bits(b,3:4)=1
               call sample_vertices()
-              call clip_level_set_triangle(vertices(:,[1,2,3]),values([1,2,3]),face_area,face_m,valid)
-              if (.not.valid) return
-              call clip_level_set_triangle(vertices(:,[1,3,4]),values([1,3,4]),area,wm,valid)
-              if (.not.valid) return
-              face_area=face_area+area;face_m=face_m+wm
-              fraction=max(0._dp,min(1._dp,face_area/(h(a)*h(b))))
-              offset=0._dp
-              if (face_area>0._dp) offset=face_m/face_area/h
-              ! Exactly invariant nodal values imply an extruded face region.
-              ! Preserve its transverse reflection symmetry instead of retaining
-              ! cancellation error from the two triangle moments.
-              if(values(1)==values(2).and.values(4)==values(3)) offset(a)=0._dp
-              if(values(1)==values(4).and.values(2)==values(3)) offset(b)=0._dp
+              if(all(values>0._dp)) then
+                fraction=1._dp;offset=0._dp
+              else
+                call clip_level_set_triangle(vertices(:,[1,2,3]),values([1,2,3]),face_area,face_m,valid)
+                if (.not.valid) return
+                call clip_level_set_triangle(vertices(:,[1,3,4]),values([1,3,4]),area,wm,valid)
+                if (.not.valid) return
+                face_area=face_area+area;face_m=face_m+wm
+                fraction=max(0._dp,min(1._dp,face_area/(h(a)*h(b))))
+                offset=0._dp
+                if (face_area>0._dp) offset=face_m/face_area/h
+                ! Exactly invariant nodal values imply an extruded face region.
+                ! Preserve its transverse reflection symmetry instead of retaining
+                ! cancellation error from the two triangle moments.
+                if(values(1)==values(2).and.values(4)==values(3)) offset(a)=0._dp
+                if(values(1)==values(4).and.values(2)==values(3)) offset(b)=0._dp
+              endif
               select case(d)
               case(1)
                 candidate%x_face_fraction(i-1+side,j,k)=fraction

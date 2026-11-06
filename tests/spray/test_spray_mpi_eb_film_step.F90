@@ -1,6 +1,8 @@
 program test_spray_mpi_eb_film_step
   use mpi_f08
   use spray_mpi_amr_film_step_mod, only: advance_mpi_amr_film_coupling
+  use spray_mpi_amr_step_mod, only: convert_mpi_amr_tree_rotating_energy
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use spray_wall_impact_mod, only: spray_wall_film,spray_wall_options
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_parcel_mod
@@ -194,6 +196,7 @@ program test_spray_mpi_eb_film_step
     end do
     end do
   end do
+  call check_rotating_film()
   ! Empty populations still validate gas and return a zero exchange.
   deallocate(drops,masses);allocate(drops(0),masses(2,0))
   call advance()
@@ -205,6 +208,58 @@ program test_spray_mpi_eb_film_step
   if (rank==0) print *, 'PASS: MPI EB film evaporation and gas/wall energy coupling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_rotating_film()
+    type(rotating_frame_3d) :: frame
+    type(amr_tree_state_3d) :: reference_gas,reference_t,reference_change,rotating_gas,rotating_t,rotating_change
+    type(spray_wall_film), allocatable :: reference_films(:),rotating_films(:)
+    real(dp), allocatable :: reference_mass(:,:),rotating_mass(:,:)
+    real(dp) :: reference_boundary(nv),rotating_boundary(nv)
+    integer :: reference_steps,rotating_steps,a
+    logical :: good
+    frame%axis=3;frame%angular_speed=120._dp;frame%axis_point=[.001_dp,.001_dp,.001_dp]
+    reference_gas=saved;reference_t=saved_t;reference_films=saved_drops;reference_mass=saved_mass
+    call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls, &
+      reference_gas,reference_t,tree,owners,reference_films,reference_mass,zero,spacing,interval,faces, &
+      reference_steps,reference_boundary,good,g,phi,gas_change=reference_change)
+    call require(good.and.reference_steps>0,'ordinary film reference')
+    rotating_gas=saved;rotating_t=saved_t;rotating_films=saved_drops;rotating_mass=saved_mass
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,rotating_gas,zero,spacing,frame,.true.,good,g)
+    call require(good,'initial rotating film gas')
+    rotating_boundary=123._dp
+    if(rank==0) then
+      call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls, &
+        rotating_gas,rotating_t,tree,owners,rotating_films,rotating_mass,zero,spacing,interval,faces, &
+        rotating_steps,rotating_boundary,good,g,phi,gas_change=rotating_change,frame=frame)
+    else
+      call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls, &
+        rotating_gas,rotating_t,tree,owners,rotating_films,rotating_mass,zero,spacing,interval,faces, &
+        rotating_steps,rotating_boundary,good,g,phi,gas_change=rotating_change)
+    end if
+    call require(.not.good.and.all(rotating_boundary==123._dp).and.all(rotating_mass==saved_mass), &
+      'rotating film frame presence rejects collectively')
+    call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls, &
+      rotating_gas,rotating_t,tree,owners,rotating_films,rotating_mass,zero,spacing,interval,faces, &
+      rotating_steps,rotating_boundary,good,g,phi,gas_change=rotating_change,frame=frame)
+    call require(good.and.rotating_steps==reference_steps,'rotating film exchange')
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,reference_gas,zero,spacing,frame,.true.,good,g)
+    call require(good,'accepted film reference gas')
+    call convert_mpi_amr_tree_rotating_energy(MPI_COMM_WORLD,tree,owners,reference_change,zero,spacing,frame,.true.,good,g)
+    call require(good,'accepted film reference source')
+    call require(all(rotating_boundary==reference_boundary).and.all(rotating_mass==reference_mass), &
+      'rotating film mass and wall totals')
+    do a=1,size(rotating_films)
+      call require(rotating_films(a)%mass==reference_films(a)%mass.and. &
+        rotating_films(a)%temperature==reference_films(a)%temperature,'rotating film state')
+    end do
+    do a=1,size(owners)
+      if(owners(a)/=rank) cycle
+      call require(all(abs(rotating_gas%fields(a)%values-reference_gas%fields(a)%values)<= &
+        2.e-13_dp*max(1._dp,abs(reference_gas%fields(a)%values))),'rotating film gas exchange')
+      call require(all(abs(rotating_change%fields(a)%values-reference_change%fields(a)%values)<= &
+        2.e-13_dp*max(1._dp,abs(reference_change%fields(a)%values))),'rotating film gas source')
+    end do
+  end subroutine check_rotating_film
+
   subroutine advance()
     call advance_mpi_amr_film_coupling(MPI_COMM_WORLD,species,transport,liquids,options,walls,local,local_t, &
       tree,owners,drops,masses,zero,spacing,interval,faces,steps,boundary,ok,g,phi,gas_change=exported)

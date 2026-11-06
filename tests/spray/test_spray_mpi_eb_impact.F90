@@ -8,6 +8,7 @@ program test_spray_mpi_eb_impact
   use spray_wall_impact_mod, only: spray_wall_film,wall_film_totals
   use spray_eb_impact_mod, only: spray_eb_wall_options
   use spray_mpi_eb_impact_mod, only: impact_mpi_level_set,advance_mpi_level_set_impacts,advance_mpi_eb_tree_impacts
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   implicit none
@@ -21,9 +22,11 @@ program test_spray_mpi_eb_impact
   type(spray_eb_wall_options) :: walls
   type(spray_parcel), allocatable :: drops(:),saved(:)
   type(spray_wall_film), allocatable :: films(:),saved_films(:)
+  type(rotating_frame_3d) :: frame
+  type(spray_parcel) :: exit_drop
   real(dp), allocatable :: masses(:,:),film_mass(:,:),fractions(:),previous(:,:),pressure(:)
   logical, allocatable :: hit(:)
-  real(dp) :: phi(0:2,0:2,0:2),normal(3),mw(1),wall(5),before(5),after(5),d,exterior(6)
+  real(dp) :: phi(0:2,0:2,0:2),normal(3),mw(1),wall(5),before(5),after(5),d,exterior(6),physical_energy,coordinate_energy
   integer(int64) :: last_id
   integer :: rank,nranks,ierr,i,j,k,p,hits,mode
   logical :: ok,rejected
@@ -119,6 +122,71 @@ program test_spray_mpi_eb_impact
       call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'interval inventory')
     end if
   end do settings_loop
+  deallocate(drops,masses,films,film_mass,pressure)
+  allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)))
+  allocate(pressure(size(drops)),films(0),film_mass(1,0))
+  if(rank==nranks-1) then
+    drops=saved;drops(1)%position=[.6_dp,.6_dp,.5_dp];masses=1e-12_dp;pressure=101325
+  endif
+  pressure=10000._dp ! Kcrit is negative at the configured 300 K wall.
+  last_id=nranks;wall=42;hits=43;options%mixture_time_scheme='euler'
+  if(rank==nranks-1) options%mixture_time_scheme='conservative'
+  call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+    [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.2_dp*sqrt(2._dp)/200, &
+    drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+  call require(.not.ok.and.last_id==nranks.and.hits==43.and.all(wall==42), &
+    'MPI splash birth policy disagreement preserves IDs and diagnostics')
+  if(rank==nranks-1) call require(all(drops(1)%position==[.6_dp,.6_dp,.5_dp]), &
+    'MPI splash birth policy rejection preserves parent position')
+  options%mixture_time_scheme='euler'
+  call inventory(before)
+  call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+    [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.2_dp*sqrt(2._dp)/200, &
+    drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+  call require(ok.and.hits==1.and.last_id==nranks+4,'MPI Euler splash births after flight')
+  do p=1,size(drops)
+    call require(maxval(abs(drops(p)%position-([.5_dp,.5_dp,.5_dp]+ &
+      parcel_diameter(drops(p),liquids(1))*[1._dp,1._dp,0._dp]/sqrt(2._dp))))<1e-14_dp, &
+      'MPI Euler splash retains impact point plus diameter offset')
+  enddo
+  call inventory(after)
+  call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'MPI Euler splash inventory')
+  deallocate(drops,masses,films,film_mass,pressure)
+  allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)))
+  allocate(pressure(size(drops)),films(0),film_mass(1,0))
+  pressure=1e6_dp;walls%temperature=600;last_id=nranks
+  if(rank==nranks-1) then
+    drops=saved;drops(1)%position=[.6_dp,.6_dp,.5_dp];drops(1)%velocity=-normal;masses=1e-12_dp
+  endif
+  call inventory(before)
+  call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+    [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.2_dp*sqrt(2._dp), &
+    drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+  call require(ok.and.hits==1.and.last_id==nranks.and.size(films)==0,'MPI Euler EB rebound retains parent')
+  if(rank==nranks-1) call require(maxval(abs(drops(1)%position- &
+    ([.4_dp,.4_dp,.5_dp]+.2_dp/sqrt(2._dp)*(1+dot_product(drops(1)%velocity,normal))*normal))) &
+    <1e-14_dp,'MPI Euler EB rebound uses one completed-flight correction')
+  call inventory(after)
+  call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'MPI Euler EB rebound inventory')
+  if(rank==nranks-1) then
+    drops=saved;drops(1)%position=[.6_dp,.6_dp,.5_dp];drops(1)%velocity=-200*normal;masses=1e-12_dp
+  endif
+  call inventory(before)
+  call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+    [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.2_dp*sqrt(2._dp)/200, &
+    drops,masses,films,film_mass,last_id,wall,hits,ok,rejected)
+  call require(ok.and.hits==1.and.last_id==nranks+4.and.size(films)==0,'MPI Euler EB thermal breakup interval')
+  if(rank==nranks-1) call require(size(drops)==5,'thermal parent and four children retained')
+  do p=1,size(drops)
+    if(drops(p)%parent_id/=0) cycle
+    call require(maxval(abs(drops(p)%position-[.5_dp,.5_dp,.5_dp]))<1e-14_dp, &
+      'MPI Euler EB thermal parent remains at impact point')
+  enddo
+  call inventory(after)
+  call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'MPI Euler EB thermal inventory')
+  walls%temperature=300
+  options%mixture_time_scheme='conservative'
+
   ! Only the final rank owns particles; all ranks receive the same exterior budget.
   deallocate(drops,masses,films,film_mass)
   allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)),films(0),film_mass(1,0))
@@ -263,6 +331,44 @@ program test_spray_mpi_eb_impact
       call inventory(after)
       call require(all(abs(after+wall-before)<=3e-12_dp*max(abs(before),1e-20_dp)),'periodic wall inventory')
     end if
+  end do
+  ! The collective exterior ledger uses the potential at the exit face.
+  phi=1._dp;faces='outflow';walls%maximum_hits=2
+  exit_drop=spray_parcel(1_int64,[.8_dp,.5_dp,.5_dp],[1._dp,0._dp,0._dp],1e-12_dp,350._dp,10._dp)
+  do mode=1,2
+    deallocate(drops,masses,films,film_mass,pressure)
+    allocate(drops(merge(1,0,rank==nranks-1)),masses(1,merge(1,0,rank==nranks-1)), &
+      films(0),film_mass(1,0),pressure(merge(1,0,rank==nranks-1)))
+    if(rank==nranks-1) then
+      drops(1)=exit_drop;masses(1,1)=exit_drop%mass;pressure(1)=101325._dp
+    end if
+    last_id=nranks;wall=42;hits=43;exterior=44;coordinate_energy=45
+    frame%axis=3;frame%angular_speed=2._dp
+    if(mode==1) then
+      if(rank==0) then
+        call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+          [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.4_dp, &
+          drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior,faces,frame,coordinate_energy)
+      else
+        call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+          [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.4_dp, &
+          drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior,faces,energy_conversion=coordinate_energy)
+      end if
+      call require(.not.ok.and.coordinate_energy==45.and.hits==43.and.all(exterior==44).and. &
+        size(drops)==merge(1,0,rank==nranks-1), &
+        'mismatched rotating frame rolls back collectively')
+      call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+        [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.4_dp, &
+        drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior,faces)
+      physical_energy=exterior(5)
+    else
+      call advance_mpi_level_set_impacts(MPI_COMM_WORLD,liquids,options,walls,phi,mw,pressure, &
+        [0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],.4_dp, &
+        drops,masses,films,film_mass,last_id,wall,hits,ok,rejected,exterior,faces,frame,coordinate_energy)
+      call require(abs(exterior(5)-physical_energy-2.5e-11_dp)<1e-18_dp,'rotating exterior energy')
+      call require(abs(coordinate_energy-2.5e-11_dp)<1e-25_dp,'collective exit coordinate conversion counted once')
+    end if
+    call require(ok.and.size(drops)==0.and.hits==1,'collective exterior exit')
   end do
   if(rank==0) print *, 'PASS: distributed EB impact interval and atomic final migration'
   call MPI_Finalize(ierr)

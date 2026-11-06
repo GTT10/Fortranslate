@@ -17,6 +17,73 @@ PCM/characteristic-PLM/characteristic-PPM face reconstruction, physical boundari
 molecular transport. Existing validation requires at least four root cells in
 each direction. The application is also registered for installation.
 
+## Timestep policy
+
+Serial/MPI fixed and selected frontends extend `amr_tree_timestepping`:
+
+```fortran
+&amr_tree_timestepping
+  subcycling=.false., maximum_dt=1e-8
+  initial_timestep_factor=1, maximum_timestep_growth=1.1
+  initial_dt=0, fixed_dt=0
+/
+```
+
+Physical limits are applied before the first-step factor or accepted-step growth
+cap. After an adaptation check or remapping, the first automatic interval cannot exceed the preceding
+accepted interval. Positive `initial_dt` overrides the first estimate and factor;
+positive `fixed_dt` bypasses physical estimates and growth limits but must not
+exceed `maximum_dt`. Nonpositive prescribed values are inactive. Final-time and
+scheduled regrid caps follow the policy; existing transactional retries remain.
+The checkpoint stores the last accepted interval and pending post-regrid hold,
+binds all controls, and requires this history for application restart. Low-level
+checkpoint callers without history retain the previous formats.
+
+## Explicit thermal slip
+
+The regular serial/MPI gas tree drivers accept an optional six-face mask in
+`amr_tree_timestepping` with SDC/MOL and enabled thermal conduction:
+
+```fortran
+&amr_tree_timestepping
+  isothermal_slip_faces=.true.,.true.,.false.,.false.,.false.,.false.
+/
+```
+
+Faces are ordered x-low, x-high, y-low, y-high, z-low, z-high. Marked faces
+must have `slip_wall` velocity boundaries. Set their positive temperatures
+with `wall_temperature` in `reactive_3d`. The default mask is all false;
+supplying wall temperatures alone leaves slip walls adiabatic. Both common
+and recursive steps include wall heat in the transport timestep. Enabled
+masks bind the checkpoint context, so changing or removing the thermal
+condition rejects restart. This option is specific to regular gas tree
+stepping; it does not establish EB or particle-wall support.
+
+The focused probe comparison passes the bounded n4/500 K fixed-PeleC gates;
+fixed/selected application and rank-changing restart checks also pass.
+See the [dated record](../../docs/validation/tgreact-amr-reference-20261019.md).
+
+## Constant transport
+
+Serial/MPI fixed and selected gas frontends accept the separate
+`reactive_constant_transport` group with SDC and enabled transport:
+
+```fortran
+&reactive_constant_transport
+  enabled=.true.,viscosity=1e-5,conductivity=.02
+  bulk_viscosity=3e-5,diffusivity=2e-5
+/
+```
+
+These SI coefficients reach common and recursive transport stages, physical
+wall heat/work and inlet/wall timestep limits. `diffusivity` is **rho D** in
+kg/(m s); its default `-1` retains molecular species diffusion. Omitted bulk
+viscosity is zero. Checkpoint identity includes all supplied coefficients;
+changing or removing enabled constant transport rejects restart. The regular
+[boundary guide](../reactive_boundaries_3d/README.md) describes coefficient
+semantics and the pinned Soret rejection. HIT-derived coefficient mode needs
+the regular HIT initializer and is rejected by these tree frontends.
+
 ## SDC
 
 With `PELEF_ENABLE_SPRAY=ON`, the serial/MPI fixed and selected frontends also route
@@ -46,6 +113,23 @@ Serial and MPI fixed/selected frontends accept `time_integrator='sdc'` with
 for a small two-level reacting example with transport and external forcing.
 Reaction-source estimates persist across successful steps. The SDC budget CSV
 adds `source_change`, separate from `boundary_change`.
+
+Fresh reacting `time_integrator='mol'` runs initialize the old reaction
+estimate after selecting the first timestep. Recursive runs use each level's
+own interval. The initialization keeps gas, temperature and UEINT unchanged;
+only the reaction estimate is committed after all levels/ranks succeed. A
+rejected first-step attempt recomputes the estimate for the reduced timestep.
+Restart retains the saved estimate and does not repeat initialization. Existing
+checkpoint layout and context remain usable because the change affects fresh
+starts only. As a numerical startup change, new reacting MOL trajectories can
+differ from runs that started with a zero reaction estimate.
+
+`mol_initial_reactions.nml` and `mol_initial_reactions.dat` exercise this path
+with a **LiDryer-selected, SUNDIALS-enabled** build. The checker
+`tools/check_amr_tree_initial_reaction.py` compares serial/two-rank fields and
+budgets, then resumes a two-rank checkpoint on three ranks and in serial.
+`source_change` records external forcing, not chemical conversion of each
+individual species; the reacting check audits H/O/N inventories separately.
 
 This route uses a common timestep by default. Add
 `&amr_tree_timestepping subcycling=.true. /` in serial or MPI runs to advance finer levels with
@@ -466,3 +550,19 @@ split-step chemistry integrator.
 The reactor selector is part of the existing full-configuration checkpoint
 identity. Continue with the same selector; changing it rejects the checkpoint.
 Builds without SUNDIALS reject `cvode` during configuration input.
+
+The coupled iteration default is 1, matching pinned SDC/MOL input.
+Use `sdc_iterations` to request additional coupled iterations explicitly.
+
+The regular tree also accepts `time_integrator='mol'` with
+`reconstruction='characteristic_plm'` and `riemann_solver='pelec'`.
+Common and recursive steps use old/new spatial stages, forced chemistry
+and transport; `mol_lax_friedrichs` selects the LF interface. MOL and LF
+selection are bound to checkpoint identity. Spatial and stage checks are
+internal serial/MPI comparisons; fixed-reference spatial trajectories and
+physical validation remain pending.
+The nonreacting multiple-iteration register convention currently exposes
+an inventory residual in a nonuniform nested fixture, and its checkpoint
+is rejected by the existing restart conservation gate. This path remains
+unqualified. Paired pinned AMR runs also reproduce inventory loss for this
+setting; a matched cross-solver spatial comparison remains pending.

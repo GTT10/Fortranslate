@@ -4,6 +4,7 @@ module mpi_eb_tree_transfer_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,coarsen_eb_geometry_3d,extract_eb_geometry_3d
@@ -156,28 +157,79 @@ contains
 
   ! Restrict on the child owner; send only its coarse U/T to the parent owner.
   ! Reverse traversal handles successive remote owners without a global gather.
-  subroutine average_down_mpi_eb_tree_3d(species,tree,owners,geometry,state,temperature,comm,ok)
+  subroutine average_down_mpi_eb_tree_3d(species,tree,owners,geometry,state,temperature,comm,ok,frame,internal_energy, &
+      direct_children)
     type(nasa7_species), intent(in) :: species(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(eb_geometry_3d), intent(in) :: geometry(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
-    type(amr_tree_state_3d) :: candidate,temps
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    logical, optional, intent(in) :: direct_children
+    logical :: direct
+    type(amr_tree_state_3d) :: candidate,temps,held
     real(dp), allocatable :: buffer(:,:,:,:)
     integer :: nv,node,parent,rank,status,ios,n(3),lo(3),hi(3),i,j,k,axis
+    integer :: supplied,minimum_supplied,maximum_supplied,axis_min,axis_max,width
     integer(int64) :: elements
+    real(dp) :: frame_values(4),frame_min(4),frame_max(4)
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
+    direct=.false.
+    if(present(direct_children)) direct=direct_children
+    supplied=merge(1,0,direct)
+    call MPI_Allreduce(supplied,minimum_supplied,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(supplied,maximum_supplied,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.minimum_supplied/=maximum_supplied) return
+    supplied=merge(1,0,present(internal_energy));width=nv+1+supplied
+    call MPI_Allreduce(supplied,minimum_supplied,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(supplied,maximum_supplied,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.minimum_supplied/=maximum_supplied) return
+    supplied=merge(1,0,present(frame))
+    call MPI_Allreduce(supplied,minimum_supplied,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(supplied,maximum_supplied,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.minimum_supplied/=maximum_supplied) return
+    if(present(frame)) then
+      call agree(frame%is_valid(),comm,ready)
+      if(.not.ready) return
+      call MPI_Allreduce(frame%axis,axis_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame%axis,axis_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS) return
+      frame_values=[frame%angular_speed,frame%axis_point]
+      call MPI_Allreduce(frame_values,frame_min,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame_values,frame_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.axis_min/=axis_max.or.any(frame_min/=frame_max)) return
+    end if
     call validate_mpi_eb_tree_geometry_3d(tree,owners,geometry,nv,comm,ready)
     if (.not.ready) return
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nv,comm,ready)
     if (.not.ready) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,ready)
     if (.not.ready) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,ready)
+      if(.not.ready) return
+    endif
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
+    if(present(internal_energy)) then
+      valid=.true.
+      do node=1,size(owners)
+        if(owners(node)/=rank) cycle
+        if(any(.not.ieee_is_finite(internal_energy%fields(node)%values(1,:,:,:)).and. &
+          geometry(node)%volume_fraction>0)) valid=.false.
+      enddo
+      call agree(valid,comm,ready)
+      if(.not.ready) return
+    endif
     allocate(candidate%fields(size(owners)),temps%fields(size(owners)),stat=ios)
     valid=ios==0
     if (valid) then
@@ -195,10 +247,25 @@ contains
     end if
     call agree(valid,comm,ready)
     if (.not.ready) return
+    if(present(internal_energy)) then
+      allocate(held%fields(size(owners)),stat=ios)
+      valid=ios==0
+      if(valid) then
+        do node=1,size(owners)
+          if(owners(node)/=rank) cycle
+          allocate(held%fields(node)%values,source=internal_energy%fields(node)%values,stat=ios)
+          if(ios/=0) then
+            valid=.false.;exit
+          endif
+        enddo
+      endif
+      call agree(valid,comm,ready)
+      if(.not.ready) return
+    endif
     do node=size(owners),2,-1
       parent=tree%nodes(node)%parent
       call bounds(tree,node,lo,hi)
-      n=hi-lo+1;elements=int(nv,int64)+1_int64
+      n=hi-lo+1;elements=int(width,int64)
       valid=.true.
       do axis=1,3
         if (elements>int(huge(1),int64)/int(n(axis),int64)) then
@@ -209,16 +276,34 @@ contains
       call agree(valid,comm,ready)
       if (.not.ready) return
       if (rank==owners(node).or.rank==owners(parent)) then
-        allocate(buffer(nv+1,n(1),n(2),n(3)),stat=ios)
+        allocate(buffer(width,n(1),n(2),n(3)),stat=ios)
         valid=ios==0
       end if
       call agree(valid,comm,ready)
       if (.not.ready) return
       if (rank==owners(node)) then
         buffer=0._dp
+        if(direct) then
+        if(present(internal_energy)) then
+        call restrict_reactive_eb_state_3d(species,geometry(node),tree%nodes(node)%patch%refinement_ratio, &
+          state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
+          buffer(:nv,:,:,:),buffer(nv+1,:,:,:),valid,frame,internal_energy%fields(node)%values(1,:,:,:),buffer(nv+2,:,:,:))
+        else
+        call restrict_reactive_eb_state_3d(species,geometry(node),tree%nodes(node)%patch%refinement_ratio, &
+          state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
+          buffer(:nv,:,:,:),buffer(nv+1,:,:,:),valid,frame)
+        endif
+        else
+        if(present(internal_energy)) then
         call restrict_reactive_eb_state_3d(species,geometry(node),tree%nodes(node)%patch%refinement_ratio, &
           candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:), &
-          buffer(:nv,:,:,:),buffer(nv+1,:,:,:),valid)
+          buffer(:nv,:,:,:),buffer(nv+1,:,:,:),valid,frame,held%fields(node)%values(1,:,:,:),buffer(nv+2,:,:,:))
+        else
+        call restrict_reactive_eb_state_3d(species,geometry(node),tree%nodes(node)%patch%refinement_ratio, &
+          candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:), &
+          buffer(:nv,:,:,:),buffer(nv+1,:,:,:),valid,frame)
+        endif
+        endif
       end if
       call agree(valid,comm,ready)
       if (.not.ready) return
@@ -240,6 +325,8 @@ contains
           if (geometry(parent)%volume_fraction(lo(1)+i-1,lo(2)+j-1,lo(3)+k-1)<=0._dp) cycle
           candidate%fields(parent)%values(:,lo(1)+i-1,lo(2)+j-1,lo(3)+k-1)=buffer(:nv,i,j,k)
           temps%fields(parent)%values(1,lo(1)+i-1,lo(2)+j-1,lo(3)+k-1)=buffer(nv+1,i,j,k)
+          if(present(internal_energy)) &
+            held%fields(parent)%values(1,lo(1)+i-1,lo(2)+j-1,lo(3)+k-1)=buffer(nv+2,i,j,k)
         end do
         end do
         end do
@@ -248,6 +335,7 @@ contains
     end do
     call move_alloc(candidate%fields,state%fields)
     call move_alloc(temps%fields,temperature%fields)
+    if(present(internal_energy)) call move_alloc(held%fields,internal_energy%fields)
     ok=.true.
   end subroutine
 
@@ -317,16 +405,17 @@ contains
     values=candidate;ok=.true.
   end subroutine
   ! Signed arbitrary fields: fluid-volume restriction, zero for solid parents.
-  subroutine average_down_mpi_eb_tree_field_3d(tree,owners,geometry,state,nv,comm,ok)
+  subroutine average_down_mpi_eb_tree_field_3d(tree,owners,geometry,state,nv,comm,ok,minimum_depth)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),nv
     type(eb_geometry_3d), intent(in) :: geometry(:)
     type(amr_tree_state_3d), intent(inout) :: state
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: minimum_depth
     type(amr_tree_state_3d) :: candidate
     real(dp), allocatable :: buffer(:,:,:,:)
-    integer :: node,parent,rank,status,ios,n(3),lo(3),hi(3),i,j,k,axis,r,first(3),last(3),c
+    integer :: node,parent,rank,status,ios,n(3),lo(3),hi(3),i,j,k,axis,r,first(3),last(3),c,depth,minimum,maximum
     integer(int64) :: elements
     real(dp) :: volume
     logical :: valid,ready
@@ -335,6 +424,13 @@ contains
     if (.not.ready) return
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nv,comm,ready)
     if (.not.ready) return
+    depth=0
+    if(present(minimum_depth)) depth=minimum_depth
+    call MPI_Allreduce(depth,minimum,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(depth,maximum,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(minimum/=maximum.or.depth<0.or.depth>=tree%level_count()) return
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
     allocate(candidate%fields(size(owners)),stat=ios)
@@ -355,6 +451,7 @@ contains
     if (.not.ready) return
     do node=size(owners),2,-1
       parent=tree%nodes(node)%parent
+      if(tree%nodes(parent)%level<depth) cycle
       call bounds(tree,node,lo,hi)
       n=hi-lo+1;elements=int(nv,int64)
       valid=.true.

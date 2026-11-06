@@ -3,7 +3,7 @@ module amr_reactive_3d_application_mod
   use precision_mod, only: dp
   use constants_mod, only: pelef_version
   use state_indices_mod, only: ncons
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
@@ -54,6 +54,7 @@ contains
     real(dp), intent(in) :: base_mole_fractions(:)
     character(len=*), intent(in), optional :: chemistry_integrator
 
+    type(nasa7_species), allocatable :: eos_species(:)
     type(reactive_3d_config) :: fine_config
     type(amr_patch_3d) :: patch,next_patch
     logical :: patch_changed
@@ -87,12 +88,17 @@ contains
     real(dp) :: inflow_t(6),primitive(reactive_nprim(size(species))),sound_speed
     real(dp) :: inlet_dt,inlet_transport_dt,face_dt,face_diffusivity,wall_dt,inlet_temperature(2,2,2),boundary_elements(3)
 
+    allocate(eos_species,source=species)
+    call configure_nasa7_eos_policy(eos_species,config%pinned_eos_extrapolation,ok, &
+      config%pinned_eos_temperature_min,config%pinned_eos_temperature_max)
+    if(.not.ok) error stop 'Invalid static 3D AMR EOS policy'
+
     selected_context = len_trim(bundle_sha256) > 0
-    if (size(species) < 1 .or. size(reactions) < 1 .or. &
-        size(base_mole_fractions) /= size(species)) then
+    if (size(eos_species) < 1 .or. size(reactions) < 1 .or. &
+        size(base_mole_fractions) /= size(eos_species)) then
       error stop "Static 3D AMR application data have incompatible dimensions"
     end if
-    if (.not. compatible_transport_database(species, transport)) then
+    if (.not. compatible_transport_database(eos_species, transport)) then
       error stop "Static 3D AMR application data have incompatible dimensions"
     end if
     if (.not. all(ieee_is_finite(base_mole_fractions))) then
@@ -119,7 +125,7 @@ contains
       error stop "Failed to construct 3D AMR patch"
     end if
 
-    nvar = reactive_nvar(size(species))
+    nvar = reactive_nvar(size(eos_species))
     allocate(x(config%nx), y(config%ny), z(config%nz))
     allocate(xf(patch%fine_nx()), yf(patch%fine_ny()), zf(patch%fine_nz()))
     allocate(coarse_state(nvar, config%nx, config%ny, config%nz))
@@ -128,9 +134,9 @@ contains
       patch%fine_nz()))
     allocate(fine_temperature(patch%fine_nx(), patch%fine_ny(), &
       patch%fine_nz()))
-    allocate(mass_fractions(size(species)))
+    allocate(mass_fractions(size(eos_species)))
     allocate(initial_integrals(nvar), final_integrals(nvar))
-    allocate(boundary_total(nvar),step_boundary(nvar),inflow_state(nvar,6),inflow_x(size(species)),inflow_y(size(species)))
+    allocate(boundary_total(nvar),step_boundary(nvar),inflow_state(nvar,6),inflow_x(size(eos_species)),inflow_y(size(eos_species)))
     allocate(inlet_cube(nvar,2,2,2))
     boundary_total=0;step_boundary=0;inflow_state=0;inflow_t=0
     faces=resolved_reactive_boundaries_3d(config)
@@ -154,7 +160,7 @@ contains
         if (selected_context) then
           if (config%transport_enabled) then
             call read_dynamic_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, &
               patch, coarse_state, coarse_temperature, fine_state, &
               fine_temperature, time, step, initial_integrals, maximum_reflux, regrid_count, &
               ok, message, bundle_sha256=bundle_sha256, &
@@ -166,7 +172,7 @@ contains
               boundary_change=boundary_total)
           else
             call read_dynamic_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
               time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
               bundle_sha256=bundle_sha256, &
@@ -177,7 +183,7 @@ contains
         else
           if (config%transport_enabled) then
             call read_dynamic_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
               time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
               transport=transport, &
@@ -186,7 +192,7 @@ contains
               boundary_change=boundary_total)
           else
             call read_dynamic_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
               time, step, initial_integrals, maximum_reflux, regrid_count, ok, message, &
               boundary_change=boundary_total)
@@ -196,7 +202,7 @@ contains
         if (selected_context) then
           if (config%transport_enabled) then
             call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, &
               patch, coarse_state, coarse_temperature, fine_state, &
               fine_temperature, time, step, initial_integrals, maximum_reflux, &
               ok, message, bundle_sha256=bundle_sha256, &
@@ -208,7 +214,7 @@ contains
               boundary_change=boundary_total)
           else
             call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
               time, step, initial_integrals, maximum_reflux, ok, message, &
               bundle_sha256=bundle_sha256, &
@@ -219,7 +225,7 @@ contains
         else
           if (config%transport_enabled) then
             call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
               time, step, initial_integrals, maximum_reflux, ok, message, &
               transport=transport, &
@@ -228,7 +234,7 @@ contains
               boundary_change=boundary_total)
           else
             call read_amr_reactive_3d_checkpoint( &
-              trim(amr_config%restart_file), species, config, amr_config, patch, &
+              trim(amr_config%restart_file), eos_species, config, amr_config, patch, &
               coarse_state, coarse_temperature, fine_state, fine_temperature, &
               time, step, initial_integrals, maximum_reflux, ok, message, &
               boundary_change=boundary_total)
@@ -244,7 +250,7 @@ contains
       call fine_patch_centers(patch,config,dx,dy,dz,xf,yf,zf)
     else
       call initialize_reactive_problem_3d( &
-        species, config, x, y, z, coarse_state, coarse_temperature, &
+        eos_species, config, x, y, z, coarse_state, coarse_temperature, &
         base_density, mass_fractions, ok, base_mole_fractions)
       if (.not. ok) error stop "Failed to initialize coarse 3D state"
       fine_config = config
@@ -252,13 +258,13 @@ contains
       fine_config%ny = patch%fine_ny()
       fine_config%nz = patch%fine_nz()
       call initialize_reactive_problem_3d( &
-        species, fine_config, xf, yf, zf, fine_state, fine_temperature, &
+        eos_species, fine_config, xf, yf, zf, fine_state, fine_temperature, &
         fine_base_density, mass_fractions, ok, base_mole_fractions)
       if (.not. ok) error stop "Failed to initialize fine 3D state"
       call average_down_3d(coarse_state, fine_state, patch, ok)
       if (.not. ok) error stop "Failed to synchronize initial 3D AMR state"
       call recover_reactive_temperatures_3d( &
-        species, coarse_state, coarse_temperature, &
+        eos_species, coarse_state, coarse_temperature, &
         config%nx, config%ny, config%nz, recovered_temperature, ok)
       if (.not. ok) error stop "Failed to recover initial coarse temperature"
       coarse_temperature = recovered_temperature
@@ -268,26 +274,26 @@ contains
     end if
     inflow_state=0.0_dp; inflow_t=0.0_dp
     inlet_dt=huge(1.0_dp); inlet_transport_dt=huge(1.0_dp)
-    call mass_fractions_from_mole_fractions(species,base_mole_fractions,inflow_y,ok)
+    call mass_fractions_from_mole_fractions(eos_species,base_mole_fractions,inflow_y,ok)
     if (.not.ok) error stop 'Invalid base inflow composition'
     if (any(faces=='inflow').and.config%inflow_composition_count/=0) then
       call resolve_selected_composition('Inflow',config%inflow_composition_count, &
-        config%inflow_composition_species,config%inflow_composition_mole_fractions,species,inflow_x,ok,message)
+        config%inflow_composition_species,config%inflow_composition_mole_fractions,eos_species,inflow_x,ok,message)
       if (.not.ok) then
         write(*,'(a)') trim(message)
         error stop 'Invalid inflow composition'
       end if
-      call mass_fractions_from_mole_fractions(species,inflow_x,inflow_y,ok)
+      call mass_fractions_from_mole_fractions(eos_species,inflow_x,inflow_y,ok)
       if (.not.ok) error stop 'Invalid inflow mass fractions'
     end if
     do face=1,6
       if (faces(face)/='inflow') cycle
       primitive=0.0_dp
-      primitive(1)=mixture_density(species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
+      primitive(1)=mixture_density(eos_species,inflow_y,config%inflow_pressure(face),config%inflow_temperature(face),ok)
       if (.not.ok) error stop 'Invalid inflow density'
       primitive(2:4)=config%inflow_velocity(:,face); primitive(5)=config%inflow_pressure(face)
       primitive(6:)=inflow_y
-      call reactive_primitive_to_conserved(species,primitive,inflow_state(:,face),inflow_t(face),sound_speed,ok)
+      call reactive_primitive_to_conserved(eos_species,primitive,inflow_state(:,face),inflow_t(face),sound_speed,ok)
       if (.not.ok) error stop 'Invalid inflow thermodynamics'
       inlet_dt=min(inlet_dt,config%cfl/sum((abs(primitive(2:4))+sound_speed)/[dx,dy,dz]))
       if (config%transport_enabled) then
@@ -299,7 +305,7 @@ contains
           end do
         end do
         inlet_temperature=inflow_t(face)
-        call reactive_transport_timestep_3d(species,transport,inlet_cube,inlet_temperature,2,2,2,dx,dy,dz, &
+        call reactive_transport_timestep_3d(eos_species,transport,inlet_cube,inlet_temperature,2,2,2,dx,dy,dz, &
           config%transport_cfl,config%viscosity_enabled,config%thermal_conduction_enabled, &
           config%species_diffusion_enabled,face_dt,face_diffusivity,ok)
         if (.not.ok) error stop 'Invalid inflow transport timestep'
@@ -307,15 +313,15 @@ contains
 
       end if
     end do
-    element_diagnostics = supports_hon_element_diagnostics(species)
+    element_diagnostics = supports_hon_element_diagnostics(eos_species)
     initial_elements = 0.0_dp
     if (element_diagnostics) then
       if (restarted) then
         call element_integrals_from_reactive_integrals_3d( &
-          species, initial_integrals, initial_elements, ok)
+          eos_species, initial_integrals, initial_elements, ok)
       else
         call composite_element_integrals_amr_3d( &
-          species, patch, coarse_state, fine_state, dx, dy, dz, &
+          eos_species, patch, coarse_state, fine_state, dx, dy, dz, &
           initial_elements, ok)
       end if
       if (.not. ok) error stop "Failed to integrate initial 3D AMR elements"
@@ -325,7 +331,7 @@ contains
       trim(application_label)
     if (selected_context) then
       write(*, '(a,1x,a)') "Bundle SHA-256:", trim(bundle_sha256)
-      write(*, '(a,i0)') "Species: ", size(species)
+      write(*, '(a,i0)') "Species: ", size(eos_species)
       write(*, '(a,i0)') "Reactions: ", size(reactions)
       write(*, '(a,1x,a)') "Chemistry integrator:", &
         trim(chemistry_integrator)
@@ -371,10 +377,10 @@ contains
           if (.not.ok) error stop '3D AMR temperature tagging failed'
           if (patch_changed) then
             if (any(config%outlet_pressure>0)) then
-              call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+              call regrid_amr_reactive_3d(eos_species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
                 next_patch,ok,config%reconstruction,config%limiter,faces,inflow_state,inflow_t,config%outlet_pressure)
             else
-            call regrid_amr_reactive_3d(species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
+            call regrid_amr_reactive_3d(eos_species,patch,coarse_state,coarse_temperature,fine_state,fine_temperature, &
               next_patch,ok,config%reconstruction,config%limiter,regrid_faces,inflow_state,inflow_t)
             end if
             if (.not.ok) error stop '3D AMR conservative regrid rejected'
@@ -392,13 +398,13 @@ contains
         error stop "Maximum step count reached before 3D AMR final_time"
       end if
       call compute_amr_reactive_cfl_timestep_3d( &
-        species, patch, coarse_state, coarse_temperature, &
+        eos_species, patch, coarse_state, coarse_temperature, &
         fine_state, fine_temperature, dx, dy, dz, config%cfl, hydro_dt, ok)
       if (.not. ok) error stop "Failed to compute 3D AMR CFL timestep"
       dt = min(hydro_dt,inlet_dt)
       if (config%transport_enabled) then
         call compute_amr_reactive_transport_timestep_3d( &
-          species, transport, patch, coarse_state, coarse_temperature, &
+          eos_species, transport, patch, coarse_state, coarse_temperature, &
           fine_state, fine_temperature, dx, dy, dz, config%transport_cfl, &
           config%viscosity_enabled, config%thermal_conduction_enabled, &
           config%species_diffusion_enabled, transport_dt, &
@@ -406,7 +412,7 @@ contains
         if (.not. ok) error stop "Failed to compute 3D AMR transport step"
         dt = min(dt, transport_dt,inlet_transport_dt)
         if (any(faces=='isothermal_wall')) then
-          call reactive_isothermal_timestep_3d(species,transport,coarse_state,coarse_temperature,[dx,dy,dz], &
+          call reactive_isothermal_timestep_3d(eos_species,transport,coarse_state,coarse_temperature,[dx,dy,dz], &
             faces,config%wall_temperature,config%transport_cfl,wall_dt,ok)
           if (.not.ok) error stop 'Invalid AMR wall thermal timestep'
           touched=[patch%coarse_i_lower==1,patch%coarse_i_upper==patch%coarse_nx, &
@@ -417,7 +423,7 @@ contains
             if (touched(face)) fine_faces(face)=faces(face)
           end do
           if (any(fine_faces=='isothermal_wall')) then
-            call reactive_isothermal_timestep_3d(species,transport,fine_state,fine_temperature, &
+            call reactive_isothermal_timestep_3d(eos_species,transport,fine_state,fine_temperature, &
               [dx,dy,dz]/real(patch%refinement_ratio,dp),fine_faces,config%wall_temperature, &
               config%transport_cfl,fine_wall_dt,ok)
             if (.not.ok) error stop 'Invalid fine AMR wall thermal timestep'
@@ -430,7 +436,7 @@ contains
       end if
       dt = min(dt, config%final_time - time)
       call advance_amr_reactive_full_3d( &
-        species, reactions, transport, patch, &
+        eos_species, reactions, transport, patch, &
         coarse_state, coarse_temperature, &
         fine_state, fine_temperature, dx, dy, dz, dt, &
         config%riemann_solver, config%chemistry_enabled, &
@@ -456,7 +462,7 @@ contains
           if (selected_context) then
             if (config%transport_enabled) then
               call write_amr_reactive_3d_checkpoint( &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, coarse_state, coarse_temperature, &
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, bundle_sha256=bundle_sha256, &
@@ -468,7 +474,7 @@ contains
               boundary_change=boundary_total)
             else
               call write_amr_reactive_3d_checkpoint( &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, coarse_state, coarse_temperature, &
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, bundle_sha256=bundle_sha256, &
@@ -479,7 +485,7 @@ contains
           else
             if (config%transport_enabled) then
               call write_amr_reactive_3d_checkpoint( &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, coarse_state, coarse_temperature, &
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message, transport=transport, &
@@ -488,7 +494,7 @@ contains
               boundary_change=boundary_total)
             else
               call write_amr_reactive_3d_checkpoint( &
-                trim(amr_config%checkpoint_file), species, config, &
+                trim(amr_config%checkpoint_file), eos_species, config, &
                 amr_config, patch, coarse_state, coarse_temperature, &
                 fine_state, fine_temperature, time, step, initial_integrals, &
                 maximum_reflux, ok, message,regrid_count=regrid_count, &
@@ -528,10 +534,10 @@ contains
     final_elements = 0.0_dp
     if (element_diagnostics) then
       call composite_element_integrals_amr_3d( &
-        species, patch, coarse_state, fine_state, dx, dy, dz, &
+        eos_species, patch, coarse_state, fine_state, dx, dy, dz, &
         final_elements, ok)
       if (.not. ok) error stop "Failed to integrate final 3D AMR elements"
-      call element_integrals_from_reactive_integrals_3d(species,boundary_total,boundary_elements,ok)
+      call element_integrals_from_reactive_integrals_3d(eos_species,boundary_total,boundary_elements,ok)
       if (.not.ok) error stop 'Invalid AMR boundary element budget'
       elemental_conservation_error = maxval(abs( &
         final_elements - initial_elements-boundary_elements) / &
@@ -549,9 +555,9 @@ contains
       patch%coarse_k_lower:patch%coarse_k_upper))) / &
       max(1.0_dp, maxval(abs(restricted)))
     call level_extrema( &
-      species, coarse_state, coarse_temperature, coarse_closure, ok)
+      eos_species, coarse_state, coarse_temperature, coarse_closure, ok)
     if (.not. ok) error stop "Final coarse 3D AMR state is not physical"
-    call level_extrema(species, fine_state, fine_temperature, fine_closure, ok)
+    call level_extrema(eos_species, fine_state, fine_temperature, fine_closure, ok)
     if (.not. ok) error stop "Final fine 3D AMR state is not physical"
     if (conservation_error > 5.0e-11_dp) then
       error stop "3D AMR composite conservation gate failed"
@@ -572,7 +578,7 @@ contains
     end if
     write(*,'(a,i0)') "Completed regrids: ",regrid_count
     call write_reactive_3d_csv( &
-      trim(amr_config%coarse_output_file), species, x, y, z, &
+      trim(amr_config%coarse_output_file), eos_species, x, y, z, &
       coarse_state, coarse_temperature, config%nx, config%ny, config%nz, &
       time, ok, message)
     if (.not. ok) then
@@ -580,7 +586,7 @@ contains
       error stop 3
     end if
     call write_reactive_3d_csv( &
-      trim(amr_config%fine_output_file), species, xf, yf, zf, &
+      trim(amr_config%fine_output_file), eos_species, xf, yf, zf, &
       fine_state, fine_temperature, patch%fine_nx(), patch%fine_ny(), &
       patch%fine_nz(), time, ok, message)
     if (.not. ok) then

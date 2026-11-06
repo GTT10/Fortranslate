@@ -3,7 +3,8 @@ module spray_wall_impact_mod
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_mixture_mod, only: liquid_mixture_properties,liquid_mixture_temperature,valid_component_inventory, &
-    build_mixture_film,mixture_trace_fraction
+    build_mixture_film,mixture_trace_fraction,liquid_mixture_conductivity,liquid_mixture_critical_limit, &
+    apply_mixture_breakup_viscosity
   use nasa7_thermo_mod, only: nasa7_species
   use gas_transport_mod, only: gas_transport_species
   use spray_parcel_mod
@@ -14,6 +15,7 @@ module spray_wall_impact_mod
   integer, parameter, public :: impact_rebound=0,impact_deposit=1,impact_dry=2
   integer, parameter, public :: impact_thermal=3,impact_spread=4,impact_wet=5
   public :: classify_wall_impact, splash_velocity_components, splash_mass_fractions
+  public :: pelec_splash_critical_parameter
   type, public :: spray_wall_film
     real(dp) :: position(3)=0,normal(3)=0,mass=0,temperature=0,diameter=0,height=0
     integer :: material_id=1
@@ -29,7 +31,7 @@ module spray_wall_impact_mod
     real(dp) :: port_conductivities(16)=-1,port_conductivity_coefficients(4,16)=0
     real(dp) :: port_conductivity_temperature_ranges(2,16)=0
   end type
-  character(len=*), parameter, public :: mixture_film_evolution_id='mixed-film-v2-trace'
+  character(len=*), parameter, public :: mixture_film_evolution_id='mixed-film-v7-critical-limit'
   public :: valid_wall_component_inventory
   public :: mixture_impact_boiling_temperature,mixture_impact_at_planar_wall
   public :: impact_at_planar_wall,valid_wall_options,valid_wall_film
@@ -41,6 +43,13 @@ module spray_wall_impact_mod
   public :: count_periodic_film_images
 
 contains
+  pure real(dp) function pelec_splash_critical_parameter(pressure,wall_temperature) result(kcrit)
+    real(dp), intent(in) :: pressure,wall_temperature
+    ! Pinned AhamedSplash.H uses Pa*1e-6 for PeleC. Pa*1e-5 is
+    ! the separate PELELM_USE_SPRAY branch, despite its p_bar variable name.
+    kcrit=(26.788_dp*log(pressure*1e-6_dp)+33.546_dp)*exp(-.006_dp*(wall_temperature-260))+36
+  end function pelec_splash_critical_parameter
+
   pure subroutine count_periodic_film_images(displacement,normal,radius,tolerance,length,count,ok)
     real(dp), intent(in) :: displacement(3),normal(3),radius,tolerance,length(3)
     integer, intent(inout) :: count
@@ -158,29 +167,40 @@ contains
     logical, intent(in) :: heat,evaporation
     real(dp), intent(out) :: mass_rate,gas_heat,wall_heat,temperature_rate
     logical, intent(out) :: ok
-    real(dp) :: area,h,bm,cp,latent
+    real(dp) :: area,h,bm,cp,latent,rho,liquid_lambda,surface_energy
     mass_rate=0;gas_heat=0;wall_heat=0;temperature_rate=0;ok=.false.
     if (.not.valid_wall_film(patch).or..not.valid_spray_liquid(liquid)) return
     if (.not.all(ieee_is_finite([conductivity,wall_temperature,gas%conductivity,gas%cp,gas%density, &
         gas%diffusivity,gas%gas_temperature,gas%surface_fraction,gas%ambient_fraction,gas%vapor_enthalpy]))) return
-    if (conductivity<=0.or.conductivity>1e4_dp.or.wall_temperature<1.or.wall_temperature>1e5_dp) return
+    liquid_lambda=conductivity
+    if(liquid%conductivity_model/='supplied') liquid_lambda= &
+      liquid_conductivity_at_temperature(liquid,patch%temperature,gas%pressure,gas%liquid_molecular_weight)
+    if (liquid_lambda<=0.or.liquid_lambda>1e4_dp.or.wall_temperature<1.or.wall_temperature>1e5_dp) return
     if (gas%conductivity<=0.or.gas%conductivity>1e4_dp.or.gas%cp<1.or.gas%cp>1e8_dp) return
     if (gas%density<=0.or.gas%density>1e8_dp.or.gas%diffusivity<=0.or.gas%diffusivity>1e4_dp) return
     if (gas%gas_temperature<1.or.gas%gas_temperature>1e5_dp) return
     if (gas%surface_fraction<0.or.gas%surface_fraction>=1.or.gas%ambient_fraction<0.or.gas%ambient_fraction>1) return
-    cp=liquid_heat_capacity_at_temperature(liquid,patch%temperature)
+    call liquid_transfer_properties(liquid,patch%temperature,gas%pressure,gas%liquid_molecular_weight,rho,cp,ok)
+    if(.not.ok) return
+    ok=.false.
     if (cp<=0.or.patch%height<1e-15_dp.or.patch%diameter>1e9_dp) return
     area=.25_dp*pi*patch%diameter**2;h=gas%conductivity/patch%height
     if (heat) then
       gas_heat=area*h*(gas%gas_temperature-patch%temperature)
-      wall_heat=2*area*conductivity*(wall_temperature-patch%temperature)/patch%height
+      wall_heat=2*area*liquid_lambda*(wall_temperature-patch%temperature)/patch%height
     end if
     if (evaporation) then
       bm=min(20.0_dp,max(0.0_dp,(gas%surface_fraction-gas%ambient_fraction)/(1-gas%surface_fraction)))
-      mass_rate=area*h*(gas%conductivity/gas%cp)**(1.0_dp/3)*log(1+bm)/gas%conductivity* &
+      mass_rate=area*h*(gas%conductivity/gas%cp)**(1.0_dp/3)*positive_log1p(bm)/gas%conductivity* &
         (gas%density*gas%diffusivity)**(2.0_dp/3)
     end if
-    latent=gas%vapor_enthalpy-liquid_energy(liquid,patch%temperature)
+    surface_energy=liquid_energy(liquid,patch%temperature)
+    if(liquid%boiling_model=='pelemp-cap') then
+      call liquid_evaporation_energy(liquid,patch%temperature,surface_energy,ok,gas%pressure,gas%liquid_molecular_weight)
+      if(.not.ok) return
+      ok=.false.
+    endif
+    latent=gas%vapor_enthalpy-surface_energy
     if (mass_rate>0.and.latent<=0) return
     temperature_rate=(gas_heat+wall_heat-mass_rate*latent)/(patch%mass*cp)
     ok=all(ieee_is_finite([mass_rate,gas_heat,wall_heat,temperature_rate]))
@@ -199,7 +219,9 @@ contains
     type(spray_parcel) :: identity
     type(spray_film) :: skin
     type(spray_liquid) :: effective
-    real(dp) :: y(size(components)),weights(size(components)),hv(size(components)),rho,cp,e,mdot,qg,qw,tdot,latent
+    type(spray_wall_film) :: thermal_patch
+    real(dp) :: y(size(components)),weights(size(components)),hv(size(components)),rho,cp,e,mdot,qg,qw,tdot,latent,liquid_lambda
+    real(dp) :: component_rates(size(components)),surface_energy
     integer :: i,n
     logical :: valid
     mass_rate=0;vapor_h=0;gas_heat=0;wall_heat=0;temperature_rate=0;ok=.false.;n=size(components)
@@ -208,31 +230,57 @@ contains
     if (any(component_mass<0).or.any(component_mass>1e18_dp)) return
     if (abs(sum(component_mass)-patch%mass)>32*epsilon(1.0_dp)*n*patch%mass) return
     y=component_mass/patch%mass
-    call liquid_mixture_properties(components,y,patch%temperature,rho,cp,e,valid)
-    if (.not.valid) return
     identity=spray_parcel(1_int64,patch%position,[0.0_dp,0.0_dp,0.0_dp], &
       min(1.0_dp,patch%mass),patch%temperature,max(1.0_dp,patch%mass))
+    thermal_patch=patch
+    if(options%mixture_time_scheme=='euler') then
+      call liquid_mixture_critical_limit(components,y,patch%temperature,thermal_patch%temperature,valid)
+      if(.not.valid) return
+      identity%temperature=thermal_patch%temperature
+    endif
     call build_mixture_film(species,transport,primitive,gas_temperature,identity,components,y,options, &
       skin,weights,hv,valid,wall_skin=.true.)
     if (.not.valid) return
+    call liquid_mixture_properties(components,y,patch%temperature,rho,cp,e,valid,primitive(5), &
+      species(components%vapor_index)%molecular_weight)
+    if (.not.valid) return
+    liquid_lambda=0
+    call liquid_mixture_conductivity(components,y,patch%temperature,conductivity,liquid_lambda,valid,primitive(5), &
+      species(components%vapor_index)%molecular_weight)
+    if(.not.valid) return
     effective=components(1);effective%density=rho;effective%heat_capacity=cp
     effective%reference_temperature=patch%temperature;effective%reference_energy=e
     effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
     effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
     effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
     effective%normal_boiling_temperature=0
+    effective%conductivity_model='supplied';effective%conductivity=0
+    effective%conductivity_coefficients=0;effective%conductivity_temperature_range=0
+    ! Pinned WallFilm.H encloses both heat terms and evaporation in
+    ! sumXVap>0. Zero diffusion weights mean no retained surface vapor.
+    if(options%mixture_time_scheme=='euler'.and.options%evaporation.and.sum(weights)==0) then
+      vapor_h=hv;ok=.true.;return
+    endif
     if (sum(weights)>0) skin%vapor_enthalpy=sum(weights*hv)
-    call wall_film_transfer_rates(patch,effective,skin,conductivity,wall_temperature,options%heat,options%evaporation, &
+    call wall_film_transfer_rates(thermal_patch,effective,skin,liquid_lambda,wall_temperature,options%heat,options%evaporation, &
       mdot,qg,qw,tdot,valid)
     if (.not.valid) return
+    ! WallFilm.H applies the 2/3 power after each component's vapor share.
+    ! The film builder returns weights proportional to X_v,i * rhoD_i;
+    ! multiplying the aggregate rate by weights**(2/3) recovers that rule,
+    ! including multiple liquid components mapped to one gas species.
+    component_rates=mdot*weights**(2._dp/3)
     latent=0
     do i=1,n
       if (weights(i)==0) cycle
-      latent=latent+weights(i)*(hv(i)-liquid_energy(components(i),patch%temperature))
+      call liquid_evaporation_energy(components(i),thermal_patch%temperature,surface_energy,valid,primitive(5), &
+        species(components(i)%vapor_index)%molecular_weight)
+      if(.not.valid) return
+      latent=latent+component_rates(i)*(hv(i)-surface_energy)
     end do
-    tdot=(qg+qw-mdot*latent)/(patch%mass*cp)
+    tdot=(qg+qw-latent)/(patch%mass*cp)
     if (.not.ieee_is_finite(tdot)) return
-    mass_rate=mdot*weights;vapor_h=hv;gas_heat=qg;wall_heat=qw;temperature_rate=tdot;ok=.true.
+    mass_rate=component_rates;vapor_h=hv;gas_heat=qg;wall_heat=qw;temperature_rate=tdot;ok=.true.
   end subroutine
 
   subroutine advance_mixture_wall_film_frozen(patch,components,component_mass,species,transport,primitive,gas_temperature, &
@@ -254,48 +302,65 @@ contains
     call mixture_wall_film_rates(patch,components,component_mass,species,transport,primitive,gas_temperature, &
       options,conductivity,wall_temperature,rates,hv,qgas,qwall,tdot,valid)
     if (.not.valid) return
+    if(dt==0) then
+      ok=.true.;return
+    endif
     call advance_mixture_wall_film_exchange(patch,components,component_mass,rates*dt,hv,qgas*dt,qwall*dt, &
-      minimum_height,gas_change,wall_energy,ok,deplete_traces=.true.)
+      minimum_height,gas_change,wall_energy,ok,deplete_traces=.true.,pressure=primitive(5), &
+      gas_molecular_weights=species(components%vapor_index)%molecular_weight, &
+      euler_temperature=options%mixture_time_scheme=='euler')
   end subroutine
 
   ! Supplied component losses are total kg; heat amounts are J into the patch.
   subroutine advance_mixture_wall_film_exchange(patch,components,component_mass,evaporated_mass,vapor_enthalpy, &
-      gas_heat,wall_heat,minimum_height,gas_change,wall_energy,ok,deplete_traces)
+      gas_heat,wall_heat,minimum_height,gas_change,wall_energy,ok,deplete_traces,pressure,gas_molecular_weights, &
+      euler_temperature)
     type(spray_wall_film), intent(inout) :: patch
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(inout) :: component_mass(:)
     real(dp), intent(in) :: evaporated_mass(:),vapor_enthalpy(:),gas_heat,wall_heat,minimum_height
     real(dp), intent(out) :: gas_change(:),wall_energy
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: deplete_traces
+    logical, optional, intent(in) :: deplete_traces,euler_temperature
+    real(dp), optional, intent(in) :: pressure,gas_molecular_weights(:)
     type(spray_wall_film) :: next
     real(dp) :: remaining(size(component_mass)),loss(size(component_mass)),exchange(size(gas_change))
-    real(dp) :: rho,cp,old_e,new_e,target,t,area,total
+    real(dp) :: rho,cp,old_e,new_e,target,t,area,total,liquid_lambda,old_rho,latent,surface_energy,mw,base_temperature
     integer :: n,i
-    logical :: valid
+    logical :: valid,use_euler
     gas_change=0;wall_energy=0;ok=.false.;n=size(components)
+    use_euler=.false.
+    if(present(euler_temperature)) use_euler=euler_temperature
     if (n<1.or.n>16.or.size(component_mass)/=n.or.size(evaporated_mass)/=n.or.size(vapor_enthalpy)/=n) return
     if (.not.valid_wall_film(patch).or.size(gas_change)<6) return
     if (.not.all(ieee_is_finite(component_mass)).or..not.all(ieee_is_finite(evaporated_mass))) return
     if (.not.all(ieee_is_finite(vapor_enthalpy)).or. &
         .not.all(ieee_is_finite([gas_heat,wall_heat,minimum_height]))) return
     if (any(component_mass<0).or.any(component_mass>1e18_dp).or.any(evaporated_mass<0)) return
+    if (any(evaporated_mass>1e18_dp)) return
     if (any(abs(vapor_enthalpy)>1e15_dp)) return
     if (max(abs(gas_heat),abs(wall_heat))>min(1e24_dp,1e15_dp*patch%mass)) return
     if (minimum_height<1e-15_dp.or.minimum_height>1) return
     total=sum(component_mass)
     if (abs(total-patch%mass)>32*epsilon(1.0_dp)*n*patch%mass) return
-    call liquid_mixture_properties(components,component_mass/patch%mass,patch%temperature,rho,cp,old_e,valid)
+    call liquid_mixture_properties(components,component_mass/patch%mass,patch%temperature,rho,cp,old_e,valid, &
+      pressure,gas_molecular_weights)
     if (.not.valid) return
+    old_rho=rho
+    base_temperature=patch%temperature
+    if(use_euler) then
+      call liquid_mixture_critical_limit(components,component_mass/patch%mass,patch%temperature,base_temperature,valid)
+      if(.not.valid) return
+    endif
     do i=1,n
       if (components(i)%vapor_index>size(gas_change)-5) return
     end do
-    if (all(evaporated_mass==0).and.gas_heat==0.and.wall_heat==0) then
+    if (all(evaporated_mass==0).and.gas_heat==0.and.wall_heat==0.and.base_temperature==patch%temperature) then
       ok=.true.;return
     end if
     loss=evaporated_mass
     if (present(deplete_traces)) then
-      if (deplete_traces) then
+      if (deplete_traces.and..not.use_euler) then
         do i=1,n
           if (loss(i)<=0) cycle
           if (component_mass(i)<=mixture_trace_fraction*patch%mass) then
@@ -306,19 +371,58 @@ contains
         end do
       end if
     end if
-    if (any(loss>component_mass)) return
-    remaining=component_mass-loss;next=patch;next%mass=sum(remaining);new_e=0
+    next=patch;new_e=0
+    if(use_euler) then
+      ! WallFilm.H first advances total mass, then clips component fractions
+      ! and normalizes survivors. Preserve that total, including trace loss.
+      next%mass=max(0._dp,patch%mass-sum(loss))
+      remaining=max(0._dp,component_mass-loss)
+      if(next%mass>0) then
+        remaining=min(next%mass,remaining)
+        where(remaining/next%mass<mixture_trace_fraction) remaining=0
+        total=sum(remaining)
+        if(total>0) then
+          remaining=remaining*(next%mass/total)
+        else
+          next%mass=0
+        endif
+      endif
+      if(next%mass==0) remaining=0
+    else
+      if (any(loss>component_mass)) return
+      remaining=component_mass-loss;next%mass=sum(remaining)
+    endif
     if (next%mass>0) then
-      target=patch%mass*old_e+gas_heat+wall_heat-sum(loss*vapor_enthalpy)
-      if (abs(target)>1e15_dp*next%mass) return
-      t=patch%temperature
-      call liquid_mixture_temperature(components,remaining/next%mass,target/next%mass,t,valid)
+      if(use_euler) then
+        latent=0
+        do i=1,n
+          if(loss(i)==0) cycle
+          mw=components(i)%molecular_weight
+          if(present(gas_molecular_weights)) mw=gas_molecular_weights(i)
+          call liquid_evaporation_energy(components(i),base_temperature,surface_energy,valid,pressure,mw)
+          if(.not.valid) return
+          latent=latent+loss(i)*(vapor_enthalpy(i)-surface_energy)
+        enddo
+        t=base_temperature+(gas_heat+wall_heat-latent)/(patch%mass*cp)
+      else
+        target=patch%mass*old_e+gas_heat+wall_heat-sum(loss*vapor_enthalpy)
+        if (abs(target)>1e15_dp*next%mass) return
+        t=patch%temperature
+        call liquid_mixture_temperature(components,remaining/next%mass,target/next%mass,t,valid)
+        if (.not.valid) return
+      endif
+      call liquid_mixture_properties(components,remaining/next%mass,t,rho,cp,new_e,valid,pressure,gas_molecular_weights)
       if (.not.valid) return
-      call liquid_mixture_properties(components,remaining/next%mass,t,rho,cp,new_e,valid)
-      if (.not.valid) return
+      if(any(components%conductivity_model/='supplied'.and.remaining>0)) then
+        liquid_lambda=0
+        call liquid_mixture_conductivity(components,remaining/next%mass,t,1._dp,liquid_lambda,valid, &
+          pressure,gas_molecular_weights)
+        if(.not.valid) return
+      endif
       area=.25_dp*pi*patch%diameter**2
       if (.not.ieee_is_finite(area).or.area<=0) return
       next%temperature=t;next%height=next%mass/rho/area
+      if(use_euler) next%height=next%mass/old_rho/area
       if (any(evaporated_mass>0).and.next%height<=minimum_height) then
         next%mass=0;remaining=0;new_e=0
       end if
@@ -348,7 +452,7 @@ contains
     real(dp), intent(out) :: gas_change(5),wall_energy
     logical, intent(out) :: ok
     type(spray_wall_film) :: candidate
-    real(dp) :: mdot,qgas,qwall,tdot,rho,area
+    real(dp) :: mdot,qgas,qwall,tdot,rho,area,cp
     next=patch;gas_change=0;wall_energy=0;ok=.false.
     if (.not.all(ieee_is_finite([dt,minimum_height]))) return
     if (dt<0.or.dt>1e6_dp.or.minimum_height<1e-15_dp.or.minimum_height>1) return
@@ -358,9 +462,9 @@ contains
     candidate%mass=max(0.0_dp,patch%mass-dt*mdot)
     if (candidate%mass>0) then
       candidate%temperature=patch%temperature+dt*tdot
-      if (liquid_heat_capacity_at_temperature(liquid,candidate%temperature)<=0) return
-      rho=liquid_density_at_temperature(liquid,candidate%temperature)
-      if (rho<=0) return
+      call liquid_transfer_properties(liquid,candidate%temperature,gas%pressure,gas%liquid_molecular_weight,rho,cp,ok)
+      if(.not.ok) return
+      ok=.false.
       area=.25_dp*pi*patch%diameter**2
       candidate%height=candidate%mass/(rho*area)
       if (mdot>0.and.candidate%height<=minimum_height) candidate%mass=0
@@ -496,6 +600,7 @@ contains
     type(spray_wall_film), intent(inout) :: deposit
     real(dp), intent(out) :: wall(5)
     logical, intent(out) :: hit,ok
+    type(spray_options) :: local_properties
     type(spray_liquid) :: effective
     type(spray_parcel) :: next
     type(spray_parcel), allocatable :: spawned(:)
@@ -508,7 +613,7 @@ contains
     if (size(component_mass)/=size(components).or.size(film_mass)/=size(components)) return
     if (.not.valid_component_inventory(parent,component_mass).or.parent%mass<=0) return
     y=component_mass/parent%mass
-    call liquid_mixture_properties(components,y,parent%temperature,rho,cp,e,valid)
+    call liquid_mixture_properties(components,y,parent%temperature,rho,cp,e,valid,pressure,molecular_weights)
     if (.not.valid) return
     call mixture_impact_boiling_temperature(components,y,molecular_weights,pressure,boil,valid)
     if (.not.valid) return
@@ -518,8 +623,11 @@ contains
     effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
     effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
     effective%normal_boiling_temperature=0
+    local_properties=properties
+    call apply_mixture_breakup_viscosity(components,y,parent%temperature,local_properties,valid,pressure,molecular_weights)
+    if(.not.valid) return
     next=parent
-    call impact_at_planar_wall(next,previous,effective,properties,molecular_weights(1),pressure,lower,upper,settings, &
+    call impact_at_planar_wall(next,previous,effective,local_properties,molecular_weights(1),pressure,lower,upper,settings, &
       films,first_id,spawned,deposited,budget,crossed,valid,boiling_temperature=boil)
     if (.not.valid) return
     if (.not.crossed) then
@@ -548,7 +656,8 @@ contains
     real(dp), intent(out) :: wall(5)
     real(dp), optional, intent(in) :: boiling_temperature
     logical, intent(out) :: hit,ok
-    real(dp) :: fraction,earliest,location(3),normal(3),delta(3),boundary,boil,denom,rho,mu,d,un,we,re,kv,kcrit,thickness
+    real(dp) :: fraction,earliest,location(3),normal(3),delta(3),boundary,boil,denom,rho,mu,d,un,we,re,kv,kcrit,thickness,cp
+    type(spray_liquid) :: effective
     integer :: a,face,f,regime
     logical :: valid
     wall=0;hit=.false.;ok=.false.;deposit=spray_wall_film()
@@ -599,14 +708,15 @@ contains
     end if
     if (boil<1.or.boil>1e5_dp) return
     if (.not.ieee_is_finite(properties%surface_tension)) return
-    rho=liquid_density_at_temperature(liquid,parent%temperature)
-    mu=liquid_viscosity_at_temperature(properties,parent%temperature);d=parcel_diameter(parent,liquid)
+    call liquid_transfer_properties(liquid,parent%temperature,pressure,molecular_weight,rho,cp,valid)
+    if(.not.valid) return
+    mu=liquid_viscosity_at_temperature(properties,parent%temperature)
+    d=parcel_diameter(parent,liquid,pressure,molecular_weight)
     if (rho<=0.or.mu<=0.or.d<=0.or.properties%surface_tension<1e-8_dp.or.properties%surface_tension>1e3_dp) return
     un=abs(dot_product(parent%velocity,normal))
     we=rho*d*un**2/properties%surface_tension;re=un*d*rho/mu
     kv=sqrt(we*sqrt(re))
-    kcrit=(26.788_dp*log(pressure*1e-5_dp)+33.546_dp)*exp(-.006_dp*(settings%temperature(face)-260))+36
-    if (kcrit<0) return
+    kcrit=pelec_splash_critical_parameter(pressure,settings%temperature(face))
     thickness=0
     do f=1,size(films)
       if (maxval(abs(films(f)%normal-normal))>1e-12_dp) cycle
@@ -614,8 +724,15 @@ contains
       if (abs(dot_product(delta,normal))>1e-10_dp*maxval(upper-lower)) cycle
       if (norm2(delta)<=.5_dp*films(f)%diameter) thickness=thickness+films(f)%height
     end do
-    call resolve_wall_impact(parent,liquid,location,normal,kv,settings%temperature(face)/boil,kcrit,thickness/d, &
-      we,re,settings%contact_angle,first_id,children,deposit,wall,regime,ok)
+    effective=liquid;effective%density=rho;effective%heat_capacity=cp
+    effective%reference_energy=liquid_energy(liquid,parent%temperature);effective%reference_temperature=parent%temperature
+    effective%density_model='constant';effective%density_coefficients=0;effective%density_temperature_range=0
+    effective%heat_capacity_model='constant';effective%heat_capacity_coefficients=0
+    effective%heat_capacity_temperature_range=0;effective%boiling_model='reject';effective%critical_temperature=0
+    effective%normal_boiling_temperature=0
+    call resolve_wall_impact(parent,effective,location,normal,kv,settings%temperature(face)/boil,kcrit,thickness/d, &
+      we,re,settings%contact_angle,first_id,children,deposit,wall,regime,ok, &
+      reference_parent_position=properties%mixture_time_scheme=='euler')
     hit=ok
   end subroutine
 
@@ -628,7 +745,8 @@ contains
   ! Component masses are per physical drop for parcels and total kg for the film.
   ! Dimensionless impact parameters are supplied by the caller, as in the pure kernel.
   subroutine resolve_mixture_wall_impact(parent,components,component_mass,location,normal,kv,tstar,kcrit,film_ratio, &
-      weber,reynolds,contact_angle,first_id,children,child_mass,film,film_mass,wall,regime,ok)
+      weber,reynolds,contact_angle,first_id,children,child_mass,film,film_mass,wall,regime,ok,pressure,gas_molecular_weights, &
+      reference_parent_position)
     type(spray_parcel), intent(inout) :: parent
     type(spray_liquid), intent(in) :: components(:)
     real(dp), intent(inout) :: component_mass(:),film_mass(:)
@@ -640,6 +758,8 @@ contains
     real(dp), intent(out) :: wall(5)
     integer, intent(out) :: regime
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: pressure,gas_molecular_weights(:)
+    logical, optional, intent(in) :: reference_parent_position
     type(spray_liquid) :: effective
     type(spray_parcel) :: candidate
     type(spray_parcel), allocatable :: spawned(:)
@@ -652,7 +772,7 @@ contains
     if (size(components)/=size(component_mass).or.size(components)/=size(film_mass)) return
     if (.not.valid_component_inventory(parent,component_mass).or.parent%mass<=0) return
     fractions=component_mass/parent%mass
-    call liquid_mixture_properties(components,fractions,parent%temperature,rho,cp,e,valid)
+    call liquid_mixture_properties(components,fractions,parent%temperature,rho,cp,e,valid,pressure,gas_molecular_weights)
     if (.not.valid) return
     effective=components(1);effective%density=rho;effective%heat_capacity=cp
     effective%reference_temperature=parent%temperature;effective%reference_energy=e
@@ -662,7 +782,7 @@ contains
     effective%normal_boiling_temperature=0
     candidate=parent
     call resolve_wall_impact(candidate,effective,location,normal,kv,tstar,kcrit,film_ratio,weber,reynolds, &
-      contact_angle,first_id,spawned,deposited,budget,kind,valid)
+      contact_angle,first_id,spawned,deposited,budget,kind,valid,reference_parent_position)
     if (.not.valid) return
     allocate(spawned_mass(size(components),size(spawned)))
     do n=1,size(spawned)
@@ -675,7 +795,7 @@ contains
   end subroutine
 
   subroutine resolve_wall_impact(parent,liquid,location,normal,kv,tstar,kcrit,film_ratio,weber,reynolds, &
-      contact_angle,first_id,children,film,wall,regime,ok)
+      contact_angle,first_id,children,film,wall,regime,ok,reference_parent_position)
     type(spray_parcel), intent(inout) :: parent
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: location(3),normal(3),kv,tstar,kcrit,film_ratio,weber,reynolds,contact_angle
@@ -685,6 +805,7 @@ contains
     real(dp), intent(out) :: wall(5)
     integer, intent(out) :: regime
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: reference_parent_position
     type(spray_parcel) :: next
     type(spray_parcel), allocatable :: spawned(:)
     type(spray_wall_film) :: deposited
@@ -737,6 +858,15 @@ contains
         return
       end select
       next%position=location+parcel_diameter(next,liquid)*normal
+      if(present(reference_parent_position)) then
+        if(reference_parent_position) then
+          if(kind==impact_rebound) then
+            next%position=parent%position-(1+restitution)*dot_product(parent%position-location,normal)*normal
+          else if(kind==impact_thermal) then
+            next%position=location
+          endif
+        endif
+      endif
     end if
     if (next%mass==0) then
       next%khrt_initial_count=0;next%khrt_shed_volume=0
@@ -800,7 +930,9 @@ contains
       candidate(i)%id=first_id+int(i-1,int64);candidate(i)%parent_id=parent%id
       candidate(i)%mass=parent%mass*masses(i)
       candidate(i)%deformation=0;candidate(i)%deformation_rate=0;candidate(i)%rt_time=-1
-      candidate(i)%khrt_initial_count=0;candidate(i)%khrt_shed_volume=0
+      ! Pinned SpraySB.cpp initializes a splash drop's N0 to its own
+      ! number density, even when the incident parent used a different N0.
+      candidate(i)%khrt_initial_count=candidate(i)%multiplicity;candidate(i)%khrt_shed_volume=0
       ub=v(2)
       if (i==2) ub=v(1)
       if (i==4) ub=v(3)
@@ -875,7 +1007,7 @@ contains
     real(dp) :: wet_critical,a,b,base,angle
     regime=-1;splashed=0;deposited=0;ok=.false.
     if (.not.all(ieee_is_finite([kv,tstar,alpha,kcrit,film_ratio]))) return
-    if (kv<0.or.kv>1e8_dp.or.tstar<=0.or.tstar>1e5_dp.or.kcrit<0.or.kcrit>1e8_dp) return
+    if (kv<0.or.kv>1e8_dp.or.tstar<=0.or.tstar>1e5_dp.or.abs(kcrit)>1e8_dp) return
     if (film_ratio<0.or.film_ratio>1e5_dp.or.alpha<pi/6.or.alpha>pi/2) return
     if (film_ratio<.01_dp) then
       if (tstar<1.1_dp) then

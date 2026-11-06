@@ -11,7 +11,7 @@ module mpi_amr_patch_tree_thermo_3d_mod
   private
   public :: recover_mpi_amr_tree_temperatures_3d,compute_mpi_amr_tree_cfl_3d
 contains
-  subroutine recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok,depth)
+  subroutine recover_mpi_amr_tree_temperatures_3d(tree,owners,species,state,temperature,comm,ok,depth,internal_energy)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
@@ -20,32 +20,43 @@ contains
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
     integer, optional, intent(in) :: depth
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
     type(amr_tree_state_3d) :: candidate
-    integer :: rank,status,node,n(3),ios,selected,low,high
+    integer :: rank,status,node,n(3),ios,selected(2),low(2),high(2)
     logical :: valid,ready
-    ok=.false.;selected=-1
-    if (present(depth)) selected=depth
-    call MPI_Allreduce(selected,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    ok=.false.;selected=[-1,merge(1,0,present(internal_energy))]
+    if (present(depth)) selected(1)=depth
+    call MPI_Allreduce(selected,low,2,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(selected,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(selected,high,2,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
-    if (low/=high) return
+    if (any(low/=high)) return
     call validate_inputs(tree,owners,species,state,temperature,comm,rank,ready)
     if (.not.ready) return
-    if (selected< -1.or.selected>=tree%level_count()) return
+    if (selected(1)< -1.or.selected(1)>=tree%level_count()) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,ready)
+      if(.not.ready) return
+    endif
     allocate(candidate%fields(size(tree%nodes)),stat=ios)
     valid=ios==0
     if (valid) then
       do node=1,size(tree%nodes)
         if (owners(node)/=rank) cycle
-        if (selected>=0.and.tree%nodes(node)%level/=selected) cycle
+        if (selected(1)>=0.and.tree%nodes(node)%level/=selected(1)) cycle
         n=tree%nodes(node)%shape
         allocate(candidate%fields(node)%values(1,n(1),n(2),n(3)),stat=ios)
         if (ios/=0) then
           valid=.false.;exit
         end if
+        if(present(internal_energy)) then
+          call recover_reactive_temperatures_3d(species,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
+            n(1),n(2),n(3),candidate%fields(node)%values(1,:,:,:),valid, &
+            internal_energy_density=internal_energy%fields(node)%values(1,:,:,:))
+        else
         call recover_reactive_temperatures_3d(species,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
           n(1),n(2),n(3),candidate%fields(node)%values(1,:,:,:),valid)
+        endif
         if (.not.valid) exit
       end do
     end if
@@ -58,7 +69,7 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,root_spacing,cfl,dt,comm,ok)
+  subroutine compute_mpi_amr_tree_cfl_3d(tree,owners,species,state,temperature,root_spacing,cfl,dt,comm,ok,internal_energy)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
@@ -67,6 +78,8 @@ contains
     real(dp), intent(inout) :: dt
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    integer :: flag,minimum,maximum
     real(dp), allocatable :: h(:,:)
     real(dp) :: controls(4),low(4),high(4),local_dt,node_dt,global_dt
     integer :: rank,status,node,parent,n(3),ios
@@ -74,6 +87,15 @@ contains
     ok=.false.
     call validate_inputs(tree,owners,species,state,temperature,comm,rank,ready)
     if (.not.ready) return
+    flag=merge(1,0,present(internal_energy))
+    call MPI_Allreduce(flag,minimum,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flag,maximum,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.minimum/=maximum) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,ready)
+      if(.not.ready) return
+    endif
     controls=[root_spacing,cfl]
     valid=all(ieee_is_finite(controls))
     if (valid) valid=all(controls>0)
@@ -97,8 +119,14 @@ contains
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
+      if(present(internal_energy)) then
+      call compute_reactive_cfl_timestep_3d(species,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
+        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,node_dt,valid, &
+          internal_energy_density=internal_energy%fields(node)%values(1,:,:,:))
+      else
       call compute_reactive_cfl_timestep_3d(species,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
         n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,node_dt,valid)
+      endif
       if (.not.valid) exit
       local_dt=min(local_dt,node_dt)
     end do

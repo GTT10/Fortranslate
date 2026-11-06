@@ -4,7 +4,7 @@ module amr_multilevel_reactive_1d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config, configure_reactive_1d_eos
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_cfl_timestep, &
     reactive_transport_timestep, &
@@ -664,20 +664,23 @@ contains
     real(dp) :: dt, tolerance
     logical :: local_ok, changed
     integer :: nvar
+    type(nasa7_species), allocatable :: eos_species(:)
 
+    call configure_reactive_1d_eos(species, config, eos_species, ok)
+    if (.not. ok) return
     initial_integrals = 0.0_dp
     final_integrals = 0.0_dp
     ok = .false.
     if (config%transport_enabled .and. .not. present(transport)) return
     if (present(base_mole_fractions)) then
       call initialize_tagged_multilevel_reactive_1d( &
-        species, config, solution, local_ok, base_mole_fractions)
+        eos_species, config, solution, local_ok, base_mole_fractions)
     else
       call initialize_tagged_multilevel_reactive_1d( &
-        species, config, solution, local_ok)
+        eos_species, config, solution, local_ok)
     end if
     if (.not. local_ok) return
-    nvar = reactive_nvar(size(species))
+    nvar = reactive_nvar(size(eos_species))
     allocate(all_integrals(nvar))
     call multilevel_reactive_integrals_1d( &
       solution, all_integrals, local_ok)
@@ -689,26 +692,26 @@ contains
       if (solution%steps >= config%maximum_steps) return
       if (config%transport_enabled) then
         call multilevel_reactive_timestep_1d( &
-          species, config, solution, dt, local_ok, transport)
+          eos_species, config, solution, dt, local_ok, transport)
       else
         call multilevel_reactive_timestep_1d( &
-          species, config, solution, dt, local_ok)
+          eos_species, config, solution, dt, local_ok)
       end if
       if (.not. local_ok) return
       dt = min(dt, config%final_time - solution%time)
       if (config%transport_enabled) then
         call advance_multilevel_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok, transport, &
+          eos_species, reactions, config, dt, solution, local_ok, transport, &
           chemistry_integrator=chemistry_integrator)
       else
         call advance_multilevel_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok, &
+          eos_species, reactions, config, dt, solution, local_ok, &
           chemistry_integrator=chemistry_integrator)
       end if
       if (.not. local_ok) return
       if (mod(solution%steps, config%amr_regrid_interval) == 0) then
         call regrid_multilevel_reactive_1d( &
-          species, config, solution, changed, local_ok)
+          eos_species, config, solution, changed, local_ok)
         if (.not. local_ok) return
       end if
     end do

@@ -5,7 +5,7 @@ program test_eb_reactive_wall_flux_3d
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions
+  use mixture_thermo_mod, only: mass_fractions_from_mole_fractions,mixture_mass_properties
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_species_component, reactive_primitive_to_conserved
@@ -198,9 +198,60 @@ program test_eb_reactive_wall_flux_3d
 
   call check_centroid_interpolation()
   call check_mol_centroid_stencil()
+  call verify_held_pressure()
   write(*, '(a)') "test_eb_reactive_wall_flux_3d: PASS"
 
 contains
+  subroutine verify_held_pressure()
+    type(eb_geometry_3d) :: cut
+    real(dp) :: q(12),u(12),y(7),mw,r,cp,cv,gamma,h,e,entropy,t,speed,pressure_value,fluid_volume
+    real(dp) :: rho,phi,expected(12),bflux(12),bp
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),held(:,:,:),potential(:,:,:),rate(:,:,:,:)
+    integer :: mode,x,z
+    logical :: good
+    call build_axis_plane_eb_geometry_3d(2,2,2,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'z',.31_dp,cut,good)
+    call require(good,'held wall geometry')
+    allocate(gas(12,2,2,2),temp(2,2,2),held(2,2,2),potential(2,2,2),rate(12,2,2,2))
+    rho=.31_dp;y=0;y(7)=1
+    do mode=1,2
+      ! Large tangential momentum loses thermal energy in the total-energy
+      ! mantissa; wall pressure must come from the independent held scalar.
+      t=650._dp
+      if(mode==1) t=300._dp
+      call mixture_mass_properties(species,y,t,mw,r,cp,cv,gamma,h,e,entropy,good)
+      call require(good,'independent wall NASA properties')
+      pressure_value=rho*r*t
+      q=0;q(1)=rho;q(2)=1.e10_dp;q(5)=pressure_value;q(12)=1
+      call reactive_primitive_to_conserved(species,q,u,t,speed,good)
+      call require(good,'high kinetic wall seed')
+      phi=0
+      if(mode==2) phi=3.e19_dp
+      u(5)=u(5)-rho*phi
+      gas=spread(spread(spread(u,2,2),3,2),4,2)
+      temp=t;held=rho*e;potential=phi
+      if(mode==1) call require(e<0,'signed native formation energy fixture')
+      call reactive_eb_slip_wall_flux_3d(species,u,t,[0._dp,0._dp,1._dp], &
+        bflux,bp,good,phi,rho*e)
+      call require(good,'held wall cell EOS')
+      call assert_close(bp,pressure_value,3.e-10_dp*pressure_value,'held cell pressure from NASA T')
+      call reactive_eb_slip_wall_source_3d(species,gas,temp,cut,rate,good,potential,held)
+      call require(good,'held cut wall source')
+      do z=1,2
+      do x=1,2
+        if(cut%volume_fraction(x,1,z)<=0.or.cut%volume_fraction(x,1,z)>=1) cycle
+        fluid_volume=cut%volume_fraction(x,1,z)*cut%dx*cut%dy*cut%dz
+        expected=0
+        expected(2:4)=pressure_value*[cut%boundary_normal_integral_x(x,1,z), &
+          cut%boundary_normal_integral_y(x,1,z),cut%boundary_normal_integral_z(x,1,z)]/fluid_volume
+        call require(maxval(abs(rate(:,x,1,z)-expected))<=3.e-10_dp*max(1._dp,maxval(abs(expected))), &
+          'independent aperture-normal pressure source; zero mass/species/energy')
+      enddo
+      enddo
+      held(2,2,1)=ieee_value(0._dp,ieee_quiet_nan)
+      call reactive_eb_slip_wall_source_3d(species,gas,temp,cut,rate,good,potential,held)
+      call require(.not.good.and.all(rate==0),'late cut scalar refusal never publishes partial source')
+    enddo
+  end subroutine verify_held_pressure
   subroutine check_centroid_interpolation()
     type(eb_geometry_3d) :: g
     real(dp) :: phi(0:6,0:6,0:6),x(2,0:6,6,6),y(2,6,0:6,6),z(2,6,6,0:6)

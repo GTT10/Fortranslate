@@ -24,7 +24,10 @@ contains
   ! Caller supplies ng valid donor cells on every side, all at the patch spacing.
   ! The periodic workspace seam is outside the complete filter/gradient stencil.
   subroutine compute_dynamic_les_rhs_ghosted_3d(species,state,temperature,spacing,test_model,test_ratio,ng, &
-      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity,boundary_faces,wall_temperature,pinned_heat_flux)
+      rhs,fx,fy,fz,ok,grid_ratio,harmonic_mean,maximum_diffusivity,boundary_faces,wall_temperature, &
+      pinned_heat_flux,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -60,7 +63,8 @@ contains
       grid_ratio=grid_ratio,harmonic_mean=harmonic_mean,fx=x,fy=y,fz=z,maximum_diffusivity=diffusion, &
       boundary_faces=boundary_faces,wall_temperature=wall_temperature,wall_bounds=reshape([ng+1,ng+n(1), &
       ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]), &
-      diffusion_bounds=reshape([ng+1,ng+n(1),ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]),pinned_heat_flux=pinned_heat_flux)
+      diffusion_bounds=reshape([ng+1,ng+n(1),ng+1,ng+n(2),ng+1,ng+n(3)],[2,3]),pinned_heat_flux=pinned_heat_flux, &
+      internal_energy_density=internal_energy_density)
     if(.not.valid) return
     lo=ng+1;hi=ng+n
     rhs=full_rhs(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
@@ -255,7 +259,9 @@ contains
   ! Pinned model transports momentum/energy only; species and mass RHS are zero.
   subroutine compute_dynamic_les_rhs_3d(species,state,temperature,spacing,test_model,test_ratio,rhs,ok, &
       grid_ratio,maximum_diffusivity,supplied_coefficients,active_x,harmonic_mean,fx,fy,fz, &
-      boundary_faces,wall_temperature,wall_bounds,diffusion_bounds,pinned_heat_flux)
+      boundary_faces,wall_temperature,wall_bounds,diffusion_bounds,pinned_heat_flux,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     integer, optional, intent(in) :: diffusion_bounds(2,3)
     logical :: estimate_face
     type(nasa7_species), intent(in) :: species(:)
@@ -291,6 +297,11 @@ contains
     if (present(harmonic_mean)) harmonic=harmonic_mean
     if (present(maximum_diffusivity)) maximum_diffusivity=0
     if (present(grid_ratio)) ratio=grid_ratio
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_cell)
+    endif
     if (any(shape(rhs)/=shape(state))) return
     if (present(fx).or.present(fy).or.present(fz)) then
       if (.not.(present(fx).and.present(fy).and.present(fz))) return
@@ -343,7 +354,7 @@ contains
       coeff=supplied_coefficients
     else
       call compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
-        coeff,local_ok,ratio)
+        coeff,local_ok,ratio,internal_energy_density=internal_energy_density)
       if (.not.local_ok) return
     end if
     allocate(q(reactive_nprim(size(species)),n(1),n(2),n(3)),temps(n(1),n(2),n(3)))
@@ -354,7 +365,9 @@ contains
     do k=1,n(3)
       do j=1,n(2)
         do i=1,n(1)
-          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound,local_ok)
+          if(allocated(held_cell)) held_cell=internal_energy_density(i,j,k)
+          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound, &
+      local_ok,internal_energy_density=held_cell)
           if (.not.local_ok) return
           if (maxval(abs(primitive(2:4)))>1e30_dp.or.primitive(1)>1e8_dp.or.t>1e8_dp) return
           q(:,i,j,k)=primitive;temps(i,j,k)=t
@@ -468,7 +481,9 @@ contains
   ! Periodic regular grid. Filter conserved state before EOS recovery, not T or u.
   ! Coefficients are smoothed with the pinned box filter of ratio six.
   subroutine compute_dynamic_les_coefficients_3d(species,state,temperature,spacing,test_model,test_ratio, &
-      coefficients,ok,grid_ratio)
+      coefficients,ok,grid_ratio,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),spacing(3)
     character(len=*), intent(in) :: test_model
@@ -476,6 +491,7 @@ contains
     real(dp), intent(inout) :: coefficients(:,:,:,:)
     logical, intent(out) :: ok
     integer, optional, intent(in) :: grid_ratio
+    real(dp), allocatable :: field_h(:,:,:,:),filtered_h(:,:,:,:),filtered_cell
     real(dp), allocatable :: weights(:),smooth(:),filtered_state(:,:,:,:),q(:,:,:,:),qt(:,:,:,:)
     real(dp), allocatable :: quantities(:,:,:,:),filtered_quantities(:,:,:,:),test_quantities(:,:,:,:),raw(:,:,:,:)
     real(dp) :: primitive(reactive_nprim(size(species))),t,sound,g(3,3),gt(3),kij(3,3),aij(3,3),rut(3),a,ft(3)
@@ -489,6 +505,11 @@ contains
     if (any(shape(coefficients)/=[3,n])) return
     if (.not.all(ieee_is_finite(spacing))) return
     if (any(spacing<1e-12_dp).or.any(spacing>1e9_dp)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_cell)
+    endif
     call les_filter_weights(test_model,test_ratio,weights,local_ok)
     if (.not.local_ok) return
     call les_filter_weights('box',6,smooth,local_ok)
@@ -496,18 +517,27 @@ contains
     allocate(filtered_state,mold=state)
     call filter_les_field_3d(state,weights,filtered_state,local_ok)
     if (.not.local_ok) return
+    if(present(internal_energy_density)) then
+      allocate(field_h(1,n(1),n(2),n(3)),filtered_h(1,n(1),n(2),n(3)),filtered_cell)
+      field_h(1,:,:,:)=internal_energy_density
+      call filter_les_field_3d(field_h,weights,filtered_h,local_ok)
+      if(.not.local_ok) return
+    endif
     allocate(q(5,n(1),n(2),n(3)),qt(5,n(1),n(2),n(3)))
     allocate(quantities(25,n(1),n(2),n(3)),filtered_quantities(25,n(1),n(2),n(3)))
     allocate(test_quantities(25,n(1),n(2),n(3)),raw(3,n(1),n(2),n(3)))
     do k=1,n(3)
       do j=1,n(2)
         do i=1,n(1)
-          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound,local_ok)
+          if(allocated(held_cell)) held_cell=internal_energy_density(i,j,k)
+          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),primitive,t,sound, &
+      local_ok,internal_energy_density=held_cell)
           if (.not.local_ok) return
           if (maxval(abs(primitive(2:4)))>1e30_dp.or.primitive(1)>1e8_dp.or.t>1e8_dp) return
           q(:,i,j,k)=[primitive(1:4),t]
+          if(allocated(filtered_cell)) filtered_cell=filtered_h(1,i,j,k)
           call reactive_conserved_to_primitive(species,filtered_state(:,i,j,k),temperature(i,j,k), &
-            primitive,t,sound,local_ok)
+            primitive,t,sound,local_ok,internal_energy_density=filtered_cell)
           if (.not.local_ok) return
           if (maxval(abs(primitive(2:4)))>1e30_dp.or.primitive(1)>1e8_dp.or.t>1e8_dp) return
           qt(:,i,j,k)=[primitive(1:4),t]

@@ -2,7 +2,10 @@ module reactive_eb_3d_driver_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use constant_volume_reactor_mod, only: forced_reactor_integrator
+  use dual_energy_mod, only: dual_energy_policy,reset_nasa7_dual_energy_patch
+  use eb_reactive_transfer_3d_mod, only: recover_reactive_eb_cell_3d
   use state_indices_mod, only: imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -47,7 +50,8 @@ contains
       iterations,chemistry,transport_flags,force,rtol,atol,redistribution,boundary_faces, &
       boundary_change,wall_change,source_change,minimum_theta,ok,reaction_source,integrated_flux, &
       difmag,target_volume_fraction,inflow_state,inflow_temperature,wall_temperature,chemistry_change, &
-      evaluate_reaction)
+      evaluate_reaction, &
+      state_redist_max_order,heat_release)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -59,19 +63,26 @@ contains
     logical, intent(in) :: chemistry,transport_flags(4)
     character(len=*), intent(in) :: redistribution,boundary_faces(6)
     real(dp), intent(inout) :: boundary_change(:),wall_change(:),source_change(:),minimum_theta
+    integer, optional, intent(in) :: state_redist_max_order
     logical, intent(out) :: ok
     real(dp), optional, intent(inout) :: chemistry_change(:)
-    real(dp), optional, intent(inout) :: reaction_source(:,:,:,:)
+    real(dp), optional, intent(inout) :: reaction_source(:,:,:,:),heat_release(:,:,:)
     type(eb_integrated_flux_3d), optional, intent(inout) :: integrated_flux
     real(dp), optional, intent(in) :: difmag,target_volume_fraction,inflow_state(:,:),inflow_temperature(:),wall_temperature(6)
     real(dp), allocatable :: old(:,:,:,:),ot(:,:,:),u(:,:,:,:),t(:,:,:),ir(:,:,:,:),hydro(:,:,:,:),rates(:,:,:,:)
+    real(dp), allocatable :: heat(:,:,:)
     real(dp), allocatable :: e0(:,:,:,:),e1(:,:,:,:),d0(:,:,:,:),d1(:,:,:,:),raw(:,:,:,:)
+    real(dp), allocatable :: hydro_ghost(:,:,:,:),hydro_gt(:,:,:)
+    type(eb_geometry_3d) :: redist_geometry
     type(eb_integrated_flux_3d) :: hf,f0,f1
     real(dp) :: boundary(size(boundary_change)),wall(size(wall_change)),external(size(source_change))
     real(dp) :: v0(size(source_change)),v1(size(source_change)),theta,stheta
     integer :: nv,n(3),i,j,k,it
     logical :: valid,diffusive
     ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
+    if(present(state_redist_max_order)) then
+      if(.not.any(state_redist_max_order==[0,2,4])) return
+    end if
     if(present(evaluate_reaction).and..not.chemistry) return
     if(.not.geometry%is_valid().or..not.valid_ctu_geometry(geometry,extended,'pelec')) return
     if(any(shape(state)/=[nv,n]).or.any(shape(temperature)/=n)) return
@@ -85,6 +96,10 @@ contains
     if(present(reaction_source)) then
       if(.not.chemistry.or.any(shape(reaction_source)/=[nv-4,n])) return
     end if
+    if(present(heat_release)) then
+      if(any(shape(heat_release)/=n)) return
+      allocate(heat(n(1),n(2),n(3)),source=0._dp)
+    endif
     old=state;ot=temperature
     allocate(ir(nv-4,n(1),n(2),n(3)),hydro(nv,n(1),n(2),n(3)),raw(nv,n(1),n(2),n(3)));ir=0
     if(present(reaction_source)) ir=reaction_source
@@ -99,6 +114,14 @@ contains
     if(.not.all(ieee_is_finite(ir))) return
     call recover(old,ot,valid)
     if(.not.valid) return
+    ! Physical exterior Qhat retains the old state: no exterior update is applied.
+    call extract_eb_geometry_3d(extended,[5,5,5],n+8,redist_geometry,valid)
+    if(.not.valid) return
+    allocate(hydro_ghost(nv,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2), &
+      hydro_gt(-1:n(1)+2,-1:n(2)+2,-1:n(3)+2))
+    call fill_reactive_boundary_ghosts_3d(old,ot,boundary_faces,hydro_ghost,hydro_gt,valid, &
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=2)
+    if(.not.valid) return
     diffusive=any(transport_flags(:3));theta=1
     call sources(old,ot,e0,d0,f0,valid)
     if(.not.valid) return
@@ -110,7 +133,9 @@ contains
       call compute_sdc_eb_boundary_hydro_3d(species,old,ot,extended,dt,rates,raw,hf,boundary,wall,valid, &
         boundary_faces,difmag=difmag,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
       if(.not.valid) return
-      call redistribute_sdc_eb_rate_3d(geometry,old,raw,dt,redistribution,hydro,valid,target_volume_fraction)
+      call redistribute_sdc_eb_rate_3d(geometry,old,raw,dt,redistribution,hydro,valid,target_volume_fraction, &
+        max_order=state_redist_max_order,boundary_state=hydro_ghost, &
+        boundary_geometry=redist_geometry,boundary_faces=boundary_faces)
       if(.not.valid) return
       u=old+dt*(rates+hydro)
       call recover(u,t,valid)
@@ -120,7 +145,7 @@ contains
       rates=.5_dp*e1+.5_dp*e0+.5_dp*d1+.5_dp*d0+hydro
       if(chemistry) then
         call react_sdc_eb_state_3d(species,reactions,old,ot,geometry,rates,dt,rtol,atol,u,t,ir,valid, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,heat_release=heat)
       else
         u=old+dt*rates
         call recover(u,t,valid)
@@ -165,6 +190,7 @@ contains
     end if
     state=u;temperature=t;boundary_change=boundary;wall_change=wall;source_change=external;minimum_theta=theta
     if(present(reaction_source)) reaction_source=ir
+    if(present(heat_release)) heat_release=heat
     if(present(chemistry_change)) chemistry_change=v0
     if(present(integrated_flux)) integrated_flux=hf
     ok=.true.
@@ -221,17 +247,20 @@ contains
       end do
       if(.not.all(ieee_is_finite(e))) return
       if(diffusive) then
-        allocate(ghost(nv,0:n(1)+1,0:n(2)+1,0:n(3)+1),gt(0:n(1)+1,0:n(2)+1,0:n(3)+1))
+        allocate(ghost(nv,-1:n(1)+2,-1:n(2)+2,-1:n(3)+2),gt(-1:n(1)+2,-1:n(2)+2,-1:n(3)+2))
         allocate(unredistributed,mold=q)
         call fill_reactive_boundary_ghosts_3d(q,temp,boundary_faces,ghost,gt,good,viscous_wall=.true., &
-          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=1)
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature,ghost_width=2)
         if(.not.good) return
         call compute_sdc_eb_transport_3d(species,transport,q,temp,geometry,dt,transport_flags, &
-          unredistributed,flux,stheta,good,ghost,gt,[.true.,.true.,.true.,.true.,.true.,.true.], &
+          unredistributed,flux,stheta,good,ghost(:,0:n(1)+1,0:n(2)+1,0:n(3)+1), &
+          gt(0:n(1)+1,0:n(2)+1,0:n(3)+1),[.true.,.true.,.true.,.true.,.true.,.true.], &
           boundary_faces,wall_temperature)
         if(.not.good) return
         theta=min(theta,stheta)
-        call redistribute_sdc_eb_rate_3d(geometry,q,unredistributed,dt,redistribution,d,good,target_volume_fraction)
+        call redistribute_sdc_eb_rate_3d(geometry,q,unredistributed,dt,redistribution,d,good,target_volume_fraction, &
+          max_order=state_redist_max_order,boundary_state=ghost, &
+          boundary_geometry=redist_geometry,boundary_faces=boundary_faces)
         if(.not.good) return
       end if
       good=.true.
@@ -242,15 +271,27 @@ contains
   ! Rates and states are per fluid volume; geometry supplies the active mask.
   subroutine react_sdc_eb_state_3d(species,reactions,old_state,old_temperature,geometry,nonreacting_rates, &
       dt,rtol,atol,state,temperature,reaction_source,ok, &
-      evaluate_reaction)
+      evaluate_reaction,frame,heat_release,internal_energy_density,energy_policy,energy_correction, &
+      old_internal_energy_density)
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: old_state(:,:,:,:),old_temperature(:,:,:),nonreacting_rates(:,:,:,:),dt,rtol,atol
     real(dp), intent(inout) :: state(:,:,:,:),temperature(:,:,:),reaction_source(:,:,:,:)
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: heat_release(:,:,:),internal_energy_density(:,:,:)
+    real(dp), optional, intent(in) :: old_internal_energy_density(:,:,:)
+    type(dual_energy_policy), optional, intent(in) :: energy_policy
+    real(dp), optional, intent(inout) :: energy_correction
     real(dp), allocatable :: candidate(:,:,:,:),ct(:,:,:),ir(:,:,:,:)
+    real(dp), allocatable :: potential(:,:,:)
+    real(dp), allocatable :: heat(:,:,:),cell_heat(:,:,:),held(:,:,:),cell_held(:,:,:)
+    real(dp), allocatable :: cell_old_held(:,:,:)
+    type(dual_energy_policy) :: policy
+    real(dp) :: correction,primitive(reactive_nprim(size(species))),recovered,speed
+    real(dp) :: position(3)
     integer :: nv,n(3),i,j,k
     logical :: valid
     ok=.false.;nv=reactive_nvar(size(species))
@@ -259,21 +300,76 @@ contains
     if(any(shape(old_state)/=[nv,n]).or.any(shape(nonreacting_rates)/=[nv,n])) return
     if(any(shape(state)/=[nv,n]).or.any(shape(old_temperature)/=n).or.any(shape(temperature)/=n)) return
     if(any(shape(reaction_source)/=[nv-4,n])) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      allocate(held,source=internal_energy_density)
+      allocate(cell_held(1,1,1))
+    endif
+    if(present(old_internal_energy_density)) then
+      if(.not.present(internal_energy_density)) return
+      if(any(shape(old_internal_energy_density)/=n)) return
+      allocate(cell_old_held(1,1,1))
+    endif
+    if(present(energy_policy).and..not.present(energy_correction)) return
+    if(present(energy_correction).and..not.present(internal_energy_density)) return
+    if(present(energy_correction)) then
+      if(.not.ieee_is_finite(energy_correction)) return
+      correction=energy_correction
+      if(present(energy_policy)) policy=energy_policy
+    endif
+    if(present(heat_release)) then
+      if(any(shape(heat_release)/=n)) return
+      allocate(heat(n(1),n(2),n(3)),source=0._dp)
+      allocate(cell_heat(1,1,1),source=0._dp)
+    endif
     if(.not.all(ieee_is_finite([dt,rtol,atol])).or.min(dt,rtol,atol)<=0) return
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+      allocate(potential(1,1,1))
+    end if
     candidate=old_state;ct=old_temperature;ir=reaction_source
     do k=1,n(3)
     do j=1,n(2)
     do i=1,n(1)
       if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+      if(present(old_internal_energy_density)) cell_old_held=old_internal_energy_density(i:i,j:j,k:k)
+      if(present(frame)) then
+        position=[geometry%x_lower,geometry%y_lower,geometry%z_lower]+ &
+          (real([i,j,k],dp)-.5_dp)*[geometry%dx,geometry%dy,geometry%dz]
+        call rotating_potential_3d(frame,position,potential(1,1,1),valid)
+        if(.not.valid) return
+      end if
       call react_sdc_state_3d(species,reactions,old_state(:,i:i,j:j,k:k),old_temperature(i:i,j:j,k:k), &
         nonreacting_rates(:,i:i,j:j,k:k),dt,rtol,atol,candidate(:,i:i,j:j,k:k),ct(i:i,j:j,k:k), &
         ir(:,i:i,j:j,k:k),valid, &
-          evaluate_reaction=evaluate_reaction)
+          evaluate_reaction=evaluate_reaction,rotating_potential=potential,heat_release=cell_heat, &
+          internal_energy_density=cell_held,old_internal_energy_density=cell_old_held)
       if(.not.valid) return
+      if(present(heat_release)) heat(i,j,k)=cell_heat(1,1,1)
+      if(present(internal_energy_density)) held(i,j,k)=cell_held(1,1,1)
     end do
     end do
     end do
+    if(present(energy_correction)) then
+      call reset_nasa7_dual_energy_patch(species,candidate,held,ct, &
+        geometry%volume_fraction*geometry%dx*geometry%dy*geometry%dz,policy,correction,valid)
+      if(.not.valid) return
+      do k=1,n(3)
+      do j=1,n(2)
+      do i=1,n(1)
+        if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+        call recover_reactive_eb_cell_3d(species,geometry,[i,j,k],candidate(:,i,j,k),ct(i,j,k), &
+          primitive,recovered,speed,valid,frame,held(i,j,k))
+        if(.not.valid) return
+        ct(i,j,k)=recovered
+      enddo
+      enddo
+      enddo
+    endif
     state=candidate;temperature=ct;reaction_source=ir;ok=.true.
+    if(present(heat_release)) heat_release=heat
+    if(present(internal_energy_density)) internal_energy_density=held
+    if(present(energy_correction)) energy_correction=correction
   end subroutine react_sdc_eb_state_3d
 
   logical function valid_ctu_geometry(physical,extended,solver) result(valid)
@@ -430,7 +526,8 @@ contains
       species, reactions, state, temperature, geometry, solver, redistribution, &
       dt, chemistry_enabled, rtol, atol, new_state, new_temperature, ok, &
       target_volume_fraction, chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry, &
-      boundary_faces,inflow_state,inflow_temperature)
+      boundary_faces,inflow_state,inflow_temperature, &
+      state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -444,6 +541,7 @@ contains
     logical, intent(in) :: chemistry_enabled
     real(dp), intent(out) :: new_state(:, :, :, :), new_temperature(:, :, :)
     real(dp), optional, intent(in) :: difmag
+    integer, optional, intent(in) :: state_redist_max_order
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: chemistry_integrator
@@ -541,7 +639,8 @@ contains
     if(present(extended_geometry)) then
       call advance_reactive_eb_boundary_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
         hydro_state,hydro_temperature,local_ok,hydro_faces,redistribution,difmag,boundary_change=exchange_boundary, &
-        wall_change=exchange_wall,target_volume_fraction=target,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        wall_change=exchange_wall,target_volume_fraction=target,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+      state_redist_max_order=state_redist_max_order)
     else
       select case (trim(redistribution))
       case ("flux_redist")
@@ -551,7 +650,8 @@ contains
       case ("state_redist")
         call advance_reactive_eb_state_redistributed_euler_3d( &
           species, candidate_state, candidate_temperature, geometry, solver, dt, &
-          hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
+          hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag, &
+      state_redist_max_order=state_redist_max_order)
       end select
     end if
     if (.not. local_ok) return
@@ -601,7 +701,8 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, new_state, &
       new_temperature, minimum_transport_theta, ok, target_volume_fraction, &
       chemistry_integrator, boundary_change, wall_change, chemistry_change, difmag,extended_geometry, &
-      boundary_faces,inflow_state,inflow_temperature,prepare_transport_halo,wall_temperature)
+      boundary_faces,inflow_state,inflow_temperature,prepare_transport_halo,wall_temperature, &
+      state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -624,6 +725,7 @@ contains
     real(dp), intent(out) :: new_state(:, :, :, :), new_temperature(:, :, :)
     real(dp), intent(out) :: minimum_transport_theta
     real(dp), optional, intent(in) :: difmag
+    integer, optional, intent(in) :: state_redist_max_order
     logical, intent(out) :: ok
     real(dp), intent(in), optional :: target_volume_fraction
     character(len=*), intent(in), optional :: chemistry_integrator
@@ -689,7 +791,8 @@ contains
         redistribution, dt, chemistry_enabled, rtol, atol, new_state, &
         new_temperature, ok, target_volume_fraction, chemistry_integrator, &
         boundary_change,wall_change,chemistry_change,difmag=difmag,extended_geometry=extended_geometry, &
-        boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        boundary_faces=boundary_faces,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+      state_redist_max_order=state_redist_max_order)
       return
     end if
 
@@ -774,11 +877,13 @@ contains
     if(present(extended_geometry)) then
       call advance_reactive_eb_boundary_ctu_3d(species,candidate_state,candidate_temperature,extended_geometry,dt, &
         hydro_state,hydro_temperature,local_ok,hydro_faces,redistribution,difmag,boundary_change=exchange_boundary, &
-        wall_change=exchange_wall,target_volume_fraction=target,inflow_state=inflow_state,inflow_temperature=inflow_temperature)
+        wall_change=exchange_wall,target_volume_fraction=target,inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+      state_redist_max_order=state_redist_max_order)
     else
       call advance_reactive_eb_state_redistributed_euler_3d( &
         species, candidate_state, candidate_temperature, geometry, solver, &
-        dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag)
+        dt, hydro_state, hydro_temperature, local_ok, target,exchange_boundary,exchange_wall,difmag=difmag, &
+      state_redist_max_order=state_redist_max_order)
     end if
     if (.not. local_ok) return
     call covered_cells_match_3d( &
@@ -1176,13 +1281,14 @@ contains
   end subroutine reactive_eb_extrema_3d
 
   subroutine write_reactive_eb_3d_csv( &
-      path, species, geometry, state, temperature, time, ok, message)
+      path, species, geometry, state, temperature, time, ok, message,heat_release)
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :), time
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
+    real(dp), optional, intent(in) :: heat_release(:,:,:)
 
     real(dp), allocatable :: primitive(:)
     real(dp) :: x, y, z, centroid_x, centroid_y, centroid_z
@@ -1204,6 +1310,14 @@ contains
       message = "Reactive EB 3D CSV input contract is invalid"
       return
     end if
+    if(present(heat_release)) then
+      if(any(shape(heat_release)/=[geometry%nx,geometry%ny,geometry%nz])) then
+        message='Reactive EB CSV heat shape is inconsistent';return
+      endif
+      if(any(.not.ieee_is_finite(heat_release).and.geometry%cell_type/=eb_covered_cell_3d)) then
+        message='Reactive EB CSV heat contains nonfinite fluid values';return
+      endif
+    endif
     allocate(primitive(reactive_nprim(size(species))))
     do k = 1, geometry%nz
       do j = 1, geometry%ny
@@ -1238,6 +1352,7 @@ contains
       write(unit, '(a)', advance='no') &
         ",rhoY_" // trim(species(species_index)%name)
     end do
+    if(present(heat_release)) write(unit,'(a)',advance='no') ',heat_release_W_m3'
     write(unit, '(a)') ""
 
     do k = 1, geometry%nz
@@ -1257,7 +1372,7 @@ contains
             message = "Reactive EB 3D state changed during CSV output"
             return
           end if
-          write(unit, '(*(es25.16e3,:,","))') &
+          write(unit, '(*(es25.16e3,:,","))',advance='no') &
             time, real(i, dp), real(j, dp), real(k, dp), x, y, z, &
             real(geometry%cell_type(i, j, k), dp), &
             geometry%volume_fraction(i, j, k), &
@@ -1269,6 +1384,13 @@ contains
               species_index = 1, size(species)), &
             (state(reactive_species_component(species_index), i, j, k), &
               species_index = 1, size(species))
+          if(present(heat_release)) then
+            local_temperature=0
+            if(geometry%cell_type(i,j,k)/=eb_covered_cell_3d) local_temperature=heat_release(i,j,k)
+            write(unit,'(a,es25.16e3)') ',',local_temperature
+          else
+            write(unit,'(a)') ''
+          endif
         end do
       end do
     end do

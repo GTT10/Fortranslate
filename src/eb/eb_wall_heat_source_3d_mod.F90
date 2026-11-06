@@ -10,6 +10,7 @@ module eb_wall_heat_source_3d_mod
   use eb_geometry_3d_mod, only: eb_geometry_3d,eb_cut_cell_3d,eb_covered_cell_3d
   use eb_boundary_gradient_3d_mod, only: eb_boundary_gradient_3d, &
     build_eb_quadratic_gradient_3d,apply_eb_boundary_flux_3d,apply_eb_boundary_viscous_flux_3d
+  use reactive_transport_3d_mod, only: valid_constant_transport_coefficients
   implicit none
   private
   public :: compute_eb_wall_heat_source_3d,compute_eb_wall_transport_source_3d
@@ -19,7 +20,10 @@ contains
   ! Rates are per fluid volume; the ledger is signed transfer to gas.
   ! Frequency bounds frozen heat/viscous row sums, not nonlinear positivity.
   subroutine compute_eb_wall_transport_source_3d(species,transport,state,temperature,geometry,lower,upper, &
-      conduction,noslip,wall_temperature,transport_rate,wall_exchange,frequency,ok)
+      conduction,noslip,wall_temperature,transport_rate,wall_exchange,frequency,ok, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:),internal_energy_density(:,:,:)
+    real(dp), allocatable :: held
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -39,6 +43,9 @@ contains
     logical :: covered(0:2,0:2,0:2),valid
     integer :: n(3),i,j,k,a,b,c,s,cell(3),out(3),donor(3),ios
     ok=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if(.not.geometry%is_valid().or.size(species)<1) return
     n=[geometry%nx,geometry%ny,geometry%nz]
     if(size(transport)/=size(species).or.any(shape(state)/=[reactive_nvar(size(species)),n])) return
@@ -48,6 +55,10 @@ contains
     if(conduction) then
       if(.not.ieee_is_finite(wall_temperature).or.wall_temperature<=0) return
     end if
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      allocate(held)
+    endif
     spacing=[geometry%dx,geometry%dy,geometry%dz]
     origin=[geometry%x_lower,geometry%y_lower,geometry%z_lower]
     allocate(rates(reactive_nvar(size(species)),upper(1)-lower(1)+1,upper(2)-lower(2)+1,upper(3)-lower(3)+1), &
@@ -85,8 +96,9 @@ contains
                 if(any(donor<1).or.any(donor>n)) return
                 if(geometry%cell_type(donor(1),donor(2),donor(3))==eb_covered_cell_3d) return
                 if(.not.recovered(donor(1),donor(2),donor(3))) then
+                  if(allocated(held)) held=internal_energy_density(donor(1),donor(2),donor(3))
                   call reactive_conserved_to_primitive(species,state(:,donor(1),donor(2),donor(3)), &
-                    temperature(donor(1),donor(2),donor(3)),q,t,sound,valid)
+                    temperature(donor(1),donor(2),donor(3)),q,t,sound,valid,internal_energy_density=held)
                   if(.not.valid) return
                   if(noslip) velocities(:,donor(1),donor(2),donor(3))=q(2:4)
                   temps(donor(1),donor(2),donor(3))=t;recovered(donor(1),donor(2),donor(3))=.true.
@@ -96,13 +108,19 @@ contains
               end do
             end do
           end do
-          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),q,t,sound,valid)
+          if(allocated(held)) held=internal_energy_density(i,j,k)
+          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),q,t,sound,valid, &
+            internal_energy_density=held)
           if(.not.valid) return
           do s=1,size(species)
             y(s)=q(reactive_mass_fraction_component(s))
           end do
-          call mixture_transport_coefficients(species,transport,y,t,q(5),mu,conductivity,diffusion,valid)
-          if(.not.valid) return
+          if(present(constant_coefficients)) then
+            mu=constant_coefficients(1);conductivity=constant_coefficients(2)
+          else
+            call mixture_transport_coefficients(species,transport,y,t,q(5),mu,conductivity,diffusion,valid)
+            if(.not.valid) return
+          endif
           fluid_volume=geometry%volume_fraction(i,j,k)*product(spacing)
           row_sum=sum(abs(stencil%weights),mask=abs(stencil%weights)>1e-14_dp)+abs(stencil%wall_weight)
           if(conduction) then
@@ -116,7 +134,9 @@ contains
           end if
           if(noslip) then
             bulk=0
-            if(allocated(transport(1)%simple_binary)) then
+            if(present(constant_coefficients)) then
+              if(size(constant_coefficients)==4) bulk=constant_coefficients(3)
+            else if(allocated(transport(1)%simple_binary)) then
               call simple_bulk_viscosity(species,transport,y,t,bulk,valid)
               if(.not.valid) return
             end if
@@ -137,7 +157,9 @@ contains
   end subroutine
   ! Compatibility entry for heat-only callers; commit all outputs together.
   subroutine compute_eb_wall_heat_source_3d(species,transport,state,temperature,geometry,lower,upper, &
-      wall_temperature,heat_rate,wall_power,frequency,ok)
+      wall_temperature,heat_rate,wall_power,frequency,ok, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:),internal_energy_density(:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -150,11 +172,15 @@ contains
     integer :: dims(3),ios
     logical :: valid
     ok=.false.;dims=shape(heat_rate)
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if(any(dims/=upper-lower+1)) return
     allocate(rates(reactive_nvar(size(species)),dims(1),dims(2),dims(3)),stat=ios)
     if(ios/=0) return
     call compute_eb_wall_transport_source_3d(species,transport,state,temperature,geometry,lower,upper, &
-      .true.,.false.,wall_temperature,rates,exchange,bound,valid)
+      .true.,.false.,wall_temperature,rates,exchange,bound,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_density)
     if(.not.valid) return
     heat_rate=rates(5,:,:,:);wall_power=exchange(5);frequency=bound;ok=.true.
   end subroutine

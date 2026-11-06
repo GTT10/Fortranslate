@@ -168,17 +168,22 @@ contains
     end do
     state=candidate;ok=.true.
   end subroutine
-  subroutine average_down_amr_patch_tree_3d(tree,state,ok)
+  subroutine average_down_amr_patch_tree_3d(tree,state,ok,minimum_depth)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(amr_tree_state_3d), intent(inout) :: state
     logical, intent(out) :: ok
+    integer, optional, intent(in) :: minimum_depth
     type(amr_tree_state_3d) :: candidate
-    integer :: node,parent
+    integer :: node,parent,depth
     ok=.false.
     if (.not.state%is_valid(tree)) return
+    depth=0
+    if(present(minimum_depth)) depth=minimum_depth
+    if(depth<0.or.depth>=tree%level_count()) return
     candidate=state
     do node=size(tree%nodes),2,-1
       parent=tree%nodes(node)%parent
+      if(tree%nodes(parent)%level<depth) cycle
       call average_down_3d(candidate%fields(parent)%values,candidate%fields(node)%values,tree%nodes(node)%patch,ok)
       if (.not.ok) return
     end do

@@ -1,6 +1,7 @@
 module reactive_eb_2d_driver_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -81,7 +82,8 @@ contains
       config%state_redist_target_volume_fraction > 0.0_dp .and. &
       config%state_redist_target_volume_fraction <= 1.0_dp .and. &
       (config%state_redist_max_order == 0 .or. &
-       config%state_redist_max_order == 2) .and. &
+       config%state_redist_max_order == 2 .or. &
+       config%state_redist_max_order == 4) .and. &
       reactive_eb_wall_configuration_is_valid(config)
   end function supported_reactive_eb_hydro_config
 
@@ -393,6 +395,8 @@ contains
       transport, minimum_transport_theta, base_mole_fractions, &
       chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: state(:, :, :), temperature(:, :)
@@ -416,6 +420,10 @@ contains
     integer :: nvar
     type(reactive_boundary_set_2d) :: boundaries
 
+    call configure_reactive_2d_eos(species,config%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) then
+      ok=.false.;return
+    endif
     ok = .false.
     time = 0.0_dp
     steps = 0
@@ -426,17 +434,17 @@ contains
     if (.not. supported_reactive_eb_hydro_config(config)) return
     if (config%flow%transport_enabled .and. .not. present(transport)) return
     call build_configured_reactive_boundary_set_2d( &
-      species, config, boundaries, local_ok, base_mole_fractions)
+      eos_species, config, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
     call build_configured_eb_geometry_2d(config, geometry, local_ok)
     if (.not. local_ok) return
     if (present(base_mole_fractions)) then
       call initialize_reactive_2d( &
-        species, config%flow, state, temperature, dx, dy, base_density, &
+        eos_species, config%flow, state, temperature, dx, dy, base_density, &
         local_ok, base_mole_fractions)
     else
       call initialize_reactive_2d( &
-        species, config%flow, state, temperature, dx, dy, base_density, &
+        eos_species, config%flow, state, temperature, dx, dy, base_density, &
         local_ok)
     end if
     if (.not. local_ok) return
@@ -459,11 +467,11 @@ contains
       if (remaining <= time_tolerance) exit
       if (steps >= config%flow%maximum_steps) return
       call compute_reactive_eb_cfl_timestep_2d( &
-        species, state, temperature, geometry, config%flow%cfl, dt, local_ok)
+        eos_species, state, temperature, geometry, config%flow%cfl, dt, local_ok)
       if (.not. local_ok) return
       if (config%flow%transport_enabled) then
         call reactive_eb_transport_timestep_2d( &
-          species, transport, state, temperature, geometry, &
+          eos_species, transport, state, temperature, geometry, &
           config%flow%transport_cfl, config%flow%viscosity_enabled, &
           config%flow%thermal_conduction_enabled, &
           config%flow%species_diffusion_enabled, transport_dt, &
@@ -474,7 +482,7 @@ contains
       dt = min(dt, remaining)
       if (config%flow%transport_enabled) then
         call advance_reactive_eb_strang_2d( &
-          species, reactions, state, temperature, geometry, &
+          eos_species, reactions, state, temperature, geometry, &
           config%flow%riemann_solver, dt, config%flow%chemistry_enabled, &
           config%flow%chemistry_relative_tolerance, &
           config%flow%chemistry_absolute_tolerance, candidate_state, &
@@ -489,7 +497,7 @@ contains
           boundaries, chemistry_integrator)
       else
         call advance_reactive_eb_strang_2d( &
-          species, reactions, state, temperature, geometry, &
+          eos_species, reactions, state, temperature, geometry, &
           config%flow%riemann_solver, dt, config%flow%chemistry_enabled, &
           config%flow%chemistry_relative_tolerance, &
           config%flow%chemistry_absolute_tolerance, candidate_state, &

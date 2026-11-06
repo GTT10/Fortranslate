@@ -4,6 +4,8 @@ module les_amr_patch_tree_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use reactive_mol_3d_mod, only: convert_regular_energy_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_ghosted_3d
   use les_filter_3d_mod, only: les_filter_weights
@@ -18,12 +20,61 @@ module les_amr_patch_tree_mod
   public :: advance_amr_patch_tree_les_3d,compute_amr_patch_tree_les_timestep_3d
   public :: compute_amr_patch_tree_les_rhs_3d
   public :: advance_amr_patch_tree_les_level_3d
+  public :: convert_amr_les_tree_energy_3d
 contains
+  subroutine convert_amr_les_tree_energy_3d(tree,state,spacing,frame,domain_lower,to_rotating,ok,owners,rank,maximum_depth)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(amr_tree_state_3d), intent(inout) :: state
+    real(dp), intent(in) :: spacing(3),domain_lower(3)
+    type(rotating_frame_3d), intent(in) :: frame
+    logical, intent(in) :: to_rotating
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: owners(:),rank
+    integer, optional, intent(in) :: maximum_depth
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: h(:,:)
+    integer :: node,parent
+    ok=.false.
+    if(.not.frame%is_valid().or..not.all(ieee_is_finite(domain_lower))) return
+    if(present(owners).neqv.present(rank)) return
+    if(present(owners)) then
+      if(size(owners)/=size(tree%nodes)) return
+    endif
+    if(.not.allocated(state%fields)) return
+    if(size(state%fields)/=size(tree%nodes)) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
+    if(.not.ok) return
+    allocate(h(3,size(tree%nodes)))
+    h(:,1)=spacing
+    do node=2,size(tree%nodes)
+      parent=tree%nodes(node)%parent
+      h(:,node)=h(:,parent)/real(tree%nodes(node)%patch%refinement_ratio,dp)
+    enddo
+    ok=.false.
+    do node=1,size(tree%nodes)
+      if(present(maximum_depth)) then
+        if(tree%nodes(node)%level>maximum_depth) cycle
+      endif
+      if(present(owners)) then
+        if(owners(node)/=rank) cycle
+      endif
+      if(.not.allocated(state%fields(node)%values)) return
+      call convert_regular_energy_3d(frame,domain_lower+real(origin(:,node),dp)*h(:,node),h(:,node), &
+        state%fields(node)%values,0,to_rotating,ok)
+      if(.not.ok) return
+    enddo
+    ok=.true.
+  end subroutine convert_amr_les_tree_energy_3d
   ! One instantaneous LES evaluation on every patch, before any reflux/update.
   subroutine compute_amr_patch_tree_les_rhs_3d(tree,species,state,temperature,spacing,faces,cs,prt,sct, &
       rates,flux,maximum_diffusivity,ok,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
-      target_depth,coarse_start,coarse_end,fractions)
+      target_depth,coarse_start,coarse_end,fractions,frame,domain_lower,internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    character(len=:), allocatable :: sampling_limiter
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     integer, optional, intent(in) :: target_depth
     type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
     real(dp), optional, intent(in) :: fractions(:)
@@ -42,16 +93,31 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     integer, optional, intent(in) :: test_ratio,grid_ratio
     logical, optional, intent(in) :: harmonic_mean
-    type(amr_tree_state_3d) :: packed,candidate
+    type(amr_tree_state_3d) :: packed,candidate,future_ordinary
     type(amr_tree_flux_3d), allocatable :: result(:)
     real(dp), allocatable :: h(:,:),ghost(:,:,:,:),inlet(:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
+    real(dp), allocatable :: sampled_h(:,:,:)
+    integer :: np,held_face,held_flag,held_low,held_high
     integer :: peer,n(3),nv,axis,level,width,ratio
-    real(dp) :: diffusion,largest,mach(6)
+    real(dp) :: diffusion,largest,mach(6),lower(3)
     character(len=32) :: filter,local_faces(6)
     logical :: valid,dynamic
+    if(present(internal_energy)) sampling_limiter='linear'
     ok=.false.;largest=0;nv=reactive_nvar(size(species))
+    np=nv+1+merge(1,0,present(internal_energy))
+    if(present(internal_energy)) then
+      if(.not.internal_energy%is_valid(tree)) return
+      do peer=1,size(tree%nodes)
+        if(size(internal_energy%fields(peer)%values,1)/=1) return
+        if(.not.all(ieee_is_finite(internal_energy%fields(peer)%values))) return
+      enddo
+    endif
+    if(present(frame).neqv.present(domain_lower)) return
+    if(present(frame)) then
+      if(.not.frame%is_valid().or..not.all(ieee_is_finite(domain_lower))) return
+    endif
     call prepare(tree,species,state,temperature,spacing,h,valid)
     if(.not.valid) return
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean,dynamic,filter,ratio,width,valid)
@@ -70,7 +136,7 @@ contains
       if(.not.coarse_start%is_valid(tree).or..not.coarse_end%is_valid(tree)) return
       do peer=1,size(tree%nodes)
         if(tree%nodes(peer)%level>=depth) cycle
-        if(size(coarse_start%fields(peer)%values,1)/=nv+1.or.size(coarse_end%fields(peer)%values,1)/=nv+1) return
+        if(size(coarse_start%fields(peer)%values,1)/=np.or.size(coarse_end%fields(peer)%values,1)/=np) return
       end do
     end if
     mach=-1
@@ -78,27 +144,62 @@ contains
     if(any(faces=='inflow'.and.mach<0)) then
       if(.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if(any(shape(inflow_state)/=[nv,6]).or.size(inflow_temperature)/=6) return
-      allocate(inlet(nv+1,6));inlet(:nv,:)=inflow_state;inlet(nv+1,:)=inflow_temperature
+      allocate(inlet(np,6));inlet(:nv,:)=inflow_state;inlet(nv+1,:)=inflow_temperature
+      if(present(internal_energy)) then
+        inlet(np,:)=0
+        do held_face=1,6
+          if(inlet(1,held_face)<=0) cycle
+          inlet(np,held_face)=inlet(5,held_face)-.5_dp*sum(inlet(2:4,held_face)**2)/inlet(1,held_face)
+        enddo
+      endif
     end if
     allocate(packed%fields(size(tree%nodes)),result(size(tree%nodes)))
     candidate=state
     do peer=1,size(tree%nodes)
       n=tree%nodes(peer)%shape
-      allocate(packed%fields(peer)%values(nv+1,n(1),n(2),n(3)))
+      allocate(packed%fields(peer)%values(np,n(1),n(2),n(3)))
       packed%fields(peer)%values(:nv,:,:,:)=state%fields(peer)%values
       packed%fields(peer)%values(nv+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+      if(present(internal_energy)) packed%fields(peer)%values(np:np,:,:,:)=internal_energy%fields(peer)%values
       if(tree%nodes(peer)%level<depth) packed%fields(peer)%values=coarse_start%fields(peer)%values
+      if(present(frame)) then
+        ! LES interpolates thermodynamic energy, including boundary and coarse donors.
+        lower=domain_lower+real(origin(:,peer),dp)*h(:,peer)
+        call convert_regular_energy_3d(frame,lower,h(:,peer),packed%fields(peer)%values,0,.false.,valid)
+        if(.not.valid) return
+      endif
       candidate%fields(peer)%values=0
     end do
+    if(present(frame).and.present(coarse_end)) then
+      future_ordinary=coarse_end
+      do peer=1,size(tree%nodes)
+        if(tree%nodes(peer)%level>=depth) cycle
+        lower=domain_lower+real(origin(:,peer),dp)*h(:,peer)
+        call convert_regular_energy_3d(frame,lower,h(:,peer),future_ordinary%fields(peer)%values,0,.false.,valid)
+        if(.not.valid) return
+      enddo
+    endif
     do peer=1,size(tree%nodes)
       if(depth>=0.and.tree%nodes(peer)%level/=depth) cycle
       n=tree%nodes(peer)%shape
-      call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
-        coarse_future=coarse_end,coarse_fractions=fractions, &
-        viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity,species_count=size(species),ghost_width=width, &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      if(present(frame).and.present(coarse_end)) then
+        call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
+          coarse_future=future_ordinary,coarse_fractions=fractions, &
+          viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity,species_count=size(species),ghost_width=width, &
+          species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy), &
+        coarse_limiter=sampling_limiter)
+      else
+        call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
+          coarse_future=coarse_end,coarse_fractions=fractions, &
+          viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity,species_count=size(species),ghost_width=width, &
+          species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy), &
+        coarse_limiter=sampling_limiter)
+      endif
       if(.not.valid) return
-      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width)
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width, &
+        stored_internal_energy=present(internal_energy))
       if(.not.valid) return
       allocate(result(peer)%x(nv,n(1)+1,n(2),n(3)),result(peer)%y(nv,n(1),n(2)+1,n(3)))
       allocate(result(peer)%z(nv,n(1),n(2),n(3)+1))
@@ -107,23 +208,29 @@ contains
         if(origin(axis,peer)==0) local_faces(2*axis-1)=faces(2*axis-1)
         if(origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
       end do
+      if(present(internal_energy)) sampled_h=ghost(np,:,:,:)
       if(dynamic) then
         call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),h(:,peer),filter,ratio,width, &
           candidate%fields(peer)%values,result(peer)%x,result(peer)%y,result(peer)%z,valid,grid_ratio,harmonic_mean, &
-          diffusion,local_faces,wall_temperature)
+          diffusion,local_faces,wall_temperature,internal_energy_density=sampled_h)
       else
         call compute_les_ghosted_rhs_3d(species,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),n,h(:,peer),cs,prt,sct, &
           candidate%fields(peer)%values,diffusion,valid,boundary_faces=local_faces,wall_temperature=wall_temperature, &
-          model=model,ci=ci,fx=result(peer)%x,fy=result(peer)%y,fz=result(peer)%z)
+          model=model,ci=ci,fx=result(peer)%x,fy=result(peer)%y,fz=result(peer)%z,internal_energy_density=sampled_h)
       end if
       if(.not.valid) return
       largest=max(largest,diffusion)
     end do
     rates=candidate;call move_alloc(result,flux);maximum_diffusivity=largest;ok=.true.
   end subroutine compute_amr_patch_tree_les_rhs_3d
-  subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
+  recursive subroutine compute_amr_patch_tree_les_timestep_3d(tree,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure)
+      coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure, &
+      frame,domain_lower,internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    character(len=:), allocatable :: sampling_limiter
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -142,16 +249,39 @@ contains
     character(len=32) :: filter
     integer :: filter_ratio,width
     logical :: dynamic
-    type(amr_tree_state_3d) :: averaged,packed
+    type(amr_tree_state_3d), allocatable :: timestep_h
+    type(amr_tree_state_3d) :: averaged,packed,ordinary
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),rhs(:,:,:,:),recovered(:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
     integer, allocatable :: ratios(:)
     real(dp) :: candidate,diffusivity,largest,rate
     character(len=32) :: local_faces(6)
+    real(dp), allocatable :: sampled_h(:,:,:)
+    integer :: np,held_face,held_flag,held_low,held_high
     integer :: peer,n(3),nvar,axis,level
     integer(int64) :: factor
     logical :: valid
+    if(present(coarse_limiter)) sampling_limiter=coarse_limiter
+    if(present(internal_energy)) sampling_limiter='linear'
     ok=.false.
+    if(present(internal_energy)) then
+      if(.not.internal_energy%is_valid(tree)) return
+      do peer=1,size(tree%nodes)
+        if(size(internal_energy%fields(peer)%values,1)/=1) return
+        if(.not.all(ieee_is_finite(internal_energy%fields(peer)%values))) return
+      enddo
+    endif
+    if(present(frame).neqv.present(domain_lower)) return
+    if(present(frame)) then
+      ordinary=state
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.false.,valid)
+      if(.not.valid) return
+      call compute_amr_patch_tree_les_timestep_3d(tree,species,ordinary,temperature,root_spacing,cfl,faces, &
+        cs,prt,sct,dt,maximum_diffusivity,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
+        coarse_limiter,outlet_pressure,model,ci,test_model,test_ratio,grid_ratio,harmonic_mean,subcycle, &
+        inflow_mach,inflow_pressure,internal_energy=internal_energy)
+      return
+    endif
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
       dynamic,filter,filter_ratio,width,valid)
     if(.not.valid) return
@@ -172,6 +302,7 @@ contains
       end if
     end if
     nvar=reactive_nvar(size(species))
+    np=nvar+1+merge(1,0,present(internal_energy))
     mach=-1
     if(present(inflow_mach)) mach=inflow_mach
     if(present(inflow_temperature)) then
@@ -181,32 +312,49 @@ contains
       if (.not.present(inflow_state).or..not.present(inflow_temperature)) return
       if (any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
       if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
-      allocate(inlet(nvar+1,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+      allocate(inlet(np,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+      if(present(internal_energy)) then
+        inlet(np,:)=0
+        do held_face=1,6
+          if(inlet(1,held_face)<=0) cycle
+          inlet(np,held_face)=inlet(5,held_face)-.5_dp*sum(inlet(2:4,held_face)**2)/inlet(1,held_face)
+        enddo
+      endif
     end if
     averaged=state
     call average_down_amr_patch_tree_3d(tree,averaged,valid)
     if (.not.valid) return
+    if(present(internal_energy)) then
+      allocate(timestep_h);timestep_h=internal_energy
+      call average_down_amr_patch_tree_3d(tree,timestep_h,valid)
+      if(.not.valid) return
+    endif
     allocate(packed%fields(size(tree%nodes)))
     do peer=1,size(tree%nodes)
       n=tree%nodes(peer)%shape
+      if(present(internal_energy)) sampled_h=timestep_h%fields(peer)%values(1,:,:,:)
       allocate(recovered(n(1),n(2),n(3)))
       call recover_reactive_temperatures_3d(species,averaged%fields(peer)%values, &
-        temperature%fields(peer)%values(1,:,:,:),n(1),n(2),n(3),recovered,valid)
+        temperature%fields(peer)%values(1,:,:,:),n(1),n(2),n(3),recovered,valid, &
+        internal_energy_density=sampled_h)
       if (.not.valid) return
-      allocate(packed%fields(peer)%values(nvar+1,n(1),n(2),n(3)))
+      allocate(packed%fields(peer)%values(np,n(1),n(2),n(3)))
       packed%fields(peer)%values(:nvar,:,:,:)=averaged%fields(peer)%values
       packed%fields(peer)%values(nvar+1,:,:,:)=recovered
+      if(present(internal_energy)) packed%fields(peer)%values(np:np,:,:,:)=timestep_h%fields(peer)%values
       deallocate(recovered)
     end do
     candidate=1e6_dp;largest=0
     do peer=1,size(tree%nodes)
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid,viscous_wall=.true., &
-        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter, &
+        inflow_state=inlet,wall_velocity=wall_velocity,coarse_limiter=sampling_limiter, &
         species_count=size(species),ghost_width=width, &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy))
       if (.not.valid) return
-      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width)
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid,ghost_width=width, &
+        stored_internal_energy=present(internal_energy))
       if (.not.valid) return
       local_faces='outflow';level=tree%nodes(peer)%level+1
       do axis=1,3
@@ -214,17 +362,20 @@ contains
         if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
       end do
       allocate(rhs(nvar,n(1),n(2),n(3)))
+      if(present(internal_energy)) sampled_h=ghost(np,:,:,:)
       if(dynamic) then
         block
           real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
           allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
           call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             h(:,peer),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid_ratio,harmonic_mean,diffusivity, &
-              boundary_faces=local_faces,wall_temperature=wall_temperature)
+              boundary_faces=local_faces,wall_temperature=wall_temperature, &
+              internal_energy_density=sampled_h)
         end block
       else
       call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer), &
-        cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature,model=model,ci=ci)
+        cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature, &
+      model=model,ci=ci,internal_energy_density=sampled_h)
       end if
       if (.not.valid) return
       rate=diffusivity*sum(1._dp/h(:,peer)**2)/real(counts(level),dp)
@@ -235,10 +386,12 @@ contains
     dt=candidate;maximum_diffusivity=largest;ok=.true.
   end subroutine
 
-  subroutine advance_amr_patch_tree_les_3d(tree,species,state,temperature,root_spacing,dt,faces, &
+  recursive subroutine advance_amr_patch_tree_les_3d(tree,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -260,7 +413,7 @@ contains
     character(len=32) :: filter
     integer :: filter_ratio,width
     logical :: dynamic
-    type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature
+    type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature,ordinary,ordinary_t
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
       first_max,second_max
@@ -268,7 +421,24 @@ contains
     integer, allocatable :: ratios(:)
     integer :: node,nvar
     logical :: valid
+    real(dp) :: rotated_budget(size(boundary_change)),rotated_max
     ok=.false.
+    if(present(frame).neqv.present(domain_lower)) return
+    if(present(frame)) then
+      ! SGS mass flux is zero, so its energy increment is identical in both storage conventions.
+      ordinary=state;ordinary_t=temperature
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.false.,valid)
+      if(.not.valid) return
+      call advance_amr_patch_tree_les_3d(tree,species,ordinary,ordinary_t,root_spacing,dt,faces, &
+        cs,prt,sct,rotated_budget,rotated_max,valid, &
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+        test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      if(.not.valid) return
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.true.,valid)
+      if(.not.valid) return
+      state=ordinary;temperature=ordinary_t;boundary_change=rotated_budget;maximum_correction=rotated_max;ok=.true.
+      return
+    endif
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
       dynamic,filter,filter_ratio,width,valid)
     if(.not.valid) return
@@ -421,11 +591,13 @@ contains
   ! Advances only depth, returning SSPRK2 time-integrated faces for later reflux.
   ! Coarse endpoint fields pack conserved state followed by a temperature guess.
   ! The recursive caller owns synchronization/restriction after child intervals.
-  subroutine advance_amr_patch_tree_les_level_3d(tree,species,state,temperature,depth,root_spacing,dt,faces, &
+  recursive subroutine advance_amr_patch_tree_les_level_3d(tree,species,state,temperature,depth,root_spacing,dt,faces, &
       cs,prt,sct,integrated_flux,maximum_diffusivity,ok, &
       coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
       wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(inout) :: state,temperature
@@ -455,13 +627,51 @@ contains
     ! Endpoints pack conserved components followed by a temperature guess.
     type(amr_tree_state_3d), optional, intent(in) :: coarse_start,coarse_end
     real(dp), optional, intent(in) :: fractions_start(:),fractions_end(:),inflow_state(:,:),inflow_temperature(:)
-    type(amr_tree_state_3d) :: initial,candidate,temps,packed,updated,first_t
+    type(amr_tree_state_3d) :: initial,candidate,temps,packed,updated,first_t,ordinary,ordinary_t, &
+      ordinary_start,ordinary_end
     type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),les_rhs(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:),recovered(:,:,:)
     real(dp) :: rhs(reactive_nvar(size(species)))
     integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint,axis,level
     logical :: valid
+    type(amr_tree_flux_3d), allocatable :: rotated_flux(:)
+    real(dp) :: rotated_diffusivity
     ok=.false.
+    if(present(frame).neqv.present(domain_lower)) return
+    if(present(frame)) then
+      if(present(coarse_start).neqv.present(coarse_end)) return
+      ordinary=state;ordinary_t=temperature
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.false.,valid)
+      if(.not.valid) return
+      if(present(coarse_start).and.present(coarse_end)) then
+        ordinary_start=coarse_start;ordinary_end=coarse_end
+        call convert_amr_les_tree_energy_3d(tree,ordinary_start,root_spacing,frame,domain_lower,.false.,valid, &
+          maximum_depth=depth-1)
+        if(.not.valid) return
+        call convert_amr_les_tree_energy_3d(tree,ordinary_end,root_spacing,frame,domain_lower,.false.,valid, &
+          maximum_depth=depth-1)
+        if(.not.valid) return
+        call advance_amr_patch_tree_les_level_3d(tree,species,ordinary,ordinary_t,depth,root_spacing,dt,faces, &
+          cs,prt,sct,rotated_flux,rotated_diffusivity,valid, &
+          ordinary_start,ordinary_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
+          wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+          test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      else
+        call advance_amr_patch_tree_les_level_3d(tree,species,ordinary,ordinary_t,depth,root_spacing,dt,faces, &
+          cs,prt,sct,rotated_flux,rotated_diffusivity,valid, &
+          inflow_state=inflow_state,inflow_temperature=inflow_temperature, &
+          wall_temperature=wall_temperature,wall_velocity=wall_velocity,coarse_limiter=coarse_limiter, &
+          outlet_pressure=outlet_pressure,model=model,ci=ci, &
+          test_model=test_model,test_ratio=test_ratio,grid_ratio=grid_ratio,harmonic_mean=harmonic_mean, &
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+      endif
+      if(.not.valid) return
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.true.,valid)
+      if(.not.valid) return
+      state=ordinary;temperature=ordinary_t;maximum_diffusivity=rotated_diffusivity
+      call move_alloc(rotated_flux,integrated_flux)
+      ok=.true.;return
+    endif
     call dynamic_controls(model,faces,test_model,test_ratio,grid_ratio,harmonic_mean, &
       dynamic,filter,filter_ratio,width,valid)
     if(.not.valid) return

@@ -15,6 +15,7 @@ module mpi_amr_patch_tree_transport_level_3d_mod
   use mpi_amr_patch_tree_ghost_3d_mod, only: fill_mpi_amr_tree_ghosts_3d
   use mpi_amr_patch_tree_thermo_3d_mod, only: recover_mpi_amr_tree_temperatures_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
+  use mpi_amr_patch_tree_transport_3d_mod, only: agree_mpi_constant_transport_coefficients
   implicit none
   private
   public :: advance_mpi_amr_tree_transport_level_3d
@@ -22,7 +23,10 @@ contains
   subroutine advance_mpi_amr_tree_transport_level_3d(tree,owners,species,transport,state,temperature,depth,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,integrated_flux,minimum_theta,comm,ok, &
       coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure)
+      wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    logical :: constant_agreed
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -57,6 +61,8 @@ contains
     integer, allocatable :: ratios(:)
     logical :: valid
     ok=.false.
+    call agree_mpi_constant_transport_coefficients(constant_coefficients,comm,constant_agreed,species=species)
+    if(.not.constant_agreed) return
     nvar=reactive_nvar(size(species))
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
@@ -290,7 +296,8 @@ contains
           end do
           call physical_transport_ghosted_fluxes_3d(species,transport,u%fields(peer)%values, &
             t%fields(peer)%values(1,:,:,:),ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer),dt,local_faces, &
-            viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,local_theta,success,wall_temperature,wall_velocity)
+            viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,local_theta,success,wall_temperature,wall_velocity, &
+            constant_coefficients=constant_coefficients)
           theta=min(theta,local_theta)
           if (.not.success) exit
           do k=1,n(3)

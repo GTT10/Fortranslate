@@ -3,6 +3,7 @@
 import argparse
 import csv
 import math
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,7 +24,14 @@ def main():
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--pressure-outlet', action='store_true')
     parser.add_argument('--rate-files', action='store_true')
+    parser.add_argument('--fixed-parts', action='store_true')
+    parser.add_argument('--euler', action='store_true')
     parser.add_argument('--ppm', action='store_true')
+    parser.add_argument('--sdc', action='store_true')
+    parser.add_argument('--mol', action='store_true')
+    parser.add_argument('--rotation', action='store_true')
+    parser.add_argument('--reactor', choices=('native', 'cvode'), default='native')
+    parser.add_argument('--thin-slabs', action='store_true')
     parser.add_argument('--difmag', type=float)
     parser.add_argument('--les-isotropic', action='store_true')
     parser.add_argument('--les-harmonic', action='store_true')
@@ -34,6 +42,26 @@ def main():
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='run-', dir=args.work_dir.resolve()))
     source = args.input.read_text()
+    grid = (8, 4, 4)
+    if args.mol:
+        args.sdc = True
+    if args.rotation and not args.mol:
+        parser.error('--rotation requires --mol')
+    if args.reactor == 'cvode' and not args.sdc:
+        parser.error('--reactor cvode requires --sdc or --mol')
+    if args.thin_slabs:
+        if not args.sdc or args.ranks != 4:
+            parser.error('--thin-slabs requires --sdc --ranks 4')
+        grid = (5, 3, 2)
+        source, replacements = re.subn(r'(?m)^\s*cells=8,4,4\s*$', ' cells=5,3,2', source)
+        assert replacements == 1, 'thin slab fixture must replace the known base grid'
+    if args.sdc:
+        source = source.replace('&mpi_spray', "&mpi_spray\n time_integrator='sdc',sdc_iterations=2,"
+                                "solver='pelec',hydro_reconstruction='characteristic_ppm',")
+    if args.euler:
+        source = source.replace('&mpi_spray', "&mpi_spray\n mixture_time_scheme='euler',")
+    if args.fixed_parts:
+        source = source.replace('&mpi_spray', '&mpi_spray\n fixed_parts=.true.,')
     if args.ppm:
         source = source.replace('&mpi_spray', "&mpi_spray\n hydro_reconstruction='characteristic_ppm',")
     if args.difmag is not None:
@@ -71,7 +99,15 @@ def main():
             source = source.replace('&mpi_spray', "&mpi_spray\n les_test_filter='gaussian', les_test_ratio=4, les_grid_ratio=2,")
         input_path = work / 'les.nml'
         input_path.write_text(source)
-    if args.ppm or args.difmag is not None:
+    if args.mol:
+        source = source.replace("time_integrator='sdc'", "time_integrator='mol'")
+        source = source.replace("hydro_reconstruction='characteristic_ppm'",
+                                "hydro_reconstruction='characteristic_plm'")
+    if args.reactor == 'cvode':
+        source = source.replace("&mpi_spray", "&mpi_spray\n chemistry='cvode',", 1)
+    if args.rotation:
+        source += "\n&mpi_spray_rotation\n enabled=.true.,rotation_axis=2,angular_speed=3000,axis_point=.03,-.04,.02\n/\n"
+    if args.sdc or args.ppm or args.difmag is not None or args.fixed_parts or args.euler:
         input_path = work / 'hydro.nml'
         input_path.write_text(source)
     command = [str(args.mpiexec.resolve()), '-n', str(args.ranks),
@@ -96,9 +132,10 @@ def main():
     if args.dynamic_walls:
         assert abs(float(history[-1]['boundary_energy'])) > 1e-14
     gas = [row for path in sorted(work.glob('*.gas.csv')) for row in rows(path)]
-    assert len(gas) == 8 * 4 * 4
+    assert len(gas) == math.prod(grid)
     cells = {(int(row['i']), int(row['j']), int(row['k'])) for row in gas}
-    assert cells == {(i, j, k) for i in range(1, 9) for j in range(1, 5) for k in range(1, 5)}
+    assert cells == {(i, j, k) for i in range(1, grid[0] + 1)
+                     for j in range(1, grid[1] + 1) for k in range(1, grid[2] + 1)}
     for row in gas:
         assert all(math.isfinite(float(value)) for value in row.values())
         rho = float(row['rho'])
@@ -112,6 +149,13 @@ def main():
         assert all(math.isfinite(float(value)) for value in row.values())
         assert math.isclose(float(row['mass']), float(row['component_mass_1']) + float(row['component_mass_2']), rel_tol=2e-12)
         assert float(row['temperature']) > 330
+        if args.fixed_parts:
+            assert all(float(row[key]) == 0 for key in ('u', 'v', 'w'))
+            for key, value in zip(('x', 'y', 'z'), (.004, .002, .002)):
+                assert float(row[key]) == value
+    if args.fixed_parts:
+        assert float(history[-1]['external_energy']) < 0
+        assert float(history[-1]['external_mx']) != 0
     # A second invocation must fail before replacing the saved history.
     original = (work / 'periodic_mixture.history.csv').read_bytes()
     repeated = subprocess.run(command, cwd=work, capture_output=True, text=True, timeout=90)
@@ -123,7 +167,7 @@ def main():
         text = source.replace("output_prefix='periodic_mixture'", f"output_prefix='{name}'")
         if stop is not None:
             text = text.replace('final_time=2e-8', f'final_time={stop}')
-        text = text.replace('\n/', '\n' + additions + '\n/')
+        text = text.replace('\n/', '\n' + additions + '\n/', 1)
         path = work / f'{name}.nml'
         path.write_text(text + file_group)
         invocation = [str(args.mpiexec.resolve()), '-n', str(rank_count),
@@ -135,6 +179,20 @@ def main():
     def snapshots(prefix, suffix, keys):
         records = [row for path in sorted(work.glob(f'{prefix}.rank*.{suffix}.csv')) for row in rows(path)]
         return {tuple(int(row[key]) for key in keys): row for row in records}
+
+    if not (args.sdc or args.fixed_parts or args.les_model or args.ppm or args.difmag is not None):
+        future_jet = 'speed=100000,half_angle=0,injection_start=1.5e-8,particle_cfl=.5,'
+        run_variant('future_jet_cfl', args.ranks, future_jet)
+        jet_history = rows(work / 'future_jet_cfl.history.csv')
+        # No particles exist before the scheduled jet. Its configured speed
+        # nevertheless limits the first flow step to .5*dx/speed.
+        assert int(jet_history[0]['parcels']) == 0
+        assert math.isclose(float(jet_history[1]['time']), 5e-9, rel_tol=1e-13)
+        run_variant('fixed_future_jet', args.ranks, future_jet + 'fixed_parts=.true.,')
+        fixed_history = rows(work / 'fixed_future_jet.history.csv')
+        assert math.isclose(float(fixed_history[1]['time']), 1e-8, rel_tol=1e-13)
+        run_variant('invalid_particle_cfl', args.ranks, 'particle_cfl=0,', expect_success=False)
+        assert not (work / 'invalid_particle_cfl.history.csv').exists()
 
     if args.rate_files:
         ports = ('port_count=2,port_events=2,2,port_start=0,7.5e-9,'
@@ -173,6 +231,9 @@ def main():
         return
 
     run_variant('split', args.ranks, " checkpoint_path='split.chk'", stop=split_time)
+    run_variant('particle_cfl_mismatch', args.ranks,
+                "restart_path='split.chk',particle_cfl=.4", expect_success=False)
+    assert not (work / 'particle_cfl_mismatch.history.csv').exists()
     assert (work / 'split.chk').is_file()
     reference_gas = snapshots('periodic_mixture', 'gas', ['i', 'j', 'k'])
     reference_particles = snapshots('periodic_mixture', 'particles', ['id'])
@@ -193,6 +254,80 @@ def main():
         assert int(resumed_history[0]['step']) == 1 and int(resumed_history[-1]['step']) == final_step
         assert int(resumed_history[-1]['parcels']) == 4
         assert abs(float(resumed_history[-1]['relative_energy_error'])) < 2e-11
+    if args.sdc:
+        assert all('heat_release' in row for row in reference_gas.values())
+        assert any(float(row['heat_release']) != 0 for row in reference_gas.values())
+        checkpoint_lines = (work / 'split.chk').read_text().splitlines()
+        magic_index = 1 if checkpoint_lines[0] == 'PELEF_SPRAY_TIMESTEP_HISTORY_V1' else 0
+        assert checkpoint_lines[magic_index].endswith('_IR_V1_HEAT_V1')
+        run_variant('sdc_repacked', 6 - args.ranks,
+                    "restart_path='split.chk',checkpoint_path='repacked.chk'", stop=split_time)
+        assert (work / 'repacked.chk').read_bytes() == (work / 'split.chk').read_bytes()
+        run_variant('sdc_iterations_changed', args.ranks,
+                    "restart_path='split.chk',sdc_iterations=3", expect_success=False)
+        assert 'Restart rejected' in (work / 'sdc_iterations_changed.log').read_text()
+        if args.mol:
+            run_variant('mol_flux_changed', args.ranks,
+                        "restart_path='split.chk',mol_lax_friedrichs=.true.", expect_success=False)
+            assert 'Restart rejected' in (work / 'mol_flux_changed.log').read_text()
+            run_variant('mol_integrator_changed', args.ranks,
+                        "restart_path='split.chk',time_integrator='sdc',hydro_reconstruction='characteristic_ppm'",
+                        expect_success=False)
+            expected = 'Rotation requires the MOL integrator' if args.rotation else 'Restart rejected'
+            assert expected in (work / 'mol_integrator_changed.log').read_text()
+        if args.rotation:
+            rotating_source = source
+            for label, old, new in (
+                ('rotation_axis_changed', 'rotation_axis=2', 'rotation_axis=1'),
+                ('rotation_omega_changed', 'angular_speed=3000', 'angular_speed=3100'),
+                ('rotation_point_changed', 'axis_point=.03,-.04,.02', 'axis_point=.04,-.04,.02'),
+                ('rotation_disabled', 'enabled=.true.,rotation_axis=2,angular_speed=3000,axis_point=.03,-.04,.02',
+                 'enabled=.false.'),
+            ):
+                source = rotating_source.replace(old, new)
+                run_variant(label, args.ranks, "restart_path='split.chk'", expect_success=False)
+                assert 'Restart rejected' in (work / f'{label}.log').read_text()
+                assert not (work / f'{label}.history.csv').exists()
+            # Omega=0 must preserve the ordinary MOL calculation exactly.
+            source = rotating_source[:rotating_source.index('&mpi_spray_rotation')]
+            run_variant('ordinary', args.ranks, '')
+            source += "\n&mpi_spray_rotation\n enabled=.true.,rotation_axis=2,angular_speed=0\n/\n"
+            run_variant('zero_rotation', args.ranks, '')
+            for suffix, keys in [('gas', ['i', 'j', 'k']), ('particles', ['id'])]:
+                assert snapshots('ordinary', suffix, keys) == snapshots('zero_rotation', suffix, keys)
+            ordinary_gas = snapshots('ordinary', 'gas', ['i', 'j', 'k'])
+            assert any(row['energy'] != ordinary_gas[key]['energy'] for key, row in reference_gas.items())
+            source = rotating_source
+        # Keep the modern schema and remove one required heat record.
+        (work / 'truncated_heat.chk').write_text('\n'.join(checkpoint_lines[:-2] + checkpoint_lines[-1:]) + '\n')
+        run_variant('sdc_heat_truncated', args.ranks,
+                    "restart_path='truncated_heat.chk'", expect_success=False)
+        assert 'Restart rejected' in (work / 'sdc_heat_truncated.log').read_text()
+        assert not (work / 'sdc_heat_truncated.history.csv').exists()
+        print(f'PASS MPI {"MOL" if args.mol else "SDC"} application, reacting heat and changed-rank restart: {work}')
+        return
+    if args.fixed_parts:
+        run_variant('changed_fixed', args.ranks,
+                    "restart_path='split.chk', fixed_parts=.false.", expect_success=False)
+        assert not (work / 'changed_fixed.history.csv').exists()
+        for name in ('resumed', 'redistributed'):
+            final = rows(work / f'{name}.history.csv')[-1]
+            for key in ('external_mass', 'external_mx', 'external_my', 'external_mz', 'external_energy'):
+                assert final[key] == history[-1][key], (name, key)
+    if args.euler:
+        run_variant('changed_scheme', args.ranks,
+                    "restart_path='split.chk', mixture_time_scheme='conservative'", expect_success=False)
+        assert 'Restart rejected' in (work / 'changed_scheme.log').read_text()
+        assert not (work / 'changed_scheme.history.csv').exists()
+        run_variant('invalid_scheme', args.ranks, "mixture_time_scheme='invalid'", expect_success=False)
+        assert 'Invalid mixture time scheme' in (work / 'invalid_scheme.log').read_text()
+        assert not (work / 'invalid_scheme.history.csv').exists()
+        run_variant('conservative_control', args.ranks, "mixture_time_scheme='conservative'")
+        control = snapshots('conservative_control', 'particles', ['id'])
+        assert control.keys() == reference_particles.keys()
+        assert any(float(row[column]) != float(control[key][column])
+                   for key, row in reference_particles.items()
+                   for column in ('temperature', 'mass', 'u', 'v', 'w'))
     if args.mach_inlet:
         original_source = source
         for label, old, new in [
@@ -213,6 +348,12 @@ def main():
         assert diagnostic in (work / 'changed_reconstruction.log').read_text()
     run_variant('incompatible', args.ranks, " restart_path='split.chk'\n liquid_cp=4000,2000", expect_success=False)
     assert not (work / 'incompatible.history.csv').exists()
+    if args.fixed_parts:
+        print(f'PASS fixed particles, constraint ledger and changed-rank restart: {work}')
+        return
+    if args.euler:
+        print(f'PASS Euler mixture update, scheme identity and changed-rank restart: {work}')
+        return
     if args.difmag is not None:
         for label, value, diagnostic in [
             ('changed_difmag', args.difmag + .1, 'Restart rejected'),

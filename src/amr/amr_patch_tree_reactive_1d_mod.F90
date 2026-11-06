@@ -30,6 +30,7 @@ module amr_patch_tree_reactive_1d_mod
     amr_ppm_ghost_width, advance_amr_level_1d, advance_transport_level_1d, &
     recover_level_temperatures_1d, fill_physical_ghosts_1d, &
     fill_fine_ghosts_1d, fill_fine_wide_ghosts_1d, write_amr_cell
+  use reactive_checkpoint_context_mod, only: eos_checkpoint_header
   implicit none
   private
 
@@ -1436,7 +1437,11 @@ contains
 
     integer :: unit, status, nvar, patch
 
+    character(len=:), allocatable :: expected_header
+
     ok = .false.
+    expected_header = eos_checkpoint_header(patch_tree_checkpoint_magic, species)
+    if (len(expected_header) == 0) return
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. solution%is_valid()) return
     nvar = size(solution%levels(1)%patches(1)%state, 1)
@@ -1444,7 +1449,7 @@ contains
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) return
-    write(unit, '(a)', iostat=status) patch_tree_checkpoint_magic
+    write(unit, '(a)', iostat=status) expected_header
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       patch_tree_checkpoint_schema, size(species), nvar, &
@@ -1473,19 +1478,23 @@ contains
     type(amr_patch_tree_reactive_solution_1d), intent(out) :: solution
     logical, intent(out) :: ok
 
-    character(len=64) :: magic, stored_name
+    character(len=1024) :: magic, stored_name
     logical :: local_ok
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: level_count, patch
 
+    character(len=:), allocatable :: expected_header
+
     ok = .false.
+    expected_header = eos_checkpoint_header(patch_tree_checkpoint_magic, species)
+    if (len(expected_header) == 0) return
     if (len_trim(path) == 0 .or. size(species) < 1 .or. &
         .not. config%amr_enabled) return
     open(newunit=unit, file=trim(path), status="old", action="read", &
       form="formatted", iostat=status)
     if (status /= 0) return
     read(unit, '(a)', iostat=status) magic
-    if (status /= 0 .or. trim(magic) /= patch_tree_checkpoint_magic) go to 900
+    if (status /= 0 .or. trim(magic) /= expected_header) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar, level_count
     if (status /= 0) go to 900
@@ -1521,7 +1530,11 @@ contains
 
     integer :: unit, status, nvar, species_index
 
+    character(len=:), allocatable :: expected_header
+
     ok = .false.
+    expected_header = eos_checkpoint_header(patch_tree_checkpoint_magic, species)
+    if (len(expected_header) == 0) return
     if (len_trim(path) == 0 .or. .not. solution%is_valid()) return
     if (.not. patch_tree_selected_checkpoint_state_is_physical( &
         species, solution)) return
@@ -1537,7 +1550,7 @@ contains
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) return
-    write(unit, '(a)', iostat=status) patch_tree_checkpoint_magic
+    write(unit, '(a)', iostat=status) expected_header
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       patch_tree_selected_checkpoint_schema, size(species), nvar, &
@@ -1595,7 +1608,11 @@ contains
     integer :: unit, status, schema, stored_species, stored_nvar
     integer :: level_count, species_index, stored_size
 
+    character(len=:), allocatable :: expected_header
+
     ok = .false.
+    expected_header = eos_checkpoint_header(patch_tree_checkpoint_magic, species)
+    if (len(expected_header) == 0) return
     if (len_trim(path) == 0 .or. .not. config%amr_enabled) return
     if (.not. valid_patch_tree_selected_checkpoint_context( &
         size(species), bundle_sha256, chemistry_integrator, &
@@ -1604,7 +1621,7 @@ contains
       form="formatted", iostat=status)
     if (status /= 0) return
     read(unit, '(a)', iostat=status) magic
-    if (status /= 0 .or. trim(magic) /= patch_tree_checkpoint_magic) go to 900
+    if (status /= 0 .or. trim(magic) /= expected_header) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar, level_count
     if (status /= 0) go to 900
@@ -1857,7 +1874,7 @@ contains
     valid = nvar >= 6 .and. size(initial_integrals) == nvar
     if (.not. valid) return
     valid = all(ieee_is_finite(initial_integrals)) .and. &
-      initial_integrals(1) > 0.0_dp .and. initial_integrals(5) > 0.0_dp
+      initial_integrals(1) > 0.0_dp
     if (.not. valid) return
     closure_tolerance = 5.0e-10_dp * max(1.0_dp, abs(initial_integrals(1)))
     valid = minval(initial_integrals(6:nvar)) >= -closure_tolerance .and. &

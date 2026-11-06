@@ -1,6 +1,7 @@
 module eb_reactive_redistribution_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use slope_limiter_mod, only: amrex_limited_slope
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_conserved_to_primitive
@@ -259,7 +260,8 @@ contains
         target <= 0.0_dp .or. target > 1.0_dp) return
     selected_max_order = 0
     if (present(max_order)) selected_max_order = max_order
-    if (selected_max_order /= 0 .and. selected_max_order /= 2) return
+    if (selected_max_order /= 0 .and. selected_max_order /= 2 .and. &
+        selected_max_order /= 4) return
 
     allocate(neighbor_count(geometry%nx, geometry%ny))
     allocate(neighbor_offset_i(3, geometry%nx, geometry%ny))
@@ -327,10 +329,10 @@ contains
           neighborhood_volume(i, j)
       end do
     end do
-    if (selected_max_order == 2) then
+    if (selected_max_order > 0) then
       call build_state_redistribution_slopes( &
         geometry, neighborhood_state, neighborhood_centroid_x, &
-        neighborhood_centroid_y, slope_x, slope_y, ok)
+        neighborhood_centroid_y, slope_x, slope_y, selected_max_order, ok)
       if (.not. ok) return
       call limit_state_redistribution_recipient_slopes( &
         geometry, provisional_state, neighbor_count, neighbor_offset_i, &
@@ -391,12 +393,13 @@ contains
 
   subroutine build_state_redistribution_slopes( &
       geometry, neighborhood_state, neighborhood_centroid_x, &
-      neighborhood_centroid_y, slope_x, slope_y, ok)
+      neighborhood_centroid_y, slope_x, slope_y, max_order, ok)
     type(eb_geometry_2d), intent(in) :: geometry
     real(dp), intent(in) :: neighborhood_state(:, :, :)
     real(dp), intent(in) :: neighborhood_centroid_x(:, :)
     real(dp), intent(in) :: neighborhood_centroid_y(:, :)
     real(dp), intent(out) :: slope_x(:, :, :), slope_y(:, :, :)
+    integer, intent(in) :: max_order
     logical, intent(out) :: ok
 
     real(dp), parameter :: limiter_epsilon = 1.0e-12_dp
@@ -406,7 +409,10 @@ contains
     real(dp) :: delta_x, delta_y, delta_state, atb_x, atb_y
     real(dp) :: predicted, local_minimum, local_maximum
     real(dp) :: limiter_x, limiter_y, limiter, small
-    integer :: i, j, ii, jj, neighbor_i, neighbor_j, component, radius
+    real(dp) :: extent_min(2), extent_max(2), location(2), values(-2:2), value
+    integer :: i, j, ii, jj, neighbor_i, neighbor_j, component, radius(2)
+    integer :: axis, selected_order, distance, offset, cell(2), other(2), dims(2)
+    logical :: regular, valid
 
     slope_x = 0.0_dp
     slope_y = 0.0_dp
@@ -418,28 +424,43 @@ contains
     do j = 1, geometry%ny
       do i = 1, geometry%nx
         if (geometry%cell_type(i, j) == eb_covered_cell) cycle
+        ! The pinned StateRedist grows each axis only when connected
+        ! neighborhood centroids span less than half a cell in that axis.
+        extent_min = huge(1.0_dp)
+        extent_max = -huge(1.0_dp)
+        do jj = -1, 1
+          neighbor_j = j + jj
+          if (neighbor_j < 1 .or. neighbor_j > geometry%ny) cycle
+          do ii = -1, 1
+            neighbor_i = i + ii
+            if (neighbor_i < 1 .or. neighbor_i > geometry%nx) cycle
+            if (.not. state_redistribution_cells_connected( &
+                geometry, i, j, ii, jj)) cycle
+            location = [real(ii, dp) + neighborhood_centroid_x(neighbor_i, neighbor_j), &
+                        real(jj, dp) + neighborhood_centroid_y(neighbor_i, neighbor_j)]
+            extent_min = min(extent_min, location)
+            extent_max = max(extent_max, location)
+          end do
+        end do
         radius = 1
+        where (extent_max - extent_min < 0.5_dp) radius = 2
         call build_normal_matrix(radius, ata_xx, ata_xy, ata_yy)
         determinant = ata_xx * ata_yy - ata_xy * ata_xy
         determinant_scale = max(1.0_dp, ata_xx * ata_yy)
-        if (abs(determinant) <= rank_tolerance * determinant_scale) then
-          radius = 2
-          call build_normal_matrix(radius, ata_xx, ata_xy, ata_yy)
-          determinant = ata_xx * ata_yy - ata_xy * ata_xy
-          determinant_scale = max(1.0_dp, ata_xx * ata_yy)
-        end if
+        cell = [i, j]
+        dims = [geometry%nx, geometry%ny]
 
         do component = 1, size(neighborhood_state, 1)
           atb_x = 0.0_dp
           atb_y = 0.0_dp
-          do jj = -radius, radius
+          do jj = -radius(2), radius(2)
             neighbor_j = j + jj
             if (neighbor_j < 1 .or. neighbor_j > geometry%ny) cycle
-            do ii = -radius, radius
+            do ii = -radius(1), radius(1)
               neighbor_i = i + ii
               if (neighbor_i < 1 .or. neighbor_i > geometry%nx) cycle
               if (.not. slope_stencil_cell_is_usable( &
-                  geometry, i, j, ii, jj, radius)) cycle
+                  geometry, i, j, ii, jj, maxval(radius))) cycle
               delta_x = real(ii, dp) + &
                 neighborhood_centroid_x(neighbor_i, neighbor_j) - &
                 neighborhood_centroid_x(i, j)
@@ -458,13 +479,46 @@ contains
               (atb_x * ata_yy - ata_xy * atb_y) / determinant
             slope_y(component, i, j) = &
               (ata_xx * atb_y - atb_x * ata_xy) / determinant
-          else if (ata_xx > rank_tolerance .and. &
-              ata_yy <= rank_tolerance) then
-            slope_x(component, i, j) = atb_x / ata_xx
-          else if (ata_yy > rank_tolerance .and. &
-              ata_xx <= rank_tolerance) then
-            slope_y(component, i, j) = atb_y / ata_yy
+          else if (ata_xx + ata_yy > rank_tolerance) then
+            ! Moore-Penrose inverse of a rank-one symmetric normal matrix.
+            ! This also retains tangential slopes for oblique thin stencils.
+            slope_x(component, i, j) = &
+              (ata_xx * atb_x + ata_xy * atb_y) / (ata_xx + ata_yy)**2
+            slope_y(component, i, j) = &
+              (ata_xy * atb_x + ata_yy * atb_y) / (ata_xx + ata_yy)**2
           end if
+
+          ! Use the pinned regular-cell PLM formula independently per axis;
+          ! fall back from order four to two, then to the EB least-squares slope.
+          do axis = 1, 2
+            selected_order = max_order
+            do
+              distance = selected_order / 2
+              regular = cell(axis) > distance .and. &
+                cell(axis) + distance <= dims(axis)
+              if (regular) then
+                do offset = -distance, distance
+                  other = cell
+                  other(axis) = other(axis) + offset
+                  if (geometry%volume_fraction(other(1), other(2)) /= 1.0_dp) regular = .false.
+                end do
+              end if
+              if (regular .or. selected_order == 2) exit
+              selected_order = 2
+            end do
+            if (.not. regular) cycle
+            values = 0.0_dp
+            do offset = -distance, distance
+              other = cell
+              other(axis) = other(axis) + offset
+              values(offset) = neighborhood_state(component, other(1), other(2))
+            end do
+            call amrex_limited_slope(values(-2), values(-1), values(0), values(1), &
+              values(2), 1.0_dp, selected_order, value, valid)
+            if (.not. valid) return
+            if (axis == 1) slope_x(component, i, j) = value
+            if (axis == 2) slope_y(component, i, j) = value
+          end do
 
           ! AMReX StateRedist limits predictions at neighboring neighborhood
           ! centroids, independently scaling each nonzero slope component.
@@ -524,20 +578,20 @@ contains
 
     subroutine build_normal_matrix( &
         stencil_radius, matrix_xx, matrix_xy, matrix_yy)
-      integer, intent(in) :: stencil_radius
+      integer, intent(in) :: stencil_radius(2)
       real(dp), intent(out) :: matrix_xx, matrix_xy, matrix_yy
 
       matrix_xx = 0.0_dp
       matrix_xy = 0.0_dp
       matrix_yy = 0.0_dp
-      do jj = -stencil_radius, stencil_radius
+      do jj = -stencil_radius(2), stencil_radius(2)
         neighbor_j = j + jj
         if (neighbor_j < 1 .or. neighbor_j > geometry%ny) cycle
-        do ii = -stencil_radius, stencil_radius
+        do ii = -stencil_radius(1), stencil_radius(1)
           neighbor_i = i + ii
           if (neighbor_i < 1 .or. neighbor_i > geometry%nx) cycle
           if (.not. slope_stencil_cell_is_usable( &
-              geometry, i, j, ii, jj, stencil_radius)) cycle
+              geometry, i, j, ii, jj, maxval(stencil_radius))) cycle
           delta_x = real(ii, dp) + &
             neighborhood_centroid_x(neighbor_i, neighbor_j) - &
             neighborhood_centroid_x(i, j)
@@ -1001,7 +1055,7 @@ contains
     allocate(candidate_temperature(geometry%nx, geometry%ny))
     allocate(primitive(reactive_nprim(size(species))))
     call recover_candidate(recovery_ok, failed_i, failed_j)
-    if (.not. recovery_ok .and. selected_max_order == 2) then
+    if (.not. recovery_ok .and. selected_max_order > 0) then
       if (present(used_order_zero_fallback)) &
         used_order_zero_fallback = .true.
       if (present(failure_context)) write(failure_context, &

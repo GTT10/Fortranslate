@@ -242,7 +242,9 @@ contains
 
   ! Two supplied halo layers on every face; return only the active-cell RHS.
   subroutine compute_les_ghosted_rhs_3d(species,state,temperature,cells,spacing,cs,prt,sct,rhs,diffusivity,ok, &
-      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model,ci,fx,fy,fz)
+      boundary_faces,boundary_rate,wall_temperature,boundary_face_mask,model,ci,fx,fy,fz,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     ! Flux density in the positive coordinate direction; all three or none.
     ! Face arrays publish together only after a successful RHS evaluation.
     real(dp), optional, intent(inout) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
@@ -276,7 +278,7 @@ contains
         end do
       end if
     end if
-    if (any(cells<2).or.any(cells>huge(1)-4)) return
+    if (any(cells<1).or.any(cells>huge(1)-4)) return
     if (any(shape(temperature)/=cells+4).or.any(shape(rhs)/=[size(state,1),cells])) return
     if ((present(fx).neqv.present(fy)).or.(present(fx).neqv.present(fz))) return
     if (present(fx)) then
@@ -289,7 +291,8 @@ contains
     end if
     allocate(full_rhs,mold=state)
     call compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,full_rhs,diffusivity,ok,cells, &
-      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci,xflux,yflux,zflux)
+      boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci,xflux,yflux,zflux, &
+      internal_energy_density=internal_energy_density)
     if (ok) then
       rhs=full_rhs(:,3:cells(1)+2,3:cells(2)+2,3:cells(3)+2)
       if (present(fx)) then
@@ -299,7 +302,9 @@ contains
   end subroutine
 
   subroutine compute_les_face_rhs_3d(species,state,temperature,spacing,cs,prt,sct,rhs,maximum_diffusivity,ok, &
-      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci,fx,fy,fz)
+      active_cells,boundary_rate,boundary_faces,wall_temperature,boundary_face_mask,model,ci,fx,fy,fz,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     real(dp), optional, intent(out) :: fx(:,0:,:,:),fy(:,:,0:,:),fz(:,:,:,0:)
     real(dp), optional, intent(in) :: ci
     character(len=*), optional, intent(in) :: model
@@ -349,13 +354,20 @@ contains
     if (.not. all(ieee_is_finite([spacing,cs,prt,sct]))) return
     if (any(spacing < 1.0e-12_dp) .or. any(spacing > 1.0e9_dp)) return
     if (cs < 0.0_dp .or. cs > 2.0_dp .or. min(prt,sct) < 1.0e-6_dp .or. max(prt,sct) > 1.0e6_dp) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=dims)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_cell)
+    endif
     allocate(primitive(size(q),dims(1),dims(2),dims(3)),temps(dims(1),dims(2),dims(3)))
     allocate(cp(dims(1),dims(2),dims(3)),cv(dims(1),dims(2),dims(3)))
     allocate(enthalpies(size(species),dims(1),dims(2),dims(3)))
     do k=1,dims(3)
       do j=1,dims(2)
         do i=1,dims(1)
-          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),q,t,sound,local_ok)
+          if(allocated(held_cell)) held_cell=internal_energy_density(i,j,k)
+          call reactive_conserved_to_primitive(species,state(:,i,j,k),temperature(i,j,k),q,t,sound,local_ok, &
+      internal_energy_density=held_cell)
           if (.not. local_ok) return
           if (maxval(abs(q(2:4))) > 1.0e7_dp .or. q(1) > 1.0e8_dp) return
           primitive(:,i,j,k)=q; temps(i,j,k)=t; y=q(6:)
@@ -409,10 +421,15 @@ contains
             if (.not. local_ok) then
               rhs=0.0_dp; maximum_diffusivity=0.0_dp; return
             end if
-            cpface=0.5_dp*(cp(i,j,k)+cp(ridx(1),ridx(2),ridx(3)))
             cvface=0.5_dp*(cv(i,j,k)+cv(ridx(1),ridx(2),ridx(3)))
             uface=0.5_dp*(primitive(2:4,i,j,k)+primitive(2:4,ridx(1),ridx(2),ridx(3)))
             face_y=0.5_dp*(primitive(6:,i,j,k)+primitive(6:,ridx(1),ridx(2),ridx(3)))
+            ! Pinned LES.H evaluates cp from the face T,Y, not from cell cp.
+            t=0.5_dp*(temps(i,j,k)+temps(ridx(1),ridx(2),ridx(3)))
+            call mixture_mass_properties(species,face_y,t,mw,r,cpface,cvg,gamma,h,e,s,local_ok)
+            if (.not.local_ok) then
+              rhs=0;maximum_diffusivity=0;return
+            end if
             hav=0.5_dp*(enthalpies(:,i,j,k)+enthalpies(:,ridx(1),ridx(2),ridx(3)))
             jflux=-mu/sct*(primitive(6:,ridx(1),ridx(2),ridx(3))-primitive(6:,i,j,k))/spacing(a)
             jflux=jflux-face_y*sum(jflux)

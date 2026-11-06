@@ -4,7 +4,8 @@ module reactive_1d_mod
   use precision_mod, only: dp
   use constants_mod, only: density_floor, pressure_floor, tiny_speed
   use state_indices_mod, only: irho, imx, imy, imz, iet, ncons
-  use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties, nasa7_specific_gas_constant
+  use nasa7_thermo_mod, only: nasa7_species, nasa7_mass_properties, nasa7_specific_gas_constant, &
+    nasa7_transient_mass_properties
   use mixture_thermo_mod, only: &
     valid_mixture_composition, mixture_mass_properties, &
     mixture_specific_gas_constant, mixture_pressure, mixture_density, &
@@ -20,7 +21,7 @@ module reactive_1d_mod
     weno_reconstruct_5js, weno_reconstruct_5z, &
     weno_reconstruct_7z, weno_reconstruct_3z
   use simulation_config_reactive_1d_mod, only: &
-    reactive_1d_config, reactive_1d_mole_fractions
+    reactive_1d_config, configure_reactive_1d_eos, reactive_1d_mole_fractions
   implicit none
   private
 
@@ -307,12 +308,14 @@ contains
 
   subroutine reactive_conserved_to_primitive( &
       species, conserved, temperature_guess, primitive, temperature, &
-      sound_speed, ok,rotating_potential)
+      sound_speed, ok,rotating_potential,internal_energy_density,preserve_species_ratios)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: conserved(:), temperature_guess
     real(dp), intent(out) :: primitive(:), temperature, sound_speed
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: internal_energy_density
     real(dp), optional, intent(in) :: rotating_potential
+    logical, optional, intent(in) :: preserve_species_ratios
     real(dp) :: potential_density,total_energy
 
     real(dp), allocatable :: y(:), candidate_primitive(:)
@@ -345,40 +348,46 @@ contains
     if (.not. local_ok) return
     call reactive_checked_divide(conserved(imz), rho, w, local_ok)
     if (.not. local_ok) return
-    call reactive_checked_multiply(conserved(imx), conserved(imx), &
-      mx_squared, local_ok)
-    if (.not. local_ok) return
-    call reactive_checked_multiply(conserved(imy), conserved(imy), &
-      my_squared, local_ok)
-    if (.not. local_ok) return
-    call reactive_checked_multiply(conserved(imz), conserved(imz), &
-      mz_squared, local_ok)
-    if (.not. local_ok) return
-    call reactive_checked_add(mx_squared, my_squared, momentum_sum, local_ok)
-    if (.not. local_ok) return
-    call reactive_checked_add(momentum_sum, mz_squared, &
-      momentum_sum_with_z, local_ok)
-    if (.not. local_ok) return
-    call reactive_checked_multiply(0.5_dp, momentum_sum_with_z, &
-      kinetic_numerator, local_ok)
-    if (.not. local_ok) return
-    call reactive_checked_divide(kinetic_numerator, rho, kinetic_density, local_ok)
-    if (.not. local_ok) return
-    total_energy=conserved(iet)
-    if(present(rotating_potential)) then
-      call reactive_checked_multiply(rho,rotating_potential,potential_density,local_ok)
-      if(.not.local_ok) return
-      call reactive_checked_add(conserved(iet),potential_density,total_energy,local_ok)
-      if(.not.local_ok) return
-    end if
-    call reactive_checked_add(total_energy, -kinetic_density, &
-      energy_residual, local_ok)
-    if (.not. local_ok) return
+    if(present(internal_energy_density)) then
+      ! Recover directly from rho e, avoiding subtraction of large kinetic energy.
+      if(.not.ieee_is_finite(internal_energy_density)) return
+      energy_residual=internal_energy_density
+    else
+      call reactive_checked_multiply(conserved(imx), conserved(imx), &
+        mx_squared, local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_multiply(conserved(imy), conserved(imy), &
+        my_squared, local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_multiply(conserved(imz), conserved(imz), &
+        mz_squared, local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_add(mx_squared, my_squared, momentum_sum, local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_add(momentum_sum, mz_squared, &
+        momentum_sum_with_z, local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_multiply(0.5_dp, momentum_sum_with_z, &
+        kinetic_numerator, local_ok)
+      if (.not. local_ok) return
+      call reactive_checked_divide(kinetic_numerator, rho, kinetic_density, local_ok)
+      if (.not. local_ok) return
+      total_energy=conserved(iet)
+      if(present(rotating_potential)) then
+        call reactive_checked_multiply(rho,rotating_potential,potential_density,local_ok)
+        if(.not.local_ok) return
+        call reactive_checked_add(conserved(iet),potential_density,total_energy,local_ok)
+        if(.not.local_ok) return
+      end if
+      call reactive_checked_add(total_energy, -kinetic_density, &
+        energy_residual, local_ok)
+      if (.not. local_ok) return
+    endif
     call reactive_checked_divide(energy_residual, rho, target_energy, local_ok)
     if (.not. local_ok) return
 
     allocate(y(nspecies))
-    call mass_fractions_from_state(conserved, nspecies, y, local_ok)
+    call mass_fractions_from_state(conserved, nspecies, y, local_ok,preserve_species_ratios)
     if (.not. local_ok) return
     call temperature_from_internal_energy( &
       species, y, target_energy, temperature_guess, candidate_temperature, &
@@ -409,11 +418,12 @@ contains
     ok = .true.
   end subroutine reactive_conserved_to_primitive
 
-  subroutine mass_fractions_from_state(conserved, nspecies, y, ok)
+  subroutine mass_fractions_from_state(conserved, nspecies, y, ok,preserve_species_ratios)
     real(dp), intent(in) :: conserved(:)
     integer, intent(in) :: nspecies
     real(dp), intent(out) :: y(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: preserve_species_ratios
     real(dp), allocatable :: candidate_y(:)
     real(dp) :: rho, total, closure, closure_difference, denominator
     real(dp) :: species_density, species_bound, normalized_total
@@ -461,6 +471,14 @@ contains
       normalized_total = next_normalized_total
     end do
     if (normalized_total <= 0.0_dp) return
+    ! Native pc_ctoprim retains admitted rhoY/rho. Keep the same positivity,
+    ! closure and finite checks; this option never projects conserved species.
+    if(present(preserve_species_ratios)) then
+      if(preserve_species_ratios) then
+        if(.not.all(ieee_is_finite(candidate_y))) return
+        y=candidate_y;ok=.true.;return
+      endif
+    endif
     do k = 1, nspecies
       call reactive_checked_divide( &
         candidate_y(k), normalized_total, normalized_component, local_ok)
@@ -568,13 +586,14 @@ contains
   ! Pressure-traced face states enter without a conserved-to-primitive round trip.
   ! cav is the neighboring cell-centered sound-speed mean used by PeleC.
   subroutine reactive_pelec_primitive_flux_x(species,ql,qr,cav,flux,ok, &
-      interface_density,interface_velocity,interface_pressure,passive_upwind,contact_velocity)
+      interface_density,interface_velocity,interface_pressure,passive_upwind,contact_velocity,internal_energy_flux)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: ql(:),qr(:),cav
     real(dp), intent(out) :: flux(:)
     logical, intent(out) :: ok
     logical, optional, intent(in) :: passive_upwind
     real(dp), optional, intent(out) :: contact_velocity
+    real(dp), optional, intent(out) :: internal_energy_flux
     real(dp) :: contact
     real(dp), optional, intent(out) :: interface_density,interface_velocity,interface_pressure
     real(dp) :: scratch(reactive_nvar(size(species))),tl,tr,cl,cr
@@ -593,7 +612,7 @@ contains
     call reconstructed_pelec_state(species,qr,scratch,tr,cr,right_ok)
     if (.not.(left_ok.and.right_ok)) return
     call reactive_pelec_flux_core(species,ql,qr,cl,cr,.true.,cav,candidate,ok, &
-      interface_density,interface_velocity,interface_pressure,contact_velocity=contact)
+      interface_density,interface_velocity,interface_pressure,contact_velocity=contact,internal_energy_flux=internal_energy_flux)
     if (.not.ok) return
     if(present(passive_upwind)) then
       if(passive_upwind) then
@@ -617,21 +636,38 @@ contains
 
   ! Pinned Fuego RPY2Cs/RYP2E evaluate reconstructed species weights without
   ! clipping or normalization. These are transient face states, never accepted
-  ! cell compositions. Keep the normalized nonnegative path and NASA bounds.
-  subroutine reconstructed_pelec_state(species,q,u,temperature,sound,ok)
+  ! cell compositions. Accepted cells retain the strict NASA temperature range;
+  ! transient face/star states use the pinned positive-temperature polynomial.
+  subroutine reconstructed_pelec_state(species,q,u,temperature,sound,ok,internal_energy_density)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: q(:)
     real(dp), intent(out) :: u(:),temperature,sound
     logical, intent(out) :: ok
+    real(dp), optional, intent(out) :: internal_energy_density
     real(dp) :: r,cv,energy,cpk,cvk,hk,ek,sk,temperature_candidate,sound_squared
     integer :: k
     logical :: valid
     u=0;temperature=0;sound=0;ok=.false.
+    if(present(internal_energy_density)) internal_energy_density=0
     if(size(q)/=reactive_nprim(size(species)).or.size(u)/=size(q)) return
     if(.not.all(ieee_is_finite(q))) return
     if(.not.any(q(6:)<0).and.abs(sum(q(6:))-1._dp)<=8*epsilon(1._dp)) then
       call reactive_primitive_to_conserved(species,q,u,temperature,sound,ok)
-      return
+      if(ok) then
+        if(present(internal_energy_density)) then
+          energy=0
+          do k=1,size(species)
+            call nasa7_transient_mass_properties(species(k),temperature,cpk,cvk,hk,ek,sk,valid)
+            if(.not.valid) then
+              ok=.false.;return
+            endif
+            energy=energy+q(5+k)*ek
+          enddo
+          internal_energy_density=q(1)*energy
+          ok=ieee_is_finite(internal_energy_density)
+        endif
+        return
+      endif
     end if
     if(q(1)<=density_floor.or.q(5)<=pressure_floor.or.sum(q(6:))<=0) return
     r=0
@@ -643,7 +679,7 @@ contains
     if(.not.ieee_is_finite(temperature_candidate)) return
     cv=0;energy=0
     do k=1,size(species)
-      call nasa7_mass_properties(species(k),temperature_candidate,cpk,cvk,hk,ek,sk,valid)
+      call nasa7_transient_mass_properties(species(k),temperature_candidate,cpk,cvk,hk,ek,sk,valid)
       if(.not.valid) return
       cv=cv+q(5+k)*cvk
       energy=energy+q(5+k)*ek
@@ -656,12 +692,13 @@ contains
     if(.not.all(ieee_is_finite(u))) then
       u=0;return
     end if
+    if(present(internal_energy_density)) internal_energy_density=q(1)*energy
     temperature=temperature_candidate;sound=sqrt(sound_squared);ok=.true.
   end subroutine reconstructed_pelec_state
 
   subroutine reactive_pelec_flux_core( &
       species, ql, qr, cl, cr, primitive_input, cav, flux, ok, interface_density, &
-      interface_velocity, interface_pressure, contact_velocity)
+      interface_velocity, interface_pressure, contact_velocity, internal_energy_flux)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: ql(:),qr(:),cl,cr,cav
     logical, intent(in) :: primitive_input
@@ -669,6 +706,7 @@ contains
     logical, intent(out) :: ok
     real(dp), intent(out), optional :: interface_density
     real(dp), intent(out), optional :: interface_velocity
+    real(dp), intent(out), optional :: internal_energy_flux
     real(dp), intent(out), optional :: contact_velocity
     real(dp), intent(out), optional :: interface_pressure
 
@@ -686,11 +724,12 @@ contains
     real(dp) :: wave_out, wave_in, shock_speed, speed_difference
     real(dp) :: interpolation_fraction, average_sound_speed, regularization
     real(dp) :: rho_interface, velocity_at_interface, pressure_at_interface
-    real(dp) :: mass_flux, stationary_threshold
+    real(dp) :: mass_flux, stationary_threshold, rho_internal
     logical :: local_ok, stationary_interface
     real(dp) :: star_pressure_floor
     integer :: nspecies, nvar, k
 
+    if(present(internal_energy_flux)) internal_energy_flux=0
     if(present(contact_velocity)) contact_velocity=0
     flux = 0.0_dp
     ok = .false.
@@ -868,7 +907,8 @@ contains
         rho_species_interface(k) / rho_interface
     end do
     if(primitive_input) then
-      call reconstructed_pelec_state(species,qinterface,interface_state,interface_temperature,interface_sound_speed,local_ok)
+      call reconstructed_pelec_state(species,qinterface,interface_state,interface_temperature,interface_sound_speed, &
+        local_ok,internal_energy_density=rho_internal)
     else
     call reactive_primitive_to_conserved( &
       species, qinterface, interface_state, interface_temperature, &
@@ -895,6 +935,12 @@ contains
     if (present(interface_density)) interface_density = rho_interface
     if (present(interface_velocity)) interface_velocity = velocity_at_interface
     if (present(interface_pressure)) interface_pressure = pressure_at_interface
+    if(present(internal_energy_flux)) then
+      if(.not.primitive_input) rho_internal=interface_state(iet)- &
+        .5_dp*rho_interface*sum(qinterface(2:4)**2)
+      internal_energy_flux=velocity_at_interface*rho_internal
+      if(.not.ieee_is_finite(internal_energy_flux)) return
+    endif
     if(present(contact_velocity)) contact_velocity=velocity_star
     ok = .true.
   end subroutine reactive_pelec_flux_core
@@ -1175,19 +1221,21 @@ contains
     else
       if(.not.all(ieee_is_finite(stencil(:,-1:1)))) return
     end if
+    ! Compare signs without a product: opposite tiny gradients can multiply
+    ! to negative zero and otherwise admit a nonzero slope at an extremum.
     do n=1,size(slope)
       sl=0
       if(selected==4) then
         do j=-1,1,2
           dl=stencil(n,j)-stencil(n,j-1);dr=stencil(n,j+1)-stencil(n,j)
           dc=.5_dp*(dl+dr);lim=0
-          if(dl*dr>=0) lim=2*min(abs(dl),abs(dr))
+          if((dl>=0.and.dr>=0).or.(dl<=0.and.dr<=0)) lim=2*min(abs(dl),abs(dr))
           sl(j)=sign(min(lim,abs(dc)),dc)
         end do
       end if
       dl=stencil(n,0)-stencil(n,-1);dr=stencil(n,1)-stencil(n,0)
       dc=.5_dp*(dl+dr);lim=0
-      if(dl*dr>=0) lim=2*min(abs(dl),abs(dr))
+      if((dl>=0.and.dr>=0).or.(dl<=0.and.dr<=0)) lim=2*min(abs(dl),abs(dr))
       ! The reference order-two branch also retains the 4/3 centered factor.
       slope(n)=flat*sign(min(lim,abs((4._dp/3)*dc-(sl(1)+sl(-1))/6)),dc)
     end do
@@ -3062,16 +3110,19 @@ contains
     character(len=*), intent(in), optional :: chemistry_integrator
     real(dp) :: dt, hydro_dt, transport_dt, maximum_diffusivity, tolerance
     logical :: local_ok
+    type(nasa7_species), allocatable :: eos_species(:)
 
+    call configure_reactive_1d_eos(species, config, eos_species, ok)
+    if (.not. ok) return
     time = 0.0_dp
     steps = 0
     if (present(base_mole_fractions)) then
       call initialize_reactive_1d( &
-        species, config, state, temperature, dx, local_ok, &
+        eos_species, config, state, temperature, dx, local_ok, &
         base_mole_fractions)
     else
       call initialize_reactive_1d( &
-        species, config, state, temperature, dx, local_ok)
+        eos_species, config, state, temperature, dx, local_ok)
     end if
     if (.not. local_ok) then
       ok = .false.; return
@@ -3082,7 +3133,7 @@ contains
       if (steps >= config%maximum_steps) then
         ok = .false.; return
       end if
-      call reactive_cfl_timestep(species, state, temperature, config%nx, dx, &
+      call reactive_cfl_timestep(eos_species, state, temperature, config%nx, dx, &
         config%cfl, hydro_dt, local_ok)
       if (.not. local_ok) then
         ok = .false.; return
@@ -3093,7 +3144,7 @@ contains
           ok = .false.; return
         end if
         call reactive_transport_timestep( &
-          species, transport, state, temperature, config%nx, dx, &
+          eos_species, transport, state, temperature, config%nx, dx, &
           config%transport_cfl, config%viscosity_enabled, &
           config%thermal_conduction_enabled, config%species_diffusion_enabled, &
           transport_dt, maximum_diffusivity, local_ok)
@@ -3105,7 +3156,7 @@ contains
       dt = min(dt, config%final_time - time)
       if (config%transport_enabled) then
         call advance_reactive_strang( &
-          species, reactions, state, temperature, config%nx, dx, dt, &
+          eos_species, reactions, state, temperature, config%nx, dx, dt, &
           config%reconstruction, config%limiter, config%boundary_condition, &
           config%chemistry_enabled, config%chemistry_relative_tolerance, &
           config%chemistry_absolute_tolerance, local_ok, config%riemann_solver, &
@@ -3115,7 +3166,7 @@ contains
           config%barodiffusion_enabled, chemistry_integrator)
       else
         call advance_reactive_strang( &
-          species, reactions, state, temperature, config%nx, dx, dt, &
+          eos_species, reactions, state, temperature, config%nx, dx, dt, &
           config%reconstruction, config%limiter, config%boundary_condition, &
           config%chemistry_enabled, config%chemistry_relative_tolerance, &
           config%chemistry_absolute_tolerance, local_ok, config%riemann_solver, &

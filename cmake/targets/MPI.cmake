@@ -1,6 +1,7 @@
 if(PELEF_ENABLE_MPI)
   add_library(
     pelef_mpi_support
+    src/parallel/mpi_reactive_eos_policy_mod.F90
     src/parallel/mpi_domain_1d_mod.F90
     src/parallel/mpi_eb_tree_checkpoint_read_3d_mod.F90
     src/parallel/mpi_eb_tree_checkpoint_3d_mod.F90
@@ -36,6 +37,7 @@ if(PELEF_ENABLE_MPI)
     src/parallel/mpi_amr_patch_tree_flux_peers_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_flux_restriction_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_reflux_3d_mod.F90
+    src/parallel/mpi_amr_reflux_budget_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_remap_3d_mod.F90
     src/parallel/mpi_amr_patch_tree_tagging_3d_mod.F90
@@ -119,6 +121,22 @@ if(PELEF_ENABLE_MPI)
   )
   target_link_libraries(pelef_mpi_amr_reactive_3d PRIVATE pelef_mpi_support)
   if(PELEF_ENABLE_TESTS)
+    add_executable(test_mpi_reactive_eos_policy tests/mpi/test_mpi_reactive_eos_policy.F90)
+    target_link_libraries(test_mpi_reactive_eos_policy PRIVATE pelef_mpi_support)
+    foreach(eos_policy_ranks IN ITEMS 2 3)
+      add_test(
+        NAME unit_mpi_reactive_eos_policy_np${eos_policy_ranks}
+        COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}"
+          "${eos_policy_ranks}" ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:test_mpi_reactive_eos_policy> ${MPIEXEC_POSTFLAGS}
+      )
+      set_tests_properties(unit_mpi_reactive_eos_policy_np${eos_policy_ranks} PROPERTIES
+        ENVIRONMENT "OMPI_MCA_rmaps_base_oversubscribe=1"
+        PROCESSORS ${eos_policy_ranks}
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "test_mpi_reactive_eos_policy: PASS"
+      )
+    endforeach()
     add_executable(
       test_mpi_reactive_integrator_policy
       tests/mpi/test_mpi_reactive_integrator_policy.F90
@@ -986,6 +1004,10 @@ if(PELEF_ENABLE_MPI)
   add_executable(pelef_mpi_reactive_eb_tree_3d app/pelef_reactive_eb_tree_3d.F90)
   target_compile_definitions(pelef_mpi_reactive_eb_tree_3d PRIVATE PELEF_MPI_EB_TREE)
   target_link_libraries(pelef_mpi_reactive_eb_tree_3d PRIVATE pelef_mpi_support)
+  if(PELEF_ENABLE_SPRAY)
+    target_compile_definitions(pelef_mpi_reactive_eb_tree_3d PRIVATE PELEF_MPI_EB_LES)
+    target_link_libraries(pelef_mpi_reactive_eb_tree_3d PRIVATE pelef_spray_tree_runtime)
+  endif()
   if(PELEF_ENABLE_SUNDIALS)
     target_compile_definitions(pelef_mpi_reactive_eb_tree_3d PRIVATE PELEF_SDC_CVODE)
     target_link_libraries(pelef_mpi_reactive_eb_tree_3d PRIVATE pelef_fixed_forced_cvode_runtime)

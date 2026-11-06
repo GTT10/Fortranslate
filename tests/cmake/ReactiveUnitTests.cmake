@@ -247,6 +247,7 @@ add_executable(
   unit/test_reactive_eb_transport_3d.F90
 )
 target_link_libraries(test_reactive_eb_transport_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_transport_spatial_halo_3d COMMAND test_reactive_eb_transport_3d spatial_halo)
 add_test(
   NAME unit_reactive_eb_transport_3d
   COMMAND test_reactive_eb_transport_3d
@@ -758,10 +759,14 @@ add_test(NAME unit_eb_tree_hydro_3d COMMAND test_eb_tree_hydro_3d)
 add_executable(test_eb_tree_transport_3d unit/test_eb_tree_transport_3d.F90)
 target_link_libraries(test_eb_tree_transport_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_transport_3d COMMAND test_eb_tree_transport_3d)
+add_test(NAME unit_eb_tree_transport_spatial_halo_3d COMMAND test_eb_tree_transport_3d spatial_halo)
 
 add_executable(test_eb_tree_full_3d unit/test_eb_tree_full_3d.F90)
 target_link_libraries(test_eb_tree_full_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_full_3d COMMAND test_eb_tree_full_3d)
+add_test(NAME unit_eb_tree_mol_spatial_halo_3d COMMAND test_eb_tree_full_3d spatial_halo)
+add_test(NAME unit_eb_tree_spatial_diffusion_callback_3d COMMAND test_eb_tree_full_3d spatial_callback)
+set_tests_properties(unit_eb_tree_spatial_diffusion_callback_3d PROPERTIES TIMEOUT 360 LABELS "eb;sdc")
 
 add_executable(test_eb_tree_checkpoint_3d unit/test_eb_tree_checkpoint_3d.F90)
 target_link_libraries(test_eb_tree_checkpoint_3d PRIVATE pelef_core)
@@ -891,6 +896,8 @@ target_link_libraries(test_eb_tree_redistribution_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_redistribution_3d COMMAND test_eb_tree_redistribution_3d)
 
 add_test(NAME unit_eb_tree_sdc_redistribution_3d COMMAND test_eb_tree_full_3d redist)
+add_test(NAME unit_eb_tree_mol_flux_budget_3d COMMAND test_eb_tree_full_3d mol_redist)
+set_tests_properties(unit_eb_tree_mol_flux_budget_3d PROPERTIES TIMEOUT 180)
 
 add_test(NAME unit_eb_tree_sdc_redist_recursive_3d COMMAND test_eb_tree_full_3d redist_recursive)
 set_tests_properties(unit_eb_tree_sdc_redist_recursive_3d PROPERTIES TIMEOUT 180)
@@ -900,3 +907,27 @@ target_link_libraries(test_eb_tree_state_redistribution_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_tree_state_redistribution_3d COMMAND test_eb_tree_state_redistribution_3d)
 
 add_test(NAME unit_eb_tree_sdc_state_redist_3d COMMAND test_eb_tree_full_3d state_redist)
+
+add_test(NAME unit_eb_tree_prepared_mol_sdc_3d COMMAND test_eb_tree_transport_3d prepared_sdc)
+set_tests_properties(unit_eb_tree_prepared_mol_sdc_3d PROPERTIES TIMEOUT 180)
+
+add_test(NAME unit_eb_tree_recursive_mol_registers_3d COMMAND test_eb_tree_transport_3d recursive_srd)
+set_tests_properties(unit_eb_tree_recursive_mol_registers_3d PROPERTIES TIMEOUT 300)
+
+if(TARGET test_eb_tree_transport_3d)
+  add_test(NAME unit_eb_tree_common_mol_registers_3d COMMAND test_eb_tree_transport_3d common_srd)
+  set_tests_properties(unit_eb_tree_common_mol_registers_3d PROPERTIES TIMEOUT 300)
+endif()
+
+if(TARGET test_eb_tree_transport_3d)
+  add_test(NAME unit_eb_tree_multi_mol_registers_3d COMMAND test_eb_tree_transport_3d multi_sdc)
+  set_tests_properties(unit_eb_tree_multi_mol_registers_3d PROPERTIES TIMEOUT 300)
+  add_test(NAME unit_eb_tree_inert_mol_registers_3d COMMAND test_eb_tree_transport_3d inert_iters)
+  set_tests_properties(unit_eb_tree_inert_mol_registers_3d PROPERTIES TIMEOUT 300)
+  add_test(NAME unit_eb_tree_godunov_spatial_halos_3d COMMAND test_eb_tree_transport_3d godunov_halo)
+  set_tests_properties(unit_eb_tree_godunov_spatial_halos_3d PROPERTIES TIMEOUT 300)
+endif()
+
+add_executable(test_state_redist_tracker_3d unit/test_state_redist_tracker_3d.F90)
+target_link_libraries(test_state_redist_tracker_3d PRIVATE pelef_core)
+add_test(NAME unit_state_redist_tracker_3d COMMAND test_state_redist_tracker_3d)

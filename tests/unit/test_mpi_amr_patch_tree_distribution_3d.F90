@@ -1,5 +1,6 @@
 program test_mpi_amr_patch_tree_distribution_3d
   use mpi_f08
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
@@ -112,7 +113,8 @@ program test_mpi_amr_patch_tree_distribution_3d
       end do
     end if
     block
-      type(amr_tree_state_3d) :: moving,moving_t,backup,backup_t,extra
+      type(amr_tree_state_3d) :: moving,moving_t,backup,backup_t,extra,heat,saved_held
+      type(amr_tree_state_3d), allocatable :: held
       integer :: destinations(3),invalid(3),peer
       real(dp) :: costs(3),threshold
       logical :: changed
@@ -166,34 +168,56 @@ program test_mpi_amr_patch_tree_distribution_3d
       destinations=0
       call redistribute_mpi_amr_tree_3d(tree,owners,destinations,2,moving,moving_t,MPI_COMM_WORLD,ok)
       call require(ok,'concentrate before cost balancing')
-      allocate(extra%fields(3))
+      allocate(held)
+      allocate(extra%fields(3),heat%fields(3),held%fields(3))
       do peer=1,3
         if(destinations(peer)/=rank) cycle
         n=tree%nodes(peer)%shape
         allocate(extra%fields(peer)%values(1,n(1),n(2),n(3)),source=-real(peer,dp))
+        allocate(heat%fields(peer)%values(1,n(1),n(2),n(3)),source=real((-1)**peer*peer,dp)*1.e9_dp)
+        allocate(held%fields(peer)%values(1,n(1),n(2),n(3)),source=-271828._dp*peer)
       end do
       costs=-1._dp ! Nonowner entries are deliberately invalid and must be ignored.
       if (rank==0) costs=[9._dp,6._dp,3._dp]
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,0.75_dp,MPI_COMM_WORLD,changed,ok)
+        costs,0.75_dp,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(ok.and..not.changed.and.all(destinations==0),'gain threshold retains owners')
       if (rank==0) costs(1)=-1._dp
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,0.25_dp,MPI_COMM_WORLD,changed,ok)
+        costs,0.25_dp,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(.not.ok.and..not.changed.and.all(destinations==0),'negative owner cost rejected')
       if (rank==0) costs(1)=9._dp
+      backup=moving;backup_t=moving_t;saved_held=held
+      if(rank==0) held%fields(3)%values(1,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+      call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
+        costs,0.25_dp,MPI_COMM_WORLD,changed,ok,heat,held)
+      call require(.not.ok.and..not.changed.and.all(destinations==0),'late nonfinite UEINT prevents migration')
+      do peer=1,3
+        if(destinations(peer)/=rank) cycle
+        call require(all(moving%fields(peer)%values==backup%fields(peer)%values),'held refusal gas rollback')
+        call require(all(moving_t%fields(peer)%values==backup_t%fields(peer)%values),'held refusal T rollback')
+      enddo
+      held=saved_held
+      if(rank==nranks-1) deallocate(held)
+      call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
+        costs,0.25_dp,MPI_COMM_WORLD,changed,ok,heat,held)
+      call require(.not.ok.and..not.changed.and.all(destinations==0),'idle held presence mismatch refusal')
+      if(.not.allocated(held)) allocate(held)
+      held=saved_held
       threshold=0.25_dp
       if (rank==0) threshold=0.5_dp
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,threshold,MPI_COMM_WORLD,changed,ok)
+        costs,threshold,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(.not.ok.and..not.changed,'rank-dependent gain rejected')
       if (rank==0) moving_t%fields(1)%values(1,1,1,1)=-1._dp
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,0.25_dp,MPI_COMM_WORLD,changed,ok)
+        costs,0.25_dp,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(.not.ok.and..not.changed.and.all(destinations==0),'migration failure preserves owners')
       if(rank==0) then
         do peer=1,3
           call require(all(extra%fields(peer)%values==-real(peer,dp)),'failed balance source rollback')
+          call require(all(heat%fields(peer)%values==real((-1)**peer*peer,dp)*1.e9_dp),'failed heat rollback')
+          call require(all(held%fields(peer)%values==-271828._dp*peer),'failed held rollback')
         end do
       end if
       if (rank==0) then
@@ -201,7 +225,7 @@ program test_mpi_amr_patch_tree_distribution_3d
         moving_t%fields(1)%values(1,1,1,1)=801._dp
       end if
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,0.25_dp,MPI_COMM_WORLD,changed,ok)
+        costs,0.25_dp,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(ok.and.changed,'cost balancing migrates fields')
       invalid=[0,1,1]
       if (nranks>=3) invalid=[0,1,2]
@@ -209,8 +233,12 @@ program test_mpi_amr_patch_tree_distribution_3d
       do peer=1,3
         call require(allocated(moving%fields(peer)%values).eqv.(destinations(peer)==rank),'balanced owner only')
         call require(allocated(extra%fields(peer)%values).eqv.(destinations(peer)==rank),'source on new owner only')
+        call require(allocated(heat%fields(peer)%values).eqv.(destinations(peer)==rank),'heat on new owner only')
+        call require(allocated(held%fields(peer)%values).eqv.(destinations(peer)==rank),'UEINT on new owner only')
         if (destinations(peer)/=rank) cycle
         call require(all(extra%fields(peer)%values==-real(peer,dp)),'exact signed source after balance')
+        call require(all(heat%fields(peer)%values==real((-1)**peer*peer,dp)*1.e9_dp),'exact signed heat balance')
+        call require(all(held%fields(peer)%values==-271828._dp*peer),'exact independent signed UEINT balance')
         n=tree%nodes(peer)%shape
         do k=1,n(3)
           do j=1,n(2)
@@ -224,11 +252,11 @@ program test_mpi_amr_patch_tree_distribution_3d
       end do
       costs=[9._dp,6._dp,3._dp]
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,0._dp,MPI_COMM_WORLD,changed,ok)
+        costs,0._dp,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(ok.and..not.changed.and.all(destinations==invalid),'no improvement retains owners')
       costs=0._dp
       call rebalance_mpi_amr_tree_with_field_3d(tree,destinations,2,moving,moving_t,1,extra, &
-        costs,0._dp,MPI_COMM_WORLD,changed,ok)
+        costs,0._dp,MPI_COMM_WORLD,changed,ok,heat,held)
       call require(ok.and..not.changed.and.all(destinations==invalid),'zero measured work retains owners')
     end block
     call MPI_Barrier(MPI_COMM_WORLD,ierr)

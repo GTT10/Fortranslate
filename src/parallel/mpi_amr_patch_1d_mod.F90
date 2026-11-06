@@ -1,6 +1,7 @@
 module mpi_amr_patch_1d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use mpi_f08
+  use mpi_reactive_eos_policy_mod, only: agree_mpi_reactive_eos_1d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -536,6 +537,8 @@ contains
     call all_ranks_accept_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
 
     call synchronize_owned_patch_tree_reactive_1d( &
       distribution, solution, local_ok)
@@ -627,6 +630,8 @@ contains
     call all_ranks_accept_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     call synchronize_owned_patch_tree_reactive_1d( &
       distribution, solution, local_ok)
     call all_ranks_accept_1d( &
@@ -863,6 +868,8 @@ contains
     call all_ranks_accept_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     call synchronize_owned_patch_tree_reactive_1d( &
       distribution, solution, local_ok)
     call all_ranks_accept_1d( &
@@ -1106,6 +1113,8 @@ contains
     call all_ranks_accept_1d( &
       distribution, local_ok, accepted, mpi_ok)
     if (.not. mpi_ok .or. .not. accepted) return
+    call agree_mpi_reactive_eos_1d(species, distribution%comm, accepted)
+    if (.not. accepted) return
     call synchronize_owned_patch_tree_reactive_1d( &
       distribution, solution, local_ok)
     call all_ranks_accept_1d( &

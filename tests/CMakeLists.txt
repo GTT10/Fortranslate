@@ -19,3 +19,11 @@ include("${PROJECT_SOURCE_DIR}/tests/cmake/FixedReactiveEB.cmake")
 include("${PROJECT_SOURCE_DIR}/tests/cmake/EBAndMPIContext.cmake")
 
 include("${PROJECT_SOURCE_DIR}/tests/cmake/Spray.cmake")
+
+add_test(NAME unit_eb_temporal_analysis
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/unit/test_eb_temporal_analysis.py")
+set_tests_properties(unit_eb_temporal_analysis PROPERTIES TIMEOUT 30 LABELS "analysis;eb")
+
+add_test(NAME unit_eb_limiter_conditioning
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/unit/test_eb_limiter_conditioning.py")
+set_tests_properties(unit_eb_limiter_conditioning PROPERTIES TIMEOUT 30 LABELS "analysis;eb")

@@ -9,6 +9,8 @@ program test_les_amr_sdc
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d, &
     prolong_amr_patch_tree_3d,composite_integrals_amr_patch_tree_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use reactive_mol_3d_mod, only: convert_regular_energy_3d
   use les_amr_sdc_mod, only: advance_amr_patch_tree_les_sdc_3d
   use les_sdc_3d_mod, only: advance_les_sdc_3d
   implicit none
@@ -18,6 +20,7 @@ program test_les_amr_sdc
   type(amr_patch_tree_3d) :: tree
   type(amr_patch_3d) :: patch(1)
   type(amr_tree_state_3d) :: u,t,saved,saved_t
+  type(rotating_frame_3d) :: frame
   real(dp) :: root(12,4,4,4),rt(1,4,4,4),q(12),sound,h(3),dt,bc(12),sc(12),correction,theta,diffusion
   real(dp) :: initial(12),final(12),scale(12),maximum,serial(12,4,4,4),st(4,4,4),sb(12),ss(12),sd
   integer :: i,j,k,c,geometry,mode,node
@@ -87,6 +90,20 @@ program test_les_amr_sdc
         all(t%fields(node)%values==saved_t%fields(node)%values),'AMR LES failure state rollback')
     end do
   end do
+  frame%axis=3;frame%angular_speed=400._dp;frame%axis_point=[.001_dp,-.002_dp,0._dp]
+  faces='outflow';flags=.false.
+  call initialize_amr_patch_tree_3d([4,4,4],[integer::],patch(:0),tree,ok)
+  call require(ok,'rotating LES SDC root topology')
+  call prolong_amr_patch_tree_3d(tree,root,u,ok)
+  call require(ok,'rotating LES SDC state')
+  call prolong_amr_patch_tree_3d(tree,rt,t,ok)
+  call require(ok,'rotating LES SDC temperature')
+  call convert_regular_energy_3d(frame,[0._dp,0._dp,0._dp],h,u%fields(1)%values,0,.true.,ok)
+  call require(ok,'rotating LES SDC energy storage')
+  call advance_amr_patch_tree_les_sdc_3d(tree,species,reactions,transport,u,t,h,dt,faces,2,.false.,flags, &
+    [0._dp,0._dp,0._dp],1e-6_dp,1e-12_dp,.17_dp,.7_dp,.7_dp,bc,sc,correction,theta,diffusion,ok, &
+    frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok.and.diffusion>0,'rotating LES SDC step')
   print *, 'PASS: AMR LES SDC four closures, root parity, reflux; recursive, residual ',recursive_steps,maximum
 contains
   subroutine require(condition,label)

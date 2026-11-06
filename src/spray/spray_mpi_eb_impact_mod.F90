@@ -4,8 +4,9 @@ module spray_mpi_eb_impact_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use spray_parcel_mod
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use spray_coupling_3d_mod, only: valid_spray_boundary_faces
-  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
+  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties,liquid_mixture_viscosity
   use spray_wall_impact_mod, only: spray_wall_film,mixture_impact_boiling_temperature, &
     classify_wall_impact,splash_mass_fractions,splash_velocity_components
   use spray_eb_impact_mod, only: spray_eb_wall_options
@@ -14,6 +15,7 @@ module spray_mpi_eb_impact_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
+  use spray_wall_impact_mod, only: pelec_splash_critical_parameter
   implicit none
   private
   public :: impact_mpi_level_set,advance_mpi_level_set_impacts,advance_mpi_eb_tree_impacts
@@ -112,19 +114,21 @@ contains
     allocate(data(6,ne),diameters(ne));data=0;sigma=properties%surface_tension
     do n=1,ne
       p=indices(n);y=component_mass(:,p)/parcels(p)%mass
-      call liquid_mixture_properties(components,y,parcels(p)%temperature,rho,cp,e,valid)
+      call liquid_mixture_properties(components,y,parcels(p)%temperature,rho,cp,e,valid,pressure(p),molecular_weights)
       if (.not.valid) exit
       call mixture_impact_boiling_temperature(components,y,molecular_weights,pressure(p),boil,valid)
       if (.not.valid) exit
       mu=liquid_viscosity_at_temperature(properties,parcels(p)%temperature)
+      call liquid_mixture_viscosity(components,y,parcels(p)%temperature, &
+        liquid_viscosity_at_temperature(properties,parcels(p)%temperature),mu,valid,pressure(p),molecular_weights)
+      if(.not.valid) exit
       valid=mu>0.and.sigma>=1e-8_dp.and.sigma<=1e3_dp
       if (.not.valid) exit
       diameters(n)=(6*parcels(p)%mass/(acos(-1.0_dp)*rho))**(1.0_dp/3.0_dp)
       un=abs(dot_product(parcels(p)%velocity,normal(:,n)))
       data(5,n)=rho*diameters(n)*un**2/sigma;data(6,n)=un*diameters(n)*rho/mu
       data(1,n)=sqrt(data(5,n)*sqrt(data(6,n)));data(2,n)=settings%temperature/boil
-      data(3,n)=(26.788_dp*log(pressure(p)*1e-5_dp)+33.546_dp)* &
-        exp(-.006_dp*(settings%temperature-260))+36
+      data(3,n)=pelec_splash_critical_parameter(pressure(p),settings%temperature)
     end do
     call agree()
     if (.not.agreed) return
@@ -159,7 +163,8 @@ contains
     end if
     call agree();if(.not.agreed) return
     call resolve_mpi_wall_impacts(comm,components,parcels,component_mass,indices(:ne),location(:,:ne),normal(:,:ne),data, &
-      settings%contact_angle,films,film_mass,properties%maximum_parcels,settings%maximum_films,last_id,budget,valid)
+      settings%contact_angle,films,film_mass,properties%maximum_parcels,settings%maximum_films,last_id,budget,valid, &
+      pressure,molecular_weights,reference_parent_position=properties%mixture_time_scheme=='euler')
     if (.not.valid) return
     call move_alloc(crossed,hit);call move_alloc(at,fractions);wall_change=budget;ok=.true.
   contains
@@ -173,7 +178,9 @@ contains
   ! Keep source-rank ownership until the caller performs final migration.
   subroutine advance_mpi_level_set_impacts(comm,components,properties,settings,phi,molecular_weights,pressure, &
       lower,upper,dt,parcels,component_mass,films,film_mass,last_id,wall_change,hits,ok,model_rejected, &
-      outflow_change,boundary_faces)
+      outflow_change,boundary_faces,frame,energy_conversion)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(inout) :: energy_conversion
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: properties
@@ -200,21 +207,41 @@ contains
     real(dp), allocatable :: next_remaining(:),next_pressure(:),kept_mass(:,:)
     real(dp), allocatable :: exit_fraction(:),exterior(:),global_exterior(:)
     logical, allocatable :: exits(:)
-    real(dp) :: delta(3),finish(3),rho,cp,e,amount
+    real(dp) :: delta(3),finish(3),rho,cp,e,amount,potential,frame_data(4),frame_min(4),frame_max(4)
     integer :: axis,mode,lowmode,highmode
     integer, allocatable :: depth(:),next_depth(:)
     logical, allocatable :: crossed(:)
     real(dp) :: ledger(5),budget(5),lowdt,highdt
     integer(int64) :: watermark,local_hits,total_hits
-    integer :: np,p,q,lo,hi,mid,nc,ierr,limits(2),lowlimits(2),highlimits(2)
+    integer :: np,p,q,lo,hi,mid,nc,ierr,limits(3),lowlimits(3),highlimits(3),frame_flag,frame_low,frame_high
+    integer :: axis_min,axis_max
+    real(dp) :: conversion,global_conversion
     logical :: valid,agreed,rejected,active,global_active
     ok=.false.
     if(present(model_rejected)) model_rejected=.false.
+    conversion=0
+    frame_flag=merge(1,0,present(frame))+2*merge(1,0,present(energy_conversion))
+    call MPI_Allreduce(frame_flag,frame_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(frame_flag,frame_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.frame_low/=frame_high) return
     valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
     valid=valid.and.ieee_is_finite(dt)
     if(valid) valid=dt>=0.and.dt<=1e6_dp
     valid=valid.and.settings%maximum_hits>=0.and.settings%maximum_hits<=1024
+    if(present(frame)) valid=valid.and.frame%is_valid().and.present(outflow_change)
     call agree();if(.not.agreed) return
+    if(present(frame)) then
+      call MPI_Allreduce(frame%axis,axis_min,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame%axis,axis_max,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+      if(ierr/=MPI_SUCCESS.or.axis_min/=axis_max) return
+      frame_data=[frame%angular_speed,frame%axis_point]
+      call MPI_Allreduce(frame_data,frame_min,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame_data,frame_max,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+      if(ierr/=MPI_SUCCESS.or.any(frame_min/=frame_max)) return
+    end if
     valid=size(pressure)==size(parcels)
     call agree();if(.not.agreed) return
     faces='outflow'
@@ -243,10 +270,11 @@ contains
     if(ierr/=MPI_SUCCESS.or.lowmode/=highmode) return
     if(present(outflow_change)) valid=size(outflow_change)==5+size(components)
     call agree();if(.not.agreed) return
-    limits=[settings%maximum_hits,properties%maximum_parcels]
-    call MPI_Allreduce(limits,lowlimits,2,MPI_INTEGER,MPI_MIN,comm,ierr)
+    limits=[settings%maximum_hits,properties%maximum_parcels, &
+      merge(1,0,properties%mixture_time_scheme=='euler')]
+    call MPI_Allreduce(limits,lowlimits,3,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(limits,highlimits,2,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(limits,highlimits,3,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS.or.any(lowlimits/=highlimits)) return
     call MPI_Allreduce(dt,lowdt,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
@@ -306,6 +334,12 @@ contains
             exterior(1)=exterior(1)-amount
             exterior(2:4)=exterior(2:4)-amount*drops(p)%velocity
             exterior(5)=exterior(5)-amount*(e+.5_dp*sum(drops(p)%velocity**2))
+            if(present(frame)) then
+              call rotating_potential_3d(frame,drops(p)%position,potential,valid)
+              if(.not.valid) exit
+              exterior(5)=exterior(5)+amount*potential
+              conversion=conversion+amount*potential
+            end if
             exterior(6:)=exterior(6:)-masses(:,p)*drops(p)%multiplicity
             drops(p)%mass=0;masses(:,p)=0
           else
@@ -320,6 +354,7 @@ contains
         if(.not.crossed(p)) cycle
         local_hits=local_hits+1_int64
         next_remaining(p)=remaining(p)*(1-exit_fraction(p)*fractions(p));next_depth(p)=depth(p)+1
+        if(properties%mixture_time_scheme=='euler') next_remaining(p)=0
       end do
       call agree();if(.not.agreed) return
       do p=np+1,size(drops)
@@ -339,6 +374,8 @@ contains
           valid=.false.;exit
         end if
         next_remaining(p)=next_remaining(q);next_pressure(p)=pressures(q);next_depth(p)=next_depth(q)
+        ! Match pinned splash allocation after the tile particle loop.
+        if(properties%mixture_time_scheme=='euler') next_remaining(p)=0
       end do
       if(valid) valid=all(next_depth<=settings%maximum_hits)
       call agree();if(.not.agreed) return
@@ -353,6 +390,8 @@ contains
     if(ierr/=MPI_SUCCESS.or.total_hits>int(huge(hits),int64)) return
     call MPI_Allreduce(exterior,global_exterior,5+nc,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(conversion,global_conversion,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.ieee_is_finite(global_conversion)) return
     if(present(outflow_change)) outflow_change=global_exterior
     kept=pack(drops,drops%mass>0);allocate(kept_mass(nc,size(kept)))
     do p=1,nc
@@ -360,6 +399,7 @@ contains
     end do
     call move_alloc(kept,parcels);call move_alloc(kept_mass,component_mass)
     call move_alloc(patches,films);call move_alloc(patch_mass,film_mass)
+    if(present(energy_conversion)) energy_conversion=global_conversion
     last_id=watermark;wall_change=ledger;hits=int(total_hits);ok=.true.
   contains
     subroutine agree()

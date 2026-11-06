@@ -15,7 +15,7 @@ module mpi_amr_eb_patch_tree_io_2d_mod
     read_reactive_amr_eb_patch_tree_2d_checkpoint, &
     write_reactive_amr_eb_patch_tree_2d_csv, &
     composite_integral_reactive_amr_eb_patch_tree_2d
-  use mpi_amr_eb_patch_tree_2d_mod, only: &
+  use mpi_amr_eb_patch_tree_2d_mod, only: agree_mpi_eb_tree_eos_2d, &
     mpi_amr_eb_patch_tree_distribution_2d, &
     mpi_sparse_reactive_amr_eb_patch_tree_2d, &
     initialize_mpi_amr_eb_patch_tree_distribution_2d, &
@@ -681,6 +681,8 @@ contains
       ok = .false.
       return
     end if
+    call agree_mpi_eb_tree_eos_2d(species,comm,ok)
+    if(.not.ok) return
     local_ok = .true.
     do species_index = 1, count_minimum
       root_name = ""

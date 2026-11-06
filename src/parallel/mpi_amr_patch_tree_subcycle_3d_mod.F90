@@ -18,7 +18,9 @@ module mpi_amr_patch_tree_subcycle_3d_mod
   private
   public :: compute_mpi_amr_tree_subcycle_cfl_3d,advance_mpi_amr_tree_subcycle_hydro_3d
 contains
-  subroutine compute_mpi_amr_tree_subcycle_cfl_3d(tree,owners,species,state,temperature,spacing,cfl,dt,comm,ok)
+  subroutine compute_mpi_amr_tree_subcycle_cfl_3d(tree,owners,species,state,temperature,spacing,cfl,dt,comm,ok,internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    real(dp), allocatable :: sampled_h(:,:,:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -30,12 +32,22 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
     integer, allocatable :: ratios(:)
     real(dp) :: candidate,local_dt,h(3),count_real
+    integer :: held_flag,held_low,held_high
     integer :: node,n(3),level,rank,status
     real(dp) :: low,high,global_dt
     logical :: valid
     ok=.false.
     call layout(tree,owners,species,state,temperature,spacing,origin,domain,ratios,counts,comm,valid)
     if (.not.valid) return
+    held_flag=merge(1,0,present(internal_energy))
+    call MPI_Allreduce(held_flag,held_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(held_flag,held_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.held_low/=held_high) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+    endif
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
     valid=ieee_is_finite(cfl)
@@ -52,8 +64,9 @@ contains
       if (owners(node)/=rank) cycle
       level=tree%nodes(node)%level+1;n=tree%nodes(node)%shape
       count_real=real(counts(level),dp);h=spacing/count_real
+      if(present(internal_energy)) sampled_h=internal_energy%fields(node)%values(1,:,:,:)
       call compute_reactive_cfl_timestep_3d(species,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
-        n(1),n(2),n(3),h(1),h(2),h(3),cfl,local_dt,valid)
+        n(1),n(2),n(3),h(1),h(2),h(3),cfl,local_dt,valid,internal_energy_density=sampled_h)
       if (.not.valid) exit
       if (local_dt<=huge(1._dp)/count_real) candidate=min(candidate,local_dt*count_real)
     end do

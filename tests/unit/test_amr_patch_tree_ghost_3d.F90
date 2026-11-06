@@ -4,12 +4,13 @@ program test_amr_patch_tree_ghost_3d
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d,prolong_pcm_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d, &
     initialize_amr_patch_tree_3d,prolong_amr_patch_tree_3d
-  use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d
+  use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d,apply_amr_tree_pressure_ghosts_3d
   use simulation_config_reactive_3d_mod, only: fill_reactive_boundary_ghosts_3d, &
-    fill_mach_inlet_boundary_ghosts_3d,mach_inlet_ghost_3d
+    fill_mach_inlet_boundary_ghosts_3d,mach_inlet_ghost_3d,characteristic_pressure_ghost_3d
   implicit none
   type(amr_patch_tree_3d) :: tree,deep
   type(amr_tree_state_3d) :: state,deep_state
@@ -108,6 +109,8 @@ program test_amr_patch_tree_ghost_3d
   end do
   call wide_wall_checks()
   call mach_inlet_checks()
+  call rotating_inlet_checks()
+  call rotating_pressure_checks()
   call temporal_checks()
   saved=ghost
   call fill_amr_patch_tree_ghosts_3d(tree,state,5,faces,ghost,ok)
@@ -130,8 +133,231 @@ program test_amr_patch_tree_ghost_3d
   call require(ok,'deep compact fields')
   call fill_amr_patch_tree_ghosts_3d(deep,deep_state,64,faces,ghost,ok)
   call require(.not.ok.and.all(ghost==saved),'global integer-coordinate overflow rejects before allocation')
+  call linear_inlet_checks()
+  call linear_short_inlet_checks()
   print '(a)','test_amr_patch_tree_ghost_3d: PASS'
 contains
+  subroutine rotating_pressure_checks()
+    type(nasa7_species), allocatable :: species(:)
+    type(amr_tree_state_3d) :: packed
+    type(rotating_frame_3d) :: frame
+    real(dp), allocatable :: buffer(:,:,:,:),kept(:,:,:,:)
+    real(dp) :: lower(3),spacing(3),position(3),potential,q(12),u(12),expected(12),donor(12)
+    real(dp) :: temperature,sound,pressure(6),expected_t
+    character(len=32) :: saved_faces(6)
+    integer :: nv,p,x,y,z,layer
+    saved_faces=faces
+    call load_h2o2_elementary_thermo(species,ok)
+    call require(ok,'rotating pressure thermo')
+    nv=5+size(species)
+    q=[.3_dp,10._dp,3._dp,-2._dp,1.e5_dp,.01_dp,.001_dp,.001_dp,.2_dp,.001_dp,.05_dp,.737_dp]
+    call reactive_primitive_to_conserved(species,q,u,temperature,sound,ok)
+    call require(ok,'rotating pressure initial state')
+    frame%axis=3;frame%angular_speed=400._dp
+    frame%axis_point=[.0004_dp,-.0007_dp,0._dp]
+    lower=[-.002_dp,.003_dp,.001_dp];spacing=[.001_dp,.0015_dp,.002_dp]
+    allocate(packed%fields(5))
+    do p=1,5
+      allocate(packed%fields(p)%values(nv+2,tree%nodes(p)%shape(1),tree%nodes(p)%shape(2),tree%nodes(p)%shape(3)))
+      do z=1,tree%nodes(p)%shape(3)
+      do y=1,tree%nodes(p)%shape(2)
+      do x=1,tree%nodes(p)%shape(1)
+        position=lower+(real(origins(:,p)+[x,y,z],dp)-.5_dp)*spacing/real(2**tree%nodes(p)%level,dp)
+        call rotating_potential_3d(frame,position,potential,ok)
+        call require(ok,'rotating pressure cell potential')
+        packed%fields(p)%values(:nv,x,y,z)=u
+        packed%fields(p)%values(5,x,y,z)=u(5)-u(1)*potential
+        packed%fields(p)%values(nv+1,x,y,z)=temperature
+        packed%fields(p)%values(nv+2,x,y,z)=u(5)-.5_dp*sum(u(2:4)**2)/u(1)
+      enddo
+      enddo
+      enddo
+    enddo
+    faces='outflow';pressure=0;pressure(2)=1.01e5_dp
+    do p=1,3,2
+      call fill_amr_patch_tree_ghosts_3d(tree,packed,p,faces,buffer,ok,ghost_width=3, &
+        frame=frame,domain_lower=lower,root_spacing=spacing)
+      call require(ok,'rotating pressure donor halo')
+      kept=buffer
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,p,faces,pressure,buffer,ok,ghost_width=3, &
+        stored_internal_energy=.true.,frame=frame,domain_lower=lower,root_spacing=spacing)
+      call require(ok,'rotating pressure application')
+      x=4*2**tree%nodes(p)%level-origins(1,p)+3
+      y=4;z=4
+      do layer=1,size(buffer,2)-x
+        position=lower+(real(origins(:,p)+[x,y,z]-3,dp)-.5_dp)*spacing/real(2**tree%nodes(p)%level,dp)
+        call rotating_potential_3d(frame,position,potential,ok)
+        donor=kept(:nv,x,y,z);donor(5)=donor(5)+donor(1)*potential
+        call characteristic_pressure_ghost_3d(species,donor,kept(nv+1,x,y,z),2,pressure(2),real(2*layer,dp), &
+          expected,expected_t,ok)
+        call require(ok,'independent ordinary pressure EOS')
+        call require(abs(buffer(nv+2,x+layer,y,z)-(expected(5)-.5_dp*sum(expected(2:4)**2)/expected(1)))<1e-9_dp, &
+          'pressure boundary retained internal energy excludes potential')
+        position=lower+(real(origins(:,p)+[x+layer,y,z]-3,dp)-.5_dp)*spacing/real(2**tree%nodes(p)%level,dp)
+        call rotating_potential_3d(frame,position,potential,ok)
+        expected(5)=expected(5)-expected(1)*potential
+        call require(maxval(abs(buffer(:nv,x+layer,y,z)-expected))<1e-9_dp, &
+          'pressure ghost uses its own potential at root and fine levels')
+        call require(buffer(nv+1,x+layer,y,z)==expected_t,'pressure ghost temperature oracle')
+      enddo
+      call require(all(buffer(:,:x,:,:)==kept(:,:x,:,:)),'untouched pressure cells retain exact bits')
+      kept=buffer
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,p,faces,pressure,buffer,ok,ghost_width=3, &
+        stored_internal_energy=.true.,frame=frame,domain_lower=lower)
+      call require(.not.ok.and.all(buffer==kept),'missing rotating pressure spacing rollback')
+    enddo
+    faces='outflow';faces(1)='inflow'
+    call fill_amr_patch_tree_ghosts_3d(tree,packed,1,faces,buffer,ok,ghost_width=3, &
+      frame=frame,domain_lower=lower,root_spacing=spacing,species=species, &
+      inflow_mach=[.2_dp,-1._dp,-1._dp,-1._dp,-1._dp,-1._dp], &
+      inflow_temperature=[temperature,temperature,temperature,temperature,temperature,temperature], &
+      limit_internal_energy=.true.,stored_internal_energy=.true.,coarse_limiter='linear',species_count=size(species))
+    call require(ok,'rotating Mach inlet with retained internal energy')
+    position=lower+[-.5_dp,.5_dp,.5_dp]*spacing
+    call rotating_potential_3d(frame,position,potential,ok)
+    call require(abs(buffer(nv+2,3,4,4)-(buffer(5,3,4,4)+buffer(1,3,4,4)*potential- &
+      .5_dp*sum(buffer(2:4,3,4,4)**2)/buffer(1,3,4,4)))<1e-9_dp, &
+      'rotating Mach inlet rho e excludes centrifugal potential')
+    faces=saved_faces
+  end subroutine rotating_pressure_checks
+
+  subroutine rotating_inlet_checks()
+    type(rotating_frame_3d) :: frame,bad_frame
+    real(dp) :: lower(3),spacing(3),position(3),potential
+    frame%axis=3;frame%angular_speed=400._dp
+    frame%axis_point=[.0004_dp,-.0007_dp,0._dp]
+    lower=[-.002_dp,.003_dp,.001_dp];spacing=[.001_dp,.0015_dp,.002_dp]
+    faces=['inflow  ','outflow ','periodic','periodic','periodic','periodic']
+    call fill_amr_patch_tree_ghosts_3d(tree,state,1,faces,ghost,ok,inflow_state=inlet, &
+      frame=frame,domain_lower=lower,root_spacing=spacing)
+    call require(ok,'rotating reservoir inlet ghost')
+    position=lower+[-.5_dp,.5_dp,.5_dp]*spacing
+    call rotating_potential_3d(frame,position,potential,ok)
+    call require(ok,'rotating reservoir position')
+    call require(all(ghost(1:4,2,3,3)==inlet(1:4,1)).and.ghost(6,2,3,3)==inlet(6,1), &
+      'rotating inlet preserves density, momentum and species')
+    call require(abs(ghost(5,2,3,3)-(inlet(5,1)-inlet(1,1)*potential))<1e-9_dp, &
+      'rotating reservoir energy uses receiving ghost position')
+    saved=ghost;bad_frame=frame;bad_frame%axis=0
+    call fill_amr_patch_tree_ghosts_3d(tree,state,1,faces,ghost,ok,inflow_state=inlet, &
+      frame=bad_frame,domain_lower=lower,root_spacing=spacing)
+    call require(.not.ok.and.all(ghost==saved),'invalid rotating inlet rolls back ghost output')
+  end subroutine rotating_inlet_checks
+
+  subroutine linear_short_inlet_checks()
+    type(amr_patch_tree_3d) :: geometry
+    type(amr_tree_state_3d) :: gas
+    type(amr_patch_3d) :: patch(2)
+    real(dp) :: packed(7,4,4,4),reservoir(7,6),base(7),gradient(7),profile(4),expected(7),coordinate
+    real(dp), allocatable :: halo(:,:,:,:)
+    character(len=32) :: bc(6)
+    integer :: axis,side,lower(3),upper(3),parent_shape(3),index(3),x,y,z
+    logical :: success
+    base=[2._dp,3._dp,4._dp,5._dp,1000._dp,.6_dp,1.4_dp]
+    gradient=[1._dp,.2_dp,.3_dp,.4_dp,2._dp,.3_dp,.7_dp]
+    do axis=1,3
+      do side=1,2
+        profile=[.5_dp,1.5_dp,3._dp,3.5_dp]
+        if(side==2) profile=[.5_dp,1._dp,2.5_dp,3.5_dp]
+        do z=1,4
+          do y=1,4
+            do x=1,4
+              index=[x,y,z];packed(:,x,y,z)=base+gradient*profile(index(axis))
+            enddo
+          enddo
+        enddo
+        lower=2;upper=3;lower(axis)=1;upper(axis)=1
+        if(side==2) then
+          lower(axis)=4;upper(axis)=4
+        endif
+        call initialize_amr_patch_3d(4,4,4,lower(1),upper(1),lower(2),upper(2),lower(3),upper(3),3,patch(1),success)
+        call require(success,'narrow parent geometry')
+        parent_shape=(upper-lower+1)*3;lower=1;upper=1
+        if(side==2) then
+          lower(axis)=3;upper(axis)=3
+        endif
+        call initialize_amr_patch_3d(parent_shape(1),parent_shape(2),parent_shape(3), &
+          lower(1),upper(1),lower(2),upper(2),lower(3),upper(3),2,patch(2),success)
+        call require(success,'narrow grandchild geometry')
+        call initialize_amr_patch_tree_3d([4,4,4],[1,2],patch,geometry,success)
+        call require(success,'narrow donor buffer tree')
+        call prolong_amr_patch_tree_3d(geometry,packed,gas,success)
+        call require(success,'narrow donor buffer state')
+        bc='outflow';bc(2*axis-1:2*axis)='inflow'
+        reservoir=spread(base,2,6);reservoir(:,2*axis)=base+4*gradient
+        call fill_amr_patch_tree_ghosts_3d(geometry,gas,3,bc,halo,success, &
+          coarse_limiter='linear',species_count=2,inflow_state=reservoir,ghost_width=1)
+        call require(success,'short prescribed-inlet donor stencil')
+        index=2;index(modulo(axis,3)+1)=1
+        coordinate=1._dp/12
+        if(side==2) then
+          index(axis)=3;coordinate=4._dp-1._dp/12
+        endif
+        expected=base+gradient*coordinate
+        call require(maxval(abs(halo(:,index(1),index(2),index(3))-expected))< &
+          64*epsilon(1._dp)*maxval(abs(expected)),'short buffer uses three-point rather than global four-point slope')
+      enddo
+    enddo
+  end subroutine linear_short_inlet_checks
+  subroutine linear_inlet_checks()
+    type(amr_patch_tree_3d) :: geometry
+    type(amr_tree_state_3d) :: gas
+    type(amr_patch_3d) :: patch(1)
+    real(dp) :: packed(7,4,4,4),reservoir(7,6),base(7),gradient(7),expected(7),coordinate
+    real(dp), allocatable :: halo(:,:,:,:)
+    character(len=32) :: bc(6)
+    integer :: axis,side,cells,variant,shape_root(3),lower(3),upper(3),index(3),x,y,z
+    logical :: success
+    base=[2._dp,3._dp,4._dp,5._dp,1000._dp,.6_dp,1.4_dp]
+    gradient=[1._dp,.2_dp,.3_dp,.4_dp,2._dp,.3_dp,.7_dp]
+    do axis=1,3
+      do variant=1,2
+        cells=4
+        if(variant==2) cells=2
+        shape_root=4;shape_root(axis)=cells
+        do z=1,shape_root(3)
+          do y=1,shape_root(2)
+            do x=1,shape_root(1)
+              index=[x,y,z];coordinate=real(index(axis),dp)-.5_dp
+              packed(:,x,y,z)=base+gradient*coordinate
+            enddo
+          enddo
+        enddo
+        do side=1,2
+          lower=2;upper=3
+          lower(axis)=1;upper(axis)=min(2,cells)
+          if(side==2) then
+            lower(axis)=max(1,cells-1);upper(axis)=cells
+          endif
+          call initialize_amr_patch_3d(shape_root(1),shape_root(2),shape_root(3), &
+            lower(1),upper(1),lower(2),upper(2),lower(3),upper(3),2,patch(1),success)
+          call require(success,'linear inflow child')
+          call initialize_amr_patch_tree_3d(shape_root,[1],patch,geometry,success)
+          call require(success,'linear inflow geometry')
+          call prolong_amr_patch_tree_3d(geometry,packed(:,:shape_root(1),:shape_root(2),:shape_root(3)),gas,success)
+          call require(success,'linear inflow state')
+          bc='outflow';bc(2*axis-1:2*axis)='inflow'
+          reservoir=spread(base,2,6)
+          reservoir(:,2*axis)=base+gradient*real(cells,dp)
+          call fill_amr_patch_tree_ghosts_3d(geometry,gas,2,bc,halo,success, &
+            coarse_limiter='linear',species_count=2,inflow_state=reservoir,ghost_width=1)
+          call require(success,'one-sided linear inflow interpolation')
+          index=3;index(modulo(axis,3)+1)=1
+          index(axis)=2
+          coordinate=.25_dp
+          if(side==2) then
+            index(axis)=geometry%nodes(2)%shape(axis)+1
+            coordinate=real(cells,dp)-.25_dp
+          endif
+          expected=base+gradient*coordinate
+          call require(maxval(abs(halo(:,index(1),index(2),index(3))-expected))< &
+            64*epsilon(1._dp)*maxval(abs(expected)),'affine coarse donor next to prescribed inlet')
+          call require(abs(sum(halo(6:7,index(1),index(2),index(3)))-halo(1,index(1),index(2),index(3)))< &
+            16*epsilon(1._dp)*abs(halo(1,index(1),index(2),index(3))),'linear species closure at inlet')
+        enddo
+      enddo
+    enddo
+  end subroutine linear_inlet_checks
   subroutine mach_inlet_checks()
     type(nasa7_species), allocatable :: thermo(:)
     type(amr_patch_tree_3d) :: geometry

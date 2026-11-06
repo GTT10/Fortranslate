@@ -7,7 +7,125 @@ module mpi_amr_patch_tree_cells_3d_mod
   implicit none
   private
   public :: fetch_mpi_amr_tree_cells_3d,validate_mpi_amr_tree_local_3d,validate_mpi_amr_tree_metadata_3d
+  public :: add_mpi_amr_tree_cells_3d
 contains
+  ! Sparse signed density increments. Duplicate targets are intentional and
+  ! are summed in sender-rank order, preserving each sender's record order.
+  ! Only owner-local candidate fields are copied; collective rejection leaves
+  ! every rank's input unchanged, including after a late overflow.
+  subroutine add_mpi_amr_tree_cells_3d(tree,owners,local,nvar,requests,increments,comm,ok,maximum_depth)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),nvar,requests(:,:)
+    type(amr_tree_state_3d), intent(inout) :: local
+    real(dp), intent(in) :: increments(:,:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: maximum_depth
+    type(amr_tree_state_3d) :: candidate
+    integer, allocatable :: send_count(:),recv_count(:),send_offset(:),recv_offset(:),cursor(:)
+    integer, allocatable :: packed(:,:),received(:,:)
+    real(dp), allocatable :: payload(:,:),incoming_values(:,:)
+    integer :: rank,nranks,status,ios,node,n(3),query,destination,slot,nquery,incoming,peer,c
+    integer(int64) :: total
+    real(dp) :: old,delta
+    logical :: valid,ready
+    ok=.false.
+    call validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ready,maximum_depth)
+    if (.not.ready) return
+    call MPI_Comm_rank(comm,rank,status)
+    if (status/=MPI_SUCCESS) return
+    call MPI_Comm_size(comm,nranks,status)
+    if (status/=MPI_SUCCESS) return
+    nquery=size(requests,2)
+    valid=size(requests,1)==4.and.all(shape(increments)==[nvar,nquery])
+    valid=valid.and.nquery<=huge(1)/max(4,nvar)
+    call agree(valid,ready)
+    if (.not.ready) return
+    valid=all(ieee_is_finite(increments))
+    do query=1,nquery
+      node=requests(1,query)
+      if (node<1.or.node>size(tree%nodes)) then
+        valid=.false.;cycle
+      end if
+      if (present(maximum_depth)) then
+        if (tree%nodes(node)%level>maximum_depth) valid=.false.
+      end if
+      if (any(requests(2:4,query)<1).or.any(requests(2:4,query)>tree%nodes(node)%shape)) valid=.false.
+    end do
+    call agree(valid,ready)
+    if (.not.ready) return
+    allocate(send_count(nranks),recv_count(nranks),send_offset(nranks),recv_offset(nranks),cursor(nranks), &
+      packed(4,nquery),payload(nvar,nquery),stat=ios)
+    call agree(ios==0,ready)
+    if (.not.ready) return
+    send_count=0
+    do query=1,nquery
+      destination=owners(requests(1,query))+1
+      send_count(destination)=send_count(destination)+1
+    end do
+    call MPI_Alltoall(send_count,1,MPI_INTEGER,recv_count,1,MPI_INTEGER,comm,status)
+    call agree(status==MPI_SUCCESS,ready)
+    if (.not.ready) return
+    total=sum(int(recv_count,int64))
+    call agree(total<=int(huge(1)/max(4,nvar),int64),ready)
+    if (.not.ready) return
+    incoming=int(total)
+    allocate(received(4,incoming),incoming_values(nvar,incoming),stat=ios)
+    call agree(ios==0,ready)
+    if (.not.ready) return
+    send_offset(1)=0;recv_offset(1)=0
+    do peer=2,nranks
+      send_offset(peer)=send_offset(peer-1)+send_count(peer-1)
+      recv_offset(peer)=recv_offset(peer-1)+recv_count(peer-1)
+    end do
+    cursor=send_offset
+    do query=1,nquery
+      destination=owners(requests(1,query))+1
+      cursor(destination)=cursor(destination)+1;slot=cursor(destination)
+      packed(:,slot)=requests(:,query);payload(:,slot)=increments(:,query)
+    end do
+    call MPI_Alltoallv(packed,4*send_count,4*send_offset,MPI_INTEGER, &
+      received,4*recv_count,4*recv_offset,MPI_INTEGER,comm,status)
+    call agree(status==MPI_SUCCESS,ready)
+    if (.not.ready) return
+    call MPI_Alltoallv(payload,nvar*send_count,nvar*send_offset,MPI_DOUBLE_PRECISION, &
+      incoming_values,nvar*recv_count,nvar*recv_offset,MPI_DOUBLE_PRECISION,comm,status)
+    call agree(status==MPI_SUCCESS,ready)
+    if (.not.ready) return
+    candidate=local;valid=.true.
+    do query=1,incoming
+      node=received(1,query);n=received(2:4,query)
+      do c=1,nvar
+        old=candidate%fields(node)%values(c,n(1),n(2),n(3));delta=incoming_values(c,query)
+        if (.not.ieee_is_finite(old)) then
+          valid=.false.;exit
+        end if
+        if (delta>0) then
+          if (old>huge(1._dp)-delta) then
+            valid=.false.;exit
+          end if
+        else if (delta<0) then
+          if (old< -huge(1._dp)-delta) then
+            valid=.false.;exit
+          end if
+        end if
+        candidate%fields(node)%values(c,n(1),n(2),n(3))=old+delta
+      end do
+      if (.not.valid) exit
+    end do
+    call agree(valid,ready)
+    if (.not.ready) return
+    call move_alloc(candidate%fields,local%fields);ok=.true.
+  contains
+    subroutine agree(condition,result)
+      logical, intent(in) :: condition
+      logical, intent(out) :: result
+      integer :: ierr
+      call MPI_Allreduce(condition,result,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+      if (ierr/=MPI_SUCCESS) result=.false.
+    end subroutine
+  end subroutine add_mpi_amr_tree_cells_3d
+
   ! Each request column is [node,i,j,k], with one-based cell indices.
   ! Request counts/order may differ on every rank, including zero requests.
   subroutine fetch_mpi_amr_tree_cells_3d(tree,owners,local,nvar,requests,values,comm,ok,maximum_depth)

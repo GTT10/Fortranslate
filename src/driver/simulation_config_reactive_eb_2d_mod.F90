@@ -159,9 +159,10 @@ contains
       message = "StateRedist target volume fraction must be in (0,1]"
       return
     end if
-    if (state_redist_max_order /= 0 .and. state_redist_max_order /= 2) then
+    if (state_redist_max_order /= 0 .and. state_redist_max_order /= 2 .and. &
+        state_redist_max_order /= 4) then
       ok = .false.
-      message = "StateRedist max order must be 0 or 2"
+      message = "StateRedist max order must be 0, 2 or 4"
       return
     end if
     if ((trim(embedded_wall_kind) /= "slip_wall" .and. &

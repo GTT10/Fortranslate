@@ -8,8 +8,11 @@ program test_mpi_amr_patch_tree_hydro_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use amr_patch_tree_hydro_3d_mod, only: compute_amr_patch_tree_cfl_3d,advance_amr_patch_tree_hydro_3d, &
-    compute_sdc_amr_patch_tree_hydro_3d
-  use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d,compute_sdc_mpi_amr_tree_hydro_3d
+    compute_sdc_amr_patch_tree_hydro_3d,compute_mol_amr_patch_tree_hydro_3d, &
+    convert_amr_patch_tree_rotating_energy_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d,compute_sdc_mpi_amr_tree_hydro_3d, &
+    compute_mol_mpi_amr_tree_hydro_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use amr_patch_tree_ghost_3d_mod, only: amr_tree_inflow_faces_3d
   implicit none
@@ -73,6 +76,24 @@ program test_mpi_amr_patch_tree_hydro_3d
   call require(ok,'serial CFL')
   inlet=spread(global%fields(1)%values(:,1,1,1),2,6)
   inlet_t=reference%fields(1)%values(1,1,1,1)
+  if(trim(arg)=='auxiliary') then
+    call check_auxiliary_mol()
+    if(rank==0) print *, 'PASS: MPI stored auxiliary regular tree MOL spatial operator'
+    call MPI_Finalize(ierr)
+    stop
+  endif
+  if(trim(arg)=='mol') then
+    call check_mol()
+    if(rank==0) print *, 'PASS: MPI regular tree MOL spatial operator'
+    call MPI_Finalize(ierr)
+    stop
+  endif
+  if(trim(arg)=='rotating_mol') then
+    call check_rotating_mol()
+    if(rank==0) print *, 'PASS: MPI rotating regular tree MOL spatial operator'
+    call MPI_Finalize(ierr)
+    stop
+  endif
   if(trim(arg)=='sdc') then
     call check_sdc()
     if(rank==0) print *, 'PASS: MPI SDC hydro stage'
@@ -192,6 +213,302 @@ program test_mpi_amr_patch_tree_hydro_3d
   if (rank==0) print *, 'PASS: distributed tree hydro, physical boundaries, exact serial parity and rollback'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_rotating_mol()
+    type(amr_tree_state_3d) :: rates,serial_rates,prior
+    type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)
+    type(rotating_frame_3d) :: frame,bad_frame
+    real(dp) :: lower(3)
+    integer :: layout,peer,order,lf_case,boundary_case
+    frame%axis=3;frame%angular_speed=400._dp
+    frame%axis_point=[.0004_dp,-.0007_dp,0._dp]
+    lower=[-.002_dp,.003_dp,.001_dp]
+    faces='periodic';dt=.001_dp*expected_dt
+    call convert_amr_patch_tree_rotating_energy_3d(tree,global,lower,spacing,frame,.true.,ok)
+    call require(ok,'rotating MOL tree initial state')
+    do layout=1,2
+      owners=mod([0,1,0],nranks)
+      if(layout==2) owners=mod([1,0,1],nranks)
+      if(allocated(local%fields)) deallocate(local%fields,temperature%fields)
+      allocate(local%fields(3),temperature%fields(3))
+      do peer=1,3
+        if(owners(peer)/=rank) cycle
+        local%fields(peer)=global%fields(peer)
+        temperature%fields(peer)=reference%fields(peer)
+      enddo
+      do boundary_case=1,4
+      faces='periodic'
+      if(boundary_case==2) faces=['outflow ','outflow ','outflow ','outflow ','periodic','periodic']
+      if(boundary_case>=3) faces=['inflow  ','outflow ','outflow ','outflow ','periodic','periodic']
+      mach=-1;pin=0
+      if(boundary_case==4) mach(1)=.2_dp
+      do order=1,2
+      do lf_case=0,1
+        call compute_mol_amr_patch_tree_hydro_3d(tree,species,global,reference,spacing,dt,faces, &
+          serial_rates,serial_flux,ok,order=order,lax_friedrichs=lf_case==1,frame=frame,domain_lower=lower, &
+          inflow_state=inlet,inflow_temperature=inlet_t,inflow_mach=mach,inflow_pressure=pin)
+        call require(ok,'serial rotating MOL spatial rates')
+        call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+          rates,flux,MPI_COMM_WORLD,ok,order=order,lax_friedrichs=lf_case==1,frame=frame,domain_lower=lower, &
+          inflow_state=inlet,inflow_temperature=inlet_t,inflow_mach=mach,inflow_pressure=pin)
+        call require(ok,'MPI rotating MOL spatial rates')
+        call matched_mol(rates,serial_rates,flux,serial_flux)
+      enddo
+      enddo
+      enddo
+      prior=rates;prior_flux=flux;bad_frame=frame
+      if(rank==nranks-1) bad_frame%angular_speed=frame%angular_speed+1._dp
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok,frame=bad_frame,domain_lower=lower)
+      call require(.not.ok,'rotating MOL frame disagreement rejected')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+    enddo
+  end subroutine check_rotating_mol
+
+  subroutine check_auxiliary_mol()
+    type(amr_tree_state_3d) :: aux,owned_aux,rates,arates,srates,sarates,start,finish,owned_start,owned_end
+    type(amr_tree_state_3d) :: prior,prior_aux,bad_state
+    type(amr_tree_flux_3d), allocatable :: flux(:),aflux(:),sflux(:),saflux(:),prior_flux(:),prior_aflux(:)
+    real(dp) :: fractions(2)
+    integer :: peer,layout,boundary_case,dims(3)
+    dt=.001_dp*expected_dt;aux=reference
+    allocate(start%fields(3))
+    do peer=1,3
+      dims=tree%nodes(peer)%shape
+      aux%fields(peer)%values=10000
+      allocate(start%fields(peer)%values(14,dims(1),dims(2),dims(3)))
+      start%fields(peer)%values(:12,:,:,:)=global%fields(peer)%values
+      start%fields(peer)%values(13,:,:,:)=reference%fields(peer)%values(1,:,:,:)
+      start%fields(peer)%values(14,:,:,:)=aux%fields(peer)%values(1,:,:,:)
+    enddo
+    finish=start
+    do peer=1,2
+      finish%fields(peer)%values(:12,:,:,:)=1.02_dp*start%fields(peer)%values(:12,:,:,:)
+      finish%fields(peer)%values(14,:,:,:)=15000
+    enddo
+    fractions=[.25_dp,.5_dp]
+    do layout=1,3
+      owners=mod([0,1,0],nranks)
+      if(layout==2) owners=mod([1,0,1],nranks)
+      if(layout==3) owners=0
+      if(allocated(local%fields)) deallocate(local%fields,temperature%fields)
+      if(allocated(owned_aux%fields)) deallocate(owned_aux%fields,owned_start%fields,owned_end%fields)
+      allocate(local%fields(3),temperature%fields(3),owned_aux%fields(3),owned_start%fields(3),owned_end%fields(3))
+      do peer=1,3
+        if(owners(peer)/=rank) cycle
+        local%fields(peer)=global%fields(peer);temperature%fields(peer)=reference%fields(peer)
+        owned_aux%fields(peer)=aux%fields(peer)
+        owned_start%fields(peer)=start%fields(peer);owned_end%fields(peer)=finish%fields(peer)
+      enddo
+      do boundary_case=1,4
+        faces='periodic';pressure=0;mach=-1;pin=0
+        if(boundary_case==2) then
+          faces=['outflow  ','outflow  ','slip_wall','slip_wall','outflow  ','outflow  ']
+          pressure(2)=102325
+        endif
+        if(boundary_case==4) then
+          faces='outflow';faces(1)='inflow';mach(1)=.2_dp;pin(1)=120000
+        endif
+        if(boundary_case/=3) then
+          call compute_mol_amr_patch_tree_hydro_3d(tree,species,global,reference,spacing,dt,faces,srates,sflux,ok, &
+            inflow_state=inlet,inflow_temperature=inlet_t,outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin, &
+            internal_energy=aux,internal_energy_rate=sarates,internal_energy_integrated_flux=saflux)
+          call require(ok,'serial stored auxiliary MOL spatial')
+          call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+            rates,flux,MPI_COMM_WORLD,ok,inflow_state=inlet,inflow_temperature=inlet_t, &
+            outlet_pressure=pressure,inflow_mach=mach,inflow_pressure=pin,internal_energy=owned_aux, &
+            internal_energy_rate=arates,internal_energy_integrated_flux=aflux)
+        else
+          call compute_mol_amr_patch_tree_hydro_3d(tree,species,global,reference,spacing,dt,faces,srates,sflux,ok, &
+            target_depth=2,coarse_start=start,coarse_end=finish,coarse_fractions=fractions, &
+            internal_energy=aux,internal_energy_rate=sarates,internal_energy_integrated_flux=saflux)
+          call require(ok,'serial stored auxiliary MOL coarse endpoint spatial')
+          call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+            rates,flux,MPI_COMM_WORLD,ok,target_depth=2,coarse_start=owned_start,coarse_end=owned_end, &
+            coarse_fractions=fractions,internal_energy=owned_aux,internal_energy_rate=arates, &
+            internal_energy_integrated_flux=aflux)
+        endif
+        call require(ok,'MPI stored auxiliary MOL spatial')
+        call matched_mol(rates,srates,flux,sflux)
+        call matched_mol(arates,sarates,aflux,saflux)
+        do peer=1,3
+          if(owners(peer)/=rank) cycle
+          call require(all(owned_aux%fields(peer)%values==aux%fields(peer)%values),'stored MOL input scalar unchanged')
+        enddo
+      enddo
+      faces='periodic'
+      prior=rates;prior_aux=arates;prior_flux=flux;prior_aflux=aflux
+      ! Argument presence differs across ranks. Reject before sparse exchange.
+      if(rank==nranks-1) then
+        call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+          rates,flux,MPI_COMM_WORLD,ok,internal_energy=owned_aux,internal_energy_rate=arates)
+      else
+        call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+          rates,flux,MPI_COMM_WORLD,ok,internal_energy=owned_aux,internal_energy_rate=arates, &
+          internal_energy_integrated_flux=aflux)
+      endif
+      call require(.not.ok,'rank-disagreeing stored auxiliary output rejected')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+      call rolled_back_mol(arates,prior_aux,aflux,prior_aflux)
+      bad_state=local
+      if(rank==owners(3)) bad_state%fields(3)%values(5,1,1,1)=-1e20_dp
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,bad_state,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok,internal_energy=owned_aux,internal_energy_rate=arates, &
+        internal_energy_integrated_flux=aflux)
+      call require(.not.ok,'stored auxiliary one-owner late failure rejected')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+      call rolled_back_mol(arates,prior_aux,aflux,prior_aflux)
+      bad_state=owned_aux
+      if(rank==owners(3)) then
+        dims=tree%nodes(3)%shape
+        deallocate(bad_state%fields(3)%values)
+        allocate(bad_state%fields(3)%values(2,dims(1),dims(2),dims(3)))
+        bad_state%fields(3)%values=10000
+      endif
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok,internal_energy=bad_state,internal_energy_rate=arates, &
+        internal_energy_integrated_flux=aflux)
+      call require(.not.ok,'stored auxiliary owner shape failure rejected')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+      call rolled_back_mol(arates,prior_aux,aflux,prior_aflux)
+    enddo
+  end subroutine check_auxiliary_mol
+
+  subroutine check_mol()
+    type(amr_tree_state_3d) :: rates,serial_rates,prior,bad_state,start,finish,owned_start,owned_end
+    type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)
+    real(dp) :: fractions(2),h(3),rhs(12),roundoff(12)
+    integer :: peer,boundary_case,order,lf_case,layout,dims(3),selected_order
+    logical :: lf
+    dt=.001_dp*expected_dt
+    allocate(start%fields(3),owned_start%fields(3),owned_end%fields(3))
+    do peer=1,3
+      dims=tree%nodes(peer)%shape
+      allocate(start%fields(peer)%values(13,dims(1),dims(2),dims(3)))
+      start%fields(peer)%values(:12,:,:,:)=global%fields(peer)%values
+      start%fields(peer)%values(13,:,:,:)=reference%fields(peer)%values(1,:,:,:)
+    enddo
+    finish=start
+    do peer=1,2
+      finish%fields(peer)%values(:12,:,:,:)=1.02_dp*start%fields(peer)%values(:12,:,:,:)
+    enddo
+    do layout=1,2
+      owners=mod([0,1,0],nranks)
+      if(layout==2) owners=mod([1,0,1],nranks)
+      if(allocated(local%fields)) deallocate(local%fields,temperature%fields)
+      allocate(local%fields(3),temperature%fields(3))
+      do peer=1,3
+        if(allocated(owned_start%fields(peer)%values)) deallocate(owned_start%fields(peer)%values)
+        if(allocated(owned_end%fields(peer)%values)) deallocate(owned_end%fields(peer)%values)
+        if(owners(peer)/=rank) cycle
+        local%fields(peer)=global%fields(peer);temperature%fields(peer)=reference%fields(peer)
+        owned_start%fields(peer)=start%fields(peer);owned_end%fields(peer)=finish%fields(peer)
+      enddo
+      do boundary_case=1,5
+        faces='periodic'
+        if(boundary_case==2) faces='outflow'
+        if(boundary_case==3) faces=['outflow  ','outflow  ','slip_wall','slip_wall','outflow  ','outflow  ']
+        if(boundary_case==4) faces(1:2)='no_slip_wall'
+        if(boundary_case==5) faces(3:4)='isothermal_wall'
+        do order=1,2
+        do lf_case=0,1
+          lf=lf_case==1
+          call compute_mol_amr_patch_tree_hydro_3d(tree,species,global,reference,spacing,dt,faces, &
+            serial_rates,serial_flux,ok,order=order,lax_friedrichs=lf)
+          call require(ok,'serial regular MOL spatial')
+          call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+            rates,flux,MPI_COMM_WORLD,ok,order=order,lax_friedrichs=lf)
+          call require(ok,'MPI regular MOL spatial')
+          call matched_mol(rates,serial_rates,flux,serial_flux)
+          do peer=1,3
+            if(owners(peer)/=rank) cycle
+            dims=tree%nodes(peer)%shape
+            h=spacing
+            block
+              integer :: ancestor
+              ancestor=peer
+              do while(ancestor>1)
+                h=h/real(tree%nodes(ancestor)%patch%refinement_ratio,dp)
+                ancestor=tree%nodes(ancestor)%parent
+              enddo
+            end block
+            do k=1,dims(3)
+            do j=1,dims(2)
+            do i=1,dims(1)
+              rhs=-(flux(peer)%x(:,i+1,j,k)-flux(peer)%x(:,i,j,k))/(dt*h(1))- &
+                (flux(peer)%y(:,i,j+1,k)-flux(peer)%y(:,i,j,k))/(dt*h(2))- &
+                (flux(peer)%z(:,i,j,k+1)-flux(peer)%z(:,i,j,k))/(dt*h(3))
+              ! Integrated flux multiplication and cancellation have a
+              ! rounding bound set by both faces, even when divergence is small.
+              roundoff=32*epsilon(1._dp)*((abs(flux(peer)%x(:,i+1,j,k))+abs(flux(peer)%x(:,i,j,k)))/(dt*h(1))+ &
+                (abs(flux(peer)%y(:,i,j+1,k))+abs(flux(peer)%y(:,i,j,k)))/(dt*h(2))+ &
+                (abs(flux(peer)%z(:,i,j,k+1))+abs(flux(peer)%z(:,i,j,k)))/(dt*h(3)))
+              call require(all(abs(rhs-rates%fields(peer)%values(:,i,j,k))<=roundoff), &
+                'MOL integrated face flux divergence within rounding bound')
+            enddo
+            enddo
+            enddo
+          enddo
+        enddo
+        enddo
+      enddo
+      faces='periodic';fractions=[.25_dp,.5_dp]
+      call compute_mol_amr_patch_tree_hydro_3d(tree,species,global,reference,spacing,dt,faces, &
+        serial_rates,serial_flux,ok,target_depth=2,coarse_start=start,coarse_end=finish,coarse_fractions=fractions)
+      call require(ok,'serial MOL temporal coarse donors')
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok,target_depth=2,coarse_start=owned_start,coarse_end=owned_end,coarse_fractions=fractions)
+      call require(ok,'MPI MOL temporal coarse donors')
+      call matched_mol(rates,serial_rates,flux,serial_flux)
+      prior=rates;prior_flux=flux;bad_state=local
+      if(rank==owners(3)) bad_state%fields(3)%values(5,1,1,1)=-1e20_dp
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,bad_state,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok)
+      call require(.not.ok,'MOL one-owner failure rejects collectively')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+      selected_order=2
+      if(rank==nranks-1) selected_order=1
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok,order=selected_order)
+      call require(.not.ok,'MOL rank-disagreeing order rejected')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+      call compute_mol_mpi_amr_tree_hydro_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+        rates,flux,MPI_COMM_WORLD,ok,order=0)
+      call require(.not.ok,'MOL invalid order cannot select CTU')
+      call rolled_back_mol(rates,prior,flux,prior_flux)
+    enddo
+  end subroutine check_mol
+  subroutine matched_mol(rates,serial_rates,flux,serial_flux)
+    type(amr_tree_state_3d), intent(in) :: rates,serial_rates
+    type(amr_tree_flux_3d), intent(in) :: flux(:),serial_flux(:)
+    integer :: peer
+    do peer=1,3
+      call require(allocated(rates%fields(peer)%values).eqv.(owners(peer)==rank),'MOL rates owned only')
+      call require(allocated(flux(peer)%x).eqv.(owners(peer)==rank.and.allocated(serial_flux(peer)%x)), &
+        'MOL flux selected and owned only')
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==serial_rates%fields(peer)%values),'serial/MPI MOL rate exact')
+      call require(all(local%fields(peer)%values==global%fields(peer)%values),'MOL input state unchanged')
+      call require(all(temperature%fields(peer)%values==reference%fields(peer)%values),'MOL input T unchanged')
+      if(.not.allocated(serial_flux(peer)%x)) cycle
+      call require(all(lbound(serial_flux(peer)%x)==1).and.all(lbound(serial_flux(peer)%y)==1).and. &
+        all(lbound(serial_flux(peer)%z)==1),'MOL tree face indices one-based')
+      call require(all(flux(peer)%x==serial_flux(peer)%x).and.all(flux(peer)%y==serial_flux(peer)%y).and. &
+        all(flux(peer)%z==serial_flux(peer)%z),'serial/MPI MOL integrated flux exact')
+    enddo
+  end subroutine matched_mol
+  subroutine rolled_back_mol(rates,prior,flux,prior_flux)
+    type(amr_tree_state_3d), intent(in) :: rates,prior
+    type(amr_tree_flux_3d), intent(in) :: flux(:),prior_flux(:)
+    integer :: peer
+    do peer=1,3
+      if(owners(peer)/=rank) cycle
+      call require(all(rates%fields(peer)%values==prior%fields(peer)%values),'MOL failed rate rollback')
+      call require(allocated(flux(peer)%x).eqv.allocated(prior_flux(peer)%x),'MOL failed flux presence rollback')
+      if(.not.allocated(prior_flux(peer)%x)) cycle
+      call require(all(flux(peer)%x==prior_flux(peer)%x).and.all(flux(peer)%y==prior_flux(peer)%y).and. &
+        all(flux(peer)%z==prior_flux(peer)%z),'MOL failed flux rollback')
+    enddo
+  end subroutine rolled_back_mol
   subroutine check_sdc()
     type(amr_tree_state_3d) :: source,owned_source,rates,serial_rates,prior,bad_state
     type(amr_tree_flux_3d), allocatable :: flux(:),serial_flux(:),prior_flux(:)

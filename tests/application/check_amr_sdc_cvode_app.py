@@ -1,6 +1,7 @@
 """AMR CVODE SDC serial/MPI equality and changed-rank checkpoint continuation."""
 import argparse
 import csv
+import math
 import os
 from pathlib import Path
 import re
@@ -61,6 +62,8 @@ def main():
     with (work / 'serial.csv').open() as stream:
         rows = list(csv.DictReader(stream))
     assert max(float(row['temperature']) for row in rows) > 1100.00001, 'Chemistry must heat the gas'
+    heat = [float(row['heat_release_W_m3']) for row in rows]
+    assert all(math.isfinite(value) for value in heat) and any(value != 0 for value in heat)
     with (work / 'serial.csv.budget.csv').open() as stream:
         ledger = list(csv.DictReader(stream))
     residual = max(abs(float(row['final']) - float(row['initial']) - float(row['boundary_change'])
@@ -73,10 +76,37 @@ def main():
     restart = "\n&amr_tree_checkpoint restart_file='tree.chk' /\n"
     _, log = run('stop', template + save, 2)
     assert 'Stopped after checkpoint at step 1' in log, log
+    assert (work / 'tree.chk').read_bytes().startswith(b'PELEF_AMR_TREE_3D_CHECKPOINT_V5\n')
     resumed, _ = run('restart', template + restart, 4)
     assert resumed == baseline, '2-to-4-rank restart differs'
     resumed, _ = run('serial_restart', template + restart)
     assert resumed == baseline, 'MPI-to-serial restart differs'
+    # Make a genuine V3 legacy archive by omitting the new scalar payload.
+    checkpoint = work / 'tree.chk'
+    modern = checkpoint.read_bytes()
+    lines = modern.decode().splitlines()
+    context_bytes = int(lines[1])
+    cursor, consumed = 2, 0
+    while consumed < context_bytes:
+        consumed += len(lines[cursor]) + 1
+        cursor += 1
+    assert consumed == context_bytes
+    count, nvar, nx, ny, nz = map(int, lines[cursor].split())
+    shapes = [(nx, ny, nz)]
+    cursor += 5  # node header, clock, ledger, forcing, reaction presence
+    for _ in range(count - 1):
+        parent, il, iu, jl, ju, kl, ku, ratio = map(int, lines[cursor].split())
+        assert 1 <= parent <= len(shapes)
+        shapes.append(((iu - il + 1) * ratio, (ju - jl + 1) * ratio, (ku - kl + 1) * ratio))
+        cursor += 1
+    heat_cells = sum(math.prod(shape) for shape in shapes)
+    assert lines[-1] == 'END_AMR_TREE_CHECKPOINT'
+    legacy = lines[:-1 - heat_cells] + [lines[-1]]
+    legacy[0] = 'PELEF_AMR_TREE_3D_CHECKPOINT_V3'
+    checkpoint.write_text('\n'.join(legacy) + '\n')
+    resumed, _ = run('legacy_restart', template + restart, 2)
+    assert resumed == baseline, 'Legacy archive cold diagnostic differs after accepted stage'
+    checkpoint.write_bytes(modern)
     run('changed_reactor', template.replace("sdc_reactor='cvode'", "sdc_reactor='native'") + restart,
         4, 'Invalid MPI tree restart checkpoint/context')
     print(f'PASS: active CVODE; exact serial/MPI and changed-rank restart; reactor mismatch rejection; residual {residual:.17g}')

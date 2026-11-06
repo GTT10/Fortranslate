@@ -8,7 +8,8 @@ module mpi_amr_reactive_1d_application_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config, configure_reactive_1d_eos
+  use mpi_reactive_eos_policy_mod, only: agree_mpi_reactive_eos_1d
   use reactive_1d_mod, only: reactive_nvar
   use amr_patch_tree_1d_mod, only: amr_patch_level_plan_1d
   use amr_patch_tree_reactive_1d_mod, only: &
@@ -66,11 +67,17 @@ contains
     integer :: ierr, rank, nranks, tagged_cells, transferred_cells
     integer :: last_checkpoint_step, nvar
 
+    type(nasa7_species), allocatable :: eos_species(:)
+
     call MPI_Comm_rank(comm, rank, ierr)
     if (ierr /= MPI_SUCCESS) error stop "MPI_Comm_rank failed"
     call MPI_Comm_size(comm, nranks, ierr)
     if (ierr /= MPI_SUCCESS) call abort_run("MPI_Comm_size failed", 2)
-
+    call configure_reactive_1d_eos(species, config, eos_species, ok)
+    call MPI_Allreduce(MPI_IN_PLACE, ok, 1, MPI_LOGICAL, MPI_LAND, comm, ierr)
+    if (ierr /= MPI_SUCCESS .or. .not. ok) call abort_run("Invalid sparse MPI AMR EOS policy", 2)
+    call agree_mpi_reactive_eos_1d(eos_species, comm, ok)
+    if (.not. ok) call abort_consensus_run("Sparse MPI AMR EOS policy disagrees across ranks", 3)
     selected_context = present(bundle_sha256) .or. &
       present(base_mole_fractions) .or. present(chemistry_integrator)
     if (selected_context .and. &
@@ -87,9 +94,9 @@ contains
     if (.not. config%amr_enabled .or. config%amr_multipatch_enabled) then
       call abort_run("Sparse MPI AMR patch-tree configuration is invalid", 2)
     end if
-    nvar = reactive_nvar(size(species))
+    nvar = reactive_nvar(size(eos_species))
     if (nvar < 1 .or. size(reactions) < 1 .or. &
-        size(transport) /= size(species) .or. len_trim(output_path) == 0) then
+        size(transport) /= size(eos_species) .or. len_trim(output_path) == 0) then
       call abort_run("Sparse MPI AMR application data are incompatible", 2)
     end if
     if (selected_context) then
@@ -103,23 +110,23 @@ contains
     if (restart_run) then
       if (selected_context) then
         call read_patch_tree_reactive_1d_selected_checkpoint( &
-          config%restart_file, species, config, selected_bundle_sha256, &
+          config%restart_file, eos_species, config, selected_bundle_sha256, &
           selected_chemistry_integrator, selected_composition, &
           root_solution, initial_all, ok)
       else
         call read_patch_tree_reactive_1d_checkpoint( &
-          config%restart_file, species, config, root_solution, ok)
+          config%restart_file, eos_species, config, root_solution, ok)
       end if
       if (.not. ok) call abort_run("Sparse MPI AMR restart read failed", 4)
     else
       allocate(empty_plans(0))
       if (selected_context) then
         call initialize_patch_tree_reactive_1d( &
-          species, config, empty_plans, root_solution, ok, &
+          eos_species, config, empty_plans, root_solution, ok, &
           selected_composition)
       else
         call initialize_patch_tree_reactive_1d( &
-          species, config, empty_plans, root_solution, ok)
+          eos_species, config, empty_plans, root_solution, ok)
       end if
       if (.not. ok) &
         call abort_run("Sparse MPI AMR root initialization failed", 4)
@@ -145,7 +152,7 @@ contains
     if (.not. ok) call abort_run("Initial sparse AMR scatter failed", 4)
     if (.not. restart_run) then
       call regrid_tagged_sparse_patch_tree_reactive_1d( &
-        species, config, distribution, sparse_solution, new_distribution, &
+        eos_species, config, distribution, sparse_solution, new_distribution, &
         changed, tagged_cells, transferred_cells, ok)
       if (.not. ok) call abort_run("Initial sparse AMR tagging failed", 4)
       distribution = new_distribution
@@ -158,27 +165,27 @@ contains
         call abort_run("Sparse MPI AMR step limit reached", 5)
       if (config%transport_enabled) then
         call sparse_patch_tree_reactive_timestep_1d( &
-          species, config, distribution, sparse_solution, dt, ok, transport)
+          eos_species, config, distribution, sparse_solution, dt, ok, transport)
       else
         call sparse_patch_tree_reactive_timestep_1d( &
-          species, config, distribution, sparse_solution, dt, ok)
+          eos_species, config, distribution, sparse_solution, dt, ok)
       end if
       if (.not. ok .or. dt <= 0.0_dp) &
         call abort_run("Sparse MPI AMR timestep failed", 5)
       dt = min(dt, config%final_time - sparse_solution%time)
       if (config%transport_enabled) then
         call advance_sparse_patch_tree_reactive_1d( &
-          species, reactions, config, dt, distribution, sparse_solution, &
+          eos_species, reactions, config, dt, distribution, sparse_solution, &
           ok, transport, chemistry_integrator=chemistry_integrator)
       else
         call advance_sparse_patch_tree_reactive_1d( &
-          species, reactions, config, dt, distribution, sparse_solution, ok, &
+          eos_species, reactions, config, dt, distribution, sparse_solution, ok, &
           chemistry_integrator=chemistry_integrator)
       end if
       if (.not. ok) call abort_run("Sparse MPI AMR advance failed", 5)
       if (mod(sparse_solution%steps, config%amr_regrid_interval) == 0) then
         call regrid_tagged_sparse_patch_tree_reactive_1d( &
-          species, config, distribution, sparse_solution, new_distribution, &
+          eos_species, config, distribution, sparse_solution, new_distribution, &
           changed, tagged_cells, transferred_cells, ok)
         if (.not. ok) call abort_run("Sparse MPI AMR regrid failed", 5)
         distribution = new_distribution
@@ -220,7 +227,7 @@ contains
     output_ok = .true.
     if (rank == 0) then
       call write_patch_tree_reactive_1d_csv( &
-        trim(output_path), species, replicated_solution, output_ok)
+        trim(output_path), eos_species, replicated_solution, output_ok)
     end if
     call MPI_Bcast(output_ok, 1, MPI_LOGICAL, 0, comm, ierr)
     if (ierr /= MPI_SUCCESS .or. .not. output_ok) &
@@ -232,7 +239,7 @@ contains
       if (selected_context) then
         write(*, '(a,1x,a)') &
           "Bundle SHA-256:", trim(selected_bundle_sha256)
-        write(*, '(a,i0)') "Species: ", size(species)
+        write(*, '(a,i0)') "Species: ", size(eos_species)
         write(*, '(a,i0)') "Reactions: ", size(reactions)
         write(*, '(a,1x,a)') "Chemistry integrator:", &
           trim(selected_chemistry_integrator)
@@ -272,7 +279,7 @@ contains
       integer :: context_ierr, index
 
       local_ok = len_trim(selected_bundle_sha256) == 64 .and. &
-        size(selected_composition) == size(species) .and. &
+        size(selected_composition) == size(eos_species) .and. &
         (trim(selected_chemistry_integrator) == "explicit" .or. &
          trim(selected_chemistry_integrator) == "implicit")
       if (local_ok) then
@@ -300,7 +307,7 @@ contains
 
       root_bundle = selected_bundle_sha256
       root_integrator = selected_chemistry_integrator
-      allocate(root_composition(size(species)))
+      allocate(root_composition(size(eos_species)))
       root_composition = selected_composition
       call MPI_Bcast( &
         root_bundle, len(root_bundle), MPI_CHARACTER, 0, comm, context_ierr)
@@ -336,12 +343,12 @@ contains
 
       if (selected_context) then
         call write_patch_tree_reactive_1d_selected_checkpoint( &
-          config%checkpoint_file, species, solution, &
+          config%checkpoint_file, eos_species, solution, &
           selected_bundle_sha256, selected_chemistry_integrator, &
           selected_composition, initial_all, checkpoint_ok)
       else
         call write_patch_tree_reactive_1d_checkpoint( &
-          config%checkpoint_file, species, solution, checkpoint_ok)
+          config%checkpoint_file, eos_species, solution, checkpoint_ok)
       end if
     end subroutine write_materialized_checkpoint
 

@@ -45,6 +45,10 @@ hydro_method='plm_ctu', riemann_solver='pelec', boundary_faces=6*'outflow',
 
 This experimental path supports drag, heating and evaporation with gas chemistry
 and molecular transport. Gas force density uses `external_forcing`;
+`rotating_frame_enabled=.true.` in `/eb_tree/` is accepted with `mol_mode=.true.`.
+Particle and film exchange, injection inventory, outflow energy and regular-cell
+LES states use the rotating-energy convention. The rotating particle trajectory
+has not been compared against the pinned reference.
 `acceleration` in `/eb_spray/` accelerates both gas and particles. Particle
 half kicks bracket each level interval, with physical-particle momentum and work
 reported in the `force` budget column
@@ -567,3 +571,10 @@ are `les_test_model='box'`, `les_test_ratio=2`, `les_grid_ratio=1`, and
 are part of checkpoint identity; changing/removing them rejects restart.
 See [application checks](../../docs/validation/les-particle-app-20260927.md)
 for the fixed-mechanism evidence and its limits.
+
+Rotating runs report `coordinate_energy` separately from physical `force` in
+the budget CSV. Only the total-energy component receives this term; the
+residual includes it. Coupled checkpoints retain its cumulative value across
+rank changes and reject rotating archives that lack the new energy-history
+context. This storage-convention contribution does not change particle forces
+or establish parity of trajectories with the pinned solver.

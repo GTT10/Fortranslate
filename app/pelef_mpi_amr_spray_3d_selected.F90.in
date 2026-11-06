@@ -18,7 +18,16 @@ program pelef_mpi_amr_spray_3d_selected
     pelef_load_selected_reactions => @PELEF_BUNDLE_LOADER_NAME@, &
     pelef_load_selected_thermo => @PELEF_BUNDLE_THERMO_LOADER_NAME@, &
     pelef_load_selected_transport => @PELEF_BUNDLE_TRANSPORT_LOADER_NAME@
+  use constant_volume_reactor_mod, only: forced_reactor_integrator
+#ifdef PELEF_SDC_CVODE
+  use sundials_forced_reactor_mod, only: advance_forced_reactor_cvode
+#endif
   implicit none
+#ifdef PELEF_SDC_CVODE
+  logical, parameter :: cvode_available=.true.
+#else
+  logical, parameter :: cvode_available=.false.
+#endif
 
   character(len=*), parameter :: pelef_selected_bundle_sha256 = &
     "@PELEF_BUNDLE_BUNDLE_SHA256@"
@@ -47,7 +56,10 @@ program pelef_mpi_amr_spray_3d_selected
   call get_command_argument(2,topology_path)
   call read_reactive_3d_configuration( &
     trim(input_path), config, ok, message, allow_selected=.true.,&
-    allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true.)
+    allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true., &
+    allow_sdc=.true.,allow_mol=.true.,allow_sdc_cvode=cvode_available,allow_external_forcing=.true., &
+    allow_dual_energy=.true.,allow_godunov_dual_energy=.true., &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     call fatal('Invalid selected MPI tree input or mechanism')
@@ -92,14 +104,16 @@ program pelef_mpi_amr_spray_3d_selected
     requested_temperature_maximum = config%initial_temperature / &
       (1.0_dp - config%density_wave_amplitude)
   end select
-  call validate_selected_temperature_range( &
-    "Selected 3D AMR tree", requested_temperature_minimum, &
-    requested_temperature_maximum, common_temperature_minimum, &
-    common_temperature_maximum, ok, message)
-  if (.not. ok) then
-    write(*, '(a)') trim(message)
-    call fatal('Invalid selected MPI tree input or mechanism')
-  end if
+  if(.not.config%pinned_eos_extrapolation) then
+    call validate_selected_temperature_range( &
+      "Selected 3D AMR tree", requested_temperature_minimum, &
+      requested_temperature_maximum, common_temperature_minimum, &
+      common_temperature_maximum, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      call fatal('Invalid selected MPI tree input or mechanism')
+    end if
+  endif
 
   call resolve_reactive_3d_selected_composition( &
     config, species, mole_fractions, ok, message)
@@ -112,10 +126,23 @@ program pelef_mpi_amr_spray_3d_selected
     write(*,'(a)') 'Chemistry integrator: '//pelef_selected_chemistry_integrator
   end if
   call get_command_argument(3,schedule_path)
-  call run_mpi_amr_spray_application(trim(input_path),trim(topology_path),trim(schedule_path), &
-    config,species,reactions,transport,mole_fractions,MPI_COMM_WORLD,chemistry_integrator=pelef_selected_chemistry_integrator)
+#ifdef PELEF_SDC_CVODE
+  if(config%sdc_reactor=='cvode') then
+    call run(advance_forced_reactor_cvode)
+  else
+    call run()
+  endif
+#else
+  call run()
+#endif
   call MPI_Finalize(ierr)
 contains
+  subroutine run(evaluate_reaction)
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
+  call run_mpi_amr_spray_application(trim(input_path),trim(topology_path),trim(schedule_path), &
+    config,species,reactions,transport,mole_fractions,MPI_COMM_WORLD,chemistry_integrator=pelef_selected_chemistry_integrator, &
+    evaluate_reaction=evaluate_reaction)
+  end subroutine run
   subroutine fatal(reason)
     character(len=*), intent(in) :: reason
     integer :: status

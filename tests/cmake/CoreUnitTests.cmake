@@ -14,6 +14,10 @@ add_executable(test_eb_mol_hydro_3d unit/test_eb_mol_hydro_3d.F90)
 target_link_libraries(test_eb_mol_hydro_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_mol_hydro_3d COMMAND test_eb_mol_hydro_3d)
 
+add_executable(test_eb_godunov_internal_energy_3d unit/test_eb_godunov_internal_energy_3d.F90)
+target_link_libraries(test_eb_godunov_internal_energy_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_godunov_internal_energy_3d COMMAND test_eb_godunov_internal_energy_3d)
+
 add_executable(test_eb_boundary_gradient_3d unit/test_eb_boundary_gradient_3d.F90)
 target_link_libraries(test_eb_boundary_gradient_3d PRIVATE pelef_core)
 add_test(NAME unit_eb_boundary_gradient_3d COMMAND test_eb_boundary_gradient_3d)
@@ -636,3 +640,29 @@ add_test(NAME unit_rotating_reaction_3d COMMAND test_rotating_reaction_3d)
 add_executable(test_rotating_transport_3d unit/test_rotating_transport_3d.F90)
 target_link_libraries(test_rotating_transport_3d PRIVATE pelef_core)
 add_test(NAME unit_rotating_transport_3d COMMAND test_rotating_transport_3d)
+
+add_executable(test_reactive_mol_3d unit/test_reactive_mol_3d.F90)
+target_link_libraries(test_reactive_mol_3d PRIVATE pelef_core)
+add_test(NAME unit_reactive_mol_3d COMMAND test_reactive_mol_3d)
+
+add_executable(test_regular_gas_checkpoint unit/test_regular_gas_checkpoint.F90)
+target_link_libraries(test_regular_gas_checkpoint PRIVATE pelef_core)
+add_test(NAME unit_regular_gas_checkpoint COMMAND test_regular_gas_checkpoint)
+
+add_executable(test_dual_energy unit/test_dual_energy.F90)
+target_link_libraries(test_dual_energy PRIVATE pelef_core)
+add_test(NAME unit_dual_energy COMMAND test_dual_energy)
+
+add_executable(test_conservative_reflux_budget unit/test_conservative_reflux_budget.F90)
+target_link_libraries(test_conservative_reflux_budget PRIVATE pelef_core)
+add_test(NAME unit_conservative_reflux_budget COMMAND test_conservative_reflux_budget)
+set_tests_properties(unit_conservative_reflux_budget PROPERTIES TIMEOUT 30 LABELS "amr;reflux;conservation")
+
+add_executable(test_forced_signed_trials unit/test_forced_signed_trials.F90)
+target_link_libraries(test_forced_signed_trials PRIVATE pelef_core)
+add_test(NAME unit_forced_signed_trials COMMAND test_forced_signed_trials)
+set_tests_properties(unit_forced_signed_trials PROPERTIES TIMEOUT 120 LABELS "chemistry;forcing")
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(test_forced_signed_trials PRIVATE
+    -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+endif()

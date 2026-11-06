@@ -50,8 +50,19 @@ program test_mixture_transport
   call require(ok, "mixture transport evaluates")
   call require_close(mu, 4.1983389803134420e-5_dp, 2.0e-12_dp, &
     "Wilke mixture viscosity")
-  call require_close(lambda, 1.2428859732637745e-1_dp, 2.0e-12_dp, &
-    "Mathur mixture conductivity")
+  call require_close(lambda, 1.2428861091736243e-1_dp, 2.0e-12_dp, &
+    "Mathur mixture conductivity (high NASA branch at midpoint)")
+  ! Pinned PelePhysics 6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b,
+  ! Mechanisms/grimech30/mechanism.H::cp_R uses T < 1000 for the low branch.
+  ! Independent native cp_R + 60-digit Eucken/Mathur evaluation supplies these
+  ! references; the transport model is the local dilute-gas subset, not a
+  ! PelePhysics transport fit. Keep the existing relative acceptance bound.
+  call mixture_thermal_conductivity_mathur(species,transport,y,nearest(1000._dp,-1._dp),lambda,ok)
+  call require(ok,"conductivity just below midpoint")
+  call require_close(lambda,1.2428859732637744e-1_dp,2.0e-12_dp,"low side of NASA midpoint")
+  call mixture_thermal_conductivity_mathur(species,transport,y,nearest(1000._dp,1._dp),lambda,ok)
+  call require(ok,"conductivity just above midpoint")
+  call require_close(lambda,1.2428861091736244e-1_dp,2.0e-12_dp,"high side of NASA midpoint")
   call require_close(diffusion(1), 8.1296448205293609e-4_dp, 2.0e-12_dp, &
     "H2 mixture-averaged diffusion")
   call require_close(diffusion(4), 1.9833619301130086e-4_dp, 2.0e-12_dp, &

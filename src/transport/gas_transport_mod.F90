@@ -19,9 +19,12 @@ module gas_transport_mod
     real(dp) :: polarizability = 0.0_dp ! angstrom^3; retained for provenance
     real(dp) :: rotational_relaxation = 0.0_dp
     real(dp) :: simple_viscosity(4)=0, simple_conductivity(4)=0
+    ! Runtime-only model controls; mechanism data serializers retain source records.
+    real(dp), allocatable :: constant_coefficients(:)
     real(dp), allocatable :: simple_binary(:,:) ! Four log-T coefficients per partner.
   end type gas_transport_species
 
+  public :: valid_constant_transport_coefficients,set_constant_transport_coefficients,constant_transport_values
   public :: valid_gas_transport_species
   public :: compatible_transport_database
   public :: load_gas_transport_data
@@ -30,6 +33,56 @@ module gas_transport_mod
   public :: transport_numeric_values
 
 contains
+  logical function valid_constant_transport_coefficients(coefficients) result(valid)
+    real(dp), intent(in) :: coefficients(:)
+    valid=.false.
+    if(size(coefficients)/=2.and.size(coefficients)/=4) return
+    if(.not.all(ieee_is_finite(coefficients))) return
+    if(any(coefficients(1:min(3,size(coefficients)))<0)) return
+    if(size(coefficients)==4) then
+      ! -1 retains the molecular diffusion path for a bulk-viscosity override.
+      if(coefficients(4)<0.and.coefficients(4)/=-1) return
+    endif
+    valid=.true.
+  end function valid_constant_transport_coefficients
+
+  subroutine set_constant_transport_coefficients(records,coefficients,ok)
+    type(gas_transport_species), intent(inout) :: records(:)
+    real(dp), intent(in) :: coefficients(:)
+    logical, intent(out) :: ok
+    type(gas_transport_species), allocatable :: candidate(:)
+    integer :: i
+    ok=.false.
+    if(size(records)<1.or..not.valid_constant_transport_coefficients(coefficients)) return
+    candidate=records
+    do i=1,size(candidate)
+      candidate(i)%constant_coefficients=coefficients
+    enddo
+    records=candidate;ok=.true.
+  end subroutine set_constant_transport_coefficients
+
+  subroutine constant_transport_values(records,coefficients,enabled,ok)
+    type(gas_transport_species), intent(in) :: records(:)
+    real(dp), intent(out) :: coefficients(4)
+    logical, intent(out) :: enabled,ok
+    integer :: i,n
+    coefficients=[0._dp,0._dp,0._dp,-1._dp];enabled=.false.;ok=.false.
+    if(size(records)<1) return
+    enabled=allocated(records(1)%constant_coefficients)
+    do i=1,size(records)
+      if(allocated(records(i)%constant_coefficients).neqv.enabled) return
+    enddo
+    if(.not.enabled) then
+      ok=.true.;return
+    endif
+    n=size(records(1)%constant_coefficients)
+    do i=1,size(records)
+      if(.not.valid_constant_transport_coefficients(records(i)%constant_coefficients)) return
+      if(size(records(i)%constant_coefficients)/=n) return
+      if(any(records(i)%constant_coefficients/=records(1)%constant_coefficients)) return
+    enddo
+    coefficients(:n)=records(1)%constant_coefficients;ok=.true.
+  end subroutine constant_transport_values
 
   pure logical function valid_gas_transport_species(record) result(valid)
     type(gas_transport_species), intent(in) :: record

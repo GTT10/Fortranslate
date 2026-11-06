@@ -64,7 +64,8 @@ program pelef_reactive_eb_3d_selected
   call get_command_argument(1, input_path)
   call read_reactive_eb_3d_configuration( &
     trim(input_path), config, ok, message, allow_selected=.true.,allow_difmag=.true.,allow_ctu=.true., &
-    allow_boundaries=.true.,allow_inlet_composition=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available)
+    allow_boundaries=.true.,allow_inlet_composition=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available, &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
@@ -133,13 +134,15 @@ program pelef_reactive_eb_3d_selected
     (config%cut_density * mixture_gas_constant)
   requested_temperature_minimum = min(regular_temperature, cut_temperature)
   requested_temperature_maximum = max(regular_temperature, cut_temperature)
-  call validate_selected_temperature_range( &
-    "Selected reactive EB 3D", requested_temperature_minimum, &
-    requested_temperature_maximum, common_temperature_minimum, &
-    common_temperature_maximum, ok, message)
-  if (.not. ok) then
-    write(*, '(a)') trim(message)
-    error stop 2
+  if(.not.config%pinned_eos_extrapolation) then
+    call validate_selected_temperature_range( &
+      "Selected reactive EB 3D", requested_temperature_minimum, &
+      requested_temperature_maximum, common_temperature_minimum, &
+      common_temperature_maximum, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      error stop 2
+    end if
   end if
 
   write(*, '(a,i0)') "Species: ", pelef_selected_species_count

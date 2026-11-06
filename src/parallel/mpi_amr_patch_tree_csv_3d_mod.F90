@@ -13,12 +13,14 @@ module mpi_amr_patch_tree_csv_3d_mod
   private
   public :: write_mpi_amr_tree_csv_3d
 contains
-  subroutine write_mpi_amr_tree_csv_3d(path,tree,owners,species,state,temperature,lower,spacing,time,comm,ok)
+  subroutine write_mpi_amr_tree_csv_3d(path,tree,owners,species,state,temperature,lower,spacing,time, &
+      comm,ok,heat_release,internal_energy)
     character(len=*), intent(in) :: path
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
+    type(amr_tree_state_3d), optional, intent(in) :: heat_release,internal_energy
     real(dp), intent(in) :: lower(3),spacing(3),time
     type(MPI_Comm), intent(in) :: comm
     logical, intent(out) :: ok
@@ -31,9 +33,28 @@ contains
     character(len=:), allocatable :: header,row,buffer
     character(len=128) :: prefix
     real(dp) :: controls(7),low(7),high(7),h(3),xyz(3)
-    integer :: rank,status,ios,node,pass,i,j,k,n(3),used,length,prefix_length,written
+    integer :: rank,status,ios,node,pass,i,j,k,n(3),used,length,prefix_length,written,heat_flag,heat_min,heat_max,base_length
+    real(dp), allocatable :: held_cell
     logical :: valid
     ok=.false.
+    heat_flag=merge(1,0,present(internal_energy))
+    call MPI_Allreduce(heat_flag,heat_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(heat_flag,heat_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.heat_min/=heat_max) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+    endif
+    heat_flag=merge(1,0,present(heat_release))
+    call MPI_Allreduce(heat_flag,heat_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(heat_flag,heat_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.heat_min/=heat_max) return
+    if(present(heat_release)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,heat_release,1,comm,valid)
+      if(.not.valid) return
+    end if
     call validate_mpi_amr_tree_local_3d(tree,owners,state,reactive_nvar(size(species)),comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
@@ -50,7 +71,9 @@ contains
     if (status/=MPI_SUCCESS.or.any(low/=high)) return
     call same_string(trim(path),valid)
     if (.not.valid) return
-    header='node,level,dx,dy,dz,'//reactive_3d_csv_header(species)//new_line('a')
+    header='node,level,dx,dy,dz,'//reactive_3d_csv_header(species)
+    if(present(heat_release)) header=header//',heat_release_W_m3'
+    header=header//new_line('a')
     call same_string(header,valid)
     if (.not.valid) return
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
@@ -59,7 +82,8 @@ contains
     allocate(local_bytes(size(owners)),bytes(size(owners)),offset(size(owners)),stat=ios)
     valid=ios==0;call agree(valid)
     if (.not.valid) return
-    allocate(character(len=26*(14+2*size(species))-1)::row,stat=ios)
+    base_length=26*(14+2*size(species))-1
+    allocate(character(len=base_length+26*heat_flag)::row,stat=ios)
     valid=ios==0;call agree(valid)
     if (.not.valid) return
     allocate(character(len=32*(len(row)+129))::buffer,stat=ios)
@@ -85,9 +109,17 @@ contains
             do i=1,n(1)
               if (covered(tree,node,[i,j,k])) cycle
               xyz=lower+(real(origin(:,node),dp)+real([i,j,k],dp)-.5_dp)*h
+              if(present(internal_energy)) held_cell=internal_energy%fields(node)%values(1,i,j,k)
               call format_reactive_3d_csv_row(species,xyz,time,state%fields(node)%values(:,i,j,k), &
-                temperature%fields(node)%values(1,i,j,k),row,valid)
+                temperature%fields(node)%values(1,i,j,k),row(:base_length),valid,internal_energy_density=held_cell)
               if (.not.valid) exit nodes
+              if(present(heat_release)) then
+                valid=ieee_is_finite(heat_release%fields(node)%values(1,i,j,k))
+                if(.not.valid) exit nodes
+                write(row(base_length+1:),'(",",es25.16e3)',iostat=ios) heat_release%fields(node)%values(1,i,j,k)
+                valid=ios==0
+                if(.not.valid) exit nodes
+              end if
               if (pass==1) then
                 if (local_bytes(node)>huge(total)-int(length,MPI_OFFSET_KIND)) then
                   valid=.false.;exit nodes

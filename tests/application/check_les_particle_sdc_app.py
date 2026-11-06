@@ -19,6 +19,9 @@ def main():
     for name in ('exe', 'mpiexec', 'source', 'work'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--recursive', action='store_true')
+    parser.add_argument('--nonmol', action='store_true', help='Exercise CTU with level-local particle sources')
+    parser.add_argument('--dynamic', action='store_true', help='Use Dynamic LES in the spatial route')
+    parser.add_argument('--spatial', action='store_true', help='Exercise prepared MOL StateRedist LES sources')
     parser.add_argument('--cvode', action='store_true', help='Exercise reacting CVODE SDC')
     parser.add_argument('--selected', action='store_true', help='Use selected H2O2 composition input')
     args = parser.parse_args()
@@ -37,6 +40,9 @@ def main():
                                 "sdc_iterations=2,boundary_faces=6*'outflow'")
     if args.cvode:
         template = template.replace("time_integrator='sdc'", "time_integrator='sdc',sdc_reactor='cvode'")
+    if args.spatial:
+        mode = '.false.' if args.nonmol else '.true.'
+        template = template.replace('&eb_tree', f"&eb_tree\n mol_mode={mode},redistribution='state_redist',", 1)
     if args.recursive:
         template = template.replace('&eb_tree', '&eb_tree\n subcycling=.true.,', 1)
     spray = """&eb_spray
@@ -47,12 +53,18 @@ def main():
 """
     les = "\n&eb_spray_les les_enabled=.true.,les_model='smagorinsky',les_cs=.17 /\n"
 
-    def run(label, controls='', ranks=4, settings=les, cut=False, error=None, reactor=None):
+    if args.dynamic:
+        assert args.spatial, '--dynamic requires --spatial'
+        les = les.replace("les_model='smagorinsky'", "les_model='dynamic'")
+
+    def run(label, controls='', ranks=4, settings=les, cut=False, error=None, reactor=None, iterations=None):
         directory = work / label
         shutil.copytree(args.source / 'cases/mpi_eb_spray_3d', directory)
         if not cut:
             (directory / 'level_set.dat').write_text('8 8 8\n' + '1.0\n' * 9**3)
         content = template
+        if iterations is not None:
+            content = content.replace("sdc_iterations=2", f"sdc_iterations={iterations}")
         if reactor:
             content = content.replace("sdc_reactor='cvode'", f"sdc_reactor='{reactor}'")
         (directory / 'tree.nml').write_text(content.replace('&eb_tree', '&eb_tree\n' + controls, 1))
@@ -77,6 +89,9 @@ def main():
                 (directory / 'result.csv.budget.csv').read_bytes(), particles)
 
     disabled = run('disabled', settings='')
+    if args.spatial and not args.nonmol:
+        single_pass = run('single_pass', settings='', iterations=1)
+        assert outputs(single_pass) == outputs(disabled), 'Nonreacting MOL one/two-iteration accepted ledgers differ'
     continuous = run('continuous')
     baseline = outputs(continuous)
     assert baseline[0] != outputs(disabled)[0], 'LES must change the coupled gas CSV'

@@ -54,6 +54,41 @@ if(PELEF_ENABLE_SUNDIALS)
           --source "${PROJECT_SOURCE_DIR}" --work "${PROJECT_BINARY_DIR}/les-regular-app")
         set_tests_properties(application_les_regular PROPERTIES TIMEOUT 300 LABELS "les;sdc;application")
       endif()
+      foreach(restart_reactor IN ITEMS native cvode)
+        add_test(NAME application_selected_regular_restart_${restart_reactor} COMMAND ${Python3_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tests/application/check_regular_gas_restart.py"
+          --exe $<TARGET_FILE:pelef_reactive_3d_selected> --source "${PROJECT_SOURCE_DIR}"
+          --work "${PROJECT_BINARY_DIR}/regular-selected-restart-${restart_reactor}"
+          --selected --reactor ${restart_reactor})
+        set_tests_properties(application_selected_regular_restart_${restart_reactor}
+          PROPERTIES TIMEOUT 240 LABELS "selected;sdc;mol;restart;application")
+      endforeach()
+      set(rotation_les_option)
+      if(PELEF_ENABLE_SPRAY)
+        set(rotation_les_option --les)
+      endif()
+      foreach(rotation_reactor IN ITEMS native cvode)
+        add_test(NAME application_selected_rotating_restart_${rotation_reactor} COMMAND ${Python3_EXECUTABLE}
+          "${PROJECT_SOURCE_DIR}/tests/application/check_regular_gas_restart.py"
+          --exe $<TARGET_FILE:pelef_reactive_3d_selected> --source "${PROJECT_SOURCE_DIR}"
+          --work "${PROJECT_BINARY_DIR}/regular-selected-rotating-${rotation_reactor}"
+          --selected --reactor ${rotation_reactor} --rotation ${rotation_les_option})
+        set_tests_properties(application_selected_rotating_restart_${rotation_reactor}
+          PROPERTIES TIMEOUT 240 LABELS "rotation;selected;mol;restart;application")
+      endforeach()
+      if(TARGET pelef_mpi_spray_3d_selected)
+        foreach(mpi_rotation_reactor IN ITEMS native cvode)
+          add_test(NAME application_selected_mpi_rotating_mol_${mpi_rotation_reactor} COMMAND ${Python3_EXECUTABLE}
+            "${PROJECT_SOURCE_DIR}/tests/spray/test_mpi_spray_application.py"
+            --mol --rotation --thin-slabs --les-model dynamic --dynamic-walls --les-harmonic
+            --reactor ${mpi_rotation_reactor} --executable $<TARGET_FILE:pelef_mpi_spray_3d_selected>
+            --mpiexec "${MPIEXEC_EXECUTABLE}" --ranks 4
+            --input "${PROJECT_SOURCE_DIR}/cases/mpi_spray_3d/periodic_mixture.nml"
+            --work-dir "${PROJECT_BINARY_DIR}/selected-mpi-rotating-mol-${mpi_rotation_reactor}")
+          set_tests_properties(application_selected_mpi_rotating_mol_${mpi_rotation_reactor}
+            PROPERTIES TIMEOUT 240 PROCESSORS 4 LABELS "spray;mpi;rotation;selected;mol;les;restart;application")
+        endforeach()
+      endif()
       add_test(NAME application_sdc_cvode COMMAND ${Python3_EXECUTABLE}
         "${PROJECT_SOURCE_DIR}/tests/application/check_sdc_cvode_app.py"
         --fixed $<TARGET_FILE:pelef_reactive_3d> --selected $<TARGET_FILE:pelef_reactive_3d_selected>
@@ -107,6 +142,19 @@ if(PELEF_ENABLE_SUNDIALS)
     pelef_selected_reactive_3d_runtime pelef_selected_cvode_runtime)
   add_test(NAME unit_sdc_cvode_bridge COMMAND test_sdc_cvode_bridge)
   set_tests_properties(unit_sdc_cvode_bridge PROPERTIES TIMEOUT 120)
+  add_executable(test_sundials_signed_trials unit/test_forced_signed_trials.F90)
+  target_link_libraries(test_sundials_signed_trials PRIVATE pelef_core pelef_selected_cvode_runtime)
+  target_compile_definitions(test_sundials_signed_trials PRIVATE PELEF_TEST_CVODE_SIGNED=1)
+  add_test(NAME unit_sundials_signed_trials COMMAND test_sundials_signed_trials)
+  set_tests_properties(unit_sundials_signed_trials PROPERTIES TIMEOUT 120 LABELS "chemistry;forcing;cvode")
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_sundials_signed_trials PRIVATE
+      -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+  endif()
+  add_executable(test_sundials_forced_reactor_full unit/test_sundials_forced_reactor_full.F90)
+  target_link_libraries(test_sundials_forced_reactor_full PRIVATE fixture_mechanism pelef_selected_cvode_runtime)
+  add_test(NAME unit_sundials_forced_reactor_full COMMAND test_sundials_forced_reactor_full)
+  set_tests_properties(unit_sundials_forced_reactor_full PROPERTIES TIMEOUT 120 LABELS "chemistry;forcing;cvode")
   add_executable(test_sundials_forced_reactor unit/test_sundials_forced_reactor.F90)
   target_link_libraries(test_sundials_forced_reactor PRIVATE fixture_mechanism pelef_selected_cvode_runtime)
   add_test(NAME unit_sundials_forced_reactor COMMAND test_sundials_forced_reactor)

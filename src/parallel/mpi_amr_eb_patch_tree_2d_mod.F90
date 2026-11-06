@@ -4,7 +4,7 @@ module mpi_amr_eb_patch_tree_2d_mod
   use mpi_f08
   use precision_mod, only: dp
   use state_indices_mod, only: irho, iet
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_eos_policy_identity
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: &
     gas_transport_species, compatible_transport_database
@@ -134,6 +134,7 @@ module mpi_amr_eb_patch_tree_2d_mod
     end subroutine sparse_reactive_amr_eb_tree_geometry_builder_2d
   end interface
 
+  public :: agree_mpi_eb_tree_eos_2d
   public :: initialize_mpi_amr_eb_patch_tree_distribution_2d
   public :: mpi_amr_eb_patch_tree_distribution_matches_2d
   public :: synchronize_owned_reactive_amr_eb_patch_tree_2d
@@ -156,6 +157,27 @@ module mpi_amr_eb_patch_tree_2d_mod
   public :: composite_sparse_amr_eb_patch_subtree_integral_2d
 
 contains
+
+  subroutine agree_mpi_eb_tree_eos_2d(species,comm,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    character(len=128) :: identity,reference
+    integer :: rank,ierr
+    logical :: local_ok,accepted
+    ok=.false.
+    identity=nasa7_eos_policy_identity(species)
+    local_ok=trim(identity)/='PELEF_INVALID_EOS_POLICY'
+    call MPI_Comm_rank(comm,rank,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    reference=''
+    if(rank==0) reference=identity
+    call MPI_Bcast(reference,len(reference),MPI_CHARACTER,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    local_ok=local_ok.and.identity==reference
+    call MPI_Allreduce(local_ok,accepted,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    ok=ierr==MPI_SUCCESS.and.accepted
+  end subroutine agree_mpi_eb_tree_eos_2d
 
   pure integer function sparse_prolongation_method_code_2d(method) &
       result(code)
@@ -1206,6 +1228,8 @@ contains
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
     call MPI_Allreduce( &
       numeric_values, numeric_minimum, size(numeric_values), &
       MPI_DOUBLE_PRECISION, MPI_MIN, distribution%comm, ierr)
@@ -1394,6 +1418,8 @@ contains
     call all_ranks_accept_2d( &
       old_distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,old_distribution%comm,accepted)
+    if(.not.accepted) return
     call MPI_Allreduce( &
       method_value, method_minimum, 1, MPI_INTEGER, MPI_MIN, &
       old_distribution%comm, ierr)
@@ -2018,6 +2044,8 @@ contains
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
 
     call MPI_Allreduce( &
       numeric_values, numeric_minimum, size(numeric_values), &
@@ -2161,6 +2189,8 @@ contains
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
 
     call MPI_Allreduce( &
       controls, control_minimum, size(controls), MPI_DOUBLE_PRECISION, &
@@ -2373,12 +2403,15 @@ contains
       size(species) >= 1 .and. all(ieee_is_finite(numeric_values)) .and. &
       dt > 0.0_dp .and. selected_target > 0.0_dp .and. &
       selected_target <= 1.0_dp .and. &
-      (state_redist_max_order == 0 .or. state_redist_max_order == 2)
+      (state_redist_max_order == 0 .or. state_redist_max_order == 2 .or. &
+       state_redist_max_order == 4)
     if (present(local_level_advances)) local_ok = local_ok .and. &
       size(local_level_advances) == sparse%level_count()
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
 
     call MPI_Allreduce( &
       numeric_values, numeric_minimum, size(numeric_values), &
@@ -2503,6 +2536,8 @@ contains
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
 
     call MPI_Allreduce( &
       numeric_values, numeric_minimum, size(numeric_values), &
@@ -2711,6 +2746,8 @@ contains
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
 
     call MPI_Allreduce( &
       numeric_values, numeric_minimum, size(numeric_values), &
@@ -2958,6 +2995,8 @@ contains
     call all_ranks_accept_2d( &
       distribution%comm, local_ok, accepted, global_ok)
     if (.not. global_ok .or. .not. accepted) return
+    call agree_mpi_eb_tree_eos_2d(species,distribution%comm,accepted)
+    if(.not.accepted) return
 
     call MPI_Allreduce( &
       numeric_values, numeric_minimum, size(numeric_values), &

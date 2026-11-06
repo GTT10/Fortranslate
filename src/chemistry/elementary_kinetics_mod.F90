@@ -49,6 +49,9 @@ module elementary_kinetics_mod
     real(dp), allocatable :: third_body_efficiencies(:)
     type(troe_parameters) :: troe
     logical :: reversible = .true.
+    ! Explicit kinetic reference-concentration convention [J/(kmol K)].
+    ! This does not change Arrhenius activation units or the thermodynamic EOS.
+    real(dp) :: equilibrium_reference_gas_constant = universal_gas_constant
     real(dp) :: sri(5) = [1.0_dp,0.0_dp,1.0_dp,1.0_dp,0.0_dp]
     real(dp) :: tsang(2) = [1.0_dp,0.0_dp]
     integer :: plog_count=0
@@ -103,6 +106,8 @@ contains
 
     valid = .false.
     if (nspecies < 1) return
+    if (.not.ieee_is_finite(reaction%equilibrium_reference_gas_constant)) return
+    if (reaction%equilibrium_reference_gas_constant <= 0._dp) return
     if (.not. allocated(reaction%reactant_stoich)) return
     if (.not. allocated(reaction%product_stoich)) return
     if (size(reaction%reactant_stoich) /= nspecies) return
@@ -314,19 +319,112 @@ contains
   end function arrhenius_rate_constant
 
   real(dp) function reaction_equilibrium_constant( &
-      species, reaction, temperature, ok) result(equilibrium_constant)
+      species,reaction,temperature,ok) result(equilibrium_constant)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reaction
+    real(dp), intent(in) :: temperature
+    logical, intent(out) :: ok
+    real(dp) :: log_kc
+    equilibrium_constant=0
+    log_kc=reaction_log_equilibrium_constant(species,reaction,temperature,ok)
+    if(.not.ok) return
+    if(abs(log_kc)>logarithm_limit) then
+      ok=.false.;return
+    endif
+    equilibrium_constant=exp(log_kc)
+    ok=ieee_is_finite(equilibrium_constant).and.equilibrium_constant>0
+  end function reaction_equilibrium_constant
+
+  ! A finite inverse-equilibrium contribution does not require a
+  ! representable standalone Kc. Keep the ordinary division path exactly,
+  ! and combine logarithms only when that intermediate is out of range.
+  ! Signed Newton products retain their sign; true output overflow refuses.
+  subroutine scaled_inverse_equilibrium_action(rate,concentrations,stoich,log_kc,result,ok,gradient_species)
+    real(dp), intent(in) :: rate,concentrations(:),stoich(:),log_kc
+    real(dp), intent(out) :: result
+    logical, intent(out) :: ok
+    integer, optional, intent(in) :: gradient_species
+    real(dp) :: logarithm,powers(size(stoich)),factor,term,result_sign
+    integer :: i,order
+    result=0;ok=.false.
+    if(size(concentrations)/=size(stoich)) return
+    if(.not.all(ieee_is_finite([rate,log_kc])).or.any(.not.ieee_is_finite(concentrations)).or. &
+      any(.not.ieee_is_finite(stoich)).or.any(stoich<0)) return
+    powers=stoich;factor=1
+    if(present(gradient_species)) then
+      if(gradient_species<1.or.gradient_species>size(stoich)) return
+      factor=stoich(gradient_species)
+      if(factor==0) then
+        ok=.true.;return
+      endif
+      powers(gradient_species)=powers(gradient_species)-1
+    endif
+    ! Validate signs and fractional zero-coordinate derivatives before an
+    ! absent factor can return zero. Signed integer mass-action polynomials
+    ! keep their existing opt-in behavior; fractional negative powers refuse.
+    result_sign=sign(1._dp,rate)
+    do i=1,size(stoich)
+      if(concentrations(i)==0.and.powers(i)<0) return
+      if(concentrations(i)>=0.or.powers(i)==0) cycle
+      if(abs(powers(i))>real(huge(order),dp)) return
+      order=nint(powers(i))
+      if(real(order,dp)/=powers(i)) return
+      if(mod(abs(order),2)==1) result_sign=-result_sign
+    enddo
+    if(rate==0.or.any(concentrations==0.and.powers>0)) then
+      ok=.true.;return
+    endif
+    ! Combine the coefficient and activities before exponentiation. Neither
+    ! an overflowing reciprocal Kc nor an underflowing concentration product
+    ! is required to exist separately when the actual contribution is finite.
+    logarithm=log(abs(rate))+log(factor)-log_kc
+    do i=1,size(stoich)
+      if(powers(i)==0) cycle
+      term=log(abs(concentrations(i)))
+      if(abs(term)>1) then
+        if(abs(powers(i))>huge(1._dp)/abs(term)) return
+      endif
+      term=term*powers(i)
+      if(term>0) then
+        if(logarithm>huge(1._dp)-term) return
+      else if(term<0) then
+        if(logarithm< -huge(1._dp)-term) return
+      endif
+      logarithm=logarithm+term
+    enddo
+    if(.not.ieee_is_finite(logarithm).or.logarithm>log(huge(1._dp))) return
+    result=result_sign*exp(logarithm)
+    ok=ieee_is_finite(result)
+  end subroutine scaled_inverse_equilibrium_action
+
+  subroutine subtract_inverse_equilibrium_term(value,term,ok)
+    real(dp), intent(inout) :: value
+    real(dp), intent(in) :: term
+    logical, intent(out) :: ok
+    ok=.false.
+    if(.not.all(ieee_is_finite([value,term]))) return
+    if(term<0) then
+      if(value>huge(1._dp)+term) return
+    else if(term>0) then
+      if(value< -huge(1._dp)+term) return
+    endif
+    value=value-term;ok=ieee_is_finite(value)
+  end subroutine subtract_inverse_equilibrium_term
+
+  real(dp) function reaction_log_equilibrium_constant( &
+      species, reaction, temperature, ok) result(log_kc)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reaction
     real(dp), intent(in) :: temperature
     logical, intent(out) :: ok
 
     real(dp) :: cp_over_r, h_over_rt, s_over_r
-    real(dp) :: delta_g_over_rt, delta_nu, log_kc
+    real(dp) :: delta_g_over_rt, delta_nu
     real(dp) :: reference_concentration, net_stoich
     logical :: species_ok
     integer :: i
 
-    equilibrium_constant = 0.0_dp
+    log_kc = 0.0_dp
     ok = valid_elementary_reaction(reaction, size(species)) .and. &
       temperature > 0.0_dp
     if (.not. ok) return
@@ -347,35 +445,40 @@ contains
       delta_nu = delta_nu + net_stoich
     end do
 
+    ! Reject unrepresentable reference concentrations before arithmetic traps.
+    ok = .false.
+    if (temperature > 1._dp) then
+      if (reaction%equilibrium_reference_gas_constant > huge(1._dp)/temperature) return
+    endif
+    if (reaction%equilibrium_reference_gas_constant < &
+        (kinetics_standard_pressure/huge(1._dp))/temperature) return
     reference_concentration = kinetics_standard_pressure / &
-      (universal_gas_constant * temperature)
+      (reaction%equilibrium_reference_gas_constant * temperature)
     log_kc = -delta_g_over_rt + delta_nu * log(reference_concentration)
-    if (.not. ieee_is_finite(log_kc) .or. abs(log_kc) > logarithm_limit) then
-      ok = .false.
-      return
-    end if
-    equilibrium_constant = exp(log_kc)
-    ok = ieee_is_finite(equilibrium_constant) .and. &
-      equilibrium_constant > 0.0_dp
-  end function reaction_equilibrium_constant
+    ok=ieee_is_finite(log_kc)
+  end function reaction_log_equilibrium_constant
 
   real(dp) function effective_third_body_concentration( &
-      reaction, concentrations, ok) result(effective_concentration)
+      reaction, concentrations, ok,signed_concentrations) result(effective_concentration)
     type(elementary_reaction), intent(in) :: reaction
     real(dp), intent(in) :: concentrations(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     effective_concentration = 0.0_dp
     ok = allocated(reaction%third_body_efficiencies)
     if (.not. ok) return
     ok = size(reaction%third_body_efficiencies) == size(concentrations) .and. &
       all(ieee_is_finite(concentrations)) .and. &
-      all(concentrations >= 0.0_dp)
+      (signed_trial.or.all(concentrations >= 0.0_dp))
     if (.not. ok) return
     effective_concentration = sum( &
       reaction%third_body_efficiencies * concentrations)
     ok = ieee_is_finite(effective_concentration) .and. &
-      effective_concentration >= 0.0_dp
+      (signed_trial.or.effective_concentration >= 0.0_dp)
   end function effective_third_body_concentration
 
   ! Cantera 3.2 SRI form: d*T**e*(a*exp(-b/T)+exp(-T/c))**X.
@@ -470,12 +573,15 @@ contains
 
   subroutine reaction_effective_forward_rate( &
       reaction, temperature, concentrations, rate_constant, &
-      concentration_derivative, ok)
+      concentration_derivative, ok, &
+      signed_concentrations)
     type(elementary_reaction), intent(in) :: reaction
     real(dp), intent(in) :: temperature, concentrations(:)
     real(dp), intent(out) :: rate_constant
     real(dp), intent(out), optional :: concentration_derivative(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
 
     real(dp) :: base_rate, low_rate, high_rate
     real(dp) :: third_body, reduced_pressure, falloff_factor
@@ -483,10 +589,12 @@ contains
     real(dp) :: derivative_wrt_third_body
     integer :: i
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     rate_constant = 0.0_dp
     if (present(concentration_derivative)) concentration_derivative = 0.0_dp
     ok = size(concentrations) > 0 .and. &
-      all(ieee_is_finite(concentrations)) .and. all(concentrations >= 0.0_dp)
+      all(ieee_is_finite(concentrations)) .and. (signed_trial.or.all(concentrations >= 0.0_dp))
     if (present(concentration_derivative)) then
       ok = ok .and. size(concentration_derivative) == size(concentrations)
     end if
@@ -511,7 +619,7 @@ contains
         reaction%forward_rate, temperature, ok)
       if (.not. ok) return
       third_body = effective_third_body_concentration( &
-        reaction, concentrations, ok)
+        reaction, concentrations, ok,signed_concentrations=signed_trial)
       if (.not. ok) return
       rate_constant = base_rate * third_body
       if (present(concentration_derivative)) then
@@ -534,7 +642,7 @@ contains
         return
       end if
       third_body = effective_third_body_concentration( &
-        reaction, concentrations, ok)
+        reaction, concentrations, ok,signed_concentrations=signed_trial)
       if (.not. ok) return
       reduced_pressure = low_rate * third_body / high_rate
       if (reaction%kind==reaction_kind_sri.or.reaction%kind==reaction_kind_sri_activated) then
@@ -563,6 +671,12 @@ contains
             derivative_wrt_third_body=derivative_wrt_third_body+rate_constant*log_factor_derivative/third_body
         else if (third_body <= tiny(1.0_dp)) then
           derivative_wrt_third_body = low_rate * falloff_factor
+        else if (reduced_pressure > 0.5_dp*sqrt(huge(1.0_dp))) then
+          ! d(k)/dM = k/M * [1/(1+Pr) + d(log F)/d(log Pr)].
+          ! Avoid overflowing (1+Pr)**2 when the derivative is finite.
+          ! Keep the ordinary-range arithmetic unchanged.
+          derivative_wrt_third_body = rate_constant / third_body * &
+            (1.0_dp / (1.0_dp + reduced_pressure) + log_factor_derivative)
         else
           derivative_wrt_pressure = high_rate * falloff_factor * &
             (1.0_dp / (1.0_dp + reduced_pressure)**2 + &
@@ -578,7 +692,8 @@ contains
     case default
       ok = .false.
     end select
-    ok = ok .and. ieee_is_finite(rate_constant) .and. rate_constant >= 0.0_dp
+    ok = ok .and. ieee_is_finite(rate_constant) .and. &
+      (rate_constant >= 0.0_dp.or.(signed_trial.and.reaction%kind==reaction_kind_three_body))
     if (present(concentration_derivative)) then
       ok = ok .and. all(ieee_is_finite(concentration_derivative))
     end if
@@ -586,45 +701,56 @@ contains
 
   subroutine reaction_progress_rate( &
       species, reaction, temperature, concentrations, forward_progress, &
-      reverse_progress, net_progress, ok)
+      reverse_progress, net_progress, ok, &
+      signed_concentrations)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reaction
     real(dp), intent(in) :: temperature, concentrations(:)
     real(dp), intent(out) :: forward_progress, reverse_progress, net_progress
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
 
-    real(dp) :: forward_constant, reverse_constant, equilibrium_constant
+    real(dp) :: forward_constant, reverse_constant, equilibrium_constant,log_kc
     real(dp) :: reactant_product, product_product
     real(dp), allocatable :: unused_derivative(:)
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     forward_progress = 0.0_dp
     reverse_progress = 0.0_dp
     net_progress = 0.0_dp
     ok = valid_elementary_reaction(reaction, size(species)) .and. &
       size(concentrations) == size(species) .and. &
       all(ieee_is_finite(concentrations)) .and. &
-      all(concentrations >= 0.0_dp)
+      (signed_trial.or.all(concentrations >= 0.0_dp))
     if (.not. ok) return
 
     allocate(unused_derivative(size(species)))
     call reaction_effective_forward_rate( &
       reaction, temperature, concentrations, forward_constant, &
-      unused_derivative, ok)
+      unused_derivative, ok,signed_concentrations=signed_trial)
     if (.not. ok) return
     call concentration_product( &
-      concentrations, reaction%reactant_stoich, reactant_product, ok)
+      concentrations, reaction%reactant_stoich, reactant_product, ok,signed_concentrations=signed_trial)
     if (.not. ok) return
     forward_progress = forward_constant * reactant_product
 
     if (reaction%reversible) then
-      equilibrium_constant = reaction_equilibrium_constant( &
-        species, reaction, temperature, ok)
+      log_kc = reaction_log_equilibrium_constant(species,reaction,temperature,ok)
       if (.not. ok) return
-      reverse_constant = forward_constant / equilibrium_constant
-      call concentration_product( &
-        concentrations, reaction%product_stoich, product_product, ok)
-      if (.not. ok) return
-      reverse_progress = reverse_constant * product_product
+      if(abs(log_kc)<=logarithm_limit) then
+        call concentration_product( &
+          concentrations, reaction%product_stoich, product_product, ok,signed_concentrations=signed_trial)
+        if (.not. ok) return
+        equilibrium_constant=exp(log_kc)
+        reverse_constant=forward_constant/equilibrium_constant
+        reverse_progress=reverse_constant*product_product
+      else
+        call scaled_inverse_equilibrium_action(forward_constant,concentrations,reaction%product_stoich, &
+          log_kc,reverse_progress,ok)
+        if(.not.ok) return
+      endif
     end if
 
     net_progress = forward_progress - reverse_progress
@@ -632,35 +758,56 @@ contains
       [forward_progress, reverse_progress, net_progress]))
   end subroutine reaction_progress_rate
 
-  subroutine concentration_product(concentrations, stoich, product, ok)
+  subroutine concentration_product(concentrations, stoich, product, ok, &
+      signed_concentrations)
     real(dp), intent(in) :: concentrations(:), stoich(:)
     real(dp), intent(out) :: product
     logical, intent(out) :: ok
-    integer :: i
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
+    integer :: i,order
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     product = 1.0_dp
     ok = size(concentrations) == size(stoich) .and. &
       all(ieee_is_finite(concentrations)) .and. &
       all(ieee_is_finite(stoich)) .and. &
-      all(concentrations >= 0.0_dp) .and. all(stoich >= 0.0_dp)
+      (signed_trial.or.all(concentrations >= 0.0_dp)) .and. all(stoich >= 0.0_dp)
     if (.not. ok) return
     do i = 1, size(concentrations)
-      if (stoich(i) > 0.0_dp) product = product * &
-        concentrations(i)**stoich(i)
+      if(stoich(i)<=0) cycle
+      if(concentrations(i)<0) then
+        ! A real exponent on a negative activity can trap. Integer reaction
+        ! orders retain their signed polynomial; noninteger orders refuse.
+        ok=stoich(i)<=real(huge(order),dp)
+        if(.not.ok) return
+        order=nint(stoich(i))
+        ok=real(order,dp)==stoich(i)
+        if(.not.ok) return
+        product=product*concentrations(i)**order
+      else
+        product=product*concentrations(i)**stoich(i)
+      endif
     end do
-    ok = ieee_is_finite(product) .and. product >= 0.0_dp
+    ok = ieee_is_finite(product) .and. (signed_trial.or.product >= 0.0_dp)
   end subroutine concentration_product
 
   subroutine concentration_product_gradient( &
-      concentrations, stoich, product, gradient, ok)
+      concentrations, stoich, product, gradient, ok, &
+      signed_concentrations)
     real(dp), intent(in) :: concentrations(:), stoich(:)
     real(dp), intent(out) :: product, gradient(:)
     logical, intent(out) :: ok
-    real(dp) :: factor
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
+    real(dp) :: factor,powers(size(stoich))
     integer :: i, j
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     gradient = 0.0_dp
-    call concentration_product(concentrations, stoich, product, ok)
+    call concentration_product(concentrations, stoich, product, ok,signed_concentrations=signed_trial)
     if (.not. ok .or. size(gradient) /= size(concentrations)) then
       ok = .false.
       return
@@ -668,18 +815,24 @@ contains
 
     do j = 1, size(concentrations)
       if (stoich(j) <= 0.0_dp) cycle
-      if (concentrations(j) > 0.0_dp) then
+      if (concentrations(j) > 0.0_dp.or.(signed_trial.and.concentrations(j)<0)) then
         gradient(j) = product * stoich(j) / concentrations(j)
       else
         if (stoich(j) < 1.0_dp) then
           ok = .false.
           return
         else if (abs(stoich(j) - 1.0_dp) <= epsilon(1.0_dp)) then
+          if(signed_trial) then
+            powers=stoich;powers(j)=0
+            call concentration_product(concentrations,powers,factor,ok,signed_concentrations=.true.)
+            if(.not.ok) return
+          else
           factor = 1.0_dp
           do i = 1, size(concentrations)
             if (i == j .or. stoich(i) <= 0.0_dp) cycle
             factor = factor * concentrations(i)**stoich(i)
           end do
+          endif
           gradient(j) = factor
         else
           gradient(j) = 0.0_dp
@@ -738,23 +891,28 @@ contains
 
   subroutine elementary_production_rates_from_concentrations( &
       species, reactions, temperature, concentrations, &
-      molar_production_rates, ok, forward_progress, reverse_progress)
+      molar_production_rates, ok, forward_progress, reverse_progress, &
+      signed_concentrations)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: temperature, concentrations(:)
     real(dp), intent(out) :: molar_production_rates(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
     real(dp), intent(out), optional :: forward_progress(:), reverse_progress(:)
 
     real(dp) :: q_forward, q_reverse, q_net
     logical :: reaction_ok
     integer :: i, reaction_index
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     molar_production_rates = 0.0_dp
     ok = size(molar_production_rates) == size(species) .and. &
       size(concentrations) == size(species) .and. size(reactions) >= 1 .and. &
       all(ieee_is_finite(concentrations)) .and. &
-      all(concentrations >= 0.0_dp)
+      (signed_trial.or.all(concentrations >= 0.0_dp))
     if (.not. ok) return
     if (present(forward_progress)) then
       if (size(forward_progress) /= size(reactions)) then
@@ -774,7 +932,7 @@ contains
     do reaction_index = 1, size(reactions)
       call reaction_progress_rate( &
         species, reactions(reaction_index), temperature, concentrations, &
-        q_forward, q_reverse, q_net, reaction_ok)
+        q_forward, q_reverse, q_net, reaction_ok,signed_concentrations=signed_trial)
       if (.not. reaction_ok) then
         ok = .false.
         return
@@ -793,26 +951,31 @@ contains
   end subroutine elementary_production_rates_from_concentrations
 
   subroutine elementary_production_jacobian( &
-      species, reactions, temperature, concentrations, jacobian, ok)
+      species, reactions, temperature, concentrations, jacobian, ok, &
+      signed_concentrations)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     real(dp), intent(in) :: temperature, concentrations(:)
     real(dp), intent(out) :: jacobian(:, :)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: signed_concentrations
+    logical :: signed_trial
 
     real(dp), allocatable :: rate_derivative(:)
     real(dp), allocatable :: reactant_gradient(:), product_gradient(:)
     real(dp), allocatable :: progress_derivative(:)
-    real(dp) :: forward_constant, reverse_constant, equilibrium_constant
-    real(dp) :: reactant_product, product_product, net_stoich
+    real(dp) :: forward_constant, reverse_constant, equilibrium_constant,log_kc
+    real(dp) :: reactant_product, product_product, net_stoich,reverse_term
     logical :: reaction_ok
     integer :: i, j, reaction_index, nspecies
 
+    signed_trial=.false.
+    if(present(signed_concentrations)) signed_trial=signed_concentrations
     jacobian = 0.0_dp
     nspecies = size(species)
     ok = size(concentrations) == nspecies .and. &
       size(jacobian, 1) == nspecies .and. size(jacobian, 2) == nspecies .and. &
-      all(ieee_is_finite(concentrations)) .and. all(concentrations >= 0.0_dp)
+      all(ieee_is_finite(concentrations)) .and. (signed_trial.or.all(concentrations >= 0.0_dp))
     if (.not. ok) return
     allocate(rate_derivative(nspecies), reactant_gradient(nspecies))
     allocate(product_gradient(nspecies), progress_derivative(nspecies))
@@ -825,14 +988,14 @@ contains
       end if
       call reaction_effective_forward_rate( &
         reactions(reaction_index), temperature, concentrations, &
-        forward_constant, rate_derivative, reaction_ok)
+        forward_constant, rate_derivative, reaction_ok,signed_concentrations=signed_trial)
       if (.not. reaction_ok) then
         ok = .false.
         return
       end if
       call concentration_product_gradient( &
         concentrations, reactions(reaction_index)%reactant_stoich, &
-        reactant_product, reactant_gradient, reaction_ok)
+        reactant_product, reactant_gradient, reaction_ok,signed_concentrations=signed_trial)
       if (.not. reaction_ok) then
         ok = .false.
         return
@@ -841,23 +1004,40 @@ contains
         forward_constant * reactant_gradient
 
       if (reactions(reaction_index)%reversible) then
-        equilibrium_constant = reaction_equilibrium_constant( &
-          species, reactions(reaction_index), temperature, reaction_ok)
+        log_kc = reaction_log_equilibrium_constant(species,reactions(reaction_index),temperature,reaction_ok)
         if (.not. reaction_ok) then
           ok = .false.
           return
         end if
-        reverse_constant = forward_constant / equilibrium_constant
-        call concentration_product_gradient( &
-          concentrations, reactions(reaction_index)%product_stoich, &
-          product_product, product_gradient, reaction_ok)
-        if (.not. reaction_ok) then
-          ok = .false.
-          return
-        end if
-        progress_derivative = progress_derivative - &
-          rate_derivative * product_product / equilibrium_constant - &
-          reverse_constant * product_gradient
+        if(abs(log_kc)<=logarithm_limit) then
+          call concentration_product_gradient( &
+            concentrations, reactions(reaction_index)%product_stoich, &
+            product_product, product_gradient, reaction_ok,signed_concentrations=signed_trial)
+          if (.not. reaction_ok) then
+            ok = .false.
+            return
+          end if
+          equilibrium_constant=exp(log_kc)
+          reverse_constant=forward_constant/equilibrium_constant
+          progress_derivative = progress_derivative - &
+            rate_derivative * product_product / equilibrium_constant - &
+            reverse_constant * product_gradient
+        else
+          do j=1,nspecies
+            call scaled_inverse_equilibrium_action(rate_derivative(j),concentrations, &
+              reactions(reaction_index)%product_stoich,log_kc,reverse_term,reaction_ok)
+            if(reaction_ok) call subtract_inverse_equilibrium_term(progress_derivative(j),reverse_term,reaction_ok)
+            if(.not.reaction_ok) then
+              ok=.false.;return
+            endif
+            call scaled_inverse_equilibrium_action(forward_constant,concentrations,reactions(reaction_index)%product_stoich, &
+              log_kc,reverse_term,reaction_ok,gradient_species=j)
+            if(reaction_ok) call subtract_inverse_equilibrium_term(progress_derivative(j),reverse_term,reaction_ok)
+            if(.not.reaction_ok) then
+              ok=.false.;return
+            endif
+          enddo
+        endif
       end if
 
       do i = 1, nspecies

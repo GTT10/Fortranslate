@@ -58,7 +58,8 @@ contains
     rank=owner(1)+parts(1)*(owner(2)+parts(2)*owner(3))
   end function
 
-  subroutine partition_spray_parcels(parcels,lower,spacing,cells,parts,periodic,counts,offsets,ok,component_mass)
+  subroutine partition_spray_parcels(parcels,lower,spacing,cells,parts,periodic,counts,offsets,ok, &
+      component_mass,tab_tangent_history)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(in) :: lower(3),spacing(3)
     integer, intent(in) :: cells(3),parts(3)
@@ -67,6 +68,8 @@ contains
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
     type(spray_parcel), allocatable :: ordered(:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
+    real(dp), allocatable :: history(:)
     real(dp), allocatable :: masses(:,:)
     integer, allocatable :: owner(:),bins(:),starts(:),next(:)
     integer :: p,r,n,destination
@@ -79,6 +82,11 @@ contains
       if (size(component_mass,2)/=size(parcels)) return
       if (size(component_mass,1)<1.or.size(component_mass,1)>16) return
     end if
+    if(present(tab_tangent_history)) then
+      if(.not.allocated(tab_tangent_history)) return
+      if(size(tab_tangent_history)/=size(parcels)) return
+      if(.not.all(ieee_is_finite(tab_tangent_history)).or.any(tab_tangent_history<0)) return
+    endif
     allocate(owner(size(parcels)),bins(n),starts(n),next(n),ordered(size(parcels)));bins=0
     do p=1,size(parcels)
       if (.not.valid_spray_parcel(parcels(p))) return
@@ -98,13 +106,16 @@ contains
     end do
     next=starts
     if (present(component_mass)) allocate(masses(size(component_mass,1),size(parcels)))
+    if(present(tab_tangent_history)) allocate(history(size(parcels)))
     do p=1,size(parcels)
       r=owner(p);destination=next(r)+1;next(r)=destination
       ordered(destination)=parcels(p)
+      if(present(tab_tangent_history)) history(destination)=tab_tangent_history(p)
       if (present(component_mass)) masses(:,destination)=component_mass(:,p)
     end do
     call move_alloc(ordered,parcels);call move_alloc(bins,counts);call move_alloc(starts,offsets)
     if (present(component_mass)) call move_alloc(masses,component_mass)
+    if(present(tab_tangent_history)) call move_alloc(history,tab_tangent_history)
     ok=.true.
   end subroutine
 end module

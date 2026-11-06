@@ -1,6 +1,7 @@
 module reactive_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use constants_mod, only: density_floor, pressure_floor
   use state_indices_mod, only: irho, imx, imy, imz, iet
   use nasa7_thermo_mod, only: nasa7_species
@@ -1736,6 +1737,8 @@ contains
       base_density, ok, transport, minimum_transport_theta, &
       base_mole_fractions, chemistry_integrator)
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: state(:, :, :), temperature(:, :)
@@ -1754,15 +1757,19 @@ contains
     logical :: local_ok
     type(reactive_boundary_set_2d) :: boundaries
 
+    call configure_reactive_2d_eos(species,config,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) then
+      ok=.false.;return
+    endif
     call initialize_reactive_2d( &
-      species, config, state, temperature, dx, dy, base_density, local_ok, &
+      eos_species, config, state, temperature, dx, dy, base_density, local_ok, &
       base_mole_fractions)
     if (.not. local_ok) then
       ok = .false.
       return
     end if
     call build_reactive_boundary_set_2d( &
-      species, config, boundaries, local_ok, base_mole_fractions)
+      eos_species, config, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) then
       ok = .false.
       return
@@ -1783,7 +1790,7 @@ contains
         return
       end if
       call compute_reactive_cfl_timestep_2d( &
-        species, state, temperature, config%nx, config%ny, dx, dy, &
+        eos_species, state, temperature, config%nx, config%ny, dx, dy, &
         config%cfl, dt, local_ok)
       if (.not. local_ok) then
         ok = .false.
@@ -1791,7 +1798,7 @@ contains
       end if
       if (config%transport_enabled) then
         call reactive_transport_timestep_2d( &
-          species, transport, state, temperature, config%nx, config%ny, &
+          eos_species, transport, state, temperature, config%nx, config%ny, &
           dx, dy, config%transport_cfl, config%viscosity_enabled, &
           config%thermal_conduction_enabled, config%species_diffusion_enabled, &
           transport_dt, maximum_diffusivity, local_ok)
@@ -1804,7 +1811,7 @@ contains
       dt = min(dt, config%final_time - time)
       if (config%transport_enabled) then
         call advance_reactive_strang_2d( &
-          species, reactions, state, temperature, config%nx, config%ny, &
+          eos_species, reactions, state, temperature, config%nx, config%ny, &
           dx, dy, dt, config%reconstruction, config%limiter, &
           config%riemann_solver, config%use_transverse_correction, &
           config%chemistry_enabled, config%chemistry_relative_tolerance, &
@@ -1816,7 +1823,7 @@ contains
           chemistry_integrator=chemistry_integrator)
       else
         call advance_reactive_strang_2d( &
-        species, reactions, state, temperature, config%nx, config%ny, &
+        eos_species, reactions, state, temperature, config%nx, config%ny, &
         dx, dy, dt, config%reconstruction, config%limiter, &
         config%riemann_solver, config%use_transverse_correction, &
         config%chemistry_enabled, config%chemistry_relative_tolerance, &

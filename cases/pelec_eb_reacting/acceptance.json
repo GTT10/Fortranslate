@@ -1,0 +1,37 @@
+{
+  "case": "Uniform H2/O2/N2 on a planar EB, no molecular transport, common MOL, LiDryer on both sides",
+  "temperature_K": 2000,
+  "pressure_Pa": 101325,
+  "mass_fractions": {
+    "H2": 0.06,
+    "O2": 0.5,
+    "N2": 0.44
+  },
+  "steps": 3,
+  "dt_s": 1e-07,
+  "root_shape": [
+    8,
+    8,
+    8
+  ],
+  "domain_m": [
+    0.01,
+    0.01,
+    0.01
+  ],
+  "plane_position_m": 0.0031,
+  "acceptance": {
+    "initial_scaled": 1e-11,
+    "temperature_absolute_K": 0.001,
+    "species_mass_fraction_absolute": 1e-07,
+    "density_scaled": 1e-09,
+    "rhoE_scaled": 1e-08,
+    "momentum_absolute_kg_m2_s": 1e-08,
+    "minimum_H2_consumption_fraction": 1e-06,
+    "H2_consumption_relative": 0.001
+  },
+  "exclusions": [
+    "spatial-gradient and AMR reflux parity",
+    "ignition and physical validation"
+  ]
+}

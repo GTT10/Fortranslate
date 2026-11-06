@@ -21,7 +21,8 @@ contains
   subroutine advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       parcels,component_mass,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
-      ok,target_volume_fraction,chemistry_integrator,acceleration,source_change,difmag,extended_geometry)
+      ok,target_volume_fraction,chemistry_integrator,acceleration,source_change,difmag,extended_geometry, &
+      state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -40,6 +41,7 @@ contains
     real(dp), optional, intent(inout) :: source_change(:)
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     real(dp), optional, intent(in) :: target_volume_fraction,difmag
+    integer, optional, intent(in) :: state_redist_max_order
     character(len=*), optional, intent(in) :: chemistry_integrator
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:)
@@ -50,7 +52,7 @@ contains
       drops,masses,dt,solver,redistribution,chemistry,transport_enabled,viscosity,conduction, &
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
       ok,target_volume_fraction,chemistry_integrator,acceleration=acceleration,source_change=source_change, &
-      difmag=difmag,extended_geometry=extended_geometry)
+      difmag=difmag,extended_geometry=extended_geometry,state_redist_max_order=state_redist_max_order)
     if (.not.ok) return
     parcels=drops;component_mass=masses
   end subroutine
@@ -61,7 +63,7 @@ contains
       diffusion,barodiffusion,rtol,atol,particle_steps,minimum_theta,boundary_change,wall_change,chemistry_change, &
       ok,target_volume_fraction,chemistry_integrator,wall_options,films,film_mass,last_id,model_rejected, &
       split_created,particle_outflow,acceleration,source_change,difmag,extended_geometry, &
-      boundary_faces,inflow_state,inflow_temperature,wall_temperature)
+      boundary_faces,inflow_state,inflow_temperature,wall_temperature,state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -97,16 +99,21 @@ contains
     logical, intent(out) :: ok
     type(eb_geometry_3d), optional, intent(in) :: extended_geometry
     real(dp), optional, intent(in) :: target_volume_fraction,difmag
+    integer, optional, intent(in) :: state_redist_max_order
     character(len=*), optional, intent(in) :: chemistry_integrator
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:),masses(:,:)
     type(spray_parcel), allocatable :: drops(:)
     real(dp) :: boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
     real(dp) :: chemical(reactive_nvar(size(species))),first_wall(5),second_wall(5),theta
-    integer :: first_steps,second_steps,nv
+    real(dp) :: constraint_change(5)
+    integer :: first_steps,second_steps,nv,redist_order
     logical :: valid
     if (present(model_rejected)) model_rejected=.false.
     if (present(split_created)) split_created=0
     ok=.false.;particle_steps=0;nv=reactive_nvar(size(species))
+    redist_order=0
+    if(present(state_redist_max_order)) redist_order=state_redist_max_order
+    if(redist_order/=0.and.redist_order/=2.and.redist_order/=4) return
     if(present(difmag)) then
       if(.not.ieee_is_finite(difmag).or.difmag<0) return
     end if
@@ -115,6 +122,7 @@ contains
     if (size(boundary_change)/=nv.or.size(wall_change)/=nv.or.size(chemistry_change)/=nv) return
     if (.not.allocated(parcels).or..not.allocated(component_mass)) return
     accel=0;force_ledger=0
+    if(options%fixed_parts.and..not.present(source_change)) return
     if(present(acceleration)) accel=acceleration
     if(.not.all(ieee_is_finite(accel))) return
     if(any(abs(accel)>1e6_dp)) return
@@ -154,6 +162,7 @@ contains
       patches=films;patch_mass=film_mass;watermark=last_id
     end if
     gas=state;temp=temperature;drops=parcels;masses=component_mass
+    before_split=watermark
     if(any(accel/=0)) then
       call force_kick(gas,temp,drops,valid)
       if(.not.valid) return
@@ -161,15 +170,18 @@ contains
     first_wall=0;second_wall=0;boundary=0;wall=0;chemical=0
     if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
-        .5_dp*dt,first_steps,first_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=first_exterior)
+        .5_dp*dt,first_steps,first_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=first_exterior, &
+        force_change=constraint_change)
     else if (impacts) then
       if(outflow) then
         call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
           .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected, &
-          outer_faces,first_exterior)
+          outer_faces,first_exterior, &
+        force_change=constraint_change)
       else
         call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
-          .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+          .5_dp*dt,first_steps,first_wall,valid,wall_options,patches,patch_mass,watermark,rejected, &
+        force_change=constraint_change)
       end if
       if (rejected) then
         if (present(model_rejected)) model_rejected=.true.
@@ -177,30 +189,38 @@ contains
       end if
     else if(present(last_id)) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
-        .5_dp*dt,first_steps,first_wall,valid,last_id=watermark)
+        .5_dp*dt,first_steps,first_wall,valid,last_id=watermark, &
+        force_change=constraint_change)
     else
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,gas,temp,drops,masses, &
-        .5_dp*dt,first_steps,first_wall,valid)
+        .5_dp*dt,first_steps,first_wall,valid, &
+        force_change=constraint_change)
     end if
     if (.not.valid) return
+    force_ledger(:5)=force_ledger(:5)+constraint_change
+    if(.not.all(ieee_is_finite(force_ledger))) return
     next_gas=gas;next_temp=temp
     call advance_reactive_eb_full_3d(species,reactions,transport,gas,temp,g,solver,redistribution,dt, &
       chemistry,rtol,atol,transport_enabled,viscosity,conduction,diffusion,barodiffusion,next_gas,next_temp, &
       theta,valid,target_volume_fraction,chemistry_integrator,boundary,wall,chemical,difmag=difmag, &
       extended_geometry=extended_geometry,boundary_faces=boundary_faces, &
-      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature)
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_temperature=wall_temperature, &
+      state_redist_max_order=state_redist_max_order)
     if (.not.valid) return
     if(outflow.and..not.impacts) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
-        .5_dp*dt,second_steps,second_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=second_exterior)
+        .5_dp*dt,second_steps,second_wall,valid,last_id=watermark,outer_faces=outer_faces,outer_change=second_exterior, &
+        force_change=constraint_change)
     else if (impacts) then
       if(outflow) then
         call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
           .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected, &
-          outer_faces,second_exterior)
+          outer_faces,second_exterior, &
+        force_change=constraint_change)
       else
         call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
-          .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected)
+          .5_dp*dt,second_steps,second_wall,valid,wall_options,patches,patch_mass,watermark,rejected, &
+        force_change=constraint_change)
       end if
       if (rejected) then
         if (present(model_rejected)) model_rejected=.true.
@@ -208,14 +228,18 @@ contains
       end if
     else if(present(last_id)) then
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
-        .5_dp*dt,second_steps,second_wall,valid,last_id=watermark)
+        .5_dp*dt,second_steps,second_wall,valid,last_id=watermark, &
+        force_change=constraint_change)
     else
       call advance_eb_mixture_coupling_allocated(species,transport,liquids,options,g,phi,next_gas,next_temp,drops,masses, &
-        .5_dp*dt,second_steps,second_wall,valid)
+        .5_dp*dt,second_steps,second_wall,valid, &
+        force_change=constraint_change)
     end if
     if (.not.valid) return
-    before_split=watermark
-    if (options%maximum_multiplicity>0) then
+    force_ledger(:5)=force_ledger(:5)+constraint_change
+    if(.not.all(ieee_is_finite(force_ledger))) return
+    if(options%etab_parcel_factor<0) before_split=watermark
+    if (options%maximum_multiplicity>0.and.options%etab_parcel_factor<0) then
       call split_spray_parcels(drops,options%maximum_multiplicity,min(125000,options%maximum_parcels), &
         valid,watermark,masses)
       if (.not.valid) return
@@ -270,6 +294,7 @@ contains
       end do
       end do
       do p=1,size(particles)
+        if(options%fixed_parts) cycle
         if(particles(p)%mass<=0) cycle
         mass=particles(p)%mass*particles(p)%multiplicity;velocity=particles(p)%velocity
         particles(p)%velocity=velocity+dv

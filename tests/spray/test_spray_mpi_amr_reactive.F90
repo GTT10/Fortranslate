@@ -118,6 +118,11 @@ program test_spray_mpi_amr_reactive
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses
   last_id=3;interval=1.e-8_dp;correction=123;theta=456
   solver='invalid';recursive=.false.;chemistry=.false.
+  if(argument=='fixed') then
+    call check_fixed()
+    call MPI_Finalize(ierr)
+    stop
+  end if
   if (argument=='les') then
     solver='hllc'
     if (rank==nranks-1) sgs(4)=.2_dp
@@ -250,6 +255,55 @@ program test_spray_mpi_amr_reactive
   if (rank==0) print *, 'PASS: MPI AMR reacting spray periodic and physical boundaries'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_fixed()
+    real(dp) :: reference_positions(3,3)
+    integer :: scheme
+    options%fixed_parts=.true.;faces='periodic';last_id=3
+    reference_positions=0
+    if(rank==nranks-1) then
+      do p=1,3
+        reference_positions(:,p)=saved_drops(p)%position
+      end do
+    end if
+    call MPI_Bcast(reference_positions,9,MPI_DOUBLE_PRECISION,nranks-1,MPI_COMM_WORLD,ierr)
+    call require(ierr==MPI_SUCCESS,'fixed reference positions broadcast')
+    solver='hllc';accel=0
+    call coupled()
+    call require(.not.ok.and.steps==0.and.all(boundary==123),'fixed AMR requires constraint output')
+    call unchanged()
+    allocate(source(nv));source=123;accel=[100._dp,-200._dp,300._dp]
+    if(rank==nranks-1) accel(1)=101
+    call coupled()
+    call require(.not.ok.and.all(source==123),'fixed AMR acceleration disagreement rollback')
+    call unchanged()
+    accel(1)=100;solver='invalid'
+    call coupled()
+    call require(.not.ok.and.all(source==123),'fixed AMR gas failure retains constraint output')
+    call unchanged()
+    solver='hllc'
+    do scheme=1,2
+      options%mixture_time_scheme='conservative'
+      if(scheme==2) options%mixture_time_scheme='euler'
+      do mode=1,2
+        recursive=mode==2;local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass;last_id=3
+        call totals(before)
+        call coupled()
+        call require(ok.and.steps>=2,'fixed regular AMR accepted coupled step')
+        call totals(after)
+        scale=max(abs(before),abs(after),abs(source),1.e-30_dp)
+        call require(all(abs(after-before-boundary-source)<=3.e-12_dp*scale),'fixed AMR gas parcel force closure')
+        q=size(drops)
+        call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+        call require(q==3.and.last_id==3,'fixed AMR migration preserves physical IDs')
+        do p=1,size(drops)
+          call require(all(drops(p)%position==reference_positions(:,int(drops(p)%id))).and. &
+            all(drops(p)%velocity==0),'fixed AMR stationary state after owner migration')
+          call require(drops(p)%temperature>350.and.drops(p)%mass<1e-12_dp,'fixed AMR evaporation')
+        end do
+      end do
+    end do
+    if(rank==0) print *, 'PASS: regular MPI AMR fixed particles and constraint rollback'
+  end subroutine check_fixed
   subroutine coupled()
     call advance_mpi_amr_spray_reactive(MPI_COMM_WORLD,tree,owners,species,reactions,transport,liquids,options, &
       local,local_t,drops,masses,zero,spacing,interval,'pcm','minmod',solver,chemistry, &

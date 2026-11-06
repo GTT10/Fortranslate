@@ -2,6 +2,7 @@ module amr_eb_patch_tree_reactive_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use, intrinsic :: iso_fortran_env, only: iostat_end
   use precision_mod, only: dp
+  use reactive_checkpoint_context_mod, only: eos_checkpoint_header
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -761,10 +762,11 @@ contains
     if (present(fingerprint)) schema = patch_tree_checkpoint_fingerprint_schema
     if (selected_context) schema = patch_tree_selected_checkpoint_schema
 
+    if(len_trim(eos_checkpoint_header(patch_tree_checkpoint_magic,species))==0) return
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) return
-    write(unit, '(a)', iostat=status) patch_tree_checkpoint_magic
+    write(unit, '(a)', iostat=status) eos_checkpoint_header(patch_tree_checkpoint_magic,species)
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       schema, size(species), solution%nvar, &
@@ -953,7 +955,7 @@ contains
       form="formatted", iostat=status)
     if (status /= 0) return
     read(unit, '(a)', iostat=status) magic
-    if (status /= 0 .or. trim(magic) /= patch_tree_checkpoint_magic) &
+    if (status /= 0 .or. trim(magic) /= eos_checkpoint_header(patch_tree_checkpoint_magic,species)) &
       go to 900
     read(unit, *, iostat=status) schema, stored_species, stored_nvar, &
       stored_levels
@@ -3200,8 +3202,11 @@ contains
     if (.not. valid) return
     first_species = reactive_species_component(1)
     last_species = reactive_species_component(nspecies)
+    ! NASA formation energy has an arbitrary reference zero. These totals
+    ! are conservation metadata, not a thermodynamic state: finite signed
+    ! energy is valid. Actual checkpoint cells receive the full EOS predicate.
     valid = all(ieee_is_finite(initial_integrals)) .and. &
-      initial_integrals(irho) > 0.0_dp .and. initial_integrals(iet) > 0.0_dp
+      initial_integrals(irho) > 0.0_dp
     if (.not. valid) return
     closure_tolerance = 5.0e-10_dp * &
       max(1.0_dp, abs(initial_integrals(irho)))
@@ -3254,11 +3259,9 @@ contains
               valid = .false.
               return
             end if
-            if (solution%levels(level)%patches(patch)%state(iet, i, j) <= &
-                0.0_dp) then
-              valid = .false.
-              return
-            end if
+            ! Signed total energy can be physical for NASA thermodynamics.
+            ! Density/species checks above and actual EOS recovery below are
+            ! the admission authority; the energy's reference-zero sign is not.
             closure_tolerance = 5.0e-10_dp * max(1.0_dp, abs(density))
             if (abs(sum(solution%levels(level)%patches(patch)%state( &
                 first_species:last_species, i, j)) - density) > &

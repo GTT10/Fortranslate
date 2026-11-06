@@ -158,11 +158,14 @@ program pelef_mpi_reactive_eb_patch_tree_2d_selected
       requested_temperature_maximum, config%eb%embedded_wall_temperature, &
       reflected_temperature_maximum)
   end if
+  if(.not.config%eb%flow%pinned_eos_extrapolation) then
   call validate_selected_temperature_range( &
     "Selected sparse MPI reactive EB patch-tree 2D", &
     requested_temperature_minimum, requested_temperature_maximum, &
     common_temperature_minimum, common_temperature_maximum, ok, message)
   if (.not. ok) call abort_run(trim(message), 3)
+
+  end if
 
   call resolve_reactive_2d_selected_composition( &
     config%eb%flow, species, mole_fractions, ok, message)

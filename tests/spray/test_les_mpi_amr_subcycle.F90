@@ -6,9 +6,13 @@ program test_les_mpi_amr_subcycle
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use les_amr_subcycle_mod, only: advance_amr_patch_tree_subcycle_les_3d
+  use les_amr_patch_tree_mod, only: advance_amr_patch_tree_les_level_3d,convert_amr_les_tree_energy_3d
+  use les_mpi_amr_level_mod, only: advance_mpi_amr_tree_les_level_3d
+  use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
   use les_mpi_amr_subcycle_mod, only: advance_mpi_amr_tree_subcycle_les_3d
   implicit none
   type(nasa7_species), allocatable :: species(:)
@@ -17,6 +21,9 @@ program test_les_mpi_amr_subcycle
   type(amr_patch_tree_3d) :: tree
   type(amr_patch_3d) :: patches(2)
   type(amr_tree_state_3d) :: global,reference,local,temperature,saved,oracle,oracle_t,saved_t
+  type(amr_tree_state_3d) :: coarse_plain,coarse_rotated
+  type(rotating_frame_3d) :: frame,trial_frame
+  type(amr_tree_flux_3d), allocatable :: plain_flux(:),rotated_flux(:)
   real(dp) :: q(12),sound,exact_t,spacing(3),dt
   real(dp) :: budget(12),serial_budget(12),largest,serial_largest,inlet(12,6),inlet_t(6)
   real(dp) :: pressure(6),mach(6),pin(6)
@@ -132,6 +139,108 @@ program test_les_mpi_amr_subcycle
     end if
     deallocate(local%fields,temperature%fields)
   end do
+  frame%axis=3;frame%angular_speed=400._dp;frame%axis_point=[.001_dp,-.002_dp,0._dp]
+  owners=[0,1,0];faces='outflow';dt=1e-9_dp
+  oracle=global;oracle_t=reference
+  allocate(local%fields(3),temperature%fields(3))
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    local%fields(node)=global%fields(node)
+    temperature%fields(node)=reference%fields(node)
+  enddo
+  call convert_amr_les_tree_energy_3d(tree,oracle,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok)
+  call require(ok,'serial rotating recursive LES storage')
+  call convert_amr_les_tree_energy_3d(tree,local,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok,owners,rank)
+  call require(ok,'MPI rotating recursive LES storage')
+  call advance_amr_patch_tree_subcycle_les_3d(tree,species,oracle,oracle_t,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,serial_budget,serial_largest,serial_diffusivity,ok, &
+    frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'serial rotating recursive LES oracle')
+  call advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,budget,largest,diffusivity,MPI_COMM_WORLD,ok, &
+    frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'MPI rotating recursive LES step')
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    call require(all(local%fields(node)%values==oracle%fields(node)%values), &
+      'MPI rotating recursive LES state parity')
+    call require(all(temperature%fields(node)%values==oracle_t%fields(node)%values), &
+      'MPI rotating recursive LES temperature parity')
+  enddo
+  call require(all(budget==serial_budget),'MPI rotating recursive LES budget parity')
+  oracle=global;oracle_t=reference
+  deallocate(local%fields,temperature%fields)
+  allocate(local%fields(3),temperature%fields(3))
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    local%fields(node)=global%fields(node)
+    temperature%fields(node)=reference%fields(node)
+  enddo
+  call convert_amr_les_tree_energy_3d(tree,local,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok,owners,rank)
+  call require(ok,'MPI rotating LES level storage')
+  call advance_amr_patch_tree_les_level_3d(tree,species,oracle,oracle_t,0,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,plain_flux,serial_diffusivity,ok)
+  call require(ok,'MPI rotating LES level oracle')
+  call advance_mpi_amr_tree_les_level_3d(tree,owners,species,local,temperature,0,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,rotated_flux,diffusivity,MPI_COMM_WORLD,ok,frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'MPI rotating LES level step')
+  call convert_amr_les_tree_energy_3d(tree,local,spacing,frame,[0._dp,0._dp,0._dp],.false.,ok,owners,rank)
+  call require(ok,'MPI rotating LES level recovery')
+  if(rank==0) then
+    call require(maxval(abs(local%fields(1)%values-oracle%fields(1)%values)/ &
+      max(1._dp,abs(oracle%fields(1)%values)))<2e-12_dp,'MPI rotating LES level state parity')
+    call require(maxval(abs(rotated_flux(1)%x-plain_flux(1)%x))<1e-12_dp,'MPI rotating LES level flux parity')
+  endif
+  oracle=global;oracle_t=reference
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    local%fields(node)=global%fields(node)
+    temperature%fields(node)=reference%fields(node)
+  enddo
+  call convert_amr_les_tree_energy_3d(tree,local,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok,owners,rank)
+  call require(ok,'MPI rotating LES fine level storage')
+  allocate(coarse_plain%fields(3),coarse_rotated%fields(3))
+  allocate(coarse_plain%fields(1)%values(13,4,4,4))
+  coarse_plain%fields(1)%values(:12,:,:,:)=global%fields(1)%values
+  coarse_plain%fields(1)%values(13,:,:,:)=reference%fields(1)%values(1,:,:,:)
+  if(rank==0) coarse_rotated%fields(1)=coarse_plain%fields(1)
+  call convert_amr_les_tree_energy_3d(tree,coarse_rotated,spacing,frame,[0._dp,0._dp,0._dp],.true.,ok, &
+    owners,rank,maximum_depth=0)
+  call require(ok,'MPI rotating LES coarse endpoint storage')
+  call advance_amr_patch_tree_les_level_3d(tree,species,oracle,oracle_t,1,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,plain_flux,serial_diffusivity,ok,coarse_start=coarse_plain,coarse_end=coarse_plain, &
+    fractions_start=[0._dp],fractions_end=[1._dp])
+  call require(ok,'MPI rotating LES fine level oracle')
+  call advance_mpi_amr_tree_les_level_3d(tree,owners,species,local,temperature,1,spacing,1e-9_dp,faces, &
+    .17_dp,.7_dp,.7_dp,rotated_flux,diffusivity,MPI_COMM_WORLD,ok, &
+    coarse_start=coarse_rotated,coarse_end=coarse_rotated, &
+    fractions_start=[0._dp],fractions_end=[1._dp],frame=frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(ok,'MPI rotating LES fine level step')
+  call convert_amr_les_tree_energy_3d(tree,local,spacing,frame,[0._dp,0._dp,0._dp],.false.,ok,owners,rank)
+  call require(ok,'MPI rotating LES fine level recovery')
+  do node=1,3
+    if(tree%nodes(node)%level/=1.or.owners(node)/=rank) cycle
+    call require(maxval(abs(local%fields(node)%values-oracle%fields(node)%values)/ &
+      max(1._dp,abs(oracle%fields(node)%values)))<2e-12_dp,'MPI rotating LES fine level state parity')
+    call require(maxval(abs(rotated_flux(node)%x-plain_flux(node)%x))<1e-12_dp, &
+      'MPI rotating LES fine level flux parity')
+  enddo
+  saved=local;saved_t=temperature
+  budget=-17;largest=-19;diffusivity=-29;steps=-23
+  trial_frame=frame
+  if(rank==nranks-1) trial_frame%angular_speed=trial_frame%angular_speed+1._dp
+  call advance_mpi_amr_tree_subcycle_les_3d(tree,owners,species,local,temperature,spacing,dt,faces, &
+    .17_dp,.7_dp,.7_dp,budget,largest,diffusivity,MPI_COMM_WORLD,ok,level_steps=steps, &
+    frame=trial_frame,domain_lower=[0._dp,0._dp,0._dp])
+  call require(.not.ok.and.all(budget==-17).and.largest==-19.and.diffusivity==-29.and.all(steps==-23), &
+    'MPI rotating recursive LES frame disagreement rollback')
+  do node=1,3
+    if(owners(node)/=rank) cycle
+    call require(all(local%fields(node)%values==saved%fields(node)%values), &
+      'MPI rotating recursive LES disagreement state rollback')
+    call require(all(temperature%fields(node)%values==saved_t%fields(node)%values), &
+      'MPI rotating recursive LES disagreement temperature rollback')
+  enddo
   if (rank==0) print *, 'PASS: MPI recursive LES: four models, 1/4/36 steps, exact state/budget, empty ranks and rollback'
   call MPI_Finalize(ierr)
 contains

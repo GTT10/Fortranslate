@@ -42,6 +42,11 @@ target_link_libraries(test_reactive_transport_3d PRIVATE pelef_core)
 add_test(NAME unit_reactive_transport_3d COMMAND test_reactive_transport_3d)
 set_tests_properties(unit_reactive_transport_3d PROPERTIES TIMEOUT 300)
 
+add_executable(test_transport_cell_reuse_3d unit/test_transport_cell_reuse_3d.F90)
+target_link_libraries(test_transport_cell_reuse_3d PRIVATE pelef_core)
+add_test(NAME unit_transport_cell_reuse_3d COMMAND test_transport_cell_reuse_3d)
+set_tests_properties(unit_transport_cell_reuse_3d PROPERTIES TIMEOUT 300)
+
 add_executable(
   test_amr_reactive_transport_3d
   unit/test_amr_reactive_transport_3d.F90
@@ -71,7 +76,11 @@ add_test(NAME unit_amr_patch_tree_reflux_3d COMMAND test_amr_patch_tree_reflux_3
 add_executable(test_amr_patch_tree_hydro_3d unit/test_amr_patch_tree_hydro_3d.F90)
 target_link_libraries(test_amr_patch_tree_hydro_3d PRIVATE pelef_core)
 add_test(NAME unit_amr_patch_tree_hydro_3d COMMAND test_amr_patch_tree_hydro_3d)
+add_test(NAME unit_amr_patch_tree_no_slip_mol_3d COMMAND test_amr_patch_tree_hydro_3d wall_mol)
 add_test(NAME unit_amr_patch_tree_ppm_3d COMMAND test_amr_patch_tree_hydro_3d ppm)
+add_test(NAME unit_amr_patch_tree_rotation_energy_3d COMMAND test_amr_patch_tree_hydro_3d rotation_energy)
+add_test(NAME unit_amr_patch_tree_rotating_mol_3d COMMAND test_amr_patch_tree_hydro_3d rotating_mol)
+add_test(NAME unit_amr_patch_tree_rotating_step_3d COMMAND test_amr_patch_tree_hydro_3d rotating_step)
 add_executable(test_amr_patch_tree_chemistry_3d unit/test_amr_patch_tree_chemistry_3d.F90)
 target_link_libraries(test_amr_patch_tree_chemistry_3d PRIVATE pelef_core)
 add_test(NAME unit_amr_patch_tree_chemistry_3d COMMAND test_amr_patch_tree_chemistry_3d)
@@ -786,6 +795,10 @@ add_executable(
 target_link_libraries(test_elementary_kinetics PRIVATE pelef_core)
 add_test(NAME unit_elementary_kinetics COMMAND test_elementary_kinetics)
 
+add_executable(test_equilibrium_reference_convention unit/test_equilibrium_reference_convention.F90)
+target_link_libraries(test_equilibrium_reference_convention PRIVATE pelef_core)
+add_test(NAME unit_equilibrium_reference_convention COMMAND test_equilibrium_reference_convention)
+
 add_executable(
   test_constant_volume_h2o2
   unit/test_constant_volume_h2o2.F90
@@ -975,3 +988,10 @@ add_test(NAME unit_eb_tree_viscosity_3d COMMAND test_eb_tree_hydro_3d viscosity)
 
 add_test(NAME unit_eb_tree_viscosity_subcycle_full_3d COMMAND test_eb_tree_subcycle_full_3d mach viscosity)
 set_tests_properties(unit_eb_tree_viscosity_subcycle_full_3d PROPERTIES TIMEOUT 240)
+
+# Worker 09 proposal: isolated work directory for publication-failure fixtures.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-publication-serial")
+add_test(NAME unit_amr_tree_checkpoint_publication
+  COMMAND test_amr_patch_tree_checkpoint_3d publication)
+set_tests_properties(unit_amr_tree_checkpoint_publication PROPERTIES TIMEOUT 60
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-publication-serial")

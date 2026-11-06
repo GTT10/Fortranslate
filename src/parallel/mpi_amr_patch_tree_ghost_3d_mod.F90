@@ -3,6 +3,7 @@ module mpi_amr_patch_tree_ghost_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use nasa7_thermo_mod, only: nasa7_species
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
   use amr_patch_tree_ghost_3d_mod, only: sample_amr_patch_tree_ghosts_3d,amr_tree_cell_source_3d
@@ -23,7 +24,11 @@ contains
   ! Collective ghost fill. Only owned selected-depth output fields allocate.
   subroutine fill_mpi_amr_tree_ghosts_3d(tree,owners,local,nvar,faces,ghosts,comm,ok, &
       viscous_wall,inflow_state,wall_velocity,coarse_limiter,species_count,coarse_future,coarse_fractions,depth,ghost_width, &
-      species,inflow_mach,inflow_temperature,inflow_pressure)
+      species,inflow_mach,inflow_temperature,inflow_pressure,limit_internal_energy,stored_internal_energy, &
+      frame,domain_lower,root_spacing)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3),root_spacing(3)
+    logical, optional, intent(in) :: limit_internal_energy,stored_internal_energy
     type(nasa7_species), optional, intent(in) :: species(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -45,9 +50,10 @@ contains
     type(cached_tree_source) :: reader
     real(dp), allocatable :: scratch(:,:,:,:),fractions(:),low_f(:),high_f(:),endpoint_values(:,:)
     integer, allocatable :: queries(:,:)
-    integer :: controls(4),low(4),high(4),active,levels,query,slot,endpoint,width
+    integer :: controls(8),low(8),high(8),active,levels,query,slot,endpoint,width
     real(dp) :: inlet_controls(18),inlet_low(18),inlet_high(18)
-    logical :: use_future
+    real(dp) :: frame_controls(11),frame_low(11),frame_high(11)
+    logical :: use_future,include_internal,stored_internal
     integer :: rank,nranks,status,ios,node,pass
     logical :: valid,ready
     ok=.false.
@@ -64,12 +70,37 @@ contains
     if (present(depth)) active=depth
     width=2
     if(present(ghost_width)) width=ghost_width
-    controls=[active,merge(1,0,present(coarse_future)),merge(1,0,present(coarse_fractions)),width]
-    call MPI_Allreduce(controls,low,4,MPI_INTEGER,MPI_MIN,comm,status)
+    stored_internal=.false.
+    if(present(stored_internal_energy)) stored_internal=stored_internal_energy
+    include_internal=.false.
+    if(present(limit_internal_energy)) include_internal=limit_internal_energy
+    controls=[active,merge(1,0,present(coarse_future)),merge(1,0,present(coarse_fractions)),width, &
+      merge(1,0,include_internal),merge(1,0,stored_internal),merge(1,0,present(frame)), &
+      merge(1,0,present(domain_lower).and.present(root_spacing))]
+    call MPI_Allreduce(controls,low,8,MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(controls,high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(controls,high,8,MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high).or.controls(2)/=controls(3)) return
+    valid=controls(7)==0.or.controls(8)==1
+    if(present(frame)) valid=valid.and.frame%is_valid()
+    if(present(domain_lower)) valid=valid.and.all(ieee_is_finite(domain_lower))
+    if(present(root_spacing)) valid=valid.and.all(ieee_is_finite(root_spacing)).and.all(root_spacing>0)
+    call agree(valid,ready)
+    if(.not.ready) return
+    frame_controls=0
+    if(present(frame)) then
+      frame_controls(1)=real(frame%axis,dp)
+      frame_controls(2)=frame%angular_speed
+      frame_controls(3:5)=frame%axis_point
+      frame_controls(6:8)=domain_lower
+      frame_controls(9:11)=root_spacing
+    endif
+    call MPI_Allreduce(frame_controls,frame_low,11,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(frame_controls,frame_high,11,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(frame_low/=frame_high)) return
     if(width<1.or.width>128) return
     if (active< -1.or.active>=tree%level_count()) return
     call validate_mpi_amr_tree_local_3d(tree,owners,local,nvar,comm,ready)
@@ -192,12 +223,16 @@ contains
           viscous_wall,inflow_state,wall_velocity,coarse_fractions=fractions(:tree%nodes(peer)%level), &
           coarse_limiter=coarse_limiter,species_count=species_count,planning=planning,validate_only=validate_only, &
           ghost_width=width,species=species,inflow_mach=inflow_mach, &
-          inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+          inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          limit_internal_energy=limit_internal_energy,stored_internal_energy=stored_internal_energy, &
+          frame=frame,domain_lower=domain_lower,root_spacing=root_spacing)
       else
         call sample_amr_patch_tree_ghosts_3d(tree,nvar,peer,faces,reader,output,success, &
           viscous_wall,inflow_state,wall_velocity,coarse_limiter=coarse_limiter, &
           species_count=species_count,planning=planning,validate_only=validate_only,ghost_width=width, &
-          species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+          species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+          limit_internal_energy=limit_internal_energy,stored_internal_energy=stored_internal_energy, &
+          frame=frame,domain_lower=domain_lower,root_spacing=root_spacing)
       end if
     end subroutine
     subroutine agree(condition,result)

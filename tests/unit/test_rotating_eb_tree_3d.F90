@@ -26,7 +26,8 @@ program test_rotating_eb_tree_3d
   type(amr_tree_state_3d) :: rates,old_rates,predictor
   type(eb_integrated_flux_3d), allocatable :: flux(:),old_flux(:)
   type(rotating_frame_3d) :: frame
-  real(dp), allocatable :: q(:),back(:),root(:,:,:,:),temp(:,:,:),ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),inlet(:,:),before(:),after(:),boundary(:),wall(:),chemical(:),external(:),expected_source(:)
+  real(dp), allocatable :: q(:),back(:),root(:,:,:,:),temp(:,:,:),ghost(:,:,:,:),gt(:,:,:),vf(:,:,:),inlet(:,:)
+  real(dp), allocatable :: before(:),after(:),boundary(:),wall(:),chemical(:),external(:),expected_source(:)
   real(dp) :: t,c,potential,position(3),lo(3),hi(3),spacing(3),expected_t,error,tin(6),mach(6),pin(6),theta,residual
   integer :: nv,i,j,k,node,order,solver,checks,width,mode
   logical :: ok

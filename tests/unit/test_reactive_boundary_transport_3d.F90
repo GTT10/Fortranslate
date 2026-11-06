@@ -9,7 +9,7 @@ program test_reactive_boundary_transport_3d
   use reactive_3d_mod, only: reactive_integrals_3d, advance_reactive_boundary_hydro_3d, &
     advance_reactive_full_3d, advance_reactive_chemistry_3d
   use reactive_transport_3d_mod, only: advance_reactive_transport_3d, reactive_transport_euler_update_3d, &
-    reactive_isothermal_timestep_3d
+    reactive_isothermal_timestep_3d,physical_transport_fluxes_3d
   use mixture_thermo_mod, only: mixture_mass_properties
   use mixture_transport_mod, only: mixture_transport_coefficients
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
@@ -31,6 +31,7 @@ program test_reactive_boundary_transport_3d
   call check_mach_split()
   call check_wall_shear()
   call check_wall_heat()
+  call check_isothermal_slip()
   do mode=1,4
     visc=mode==1.or.mode==4; heat=mode==2.or.mode==4; diff=mode>=3
     do b=1,3
@@ -212,6 +213,68 @@ contains
       .true.,.true.,.true.,.true.,theta,ok,faces,change,outlet_pressure=outlet)
     call require(.not.ok.and.all(u==before).and.all(t==bt),'pressure transport rollback')
   end subroutine
+  subroutine check_isothermal_slip()
+    real(dp) :: fx(12,0:4,4,4),fy(12,4,0:4,4),fz(12,4,4,0:4)
+    real(dp) :: wt(6),mu,kappa,diffusion(7),expected,wall_dt,adiabatic_dt
+    real(dp) :: mw,gas_r,cp,cv,gamma,h,e,entropy,measured,normal_heat
+    logical :: thermal(6)
+    integer :: face,axis,side,hot
+    do face=1,6
+      axis=(face+1)/2;side=merge(0,4,modulo(face,2)==1)
+      faces='periodic';faces(2*axis-1:2*axis)='slip_wall'
+      q=0;q(1)=.3_dp;q(2:4)=[13._dp,-7._dp,5._dp];q(axis+1)=0
+      q(5)=101325;q(6)=.03_dp;q(9)=.22_dp;q(12)=.75_dp
+      do k=1,4
+      do j=1,4
+      do i=1,4
+        call reactive_primitive_to_conserved(species,q,before(:,i,j,k),bt(i,j,k),sound,ok)
+        call require(ok,'thermal slip initial state')
+      enddo
+      enddo
+      enddo
+      do hot=1,2
+        wt=bt(1,1,1)*merge(.5_dp,1.5_dp,hot==1)
+        thermal=.false.;thermal(face)=.true.
+        call mixture_transport_coefficients(species,transport,q(6:),wt(face),q(5),mu,kappa,diffusion,ok)
+        call require(ok,'thermal slip conductivity')
+        expected=2*kappa*(wt(face)-bt(1,1,1))/dx
+        if(side==4) expected=-expected
+        call physical_transport_fluxes_3d(species,transport,before,bt,[4,4,4],[dx,dx,dx],dt,faces, &
+          .true.,.true.,.true.,.true.,fx,fy,fz,theta,ok,wall_temperature=wt,isothermal_slip_faces=thermal)
+        call require(ok,'explicit isothermal slip flux')
+        select case(axis)
+        case(1);measured=fx(5,side,2,2)
+        case(2);measured=fy(5,2,side,2)
+        case(3);measured=fz(5,2,2,side)
+        end select
+        call require(abs(measured/expected-1)<1e-12_dp,'slip Fourier flux')
+        call require(maxval(abs(fx(2:4,:,:,:)))<1e-12_dp.and.maxval(abs(fy(2:4,:,:,:)))<1e-12_dp.and. &
+          maxval(abs(fz(2:4,:,:,:)))<1e-12_dp,'heated slip preserves tangential flow without shear')
+        call require(maxval(abs(fx(6:,:,:,:)))<1e-12_dp.and.maxval(abs(fy(6:,:,:,:)))<1e-12_dp.and. &
+          maxval(abs(fz(6:,:,:,:)))<1e-12_dp,'heated slip has no species exchange')
+        call mixture_mass_properties(species,q(6:),bt(1,1,1),mw,gas_r,cp,cv,gamma,h,e,entropy,ok)
+        call require(ok,'thermal slip heat capacity')
+        call reactive_isothermal_timestep_3d(species,transport,before,bt,[dx,dx,dx],faces,wt,.35_dp, &
+          wall_dt,ok,isothermal_slip_faces=thermal)
+        call require(ok.and.abs(wall_dt/(.35_dp*q(1)*cv*dx**2/(2*kappa))-1)<1e-12_dp,'slip thermal timestep')
+        call physical_transport_fluxes_3d(species,transport,before,bt,[4,4,4],[dx,dx,dx],dt,faces, &
+          .true.,.true.,.true.,.true.,fx,fy,fz,theta,ok,wall_temperature=wt)
+        call require(ok,'existing adiabatic slip remains valid')
+        normal_heat=max(maxval(abs(fx(5,:,:,:))),maxval(abs(fy(5,:,:,:))),maxval(abs(fz(5,:,:,:))))
+        call require(normal_heat<1e-12_dp,'wall temperature alone does not heat slip walls')
+        call reactive_isothermal_timestep_3d(species,transport,before,bt,[dx,dx,dx],faces,wt,.35_dp,adiabatic_dt,ok)
+        call require(ok.and.adiabatic_dt==huge(1._dp),'unmarked slip has no wall thermal constraint')
+        call physical_transport_fluxes_3d(species,transport,before,bt,[4,4,4],[dx,dx,dx],dt,faces, &
+          .true.,.false.,.true.,.true.,fx,fy,fz,theta,ok,wall_temperature=wt,isothermal_slip_faces=thermal)
+        call require(.not.ok,'heated slip rejects disabled conduction')
+      enddo
+      thermal=.true.
+      call physical_transport_fluxes_3d(species,transport,before,bt,[4,4,4],[dx,dx,dx],dt,faces, &
+        .true.,.true.,.true.,.true.,fx,fy,fz,theta,ok,wall_temperature=wt,isothermal_slip_faces=thermal)
+      call require(.not.ok,'thermal slip mask rejects periodic faces')
+    enddo
+    print *, 'PASS: explicit six-face thermal slip, tangential flow and unchanged adiabatic defaults'
+  end subroutine check_isothermal_slip
   subroutine check_wall_heat()
     real(dp) :: mu,kappa,diffusion(7),wt(6),expected,wall_dt,rate,mw,gas_r,cp,cv,gamma,h,e,entropy
     integer :: face,thermal_case

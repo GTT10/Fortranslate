@@ -44,7 +44,7 @@ def regenerate_simple_transport(bundle: dict, directory: Path) -> dict:
     """Re-read pinned bytes; never trust coefficients copied from bundle JSON."""
     source = bundle['simple_transport']['source']
     manifest = None
-    for name in ('heptane_3sp', 'decane_3sp', 'dodecane_lu'):
+    for name in ('heptane_3sp', 'decane_3sp', 'dodecane_lu', 'pelec_tgreact_eb_amr'):
         candidate = json.loads((Path(__file__).resolve().parents[1]/'references'/f'{name}.json').read_text())
         entry = candidate['simple_transport_header']
         if source == dict(file=entry['basename'], sha256=entry['sha256'],

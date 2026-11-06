@@ -1,20 +1,21 @@
 module reactive_eb_3d_checkpoint_mod
+  use dual_energy_mod, only: dual_energy_policy
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
   use elementary_kinetics_mod, only: reaction_kind_chebyshev, chebyshev_capacity
   use elementary_kinetics_mod, only: reaction_kind_plog
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use eb_reactive_transfer_3d_mod, only: recover_reactive_eb_cell_3d
   use constants_mod, only: density_floor
   use state_indices_mod, only: irho, iet
-  use nasa7_thermo_mod, only: nasa7_species, valid_nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_eos_policy_identity, valid_nasa7_species
   use elementary_kinetics_mod, only: &
     reaction_kind_sri,reaction_kind_sri_activated, elementary_reaction, valid_arrhenius_rate, valid_troe_parameters, &
     valid_elementary_reaction
   use gas_transport_mod, only: &
     gas_transport_species, valid_gas_transport_species
-  use reactive_1d_mod, only: &
-    reactive_nvar, reactive_species_component, &
-    reactive_conserved_to_primitive
+  use reactive_1d_mod, only: reactive_nvar,reactive_species_component
   use simulation_config_reactive_eb_3d_mod, only: &
     reactive_eb_3d_config,reactive_eb_geometry_identity,valid_reactive_eb_boundaries
   use eb_geometry_3d_mod, only: &
@@ -32,6 +33,9 @@ module reactive_eb_3d_checkpoint_mod
   integer, parameter :: checkpoint_exchange_offset = 3
   ! Schemas 10/11/12 add SDC controls, forcing inventory and optional reaction estimates.
   integer, parameter :: checkpoint_sdc_offset = 6
+  integer, parameter :: checkpoint_heat_offset = 12
+  ! Schemas 25:48 retain independent UEINT, reset policy and numeric prefix.
+  integer, parameter :: checkpoint_held_offset = 24
   integer, parameter :: bundle_sha256_length = 64
   integer, parameter :: n_config_reals = 19
   integer, parameter :: n_config_ints = 5
@@ -67,7 +71,14 @@ contains
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
       chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
-      boundary_change, wall_change, chemistry_change, tree_patch,source_change,reaction_source)
+      boundary_change,wall_change,chemistry_change,tree_patch,source_change,reaction_source,frame,heat_release,heat_available, &
+      internal_energy_density,energy_correction,energy_policy)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:),energy_correction
+    type(dual_energy_policy), optional, intent(in) :: energy_policy
+    real(dp), optional, intent(in) :: heat_release(:,:,:)
+    logical, optional, intent(in) :: heat_available
+    logical :: has_heat
+    type(rotating_frame_3d), optional, intent(in) :: frame
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -106,7 +117,27 @@ contains
     ok = .false.
     message = ""
     unit = -1
+    has_heat=present(heat_release)
+    if(present(heat_available)) has_heat=has_heat.and.heat_available
     nvar = reactive_nvar(size(species))
+    if(present(internal_energy_density).neqv.present(energy_correction)) then
+      message='Incomplete held checkpoint energy context';return
+    endif
+    if(present(internal_energy_density).neqv.present(energy_policy)) then
+      message='Incomplete held checkpoint reset policy';return
+    endif
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) then
+        message='Invalid held checkpoint dimensions';return
+      endif
+      if(.not.all(ieee_is_finite(internal_energy_density)).or. &
+        .not.all(ieee_is_finite([energy_correction,energy_policy%eta2]))) then
+        message='Nonfinite held checkpoint energy context';return
+      endif
+      if(abs(energy_correction)>huge(1._dp)/8) then
+        message='Invalid held checkpoint numeric prefix';return
+      endif
+    endif
     if(config%time_integrator=='sdc') then
       if(.not.present(source_change).or..not.present(boundary_change)) then
         message='Missing SDC checkpoint inventory fields';return
@@ -195,7 +226,7 @@ contains
       return
     end if
     if (.not. valid_checkpoint_state( &
-          species, geometry, state, temperature)) then
+          species,geometry,state,temperature,frame,internal_energy_density)) then
       message = "Invalid Reactive EB 3D checkpoint state or temperature"
       return
     end if
@@ -244,6 +275,19 @@ contains
       end if
       schema=schema+checkpoint_sdc_offset
     end if
+    if(has_heat) then
+      if(config%time_integrator/='sdc') then
+        message='Heat release requires SDC checkpoint context';return
+      endif
+      if(any(shape(heat_release)/=[config%nx,config%ny,config%nz])) then
+        message='Invalid checkpoint heat dimensions';return
+      endif
+      if(any(.not.ieee_is_finite(heat_release).and.geometry%cell_type/=eb_covered_cell_3d)) then
+        message='Nonfinite checkpoint fluid heat';return
+      endif
+      schema=schema+checkpoint_heat_offset
+    endif
+    if(present(internal_energy_density)) schema=schema+checkpoint_held_offset
     if (present(checkpoint_unit)) then
       if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.true.)) then
         message="Checkpoint unit is not open for the requested formatted operation"
@@ -291,7 +335,11 @@ contains
       end do
     end if
 
-    write(unit, '(a)', iostat=status) "SPECIES"
+    if(all(species%pinned_eos_extrapolation)) then
+      write(unit, '(a)', iostat=status) trim(nasa7_eos_policy_identity(species))
+    else
+      write(unit, '(a)', iostat=status) "SPECIES"
+    end if
     if (status /= 0) go to 900
     do species_index = 1, size(species)
       write(unit, '(a)', iostat=status) trim(species(species_index)%name)
@@ -553,6 +601,23 @@ contains
       end do
     end do
 
+    if(present(internal_energy_density)) then
+      write(unit,'(a)',iostat=status) 'HELD_INTERNAL_ENERGY_V1'
+      if(status/=0) go to 900
+      write(unit,'(3(i0,1x),2(es27.18e3,1x))',iostat=status) &
+        merge(1,0,energy_policy%allow_small_energy),merge(1,0,energy_policy%allow_negative_energy), &
+        merge(1,0,energy_policy%update_total_from_internal),energy_policy%eta2,energy_correction
+      if(status/=0) go to 900
+      do k=1,config%nz
+      do j=1,config%ny
+      do i=1,config%nx
+        write(unit,'(es27.18e3)',iostat=status) internal_energy_density(i,j,k)
+        if(status/=0) go to 900
+      enddo
+      enddo
+      enddo
+    endif
+
     if(config%time_integrator=='sdc') then
       if(config%sdc_reactor=='cvode') then
         write(unit,'(a)',iostat=status) 'SDC_CVODE_SOURCES'
@@ -577,6 +642,22 @@ contains
         end do
       end if
     end if
+    if(has_heat) then
+      write(unit,'(a)',iostat=status) 'HEAT_RELEASE_W_M3_V1'
+      if(status/=0) go to 900
+      do k=1,config%nz
+      do j=1,config%ny
+      do i=1,config%nx
+        if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) then
+          write(unit,'(es27.18e3)',iostat=status) 0._dp
+        else
+          write(unit,'(es27.18e3)',iostat=status) heat_release(i,j,k)
+        endif
+        if(status/=0) go to 900
+      enddo
+      enddo
+      enddo
+    endif
     write(unit, '(a)', iostat=status) "END_CHECKPOINT"
     if (status /= 0) go to 900
     if (.not.present(checkpoint_unit)) then
@@ -600,7 +681,18 @@ contains
       initial_element_integrals, minimum_dt, maximum_transport_diffusivity, &
       minimum_transport_theta, ok, message, bundle_sha256, &
       chemistry_integrator, base_mole_fractions, checkpoint_unit, element_names, element_atoms, &
-      boundary_change, wall_change, chemistry_change, tree_patch,source_change,reaction_source)
+      boundary_change,wall_change,chemistry_change,tree_patch,source_change,reaction_source,frame,heat_release,heat_available, &
+      internal_energy_density,energy_correction,energy_policy)
+    real(dp), optional, intent(inout) :: internal_energy_density(:,:,:),energy_correction
+    type(dual_energy_policy), optional, intent(in) :: energy_policy
+    real(dp), allocatable :: candidate_held(:,:,:)
+    real(dp) :: stored_eta2,stored_correction
+    integer :: stored_energy_flags(3)
+    real(dp), optional, intent(inout) :: heat_release(:,:,:)
+    logical, optional, intent(inout) :: heat_available
+    logical :: has_heat
+    real(dp), allocatable :: candidate_heat(:,:,:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     character(len=*), intent(in) :: path
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -685,6 +777,20 @@ contains
     message = ""
     unit = -1
     nvar = reactive_nvar(size(species))
+    if(present(internal_energy_density).neqv.present(energy_correction)) then
+      message='Incomplete held restart energy context';return
+    endif
+    if(present(internal_energy_density).neqv.present(energy_policy)) then
+      message='Incomplete held restart reset policy';return
+    endif
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) then
+        message='Invalid held restart dimensions';return
+      endif
+      if(.not.ieee_is_finite(energy_policy%eta2)) then
+        message='Nonfinite held restart reset policy';return
+      endif
+    endif
     if(config%time_integrator=='sdc') then
       if(.not.present(source_change).or..not.present(boundary_change)) then
         message='Missing SDC checkpoint inventory fields';return
@@ -794,6 +900,12 @@ contains
 
     if (present(boundary_change)) expected_schema=expected_schema+checkpoint_exchange_offset
     if(config%time_integrator=='sdc') expected_schema=expected_schema+checkpoint_sdc_offset
+    if(present(internal_energy_density)) expected_schema=expected_schema+checkpoint_held_offset
+    if(present(heat_release)) then
+      if(any(shape(heat_release)/=[config%nx,config%ny,config%nz])) then
+        message='Invalid checkpoint heat dimensions';return
+      endif
+    endif
     if (present(checkpoint_unit)) then
       if (.not.valid_borrowed_checkpoint_unit(checkpoint_unit,.false.)) then
         message="Checkpoint unit is not open for the requested formatted operation"
@@ -815,7 +927,11 @@ contains
     if (trim(magic) /= checkpoint_magic) go to 900
     read(unit, *, iostat=status) stored_header
     if (status /= 0) go to 900
-    if (stored_header(1) /= expected_schema) then
+    if((stored_header(1)>checkpoint_held_offset).neqv.present(internal_energy_density)) then
+      message='Held checkpoint/restart presence mismatch';go to 900
+    endif
+    has_heat=config%time_integrator=='sdc'.and.stored_header(1)==expected_schema+checkpoint_heat_offset
+    if (stored_header(1) /= expected_schema.and..not.has_heat) then
       if (selected_context) then
         message = &
           "Reactive EB 3D checkpoint lacks selected mechanism context"
@@ -897,7 +1013,11 @@ contains
 
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
-    if (trim(marker) /= "SPECIES") go to 900
+    if(all(species%pinned_eos_extrapolation)) then
+      if (trim(marker) /= trim(nasa7_eos_policy_identity(species))) go to 900
+    else
+      if (trim(marker) /= "SPECIES") go to 900
+    end if
     do species_index = 1, size(species)
       read(unit, '(a)', iostat=status) stored_name
       if (status /= 0) go to 900
@@ -1244,8 +1364,36 @@ contains
         end do
       end do
     end do
-    if (.not. valid_checkpoint_state( &
-          species, candidate_geometry, candidate_state, candidate_temperature)) go to 900
+    if(present(internal_energy_density)) then
+      read(unit,'(a)',iostat=status) marker
+      if(status/=0) go to 900
+      if(marker/='HELD_INTERNAL_ENERGY_V1') go to 900
+      read(unit,*,iostat=status) stored_energy_flags,stored_eta2,stored_correction
+      if(status/=0) go to 900
+      if(.not.all(ieee_is_finite([stored_eta2,stored_correction]))) go to 900
+      if(abs(stored_correction)>huge(1._dp)/8) go to 900
+      if(any(stored_energy_flags/=[merge(1,0,energy_policy%allow_small_energy), &
+        merge(1,0,energy_policy%allow_negative_energy),merge(1,0,energy_policy%update_total_from_internal)]).or. &
+        stored_eta2/=energy_policy%eta2) then
+        message='Held checkpoint reset policy mismatch';go to 900
+      endif
+      allocate(candidate_held(config%nx,config%ny,config%nz))
+      do k=1,config%nz
+      do j=1,config%ny
+      do i=1,config%nx
+        read(unit,'(a)',iostat=status) marker
+        if(status/=0) go to 900
+        marker=adjustl(marker)
+        if(len_trim(marker)==0.or.len_trim(marker)>64) go to 900
+        if(verify(trim(marker),'0123456789+-.eEdD')/=0) go to 900
+        read(marker,*,iostat=status) candidate_held(i,j,k)
+        if(status/=0) go to 900
+      enddo
+      enddo
+      enddo
+    endif
+    if (.not.valid_checkpoint_state(species,candidate_geometry,candidate_state,candidate_temperature, &
+      frame,candidate_held)) go to 900
 
     if(config%time_integrator=='sdc') then
       read(unit,'(a)',iostat=status) marker
@@ -1279,6 +1427,27 @@ contains
         if(.not.all(ieee_is_finite(candidate_ir))) go to 900
       end if
     end if
+    if(has_heat) then
+      read(unit,'(a)',iostat=status) marker
+      if(status/=0) go to 900
+      if(trim(marker)/='HEAT_RELEASE_W_M3_V1') go to 900
+      allocate(candidate_heat(config%nx,config%ny,config%nz))
+      do k=1,config%nz
+      do j=1,config%ny
+      do i=1,config%nx
+        read(unit,'(a)',iostat=status) marker
+        if(status/=0) go to 900
+        marker=adjustl(marker)
+        if(len_trim(marker)==0.or.len_trim(marker)>64) go to 900
+        if(verify(trim(marker),'0123456789+-.eEdD')/=0) go to 900
+        read(marker,*,iostat=status) candidate_heat(i,j,k)
+        if(status/=0) go to 900
+        if(.not.ieee_is_finite(candidate_heat(i,j,k))) go to 900
+        if(candidate_geometry%cell_type(i,j,k)==eb_covered_cell_3d) candidate_heat(i,j,k)=0
+      enddo
+      enddo
+      enddo
+    endif
     read(unit, '(a)', iostat=status) marker
     if (status /= 0) go to 900
     if (trim(marker) /= "END_CHECKPOINT") go to 900
@@ -1299,6 +1468,14 @@ contains
     end if
     if(present(source_change)) source_change=candidate_source
     if(present(reaction_source)) reaction_source=candidate_ir
+    if(present(heat_release)) then
+      heat_release=0
+      if(has_heat) heat_release=candidate_heat
+    endif
+    if(present(heat_available)) heat_available=has_heat
+    if(present(internal_energy_density)) then
+      internal_energy_density=candidate_held;energy_correction=stored_correction
+    endif
     geometry = candidate_geometry
     state = candidate_state
     temperature = candidate_temperature
@@ -1465,6 +1642,10 @@ contains
         identity=trim(identity)//trim(entry)
       end do
     end if
+    if(config%state_redist_max_order/=0) then
+      write(entry,'(a,i0)') ' state-redist-order-v1 ',config%state_redist_max_order
+      identity=trim(identity)//trim(entry)
+    endif
   end function checkpoint_solver_identity
 
   logical function valid_checkpoint_config(config,tree_patch) result(valid)
@@ -1477,6 +1658,7 @@ contains
     embedded=.false.
     if(present(tree_patch)) embedded=tree_patch
     valid=.false.
+    if(config%state_redist_max_order/=0.and.config%state_redist_max_order/=2.and.config%state_redist_max_order/=4) return
     if(.not.valid_reactive_eb_boundaries(config,tree_patch)) return
     if(.not.ieee_is_finite(config%difmag).or.config%difmag<0) return
     if(config%hydro_method/='pcm'.and.config%hydro_method/='plm_ctu') return
@@ -1646,10 +1828,13 @@ contains
   end function valid_checkpoint_shapes
 
   logical function valid_checkpoint_state( &
-      species, geometry, state, temperature) result(valid)
+      species,geometry,state,temperature,frame,internal_energy_density) result(valid)
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held
     real(dp), allocatable :: primitive(:)
     real(dp) :: recovered_temperature, rho, species_total, closure
     real(dp) :: kinetic_density
@@ -1657,6 +1842,9 @@ contains
     integer :: i, j, k, nvar
 
     valid = .false.
+    if(present(frame)) then
+      if(.not.frame%is_valid()) return
+    end if
     nvar = reactive_nvar(size(species))
     if (size(state, 1) /= nvar .or. size(state, 2) /= geometry%nx .or. &
         size(state, 3) /= geometry%ny .or. size(state, 4) /= geometry%nz .or. &
@@ -1664,6 +1852,11 @@ contains
     if (.not. all(ieee_is_finite(state)) .or. &
         .not. all(ieee_is_finite(temperature)) .or. &
         minval(temperature) <= 0.0_dp) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held)
+    endif
     allocate(primitive(5 + size(species)))
     do k = 1, geometry%nz
       do j = 1, geometry%ny
@@ -1685,9 +1878,9 @@ contains
                 .not. ieee_is_finite(state(iet, i, j, k))) return
             cycle
           end if
-          call reactive_conserved_to_primitive( &
-            species, state(:, i, j, k), temperature(i, j, k), primitive, &
-            recovered_temperature, kinetic_density, local_ok)
+          if(present(internal_energy_density)) held=internal_energy_density(i,j,k)
+          call recover_reactive_eb_cell_3d(species,geometry,[i,j,k],state(:,i,j,k),temperature(i,j,k), &
+            primitive,recovered_temperature,kinetic_density,local_ok,frame,held)
           if (.not. local_ok .or. .not. checkpoint_real_matches( &
               temperature(i, j, k), recovered_temperature)) return
         end do

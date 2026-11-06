@@ -1,8 +1,10 @@
 program test_mixture_thermo
   use, intrinsic :: ieee_arithmetic, only: &
     ieee_is_finite, ieee_positive_inf, ieee_quiet_nan, ieee_value
+  use h2o2_full_thermo_mod, only: load_h2o2_full_thermo
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,universal_gas_constant, &
+    configure_nasa7_eos_policy,nasa7_eos_bounds,nasa7_eos_policy_identity
   use thermo_database_mod, only: &
     load_gri30_thermo_subset, gri_h2_index, gri_o2_index, &
     gri_h2o_index, gri_n2_index
@@ -131,9 +133,168 @@ program test_mixture_thermo
     end do
   end block
 
+  block
+    type(nasa7_species), allocatable :: full_species(:)
+    real(dp), allocatable :: pure_n2(:)
+    real(dp) :: target,guesses(2)
+    integer :: n,guess
+    call load_h2o2_full_thermo(full_species,ok)
+    if(.not.ok) error stop 'Midpoint inversion species load'
+    allocate(pure_n2(size(full_species)));pure_n2=0
+    do n=1,size(full_species)
+      if(full_species(n)%name=='N2') pure_n2(n)=1
+    enddo
+    call mixture_mass_properties(full_species,pure_n2,1000._dp,molecular_weight,gas_constant, &
+      cp,cv,gamma,enthalpy,target,entropy,ok)
+    if(.not.ok) error stop 'Midpoint energy evaluation'
+    guesses=[1000._dp,nearest(1000._dp,1._dp)]
+    do guess=1,size(guesses)
+      call temperature_from_internal_energy(full_species,pure_n2,target,guesses(guess), &
+        recovered_temperature,ok,iterations)
+      if(.not.ok.or.abs(recovered_temperature-1000._dp)>1e-9_dp) &
+        error stop 'Midpoint high-fit inversion depends on exact or upper-neighbor warm start'
+    enddo
+  end block
+
+  call check_pinned_extrapolation()
+  call check_pinned_convergence()
+
   write(*, '(a)') "test_mixture_thermo: PASS"
 
 contains
+
+  subroutine check_pinned_convergence()
+    type(nasa7_species) :: table(2)
+    character(len=128) :: default_identity,converged_identity
+    real(dp) :: guess,recovered
+    logical :: good
+    table%name='constant';table%molecular_weight=universal_gas_constant
+    table%temperature_min=300;table%temperature_mid=1000;table%temperature_max=3500
+    table(1)%low_coefficients=[2._dp,0._dp,0._dp,0._dp,0._dp,0._dp,0._dp]
+    table(1)%high_coefficients=table(1)%low_coefficients;table(2)=table(1)
+    call configure_nasa7_eos_policy(table,.true.,good)
+    if(.not.good) error stop 'Default caloric policy setup'
+    default_identity=nasa7_eos_policy_identity(table)
+    guess=2000._dp+5e-7_dp
+    ! cv=1 and e=T: the native default deliberately retains this warm start.
+    call temperature_from_internal_energy(table,[1._dp,0._dp],2000._dp,guess,recovered,good)
+    if(.not.good.or.recovered/=guess) error stop 'Default caloric stopping rule changed'
+    call configure_nasa7_eos_policy(table,.true.,good,converged_inverse=.true.)
+    if(.not.good) error stop 'Converged caloric policy setup'
+    converged_identity=nasa7_eos_policy_identity(table)
+    if(converged_identity==default_identity.or.index(converged_identity,'PELEF_FUEGO_EOS_CONVERGENCE_V1')/=1) &
+      error stop 'Caloric precision missing from restart identity'
+    call temperature_from_internal_energy(table,[1._dp,0._dp],2000._dp,guess,recovered,good)
+    if(.not.good.or.abs(recovered-2000)>1e-12_dp) error stop 'Converged caloric analytic solution'
+    call configure_nasa7_eos_policy(table,.false.,good,converged_inverse=.true.)
+    if(good.or.nasa7_eos_policy_identity(table)/=converged_identity) error stop 'Invalid precision setup changed policy'
+    table(1)%pinned_eos_convergence=.false.
+    if(valid_mixture_composition(table,[1._dp,0._dp])) error stop 'Mixed caloric precision accepted'
+    if(nasa7_eos_policy_identity(table)/='PELEF_INVALID_EOS_POLICY') error stop 'Mixed caloric identity accepted'
+    call configure_nasa7_eos_policy(table,.true.,good)
+    if(.not.good.or.nasa7_eos_policy_identity(table)/=default_identity) error stop 'Default caloric identity not restored'
+  end subroutine check_pinned_convergence
+
+  subroutine check_pinned_extrapolation()
+    type(nasa7_species), allocatable :: table(:)
+    type(nasa7_species) :: constant(1)
+    real(dp), allocatable :: y(:)
+    real(dp) :: w,r,cp,cv,g,h,e,s,target,recovered,cs,p,boundaries(2),offsets(2)
+    integer :: i,j,count
+    logical :: good
+    call load_h2o2_full_thermo(table,good)
+    if(.not.good) error stop 'Pinned EOS table load'
+    allocate(y(size(table)));y=0
+    do i=1,size(table)
+      if(table(i)%name=='N2') y(i)=1
+    enddo
+    boundaries=[300._dp,3500._dp];offsets=[-10._dp,25._dp]
+    do j=1,2
+      call mixture_mass_properties(table,y,boundaries(j),w,r,cp,cv,g,h,e,s,good)
+      if(.not.good) error stop 'Pinned boundary properties'
+      target=e+cv*offsets(j)
+      call temperature_from_internal_energy(table,y,target,1000._dp,recovered,good)
+      if(good.or.recovered/=0) error stop 'Strict mode still rejects boundary energy outside fits'
+      table%pinned_eos_extrapolation=.true.
+      call temperature_from_internal_energy(table,y,target,1000._dp,recovered,good,count)
+      if(.not.good.or.count/=0) error stop 'Pinned boundary extrapolation refused'
+      call assert_close(recovered,boundaries(j)+offsets(j),2e-13_dp,'pinned extrapolated temperature')
+      p=mixture_pressure(table,y,1._dp,recovered,good)
+      if(.not.good.or.p<=0) error stop 'Extrapolated pressure'
+      cs=mixture_sound_speed(table,y,recovered,good)
+      if(.not.good.or.cs<=0) error stop 'Extrapolated sound speed'
+      table%pinned_eos_extrapolation=.false.
+    enddo
+    table%pinned_eos_extrapolation=.true.
+    call mixture_mass_properties(table,y,300._dp,w,r,cp,cv,g,h,e,s,good)
+    target=e-301._dp*cv
+    call temperature_from_internal_energy(table,y,target,1000._dp,recovered,good)
+    if(good.or.recovered/=0) error stop 'Negative extrapolated temperature refused'
+    ! R=1, cp/R=2 gives exactly cv=1 and e(300)=300: no rounded
+    ! cancellation can turn the intended zero into a small positive result.
+    constant=table(:1);constant(1)%molecular_weight=universal_gas_constant
+    constant(1)%low_coefficients=[2._dp,0._dp,0._dp,0._dp,0._dp,0._dp,0._dp]
+    constant(1)%high_coefficients=constant(1)%low_coefficients
+    call mixture_mass_properties(constant,[1._dp],300._dp,w,r,cp,cv,g,h,target,s,good)
+    if(.not.good.or.cv/=1.or.target/=300) error stop 'Exact zero-temperature fixture'
+    call temperature_from_internal_energy(constant,[1._dp],0._dp,1000._dp,recovered,good)
+    if(good.or.recovered/=0) error stop 'Zero extrapolated temperature refused'
+    target=ieee_value(1._dp,ieee_quiet_nan)
+    call temperature_from_internal_energy(table,y,target,1000._dp,recovered,good)
+    if(good.or.recovered/=0) error stop 'Nonfinite extrapolated energy refused'
+    call temperature_from_internal_energy(table,y,huge(1._dp)/4,1000._dp,recovered,good)
+    if(good.or.recovered/=0) error stop 'Overflowing extrapolated properties refused'
+    table(1)%pinned_eos_extrapolation=.false.
+    if(valid_mixture_composition(table,y)) error stop 'Mixed EOS policies refused'
+    ! Generated headers use mechanism-specific common fit limits, with a
+    ! few explicit exceptions. Both selections retain coefficient metadata.
+    table%pinned_eos_extrapolation=.true.;table%temperature_min=200;table%temperature_max=5000
+    call mixture_mass_properties(table,y,200._dp,w,r,cp,cv,g,h,e,s,good)
+    target=e-10._dp*cv
+    call temperature_from_internal_energy(table,y,target,1000._dp,recovered,good)
+    if(.not.good) error stop 'Mechanism-specific inversion bounds refused'
+    call assert_close(recovered,190._dp,2e-13_dp,'mechanism-specific lower inversion boundary')
+    call configure_nasa7_eos_policy(table,.true.,good,300._dp,3500._dp)
+    if(.not.good) error stop 'Explicit inversion boundary setup'
+    if(any(table%temperature_min/=200).or.any(table%temperature_max/=5000)) &
+      error stop 'EOS policy changed fitted metadata'
+    call nasa7_eos_bounds(table,target,recovered,good)
+    if(.not.good.or.target/=300.or.recovered/=3500) error stop 'Explicit inversion bounds'
+    call mixture_mass_properties(table,y,300._dp,w,r,cp,cv,g,h,e,s,good)
+    target=e-10._dp*cv
+    call temperature_from_internal_energy(table,y,target,1000._dp,recovered,good)
+    if(.not.good) error stop 'Explicit reference inversion bounds refused'
+    call assert_close(recovered,290._dp,2e-13_dp,'explicit reference inversion boundary')
+    call configure_nasa7_eos_policy(table,.true.,good,3500._dp,300._dp)
+    if(good.or.any(table%pinned_eos_temperature_min/=300).or.any(table%pinned_eos_temperature_max/=3500)) &
+      error stop 'Invalid boundary setup was not transactional'
+    call configure_nasa7_eos_policy(table,.false.,good,300._dp,3500._dp)
+    if(good.or..not.all(table%pinned_eos_extrapolation)) error stop 'Inactive nonzero bounds accepted'
+    table(1)%pinned_eos_temperature_max=4000
+    if(valid_mixture_composition(table,y)) error stop 'Mixed inversion bounds accepted'
+    table(1)%pinned_eos_temperature_max=3500
+    if(index(nasa7_eos_policy_identity(table),'PELEF_FUEGO_EOS_V2')/=1) error stop 'EOS policy identity'
+    ! PelePhysics 6e8026fc, Mechanisms/LiDryer/mechanism.H, species 8.
+    ! Exact header coefficients; the existing Cantera table is a different dataset.
+    table=table(:1);y=[1._dp]
+    table(1)%name='N2';table(1)%molecular_weight=28.014_dp
+    table(1)%temperature_min=300;table(1)%temperature_mid=1000;table(1)%temperature_max=3500
+    table(1)%low_coefficients=[3.298677_dp,1.408240e-3_dp,-3.963222e-6_dp, &
+      5.641515e-9_dp,-2.444855e-12_dp,-1020.900_dp,3.950372_dp]
+    table(1)%high_coefficients=[2.926640_dp,1.487977e-3_dp,-5.684761e-7_dp, &
+      1.009704e-10_dp,-6.753351e-15_dp,-922.7977_dp,5.980528_dp]
+    ! Energies produced by compiling the byte-verified, unmodified C++ header.
+    call temperature_from_internal_energy(table,y,-94478.993881851493_dp,700._dp,recovered,good)
+    if(.not.good) error stop 'Pinned C++ low energy refused'
+    call assert_close(recovered,290._dp,2e-12_dp,'pinned C++ low extrapolation')
+    call temperature_from_internal_energy(table,y,2960713.5535413623_dp,700._dp,recovered,good)
+    if(.not.good) error stop 'Pinned C++ high energy refused'
+    call assert_close(recovered,3525._dp,2e-12_dp,'pinned C++ high extrapolation')
+    call temperature_from_internal_energy(table,y,469600.84168867877_dp,700._dp,recovered,good)
+    if(.not.good) error stop 'Pinned C++ midpoint energy refused'
+    call assert_close(recovered,1000._dp,2e-12_dp,'pinned C++ midpoint inversion')
+  end subroutine check_pinned_extrapolation
+
 
   subroutine check_nonfinite_contract(active_species, valid_mass_fractions, ok_out)
     type(nasa7_species), intent(in) :: active_species(:)

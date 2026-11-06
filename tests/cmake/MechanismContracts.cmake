@@ -655,3 +655,9 @@ add_test(
     "${PROJECT_SOURCE_DIR}/tests/unit/test_ingest_cantera_mechanism.py"
 )
 
+add_test(
+  NAME unit_prepare_lidryer_native_activation
+  COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/unit/test_prepare_lidryer_native_activation.py"
+)
+

@@ -11,6 +11,120 @@ The supplied case has a 4-cubed root, two children, and grandchildren with
 separate parents (three levels, ratios two). A planar wall cuts z=0.31.
 Two 1e-9 steps run reaction, molecular transport and HLLC hydro.
 
+## Reacting mixture and restart acceptance case
+
+`reacting_restart.nml` uses the selected `h2o2_full` mechanism with H2/O2/N2
+mole proportions 2:1:3.76. Native MOL with two SDC iterations, molecular
+transport and retained internal energy advances a 4-cubed root and one
+partial child through three 1e-7 s steps. The child is removed at the first
+step and recreated at the second. This is a short reacting integration case,
+not an ignition-delay, fixed-PeleC, or production-mesh validation.
+
+With the test suite and MPI enabled, build the selected full-mechanism
+fixtures and run the common/recursive acceptance checks:
+
+```sh
+cmake --build build/debug --target test_selected_full_reactive_eb_tree_3d test_selected_full_mpi_reactive_eb_tree_3d
+ctest --test-dir build/debug -R '^regression_selected_eb_tree_reacting_restart_' --output-on-failure
+```
+
+The checker requires measurable hydrogen consumption, a reaction-off
+control, nonnegative species, independent H/O/N chemistry inventories,
+CSV-integrated gas budgets and mixture NASA7 internal energy. It also checks
+serial/2/3-rank final fields, 2-to-3-rank and serial/MPI continuation through
+the second regrid, cumulative restart budgets and rejection of changed
+chemistry settings. Each invocation writes to a unique directory with input
+and binary hashes, commands, logs and `checks.json`; failed attempts remain
+distinct from passed acceptance runs.
+
+`reacting_stiff.nml` selects the existing CVODE backend at 250000 Pa with
+the same densities, mixture, mesh, transport and 300 ns duration. It needs
+`PELEF_ENABLE_SUNDIALS=ON` and the pinned double-precision Fortran SUNDIALS
+installation. The initial regular/cut temperatures are approximately
+2028/1796 K. The native first-cell diagnostic needed 391 internal steps for
+one 100 ns interval; this case exercises the intended stiff-reactor path
+without relaxing reaction tolerances.
+
+The focused `regression_selected_eb_tree_hot_cvode_restart` check runs only
+the serial case, reaction-off control, two-rank case, checkpoint stop and
+three-rank continuation. It reuses the independent inventory/EOS checks and
+requires hydrogen consumption above `1e-5` of its initial inventory. The
+broader serial-interchange and metadata refusal matrix stays in the existing
+tests. The hot check also audits intermediate snapshots and two invalid
+output policies without additional time integration.
+
+### Full-coordinate forced CVODE
+
+The opt-in `sdc_reactor='cvode_full'` selects the full species-density and
+temperature reactor in fixed/selected serial and MPI EB-tree builds with
+SUNDIALS enabled. It uses BDF order at most two, analytic species-density
+Jacobian columns and a centered temperature column. It requires reacting SDC;
+`native` remains the default and `cvode` retains its reduced-coordinate solver.
+The caller supplies tolerances. Endpoint mass admission and transactional
+rollback are independent of the requested integration accuracy.
+
+The tree checkpoint stores a distinct reactor identity. Restart with `native`
+or `cvode` cannot consume a `cvode_full` checkpoint. The focused
+`regression_selected_eb_tree_full_cvode_restart` exercises reacting serial/MPI
+execution, changed-rank continuation and reactor mismatch rejection. This
+application lifecycle check does not establish fixed-PeleC trajectory or
+physical validation; the full-coordinate reactor's earlier 32-cell comparison
+belongs to an isolated diagnostic build.
+
+## Fresh MOL reaction history
+
+Fresh reacting gas MOL runs initialize the predictor's reaction history using
+private reaction trials at the first attempted timestep. Recursive levels use
+their divided intervals. Solid EB cells are excluded, and gas, temperature and
+held internal energy are not advanced by initialization. A failed trial leaves
+the history unchanged; a rejected first gas step restores it before retrying
+with the shortened interval. Restarts retain the checkpoint history, and the
+normal accepted-step history takes over after the first step. This change is
+connected to gas tree applications; the separate particle startup is unchanged.
+
+## Intermediate gas output
+
+Set `output_interval_steps=10` in `&eb_tree` to save the initial/restored
+state, every tenth accepted coarse step, and the final/checkpoint-stop state.
+The default, zero, keeps final-only output. The serial and MPI gas
+executables share this option; particle/film snapshots are not included and
+the spray executable rejects a nonzero interval.
+
+For `output_file='result.csv'`, accepted step 10 writes:
+
+- `result.csv.step10.csv`: exposed composite cells with the same gas,
+  species, temperature and available heat-release/UEINT columns as the final CSV.
+- `result.csv.step10.csv.budget.csv`: cumulative conservation budgets.
+- `result.csv.step10.csv.time.csv`: `step,time_s,nodes,regrid_stage`.
+
+Snapshots are taken after synchronization, rebalancing and regridding, never
+from rejected trials. A continuation starts at the checkpoint's absolute
+step and physical time; the output interval may change on restart. Filenames
+are numbered by step, so sort numerically or use the metadata time. Select a
+new output directory/prefix to retain independent runs; matching snapshot
+paths are replaced, like the final output. The final `result.csv` and its
+budget retain their existing format. This output enables trajectory
+comparison but does not itself establish agreement with PeleC.
+
+## Constant gas transport
+
+Serial/MPI gas and MPI spray SDC accept a separate
+`&reactive_constant_transport` group in the tree input. Set `enabled=.true.`,
+`viscosity` (Pa s), `conductivity` (W/(m K)), optional `bulk_viscosity`
+(Pa s), and optional `diffusivity` (rhoD in kg/(m s)). The default
+`diffusivity=-1` retains molecular species diffusion. Constants reach common
+and recursive stages, physical/embedded walls and automatic timestep bounds.
+Restart checks the enabled state and all resolved coefficients. The group
+requires enabled SDC transport; HIT scale resolution uses the regular HIT
+application. Nonzero Soret controls are rejected by the pinned PeleC contract.
+
+SDC MOL and CTU spatial stages with `none`, `flux_redist` or `state_redist` zero every covered-cell
+source and set the density source to the ordered sum of species mass sources,
+following pinned `EB.cpp::pc_post_eb_redistribution`. Species, momentum, energy
+and the already assembled redistribution registers retain their values.
+The application checkpoint tag `PELEF_EB_TREE_SPATIAL_DENSITY_RATE_V2` binds this
+spatial-source ordering for every SDC path.
+
 ## Method of lines (MOL)
 
 Fixed and selected serial/MPI gas executables accept these additions to the
@@ -30,6 +144,51 @@ actual hydro update. Three-level serial/MPI comparisons and serial-to-MPI
 restart are recorded in [the connection evidence](../../docs/validation/serial-mol-tree-20260927.md).
 The nested LF negative-fuel case remains unresolved; these focused checks do
 not establish positivity for arbitrary cut-cell states.
+
+MOL peer/coarse-fine synchronization uses the pinned stage registration
+weights in both common and recursive intervals. When chemistry is disabled and
+`sdc_iterations>1`, the reference registers only the old-time half flux even
+though the gas update and physical boundary ledger accept both trapezoidal
+halves. The implementation retains that distinction. Fine StateRedist transfers
+enter with registered flux; coarse transfers accumulate on every evaluation.
+Application checkpoints identify this ordering with
+`PELEF_EB_TREE_MOL_REGISTER_REFLUX_V2`; preceding MOL V1 checkpoints are rejected.
+
+For a rotating gas frame, set `rotating_frame_enabled=.true.`,
+`rotation_axis=2`, `rotation_angular_speed=120.0`, and
+`rotation_axis_point=0.25,0.4,0.5` in `&eb_tree`. The axis uses PeleC's
+zero-based x/y/z numbering (0/1/2); speed is in rad/s and the axis point uses
+domain coordinates. This requires `mol_mode=.true.`. The application converts
+the initial gas energy to the relative-energy convention; inlet states remain
+physical and are converted when applied. The frame settings must match the
+checkpoint on restart, including a serial/MPI rank-count change. This option
+is available in the serial and MPI gas executables and in MPI EB spray SDC,
+including recursive particle/film exchange and regular-cell LES. The spray
+inventory, injection and particle-outflow ledgers use the rotating-energy convention. The MPI
+spray application has a bounded two-rank, two-step check; this does not establish
+particle-trajectory parity or physical spray validation.
+
+## Gas LES
+
+With `PELEF_ENABLE_SPRAY=ON`, fixed and selected serial/MPI gas executables
+accept a separate namelist in the tree input, without a particle input:
+
+```fortran
+&eb_tree_les
+ les_enabled=.true.,les_model='smagorinsky',les_cs=.17,
+ les_prt=.7,les_sct=.7,les_ci=0,les_cfl=.1
+/
+```
+
+This requires SDC and completely regular geometry. The algebraic model also
+accepts `les_model='wale'` or `'vreman'`. `les_model='dynamic'`
+enables `les_test_model`, `les_test_ratio`, `les_grid_ratio` and
+`les_harmonic_mean`; the defaults are `'box'`, 2, 1 and `.false.`.
+Common and recursive steps use the spatial callback with StateRedist;
+Dynamic LES requests the filter's actual donor width. LES also constrains
+the timestep. Enable, model, filter and coefficient settings must match a
+checkpoint when restarting across rank counts or between serial and MPI.
+The runtime remains experimental.
 
 ## Artificial viscosity
 
@@ -165,6 +324,14 @@ With `automatic_timestep=.true.`, `hydro_cfl` (default 0.5) and
 cut-cell volume/open-face metrics and global donor signal/diffusivity maxima.
 The estimate uses an averaged snapshot, includes hidden parents which are
 advanced before restriction, and remains capped by `time_step`/remaining time.
+`initial_timestep_factor` (default 1) scales the first automatic estimate.
+`maximum_timestep_growth` (default 1.1) limits later estimates relative to the
+last accepted root interval; the first interval after regridding cannot grow.
+Event and final-time caps follow these limits. Automatic mode snaps to the
+final time within 0.1% of an interval, matching the reference stop-time rule.
+Checkpoints retain both controls,
+the last accepted interval and the post-regrid flag; older automatic-mode
+checkpoints without that history are rejected.
 The full-interval diffusion bound is conservatively applied despite split
 half steps. It is not a chemistry accuracy estimate.
 Rejected steps halve their interval up to `maximum_step_retries` (default 12).
@@ -410,9 +577,12 @@ physical-boundary stepping in the separate single-level application.
 
 `redistribution='state_redist'` selects weighted state redistribution for serial/MPI
 common and recursive SDC. Its target is `state_redist_target_volume_fraction` (default
-0.5, allowed range greater than zero through one). `sdc_state_redist.nml`
-provides a reacting fixture. Both settings must match on restart, including
-rank-changing continuation. Add `subcycling=.true.` for recursive intervals. See the
+0.5, allowed range greater than zero through one). `state_redist_max_order` selects
+0 (default), 2 or 4. Orders 2/4 reconstruct at overlap-weighted neighborhood
+centroids and preserve component inventories; regular stencils use the selected
+limited slope order. `sdc_state_redist.nml` provides a reacting fixture. The method,
+target and reconstruction order must match on restart, including rank-changing
+continuation. These interfaces do not establish fixed-reference numerical parity. Add `subcycling=.true.` for recursive intervals. See the
 [serial coupling/restart checks](../../docs/validation/sdc-eb-tree-state-redistribution-20260927.md)
 [MPI common-step checks](../../docs/validation/sdc-mpi-eb-state-redistribution-20260927.md),
 and [recursive checks](../../docs/validation/sdc-state-redistribution-recursive-20260927.md).
@@ -450,7 +620,89 @@ The same `sdc.nml` fixture runs with `pelef_mpi_reactive_eb_tree_3d`.
 A two-rank run and one-rank checkpoint continuation are recorded in the
 [MPI application checks](../../docs/validation/sdc-mpi-eb-app-20260927.md).
 
+## Optional momentum limiter for coarse halos
+
+`separate_momentum=.true.` selects an experimental coarse-halo interpolation
+policy: each momentum component has its own bounded slope, while density,
+species and energy retain a shared scalar limiter. The default is false.
+It requires `time_integrator='sdc'`, `mol_mode=.true.`,
+`dual_energy_enabled=.true.` and `redistribution='none'`. Common and recursive
+stepping accept it; spray and enabled LES are excluded.
+
+MPI ranks must agree on the choice. A checkpoint written with this option
+requires it on restart; switching either direction is rejected before state
+loading. The default checkpoint envelope is unchanged. Kernel/operator and
+native source/history replay tests pass. Selected reacting common/recursive
+application lifecycle checks also pass; see the
+[application evidence](../../docs/validation/eb-momentum-application-20261021.md). This option changes the numerical policy relative to the original
+pinned reference and is not physical validation. See the
+[design and evidence](../../docs/design_decisions/eb-halo-momentum-limiter.md).
+
+### Density-coupled velocity option
+
+`consistent_velocity=.true.` together with `separate_momentum=.true.` selects
+an alternative momentum slope: the donor velocity multiplies the limited
+density slope, and a separately limited relative-momentum slope is added.
+This preserves constant velocity when the scalar limiter clips density.
+Both options default to false. It uses the same held-MOL, no-redistribution,
+no-LES/no-spray admission rules above.
+
+The choice is passed through serial/MPI hydro and transport halos, common and
+recursive stages, retry/source-prefix identity and history replay. MPI ranks
+must agree; checkpoints record the velocity policy and refuse switching it
+on restart. This connects the velocity candidate to ordinary application
+stepping. The separate diagnostic pressure-reconstruction candidate is not
+selected by this input. See the
+[velocity application record](../../docs/validation/eb-velocity-application-20261022.md).
+
+### Paired pressure option
+
+For common or recursive gas held MOL, select all three policies:
+
+```fortran
+ separate_momentum=.true., consistent_velocity=.true., paired_pressure=.true.,
+ subcycling=.false., redistribution='none',
+```
+
+The pressure option uses fluid-volume-restricted fine EOS pressure on both
+covered coarse spatial states and incoming fine halos. It requires the
+velocity option, held MOL and a nonrotating frame. Set `subcycling=.true.`
+for recursive clocks with endpoint-pressure ancestor interpolation.
+LES and spray are unsupported and refused. Checkpoints bind the choice;
+switching it on restart is refused. It does not change accepted input leaf
+states directly or eliminate pressure error from general thermal mixing.
+See [the numerical policy](../../docs/design_decisions/eb-paired-pressure.md)
+and [recursive application checks](../../docs/validation/eb-pressure-recursive-20261022.md).
+
+### Connected-direction halo option
+
+`connected_directions=.true.` enables interpolation along connected coarse
+stencil directions beside a covered neighbor. It defaults to false and
+requires `separate_momentum=.true.` and its held MOL/SDC admission rules
+(no redistribution, LES or spray). It may be combined with
+`consistent_velocity` and `paired_pressure`.
+
+Blocked directions contribute zero slope. Disconnected diagonals in the
+retained stencil force PCM. Serial/MPI common and recursive dispatch pass
+the option, and MPI ranks must agree. Checkpoints bind it with
+`PELEF_EB_TREE_CONNECTED_DIRECTIONS_V1`; switching it on restart is refused.
+The integration verification is recorded separately from analytic-shear
+convergence in [the application record](../../docs/validation/eb-connected-application-20261022.md).
+Local transverse-error convergence and general geometry flow accuracy remain open.
+
 ## SDC CVODE reactor
+
+The gas EB-tree `&eb_tree` namelist also accepts
+`pinned_eos_convergence=.true.` when `pinned_eos_extrapolation=.true.`.
+This opt-in caloric inverse uses a 1e-12 K temperature correction threshold
+and up to 5000 iterations; the default remains false (1e-6 K, 200 iterations).
+It does not change chemistry tolerances. Serial/MPI fixed and selected
+frontends pass the policy to the existing thermodynamic routines.
+Checkpoint policy identity includes this setting, so continuation requires
+the same value. MPI rejects differing policies across ranks before gas
+initialization. The selected full-mechanism gas reacting/regrid/restart check
+passes; see the [application record](../../docs/validation/eb-eos-application-20261021.md);
+this is not spray or LES qualification.
 
 SUNDIALS-enabled fixed/selected serial and MPI gas executables, and MPI particle
 executables, accept `sdc_reactor='cvode'` in `&eb_tree`. It requires reacting
@@ -462,3 +714,118 @@ Restart requires the same reactor. Native checkpoint control values remain
 unchanged; CVODE uses an additional control flag that older readers reject.
 See [focused gas/particle checks](../../docs/validation/eb-tree-particle-cvode-20260927.md)
 for the tested combinations and limits.
+
+The opt-in `dual_energy_enabled=.true.` SDC gas path retains a separate
+`rho*e` (UEINT) field through timestep selection, regrid, owner rebalance and
+serial/MPI checkpoint continuation. It connects MOL or Godunov CTU on common
+or recursive steps with no redistribution or prepared StateRedist. Reset
+controls are `allow_small_energy`, `allow_negative_energy`,
+`update_total_from_internal` (all default true) and `dual_energy_eta2` (default
+`1e-4`); checkpoints bind all four controls.
+CSV output adds `rho_internal_energy_J_m3`. The budget separates
+`numerical_energy` from chemistry, forcing and physical boundary work.
+`internal_energy_pressure_work` reports cumulative signed Godunov `-p div(u)`
+volume work on the energy row; it is an UEINT diagnostic and is not subtracted
+from the UEDEN conservation residual. MOL reports zero for this Godunov term.
+Held checkpoints use serial V9 or indexed MPI V10 to retain this scalar history
+across rank changes. The readers retain V7/V8 compatibility for MOL; Godunov
+restart requires the pressure-work history in the new format.
+MOL LES and embedded viscous/thermal wall bindings have focused checks.
+Godunov reacting/reset/LES trajectories and paired reactive parent replay need
+broader qualification. Held particle/film coupling remains unfinished and is
+rejected before initialization. All remain part of the port's completion scope.
+Existing gas-only input/output formats are retained when the option is off.
+
+## Explicit gas initial state
+
+`initial_state_file` optionally loads `PELEF_EB_TREE_STATE_V1` for a fresh,
+nonrotating gas run with `dual_energy_enabled=.true.`. It conflicts with
+`restart_file`; the default remains density-sheet initialization. MPI rank 0
+reads and broadcasts the records. Candidate owner-local arrays are committed
+only after the complete input passes admission.
+
+The text layout is: magic line; node and species counts; one species name per
+line in mechanism order; then, for each node, its one-based index and three
+shape dimensions followed by all cells in k/j/i loop order (i fastest).
+Each cell row contains `node i j k`, the conserved vector
+`rho rhou rhov rhow rhoE rhoY(1:nspecies)`, held internal-energy density,
+and temperature. Covered coarse donors and solid cells must be included.
+Nonfinite values, negative species, inconsistent mass/energy/temperature,
+wrong order, missing cells and trailing records are refused. Empty cells
+are allowed only where geometry has no fluid. File values are SI.
+For uncovered cells, total minus kinetic energy must equal held internal
+energy. Covered coarse donors may retain nonnegative unresolved kinetic
+energy from independent conservative restriction of total and held energy;
+a negative deficit is refused. Their held energy must still admit EOS
+inversion; a positive independently restricted temperature is retained as
+the inversion seed. Uncovered cells require temperature agreement with the
+EOS. The importer preserves these donor
+values; it does not assert that supplied coarse values are fine-cell averages.
+
+This input path does not itself establish fixed-PeleC agreement. The geometry,
+transport, timestep, reaction tolerances and numerical policies still come
+from the application configuration and must match the reference comparison.
+
+### Ordinary MOL transport thermodynamics
+
+Ordinary nonrotating MOL uses total energy minus resolved kinetic energy to
+recover temperature and pressure for normal-face transport, consistently with
+its hydro fluxes and the pinned PeleC path. After restriction, this can differ
+from the separately retained internal energy. The retained scalar continues to
+follow its own evolution; general transport, rotating frames, experimental
+separate-momentum halo policies and wall-source recovery retain their existing
+contracts. Serial and MPI use the same selection. The dated
+[transport recovery evidence](../../docs/validation/eb-full-cvode-application-20261024.md)
+separates bounded reference comparisons, restart equivalence and open C2 work.
+
+### Selected-cell MOL diagnostics
+
+Serial held-energy SDC MOL with subcycling and redistribution `none` accepts
+`mol_trace_count` (0 by
+default, maximum 16), `mol_trace_nodes`, and `mol_trace_cells(:,probe)`.
+For example, `mol_trace_count=1, mol_trace_nodes(1)=2,
+mol_trace_cells(:,1)=3,3,8` records one fine cell. MPI requests are rejected
+explicitly; this diagnostic is not an MPI trace implementation.
+
+The application writes `<output_file>.mol_stage.csv` and
+`<output_file>.mol_sync.csv`. Component indices follow conserved-state order:
+density, three momenta, total energy, then species densities in mechanism
+order. Stage tables contain cell and reconstructed face pressures, raw and
+centroid hydro fluxes, supplied tree flux divided by the interval, hydro/wall
+rates and the observed state. Sync tables retain interval-integrated fluxes,
+state, and raw/applied closure increments. Each has node/cell/face, depth,
+interval-start time, interval, step and event identifiers. These are read-only
+attempt diagnostics, including any subsequently rejected attempts; they are
+not accepted-step receipts. Hydro rates exclude reaction/transport, so their
+balance alone does not reconstruct the full reacting SDC trajectory. Consult
+face aperture and volume fraction, especially for closed faces and cut cells.
+
+Reacting runs additionally write `<output_file>.mol_reaction.csv` after each
+successful forced-reactor pass, before the subsequent energy recovery/reset.
+This table records the interval's old state, updated state, actual forcing
+rate, old/new spatial and external rates, and the returned reaction source.
+The forcing includes the hydro contribution and any applicable predictor
+correction; it must not be replaced by the hydro-only stage flux divergence.
+For species, the reaction source is the reactor endpoint minus its forced
+nonreacting endpoint, divided by the interval. Its energy entry is the
+returned total-energy projection correction, not chemical heat release.
+Density and momentum entries are zero; density can retain roundoff from
+reconstructing the sum of species. As with the other tables, rows describe
+attempts and are not proof that a step was accepted.
+
+Stage rows also include `rho_left/right`, `normal_velocity_left/right`, and
+`sound_left/right` in SI units. Density and velocity are the successful
+Riemann call's reconstructed states; normal velocity follows the face axis.
+Sound speeds are the two donor cell-center values whose mean is supplied to
+the PeleC Riemann path. Closed faces retain zero diagnostics and must be
+excluded using aperture. These fields do not include transverse velocity or
+species composition and therefore are not a complete arbitrary-state replay.
+
+The opt-in trace also writes `<output_file>.mol_stencil.csv`: four prepared
+primitive donor cells per face, before characteristic reconstruction. Offsets
+-2,-1,0,1 are relative to the right donor; -1 and 0 are the left/right cells.
+Columns contain SI density, three velocities, pressure, donor sound speed,
+and `Y_1` through `Y_n` in mechanism order. Covered cells retain zero primitive
+values. This table includes halo inputs but does not record EB connectivity;
+use the face geometry when interpreting or replaying it. Allocation and output
+occur only when MOL diagnostics are requested.

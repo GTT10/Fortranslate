@@ -5,7 +5,7 @@ module amr_reactive_1d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use gas_transport_mod, only: gas_transport_species
-  use simulation_config_reactive_1d_mod, only: reactive_1d_config
+  use simulation_config_reactive_1d_mod, only: reactive_1d_config, configure_reactive_1d_eos
   use reactive_1d_mod, only: &
     reactive_nvar, reactive_nprim, reactive_mass_fraction_component, &
     reactive_conserved_to_primitive, reactive_primitive_to_conserved, &
@@ -435,14 +435,17 @@ contains
 
     real(dp) :: dt, tolerance
     logical :: local_ok, changed
+    type(nasa7_species), allocatable :: eos_species(:)
 
+    call configure_reactive_1d_eos(species, config, eos_species, ok)
+    if (.not. ok) return
     initial_integrals = 0.0_dp
     final_integrals = 0.0_dp
     if (present(base_mole_fractions)) then
       call initialize_amr_reactive_1d( &
-        species, config, solution, local_ok, base_mole_fractions)
+        eos_species, config, solution, local_ok, base_mole_fractions)
     else
-      call initialize_amr_reactive_1d(species, config, solution, local_ok)
+      call initialize_amr_reactive_1d(eos_species, config, solution, local_ok)
     end if
     if (.not. local_ok) then
       ok = .false.
@@ -466,10 +469,10 @@ contains
           return
         end if
         call amr_reactive_timestep_1d( &
-          species, config, solution, dt, local_ok, transport)
+          eos_species, config, solution, dt, local_ok, transport)
       else
         call amr_reactive_timestep_1d( &
-          species, config, solution, dt, local_ok)
+          eos_species, config, solution, dt, local_ok)
       end if
       if (.not. local_ok) then
         ok = .false.
@@ -478,11 +481,11 @@ contains
       dt = min(dt, config%final_time - solution%time)
       if (config%transport_enabled) then
         call advance_amr_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok, transport, &
+          eos_species, reactions, config, dt, solution, local_ok, transport, &
           chemistry_integrator=chemistry_integrator)
       else
         call advance_amr_reactive_1d( &
-          species, reactions, config, dt, solution, local_ok, &
+          eos_species, reactions, config, dt, solution, local_ok, &
           chemistry_integrator=chemistry_integrator)
       end if
       if (.not. local_ok) then
@@ -491,7 +494,7 @@ contains
       end if
       if (mod(solution%steps, config%amr_regrid_interval) == 0) then
         call regrid_amr_reactive_1d( &
-          species, config, solution, changed, local_ok)
+          eos_species, config, solution, changed, local_ok)
         if (.not. local_ok) then
           ok = .false.
           return

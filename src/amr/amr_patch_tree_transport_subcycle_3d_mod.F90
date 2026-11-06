@@ -17,7 +17,11 @@ module amr_patch_tree_transport_subcycle_3d_mod
   public :: compute_amr_patch_tree_subcycle_transport_timestep_3d,advance_amr_patch_tree_subcycle_transport_3d
 contains
   subroutine compute_amr_patch_tree_subcycle_transport_timestep_3d(tree,species,transport,state,temperature, &
-      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,ok,faces,wall_temperature)
+      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,ok,faces,wall_temperature, &
+      constant_coefficients,internal_energy,isothermal_slip_faces)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    real(dp), allocatable :: sampled_h(:,:,:)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -34,13 +38,23 @@ contains
     integer, allocatable :: ratios(:)
     character(len=32) :: local_faces(6)
     integer :: node,n(3),axis,level
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_slip(6)
     logical :: valid
     ok=.false.
+    thermal_slip=.false.
+    if(present(isothermal_slip_faces)) thermal_slip=isothermal_slip_faces
+    if(any(thermal_slip)) then
+      if(.not.present(faces).or..not.present(wall_temperature).or..not.conduction) return
+      if(size(wall_temperature)/=6) return
+      if(any(thermal_slip.and.faces/='slip_wall')) return
+      if(any(thermal_slip.and.(.not.ieee_is_finite(wall_temperature).or.wall_temperature<=0))) return
+    endif
     call layout(tree,species,state,temperature,root_spacing,origin,domain,ratios,counts,valid)
     if (.not.valid) return
     if (present(faces)) then
       if (.not.valid_reactive_boundaries_3d(faces)) return
-      if (any(faces=='isothermal_wall')) then
+      if (any(faces=='isothermal_wall').or.any(thermal_slip)) then
         if (.not.conduction.or..not.present(wall_temperature)) return
         if (size(wall_temperature)/=6) return
       end if
@@ -49,25 +63,37 @@ contains
     do node=1,size(tree%nodes)
       h(:,node)=root_spacing*real(domain(:,1),dp)/real(domain(:,tree%nodes(node)%level+1),dp)
     end do
+    if(present(internal_energy)) then
+      if(.not.internal_energy%is_valid(tree)) return
+      do node=1,size(tree%nodes)
+        if(size(internal_energy%fields(node)%values,1)/=1) return
+        if(.not.all(ieee_is_finite(internal_energy%fields(node)%values))) return
+      enddo
+    endif
     candidate=huge(1.0_dp);diffusivity=0
     do node=1,size(tree%nodes)
       n=tree%nodes(node)%shape;level=tree%nodes(node)%level+1
+      if(present(internal_energy)) sampled_h=internal_energy%fields(node)%values(1,:,:,:)
       call reactive_transport_timestep_3d(species,transport,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
-        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid)
+        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=sampled_h)
       if (.not.valid) return
       if (local_dt<=huge(1._dp)/real(counts(level),dp)) candidate=min(candidate,local_dt*real(counts(level),dp))
       diffusivity=max(diffusivity,local_diffusivity)
       if (present(faces)) then
-        if (any(faces=='isothermal_wall')) then
+        if (any(faces=='isothermal_wall').or.any(thermal_slip)) then
           local_faces='outflow';level=tree%nodes(node)%level+1
           do axis=1,3
-            if (origin(axis,node)==0.and.faces(2*axis-1)=='isothermal_wall') &
-              local_faces(2*axis-1)='isothermal_wall'
-            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and.faces(2*axis)=='isothermal_wall') &
-              local_faces(2*axis)='isothermal_wall'
+            if (origin(axis,node)==0.and.(faces(2*axis-1)=='isothermal_wall'.or.thermal_slip(2*axis-1))) &
+              local_faces(2*axis-1)=faces(2*axis-1)
+            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and. &
+                (faces(2*axis)=='isothermal_wall'.or.thermal_slip(2*axis))) &
+              local_faces(2*axis)=faces(2*axis)
           end do
           call reactive_isothermal_timestep_3d(species,transport,state%fields(node)%values, &
-            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid)
+            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=sampled_h, &
+          isothermal_slip_faces=thermal_slip.and.local_faces=='slip_wall')
           if (.not.valid) return
           if (wall_dt<=huge(1._dp)/real(counts(level),dp)) candidate=min(candidate,wall_dt*real(counts(level),dp))
         end if

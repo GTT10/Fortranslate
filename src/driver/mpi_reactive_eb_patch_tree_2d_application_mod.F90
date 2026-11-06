@@ -3,6 +3,7 @@ module mpi_reactive_eb_patch_tree_2d_application_mod
   use, intrinsic :: iso_fortran_env, only: error_unit
   use mpi_f08
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -95,6 +96,8 @@ contains
     character(len=*), intent(in) :: application_label, output_path
     type(reactive_eb_amr_2d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     character(len=*), intent(in), optional :: bundle_sha256
@@ -137,10 +140,24 @@ contains
     logical :: stopped_after_checkpoint, thermal_conduction_active
     logical :: viscosity_active
 
+    real(dp) :: eos_controls(3),eos_low(3),eos_high(3)
+    integer :: eos_valid,eos_all_valid
+
     call MPI_Comm_rank(comm, rank, ierr)
     if (ierr /= MPI_SUCCESS) error stop "MPI_Comm_rank failed"
     call MPI_Comm_size(comm, nranks, ierr)
     if (ierr /= MPI_SUCCESS) call abort_run("MPI_Comm_size failed", 2)
+    call configure_reactive_2d_eos(species,config%eb%flow,eos_species,eos_policy_ok)
+    eos_valid=merge(1,0,eos_policy_ok)
+    call MPI_Allreduce(eos_valid,eos_all_valid,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.eos_all_valid/=1) call abort_run('Invalid 2D MPI EOS policy',2)
+    eos_controls=[merge(1._dp,0._dp,eos_species(1)%pinned_eos_extrapolation), &
+      eos_species(1)%pinned_eos_temperature_min,eos_species(1)%pinned_eos_temperature_max]
+    call MPI_Allreduce(eos_controls,eos_low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) call abort_run('2D MPI EOS minimum agreement failed',2)
+    call MPI_Allreduce(eos_controls,eos_high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(eos_low/=eos_high)) call abort_run('2D MPI EOS policy disagrees',2)
+
 
     selected_context = present(bundle_sha256) .or. &
       present(base_mole_fractions) .or. present(chemistry_integrator)
@@ -166,9 +183,9 @@ contains
     end if
     if (config%three_level_enabled .or. config%multipatch_enabled) &
       call abort_run("Sparse MPI patch tree excludes fixed-depth modes", 2)
-    if (len_trim(output_path) == 0 .or. size(species) < 1 .or. &
-        reactive_nvar(size(species)) < 1 .or. size(reactions) < 1 .or. &
-        .not. compatible_transport_database(species, transport)) then
+    if (len_trim(output_path) == 0 .or. size(eos_species) < 1 .or. &
+        reactive_nvar(size(eos_species)) < 1 .or. size(reactions) < 1 .or. &
+        .not. compatible_transport_database(eos_species, transport)) then
       call abort_run("Sparse MPI EB application data are incompatible", 2)
     end if
     call build_reactive_amr_eb_patch_tree_checkpoint_fingerprint_2d( &
@@ -185,10 +202,10 @@ contains
       config%eb%flow%barodiffusion_enabled
     if (selected_context) then
       call build_configured_reactive_boundary_set_2d( &
-        species, config%eb, boundaries, ok, selected_composition)
+        eos_species, config%eb, boundaries, ok, selected_composition)
     else
       call build_configured_reactive_boundary_set_2d( &
-        species, config%eb, boundaries, ok)
+        eos_species, config%eb, boundaries, ok)
     end if
     if (.not. ok) call abort_run("Boundary initialization failed", 3)
 
@@ -213,7 +230,7 @@ contains
   if (restart_run) then
     if (selected_context) then
       call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        config%restart_file, species, comm, io_root, &
+        config%restart_file, eos_species, comm, io_root, &
         config%patch_tree_maximum_levels, &
         config%patch_tree_mpi_work_exponent, distribution, sparse, time, &
         steps, regrids, minimum_dt, ok, fingerprint=fingerprint, &
@@ -229,7 +246,7 @@ contains
         base_mole_fractions=selected_composition)
     else
       call read_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        config%restart_file, species, comm, io_root, &
+        config%restart_file, eos_species, comm, io_root, &
         config%patch_tree_maximum_levels, &
         config%patch_tree_mpi_work_exponent, distribution, sparse, time, &
         steps, regrids, minimum_dt, ok, fingerprint=fingerprint, &
@@ -264,11 +281,11 @@ contains
     if (distribution%is_local(0, 1)) then
       if (selected_context) then
         call initialize_reactive_2d( &
-          species, config%eb%flow, root_state, root_temperature, dx, dy, &
+          eos_species, config%eb%flow, root_state, root_temperature, dx, dy, &
           base_density, ok, selected_composition)
       else
         call initialize_reactive_2d( &
-          species, config%eb%flow, root_state, root_temperature, dx, dy, &
+          eos_species, config%eb%flow, root_state, root_temperature, dx, dy, &
           base_density, ok)
       end if
       if (.not. ok) call abort_run("Root reactive state failed", 4)
@@ -282,7 +299,7 @@ contains
     if (root_initializer_ranks /= 1) &
       call abort_run("Root reactive state ownership failed", 4)
     call initialize_sparse_owned_reactive_amr_eb_patch_tree_root_2d( &
-      distribution, topology, reactive_nvar(size(species)), root_state, &
+      distribution, topology, reactive_nvar(size(eos_species)), root_state, &
       root_temperature, sparse, ok)
     if (.not. ok) call abort_run("Sparse patch-tree initialization failed", 4)
     if (allocated(root_state) .or. allocated(root_temperature)) &
@@ -290,7 +307,7 @@ contains
     if (config%dynamic_regridding .and. &
         config%regrid_at_initialization) then
       call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
-        species, distribution, sparse, criteria, &
+        eos_species, distribution, sparse, criteria, &
         config%patch_tree_maximum_levels, config%refinement_ratio, &
         build_patch_tree_geometry, config, new_distribution, ok, changed, &
         tagged_cells, transferred_cells, &
@@ -328,7 +345,7 @@ contains
     if (steps >= config%eb%flow%maximum_steps) &
       call abort_run("Sparse patch-tree step limit reached", 5)
     call compute_sparse_owned_reactive_amr_eb_patch_tree_timestep_2d( &
-      species, transport, distribution, sparse, config%eb%flow%cfl, &
+      eos_species, transport, distribution, sparse, config%eb%flow%cfl, &
       config%eb%flow%transport_cfl, viscosity_active, &
       thermal_conduction_active, species_diffusion_active, dt, ok)
     if (.not. ok) call abort_run("Sparse patch-tree timestep failed", 5)
@@ -352,7 +369,7 @@ contains
     allocate(global_step_transport_advances(sparse%level_count()), source=0)
     allocate(global_step_hydro_advances(sparse%level_count()), source=0)
     call advance_sparse_owned_reactive_amr_eb_patch_tree_full_physics_2d( &
-      species, reactions, transport, distribution, sparse, &
+      eos_species, reactions, transport, distribution, sparse, &
       config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
       config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
       config%eb%flow%chemistry_enabled, &
@@ -411,7 +428,7 @@ contains
     if (config%dynamic_regridding .and. &
         modulo(steps, config%regrid_interval) == 0) then
       call regrid_tagged_sparse_owned_reactive_amr_eb_patch_tree_2d( &
-        species, distribution, sparse, criteria, &
+        eos_species, distribution, sparse, criteria, &
         config%patch_tree_maximum_levels, config%refinement_ratio, &
         build_patch_tree_geometry, config, new_distribution, ok, changed, &
         tagged_cells, transferred_cells, &
@@ -447,7 +464,7 @@ contains
   conservation_error = maxval(abs(final_integrals - initial_integrals) / &
     max(1.0_dp, abs(initial_integrals)))
   call write_sparse_owned_reactive_amr_eb_patch_tree_2d_csv( &
-    trim(output_path), species, distribution, sparse, io_root, time, ok)
+    trim(output_path), eos_species, distribution, sparse, io_root, time, ok)
   if (.not. ok) call abort_run("Sparse composite output failed", 6)
 
   if (rank == io_root) then
@@ -456,7 +473,7 @@ contains
     if (selected_context) then
       write(*, '(a,1x,a)') &
         "Bundle SHA-256:", trim(selected_bundle_sha256)
-      write(*, '(a,i0)') "Species: ", size(species)
+      write(*, '(a,i0)') "Species: ", size(eos_species)
       write(*, '(a,i0)') "Reactions: ", size(reactions)
       write(*, '(a,1x,a)') "Chemistry integrator:", &
         trim(selected_chemistry_integrator)
@@ -507,9 +524,9 @@ contains
     logical :: global_ok, local_ok
     real(dp), allocatable :: root_composition(:)
 
-    local_counts = [size(species), size(reactions), size(transport)]
+    local_counts = [size(eos_species), size(reactions), size(transport)]
     local_ok = len_trim(selected_bundle_sha256) == 64 .and. &
-      size(selected_composition) == size(species)
+      size(selected_composition) == size(eos_species)
     if (local_ok) then
       local_ok = trim(selected_chemistry_integrator) == "explicit" .or. &
         trim(selected_chemistry_integrator) == "implicit"
@@ -598,7 +615,7 @@ contains
 
     if (selected_context) then
       call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        config%checkpoint_file, species, distribution, sparse, io_root, &
+        config%checkpoint_file, eos_species, distribution, sparse, io_root, &
         time, steps, regrids, minimum_dt, checkpoint_ok, &
         fingerprint=fingerprint, &
         minimum_transport_theta=minimum_transport_theta, &
@@ -613,7 +630,7 @@ contains
         base_mole_fractions=selected_composition)
     else
       call write_sparse_owned_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        config%checkpoint_file, species, distribution, sparse, io_root, &
+        config%checkpoint_file, eos_species, distribution, sparse, io_root, &
         time, steps, regrids, minimum_dt, checkpoint_ok, &
         fingerprint=fingerprint, &
         minimum_transport_theta=minimum_transport_theta, &

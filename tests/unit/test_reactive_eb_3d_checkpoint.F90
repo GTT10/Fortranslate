@@ -1,6 +1,8 @@
 program test_reactive_eb_3d_checkpoint
   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
   use precision_mod, only: dp
+  use dual_energy_mod, only: dual_energy_policy,initialize_nasa7_internal_energy_patch
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use elementary_kinetics_mod, only: elementary_reaction
@@ -10,7 +12,7 @@ program test_reactive_eb_3d_checkpoint
     gas_transport_species, load_h2o2_elementary_transport
   use reactive_1d_mod, only: reactive_nvar
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, build_axis_plane_eb_geometry_3d
+    eb_geometry_3d, build_axis_plane_eb_geometry_3d,eb_covered_cell_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: &
     initialize_reactive_eb_density_sheet_3d, reactive_eb_integrals_3d, &
@@ -62,7 +64,8 @@ program test_reactive_eb_3d_checkpoint
   real(dp) :: read_time, read_minimum_dt, read_maximum_diffusivity
   real(dp) :: read_minimum_theta, saved_time, saved_minimum_dt
   real(dp) :: saved_maximum_diffusivity, saved_minimum_theta
-  real(dp), allocatable :: force(:), rf(:), ir(:,:,:,:), rir(:,:,:,:)
+  real(dp), allocatable :: force(:), rf(:), ir(:,:,:,:), rir(:,:,:,:),heat(:,:,:),rh(:,:,:)
+  logical :: heat_known
   integer :: steps, read_steps, saved_steps, nvar
   logical :: ok
   character(len=256) :: message
@@ -458,15 +461,181 @@ program test_reactive_eb_3d_checkpoint
   call check_embedded_records()
   call check_exchange_records()
   call check_sdc_records()
+  call check_held_records()
   write(*, '(a)') "test_reactive_eb_3d_checkpoint: PASS"
 
 contains
 
+  subroutine check_held_records()
+    type(reactive_eb_3d_config) :: cfg
+    type(dual_energy_policy) :: policy,expected_policy
+    type(rotating_frame_3d), allocatable :: rotation
+    type(eb_geometry_3d) :: geo
+    real(dp), allocatable :: seed(:,:,:,:),seed_t(:,:,:),seed_h(:,:,:),out(:,:,:,:),ot(:,:,:),oh(:,:,:)
+    real(dp), allocatable :: initial(:),scale(:),got_initial(:),got_scale(:),source(:),bc(:),wc(:),cc(:)
+    real(dp), allocatable :: reaction(:,:,:,:),heat(:,:,:),got_source(:),got_bc(:),got_wc(:),got_cc(:)
+    real(dp), allocatable :: got_reaction(:,:,:,:),got_heat(:,:,:),composition(:)
+    real(dp) :: elements(3),got_elements(3),prefix,got_prefix,got_time,got_dt,got_diff,got_theta,rho,phi,position(3)
+    character(len=:), allocatable :: bundle,integrator
+    character(len=4096) :: line
+    character(len=64) :: target
+    character(len=*), parameter :: path='held_patch_checkpoint.chk',bad='held_patch_checkpoint_bad.chk'
+    integer :: condition,mode,failure,x,y,z,unit,ios,row,metadata_row,last_scalar_row,end_row,got_steps
+    logical :: good
+    allocate(seed_h, mold=temperature);allocate(out,mold=state);allocate(ot,mold=temperature);allocate(oh,mold=temperature)
+    allocate(initial(nvar),scale(nvar),got_initial(nvar),got_scale(nvar))
+    do condition=1,2
+      cfg=write_config;cfg%time_integrator='split';cfg%external_forcing=0;cfg%chemistry_enabled=.false.
+      if(condition==2) then
+        allocate(rotation);rotation%axis=2;rotation%angular_speed=1.e10_dp;rotation%axis_point=[10._dp,10._dp,10._dp]
+      endif
+      seed=state;seed_t=temperature;seed_h=27
+      do z=1,cfg%nz
+      do y=1,cfg%ny
+      do x=1,cfg%nx
+        if(geometry%volume_fraction(x,y,z)<=0) cycle
+        seed_t(x,y,z)=merge(300._dp,700._dp,condition==1)+.5_dp*x+y
+      enddo
+      enddo
+      enddo
+      call initialize_nasa7_internal_energy_patch(species,seed,seed_t,geometry%volume_fraction,seed_h,good)
+      call require(good,'native checkpoint UEINT from independent thermal seed')
+      if(condition==1) call require(any(seed_h<0.and.geometry%volume_fraction>0),'native signed formation energy checkpoint')
+      do z=1,cfg%nz
+      do y=1,cfg%ny
+      do x=1,cfg%nx
+        if(geometry%volume_fraction(x,y,z)<=0) cycle
+        rho=seed(1,x,y,z);seed(2:4,x,y,z)=[rho*1.e10_dp,0._dp,0._dp];seed(5,x,y,z)=.5_dp*rho*1.e20_dp
+        if(allocated(rotation)) then
+          position=[geometry%x_lower,geometry%y_lower,geometry%z_lower]+ &
+            (real([x,y,z],dp)-.5_dp)*[geometry%dx,geometry%dy,geometry%dz]
+          call rotating_potential_3d(rotation,position,phi,good)
+          call require(good,'high rotation checkpoint modified gas energy')
+          seed(5,x,y,z)=seed(5,x,y,z)-rho*phi
+        endif
+      enddo
+      enddo
+      enddo
+      call reactive_eb_integrals_3d(seed,geometry,initial,good,scale)
+      call require(good,'held checkpoint independent gas inventory')
+      call reactive_eb_element_integrals_3d(species,seed,geometry,elements,good)
+      call require(good,'held checkpoint independent element inventory')
+      do mode=1,4
+        if(mod(mode,2)==0) then
+          bundle=selected_bundle_sha256;integrator='explicit';allocate(composition(size(species)))
+          composition=0;composition(size(species))=1
+        endif
+        if(mode==3) then
+          cfg%time_integrator='sdc';cfg%chemistry_enabled=.true.;cfg%external_forcing=[1._dp,2._dp,3._dp]
+          allocate(source(nvar),bc(nvar),wc(nvar),cc(nvar),got_source(nvar),got_bc(nvar),got_wc(nvar),got_cc(nvar))
+          source=2.e-9_dp;bc=0;wc=0;cc=0
+          allocate(reaction(nvar-4,cfg%nx,cfg%ny,cfg%nz),got_reaction(nvar-4,cfg%nx,cfg%ny,cfg%nz))
+          allocate(heat(cfg%nx,cfg%ny,cfg%nz),got_heat(cfg%nx,cfg%ny,cfg%nz))
+          reaction=-3.e-4_dp;heat=-1.e9_dp
+          where(geometry%cell_type==eb_covered_cell_3d) heat=0
+        endif
+        policy%eta2=merge(2._dp,-.25_dp,mod(mode,2)==0)
+        policy%allow_small_energy=mod(mode,2)==1;policy%allow_negative_energy=mode/=2
+        policy%update_total_from_internal=mode/=3;prefix=real((-1)**mode*(7+mode),dp)
+        call write_reactive_eb_3d_checkpoint(path,species,reactions,transport,cfg,geometry,seed,seed_t, &
+          1.e-9_dp,1,initial,scale,elements,1.e-9_dp,0._dp,1._dp,good,message, &
+          bundle_sha256=bundle,chemistry_integrator=integrator,base_mole_fractions=composition, &
+          boundary_change=bc,wall_change=wc,chemistry_change=cc,source_change=source,reaction_source=reaction, &
+          heat_release=heat,frame=rotation,internal_energy_density=seed_h,energy_correction=prefix,energy_policy=policy)
+        if(.not.good) print *, 'Held checkpoint write failure: ',condition,mode,trim(message)
+        call require(good,'held fixed/selected split/SDC checkpoint write')
+        ! An incomplete held context must fail before replacing this file.
+        call write_reactive_eb_3d_checkpoint(path,species,reactions,transport,cfg,geometry,seed,seed_t, &
+          1.e-9_dp,1,initial,scale,elements,1.e-9_dp,0._dp,1._dp,good,message, &
+          bundle_sha256=bundle,chemistry_integrator=integrator,base_mole_fractions=composition, &
+          boundary_change=bc,wall_change=wc,chemistry_change=cc,source_change=source,reaction_source=reaction, &
+          heat_release=heat,frame=rotation,internal_energy_density=seed_h,energy_policy=policy)
+        call require(.not.good,'missing numeric prefix refuses before checkpoint publication')
+        row=0;metadata_row=0;end_row=0
+        open(newunit=unit,file=path,status='old',action='read')
+        do
+          read(unit,'(a)',iostat=ios) line
+          if(ios/=0) exit
+          row=row+1
+          if(line=='HELD_INTERNAL_ENERGY_V1') metadata_row=row+1
+          if(line=='END_CHECKPOINT') end_row=row
+        enddo
+        close(unit);last_scalar_row=metadata_row+product(shape(seed_h))
+        call require(metadata_row>0.and.end_row>last_scalar_row,'held scalar and prefix present in serialized record')
+        do failure=0,9
+          expected_policy=policy;target=path
+          select case(failure)
+          case(1);expected_policy%eta2=policy%eta2+1
+          case(2);expected_policy%allow_small_energy=.not.policy%allow_small_energy
+          case(3);expected_policy%allow_negative_energy=.not.policy%allow_negative_energy
+          case(4);expected_policy%update_total_from_internal=.not.policy%update_total_from_internal
+          case(5)
+            write(line,'(3(i0,1x),es27.18e3,a)') merge(1,0,policy%allow_small_energy), &
+              merge(1,0,policy%allow_negative_energy),merge(1,0,policy%update_total_from_internal),policy%eta2,' NaN'
+            call replace_checkpoint_line(path,bad,metadata_row,trim(line));target=bad
+          case(6);call replace_checkpoint_line(path,bad,last_scalar_row,'1.0e30');target=bad
+          case(7);call replace_checkpoint_line(path,bad,end_row,'BROKEN_END');target=bad
+          case(8);call replace_checkpoint_line(path,bad,last_scalar_row,'NaN');target=bad
+          end select
+          geo=geometry;out=.9_dp*seed;ot=.9_dp*seed_t;oh=17;got_prefix=19
+          got_time=23;got_steps=2;got_dt=29;got_diff=31;got_theta=.7_dp
+          got_initial=37;got_scale=41;got_elements=43
+          if(allocated(source)) then
+            got_source=47;got_bc=53;got_wc=59;got_cc=61;got_reaction=67;got_heat=71
+          endif
+          if(failure==9) then
+            call read_reactive_eb_3d_checkpoint(trim(target),species,reactions,transport,cfg,geo,out,ot, &
+              got_time,got_steps,got_initial,got_scale,got_elements,got_dt,got_diff,got_theta,good,message, &
+              bundle_sha256=bundle,chemistry_integrator=integrator,base_mole_fractions=composition, &
+              boundary_change=got_bc,wall_change=got_wc,chemistry_change=got_cc,source_change=got_source, &
+              reaction_source=got_reaction,heat_release=got_heat,frame=rotation)
+          else
+            call read_reactive_eb_3d_checkpoint(trim(target),species,reactions,transport,cfg,geo,out,ot, &
+              got_time,got_steps,got_initial,got_scale,got_elements,got_dt,got_diff,got_theta,good,message, &
+              bundle_sha256=bundle,chemistry_integrator=integrator,base_mole_fractions=composition, &
+              boundary_change=got_bc,wall_change=got_wc,chemistry_change=got_cc,source_change=got_source, &
+              reaction_source=got_reaction,heat_release=got_heat,frame=rotation,internal_energy_density=oh, &
+              energy_correction=got_prefix,energy_policy=expected_policy)
+          endif
+          if(failure==0) then
+            if(.not.good) print *, 'Held checkpoint read failure: ',condition,mode,trim(message)
+            call require(good.and.all(out==seed).and.all(ot==seed_t).and.all(oh==seed_h).and.got_prefix==prefix, &
+              'exact gas/T/UEINT/signed numeric prefix checkpoint roundtrip at unresolved kinetic energy')
+            call require(got_time==1.e-9_dp.and.got_steps==1.and.all(got_initial==initial).and.all(got_scale==scale).and. &
+              all(got_elements==elements).and.got_dt==1.e-9_dp.and.got_diff==0.and.got_theta==1,'exact held diagnostics')
+            if(allocated(source)) call require(all(got_source==source).and.all(got_bc==bc).and.all(got_wc==wc).and. &
+              all(got_cc==cc).and.all(got_reaction==reaction).and.all(got_heat==heat),'held SDC source/heat roundtrip')
+          else
+            call require(.not.good.and.all(out==.9_dp*seed).and.all(ot==.9_dp*seed_t).and.all(oh==17).and.got_prefix==19, &
+              'held policy/EOS/trailer/presence refusal restores all caller energy fields')
+            call require(got_time==23.and.got_steps==2.and.all(got_initial==37).and.all(got_scale==41).and. &
+              all(got_elements==43).and.got_dt==29.and.got_diff==31.and.got_theta==.7_dp,'held restart metadata rollback')
+            if(allocated(source)) call require(all(got_source==47).and.all(got_bc==53).and.all(got_wc==59).and. &
+              all(got_cc==61).and.all(got_reaction==67).and.all(got_heat==71),'held refusal retains SDC/heat ledgers')
+          endif
+          call require(all(geo%volume_fraction==geometry%volume_fraction),'held restart preserves expected geometry')
+        enddo
+        if(allocated(bundle)) deallocate(bundle,integrator,composition)
+      enddo
+      deallocate(source,bc,wc,cc,got_source,got_bc,got_wc,got_cc,reaction,got_reaction,heat,got_heat)
+    enddo
+    call remove_file(path);call remove_file(bad)
+  end subroutine check_held_records
+
   subroutine check_sdc_records()
-    integer :: stream, ios, line_number, mode
+    integer :: stream, ios, line_number, mode,ii,jj,kk
     character(len=4096) :: line
     allocate(force(nvar),rf(nvar),ir(nvar-4,write_config%nx,write_config%ny,write_config%nz))
     force=2.e-9_dp;rf=-1._dp;ir=-3.e-4_dp;rir=ir
+    allocate(heat(write_config%nx,write_config%ny,write_config%nz),rh(write_config%nx,write_config%ny,write_config%nz))
+    do kk=1,write_config%nz
+    do jj=1,write_config%ny
+    do ii=1,write_config%nx
+      heat(ii,jj,kk)=real((-1)**ii*(ii+10*jj+100*kk),dp)*1e9_dp
+    enddo
+    enddo
+    enddo
+    where(geometry%cell_type==eb_covered_cell_3d) heat=0
     write_config%time_integrator='sdc'
     restart_config%time_integrator='sdc'
     write_config%external_forcing=[1._dp,2._dp,3._dp]
@@ -484,10 +653,41 @@ contains
         boundary_change=boundary,wall_change=wall,chemistry_change=chemistry,source_change=force,reaction_source=ir)
       call require(ok,'write SDC checkpoint: '//trim(message))
       call require_checkpoint_schema(exchange_path,12,'SELECTED_CONTEXT')
+      rh=41;heat_known=.true.
       call read_sdc(exchange_path)
       call require(ok,'read SDC checkpoint: '//trim(message))
+      call require(all(rh==0).and..not.heat_known,'legacy SDC heat unknown with private zero work')
       call require(all(rf==force),'SDC forcing exact round trip')
       if(allocated(ir)) call require(all(rir==ir),'SDC reaction exact round trip')
+      call remove_file(exchange_path)
+      where(geometry%cell_type==eb_covered_cell_3d) heat=ieee_value(0._dp,ieee_quiet_nan)
+      call write_reactive_eb_3d_checkpoint(exchange_path,species,reactions,transport,write_config,geometry, &
+        state,temperature,time,steps,initial_integrals,initial_l1_integrals,initial_elements,minimum_dt, &
+        maximum_diffusivity,minimum_theta,ok,message,bundle_sha256=sha,chemistry_integrator=integrator, &
+        base_mole_fractions=fractions,element_names=names,element_atoms=atoms, &
+        boundary_change=boundary,wall_change=wall,chemistry_change=chemistry,source_change=force,reaction_source=ir, &
+        heat_release=heat)
+      call require(ok,'signed SDC heat write ignores covered NaNs')
+      where(geometry%cell_type==eb_covered_cell_3d) heat=0
+      call require_checkpoint_schema(exchange_path,24,'SELECTED_CONTEXT')
+      call read_sdc(exchange_path)
+      call require(ok.and.heat_known.and.all(rh==heat),'signed SDC heat exact restoration')
+      open(newunit=stream,file=exchange_path,status='old',action='read');line_number=0
+      do
+        read(stream,'(a)',iostat=ios) line
+        call require(ios==0,'find heat marker');line_number=line_number+1
+        if(line=='HEAT_RELEASE_W_M3_V1') exit
+      enddo
+      close(stream)
+      call save_targets()
+      call replace_checkpoint_line(exchange_path,exchange_bad,line_number+1,'NaN')
+      call read_sdc(exchange_bad)
+      call require_exchange_rollback('late nonfinite SDC heat')
+      call require(heat_known.and.all(rh==heat),'late heat error preserves scalar and availability')
+      call replace_checkpoint_line(exchange_path,exchange_bad,line_number+1,'/')
+      call read_sdc(exchange_bad)
+      call require_exchange_rollback('null SDC heat record')
+      call require(heat_known.and.all(rh==heat),'null heat error preserves scalar and availability')
       call save_targets()
       restart_config%sdc_iterations=restart_config%sdc_iterations+1
       call read_sdc(exchange_path)
@@ -524,7 +724,8 @@ contains
       read_state,read_temperature,read_time,read_steps,read_integrals,read_l1_integrals,read_elements, &
       read_minimum_dt,read_maximum_diffusivity,read_minimum_theta,ok,message,bundle_sha256=sha, &
       chemistry_integrator=integrator,base_mole_fractions=fractions,element_names=names,element_atoms=atoms, &
-      boundary_change=rb,wall_change=rw,chemistry_change=rc,source_change=rf,reaction_source=rir)
+      boundary_change=rb,wall_change=rw,chemistry_change=rc,source_change=rf,reaction_source=rir, &
+      heat_release=rh,heat_available=heat_known)
   end subroutine read_sdc
 
   subroutine check_exchange_records()

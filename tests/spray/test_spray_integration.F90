@@ -28,6 +28,9 @@ program test_spray_integration
   real(dp) :: state(15,5,5,5),temperature(5,5,5),before(15,5,5,5),before_t(5,5,5)
   real(dp) :: x(10),y(10),primitive(15),r,sound,local_t,totals0(15),totals1(15),injected(15),time
   real(dp) :: checkpoint_state(15,5,5,5),checkpoint_temperature(5,5,5)
+  real(dp) :: heat(5,5,5),saved_heat(5,5,5),ir(11,5,5,5),saved_ir(11,5,5,5)
+  logical :: heat_known
+  integer :: record_count
   real(dp) :: force(15),accel(3),dt,expected(3),saved_force(15)
   real(dp), allocatable :: component_mass(:,:),saved_mass(:,:),film_mass(:,:),saved_film_mass(:,:)
   integer(int64) :: last_id
@@ -84,7 +87,7 @@ program test_spray_integration
     do iteration=1,2
       state=before;temperature=before_t;deallocate(films);allocate(films(0))
       call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
-        [0.0_dp,0.0_dp,-1.0_dp],merge(10.0_dp,300.0_dp,iteration==1),0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+        [0.0_dp,0.0_dp,-1.0_dp],merge(5.0_dp,300.0_dp,iteration==1),0.0_dp,2e-5_dp,330.0_dp,drops,ok)
       call require(ok,'wall injection')
       call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals0,wall_films=films)
       call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
@@ -108,6 +111,41 @@ program test_spray_integration
     call write_spray_checkpoint('film.chk','film-context',species,state,temperature,drops,time,steps,event, &
       totals0,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
     call require(ok,trim(message))
+    ! Legacy film files contain no N0 payload when all retained counts are zero.
+    drops%khrt_initial_count=0
+    call write_spray_checkpoint('film-legacy.chk','film-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(ok,'legacy zero-count film checkpoint write')
+    open(newunit=i,file='film-legacy.chk',status='old');read(i,'(a)') checkpoint_record;close(i)
+    call require(index(checkpoint_record,'_N0_V1')==0,'legacy zero-count checkpoint format retained')
+    drops=before_drops
+    call read_spray_checkpoint('film-legacy.chk','film-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(ok.and.all(drops%khrt_initial_count==0),'legacy film count defaults read')
+    open(newunit=i,file='film-legacy.chk',status='old');close(i,status='delete')
+    ! Corrupt the first retained-count row after the seven header/budget rows,
+    ! cell rows, parcel row and lineage row. The reader must remain transactional.
+    open(newunit=i,file='film.chk',status='old');open(newunit=k,file='film-bad-count.chk',status='new')
+    j=0
+    do
+      read(i,'(a)',iostat=record_status) checkpoint_record
+      if(record_status/=0) exit
+      j=j+1
+      if(j==7+size(temperature)+3) checkpoint_record='-1'
+      write(k,'(a)') trim(checkpoint_record)
+    enddo
+    close(i);close(k)
+    checkpoint_state=state;checkpoint_temperature=temperature;saved_force=force
+    call read_spray_checkpoint('film-bad-count.chk','film-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(.not.ok.and.all(drops%khrt_initial_count==0).and.all(state==checkpoint_state).and. &
+      all(temperature==checkpoint_temperature),'invalid retained count read rollback')
+    call require(time==2e-7_dp.and.steps==1.and.event==0.and.all(totals1==totals0).and.all(injected==0).and. &
+      all(force==saved_force),'invalid retained count clock and ledger rollback')
+    call require(all(films%mass==saved_films%mass).and.all(films%height==saved_films%height).and. &
+      all(drops%mass==before_drops%mass).and.all(drops%parent_id==before_drops%parent_id), &
+      'invalid retained count film and parcel rollback')
+    open(newunit=i,file='film-bad-count.chk',status='old');close(i,status='delete')
     deallocate(films);allocate(films(0));deallocate(drops);allocate(drops(0))
     call read_spray_checkpoint('film.chk','wrong-context',species,state,temperature,drops,time,steps,event, &
       totals1,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
@@ -118,6 +156,29 @@ program test_spray_integration
     call require(all(films%mass==saved_films%mass).and.all(films%height==saved_films%height), &
       'exact film checkpoint geometry')
     call require(all(drops%parent_id==before_drops%parent_id),'wall-only parent IDs restored')
+    call require(all(drops%khrt_initial_count==before_drops%khrt_initial_count).and. &
+      all(drops%khrt_shed_volume==0),'wall-only retained birth counts restored')
+    call require(all(drops(2:)%khrt_initial_count>0),'live splash has retained birth counts')
+    checkpoint_state=state;checkpoint_temperature=temperature
+    drops(2)%khrt_shed_volume=1e-18_dp
+    call write_spray_checkpoint('unsupported-shed.chk','film-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,boundary_totals=force,film_state=.true.,wall_films=films)
+    call require(.not.ok,'wall-only checkpoint rejects pending aerodynamic shed history')
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],1e-10_dp,.false.,.false.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,boundary_faces=faces,boundary_change=force, &
+      wall_options=wall_options,wall_films=films)
+    call require(.not.ok.and.all(state==checkpoint_state).and.all(temperature==checkpoint_temperature), &
+      'unsupported pending history refuses without gas mutation')
+    call require(drops(2)%khrt_shed_volume==1e-18_dp.and.all(drops%mass==before_drops%mass), &
+      'unsupported pending history preserves parcel state')
+    drops=before_drops
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],1e-10_dp,.false.,.false.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,boundary_faces=faces,boundary_change=force, &
+      wall_options=wall_options,wall_films=films)
+    call require(ok.and.all(drops%khrt_initial_count==before_drops%khrt_initial_count), &
+      'restarted wall children continue with retained birth counts')
     allocate(component_mass(2,size(drops)),film_mass(2,size(films)))
     do i=1,size(drops)
       component_mass(:,i)=drops(i)%mass*[.6_dp,.4_dp]
@@ -190,7 +251,7 @@ program test_spray_integration
       state=before;temperature=before_t
       deallocate(films,film_mass);allocate(films(0),film_mass(2,0))
       call inject_cone_parcels(liquid,1e-10_dp,1,1_int64,[.002_dp,.002_dp,5e-7_dp], &
-        [0.0_dp,0.0_dp,-1.0_dp],merge(10.0_dp,300.0_dp,iteration==1),0.0_dp,2e-5_dp,330.0_dp,drops,ok)
+        [0.0_dp,0.0_dp,-1.0_dp],merge(5.0_dp,300.0_dp,iteration==1),0.0_dp,2e-5_dp,330.0_dp,drops,ok)
       call require(ok,'mixed wall injection')
       component_mass=reshape(drops(1)%mass*[.6_dp,.4_dp],[2,1])
       call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok,films,film_mass)
@@ -202,6 +263,24 @@ program test_spray_integration
       call require(size(films)==1.and.drops(1)%mass==0,'mixed wall deposited patch')
       if (iteration==1) call require(size(drops)==1,'mixed low speed deposition')
       if (iteration==2) call require(size(drops)==5,'mixed high speed splash')
+      if (iteration==2) then
+        before_drops=drops
+        call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+          [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,1e-10_dp,steps,ok,message, &
+          faces,saved_force,wall_options,films,film_mass)
+        call require(ok.and.all(drops%khrt_initial_count==before_drops%khrt_initial_count), &
+          'mixed splash children continue with retained birth counts')
+        force=force+saved_force
+        checkpoint_state=state;checkpoint_temperature=temperature;saved_mass=component_mass
+        drops(2)%khrt_shed_volume=1e-18_dp
+        call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+          [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,1e-10_dp,steps,ok,message, &
+          faces,saved_force,wall_options,films,film_mass)
+        call require(.not.ok.and.all(state==checkpoint_state).and.all(temperature==checkpoint_temperature).and. &
+          all(component_mass==saved_mass).and.drops(2)%khrt_shed_volume==1e-18_dp, &
+          'mixed unsupported pending history refuses without mutation')
+        drops(2)%khrt_shed_volume=0
+      endif
       if (iteration==2) call require(maxval(abs(film_mass(:,1)/films(1)%mass-[.6_dp,.4_dp]))<1e-13_dp, &
         'deposited composition')
       if (iteration==1) call require(films(1)%temperature/=330.0_dp,'new film heats during remaining interval')
@@ -449,6 +528,32 @@ program test_spray_integration
     call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
     call require(ok.and.maxval(abs(totals1-totals0))<1e-12_dp,'mixture breakup/splitting conservation')
     drops=before_drops;component_mass=saved_mass;state=before;temperature=before_t
+    options%breakup_model='etab';options%etab_parcel_factor=.5_dp;options%maximum_multiplicity=1._dp
+    drops%khrt_initial_count=drops%multiplicity
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    drops%deformation=1.1_dp
+    do i=1,size(drops)
+      drops(i)%velocity=[100._dp,0._dp,0._dp]
+    enddo
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+    call require(ok,'mixed reference ETAB initial inventory')
+    call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+      [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,1e-9_dp,steps,ok,message)
+    call require(ok,trim(message))
+    call require(size(drops)>size(before_drops).and.size(component_mass,2)==size(drops), &
+      'mixed reference ETAB children and component columns')
+    do i=1,size(drops)
+      if(drops(i)%parent_id==0) cycle
+      j=findloc(before_drops%id,drops(i)%parent_id,dim=1)
+      call require(j>0,'mixed ETAB birth parent exists')
+      expected=modulo(before_drops(j)%position+1e-9_dp*drops(i)%velocity,.005_dp)
+      call require(maxval(abs(drops(i)%position-expected))<1e-15_dp,'mixed ETAB child uses original parent position')
+    enddo
+    call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+    call require(ok.and.maxval(abs(totals1-totals0))<1e-12_dp*maxval(abs(totals0)), &
+      'mixed reference ETAB gas child and component conservation')
+    drops=before_drops;component_mass=saved_mass;state=before;temperature=before_t
+    options%etab_parcel_factor=-1;options%breakup_model='khrt'
     options%khrt_children=.true.;options%khrt_reference_diameter_cubed=1e-25_dp;options%maximum_multiplicity=0
     do i=1,size(drops)
       drops(i)%velocity=[1000.0_dp,0.0_dp,0.0_dp]
@@ -459,6 +564,12 @@ program test_spray_integration
     call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
       [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,2e-7_dp,steps,ok,message)
     call require(ok.and.size(drops)>size(before_drops),'mixed KH children created')
+    do i=size(before_drops)+1,size(drops)
+      j=findloc(before_drops%id,drops(i)%parent_id,dim=1)
+      call require(j>0,'mixed KH birth parent exists')
+      expected=modulo(before_drops(j)%position+2e-7_dp*drops(i)%velocity,.005_dp)
+      call require(maxval(abs(drops(i)%position-expected))<1e-15_dp,'mixed KH child uses original parent position')
+    enddo
     call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
     call require(ok.and.maxval(abs(totals1-totals0))<1e-12_dp,'mixed KH gas/child conservation')
     drops=before_drops;component_mass=saved_mass;state=before;temperature=before_t
@@ -468,6 +579,64 @@ program test_spray_integration
     call require(.not.ok.and.all(state==before).and.all(temperature==before_t),'mixed KH capacity gas rollback')
     call require(size(drops)==size(before_drops).and.all(component_mass==saved_mass),'mixed KH capacity composition rollback')
     call require(all(drops%khrt_shed_volume==0).and.all(drops%mass==before_drops%mass),'mixed KH parent rollback')
+  case('fixed_parts')
+    materials(1)=liquid
+    call initialize_spray_liquid(species,'H2O2',800._dp,2000._dp,350._dp,101325._dp,1e6_dp,materials(2),ok)
+    call require(ok,'fixed second liquid')
+    allocate(component_mass(2,size(drops)))
+    do i=1,size(drops)
+      component_mass(:,i)=drops(i)%mass*[.6_dp,.4_dp]
+    enddo
+    saved_mass=component_mass
+    do iteration=1,3
+      state=before;temperature=before_t;drops=before_drops;component_mass=saved_mass
+      options=spray_options();options%fixed_parts=.true.
+      if(iteration==3) options%mixture_time_scheme='euler'
+      dt=2e-7_dp;accel=0
+      if(iteration>1) accel=[0._dp,0._dp,-9810._dp]
+      if(iteration>1) then
+        saved_force=37
+        call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+          [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,-dt,steps,ok,message, &
+          force_change=saved_force(:5))
+        call require(.not.ok.and.all(saved_force==37).and.all(state==before),'fixed failed low ledger rollback')
+        record_status=options%maximum_substeps;options%maximum_substeps=1
+        call advance_mixture_coupling_3d(species,transport,materials,options,state,temperature, &
+          [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],drops,component_mass,dt,steps,ok,message, &
+          force_change=saved_force(:5))
+        call require(.not.ok.and.all(saved_force==37).and.all(state==before).and.all(component_mass==saved_mass), &
+          'fixed late substep failure preserves whole state and ledger')
+        options%maximum_substeps=record_status
+        call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals0,ok)
+        call require(ok,'fixed mixed initial totals')
+        call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+          [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],dt,.false.,.false.,'implicit', &
+          1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+          mixture_components=materials,component_mass=component_mass)
+        call require(ok,trim(message))
+        call require(all(component_mass<saved_mass),'fixed mixed evaporation retained')
+        call mixture_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,materials,component_mass,totals1,ok)
+        call require(ok,'fixed mixed final totals')
+      else
+        call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals0)
+        call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+          [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],dt,.false.,.false.,'implicit', &
+          1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message,source_change=force)
+        call require(ok,trim(message))
+        call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals1)
+      endif
+      call require(all(abs(totals1(:5)-totals0(:5)-force(:5))< &
+        2e-12_dp*max(1e-6_dp,abs(totals0(:5)))),'fixed constraint conserved totals')
+      do i=1,size(drops)
+        call require(all(drops(i)%position==before_drops(i)%position),'fixed serial position')
+        call require(all(drops(i)%velocity==0),'fixed serial velocity')
+        call require(drops(i)%mass<before_drops(i)%mass.and.drops(i)%temperature>330,'fixed thermal evolution')
+      enddo
+      call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+        [0._dp,0._dp,0._dp],[.001_dp,.001_dp,.001_dp],dt,.false.,.false.,'implicit', &
+        1e-7_dp,1e-12_dp,0._dp,.7_dp,.7_dp,ok,message)
+      call require(.not.ok,'fixed serial requires constraint output')
+    enddo
   case('materials')
     materials(1)=liquid
     ! Illustrative second pure liquid: tests species routing, not peroxide property accuracy.
@@ -538,6 +707,40 @@ program test_spray_integration
     call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
       [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],dt,.true.,.false.,'invalid', &
       1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force)
+    call require(.not.ok.and.all(state==before).and.all(force==0),'force kick rolls back after later failure')
+    do i=1,size(drops)
+      call require(all(drops(i)%velocity==before_drops(i)%velocity),'force parcel rollback')
+    end do
+  case('mixture_acceleration')
+    materials=[liquid,liquid]
+    allocate(component_mass(2,size(drops)))
+    do i=1,size(drops)
+      component_mass(:,i)=drops(i)%mass*[.6_dp,.4_dp]
+    enddo
+    options%mixture_time_scheme='euler'
+    options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    accel=[0.0_dp,0.0_dp,-9810.0_dp];dt=2e-7_dp
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],dt,.false.,.false.,'implicit', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+      mixture_components=materials,component_mass=component_mass)
+    call require(ok,trim(message))
+    do i=1,size(drops)
+      expected=before_drops(i)%velocity+accel*dt
+      call require(maxval(abs(drops(i)%velocity-expected))<1e-13_dp,'ballistic velocity')
+      expected=before_drops(i)%position+before_drops(i)%velocity*dt+0.5_dp*accel*dt**2
+      call require(maxval(abs(drops(i)%position-expected))<1e-16_dp,'ballistic position')
+    end do
+    call require(maxval(abs(state(4,:,:,:)/state(1,:,:,:)-accel(3)*dt))<1e-13_dp,'gas acceleration')
+    call require(maxval(abs(temperature-before_t))<1e-8_dp,'force preserves thermal energy')
+    call spray_system_totals(state,[.001_dp,.001_dp,.001_dp],drops,liquid,totals1)
+    call require(maxval(abs(totals1(2:4)-totals0(2:4)-force(2:4)))<1e-18_dp,'external impulse ledger')
+    call require(abs(totals1(5)-totals0(5)-force(5))<1e-12_dp*abs(totals0(5)),'external work ledger')
+    before=state;before_t=temperature;before_drops=drops
+    call advance_spray_reactive_3d(species,reactions,transport,liquid,options,state,temperature,drops, &
+      [0.0_dp,0.0_dp,0.0_dp],[.001_dp,.001_dp,.001_dp],dt,.true.,.false.,'invalid', &
+      1e-7_dp,1e-12_dp,0.0_dp,.7_dp,.7_dp,ok,message,acceleration=accel,source_change=force, &
+      mixture_components=materials,component_mass=component_mass)
     call require(.not.ok.and.all(state==before).and.all(force==0),'force kick rolls back after later failure')
     do i=1,size(drops)
       call require(all(drops(i)%velocity==before_drops(i)%velocity),'force parcel rollback')
@@ -644,12 +847,56 @@ program test_spray_integration
     call read_spray_checkpoint('roundtrip.chk','wrong-context',species,state,temperature,drops,time,steps,event, &
       totals1,injected,ok,message)
     call require(.not.ok .and. all(state==0.0_dp) .and. size(drops)==0,'invalid restart transaction')
+    heat=41;ir=42;heat_known=.true.
     call read_spray_checkpoint('roundtrip.chk','integration-context',species,state,temperature,drops,time,steps,event, &
-      totals1,injected,ok,message)
+      totals1,injected,ok,message,reaction_source=ir,heat_release=heat,heat_available=heat_known)
     call require(ok,trim(message))
     call require(all(state==before) .and. all(temperature==before_t),'restart exact state')
     call require(all(totals0==totals1) .and. size(drops)==2 .and. steps==3,'restart metadata')
+    call require(all(ir==0).and.all(heat==0).and..not.heat_known,'legacy restart clears work but marks heat unknown')
     open(newunit=i,file='roundtrip.chk',status='old'); close(i,status='delete')
+    ! Signed stored stage outputs cannot be reconstructed from the gas snapshot.
+    do k=1,5
+    do j=1,5
+    do i=1,5
+      heat(i,j,k)=real((-1)**i*(i+5*j+25*k),dp)*1e9_dp
+      ir(:,i,j,k)=-real(i+5*j+25*k,dp)
+    enddo
+    enddo
+    enddo
+    saved_heat=heat;saved_ir=ir;heat_known=.true.
+    call write_spray_checkpoint('stage.chk','stage-context',species,state,temperature,drops,time,steps,event, &
+      totals0,injected,ok,message,reaction_source=ir,heat_release=heat,heat_available=heat_known)
+    call require(ok,'signed stage checkpoint write')
+    heat=0;ir=0;heat_known=.false.
+    call read_spray_checkpoint('stage.chk','stage-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,reaction_source=ir,heat_release=heat,heat_available=heat_known)
+    call require(ok.and.heat_known.and.all(ir==saved_ir).and.all(heat==saved_heat),'signed stage exact restoration')
+    call read_spray_checkpoint('stage.chk','stage-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message)
+    call require(ok,'optional diagnostic reader may discard stored stage fields')
+    open(newunit=i,file='stage.chk',status='old');record_count=0
+    do
+      read(i,'(a)',iostat=record_status) checkpoint_record
+      if(record_status/=0) exit
+      record_count=record_count+1
+    enddo
+    rewind(i);open(newunit=j,file='bad-stage.chk',status='replace');k=0
+    do
+      read(i,'(a)',iostat=record_status) checkpoint_record
+      if(record_status/=0) exit
+      k=k+1
+      if(k==record_count-1) checkpoint_record='NaN'
+      write(j,'(a)') trim(checkpoint_record)
+    enddo
+    close(i);close(j)
+    heat=41;ir=42;heat_known=.false.
+    call read_spray_checkpoint('bad-stage.chk','stage-context',species,state,temperature,drops,time,steps,event, &
+      totals1,injected,ok,message,reaction_source=ir,heat_release=heat,heat_available=heat_known)
+    call require(.not.ok.and.all(heat==41).and.all(ir==42).and..not.heat_known.and.all(state==before), &
+      'late nonfinite heat rejection retains gas rates heat and availability')
+    open(newunit=i,file='stage.chk',status='old');close(i,status='delete')
+    open(newunit=i,file='bad-stage.chk',status='old');close(i,status='delete')
     last_id=huge(0_int64)-7_int64
     call write_spray_checkpoint('ids.chk','id-context',species,state,temperature,drops,time,steps,event, &
       totals0,injected,ok,message,last_id=last_id)

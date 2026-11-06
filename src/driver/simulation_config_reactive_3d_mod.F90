@@ -1,7 +1,7 @@
 module simulation_config_reactive_3d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,valid_nasa7_eos_options
   use selected_composition_mod, only: &
     selected_composition_max_species, selected_composition_name_length, &
     validate_selected_composition_fields, resolve_selected_composition
@@ -16,9 +16,14 @@ module simulation_config_reactive_3d_mod
     integer :: ny = 12
     integer :: nz = 12
     integer :: maximum_steps = 100000
-    integer :: sdc_iterations=2
+    integer :: sdc_iterations=1 ! Pinned SDC/MOL default; explicit iterations remain configurable.
     character(len=16) :: sdc_reactor='native'
     character(len=32) :: time_integrator="split"
+    logical :: mol_lax_friedrichs=.false.
+    logical :: allow_small_energy=.true. ! Pinned internal-energy reset controls.
+    logical :: allow_negative_energy=.true.
+    logical :: dual_energy_update_E_from_e=.true.
+    real(dp) :: dual_energy_eta2=1.e-4_dp
     real(dp) :: x_lower = 0.0_dp
     real(dp) :: x_upper = 0.01_dp
     real(dp) :: y_lower = 0.0_dp
@@ -31,6 +36,8 @@ module simulation_config_reactive_3d_mod
     character(len=32) :: reconstruction = "pcm"
     character(len=32) :: limiter = "mc"
     character(len=32) :: thermo_model = "full_h2o2"
+    logical :: pinned_eos_extrapolation=.false.
+    real(dp) :: pinned_eos_temperature_min=0._dp,pinned_eos_temperature_max=0._dp
     character(len=32) :: riemann_solver = "rusanov"
     character(len=32) :: boundary_condition = "periodic"
     character(len=32) :: boundary_faces(6) = ""
@@ -114,7 +121,7 @@ contains
   ! Pinned EB-ConvergingNozzle inlet: interior composition, prescribed T/Mach,
   ! extrapolated pressure by default, or an explicit pressure target.
   subroutine mach_inlet_ghost_3d(species,interior,temperature,face,inlet_temperature,mach,ghost,ghost_temperature,ok, &
-      inlet_pressure,velocity_fluctuation,total_velocity)
+      inlet_pressure,velocity_fluctuation,total_velocity,internal_energy_density)
     use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
     use mixture_thermo_mod, only: mixture_mass_properties
     type(nasa7_species), intent(in) :: species(:)
@@ -123,6 +130,7 @@ contains
     real(dp), intent(inout) :: ghost(:),ghost_temperature
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: inlet_pressure,velocity_fluctuation(3),total_velocity(3)
+    real(dp), optional, intent(in) :: internal_energy_density
     real(dp) :: q(reactive_nvar(size(species))),candidate(reactive_nvar(size(species)))
     real(dp) :: recovered,sound,pressure,mw,r,cp,cv,gamma,h,e,entropy,new_t,new_sound
     integer :: axis
@@ -138,7 +146,8 @@ contains
     if(present(total_velocity)) then
       if(.not.all(ieee_is_finite(total_velocity))) return
     end if
-    call reactive_conserved_to_primitive(species,interior,temperature,q,recovered,sound,valid)
+    call reactive_conserved_to_primitive(species,interior,temperature,q,recovered,sound,valid, &
+      internal_energy_density=internal_energy_density)
     if(.not.valid) return
     pressure=q(5)
     if(present(inlet_pressure)) pressure=inlet_pressure
@@ -158,7 +167,10 @@ contains
 
   ! Mach >= 0 enables this inlet; negative entries retain ordinary face behavior.
   subroutine fill_mach_inlet_boundary_ghosts_3d(species,u,t,faces,mach,ghost,gt,ok, &
-      inflow_state,inflow_temperature,inflow_pressure,ghost_width,viscous_wall,wall_velocity)
+      inflow_state,inflow_temperature,inflow_pressure,ghost_width,viscous_wall,wall_velocity, &
+      internal_energy_density,internal_energy_ghost)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), optional, intent(inout) :: internal_energy_ghost(:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),mach(6)
     character(len=*), intent(in) :: faces(6)
@@ -167,7 +179,7 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:),inflow_pressure(6),wall_velocity(:,:)
     integer, optional, intent(in) :: ghost_width
     logical, optional, intent(in) :: viscous_wall
-    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:)
+    real(dp), allocatable :: candidate(:,:,:,:),temps(:,:,:),candidate_h(:,:,:),held_cell
     real(dp) :: pressure(6),shift(3),momentum(3),rho
     character(len=32) :: ordinary(6)
     integer :: n(3),dims(3),width,i,j,k,q(3),inlet,axis
@@ -176,10 +188,16 @@ contains
     if(present(ghost_width)) width=ghost_width
     if(present(inflow_pressure)) pressure=inflow_pressure
     if(present(viscous_wall)) viscous=viscous_wall
-    if(width<1.or.width>128.or.any(n<2).or.any(n>huge(1)-256)) return
+    if(width<1.or.width>128.or.any(n<1).or.any(n>huge(1)-256)) return
     dims=n+2*width
     if(any(shape(u)/=[5+size(species),n]).or.any(shape(ghost)/=[5+size(species),dims])) return
     if(any(shape(gt)/=dims)) return
+    if(present(internal_energy_density).neqv.present(internal_energy_ghost)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n).or.any(shape(internal_energy_ghost)/=dims)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(candidate_h(dims(1),dims(2),dims(3)),held_cell)
+    endif
     if(.not.all(ieee_is_finite(mach)).or..not.all(ieee_is_finite(pressure))) return
     if(any(mach>100).or.any(mach>=0.and.faces/='inflow')) return
     if(any(pressure<0).or.any(pressure>1e15_dp).or.any(pressure>0.and.mach<0)) return
@@ -193,7 +211,8 @@ contains
     where(mach>=0) ordinary='outflow'
     allocate(candidate,mold=ghost);allocate(temps,mold=gt)
     call fill_reactive_boundary_ghosts_3d(u,t,ordinary,candidate,temps,valid,viscous_wall=viscous, &
-      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity,ghost_width=width)
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity,ghost_width=width, &
+      internal_energy_density=internal_energy_density,internal_energy_ghost=candidate_h)
     if(.not.valid) return
     do k=1,dims(3)
       do j=1,dims(2)
@@ -202,14 +221,23 @@ contains
           if(.not.valid) return
           if(inlet==0) cycle
           if(mach(inlet)<0) cycle
+          if(allocated(held_cell)) held_cell=internal_energy_density(q(1),q(2),q(3))
           if(pressure(inlet)>0) then
             call mach_inlet_ghost_3d(species,u(:,q(1),q(2),q(3)),t(q(1),q(2),q(3)),inlet, &
-              inflow_temperature(inlet),mach(inlet),candidate(:,i,j,k),temps(i,j,k),valid,inlet_pressure=pressure(inlet))
+              inflow_temperature(inlet),mach(inlet),candidate(:,i,j,k),temps(i,j,k),valid,inlet_pressure=pressure(inlet), &
+              internal_energy_density=held_cell)
           else
             call mach_inlet_ghost_3d(species,u(:,q(1),q(2),q(3)),t(q(1),q(2),q(3)),inlet, &
-              inflow_temperature(inlet),mach(inlet),candidate(:,i,j,k),temps(i,j,k),valid)
+              inflow_temperature(inlet),mach(inlet),candidate(:,i,j,k),temps(i,j,k),valid, &
+              internal_energy_density=held_cell)
           end if
           if(.not.valid) return
+          if(present(internal_energy_ghost)) then
+            rho=candidate(1,i,j,k)
+            if(rho<=0) return
+            candidate_h(i,j,k)=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/rho
+            if(.not.ieee_is_finite(candidate_h(i,j,k))) return
+          endif
           momentum=candidate(2:4,i,j,k)
           do axis=1,3
             if(reflect(axis)) candidate(axis+1,i,j,k)=-candidate(axis+1,i,j,k)
@@ -223,12 +251,16 @@ contains
       end do
     end do
     if(.not.all(ieee_is_finite(candidate)).or..not.all(ieee_is_finite(temps))) return
+    if(present(internal_energy_ghost)) internal_energy_ghost=candidate_h
     ghost=candidate;gt=temps;ok=.true.
   end subroutine fill_mach_inlet_boundary_ghosts_3d
 
   subroutine characteristic_pressure_ghost_3d(species,interior,temperature,face,pressure,distance_ratio, &
-      ghost,ghost_temperature,ok)
+      ghost,ghost_temperature,ok,internal_energy_density,ghost_internal_energy)
     use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
+    real(dp), optional, intent(in) :: internal_energy_density
+    real(dp), optional, intent(inout) :: ghost_internal_energy
+    real(dp) :: new_h
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: interior(:),temperature,pressure,distance_ratio
     integer, intent(in) :: face
@@ -242,7 +274,8 @@ contains
     if(size(interior)/=size(q).or.size(ghost)/=size(q)) return
     if(.not.all(ieee_is_finite([pressure,distance_ratio]))) return
     if(pressure<=0.or.pressure>1e15_dp.or.distance_ratio<0.or.distance_ratio>1e6_dp) return
-    call reactive_conserved_to_primitive(species,interior,temperature,q,recovered,sound,ok)
+    call reactive_conserved_to_primitive(species,interior,temperature,q,recovered,sound,ok, &
+      internal_energy_density=internal_energy_density)
     if(.not.ok) return
     ok=.false.;rho=q(1);dpres=distance_ratio*(pressure-q(5));axis=(face+1)/2
     sign_normal=merge(-1._dp,1._dp,modulo(face,2)==1)
@@ -251,13 +284,22 @@ contains
     q(5)=q(5)+dpres
     call reactive_primitive_to_conserved(species,q,candidate,new_t,new_sound,ok)
     if(.not.ok) return
+    if(present(ghost_internal_energy)) then
+      new_h=candidate(5)-.5_dp*sum(candidate(2:4)**2)/candidate(1)
+      if(.not.ieee_is_finite(new_h)) then
+        ok=.false.;return
+      endif
+      ghost_internal_energy=new_h
+    endif
     ghost=candidate;ghost_temperature=new_t
   end subroutine
 
   ! Apply after ordinary ghost filling; face order defines corner composition.
   ! boundary_cells gives the first/last physical-domain cell indices in the
   ! padded buffer. Unspecified bounds use the patch interior and width=2.
-  subroutine fill_pressure_outlet_ghosts_3d(species,n,faces,pressure,ghost,gt,ok,ghost_width,boundary_cells)
+  subroutine fill_pressure_outlet_ghosts_3d(species,n,faces,pressure,ghost,gt,ok,ghost_width,boundary_cells,internal_energy_ghost)
+    real(dp), optional, intent(inout) :: internal_energy_ghost(:,:,:)
+    real(dp), allocatable :: donor_h,output_h
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: n(3)
     character(len=*), intent(in) :: faces(6)
@@ -278,6 +320,11 @@ contains
     if(any(bounds(2,:)<bounds(1,:))) return
     if(any(n<1).or.any(shape(gt)/=dims)) return
     if(any(shape(ghost)/=[5+size(species),dims])) return
+    if(present(internal_energy_ghost)) then
+      if(any(shape(internal_energy_ghost)/=dims)) return
+      if(.not.all(ieee_is_finite(internal_energy_ghost))) return
+      allocate(donor_h,output_h)
+    endif
     if(.not.present(pressure)) then
       ok=.true.;return
     end if
@@ -297,12 +344,14 @@ contains
           donor(axis)=bounds(2,axis);layers=dims(axis)-donor(axis)
         end if
         state=ghost(:,donor(1),donor(2),donor(3));temperature=gt(donor(1),donor(2),donor(3))
+        if(allocated(donor_h)) donor_h=internal_energy_ghost(donor(1),donor(2),donor(3))
         do layer=1,layers
           idx=donor;idx(axis)=donor(axis)-layer
           if(modulo(face,2)==0) idx(axis)=donor(axis)+layer
           call characteristic_pressure_ghost_3d(species,state,temperature,face,pressure(face),real(2*layer,dp), &
-            ghost(:,idx(1),idx(2),idx(3)),gt(idx(1),idx(2),idx(3)),ok)
+            ghost(:,idx(1),idx(2),idx(3)),gt(idx(1),idx(2),idx(3)),ok,donor_h,output_h)
           if(.not.ok) return
+          if(present(internal_energy_ghost)) internal_energy_ghost(idx(1),idx(2),idx(3))=output_h
         end do
       end do
       end do
@@ -312,7 +361,10 @@ contains
   end subroutine
 
   pure subroutine fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall, &
-      inflow_state,inflow_temperature,wall_velocity,ghost_width)
+      inflow_state,inflow_temperature,wall_velocity,ghost_width, &
+      internal_energy_density,internal_energy_ghost)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), optional, intent(out) :: internal_energy_ghost(:,:,:)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:)
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(out) :: ghost(:,:,:,:),gt(:,:,:)
@@ -343,9 +395,14 @@ contains
       if (any(shape(inflow_state)/=[size(u,1),6]).or.size(inflow_temperature)/=6) return
       if (.not.all(ieee_is_finite(inflow_state)).or..not.all(ieee_is_finite(inflow_temperature))) return
     end if
-    if (any(n<2) .or. size(u,1)<5) return
+    if (any(n<1) .or. size(u,1)<5) return
     if (any(shape(u)/=[size(u,1),n]) .or. any(shape(ghost)/=[size(u,1),dims])) return
     if (any(shape(gt)/=dims) .or. .not.valid_reactive_boundaries_3d(faces)) return
+    if(present(internal_energy_density).neqv.present(internal_energy_ghost)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n).or.any(shape(internal_energy_ghost)/=dims)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+    endif
       do k=1,dims(3)
         do j=1,dims(2)
           do i=1,dims(1)
@@ -354,8 +411,16 @@ contains
             if (.not.ok) return
             ok=.false.
             ghost(:,i,j,k)=u(:,q(1),q(2),q(3)); gt(i,j,k)=t(q(1),q(2),q(3))
+            if(present(internal_energy_density)) internal_energy_ghost(i,j,k)= &
+              internal_energy_density(q(1),q(2),q(3))
             if (inlet>0) then
               ghost(:,i,j,k)=inflow_state(:,inlet); gt(i,j,k)=inflow_temperature(inlet)
+              if(present(internal_energy_ghost)) then
+                rho=ghost(1,i,j,k)
+                if(rho<=0) return
+                internal_energy_ghost(i,j,k)=ghost(5,i,j,k)-.5_dp*sum(ghost(2:4,i,j,k)**2)/rho
+                if(.not.ieee_is_finite(internal_energy_ghost(i,j,k))) return
+              endif
             end if
             old_momentum=ghost(2:4,i,j,k)
             do a=1,3
@@ -479,7 +544,8 @@ contains
 
   subroutine read_reactive_3d_configuration( &
       path, config, ok, message, allow_selected, allow_pressure_outlet, allow_mach_inlet, allow_characteristic_ppm, allow_difmag, &
-      allow_external_forcing,allow_sdc,allow_sdc_cvode,allow_gamma_law)
+      allow_external_forcing,allow_sdc,allow_sdc_cvode,allow_gamma_law,allow_mol,allow_dual_energy,allow_godunov_dual_energy, &
+      allow_pinned_eos)
     character(len=*), intent(in) :: path
     type(reactive_3d_config), intent(out) :: config
     logical, intent(out) :: ok
@@ -487,10 +553,15 @@ contains
     logical, intent(in), optional :: allow_selected, allow_pressure_outlet, allow_mach_inlet
     logical, intent(in), optional :: allow_characteristic_ppm,allow_difmag,allow_external_forcing,allow_sdc,allow_sdc_cvode
 
-    logical, optional, intent(in) :: allow_gamma_law
+    logical, optional, intent(in) :: allow_gamma_law,allow_mol,allow_dual_energy,allow_godunov_dual_energy
     character(len=16) :: sdc_reactor
     character(len=32) :: time_integrator
     integer :: sdc_iterations
+    logical, optional, intent(in) :: allow_pinned_eos
+    real(dp) :: pinned_eos_temperature_min,pinned_eos_temperature_max
+    logical :: pinned_eos_extrapolation
+    logical :: mol_lax_friedrichs,allow_small_energy,allow_negative_energy,dual_energy_update_E_from_e
+    real(dp) :: dual_energy_eta2
     integer :: nx, ny, nz, maximum_steps, unit, io_status
     integer :: wave_number_x, wave_number_y, wave_number_z
     real(dp) :: x_lower, x_upper, y_lower, y_upper, z_lower, z_upper
@@ -521,10 +592,12 @@ contains
     logical :: selected_allowed
 
     namelist /reactive_3d/ &
-      nx, ny, nz, maximum_steps, time_integrator, sdc_iterations, sdc_reactor, &
+      nx, ny, nz, maximum_steps, time_integrator, sdc_iterations, sdc_reactor, mol_lax_friedrichs, &
+      allow_small_energy,allow_negative_energy,dual_energy_update_E_from_e,dual_energy_eta2, &
       x_lower, x_upper, y_lower, y_upper, z_lower, z_upper, &
       final_time, cfl, problem, reconstruction, limiter, difmag, external_forcing, &
-      thermo_model, riemann_solver, &
+      thermo_model,pinned_eos_extrapolation, &
+      pinned_eos_temperature_min,pinned_eos_temperature_max, riemann_solver, &
       boundary_condition, boundary_faces, wall_temperature, wall_velocity, inflow_temperature, inflow_pressure, inflow_velocity, &
       outlet_pressure, inflow_mach, inflow_composition_count,inflow_composition_species,inflow_composition_mole_fractions, &
       chemistry_enabled, chemistry_relative_tolerance, &
@@ -546,6 +619,9 @@ contains
     nz = config%nz
     sdc_reactor=config%sdc_reactor
     time_integrator=config%time_integrator;sdc_iterations=config%sdc_iterations
+    mol_lax_friedrichs=config%mol_lax_friedrichs
+    allow_small_energy=config%allow_small_energy;allow_negative_energy=config%allow_negative_energy
+    dual_energy_update_E_from_e=config%dual_energy_update_E_from_e;dual_energy_eta2=config%dual_energy_eta2
     maximum_steps = config%maximum_steps
     x_lower = config%x_lower
     x_upper = config%x_upper
@@ -561,6 +637,9 @@ contains
     reconstruction = config%reconstruction
     limiter = config%limiter
     thermo_model = config%thermo_model
+    pinned_eos_extrapolation=config%pinned_eos_extrapolation
+    pinned_eos_temperature_min=config%pinned_eos_temperature_min
+    pinned_eos_temperature_max=config%pinned_eos_temperature_max
     riemann_solver = config%riemann_solver
     boundary_condition = config%boundary_condition
     inflow_temperature = config%inflow_temperature
@@ -630,11 +709,24 @@ contains
       return
     end if
 
+    if(.not.valid_nasa7_eos_options(pinned_eos_extrapolation, &
+        pinned_eos_temperature_min,pinned_eos_temperature_max)) then
+      ok=.false.;message='Invalid pinned EOS bounds: use zero/zero or a positive increasing pair';return
+    endif
+    if(pinned_eos_extrapolation) then
+      ok=.false.;message='Pinned Fuego EOS is not connected to this application'
+      if(.not.present(allow_pinned_eos)) return
+      if(.not.allow_pinned_eos) return
+    end if
+
     config%nx = nx
     config%ny = ny
     config%nz = nz
     config%sdc_reactor=sdc_reactor
     config%time_integrator=time_integrator;config%sdc_iterations=sdc_iterations
+    config%mol_lax_friedrichs=mol_lax_friedrichs
+    config%allow_small_energy=allow_small_energy;config%allow_negative_energy=allow_negative_energy
+    config%dual_energy_update_E_from_e=dual_energy_update_E_from_e;config%dual_energy_eta2=dual_energy_eta2
     config%maximum_steps = maximum_steps
     config%x_lower = x_lower
     config%x_upper = x_upper
@@ -650,6 +742,9 @@ contains
     config%reconstruction = trim(reconstruction)
     config%limiter = trim(limiter)
     config%thermo_model = trim(thermo_model)
+    config%pinned_eos_extrapolation=pinned_eos_extrapolation
+    config%pinned_eos_temperature_min=pinned_eos_temperature_min
+    config%pinned_eos_temperature_max=pinned_eos_temperature_max
     config%riemann_solver = trim(riemann_solver)
     config%boundary_condition = trim(boundary_condition)
     config%inflow_temperature = inflow_temperature
@@ -701,8 +796,16 @@ contains
     config%composition_mole_fractions = composition_mole_fractions
     config%output_file = trim(output_file)
     call validate_reactive_3d_configuration( &
-      config, ok, message, allow_selected=selected_allowed,allow_gamma_law=allow_gamma_law)
+      config, ok, message, allow_selected=selected_allowed,allow_gamma_law=allow_gamma_law, &
+      allow_dual_energy=allow_dual_energy,allow_godunov_dual_energy=allow_godunov_dual_energy)
     if (.not.ok) return
+    if(config%time_integrator=='mol') then
+      ok=.false.
+      if(present(allow_mol)) ok=allow_mol
+      if(.not.ok) then
+        message='MOL input is not connected in this application';return
+      endif
+    endif
     if(config%time_integrator=='sdc') then
       ok=.false.
       if(present(allow_sdc)) ok=allow_sdc
@@ -756,14 +859,14 @@ contains
   end subroutine read_reactive_3d_configuration
 
   pure subroutine validate_reactive_3d_configuration( &
-      config, ok, message, allow_selected,allow_gamma_law)
+      config, ok, message, allow_selected,allow_gamma_law,allow_dual_energy,allow_godunov_dual_energy)
     type(reactive_3d_config), intent(in) :: config
     logical, intent(out) :: ok
     character(len=*), intent(out) :: message
-    logical, intent(in), optional :: allow_selected,allow_gamma_law
+    logical, intent(in), optional :: allow_selected,allow_gamma_law,allow_dual_energy,allow_godunov_dual_energy
 
     real(dp) :: mole_sum
-    logical :: selected_allowed, selected_model,gamma_allowed
+    logical :: selected_allowed, selected_model,gamma_allowed,dual_allowed,changed_energy_policy,godunov_dual_allowed
     integer :: face
     character(len=32) :: faces(6)
 
@@ -771,18 +874,44 @@ contains
     message = ""
     gamma_allowed=.false.
     if(present(allow_gamma_law)) gamma_allowed=allow_gamma_law
+    dual_allowed=.false.
+    if(present(allow_dual_energy)) dual_allowed=allow_dual_energy
+    godunov_dual_allowed=.false.
+    if(present(allow_godunov_dual_energy)) godunov_dual_allowed=allow_godunov_dual_energy
+    if(.not.ieee_is_finite(config%dual_energy_eta2)) then
+      message='Dual energy eta2 must be finite and nonnegative';return
+    endif
+    if(config%dual_energy_eta2<0) then
+      message='Dual energy eta2 must be finite and nonnegative';return
+    endif
+    changed_energy_policy=.not.config%allow_small_energy.or..not.config%allow_negative_energy.or. &
+      .not.config%dual_energy_update_E_from_e.or.config%dual_energy_eta2/=1.e-4_dp
+    if(changed_energy_policy) then
+      if(.not.dual_allowed.or..not.(config%time_integrator=='mol'.or. &
+        (config%time_integrator=='sdc'.and.godunov_dual_allowed))) then
+        message='Dual energy input controls require a supported regular MOL/Godunov application';return
+      endif
+    endif
     selected_allowed = .false.
     if (present(allow_selected)) selected_allowed = allow_selected
     selected_model = trim(config%thermo_model) == "selected"
     faces=resolved_reactive_boundaries_3d(config)
-    if(config%time_integrator/='split'.and.config%time_integrator/='sdc') then
+    if(config%time_integrator/='split'.and.config%time_integrator/='sdc'.and.config%time_integrator/='mol') then
       message='Unknown reactive 3D time integrator';return
     end if
+    if(config%mol_lax_friedrichs.and.config%time_integrator/='mol') then
+      message='MOL LF requires MOL integration';return
+    endif
+    if(config%time_integrator=='mol') then
+      if(config%reconstruction/='characteristic_plm'.or.config%riemann_solver/='pelec') then
+        message='MOL requires characteristic PLM/PeleC';return
+      endif
+    endif
     if(config%sdc_reactor/='native'.and.config%sdc_reactor/='cvode') then
       message='Unknown SDC reactor';return
     endif
     if(config%sdc_reactor=='cvode') then
-      if(config%time_integrator/='sdc'.or..not.config%chemistry_enabled) then
+      if((config%time_integrator/='sdc'.and.config%time_integrator/='mol').or..not.config%chemistry_enabled) then
         message='SDC CVODE requires reacting SDC';return
       endif
     endif
@@ -797,7 +926,7 @@ contains
     if(.not.all(ieee_is_finite(config%external_forcing))) then
       message='External forcing must be finite';return
     end if
-    if(any(config%external_forcing/=0)) then
+    if(any(config%external_forcing/=0).and.config%time_integrator/='mol') then
       if(config%reconstruction/='characteristic_ppm'.or.config%riemann_solver/='pelec') then
         message='External forcing requires characteristic_ppm and pelec';return
       end if
@@ -957,7 +1086,11 @@ contains
       message = "Reactive 3D output_file must not be empty"
     else
       if(config%thermo_model=='gamma_law') then
-        if(config%chemistry_enabled.or.config%time_integrator/='sdc'.or.config%composition_count/=0) then
+        if(config%pinned_eos_extrapolation) then
+          message='Pinned Fuego EOS requires a NASA mechanism';return
+        end if
+        if(config%chemistry_enabled.or.(config%time_integrator/='sdc'.and.config%time_integrator/='mol').or. &
+            config%composition_count/=0) then
           message='Gamma-law requires nonreacting SDC without named composition';return
         end if
         if(config%transport_enabled.and.config%species_diffusion_enabled) then

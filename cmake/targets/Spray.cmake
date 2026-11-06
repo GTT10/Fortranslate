@@ -12,6 +12,7 @@ if(PELEF_ENABLE_SPRAY)
       src/spray/spray_wall_impact_mod.F90
       src/spray/spray_breakup_mod.F90
       src/spray/spray_coupling_3d_mod.F90
+      src/spray/spray_sdc_3d_mod.F90
       src/spray/spray_reactive_3d_mod.F90
       src/spray/spray_checkpoint_mod.F90
       src/spray/spray_application_mod.F90
@@ -24,6 +25,7 @@ if(PELEF_ENABLE_SPRAY)
     if(PELEF_ENABLE_MPI)
       target_sources(${target} PRIVATE src/les/les_mpi_filter_mod.F90 src/les/les_mpi_dynamic_mod.F90
         src/les/les_mpi_boundary_mod.F90
+        src/spray/spray_mpi_sdc_mod.F90
         src/spray/spray_mpi_exchange_mod.F90
         src/spray/spray_mpi_mod.F90 src/spray/spray_mpi_checkpoint_mod.F90
         src/spray/spray_mpi_application_mod.F90)
@@ -51,6 +53,7 @@ if(PELEF_ENABLE_SPRAY)
   pelef_add_spray_runtime(pelef_spray_runtime pelef_core)
   function(pelef_add_spray_tree_runtime target spray_base tree_base)
     add_library(${target} STATIC src/les/les_amr_patch_tree_mod.F90 src/les/les_amr_sdc_mod.F90
+      src/les/les_eb_sdc_mod.F90
       src/les/les_amr_application_mod.F90
       src/les/les_amr_subcycle_mod.F90
       src/spray/spray_eb_intersection_mod.F90
@@ -107,7 +110,8 @@ if(PELEF_ENABLE_SPRAY)
   add_executable(pelef_eb_spray_3d app/pelef_eb_spray_3d.F90)
   target_link_libraries(pelef_eb_spray_3d PRIVATE pelef_spray_tree_runtime)
   install(TARGETS pelef_eb_spray_3d RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-  if(PELEF_MECHANISM_BUNDLE)
+  # Test mechanism fixtures need the same isolated runtime as configured bundles.
+  if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     pelef_add_spray_runtime(pelef_selected_spray_runtime pelef_selected_reactive_3d_runtime)
     pelef_add_spray_tree_runtime(pelef_selected_spray_tree_runtime
       pelef_selected_spray_runtime pelef_selected_amr_tree_reactive_3d_runtime)
@@ -130,12 +134,13 @@ endif()
 if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
   add_executable(pelef_mpi_amr_spray_3d app/pelef_mpi_amr_spray_3d.F90)
   target_link_libraries(pelef_mpi_amr_spray_3d PRIVATE pelef_spray_tree_runtime)
+  pelef_require_coherent_mpi_runtime(pelef_mpi_amr_spray_3d)
   install(TARGETS pelef_mpi_amr_spray_3d RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 if(PELEF_ENABLE_SPRAY AND PELEF_ENABLE_MPI)
   add_executable(pelef_mpi_eb_spray_3d app/pelef_reactive_eb_tree_3d.F90)
-  target_compile_definitions(pelef_mpi_eb_spray_3d PRIVATE PELEF_MPI_EB_TREE PELEF_MPI_EB_SPRAY)
+  target_compile_definitions(pelef_mpi_eb_spray_3d PRIVATE PELEF_MPI_EB_TREE PELEF_MPI_EB_SPRAY PELEF_MPI_EB_LES)
   target_link_libraries(pelef_mpi_eb_spray_3d PRIVATE pelef_spray_tree_runtime)
   install(TARGETS pelef_mpi_eb_spray_3d RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()

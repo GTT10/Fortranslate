@@ -1,9 +1,11 @@
 program test_reactive_eb_transport_3d
   use, intrinsic :: iso_fortran_env, only: int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use precision_mod, only: dp
   use eb_geometry_2d_mod, only: eb_geometry_2d,build_eb_geometry_2d
   use state_indices_mod, only: irho, imy, imz, iet
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,universal_gas_constant
+  use mixture_thermo_mod, only: mixture_mass_properties
   use elementary_kinetics_mod, only: elementary_reaction
   use transport_database_mod, only: &
     gas_transport_species, load_h2o2_elementary_transport
@@ -16,7 +18,7 @@ program test_reactive_eb_transport_3d
     reactive_primitive_to_conserved
   use eb_geometry_3d_mod, only: &
     eb_geometry_3d, eb_covered_cell_3d, eb_cut_cell_3d, &
-    build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d
+    build_axis_plane_eb_geometry_3d,extrude_eb_geometry_3d,extract_eb_geometry_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: &
     initialize_reactive_eb_density_sheet_3d, reactive_eb_integrals_3d, &
@@ -27,13 +29,14 @@ program test_reactive_eb_transport_3d
     reactive_eb_transport_fluxes_rhs_3d, reactive_eb_transport_euler_update_3d, &
     advance_reactive_eb_transport_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
-  use eb_reactive_transport_3d_mod, only: compute_sdc_eb_transport_3d
+  use eb_reactive_transport_3d_mod, only: compute_sdc_eb_transport_3d,compute_sdc_eb_transport_halo_3d
   implicit none
 
   type(nasa7_species), allocatable :: species(:)
   type(elementary_reaction), allocatable :: reactions(:)
   type(gas_transport_species), allocatable :: transport(:)
   logical :: ok
+  character(len=32) :: mode_arg
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "transport thermodynamics load")
@@ -41,6 +44,11 @@ program test_reactive_eb_transport_3d
   call require(ok, "transport chemistry load")
   call load_h2o2_elementary_transport(transport, ok)
   call require(ok, "transport database load")
+  call check_held_eos()
+  call check_spatial_halo()
+  call check_centroid_transport()
+  call get_command_argument(1,mode_arg)
+  if(mode_arg=='spatial_halo') stop
   call check_regular_patch()
   call check_axis(species, transport, "x")
   call check_axis(species, transport, "y")
@@ -51,6 +59,276 @@ program test_reactive_eb_transport_3d
   write(*, '(a)') "test_reactive_eb_transport_3d: PASS"
 
 contains
+  subroutine check_held_eos()
+    type(eb_geometry_3d) :: cut
+    type(eb_integrated_flux_3d) :: flux,saved_flux
+    real(dp) :: q(12),u(12),y(7),rho,t,cs,mw,r,cp,cv,gamma,h,e,entropy,theta,interval,expected
+    real(dp) :: coefficients(4),wall_t(6)
+    real(dp) :: gas(12,2,2,2),temp(2,2,2),held(2,2,2),rate(12,2,2,2)
+    real(dp) :: ghost(12,0:3,0:3,0:3),gt(0:3,0:3,0:3),gh(0:3,0:3,0:3)
+    integer :: i,j,k
+    logical :: good,faces(6)
+    character(len=16) :: labels(6)
+    call build_axis_plane_eb_geometry_3d(2,2,2,0._dp,1._dp,0._dp,1._dp,0._dp,1._dp,'z',.31_dp,cut,good)
+    call require(good,'held molecular cut geometry')
+    rho=.31_dp;y=0;y(7)=1;coefficients=[0._dp,.02_dp,0._dp,0._dp];interval=1.e-8_dp
+    do k=0,3
+    do j=0,3
+    do i=0,3
+      t=300
+      if(i==1) t=350
+      if(i==2) t=700
+      if(i==3) t=800
+      call mixture_mass_properties(species,y,t,mw,r,cp,cv,gamma,h,e,entropy,good)
+      call require(good,'independent held molecular NASA energy')
+      q=0;q(1)=rho;q(5)=rho*universal_gas_constant/species(7)%molecular_weight*t;q(12)=1
+      call reactive_primitive_to_conserved(species,q,u,t,cs,good)
+      call require(good,'held molecular seed')
+      ghost(:,i,j,k)=u;ghost(5,i,j,k)=-1.e20_dp
+      gt(i,j,k)=t;gh(i,j,k)=rho*e
+    enddo
+    enddo
+    enddo
+    gas=ghost(:,1:2,1:2,1:2);temp=gt(1:2,1:2,1:2);held=gh(1:2,1:2,1:2)
+    faces=.false.;labels='outflow';wall_t=600;theta=1
+    call compute_sdc_eb_transport_3d(species,transport,gas,temp,cut,interval,[.false.,.true.,.false.,.false.], &
+      rate,flux,theta,good,constant_coefficients=coefficients,internal_energy_density=held)
+    call require(good,'actual held molecular cell EOS')
+    expected=-coefficients(2)*(700._dp-350._dp)/cut%dx*interval
+    call require(abs(flux%x(5,1,1,1)-expected)<=3.e-10_dp*abs(expected),'independent interior Fourier flux')
+    faces(1:2)=.true.
+    call compute_sdc_eb_transport_3d(species,transport,gas,temp,cut,interval,[.false.,.true.,.false.,.false.], &
+      rate,flux,theta,good,ghost,gt,faces,constant_coefficients=coefficients, &
+      internal_energy_density=held,ghost_internal_energy_density=gh)
+    call require(good,'actual held molecular face donor EOS')
+    expected=-coefficients(2)*(350._dp-300._dp)/cut%dx*interval
+    call require(abs(flux%x(5,0,1,1)-expected)<=3.e-10_dp*abs(expected),'independent ghost Fourier flux')
+    saved_flux=flux;rate=17;theta=.3_dp
+    gh(0,2,2)=1.e30_dp
+    call compute_sdc_eb_transport_3d(species,transport,gas,temp,cut,interval,[.false.,.true.,.false.,.false.], &
+      rate,flux,theta,good,ghost,gt,faces,constant_coefficients=coefficients, &
+      internal_energy_density=held,ghost_internal_energy_density=gh)
+    call require(.not.good.and.all(rate==17).and.theta==.3_dp,'late finite held donor refusal rollback')
+    call require(all(flux%x==saved_flux%x).and.all(flux%y==saved_flux%y).and.all(flux%z==saved_flux%z), &
+      'late held donor refusal retains all face families')
+    gh(0,2,2)=gh(0,1,1)
+    labels(1:2)='isothermal_wall'
+    call compute_sdc_eb_transport_3d(species,transport,gas,temp,cut,interval,[.false.,.true.,.false.,.false.], &
+      rate,flux,theta,good,ghost,gt,faces,labels,wall_t,constant_coefficients=coefficients, &
+      internal_energy_density=held,ghost_internal_energy_density=gh)
+    call require(good,'isothermal heat flux uses held cell EOS')
+    expected=coefficients(2)*(600._dp-350._dp)/(.5_dp*cut%dx)*interval
+    call require(abs(flux%x(5,0,1,1)-expected)<=3.e-10_dp*abs(expected),'independent isothermal Fourier flux')
+    call compute_sdc_eb_transport_3d(species,transport,gas,temp,cut,interval,[.false.,.true.,.false.,.false.], &
+      rate,flux,theta,good,ghost,gt,faces,constant_coefficients=coefficients,internal_energy_density=held)
+    call require(.not.good,'held boundary context requires actual donor scalar')
+  end subroutine check_held_eos
+
+  subroutine check_spatial_halo()
+    type(gas_transport_species), allocatable :: saved_transport(:)
+    real(dp), allocatable :: coefficients(:)
+    integer :: transport_model
+    type(eb_geometry_3d) :: wide,center,working
+    type(eb_integrated_flux_3d) :: flux,grown_flux,saved_flux
+    real(dp), allocatable :: state(:,:,:,:),temperature(:,:,:),q(:),halo(:,:,:,:),saved_halo(:,:,:,:), &
+      rate(:,:,:,:),grown_rate(:,:,:,:),saved_rate(:,:,:,:)
+    real(dp) :: b(6),t,sound,pos(3),interval,theta,saved_theta,grown_theta,inventory,face_inventory, &
+      heat_energy,frequency,saved_energy,saved_frequency,pi
+    integer :: nv,i,j,k,c,n2,h2,mode,window(3,2)
+    logical :: good,faces(6)
+    character(len=32) :: labels(6)
+    nv=reactive_nvar(size(species));n2=0;h2=0;pi=acos(-1._dp)
+    do c=1,size(species)
+      if(species(c)%name=='N2') n2=c
+      if(species(c)%name=='H2') h2=c
+    enddo
+    call require(n2>0.and.h2>0,'transport halo species')
+    call build_axis_plane_eb_geometry_3d(16,16,16,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp, &
+      'z',.49_dp,wide,good)
+    call require(good,'transport halo wide geometry')
+    call extract_eb_geometry_3d(wide,[7,7,7],[10,10,10],center,good)
+    call require(good,'transport halo valid geometry')
+    call extract_eb_geometry_3d(wide,[3,3,3],[14,14,14],working,good)
+    call require(good,'transport halo grown geometry')
+    allocate(state(nv,16,16,16),temperature(16,16,16),q(reactive_nprim(size(species))),rate(nv,4,4,4), &
+      grown_rate(nv,12,12,12))
+    do k=1,16
+    do j=1,16
+    do i=1,16
+      pos=-1.5_dp+(real([i,j,k],dp)-.5_dp)*.25_dp
+      q=0;q(1)=1;q(5)=250000+1000*cos(2*pi*pos(2));q(2:4)=[.1_dp,.2_dp,-.1_dp]
+      q(h2+5)=.05_dp+.01_dp*sin(2*pi*pos(1));q(n2+5)=1-q(h2+5)
+      call reactive_primitive_to_conserved(species,q,state(:,i,j,k),t,sound,good)
+      call require(good,'transport halo state')
+      temperature(i,j,k)=t
+      if(wide%volume_fraction(i,j,k)<=0) state(:,i,j,k)=0
+    enddo
+    enddo
+    enddo
+    window(:,1)=5;window(:,2)=8;b=600
+    saved_transport=transport
+    do transport_model=1,2
+    if(transport_model==2) then
+      coefficients=[1.e-5_dp,.02_dp,3.e-5_dp,2.e-5_dp]
+      transport%diameter=0
+    endif
+    do mode=1,6
+      labels='outflow';faces=.true.;interval=1.e-8_dp
+      if(mode==1) faces=.false.
+      if(mode==3) then
+        labels(1)='slip_wall';labels(2)='no_slip_wall'
+      endif
+      if(mode==4) labels(3:4)='isothermal_wall'
+      if(mode>=5) labels(1:4)='periodic'
+      if(mode==6) interval=1.e8_dp
+      call compute_sdc_eb_transport_halo_3d(species,transport,state,temperature,wide,interval, &
+        [.true.,.true.,.true.,.true.],rate,flux,halo,theta,good,faces,labels,b, &
+        constant_coefficients=coefficients)
+      call require(good,'transport halo source evaluation')
+      call require(all(shape(halo)==[nv,16,16,16]).and.all(lbound(flux%x)==[1,0,1,1]),'transport halo output shape/bounds')
+      call require(all(rate==halo(:,7:10,7:10,7:10)),'transport halo valid source crop')
+      call require(all(halo(:,:3,:,:)==0).and.all(halo(:,14:,:,:)==0),'transport halo unused support zero')
+      call compute_sdc_eb_transport_3d(species,transport,state(:,3:14,3:14,3:14),temperature(3:14,3:14,3:14), &
+        working,interval,[.true.,.true.,.true.,.true.],grown_rate,grown_flux,grown_theta,good, &
+        state(:,2:15,2:15,2:15),temperature(2:15,2:15,2:15),faces,labels,b,physical_box=window,constant_coefficients=coefficients)
+      call require(good,'transport halo direct grown control')
+      call require(all(halo(:,4:13,4:13,4:13)==grown_rate(:,2:11,2:11,2:11)),'transport halo matches same-level grown RHS')
+      call require(all(flux%x==grown_flux%x(:,4:8,5:8,5:8)).and.all(flux%y==grown_flux%y(:,5:8,4:8,5:8)).and. &
+        all(flux%z==grown_flux%z(:,5:8,5:8,4:8)),'transport halo integrated face crop')
+      do c=1,nv
+        inventory=interval*center%dx*center%dy*center%dz*sum(center%volume_fraction*rate(c,:,:,:))
+        face_inventory=center%dy*center%dz*sum(center%x_face_fraction(0,:,:)*flux%x(c,0,:,:)- &
+          center%x_face_fraction(4,:,:)*flux%x(c,4,:,:))+ &
+          center%dx*center%dz*sum(center%y_face_fraction(:,0,:)*flux%y(c,:,0,:)- &
+          center%y_face_fraction(:,4,:)*flux%y(c,:,4,:))+ &
+          center%dx*center%dy*sum(center%z_face_fraction(:,:,0)*flux%z(c,:,:,0)- &
+          center%z_face_fraction(:,:,4)*flux%z(c,:,:,4))
+        call require(abs(inventory-face_inventory)<1.e-11_dp*max(1._dp,abs(inventory),abs(face_inventory)), &
+          'transport halo valid volume inventory')
+      enddo
+      if(mode>=5) then
+        call require(maxval(abs(flux%x(:,0,:,:)-flux%x(:,4,:,:)))<1.e-12_dp,'transport halo shared periodic x flux')
+        call require(maxval(abs(flux%y(:,:,0,:)-flux%y(:,:,4,:)))<1.e-12_dp,'transport halo shared periodic y flux')
+      endif
+      if(mode==6) call require(theta<.99_dp,'transport halo periodic limiter activates')
+      if(mode==1) call require(all(flux%x(:,0,:,:)==0).and.all(flux%x(:,4,:,:)==0).and. &
+        all(flux%y(:,:,0,:)==0).and.all(flux%y(:,:,4,:)==0),'transport halo closed valid faces')
+    enddo
+    enddo
+    deallocate(coefficients)
+    transport=saved_transport
+    faces=.false.;labels='outflow';interval=1.e-8_dp
+    heat_energy=-7;frequency=-9
+    call compute_sdc_eb_transport_halo_3d(species,transport,state,temperature,wide,interval, &
+      [.false.,.true.,.false.,.false.],rate,flux,halo,theta,good,faces,labels, &
+      embedded_wall_temperature=600._dp,embedded_wall_energy=heat_energy,embedded_frequency=frequency)
+    call require(good.and.frequency>0,'transport halo embedded heat source')
+    inventory=interval*center%dx*center%dy*center%dz*sum(center%volume_fraction*rate(iet,:,:,:))
+    call require(abs(inventory-heat_energy)<1.e-11_dp,'transport halo embedded valid heat ledger')
+    saved_rate=rate;saved_flux=flux;saved_halo=halo;saved_theta=theta;saved_energy=heat_energy;saved_frequency=frequency
+    state(1,10,10,10)=ieee_value(0._dp,ieee_quiet_nan)
+    call compute_sdc_eb_transport_halo_3d(species,transport,state,temperature,wide,interval, &
+      [.false.,.true.,.false.,.false.],rate,flux,halo,theta,good,faces,labels, &
+      embedded_wall_temperature=600._dp,embedded_wall_energy=heat_energy,embedded_frequency=frequency)
+    call require(.not.good,'transport halo invalid prepared state rejected')
+    call require(all(rate==saved_rate).and.all(halo==saved_halo).and.theta==saved_theta.and. &
+      heat_energy==saved_energy.and.frequency==saved_frequency,'transport halo source and ledger rollback')
+    call require(all(flux%x==saved_flux%x).and.all(flux%y==saved_flux%y).and.all(flux%z==saved_flux%z), &
+      'transport halo flux rollback')
+    print *, 'PASS: transport prepared halo, physical walls, periodic limiting and rollback'
+  end subroutine check_spatial_halo
+
+  subroutine check_centroid_transport()
+    type(eb_geometry_3d) :: wide,center
+    type(eb_integrated_flux_3d) :: flux
+    real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),rate(:,:,:,:),halo(:,:,:,:),q(:),y(:),h_species(:)
+    real(dp) :: coefficients(4),position(3),t,cs,mw,r,cp,cv,gamma,h,e,entropy,theta,interval,expected,inventory
+    integer :: nv,ns,i,j,k,c,mode
+    logical :: good,faces(6)
+    character(len=16) :: labels(6)
+    nv=reactive_nvar(size(species));ns=size(species)
+    allocate(gas(nv,16,16,16),temp(16,16,16),rate(nv,4,4,4),q(reactive_nprim(ns)),y(ns),h_species(ns))
+    call build_axis_plane_eb_geometry_3d(16,16,16,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp,-1.5_dp,2.5_dp, &
+      'z',.49_dp,wide,good)
+    call require(good,'centroid transport planar geometry')
+    call extract_eb_geometry_3d(wide,[7,7,7],[10,10,10],center,good)
+    call require(good,'centroid transport valid geometry')
+    do c=1,ns
+      y=0;y(c)=1
+      call mixture_mass_properties(species,y,500._dp,mw,r,cp,cv,gamma,h,e,entropy,good)
+      call require(good,'independent species enthalpy')
+      h_species(c)=h
+    enddo
+    do mode=1,3
+      do k=1,16
+      do j=1,16
+      do i=1,16
+        position=-1.5_dp+(real([i,j,k],dp)-.5_dp)*.25_dp
+        y=0;y(ns)=1;t=500
+        if(mode==1) t=800+100*position(1)*position(3)
+        if(mode==3) then
+          y(1)=.1_dp+.03_dp*sin(2*acos(-1._dp)*position(1))*(1+.2_dp*sin(2*acos(-1._dp)*position(3)))
+          y(ns)=1-y(1)
+        endif
+        call mixture_mass_properties(species,y,t,mw,r,cp,cv,gamma,h,e,entropy,good)
+        call require(good,'centroid transport analytic thermodynamics')
+        q=0;q(1)=1;q(5)=r*t;q(6:)=y
+        if(mode==2) q(3)=position(1)*position(2)
+        call reactive_primitive_to_conserved(species,q,gas(:,i,j,k),t,cs,good)
+        call require(good,'centroid transport analytic gas')
+        temp(i,j,k)=t
+        if(wide%volume_fraction(i,j,k)<=0) gas(:,i,j,k)=0
+      enddo
+      enddo
+      enddo
+      faces=.true.;labels='outflow';interval=1.e-6_dp;coefficients=0
+      if(mode==1) coefficients(2)=.02_dp
+      if(mode==2) coefficients(1)=.03_dp
+      if(mode==3) then
+        coefficients(4)=.2_dp;interval=1.e3_dp;faces=.false.
+      endif
+      call compute_sdc_eb_transport_halo_3d(species,transport,gas,temp,wide,interval, &
+        [mode==2,mode==1,mode==3,.false.],rate,flux,halo,theta,good,faces,labels, &
+        constant_coefficients=coefficients)
+      call require(good,'centroid transport evaluation')
+      if(mode==1) then
+        ! T=800+100*x*z: q_x=-lambda*100*z. The aperture spans z=.49:.5.
+        expected=-.02_dp*100*.495_dp*interval
+        call require(abs(flux%x(iet,2,2,2)-expected)<3.e-11_dp*abs(expected), &
+          'independent Fourier flux at open-face centroid')
+      else if(mode==2) then
+        ! v=x*y: tau_xx=-2*mu*x/3, tau_xy=mu*y; both sides of the face contribute.
+        call require(abs(flux%x(2,0,2,3))<1.e-15_dp,'lower interface viscous transverse stencil')
+        expected=2*.03_dp/3*interval
+        call require(abs(flux%x(2,4,2,3)-expected)<1.e-13_dp*abs(expected), &
+          'upper interface viscous transverse stencil')
+        call require(abs(flux%y(2,2,0,3))<1.e-15_dp,'lower interface shear stencil')
+        call require(abs(flux%y(2,2,4,3)+.03_dp*interval)<1.e-13_dp*.03_dp*interval, &
+          'upper interface shear stencil')
+      else
+        call require(theta<.99_dp,'centroid species limiter activates')
+        do c=1,ns
+          call require(minval(gas(c+5,7:10,7:10,7:10)+interval*rate(c+5,:,:,:))>=-1.e-14_dp, &
+            'centroid limited species remains nonnegative')
+          inventory=interval*center%dx*center%dy*center%dz*sum(center%volume_fraction*rate(c+5,:,:,:))
+          call require(abs(inventory)<1.e-13_dp,'closed centroid species inventory')
+        enddo
+        call require(maxval(abs(sum(flux%x(6:,:,:,:),dim=1)))<1.e-13_dp.and. &
+          maxval(abs(sum(flux%y(6:,:,:,:),dim=1)))<1.e-13_dp.and. &
+          maxval(abs(sum(flux%z(6:,:,:,:),dim=1)))<1.e-13_dp,'centroid corrected species mass flux sums to zero')
+        do k=1,4
+        do j=1,4
+        do i=0,4
+          expected=dot_product(h_species,flux%x(6:,i,j,k))
+          call require(abs(flux%x(iet,i,j,k)-expected)<1.e-10_dp*max(1._dp,abs(expected)), &
+            'limited centroid species enthalpy shares species flux weights')
+        enddo
+        enddo
+        enddo
+      endif
+    enddo
+    print *, 'PASS: analytic centroid heat and interface stress, positive conservative species/enthalpy'
+  end subroutine check_centroid_transport
 
   subroutine check_regular_patch()
     type(eb_geometry_3d) :: geometry

@@ -119,7 +119,7 @@ contains
   ! Input IDs are strictly increasing, as after MPI receive sorting. Stable
   ! rank bins preserve every parcel field and optional component association.
   subroutine partition_amr_tree_spray_parcels(tree,owners,nranks,parcels,lower,spacing,periodic, &
-      counts,offsets,locations,ok,component_mass,maximum_level)
+      counts,offsets,locations,ok,component_mass,maximum_level,tab_tangent_history)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, optional, intent(in) :: maximum_level
     integer, intent(in) :: owners(:),nranks
@@ -129,6 +129,8 @@ contains
     integer, allocatable, intent(inout) :: counts(:),offsets(:),locations(:,:)
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
+    real(dp), allocatable :: history(:)
     type(spray_parcel), allocatable :: ordered(:)
     real(dp), allocatable :: positions(:,:),masses(:,:)
     integer, allocatable :: found(:,:),bins(:),starts(:),next(:),ordered_locations(:,:)
@@ -145,6 +147,12 @@ contains
     end if
     allocate(positions(3,size(parcels)),stat=ios)
     if (ios/=0) return
+    if(present(tab_tangent_history)) then
+      if(.not.allocated(tab_tangent_history)) return
+      if(size(tab_tangent_history)/=size(parcels)) return
+      if(.not.all(ieee_is_finite(tab_tangent_history)).or.any(tab_tangent_history<0)) return
+      allocate(history(size(parcels)))
+    endif
     do p=1,size(parcels)
       if (.not.valid_spray_parcel(parcels(p))) return
       if (p>1) then
@@ -177,10 +185,12 @@ contains
       r=owners(found(1,p))+1;destination=next(r)+1;next(r)=destination
       ordered(destination)=parcels(p);ordered_locations(:,destination)=found(:,p)
       if (present(component_mass)) masses(:,destination)=component_mass(:,p)
+      if(present(tab_tangent_history)) history(destination)=tab_tangent_history(p)
     end do
     call move_alloc(ordered,parcels);call move_alloc(bins,counts);call move_alloc(starts,offsets)
     call move_alloc(ordered_locations,locations)
     if (present(component_mass)) call move_alloc(masses,component_mass)
+    if(present(tab_tangent_history)) call move_alloc(history,tab_tangent_history)
     ok=.true.
   end subroutine
 end module

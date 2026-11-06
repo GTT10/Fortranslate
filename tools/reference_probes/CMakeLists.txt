@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.23)
+project(PeleFReferenceInterpolationProbes LANGUAGES CXX)
+find_package(AMReX CONFIG REQUIRED)
+add_executable(amrex_boundary_interp_probe amrex_boundary_interp_probe.cpp)
+target_link_libraries(amrex_boundary_interp_probe PRIVATE AMReX::amrex)
+target_compile_features(amrex_boundary_interp_probe PRIVATE cxx_std_20)

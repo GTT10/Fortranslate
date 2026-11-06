@@ -23,8 +23,9 @@ program test_eb_reactive_redistribution_2d
   integer, parameter :: neighbor_i = 4
   integer, parameter :: overlap_nx = 4
   integer, parameter :: overlap_ny = 4
+  integer, parameter :: curved_n = 12
   type(nasa7_species), allocatable :: species(:)
-  type(eb_geometry_2d) :: geometry, overlap_geometry
+  type(eb_geometry_2d) :: geometry, overlap_geometry, curved_geometry
   real(dp), allocatable :: primitive(:), state_cell(:), mass_fractions(:)
   real(dp), allocatable :: conservative_rhs(:, :, :)
   real(dp), allocatable :: redistributed_rhs(:, :, :)
@@ -34,6 +35,9 @@ program test_eb_reactive_redistribution_2d
   real(dp), allocatable :: redistributed_state(:, :, :)
   real(dp), allocatable :: scalar_state(:, :, :), scalar_redistributed(:, :, :)
   real(dp), allocatable :: scalar_zeroth_order(:, :, :)
+  real(dp) :: curved_level_set(0:curved_n, 0:curved_n)
+  real(dp) :: curved_state(1, curved_n, curved_n), curved_two(1, curved_n, curved_n)
+  real(dp) :: curved_four(1, curved_n, curved_n)
   real(dp) :: level_set(0:nx, 0:ny), mole_fractions(7)
   real(dp) :: overlap_level_set(0:overlap_nx, 0:overlap_ny)
   real(dp) :: reference_rhs(5), temperature_cell, sound_speed
@@ -43,7 +47,7 @@ program test_eb_reactive_redistribution_2d
   real(dp) :: qhat_a, qhat_b, expected_shared
   real(dp) :: cell_coordinate_x, cell_coordinate_y, linear_error
   logical :: ok, used_order_zero_fallback
-  integer :: i, j, k, nvar
+  integer :: i, j, k, nvar, order
 
   call load_h2o2_elementary_thermo(species, ok)
   call require(ok, "thermodynamic database load")
@@ -323,22 +327,25 @@ program test_eb_reactive_redistribution_2d
   call reactive_eb_weighted_state_redistribute_2d( &
     overlap_geometry, scalar_state, scalar_zeroth_order, ok, 0.5_dp, 0)
   call require(ok, "zeroth-order affine StateRedist")
-  call reactive_eb_weighted_state_redistribute_2d( &
-    overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, 2)
-  call require(ok, "second-order affine StateRedist")
-  linear_error = maxval(abs(scalar_redistributed - scalar_state), &
-    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1))
-  call require(linear_error <= 2.0e-12_dp, &
-    "second-order affine state preservation")
-  call require(maxval(abs(scalar_zeroth_order - scalar_state), &
-    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) > &
-    1.0e-5_dp, "zeroth-order affine diffusion")
-  original_integral = sum(overlap_geometry%volume_fraction * &
-    scalar_state(1, :, :))
-  redistributed_integral = sum(overlap_geometry%volume_fraction * &
-    scalar_redistributed(1, :, :))
-  call assert_close(redistributed_integral, original_integral, &
-    2.0e-12_dp, "second-order affine conservation")
+  do order = 2, 4, 2
+    call reactive_eb_weighted_state_redistribute_2d( &
+      overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, order)
+    call require(ok, "higher-order affine StateRedist")
+    linear_error = maxval(abs(scalar_redistributed - scalar_state), &
+      mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1))
+    call require(linear_error <= 2.0e-12_dp, &
+      "higher-order affine state preservation")
+    call require(maxval(abs(scalar_zeroth_order - scalar_state), &
+      mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) > &
+      1.0e-5_dp, "zeroth-order affine diffusion")
+    original_integral = sum(overlap_geometry%volume_fraction * &
+      scalar_state(1, :, :))
+    redistributed_integral = sum(overlap_geometry%volume_fraction * &
+      scalar_redistributed(1, :, :))
+    call assert_close(redistributed_integral, original_integral, &
+      2.0e-12_dp, "higher-order affine conservation")
+
+  end do
 
   scalar_state = 0.0_dp
   do j = 1, overlap_ny
@@ -347,20 +354,61 @@ program test_eb_reactive_redistribution_2d
           i + j >= 6) scalar_state(1, i, j) = 1.0_dp
     end do
   end do
-  call reactive_eb_weighted_state_redistribute_2d( &
-    overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, 2)
-  call require(ok, "limited second-order discontinuous StateRedist")
-  call require(minval(scalar_redistributed, &
-    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) >= &
-    -2.0e-12_dp .and. maxval(scalar_redistributed, &
-    mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) <= &
-    1.0_dp + 2.0e-12_dp, "second-order StateRedist monotonicity")
-  original_integral = sum(overlap_geometry%volume_fraction * &
-    scalar_state(1, :, :))
-  redistributed_integral = sum(overlap_geometry%volume_fraction * &
-    scalar_redistributed(1, :, :))
-  call assert_close(redistributed_integral, original_integral, &
-    2.0e-12_dp, "limited second-order conservation")
+  do order = 2, 4, 2
+    call reactive_eb_weighted_state_redistribute_2d( &
+      overlap_geometry, scalar_state, scalar_redistributed, ok, 0.5_dp, order)
+    call require(ok, "limited higher-order discontinuous StateRedist")
+    call require(minval(scalar_redistributed, &
+      mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) >= &
+      -2.0e-12_dp .and. maxval(scalar_redistributed, &
+      mask=spread(overlap_geometry%cell_type /= eb_covered_cell, 1, 1)) <= &
+      1.0_dp + 2.0e-12_dp, "higher-order StateRedist monotonicity")
+    original_integral = sum(overlap_geometry%volume_fraction * &
+      scalar_state(1, :, :))
+    redistributed_integral = sum(overlap_geometry%volume_fraction * &
+      scalar_redistributed(1, :, :))
+    call assert_close(redistributed_integral, original_integral, &
+      2.0e-12_dp, "limited higher-order conservation")
+
+  end do
+
+  ! A curved interface exercises order-four fallback to EB slopes,
+  ! with a smooth non-affine field and conservative overlapping scatter.
+  do j = 0, curved_n
+    do i = 0, curved_n
+      curved_level_set(i, j) = sqrt((real(i, dp) - 6.1_dp)**2 + &
+        (real(j, dp) - 5.8_dp)**2) - 3.1_dp
+    end do
+  end do
+  call build_eb_geometry_2d(curved_level_set, 0.0_dp, 1.0_dp, &
+    0.0_dp, 1.0_dp, curved_geometry, ok)
+  call require(ok, "curved-field circular geometry")
+  do j = 1, curved_n
+    do i = 1, curved_n
+      cell_coordinate_x = real(i, dp) - 0.5_dp + curved_geometry%cell_centroid_x(i, j)
+      cell_coordinate_y = real(j, dp) - 0.5_dp + curved_geometry%cell_centroid_y(i, j)
+      curved_state(1, i, j) = 2.0_dp + 0.3_dp * sin(0.5_dp * cell_coordinate_x + 0.2_dp * cell_coordinate_y) + &
+        0.01_dp * cell_coordinate_x * cell_coordinate_y
+    end do
+  end do
+  call reactive_eb_weighted_state_redistribute_2d(curved_geometry, &
+    curved_state, curved_two, ok, 0.5_dp, 2)
+  call require(ok, "curved-field order-two reconstruction")
+  call reactive_eb_weighted_state_redistribute_2d(curved_geometry, &
+    curved_state, curved_four, ok, 0.5_dp, 4)
+  call require(ok, "curved-field order-four reconstruction")
+  call require(minval(curved_four, &
+    mask=spread(curved_geometry%cell_type /= eb_covered_cell, 1, 1)) >= &
+    minval(curved_state, mask=spread(curved_geometry%cell_type /= eb_covered_cell, 1, 1)) - 2.0e-12_dp, &
+    "curved-field order-four minimum bound")
+  call require(maxval(curved_four) <= &
+    maxval(curved_state, mask=spread(curved_geometry%cell_type /= eb_covered_cell, 1, 1)) + 2.0e-12_dp, &
+    "curved-field order-four maximum bound")
+  original_integral = sum(curved_geometry%volume_fraction * curved_state(1, :, :))
+  call assert_close(sum(curved_geometry%volume_fraction * curved_two(1, :, :)), &
+    original_integral, 2.0e-12_dp, "curved-field order-two conservation")
+  call assert_close(sum(curved_geometry%volume_fraction * curved_four(1, :, :)), &
+    original_integral, 2.0e-12_dp, "curved-field order-four conservation")
 
   call reactive_eb_weighted_state_redistribute_2d( &
     overlap_geometry, scalar_state, scalar_redistributed, ok, 0.0_dp)

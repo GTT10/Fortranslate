@@ -2,6 +2,7 @@ program test_les_dynamic_boundaries
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
   use les_smagorinsky_3d_mod, only: compute_les_rhs_3d,advance_les_ssprk2_3d
   use precision_mod, only: dp
+  use mixture_thermo_mod, only: mixture_mass_properties
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_primitive_to_conserved
@@ -70,7 +71,13 @@ program test_les_dynamic_boundaries
     ! AMR averages two Euler states; the regular integrator adds the weighted RHS.
     call require(all(abs(u-state%fields(1)%values)<=8*epsilon(1._dp)*max(abs(u),abs(root))), &
       'AMR root state within floating-point accumulation error')
-    call require(all(ut==temps%fields(1)%values(1,:,:,:)),'exact AMR root temperature')
+    ! The accepted conserved fields already allow accumulation roundoff above.
+    ! Check each temperature against its own caloric state, not bit equality
+    ! between inverse solves whose accepted energies can differ.
+    call require(caloric_state_matches(u,ut),'regular temperature matches accepted energy')
+    call require(caloric_state_matches(state%fields(1)%values,temps%fields(1)%values(1,:,:,:)), &
+      'AMR temperature matches accepted energy')
+    call require(.not.caloric_state_matches(u,ut+1.e-3_dp),'temperature oracle rejects a biased output')
     scale=max(maxval(abs(reference)),1e-30_dp)
     call require(maxval(abs(budget-reference))<=1e-12_dp*scale,'AMR boundary budget')
     delta=sum(sum(sum(u-root,dim=4),dim=3),dim=2)*product(h)
@@ -90,6 +97,30 @@ program test_les_dynamic_boundaries
   call check_mach_les()
   print *, 'PASS: regular Dynamic physical boundaries, AMR parity, conservation and rollback'
 contains
+  logical function caloric_state_matches(values,temperature) result(matches)
+    real(dp), intent(in) :: values(:,:,:,:),temperature(:,:,:)
+    real(dp) :: y(size(species)),mw,r,cp,cv,gamma,enthalpy,energy,entropy,kinetic,target,roundoff
+    integer :: a,b,c
+    logical :: valid
+    matches=.false.
+    do c=1,size(temperature,3)
+      do b=1,size(temperature,2)
+        do a=1,size(temperature,1)
+          y=values(6:,a,b,c)/values(1,a,b,c)
+          kinetic=.5_dp*sum((values(2:4,a,b,c)/values(1,a,b,c))**2)
+          target=values(5,a,b,c)/values(1,a,b,c)-kinetic
+          call mixture_mass_properties(species,y,temperature(a,b,c),mw,r,cp,cv,gamma,enthalpy,energy,entropy,valid)
+          if(.not.valid) return
+          ! The strict caloric inverse admits residual 1e-11*max(1,|e|).
+          ! Bound the independent density/kinetic reconstruction's <=16 basic
+          ! floating-point operations separately; do not relax the state gate.
+          roundoff=16*epsilon(1._dp)*max(1._dp,abs(values(5,a,b,c)/values(1,a,b,c)),abs(kinetic),abs(energy))
+          if(abs(energy-target)>1.e-11_dp*max(1._dp,abs(target))+roundoff) return
+        enddo
+      enddo
+    enddo
+    matches=.true.
+  end function caloric_state_matches
   subroutine check_mach_les()
     character(len=16), parameter :: models(4)=[character(len=16)::'smagorinsky','wale','vreman','dynamic']
     real(dp) :: mach(6),pin(6),target_t(6),uniform(12,4,4,4),uniform_t(4,4,4),ug(12),tg,ref_rate(12)

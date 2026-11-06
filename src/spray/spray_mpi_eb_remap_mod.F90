@@ -8,6 +8,7 @@ module spray_mpi_eb_remap_mod
   use spray_wall_impact_mod, only: spray_wall_film
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films
   use mpi_eb_tree_remap_3d_mod, only: remap_mpi_eb_tree_3d
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use spray_mpi_amr_tree_mod, only: migrate_eb_tree_spray_parcels
   implicit none
   private
@@ -15,10 +16,12 @@ module spray_mpi_eb_remap_mod
 contains
   ! Immutable physical geometry, common root/refinement lattice. All state commits together.
   subroutine remap_mpi_eb_spray(comm,species,tree,owners,geometry,state,temperature,parcels,components, &
-      new_tree,new_owners,finest,phi,lower,spacing,capacity,ok,wall_films,film_mass,maximum_films,reaction_source,periodic)
+      new_tree,new_owners,finest,phi,lower,spacing,capacity,ok,wall_films,film_mass,maximum_films, &
+      reaction_source,periodic,frame,heat_release)
     logical, optional, intent(in) :: periodic(3)
-    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source
-    type(amr_tree_state_3d), allocatable :: ir
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source,heat_release
+    type(amr_tree_state_3d), allocatable :: ir,heat
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(amr_patch_tree_3d), intent(inout) :: tree
@@ -58,7 +61,10 @@ contains
     if(present(reaction_source)) then
       allocate(ir);ir=reaction_source
     end if
-    call remap_mpi_eb_tree_3d(species,tree,new_tree,owners,new_owners,finest,candidate_geometry,gas,temp,comm,valid,ir)
+    if(present(heat_release)) then
+      allocate(heat);heat=heat_release
+    end if
+    call remap_mpi_eb_tree_3d(species,tree,new_tree,owners,new_owners,finest,candidate_geometry,gas,temp,comm,valid,ir,frame,heat)
     if(.not.valid) return
     call migrate_eb_tree_spray_parcels(comm,new_tree,new_owners,phi,drops,lower,spacing,capacity,valid,masses,periodic=periodic)
     if(.not.valid) return
@@ -68,6 +74,7 @@ contains
         lower,spacing,maximum_films,valid,phi,periodic=periodic)
       if(.not.valid) return
     end if
+    if(present(heat_release)) heat_release=heat
     if(present(reaction_source)) reaction_source=ir
     tree=new_tree;owners=new_owners
     call move_alloc(candidate_geometry,geometry)

@@ -2,6 +2,8 @@ module reactive_eb_amr_2d_driver_mod
   use, intrinsic :: iso_fortran_env, only: iostat_end
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use reactive_checkpoint_context_mod, only: eos_checkpoint_header
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use state_indices_mod, only: irho, iet
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -144,7 +146,8 @@ contains
       config%eb%state_redist_target_volume_fraction > 0.0_dp .and. &
       config%eb%state_redist_target_volume_fraction <= 1.0_dp .and. &
       (config%eb%state_redist_max_order == 0 .or. &
-       config%eb%state_redist_max_order == 2) .and. &
+       config%eb%state_redist_max_order == 2 .or. &
+       config%eb%state_redist_max_order == 4) .and. &
       reactive_eb_wall_configuration_is_valid(config%eb) .and. &
       config%coarse_i_lower >= 1 .and. &
       config%coarse_i_upper <= config%eb%flow%nx .and. &
@@ -1991,6 +1994,7 @@ contains
           fine_geometry%is_valid() .or. patch%refinement_ratio /= 0) return
     end if
 
+    if(len_trim(eos_checkpoint_header(reactive_eb_amr_checkpoint_magic,species))==0) return
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) then
@@ -1998,7 +2002,7 @@ contains
         "Could not open Reactive EB AMR 2D checkpoint for writing"
       return
     end if
-    write(unit, '(a)', iostat=status) reactive_eb_amr_checkpoint_magic
+    write(unit, '(a)', iostat=status) eos_checkpoint_header(reactive_eb_amr_checkpoint_magic,species)
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       schema, size(species), nvar, merge(1, 0, fine_active)
@@ -2270,7 +2274,7 @@ contains
     end if
     read(unit, '(a)', iostat=status) magic
     if (status /= 0 .or. &
-        trim(magic) /= reactive_eb_amr_checkpoint_magic) go to 900
+        trim(magic) /= eos_checkpoint_header(reactive_eb_amr_checkpoint_magic,species)) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar, stored_fine_flag
     if (status /= 0) go to 900
@@ -2643,6 +2647,7 @@ contains
         minimum_dt > time + time_tolerance .or. &
         .not. ieee_is_finite(base_density) .or. base_density <= 0.0_dp) return
 
+    if(len_trim(eos_checkpoint_header(reactive_eb_amr_checkpoint_magic,species))==0) return
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) then
@@ -2650,7 +2655,7 @@ contains
         "Could not open Reactive EB AMR patch-set checkpoint for writing"
       return
     end if
-    write(unit, '(a)', iostat=status) reactive_eb_patch_set_checkpoint_magic
+    write(unit, '(a)', iostat=status) eos_checkpoint_header(reactive_eb_patch_set_checkpoint_magic,species)
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) &
       schema, size(species), nvar, patch_set%patch_count()
@@ -2907,7 +2912,7 @@ contains
     end if
     read(unit, '(a)', iostat=status) magic
     if (status /= 0 .or. &
-        trim(magic) /= reactive_eb_patch_set_checkpoint_magic) go to 900
+        trim(magic) /= eos_checkpoint_header(reactive_eb_patch_set_checkpoint_magic,species)) go to 900
     read(unit, *, iostat=status) &
       schema, stored_species, stored_nvar, stored_patch_count
     if (status /= 0) go to 900
@@ -3284,6 +3289,7 @@ contains
           level_one_patch%coarse_j_upper /= config%level_two_j_upper) return
     end if
 
+    if(len_trim(eos_checkpoint_header(reactive_eb_amr_checkpoint_magic,species))==0) return
     open(newunit=unit, file=trim(path), status="replace", action="write", &
       form="formatted", iostat=status)
     if (status /= 0) then
@@ -3293,9 +3299,9 @@ contains
     end if
     if (config%dynamic_regridding) then
       write(unit, '(a)', iostat=status) &
-        reactive_eb_dynamic_three_level_checkpoint_magic
+        eos_checkpoint_header(reactive_eb_dynamic_three_level_checkpoint_magic,species)
     else
-      write(unit, '(a)', iostat=status) reactive_eb_three_level_checkpoint_magic
+      write(unit, '(a)', iostat=status) eos_checkpoint_header(reactive_eb_three_level_checkpoint_magic,species)
     end if
     if (status /= 0) go to 900
     write(unit, '(*(i0,1x))', iostat=status) schema, size(species), nvar
@@ -3547,9 +3553,9 @@ contains
     read(unit, '(a)', iostat=status) magic
     if (status /= 0) go to 900
     dynamic_checkpoint = &
-      trim(magic) == reactive_eb_dynamic_three_level_checkpoint_magic
+      trim(magic) == eos_checkpoint_header(reactive_eb_dynamic_three_level_checkpoint_magic,species)
     if (.not. dynamic_checkpoint .and. &
-        trim(magic) /= reactive_eb_three_level_checkpoint_magic) go to 900
+        trim(magic) /= eos_checkpoint_header(reactive_eb_three_level_checkpoint_magic,species)) go to 900
     if (dynamic_checkpoint .neqv. config%dynamic_regridding) go to 900
     if (dynamic_checkpoint .and. .not. present(regrids)) go to 900
     read(unit, *, iostat=status) &
@@ -3877,6 +3883,8 @@ contains
       base_mole_fractions, chemistry_integrator, bundle_sha256, &
       failure_context)
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: coarse_state(:, :, :)
@@ -3912,6 +3920,10 @@ contains
     type(reactive_boundary_set_2d) :: boundaries
     character(len=1024) :: checkpoint_failure
 
+    call configure_reactive_2d_eos(species,config%eb%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) then
+      ok=.false.;return
+    endif
     ok = .false.
     checkpoint_failure = ""
     if (present(failure_context)) failure_context = ""
@@ -3940,7 +3952,7 @@ contains
         return
       end if
       if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
-          size(species), bundle_sha256, chemistry_integrator, &
+          size(eos_species), bundle_sha256, chemistry_integrator, &
           base_mole_fractions)) then
         if (present(failure_context)) failure_context = &
           "Reactive EB AMR 2D selected simulation context is invalid"
@@ -3948,12 +3960,12 @@ contains
       end if
     end if
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok, base_mole_fractions)
+      eos_species, config%eb, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
       if (selected_context .and. config%dynamic_regridding) then
         call read_reactive_eb_amr_2d_checkpoint( &
-          config%restart_file, species, config, coarse_state, &
+          config%restart_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
           fine_geometry, patch, fine_active, time, steps, regrids, &
           minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
@@ -3963,7 +3975,7 @@ contains
           failure_context=checkpoint_failure)
       else
         call read_reactive_eb_amr_2d_checkpoint( &
-          config%restart_file, species, config, coarse_state, &
+          config%restart_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
           fine_geometry, patch, fine_active, time, steps, regrids, &
           minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
@@ -3990,11 +4002,11 @@ contains
 
       if (present(base_mole_fractions)) then
         call initialize_reactive_2d( &
-          species, config%eb%flow, coarse_state, coarse_temperature, &
+          eos_species, config%eb%flow, coarse_state, coarse_temperature, &
           coarse_dx, coarse_dy, base_density, local_ok, base_mole_fractions)
       else
         call initialize_reactive_2d( &
-          species, config%eb%flow, coarse_state, coarse_temperature, &
+          eos_species, config%eb%flow, coarse_state, coarse_temperature, &
           coarse_dx, coarse_dy, base_density, local_ok)
       end if
       if (.not. local_ok) return
@@ -4006,14 +4018,14 @@ contains
       allocate(fine_state(nvar, fine_nx, fine_ny))
       allocate(fine_temperature(fine_nx, fine_ny))
       call prolong_reactive_eb_patch_2d( &
-        species, coarse_state, coarse_temperature, coarse_geometry, &
+        eos_species, coarse_state, coarse_temperature, coarse_geometry, &
         fine_geometry, patch, config%prolongation_method, fine_state, &
         fine_temperature, local_ok)
       if (.not. local_ok) return
       fine_active = .true.
       if (config%dynamic_regridding .and. config%regrid_at_initialization) then
         call regrid_reactive_eb_amr_hierarchy_2d( &
-          species, config, coarse_state, coarse_temperature, &
+          eos_species, config, coarse_state, coarse_temperature, &
           coarse_geometry, fine_state, fine_temperature, fine_geometry, &
           patch, fine_active, changed, local_ok)
         if (.not. local_ok) return
@@ -4051,18 +4063,18 @@ contains
         allocate(fine_candidate, mold=fine_state)
         allocate(fine_candidate_temperature, mold=fine_temperature)
         call compute_reactive_eb_amr_cfl_timestep_2d( &
-          species, coarse_state, coarse_temperature, coarse_geometry, &
+          eos_species, coarse_state, coarse_temperature, coarse_geometry, &
           fine_state, fine_temperature, fine_geometry, &
           config%refinement_ratio, config%eb%flow%cfl, dt, local_ok)
       else
         call compute_reactive_eb_cfl_timestep_2d( &
-          species, coarse_state, coarse_temperature, coarse_geometry, &
+          eos_species, coarse_state, coarse_temperature, coarse_geometry, &
           config%eb%flow%cfl, dt, local_ok)
       end if
       if (.not. local_ok) return
       if (config%eb%flow%transport_enabled) then
         call reactive_eb_transport_timestep_2d( &
-          species, transport, coarse_state, coarse_temperature, &
+          eos_species, transport, coarse_state, coarse_temperature, &
           coarse_geometry, config%eb%flow%transport_cfl, &
           config%eb%flow%viscosity_enabled, &
           config%eb%flow%thermal_conduction_enabled, &
@@ -4072,7 +4084,7 @@ contains
         dt = min(dt, coarse_transport_dt)
         if (fine_active) then
           call reactive_eb_transport_timestep_2d( &
-            species, transport, fine_state, fine_temperature, fine_geometry, &
+            eos_species, transport, fine_state, fine_temperature, fine_geometry, &
             config%eb%flow%transport_cfl, &
             config%eb%flow%viscosity_enabled, &
             config%eb%flow%thermal_conduction_enabled, &
@@ -4086,7 +4098,7 @@ contains
       if (fine_active) then
         if (config%eb%flow%transport_enabled) then
           call advance_two_level_reactive_eb_strang_2d( &
-            species, reactions, coarse_state, coarse_temperature, &
+            eos_species, reactions, coarse_state, coarse_temperature, &
             coarse_geometry, fine_state, fine_temperature, fine_geometry, &
             patch, config%eb%flow%riemann_solver, &
             config%eb%flow%reconstruction, config%eb%flow%limiter, &
@@ -4105,7 +4117,7 @@ contains
             boundaries, chemistry_integrator)
         else
           call advance_two_level_reactive_eb_strang_2d( &
-            species, reactions, coarse_state, coarse_temperature, &
+            eos_species, reactions, coarse_state, coarse_temperature, &
             coarse_geometry, fine_state, fine_temperature, fine_geometry, &
             patch, config%eb%flow%riemann_solver, &
             config%eb%flow%reconstruction, config%eb%flow%limiter, &
@@ -4122,7 +4134,7 @@ contains
       else
         if (config%eb%flow%transport_enabled) then
           call advance_reactive_eb_strang_2d( &
-            species, reactions, coarse_state, coarse_temperature, &
+            eos_species, reactions, coarse_state, coarse_temperature, &
             coarse_geometry, config%eb%flow%riemann_solver, dt, &
             config%eb%flow%chemistry_enabled, &
             config%eb%flow%chemistry_relative_tolerance, &
@@ -4139,7 +4151,7 @@ contains
             boundaries, chemistry_integrator)
         else
           call advance_reactive_eb_strang_2d( &
-            species, reactions, coarse_state, coarse_temperature, &
+            eos_species, reactions, coarse_state, coarse_temperature, &
             coarse_geometry, config%eb%flow%riemann_solver, dt, &
             config%eb%flow%chemistry_enabled, &
             config%eb%flow%chemistry_relative_tolerance, &
@@ -4167,7 +4179,7 @@ contains
       if (config%dynamic_regridding .and. &
           modulo(steps, config%regrid_interval) == 0) then
         call regrid_reactive_eb_amr_hierarchy_2d( &
-          species, config, coarse_state, coarse_temperature, &
+          eos_species, config, coarse_state, coarse_temperature, &
           coarse_geometry, fine_state, fine_temperature, fine_geometry, &
           patch, fine_active, changed, local_ok)
         if (.not. local_ok) return
@@ -4177,7 +4189,7 @@ contains
         if (modulo(steps, config%checkpoint_interval) == 0) then
           if (selected_context .and. config%dynamic_regridding) then
             call write_reactive_eb_amr_2d_checkpoint( &
-              config%checkpoint_file, species, config, coarse_state, &
+              config%checkpoint_file, eos_species, config, coarse_state, &
               coarse_temperature, coarse_geometry, fine_state, &
               fine_temperature, fine_geometry, patch, fine_active, time, &
               steps, regrids, minimum_dt, base_density, local_ok, &
@@ -4188,7 +4200,7 @@ contains
               failure_context=checkpoint_failure)
           else
             call write_reactive_eb_amr_2d_checkpoint( &
-              config%checkpoint_file, species, config, coarse_state, &
+              config%checkpoint_file, eos_species, config, coarse_state, &
               coarse_temperature, coarse_geometry, fine_state, &
               fine_temperature, fine_geometry, patch, fine_active, time, &
               steps, regrids, minimum_dt, base_density, local_ok, &
@@ -4215,7 +4227,7 @@ contains
         last_checkpoint_step /= steps) then
       if (selected_context .and. config%dynamic_regridding) then
         call write_reactive_eb_amr_2d_checkpoint( &
-          config%checkpoint_file, species, config, coarse_state, &
+          config%checkpoint_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
           fine_geometry, patch, fine_active, time, steps, regrids, &
           minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
@@ -4225,7 +4237,7 @@ contains
           failure_context=checkpoint_failure)
       else
         call write_reactive_eb_amr_2d_checkpoint( &
-          config%checkpoint_file, species, config, coarse_state, &
+          config%checkpoint_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, fine_state, fine_temperature, &
           fine_geometry, patch, fine_active, time, steps, regrids, &
           minimum_dt, base_density, local_ok, bundle_sha256=bundle_sha256, &
@@ -4256,6 +4268,8 @@ contains
       base_density, ok, failure_context, transport, minimum_transport_theta, &
       base_mole_fractions, chemistry_integrator, bundle_sha256)
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: root_state(:, :, :)
@@ -4296,6 +4310,10 @@ contains
     type(reactive_boundary_set_2d) :: boundaries
     character(len=1024) :: checkpoint_failure
 
+    call configure_reactive_2d_eos(species,config%eb%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) then
+      ok=.false.;return
+    endif
     root_geometry = eb_geometry_2d()
     level_one_geometry = eb_geometry_2d()
     level_two_geometry = eb_geometry_2d()
@@ -4327,7 +4345,7 @@ contains
         return
       end if
       if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
-          size(species), bundle_sha256, chemistry_integrator, &
+          size(eos_species), bundle_sha256, chemistry_integrator, &
           base_mole_fractions)) then
         if (present(failure_context)) failure_context = &
           "selected three-level simulation context is invalid"
@@ -4335,14 +4353,14 @@ contains
       end if
     end if
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok, base_mole_fractions)
+      eos_species, config%eb, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
 
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "restart"
       if (selected_context) then
         call read_reactive_eb_amr_three_level_2d_checkpoint( &
-          config%restart_file, species, config, root_state, root_temperature, &
+          config%restart_file, eos_species, config, root_state, root_temperature, &
           root_geometry, level_one_state, level_one_temperature, &
           level_one_geometry, root_patch, level_two_state, &
           level_two_temperature, level_two_geometry, level_one_patch, time, &
@@ -4354,7 +4372,7 @@ contains
           failure_context=checkpoint_failure)
       else
         call read_reactive_eb_amr_three_level_2d_checkpoint( &
-          config%restart_file, species, config, root_state, root_temperature, &
+          config%restart_file, eos_species, config, root_state, root_temperature, &
           root_geometry, level_one_state, level_one_temperature, &
           level_one_geometry, root_patch, level_two_state, &
           level_two_temperature, level_two_geometry, level_one_patch, time, &
@@ -4386,11 +4404,11 @@ contains
     if (present(failure_context)) failure_context = "root initialization"
     if (present(base_mole_fractions)) then
       call initialize_reactive_2d( &
-        species, config%eb%flow, root_state, root_temperature, root_dx, &
+        eos_species, config%eb%flow, root_state, root_temperature, root_dx, &
         root_dy, base_density, local_ok, base_mole_fractions)
     else
       call initialize_reactive_2d( &
-        species, config%eb%flow, root_state, root_temperature, root_dx, &
+        eos_species, config%eb%flow, root_state, root_temperature, root_dx, &
         root_dy, base_density, local_ok)
     end if
     if (.not. local_ok) return
@@ -4405,7 +4423,7 @@ contains
       level_one_geometry%nx, level_one_geometry%ny))
     if (present(failure_context)) failure_context = "middle prolongation"
     call prolong_reactive_eb_patch_2d( &
-      species, root_state, root_temperature, root_geometry, &
+      eos_species, root_state, root_temperature, root_geometry, &
       level_one_geometry, root_patch, config%prolongation_method, &
       level_one_state, &
       level_one_temperature, local_ok)
@@ -4416,7 +4434,7 @@ contains
       level_two_geometry%nx, level_two_geometry%ny))
     if (present(failure_context)) failure_context = "finest prolongation"
     call prolong_reactive_eb_patch_2d( &
-      species, level_one_state, level_one_temperature, level_one_geometry, &
+      eos_species, level_one_state, level_one_temperature, level_one_geometry, &
       level_two_geometry, level_one_patch, config%prolongation_method, &
       level_two_state, &
       level_two_temperature, local_ok)
@@ -4426,7 +4444,7 @@ contains
         if (present(failure_context)) &
           failure_context = "initial three-level regrid"
         call regrid_scheduled_three_level_reactive_eb_amr_2d( &
-          species, config, root_state, root_temperature, root_geometry, &
+          eos_species, config, root_state, root_temperature, root_geometry, &
           level_one_state, level_one_temperature, level_one_geometry, &
           root_patch, level_two_state, level_two_temperature, &
           level_two_geometry, level_one_patch, changed, local_ok)
@@ -4460,7 +4478,7 @@ contains
       if (steps >= config%eb%flow%maximum_steps) return
       if (present(failure_context)) failure_context = "three-level CFL"
       call compute_three_level_reactive_eb_cfl_timestep_2d( &
-        species, root_state, root_temperature, root_geometry, &
+        eos_species, root_state, root_temperature, root_geometry, &
         level_one_state, level_one_temperature, level_one_geometry, &
         root_patch, level_two_state, level_two_temperature, &
         level_two_geometry, level_one_patch, config%eb%flow%cfl, dt, local_ok)
@@ -4468,14 +4486,14 @@ contains
       if (config%eb%flow%transport_enabled) then
         if (present(failure_context)) failure_context = "three-level transport CFL"
         call reactive_eb_transport_timestep_2d( &
-          species, transport, root_state, root_temperature, root_geometry, &
+          eos_species, transport, root_state, root_temperature, root_geometry, &
           config%eb%flow%transport_cfl, config%eb%flow%viscosity_enabled, &
           config%eb%flow%thermal_conduction_enabled, &
           config%eb%flow%species_diffusion_enabled, root_transport_dt, &
           maximum_diffusivity, local_ok)
         if (.not. local_ok) return
         call reactive_eb_transport_timestep_2d( &
-          species, transport, level_one_state, level_one_temperature, &
+          eos_species, transport, level_one_state, level_one_temperature, &
           level_one_geometry, config%eb%flow%transport_cfl, &
           config%eb%flow%viscosity_enabled, &
           config%eb%flow%thermal_conduction_enabled, &
@@ -4483,7 +4501,7 @@ contains
           maximum_diffusivity, local_ok)
         if (.not. local_ok) return
         call reactive_eb_transport_timestep_2d( &
-          species, transport, level_two_state, level_two_temperature, &
+          eos_species, transport, level_two_state, level_two_temperature, &
           level_two_geometry, config%eb%flow%transport_cfl, &
           config%eb%flow%viscosity_enabled, &
           config%eb%flow%thermal_conduction_enabled, &
@@ -4515,7 +4533,7 @@ contains
       if (present(failure_context)) failure_context = "three-level advance"
       if (config%eb%flow%transport_enabled) then
         call advance_three_level_reactive_eb_strang_2d( &
-          species, reactions, root_state, root_temperature, root_geometry, &
+          eos_species, reactions, root_state, root_temperature, root_geometry, &
           level_one_state, level_one_temperature, level_one_geometry, &
           root_patch, level_two_state, level_two_temperature, &
           level_two_geometry, level_one_patch, &
@@ -4536,7 +4554,7 @@ contains
           boundaries, failure_context, chemistry_integrator)
       else
         call advance_three_level_reactive_eb_strang_2d( &
-          species, reactions, root_state, root_temperature, root_geometry, &
+          eos_species, reactions, root_state, root_temperature, root_geometry, &
           level_one_state, level_one_temperature, level_one_geometry, &
           root_patch, level_two_state, level_two_temperature, &
           level_two_geometry, level_one_patch, &
@@ -4570,7 +4588,7 @@ contains
         if (present(failure_context)) &
           failure_context = "scheduled three-level regrid"
         call regrid_scheduled_three_level_reactive_eb_amr_2d( &
-          species, config, root_state, root_temperature, root_geometry, &
+          eos_species, config, root_state, root_temperature, root_geometry, &
           level_one_state, level_one_temperature, level_one_geometry, &
           root_patch, level_two_state, level_two_temperature, &
           level_two_geometry, level_one_patch, changed, local_ok)
@@ -4582,7 +4600,7 @@ contains
           if (present(failure_context)) failure_context = "scheduled checkpoint"
           if (selected_context) then
             call write_reactive_eb_amr_three_level_2d_checkpoint( &
-              config%checkpoint_file, species, config, root_state, &
+              config%checkpoint_file, eos_species, config, root_state, &
               root_temperature, root_geometry, level_one_state, &
               level_one_temperature, level_one_geometry, root_patch, &
               level_two_state, level_two_temperature, level_two_geometry, &
@@ -4594,7 +4612,7 @@ contains
               failure_context=checkpoint_failure)
           else
             call write_reactive_eb_amr_three_level_2d_checkpoint( &
-              config%checkpoint_file, species, config, root_state, &
+              config%checkpoint_file, eos_species, config, root_state, &
               root_temperature, root_geometry, level_one_state, &
               level_one_temperature, level_one_geometry, root_patch, &
               level_two_state, level_two_temperature, level_two_geometry, &
@@ -4620,7 +4638,7 @@ contains
       if (present(failure_context)) failure_context = "final checkpoint"
       if (selected_context) then
         call write_reactive_eb_amr_three_level_2d_checkpoint( &
-          config%checkpoint_file, species, config, root_state, &
+          config%checkpoint_file, eos_species, config, root_state, &
           root_temperature, root_geometry, level_one_state, &
           level_one_temperature, level_one_geometry, root_patch, &
           level_two_state, level_two_temperature, level_two_geometry, &
@@ -4632,7 +4650,7 @@ contains
           failure_context=checkpoint_failure)
       else
         call write_reactive_eb_amr_three_level_2d_checkpoint( &
-          config%checkpoint_file, species, config, root_state, &
+          config%checkpoint_file, eos_species, config, root_state, &
           root_temperature, root_geometry, level_one_state, &
           level_one_temperature, level_one_geometry, root_patch, &
           level_two_state, level_two_temperature, level_two_geometry, &
@@ -4663,6 +4681,8 @@ contains
       transport, minimum_transport_theta, base_mole_fractions, &
       chemistry_integrator, bundle_sha256)
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
     real(dp), allocatable, intent(out) :: coarse_state(:, :, :)
@@ -4695,6 +4715,10 @@ contains
     character(len=1024) :: checkpoint_failure
 
     ok = .false.
+    call configure_reactive_2d_eos(species,config%eb%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) then
+      ok=.false.;return
+    endif
     time = 0.0_dp
     steps = 0
     regrids = 0
@@ -4723,7 +4747,7 @@ contains
         return
       end if
       if (.not. valid_reactive_eb_amr_selected_checkpoint_context( &
-          size(species), bundle_sha256, chemistry_integrator, &
+          size(eos_species), bundle_sha256, chemistry_integrator, &
           base_mole_fractions)) then
         if (present(failure_context)) failure_context = &
           "selected patch-set simulation context is invalid"
@@ -4731,13 +4755,13 @@ contains
       end if
     end if
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok, base_mole_fractions)
+      eos_species, config%eb, boundaries, local_ok, base_mole_fractions)
     if (.not. local_ok) return
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "checkpoint restart"
       if (selected_context) then
         call read_reactive_eb_amr_patch_set_2d_checkpoint( &
-          config%restart_file, species, config, coarse_state, &
+          config%restart_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, patch_set, time, steps, &
           regrids, minimum_dt, base_density, local_ok, &
           bundle_sha256=bundle_sha256, &
@@ -4747,7 +4771,7 @@ contains
           failure_context=checkpoint_failure)
       else
         call read_reactive_eb_amr_patch_set_2d_checkpoint( &
-          config%restart_file, species, config, coarse_state, &
+          config%restart_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, patch_set, time, steps, &
           regrids, minimum_dt, base_density, local_ok, &
           failure_context=checkpoint_failure)
@@ -4765,11 +4789,11 @@ contains
       if (present(failure_context)) failure_context = "coarse initialization"
       if (present(base_mole_fractions)) then
         call initialize_reactive_2d( &
-          species, config%eb%flow, coarse_state, coarse_temperature, &
+          eos_species, config%eb%flow, coarse_state, coarse_temperature, &
           coarse_dx, coarse_dy, base_density, local_ok, base_mole_fractions)
       else
         call initialize_reactive_2d( &
-          species, config%eb%flow, coarse_state, coarse_temperature, &
+          eos_species, config%eb%flow, coarse_state, coarse_temperature, &
           coarse_dx, coarse_dy, base_density, local_ok)
       end if
       if (.not. local_ok) return
@@ -4789,14 +4813,14 @@ contains
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "initial patch set"
       call initialize_reactive_eb_patch_set_2d( &
-        species, coarse_state, coarse_temperature, coarse_geometry, &
+        eos_species, coarse_state, coarse_temperature, coarse_geometry, &
         fine_geometries, initial_collection, config%refinement_ratio, &
         patch_set, local_ok, config%prolongation_method)
       if (.not. local_ok) return
       if (config%regrid_at_initialization) then
         if (present(failure_context)) failure_context = "initial regrid"
         call regrid_reactive_eb_amr_patch_set_2d( &
-          species, config, coarse_state, coarse_temperature, coarse_geometry, &
+          eos_species, config, coarse_state, coarse_temperature, coarse_geometry, &
           patch_set, changed, local_ok)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
@@ -4824,14 +4848,14 @@ contains
       if (steps >= config%eb%flow%maximum_steps) return
       if (present(failure_context)) failure_context = "CFL selection"
       call compute_reactive_eb_patch_set_cfl_timestep_2d( &
-        species, coarse_state, coarse_temperature, coarse_geometry, &
+        eos_species, coarse_state, coarse_temperature, coarse_geometry, &
         patch_set, config%eb%flow%cfl, dt, local_ok)
       if (.not. local_ok) return
       if (config%eb%flow%transport_enabled) then
         if (present(failure_context)) &
           failure_context = "multipatch transport CFL"
         call reactive_eb_transport_timestep_2d( &
-          species, transport, coarse_state, coarse_temperature, &
+          eos_species, transport, coarse_state, coarse_temperature, &
           coarse_geometry, config%eb%flow%transport_cfl, &
           config%eb%flow%viscosity_enabled, &
           config%eb%flow%thermal_conduction_enabled, &
@@ -4841,7 +4865,7 @@ contains
         dt = min(dt, coarse_transport_dt)
         do child = 1, patch_set%patch_count()
           call reactive_eb_transport_timestep_2d( &
-            species, transport, patch_set%children(child)%state, &
+            eos_species, transport, patch_set%children(child)%state, &
             patch_set%children(child)%temperature, &
             patch_set%children(child)%geometry, &
             config%eb%flow%transport_cfl, &
@@ -4863,7 +4887,7 @@ contains
       if (present(failure_context)) failure_context = "patch-set advance"
       if (config%eb%flow%transport_enabled) then
         call advance_reactive_eb_patch_set_strang_2d( &
-          species, reactions, coarse_state, coarse_temperature, &
+          eos_species, reactions, coarse_state, coarse_temperature, &
           coarse_geometry, patch_set, config%eb%flow%riemann_solver, &
           config%eb%flow%reconstruction, config%eb%flow%limiter, &
           config%eb%state_redist_max_order, dt, &
@@ -4880,7 +4904,7 @@ contains
           boundaries, chemistry_integrator)
       else
         call advance_reactive_eb_patch_set_strang_2d( &
-          species, reactions, coarse_state, coarse_temperature, &
+          eos_species, reactions, coarse_state, coarse_temperature, &
           coarse_geometry, patch_set, config%eb%flow%riemann_solver, &
           config%eb%flow%reconstruction, config%eb%flow%limiter, &
           config%eb%state_redist_max_order, dt, &
@@ -4904,7 +4928,7 @@ contains
       if (modulo(steps, config%regrid_interval) == 0) then
         if (present(failure_context)) failure_context = "periodic regrid"
         call regrid_reactive_eb_amr_patch_set_2d( &
-          species, config, coarse_state, coarse_temperature, &
+          eos_species, config, coarse_state, coarse_temperature, &
           coarse_geometry, patch_set, changed, local_ok)
         if (.not. local_ok) return
         if (changed) regrids = regrids + 1
@@ -4914,7 +4938,7 @@ contains
           if (present(failure_context)) failure_context = "checkpoint write"
           if (selected_context) then
             call write_reactive_eb_amr_patch_set_2d_checkpoint( &
-              config%checkpoint_file, species, config, coarse_state, &
+              config%checkpoint_file, eos_species, config, coarse_state, &
               coarse_temperature, coarse_geometry, patch_set, time, steps, &
               regrids, minimum_dt, base_density, local_ok, &
               bundle_sha256=bundle_sha256, &
@@ -4924,7 +4948,7 @@ contains
               failure_context=checkpoint_failure)
           else
             call write_reactive_eb_amr_patch_set_2d_checkpoint( &
-              config%checkpoint_file, species, config, coarse_state, &
+              config%checkpoint_file, eos_species, config, coarse_state, &
               coarse_temperature, coarse_geometry, patch_set, time, steps, &
               regrids, minimum_dt, base_density, local_ok, &
               failure_context=checkpoint_failure)
@@ -4947,7 +4971,7 @@ contains
       if (present(failure_context)) failure_context = "final checkpoint write"
       if (selected_context) then
         call write_reactive_eb_amr_patch_set_2d_checkpoint( &
-          config%checkpoint_file, species, config, coarse_state, &
+          config%checkpoint_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, patch_set, time, steps, &
           regrids, minimum_dt, base_density, local_ok, &
           bundle_sha256=bundle_sha256, &
@@ -4957,7 +4981,7 @@ contains
           failure_context=checkpoint_failure)
       else
         call write_reactive_eb_amr_patch_set_2d_checkpoint( &
-          config%checkpoint_file, species, config, coarse_state, &
+          config%checkpoint_file, eos_species, config, coarse_state, &
           coarse_temperature, coarse_geometry, patch_set, time, steps, &
           regrids, minimum_dt, base_density, local_ok, &
           failure_context=checkpoint_failure)
@@ -5041,6 +5065,8 @@ contains
       transport_level_advances, hydro_level_advances, &
       regrid_evaluations, cumulative_tagged_cells)
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(reactive_eb_amr_2d_config), intent(in) :: config
@@ -5081,6 +5107,10 @@ contains
     integer, allocatable :: step_transport_advances(:)
     integer, allocatable :: step_hydro_advances(:)
 
+    call configure_reactive_2d_eos(species,config%eb%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) then
+      ok=.false.;return
+    endif
     solution = reactive_amr_eb_patch_tree_2d()
     time = 0.0_dp
     minimum_dt = 0.0_dp
@@ -5103,7 +5133,7 @@ contains
         config%patch_tree_maximum_levels > 64 .or. &
         (config%eb%flow%chemistry_enabled .and. size(reactions) < 1) .or. &
         (config%eb%flow%transport_enabled .and. &
-         size(transport) /= size(species))) return
+         size(transport) /= size(eos_species))) return
     viscosity_active = config%eb%flow%transport_enabled .and. &
       config%eb%flow%viscosity_enabled
     thermal_conduction_active = config%eb%flow%transport_enabled .and. &
@@ -5116,7 +5146,7 @@ contains
       config, fingerprint, local_ok)
     if (.not. local_ok) return
     call build_configured_reactive_boundary_set_2d( &
-      species, config%eb, boundaries, local_ok)
+      eos_species, config%eb, boundaries, local_ok)
     if (.not. local_ok) return
 
     criteria%relative_gradient_threshold = &
@@ -5132,7 +5162,7 @@ contains
     if (len_trim(config%restart_file) > 0) then
       if (present(failure_context)) failure_context = "checkpoint restart"
       call read_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        config%restart_file, species, config%patch_tree_maximum_levels, &
+        config%restart_file, eos_species, config%patch_tree_maximum_levels, &
         solution, time, steps, regrids, minimum_dt, local_ok, fingerprint, &
         local_minimum_transport_theta, initial_integrals, &
         accumulated_chemistry_advances, accumulated_transport_advances, &
@@ -5153,7 +5183,7 @@ contains
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "root initialization"
       call initialize_reactive_2d( &
-        species, config%eb%flow, root_state, root_temperature, dx, dy, &
+        eos_species, config%eb%flow, root_state, root_temperature, dx, dy, &
         base_density, local_ok)
       if (.not. local_ok) return
       if (abs(dx - root_geometry%dx) > &
@@ -5167,7 +5197,7 @@ contains
       if (.not. local_ok) return
       if (present(failure_context)) failure_context = "root tree"
       call initialize_reactive_amr_eb_patch_tree_2d( &
-        species, root_state, root_temperature, topology, solution, local_ok, &
+        eos_species, root_state, root_temperature, topology, solution, local_ok, &
         config%prolongation_method)
       if (.not. local_ok) return
       nvar = solution%nvar
@@ -5175,7 +5205,7 @@ contains
           config%regrid_at_initialization) then
         if (present(failure_context)) failure_context = "initial regrid"
         call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
-          species, solution, criteria, config%patch_tree_maximum_levels, &
+          eos_species, solution, criteria, config%patch_tree_maximum_levels, &
           config%refinement_ratio, build_patch_tree_geometry, config, &
           local_ok, changed, tagged_cells, &
           prolongation_method=config%prolongation_method)
@@ -5211,7 +5241,7 @@ contains
       end if
       if (present(failure_context)) failure_context = "timestep"
       call compute_reactive_amr_eb_patch_tree_timestep_2d( &
-        species, transport, solution, config%eb%flow%cfl, &
+        eos_species, transport, solution, config%eb%flow%cfl, &
         config%eb%flow%transport_cfl, &
         viscosity_active, thermal_conduction_active, &
         species_diffusion_active, dt, local_ok)
@@ -5227,7 +5257,7 @@ contains
       allocate(step_transport_advances(solution%level_count()), source=0)
       allocate(step_hydro_advances(solution%level_count()), source=0)
       call advance_reactive_amr_eb_patch_tree_full_physics_2d( &
-        species, reactions, transport, solution, &
+        eos_species, reactions, transport, solution, &
         config%eb%flow%riemann_solver, config%eb%flow%reconstruction, &
         config%eb%flow%limiter, config%eb%state_redist_max_order, dt, &
         config%eb%flow%chemistry_enabled, &
@@ -5275,7 +5305,7 @@ contains
           modulo(steps, config%regrid_interval) == 0) then
         if (present(failure_context)) failure_context = "periodic regrid"
         call regrid_tagged_reactive_amr_eb_patch_tree_2d( &
-          species, solution, criteria, config%patch_tree_maximum_levels, &
+          eos_species, solution, criteria, config%patch_tree_maximum_levels, &
           config%refinement_ratio, build_patch_tree_geometry, config, &
           local_ok, changed, tagged_cells, &
           prolongation_method=config%prolongation_method)
@@ -5288,7 +5318,7 @@ contains
         if (modulo(steps, config%checkpoint_interval) == 0) then
           if (present(failure_context)) failure_context = "checkpoint write"
           call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-            config%checkpoint_file, species, solution, time, steps, regrids, &
+            config%checkpoint_file, eos_species, solution, time, steps, regrids, &
             minimum_dt, local_ok, fingerprint, &
             local_minimum_transport_theta, initial_integrals, &
             accumulated_chemistry_advances, &
@@ -5309,7 +5339,7 @@ contains
         last_checkpoint_step /= steps) then
       if (present(failure_context)) failure_context = "final checkpoint write"
       call write_reactive_amr_eb_patch_tree_2d_checkpoint( &
-        config%checkpoint_file, species, solution, time, steps, regrids, &
+        config%checkpoint_file, eos_species, solution, time, steps, regrids, &
         minimum_dt, local_ok, fingerprint, local_minimum_transport_theta, &
         initial_integrals, accumulated_chemistry_advances, &
         accumulated_transport_advances, accumulated_hydro_advances, &

@@ -5,6 +5,7 @@ module spray_mpi_amr_checkpoint_mod
   use, intrinsic :: iso_c_binding, only: c_int,c_char,c_null_char
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use nasa7_thermo_mod, only: nasa7_species
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use spray_parcel_mod, only: spray_parcel,valid_spray_parcel
   use spray_mixture_mod, only: valid_component_inventory
   use spray_mpi_exchange_mod, only: exchange_spray_parcel_bins
@@ -30,7 +31,15 @@ contains
   ! Shared path/context/model tables are required; at most one million total parcels.
   subroutine mpi_amr_spray_checkpoint(comm,writing,path,context,species,tree,owners,state,temperature, &
       parcels,component_mass,time,steps,event,regridded,last_id,injected,lower,spacing,maximum_parcels,ok,periodic,boundary, &
-      wall_films,film_mass,maximum_films,source)
+      wall_films,film_mass,maximum_films,source,reaction_source,heat_release,heat_available,frame,coordinate_energy, &
+      internal_energy,energy_correction,internal_energy_pressure_work_change)
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    real(dp), optional, intent(inout) :: energy_correction,internal_energy_pressure_work_change
+    real(dp) :: work_ledger,reference_work
+    real(dp) :: held_ledger,reference_held
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(inout) :: coordinate_energy
+    real(dp) :: coordinate_ledger,reference_coordinate
     type(MPI_Comm), intent(in) :: comm
     logical, intent(in) :: writing
     character(len=*), intent(in) :: path,context
@@ -49,6 +58,10 @@ contains
     logical, intent(out) :: ok
     logical, optional, intent(in) :: periodic(3)
     real(dp), optional, intent(inout) :: boundary(:),source(:)
+    type(amr_tree_state_3d), optional, intent(inout) :: reaction_source,heat_release
+    logical, optional, intent(inout) :: heat_available
+    type(amr_tree_state_3d) :: rates,heat
+    logical :: with_heat
     real(dp), allocatable :: source_ledger(:),reference_source(:)
     type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
     real(dp), allocatable, optional, intent(inout) :: film_mass(:,:)
@@ -64,7 +77,7 @@ contains
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:),ledger(:)
     integer, allocatable :: assigned(:),counts(:),offsets(:)
-    integer :: rank,nranks,ierr,unit,ios,p,nc,np,nvar,info(3),date(8),low(5),high(5),header(5)
+    integer :: rank,nranks,ierr,unit,ios,p,nc,np,nvar,info(3),date(8),low(13),high(13),header(13),node,n(3)
     integer(int64) :: mark,tick
     real(dp) :: at_time
     logical :: valid,agreed,exists
@@ -92,11 +105,37 @@ contains
     if (present(periodic)) wraps=periodic
     write(boundary_key,'(3l1)') wraps
     call same_string(boundary_key,valid);if (.not.valid) return
-    header=[nc,nvar,merge(1,0,writing),merge(1,0,present(wall_films)),merge(1,0,present(source))]
-    call MPI_Allreduce(header,low,5,MPI_INTEGER,MPI_MIN,comm,ierr)
+    with_heat=present(heat_release)
+    if(present(heat_available).and.writing) with_heat=with_heat.and.heat_available
+    header=[nc,nvar,merge(1,0,writing),merge(1,0,present(wall_films)),merge(1,0,present(source)), &
+      merge(1,0,present(reaction_source)),merge(1,0,present(heat_release)),merge(1,0,with_heat), &
+      merge(1,0,present(frame)),merge(1,0,present(coordinate_energy)), &
+      merge(1,0,present(internal_energy)),merge(1,0,present(energy_correction)), &
+      merge(1,0,present(internal_energy_pressure_work_change))]
+    call MPI_Allreduce(header,low,13,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(header,high,5,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(header,high,13,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    valid=present(frame).eqv.present(coordinate_energy)
+    valid=valid.and.(present(internal_energy).eqv.present(energy_correction))
+    valid=valid.and.(.not.present(internal_energy_pressure_work_change).or.present(internal_energy))
+    call agree();if(.not.agreed) return
+    held_ledger=0
+    if(present(energy_correction)) held_ledger=energy_correction
+    valid=ieee_is_finite(held_ledger);call agree();if(.not.agreed) return
+    reference_held=held_ledger
+    call MPI_Bcast(reference_held,1,MPI_DOUBLE_PRECISION,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=held_ledger==reference_held;call agree();if(.not.agreed) return
+    work_ledger=0
+    if(present(internal_energy_pressure_work_change)) work_ledger=internal_energy_pressure_work_change
+    valid=ieee_is_finite(work_ledger);call agree();if(.not.agreed) return
+    reference_work=work_ledger
+    call MPI_Bcast(reference_work,1,MPI_DOUBLE_PRECISION,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=work_ledger==reference_work;call agree();if(.not.agreed) return
+    coordinate_ledger=0
+    if(present(coordinate_energy)) coordinate_ledger=coordinate_energy
     payload_header='PELEF_AMR_PARTICLES_V1'
     if (present(wall_films)) payload_header='PELEF_AMR_PARTICLES_V2'
     ! Verify shared strings before root performs any I/O.
@@ -109,7 +148,7 @@ contains
     if (present(boundary)) boundary_ledger=boundary
     if (writing) then
       valid=ieee_is_finite(time).and.all(ieee_is_finite(injected)).and.all(ieee_is_finite(boundary_ledger))
-      valid=valid.and.all(ieee_is_finite(source_ledger))
+      valid=valid.and.all(ieee_is_finite(source_ledger)).and.ieee_is_finite(coordinate_ledger)
       valid=valid.and.time>=0.and.steps>=0.and.event>=0.and.last_id>=0
       call agree();if (.not.agreed) return
       info=[steps,event,merge(1,0,regridded)];at_time=time;mark=last_id;ledger=injected
@@ -133,6 +172,11 @@ contains
       if (ierr/=MPI_SUCCESS) return
       valid=all(reference_source==source_ledger)
       call agree();if (.not.agreed) return
+      reference_coordinate=coordinate_ledger
+      call MPI_Bcast(reference_coordinate,1,MPI_DOUBLE_PRECISION,0,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      valid=reference_coordinate==coordinate_ledger
+      call agree();if(.not.agreed) return
       drops=parcels;masses=component_mass
       allocate(counts(nranks),offsets(nranks));counts=0;counts(1)=size(drops);offsets=counts(1);offsets(1)=0
       call exchange_spray_parcel_bins(comm,drops,counts,offsets,1000000,valid,masses)
@@ -172,10 +216,21 @@ contains
       if (.not.all(wraps)) bound_context=bound_context//'SPRAY_PERIODIC '//boundary_key//achar(10)
       if (present(wall_films)) bound_context=bound_context//'SPRAY_FILMS_V1'//achar(10)
       if (present(source)) bound_context=bound_context//'SPRAY_SOURCE_V1'//achar(10)
+      if(present(frame)) bound_context=bound_context//'SPRAY_COORDINATE_ENERGY_V1'//achar(10)
+    if(present(internal_energy)) bound_context=bound_context//'SPRAY_ACTUAL_UEINT_V1'//achar(10)
+    if(present(internal_energy_pressure_work_change)) &
+      bound_context=bound_context//'SPRAY_UEINT_PRESSURE_WORK_V1'//achar(10)
       snapshot%tree=tree;snapshot%time=time;snapshot%steps=steps;snapshot%regrids=info(3)
       snapshot%initial=injected;snapshot%boundary=boundary_ledger
+      if(present(reaction_source).or.present(heat_release)) snapshot%source=source_ledger
+      if(present(reaction_source)) snapshot%reaction_source=reaction_source
+      if(with_heat) snapshot%heat_release=heat_release
+      if(present(internal_energy)) then
+        snapshot%internal_energy=internal_energy;snapshot%energy_correction=energy_correction
+      endif
+      if(present(internal_energy_pressure_work_change)) snapshot%pressure_work_change=work_ledger
       call write_mpi_amr_tree_checkpoint_3d(path//'.gas',species,bound_context,snapshot,owners,state,temperature, &
-        comm,valid,indexed=.true.)
+        comm,valid,indexed=.true.,frame=frame,domain_lower=lower,root_spacing=spacing)
       if (.not.valid) return
       if (rank==0) then
         open(newunit=unit,file=path//'.particles',status='new',action='write',iostat=ios)
@@ -203,6 +258,10 @@ contains
             if (ios==0) write(unit,'(a)',iostat=ios) 'SPRAY_SOURCE_V1'
             if (ios==0) write(unit,'(*(es27.18e3,1x))',iostat=ios) source_ledger
           end if
+          if(present(frame)) then
+            if(ios==0) write(unit,'(a)',iostat=ios) 'SPRAY_COORDINATE_ENERGY_V1'
+            if(ios==0) write(unit,'(es27.18e3)',iostat=ios) coordinate_ledger
+          endif
           if (ios==0) write(unit,'(a)',iostat=ios) 'END_AMR_PARTICLES'
           valid=ios==0;close(unit,iostat=ios);valid=valid.and.ios==0
         end if
@@ -233,9 +292,18 @@ contains
     if (.not.all(wraps)) bound_context=bound_context//'SPRAY_PERIODIC '//boundary_key//achar(10)
     if (present(wall_films)) bound_context=bound_context//'SPRAY_FILMS_V1'//achar(10)
     if (present(source)) bound_context=bound_context//'SPRAY_SOURCE_V1'//achar(10)
+    if(present(frame)) bound_context=bound_context//'SPRAY_COORDINATE_ENERGY_V1'//achar(10)
+    if(present(internal_energy)) bound_context=bound_context//'SPRAY_ACTUAL_UEINT_V1'//achar(10)
+    if(present(internal_energy_pressure_work_change)) &
+      bound_context=bound_context//'SPRAY_UEINT_PRESSURE_WORK_V1'//achar(10)
     call read_mpi_amr_tree_checkpoint_3d(path//'.gas',species,bound_context,tree%nodes(1)%shape, &
-      'round_robin',0,snapshot,assigned,comm,valid)
+      'round_robin',0,snapshot,assigned,comm,valid,frame=frame,domain_lower=lower,root_spacing=spacing, &
+      allow_internal_energy=present(internal_energy))
     if (.not.valid) return
+    valid=present(internal_energy).eqv.allocated(snapshot%internal_energy%fields)
+    valid=valid.and.(present(energy_correction).eqv.allocated(snapshot%energy_correction))
+    valid=valid.and.(present(internal_energy_pressure_work_change).eqv.allocated(snapshot%pressure_work_change))
+    call agree();if(.not.agreed) return
     valid=present(boundary).or.all(snapshot%boundary==0)
     call agree();if (.not.agreed) return
     allocate(drops(0),masses(nc,0));info=0;mark=0
@@ -257,6 +325,8 @@ contains
     if (ierr/=MPI_SUCCESS) return
     call MPI_Bcast(source_ledger,nvar,MPI_DOUBLE_PRECISION,0,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
+    call MPI_Bcast(coordinate_ledger,1,MPI_DOUBLE_PRECISION,0,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
     call migrate_amr_tree_spray_parcels(comm,snapshot%tree,assigned,drops,lower,spacing,wraps, &
       maximum_parcels,valid,masses)
     if (.not.valid) return
@@ -264,6 +334,38 @@ contains
       call migrate_mpi_amr_wall_films(comm,snapshot%tree,assigned,films,film_components,lower,spacing,maximum_films,valid)
       if (.not.valid) return
     end if
+    ! Prepare legacy work fields on the restored lattice before publishing state.
+    if(present(reaction_source)) then
+      if(allocated(snapshot%reaction_source%fields)) then
+        rates=snapshot%reaction_source
+      else
+        allocate(rates%fields(size(assigned)))
+        do node=1,size(assigned)
+          if(assigned(node)/=rank) cycle
+          n=snapshot%tree%nodes(node)%shape
+          allocate(rates%fields(node)%values(nvar-4,n(1),n(2),n(3)),source=0._dp)
+        end do
+      end if
+    end if
+    if(present(heat_release)) then
+      if(allocated(snapshot%heat_release%fields)) then
+        heat=snapshot%heat_release
+      else
+        heat=snapshot%temperature
+        do node=1,size(assigned)
+          if(assigned(node)/=rank) cycle
+          heat%fields(node)%values=0
+        end do
+      end if
+    end if
+    if(present(reaction_source)) call move_alloc(rates%fields,reaction_source%fields)
+    if(present(heat_release)) call move_alloc(heat%fields,heat_release%fields)
+    if(present(heat_available)) heat_available=allocated(snapshot%heat_release%fields)
+    if(present(internal_energy)) then
+      call move_alloc(snapshot%internal_energy%fields,internal_energy%fields)
+      energy_correction=snapshot%energy_correction
+    endif
+    if(present(internal_energy_pressure_work_change)) internal_energy_pressure_work_change=snapshot%pressure_work_change
     tree=snapshot%tree;call move_alloc(assigned,owners)
     call move_alloc(snapshot%state%fields,state%fields);call move_alloc(snapshot%temperature%fields,temperature%fields)
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
@@ -273,6 +375,7 @@ contains
     end if
     if (present(boundary)) boundary=snapshot%boundary
     if (present(source)) source=source_ledger
+    if(present(coordinate_energy)) coordinate_energy=coordinate_ledger
     ok=.true.
   contains
     subroutine read_particles()
@@ -325,6 +428,12 @@ contains
         if (ios/=0) return
         if (.not.all(ieee_is_finite(source_ledger))) return
       end if
+      if(present(frame)) then
+        read(unit,'(a)',iostat=ios) line
+        if(ios/=0.or.line/='SPRAY_COORDINATE_ENERGY_V1') return
+        read(unit,*,iostat=ios) coordinate_ledger
+        if(ios/=0.or..not.ieee_is_finite(coordinate_ledger)) return
+      endif
       read(unit,'(a)',iostat=ios) line
       if (ios/=0.or.line/='END_AMR_PARTICLES') return
       read(unit,'(a)',iostat=ios) line

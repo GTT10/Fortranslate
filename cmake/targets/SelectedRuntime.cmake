@@ -7,8 +7,10 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/physics/nasa7_thermo_mod.F90
     src/physics/mixture_thermo_mod.F90
     src/physics/rotating_frame_3d_mod.F90
+    src/physics/dual_energy_mod.F90
     src/chemistry/elementary_kinetics_mod.F90
     src/chemistry/constant_volume_reactor_mod.F90
+    src/io/reactive_checkpoint_context_mod.F90
     src/driver/selected_composition_mod.F90
     src/transport/gas_transport_mod.F90
     src/driver/selected_mechanism_runtime_mod.F90
@@ -87,6 +89,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     add_library(
       pelef_selected_mpi_reactive_1d_runtime
       STATIC
+      src/parallel/mpi_reactive_eos_policy_mod.F90
       src/parallel/mpi_domain_1d_mod.F90
       src/parallel/mpi_reactive_transport_1d_mod.F90
       src/parallel/mpi_reactive_1d_mod.F90
@@ -177,6 +180,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     add_library(
       pelef_selected_mpi_amr_reactive_1d_runtime
       STATIC
+      src/parallel/mpi_reactive_eos_policy_mod.F90
       src/parallel/mpi_amr_patch_1d_mod.F90
       src/parallel/mpi_amr_sparse_patch_1d_mod.F90
       src/driver/mpi_amr_reactive_1d_application_mod.F90
@@ -406,6 +410,16 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/reactive/reactive_directional_flux_3d_mod.F90
     src/transport/reactive_transport_3d_mod.F90
     src/reactive/reactive_3d_mod.F90
+    src/eb/eb_geometry_2d_mod.F90
+    src/eb/eb_geometry_3d_mod.F90
+    src/eb/eb_polyhedron_clip_mod.F90
+    src/eb/eb_reactive_wall_flux_3d_mod.F90
+    src/eb/eb_reactive_transfer_3d_mod.F90
+    src/eb/eb_reactive_reflux_3d_mod.F90
+    src/eb/eb_mol_hydro_3d_mod.F90
+    src/reactive/reactive_mol_3d_mod.F90
+    src/io/reactive_checkpoint_context_mod.F90
+    src/io/reactive_3d_checkpoint_mod.F90
     src/problems/reactive_entropy_wave_3d_problem_mod.F90
   src/problems/reactive_hit_3d_mod.F90
     src/io/reactive_csv_io_3d_mod.F90
@@ -490,6 +504,8 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     src/amr/amr_patch_tree_3d_mod.F90
     src/amr/amr_patch_tree_ghost_3d_mod.F90
     src/amr/amr_patch_tree_reflux_3d_mod.F90
+    src/amr/conservative_reflux_budget_mod.F90
+    src/amr/amr_tree_reflux_graph_3d_mod.F90
     src/amr/amr_patch_tree_hydro_3d_mod.F90
     src/amr/amr_patch_tree_subcycle_3d_mod.F90
     src/amr/amr_patch_tree_chemistry_3d_mod.F90
@@ -551,6 +567,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
       src/parallel/mpi_amr_patch_tree_flux_peers_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_flux_restriction_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_reflux_3d_mod.F90
+      src/parallel/mpi_amr_reflux_budget_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_restriction_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_remap_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_tagging_3d_mod.F90
@@ -620,19 +637,13 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
   add_library(
     pelef_selected_reactive_eb_3d_runtime
     STATIC
-    src/eb/eb_geometry_2d_mod.F90
-    src/eb/eb_geometry_3d_mod.F90
-    src/eb/eb_polyhedron_clip_mod.F90
     src/driver/simulation_config_reactive_eb_3d_mod.F90
     src/eb/reactive_eb_cfl_3d_mod.F90
-    src/eb/eb_reactive_wall_flux_3d_mod.F90
     src/eb/eb_reactive_redistribution_3d_mod.F90
-    src/eb/eb_reactive_transfer_3d_mod.F90
-    src/eb/eb_reactive_reflux_3d_mod.F90
     src/eb/eb_reactive_hydro_3d_mod.F90
-    src/eb/eb_mol_hydro_3d_mod.F90
     src/eb/eb_reactive_two_level_3d_mod.F90
     src/eb/eb_reactive_patch_tree_3d_mod.F90
+    src/eb/eb_held_funding_queue_3d_mod.F90
     src/io/eb_reactive_tree_checkpoint_3d_mod.F90
     src/eb/eb_boundary_gradient_3d_mod.F90
     src/eb/eb_wall_heat_source_3d_mod.F90
@@ -674,6 +685,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
 
   if(PELEF_ENABLE_MPI)
     add_library(pelef_selected_mpi_eb_tree_3d_runtime STATIC
+      src/parallel/mpi_reactive_eos_policy_mod.F90
       src/parallel/mpi_amr_patch_tree_distribution_3d_mod.F90
       src/parallel/mpi_amr_patch_tree_cells_3d_mod.F90
       src/parallel/mpi_eb_tree_checkpoint_read_3d_mod.F90
@@ -700,7 +712,7 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     target_include_directories(pelef_selected_mpi_eb_tree_3d_runtime PUBLIC
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/selected_mpi_eb_tree_3d_modules>")
     target_link_libraries(pelef_selected_mpi_eb_tree_3d_runtime PUBLIC
-      pelef_selected_reactive_eb_3d_runtime MPI::MPI_Fortran)
+      pelef_selected_reactive_eb_3d_runtime pelef_selected_mpi_amr_tree_reactive_3d_runtime MPI::MPI_Fortran)
     if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
       target_compile_options(pelef_selected_mpi_eb_tree_3d_runtime PRIVATE
         -Wall -Wextra -Wpedantic -Wimplicit-interface -Wconversion-extra)
@@ -754,4 +766,3 @@ if(PELEF_ENABLE_TESTS OR PELEF_MECHANISM_BUNDLE)
     endif()
   endif()
 endif()
-

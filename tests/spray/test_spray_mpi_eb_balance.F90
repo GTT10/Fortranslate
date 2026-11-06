@@ -35,8 +35,8 @@ program test_spray_mpi_eb_balance
   type(amr_patch_3d) :: patch(1)
   type(amr_patch_tree_3d) :: tree
   type(eb_geometry_3d) :: finest,g(2)
-  type(amr_tree_state_3d) :: field,temp,saved,saved_t,saved_history
-  type(amr_tree_state_3d), allocatable :: history
+  type(amr_tree_state_3d) :: field,temp,saved,saved_t,saved_history,saved_heat
+  type(amr_tree_state_3d), allocatable :: history,heat
   type(nasa7_species), allocatable :: species(:)
   real(dp), allocatable :: positions(:,:),feedback(:,:),cell(:),primitive(:),y(:),total(:),parent(:),fine(:)
   real(dp) :: phi(0:8,0:8,0:8),zero(3)=0,spacing(3)=.001_dp,t,sound,r,volume
@@ -124,6 +124,14 @@ program test_spray_mpi_eb_balance
     end do
     end do
   end do
+  allocate(heat)
+  allocate(heat%fields(size(owners)))
+  do node=1,size(owners)
+    if(owners(node)/=rank) cycle
+    dims=tree%nodes(node)%shape
+    allocate(heat%fields(node)%values(1,dims(1),dims(2),dims(3)),source=real((-1)**node*node,dp)*1.e9_dp)
+  end do
+  saved_heat=heat
   saved_history=history
   saved=field;saved_t=temp;saved_drops=drops;saved_mass=masses
   costs=0
@@ -133,6 +141,10 @@ program test_spray_mpi_eb_balance
   call rebalance()
   call require(.not.ok.and..not.changed.and.all(owners==nranks-1),'history presence must agree across ranks')
   if(rank==0) allocate(history,source=saved_history)
+  if(rank==0) deallocate(heat)
+  call rebalance()
+  call require(.not.ok.and..not.changed.and.all(owners==nranks-1),'heat presence must agree across ranks')
+  if(rank==0) allocate(heat,source=saved_heat)
   capacity=0
   call rebalance()
   call require(.not.ok.and..not.changed.and.all(owners==nranks-1),'failed balance owner rollback')
@@ -142,6 +154,7 @@ program test_spray_mpi_eb_balance
       call require(all(field%fields(node)%values==saved%fields(node)%values),'failed gas rollback')
       call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'failed temperature rollback')
       call require(all(history%fields(node)%values==saved_history%fields(node)%values),'history parcel failure rollback')
+      call require(all(heat%fields(node)%values==saved_heat%fields(node)%values),'heat parcel failure rollback')
     end do
   end if
   capacity=100;film_capacity=0
@@ -155,6 +168,7 @@ program test_spray_mpi_eb_balance
       call require(all(field%fields(node)%values==saved%fields(node)%values),'film capacity gas rollback')
       call require(all(temp%fields(node)%values==saved_t%fields(node)%values),'film capacity temperature rollback')
       call require(all(history%fields(node)%values==saved_history%fields(node)%values),'history film failure rollback')
+      call require(all(heat%fields(node)%values==saved_heat%fields(node)%values),'heat film failure rollback')
     end do
   end if
   film_capacity=100
@@ -170,7 +184,9 @@ program test_spray_mpi_eb_balance
   do node=1,2
     call require(allocated(field%fields(node)%values).eqv.(rank==owners(node)),'gas ownership')
     call require(allocated(history%fields(node)%values).eqv.(rank==owners(node)),'reaction history ownership')
+    call require(allocated(heat%fields(node)%values).eqv.(rank==owners(node)),'heat ownership')
     if(rank/=owners(node)) cycle
+    call require(all(heat%fields(node)%values==real((-1)**node*node,dp)*1.e9_dp),'exact signed heat migration')
     dims=tree%nodes(node)%shape
     do k=1,dims(3)
     do j=1,dims(2)
@@ -203,7 +219,7 @@ contains
   subroutine rebalance()
     call rebalance_mpi_amr_spray(MPI_COMM_WORLD,tree,owners,nv,field,temp,drops,masses,zero,spacing, &
       periodic,costs,0._dp,capacity,changed,ok, &
-      wall_films=films,film_mass=film_mass,maximum_films=film_capacity,nodal_phi=phi,reaction_source=history)
+      wall_films=films,film_mass=film_mass,maximum_films=film_capacity,nodal_phi=phi,reaction_source=history,heat_release=heat)
   end subroutine
   subroutine require(condition,label)
     logical, intent(in) :: condition

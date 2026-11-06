@@ -1,7 +1,7 @@
 module simulation_config_reactive_2d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,configure_nasa7_eos_policy,valid_nasa7_eos_options
   use selected_composition_mod, only: &
     selected_composition_max_species, selected_composition_name_length, &
     validate_selected_composition_fields, resolve_selected_composition
@@ -27,6 +27,8 @@ module simulation_config_reactive_2d_mod
     character(len=32) :: limiter = "mc"
     logical :: use_transverse_correction = .true.
     logical :: chemistry_enabled = .false.
+    logical :: pinned_eos_extrapolation=.false.
+    real(dp) :: pinned_eos_temperature_min=0._dp,pinned_eos_temperature_max=0._dp
     character(len=32) :: chemistry_model = "elementary"
     logical :: transport_enabled = .false.
     logical :: viscosity_enabled = .true.
@@ -101,11 +103,22 @@ module simulation_config_reactive_2d_mod
     character(len=256) :: output_file = "reactive_2d.csv"
   end type reactive_2d_config
 
+  public :: configure_reactive_2d_eos
   public :: read_reactive_2d_configuration
   public :: reactive_2d_mole_fractions
   public :: resolve_reactive_2d_selected_composition
 
 contains
+
+  subroutine configure_reactive_2d_eos(species,config,eos_species,ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(reactive_2d_config), intent(in) :: config
+    type(nasa7_species), allocatable, intent(out) :: eos_species(:)
+    logical, intent(out) :: ok
+    eos_species=species
+    call configure_nasa7_eos_policy(eos_species,config%pinned_eos_extrapolation,ok, &
+      config%pinned_eos_temperature_min,config%pinned_eos_temperature_max)
+  end subroutine configure_reactive_2d_eos
 
   pure logical function valid_boundary_kind(kind) result(valid)
     character(len=*), intent(in) :: kind
@@ -199,6 +212,8 @@ contains
     character(len=24) :: wall_species_x_lower, wall_species_x_upper
     character(len=24) :: wall_species_y_lower, wall_species_y_upper
     character(len=256) :: output_file
+    logical :: pinned_eos_extrapolation
+    real(dp) :: pinned_eos_temperature_min,pinned_eos_temperature_max
     logical :: use_transverse_correction, chemistry_enabled
     logical :: transport_enabled, viscosity_enabled
     logical :: thermal_conduction_enabled, species_diffusion_enabled
@@ -209,6 +224,7 @@ contains
       nx, ny, maximum_steps, x_lower, x_upper, y_lower, y_upper, &
       final_time, cfl, problem, reconstruction, riemann_solver, limiter, &
       use_transverse_correction, chemistry_enabled, chemistry_model, transport_enabled, &
+      pinned_eos_extrapolation,pinned_eos_temperature_min,pinned_eos_temperature_max, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, transport_cfl, &
       boundary_x_lower, boundary_x_upper, boundary_y_lower, boundary_y_upper, &
@@ -250,6 +266,9 @@ contains
     limiter = config%limiter
     use_transverse_correction = config%use_transverse_correction
     chemistry_enabled = config%chemistry_enabled
+    pinned_eos_extrapolation=config%pinned_eos_extrapolation
+    pinned_eos_temperature_min=config%pinned_eos_temperature_min
+    pinned_eos_temperature_max=config%pinned_eos_temperature_max
     chemistry_model = config%chemistry_model
     transport_enabled = config%transport_enabled
     viscosity_enabled = config%viscosity_enabled
@@ -336,6 +355,10 @@ contains
       return
     end if
 
+    if(.not.valid_nasa7_eos_options(pinned_eos_extrapolation, &
+      pinned_eos_temperature_min,pinned_eos_temperature_max)) then
+      ok=.false.;message='Invalid reactive 2D EOS policy';return
+    endif
     selected_model = trim(chemistry_model) == "selected"
     mole_sum = x_h2 + x_h + x_o + x_o2 + x_oh + x_h2o + x_ho2 + &
       x_h2o2 + x_ar + x_n2
@@ -493,6 +516,9 @@ contains
     config%limiter = trim(limiter)
     config%use_transverse_correction = use_transverse_correction
     config%chemistry_enabled = chemistry_enabled
+    config%pinned_eos_extrapolation=pinned_eos_extrapolation
+    config%pinned_eos_temperature_min=pinned_eos_temperature_min
+    config%pinned_eos_temperature_max=pinned_eos_temperature_max
     config%chemistry_model = trim(chemistry_model)
     config%transport_enabled = transport_enabled
     config%viscosity_enabled = viscosity_enabled

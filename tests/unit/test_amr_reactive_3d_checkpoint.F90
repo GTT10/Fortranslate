@@ -214,6 +214,29 @@ program test_amr_reactive_3d_checkpoint
     maximum_reflux == saved_maximum_reflux, &
     "checkpoint metadata exact round trip")
 
+  species%pinned_eos_extrapolation=.true.;config%pinned_eos_extrapolation=.true.
+  call read_amr_reactive_3d_checkpoint(checkpoint_path,species,config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(.not.ok.and.all(coarse_state==saved_coarse_state).and.all(fine_state==saved_fine_state), &
+    'strict to reference AMR EOS transactional refusal')
+  call write_amr_reactive_3d_checkpoint('test_amr_eos_mode.chk',species,config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(ok,'reference AMR EOS write')
+  call read_amr_reactive_3d_checkpoint('test_amr_eos_mode.chk',species,config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(ok,'reference AMR EOS read')
+  species%pinned_eos_temperature_min=300;species%pinned_eos_temperature_max=4000
+  call read_amr_reactive_3d_checkpoint('test_amr_eos_mode.chk',species,config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(.not.ok.and.all(coarse_state==saved_coarse_state).and.all(fine_state==saved_fine_state), &
+    'changed AMR EOS bounds rollback')
+  species%pinned_eos_temperature_min=0;species%pinned_eos_temperature_max=0
+  species%pinned_eos_extrapolation=.false.;config%pinned_eos_extrapolation=.false.
+  call read_amr_reactive_3d_checkpoint('test_amr_eos_mode.chk',species,config,amr_config,patch, &
+    coarse_state,coarse_temperature,fine_state,fine_temperature,time,steps,initial_integrals,maximum_reflux,ok,message)
+  call require(.not.ok.and.all(coarse_state==saved_coarse_state).and.all(fine_state==saved_fine_state), &
+    'reference to strict AMR EOS transactional refusal')
+
   if(variant=='difmag') then
     incompatible_config=config;incompatible_config%difmag=.05_dp
   else

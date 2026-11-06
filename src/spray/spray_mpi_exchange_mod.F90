@@ -1,5 +1,6 @@
 module spray_mpi_exchange_mod
   use mpi_f08
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use, intrinsic :: iso_fortran_env, only: int64
   use spray_parcel_mod, only: spray_parcel,valid_spray_parcel
@@ -10,17 +11,19 @@ module spray_mpi_exchange_mod
 contains
   ! Exchange contiguous destination bins, then sort received IDs. Caller checks
   ! geometric ownership on the private result before publishing application state.
-  subroutine exchange_spray_parcel_bins(comm,parcels,counts,offsets,maximum_parcels,ok,component_mass)
+  subroutine exchange_spray_parcel_bins(comm,parcels,counts,offsets,maximum_parcels,ok,component_mass,tab_tangent_history)
     type(MPI_Comm), intent(in) :: comm
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     integer, intent(in) :: counts(:),offsets(:),maximum_parcels
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
+    real(dp), allocatable :: incoming_history(:)
     type(spray_parcel), allocatable :: incoming(:)
     real(dp), allocatable :: masses(:,:),send_real(:,:),recv_real(:,:)
     integer(int64), allocatable :: send_int(:,:),recv_int(:,:)
     integer, allocatable :: received(:),displacements(:)
-    integer :: nranks,ierr,nc,nreal,nrecv,p,r,low,high,ios
+    integer :: nranks,ierr,nc,nreal,nrecv,p,r,low,high,ios,payload_code
     integer(int64) :: cursor
     logical :: valid,global_valid
     ok=.false.
@@ -38,11 +41,19 @@ contains
       end if
       valid=valid.and.nc>=1.and.nc<=16
     end if
+    if(present(tab_tangent_history)) then
+      valid=valid.and.allocated(tab_tangent_history)
+      if(allocated(tab_tangent_history).and.allocated(parcels)) then
+        valid=valid.and.size(tab_tangent_history)==size(parcels)
+        valid=valid.and.all(ieee_is_finite(tab_tangent_history)).and.all(tab_tangent_history>=0)
+      endif
+    endif
+    payload_code=nc+32*merge(1,0,present(tab_tangent_history))
     call agree()
     if (.not.global_valid) return
-    call MPI_Allreduce(nc,low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(payload_code,low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(nc,high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(payload_code,high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     valid=low==high;cursor=0
     do r=1,nranks
@@ -70,7 +81,7 @@ contains
     do r=2,nranks
       displacements(r)=displacements(r-1)+received(r-1)
     end do
-    nreal=14+nc
+    nreal=14+nc+merge(1,0,present(tab_tangent_history))
     allocate(send_int(3,size(parcels)),send_real(nreal,size(parcels)),recv_int(3,nrecv),recv_real(nreal,nrecv),stat=ios)
     valid=ios==0;call agree()
     if (.not.global_valid) return
@@ -79,7 +90,8 @@ contains
       send_real(1:14,p)=[parcels(p)%position,parcels(p)%velocity,parcels(p)%mass,parcels(p)%temperature, &
         parcels(p)%multiplicity,parcels(p)%deformation,parcels(p)%deformation_rate,parcels(p)%rt_time, &
         parcels(p)%khrt_initial_count,parcels(p)%khrt_shed_volume]
-      if (nc>0) send_real(15:,p)=component_mass(:,p)
+      if (nc>0) send_real(15:14+nc,p)=component_mass(:,p)
+      if(present(tab_tangent_history)) send_real(nreal,p)=tab_tangent_history(p)
     end do
     call MPI_Alltoallv(send_int,3*counts,3*offsets,MPI_INTEGER8,recv_int,3*received,3*displacements,MPI_INTEGER8,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -94,7 +106,15 @@ contains
     if (nc>0) allocate(masses(nc,nrecv),stat=ios)
     valid=ios==0;call agree()
     if (.not.global_valid) return
+    if(present(tab_tangent_history)) then
+      allocate(incoming_history(nrecv),stat=ios)
+      valid=ios==0;call agree()
+      if(.not.global_valid) return
+      incoming_history=recv_real(nreal,:)
+    endif
     valid=.true.
+    if(present(tab_tangent_history)) valid= &
+      all(ieee_is_finite(incoming_history)).and.all(incoming_history>=0)
     do p=1,nrecv
       incoming(p)=spray_parcel(recv_int(1,p),recv_real(1:3,p),recv_real(4:6,p),recv_real(7,p), &
         recv_real(8,p),recv_real(9,p),recv_real(10,p),recv_real(11,p),recv_int(2,p),recv_real(12,p), &
@@ -102,12 +122,13 @@ contains
       valid=valid.and.valid_spray_parcel(incoming(p))
       if (p>1) valid=valid.and.incoming(p)%id>incoming(p-1)%id
       if (nc>0) then
-        masses(:,p)=recv_real(15:,p)
+        masses(:,p)=recv_real(15:14+nc,p)
         valid=valid.and.valid_component_inventory(incoming(p),masses(:,p))
       end if
     end do
     call agree()
     if (.not.global_valid) return
+    if(present(tab_tangent_history)) call move_alloc(incoming_history,tab_tangent_history)
     call move_alloc(incoming,parcels)
     if (present(component_mass)) call move_alloc(masses,component_mass)
     ok=.true.

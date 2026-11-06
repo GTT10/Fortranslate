@@ -1,7 +1,7 @@
 program test_spray_mpi_amr_step
   use mpi_f08
   use spray_mpi_amr_step_mod, only: advance_mpi_amr_mixture_coupling,kick_mpi_amr_mixture_halo, &
-    advance_mpi_amr_ghost_halo,advance_mpi_amr_level_halo
+    advance_mpi_amr_ghost_halo,advance_mpi_amr_level_halo,compute_mpi_amr_spray_timestep
   use spray_amr_tree_partition_mod, only: locate_amr_tree_spray_cells
   use spray_parcel_mod
   use spray_mixture_mod, only: liquid_mixture_properties,advance_mixture_frozen_gas
@@ -29,7 +29,7 @@ program test_spray_mpi_amr_step
   real(dp), allocatable :: root(:,:,:,:),primitive(:),cell(:),y(:),before(:),after(:),scale(:)
   real(dp), allocatable :: positions(:,:)
   integer, allocatable :: locations(:,:)
-  real(dp) :: spacing(3)=.001_dp,zero(3)=0._dp,t,sound,r,interval
+  real(dp) :: spacing(3)=.001_dp,zero(3)=0._dp,t,sound,r,interval,birth_origin(3)
   integer :: nv,node,n(3),i,j,k,p,water,nitrogen,steps
   integer :: rank,nranks,ierr,owners(3),q
   logical :: ok
@@ -97,6 +97,7 @@ program test_spray_mpi_amr_step
     if (p==3) drops(p)%position=spacing*[3.99_dp,1.1_dp,1.1_dp]
     masses(:,p)=drops(p)%mass*[.25_dp,.75_dp]
   end do
+  call check_particle_timestep()
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses
   interval=2.e-5_dp;last_id=3
   options%maximum_substeps=1
@@ -155,6 +156,19 @@ program test_spray_mpi_amr_step
   q=size(drops)
   call MPI_Allreduce(MPI_IN_PLACE,q,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
   call require(q>3,'KH child migration')
+  do p=1,size(drops)
+    if(drops(p)%parent_id<=0) cycle
+    select case(drops(p)%parent_id)
+    case(1);birth_origin=spacing*[1.99_dp,.8_dp,.8_dp]
+    case(2);birth_origin=spacing*[.99_dp,.9_dp,.9_dp]
+    case(3);birth_origin=spacing*[3.99_dp,1.1_dp,1.1_dp]
+    case default;call require(.false.,'KH original parent identity')
+    end select
+    call require(maxval(abs(drops(p)%position-modulo(birth_origin+interval*drops(p)%velocity,4*spacing))) &
+      <1e-14_dp,'AMR KH child moves once from pre-flight origin')
+  end do
+  call check_breakup_kick()
+  call check_flow_cycles()
   deallocate(drops,masses);allocate(drops(0),masses(2,0))
   options=spray_options();interval=1.e-6_dp
   saved=local;saved_t=local_t;saved_drops=drops;saved_mass=masses;last_id=3
@@ -163,6 +177,143 @@ program test_spray_mpi_amr_step
   if (rank==0) print *, 'PASS: periodic MPI AMR mixed-particle coupling'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_particle_timestep()
+    type(spray_parcel), allocatable :: particles(:)
+    type(spray_options) :: controls
+    real(dp) :: bound
+    logical :: good
+    allocate(particles(merge(1,0,rank==0)))
+    if(rank==0) particles(1)=spray_parcel(1_int64,spacing*[3.5_dp,.8_dp,.8_dp], &
+      [20._dp,0._dp,0._dp],1e-12_dp,350._dp,100._dp)
+    controls%particle_cfl=.5_dp
+    call compute_mpi_amr_spray_timestep(MPI_COMM_WORLD,tree,particles,zero,spacing, &
+      [.true.,.true.,.true.],controls,0._dp,.false.,bound,good)
+    call require(good.and.abs(bound-2.5e-5_dp)<1e-18_dp,'coarse particle uses its own level width')
+    if(rank==0) then
+      particles(1)%position=spacing*[.99_dp,.9_dp,.9_dp]
+      particles(1)%velocity=[80._dp,0._dp,0._dp]
+    endif
+    call compute_mpi_amr_spray_timestep(MPI_COMM_WORLD,tree,particles,zero,spacing, &
+      [.true.,.true.,.true.],controls,0._dp,.false.,bound,good)
+    call require(good.and.abs(bound-1.5625e-6_dp)<1e-18_dp,'nested particle uses finest covering width')
+    call compute_mpi_amr_spray_timestep(MPI_COMM_WORLD,tree,particles,zero,spacing, &
+      [.true.,.true.,.true.],controls,0._dp,.true.,bound,good)
+    call require(good.and.abs(bound-6.25e-6_dp)<1e-18_dp,'nested timestep scales by cumulative cycles')
+    call compute_mpi_amr_spray_timestep(MPI_COMM_WORLD,tree,particles,zero,spacing, &
+      [.true.,.true.,.true.],controls,100._dp,.true.,bound,good)
+    call require(good.and.abs(bound-5.e-6_dp)<1e-18_dp,'jet bounds apply before level-to-root scaling')
+    call compute_mpi_amr_spray_timestep(MPI_COMM_WORLD,tree,particles,zero,spacing, &
+      [.true.,.true.,.true.],controls,0._dp,rank==0,bound,good)
+    call require(.not.good.and.bound==0,'rank-disagreeing timestep cycle policy rejects')
+  end subroutine check_particle_timestep
+
+  subroutine check_flow_cycles()
+    integer :: a,cycle
+    type(spray_parcel) :: reference
+    real(dp) :: cm(2),sampled(nv),sample_t,sample_sound,delta(nv),reference_cell(nv)
+    real(dp) :: origin(3),duration
+    local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+    options=spray_options();options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+    duration=6e-5_dp;last_id=3;options%maximum_substeps=2
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,local,local_t, &
+      tree,owners,drops,masses,zero,spacing,duration,steps,ok,last_id,maximum_level=0,motion_mode='kick_drift')
+    call require(.not.ok.and.steps==0.and.last_id==3,'native flow-cycle capacity rejects whole interval')
+    call require(all(drops%mass==saved_drops%mass).and.all(masses==saved_mass),'native flow-cycle failure keeps particles')
+    options%maximum_substeps=10
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,local,local_t, &
+      tree,owners,drops,masses,zero,spacing,duration,steps,ok,last_id,maximum_level=0,motion_mode='kick_drift')
+    call require(ok.and.steps==3.and.last_id==3,'native flow CFL 1.2 uses three equal slices with empty ranks')
+    do a=1,size(drops)
+      select case(drops(a)%id)
+      case(1);origin=spacing*[1.99_dp,.8_dp,.8_dp]
+      case(2);origin=spacing*[.99_dp,.9_dp,.9_dp]
+      case(3);origin=spacing*[3.99_dp,1.1_dp,1.1_dp]
+      case default;call require(.false.,'native flow original identity')
+      end select
+      call require(maxval(abs(drops(a)%position-modulo(origin+duration*drops(a)%velocity,4*spacing)))<1e-15_dp, &
+        'native flow cycles advance trajectory over full flow interval')
+    enddo
+    ! Particle feedback changes gas after each slice. Sampling still uses
+    ! the gas stage supplied at entry, matching InterpolateGasPhase in MKD.
+    local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+    options%drag=.true.;options%heat=.true.;options%mixture_time_scheme='euler'
+    ! Keep interpolation rounding away from the NASA coefficient boundary;
+    ! exact midpoint selection is covered by the thermodynamics unit tests.
+    sampled=primitive;sampled(5)=r*1100._dp
+    call reactive_primitive_to_conserved(species,sampled,reference_cell,sample_t,sample_sound,ok)
+    call require(ok,'frozen-stage reference conserved gas')
+    do a=1,size(local%fields)
+      if(.not.allocated(local%fields(a)%values)) cycle
+      do k=1,size(local%fields(a)%values,4)
+      do j=1,size(local%fields(a)%values,3)
+      do i=1,size(local%fields(a)%values,2)
+        local%fields(a)%values(:,i,j,k)=reference_cell
+      enddo
+      enddo
+      enddo
+      local_t%fields(a)%values=1100._dp
+    enddo
+    call reactive_conserved_to_primitive(species,reference_cell,1100._dp,sampled,sample_t,sample_sound,ok)
+    call require(ok,'frozen-stage reference gas')
+    call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,local,local_t, &
+      tree,owners,drops,masses,zero,spacing,duration,steps,ok,last_id,maximum_level=0,motion_mode='kick_drift')
+    call require(ok.and.steps==3,'frozen-stage transfer keeps three flow slices')
+    do a=1,size(drops)
+      reference=spray_parcel(drops(a)%id,[0._dp,0._dp,0._dp],[20._dp,10._dp,5._dp],1e-12_dp,350._dp,100._dp)
+      cm=reference%mass*[.25_dp,.75_dp]
+      do cycle=1,3
+        call advance_mixture_frozen_gas(species,transport,sampled,sample_t,reference,liquids,cm,options, &
+          duration/3,delta,ok,time_modifier=.5_dp)
+        call require(ok,'frozen-stage reference transfer slice')
+      enddo
+      call require(maxval(abs(drops(a)%velocity-reference%velocity))<1e-12_dp.and. &
+        abs(drops(a)%temperature-reference%temperature)<1e-10_dp, &
+        'each flow slice samples frozen stage gas despite feedback')
+    enddo
+  end subroutine check_flow_cycles
+
+  subroutine check_breakup_kick()
+    integer :: model,a,global_count
+    real(dp) :: origin(3)
+    do model=1,2
+      local=saved;local_t=saved_t;drops=saved_drops;masses=saved_mass
+      options=spray_options();options%drag=.false.;options%heat=.false.;options%evaporation=.false.
+      options%surface_tension=.072_dp;options%liquid_viscosity=.001_dp
+      if(model==1) then
+        options%breakup_model='khrt';options%khrt_children=.true.
+        options%khrt_reference_diameter_cubed=1e-25_dp
+      else
+        options%breakup_model='etab';options%etab_parcel_factor=.8_dp
+        options%maximum_multiplicity=10
+      endif
+      do a=1,size(drops)
+        drops(a)%velocity=[1000._dp,10._dp,5._dp]
+        if(model==2) drops(a)%deformation=1.1_dp
+      enddo
+      last_id=3
+      call totals(before)
+      call advance_mpi_amr_mixture_coupling(MPI_COMM_WORLD,species,transport,liquids,options,local,local_t, &
+        tree,owners,drops,masses,zero,spacing,1e-8_dp,steps,ok,last_id,motion_mode='kick')
+      call require(ok.and.last_id==3,'new-time breakup kick creates no child IDs')
+      call totals(after)
+      call require(all(abs(after-before)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+        'new-time breakup kick conserves combined inventory')
+      global_count=size(drops)
+      call MPI_Allreduce(MPI_IN_PLACE,global_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require(global_count==3,'new-time breakup kick preserves parcel count')
+      do a=1,size(drops)
+        select case(drops(a)%id)
+        case(1);origin=spacing*[1.99_dp,.8_dp,.8_dp]
+        case(2);origin=spacing*[.99_dp,.9_dp,.9_dp]
+        case(3);origin=spacing*[3.99_dp,1.1_dp,1.1_dp]
+        case default;call require(.false.,'new-time breakup kick parent identity')
+        end select
+        call require(all(drops(a)%position==origin),'new-time breakup kick preserves position')
+        call require(drops(a)%mass<1e-12_dp,'new-time breakup kick retains diameter evolution')
+      enddo
+    enddo
+  end subroutine check_breakup_kick
+
   subroutine check_halo_kick()
     type(amr_tree_state_3d) :: halo,ht,source,kept_source,routed,surplus,kept_routed,kept_surplus
     type(spray_parcel), allocatable :: hd(:),reference(:)

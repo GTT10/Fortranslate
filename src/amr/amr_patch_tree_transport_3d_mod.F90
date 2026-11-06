@@ -7,12 +7,15 @@ module amr_patch_tree_transport_3d_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use reactive_mol_3d_mod, only: convert_regular_energy_3d
   use reactive_3d_mod, only: recover_reactive_temperatures_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,average_down_amr_patch_tree_3d, &
     amr_tree_integer_layout_3d
   use amr_patch_tree_ghost_3d_mod, only: fill_amr_patch_tree_ghosts_3d,apply_amr_tree_pressure_ghosts_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d,reflux_amr_patch_tree_3d
   use simulation_config_reactive_3d_mod, only: valid_reactive_boundaries_3d
+  use reactive_transport_3d_mod, only: valid_constant_transport_coefficients
   implicit none
   private
   public :: advance_amr_patch_tree_transport_3d,compute_amr_patch_tree_transport_timestep_3d
@@ -21,7 +24,15 @@ module amr_patch_tree_transport_3d_mod
 contains
   subroutine compute_sdc_amr_patch_tree_transport_3d(tree,species,transport,state,temperature,root_spacing,dt,faces, &
       flags,transport_rate,integrated_flux,minimum_theta,ok,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
-      outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,coarse_fractions)
+      outlet_pressure,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,coarse_fractions, &
+      constant_coefficients,frame,domain_lower,internal_energy,total_energy_primitives,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_slip(6),local_thermal_slip(6)
+    logical, optional, intent(in) :: total_energy_primitives
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -41,17 +52,43 @@ contains
     type(amr_tree_state_3d) :: packed,rates
     type(amr_tree_flux_3d), allocatable :: flux(:)
     real(dp), allocatable :: h(:,:),inlet(:,:),ghost(:,:,:,:),fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
+    real(dp), allocatable :: ordinary(:,:,:,:),sampled_h(:,:,:),sampled_ghost_h(:,:,:)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
-    real(dp) :: rhs(reactive_nvar(size(species))),local_theta,candidate_theta
+    real(dp) :: rhs(reactive_nvar(size(species))),local_theta,candidate_theta,lower(3)
     character(len=32) :: local_faces(6)
+    character(len=:), allocatable :: sampling_limiter
+    integer :: np,held_face
     integer :: peer,n(3),i,j,k,axis,level,nvar,depth
-    logical :: valid
+    logical :: valid,use_total_energy
+    use_total_energy=.false.
+    if(present(total_energy_primitives)) use_total_energy=total_energy_primitives
+    sampling_limiter='mc'
+    if(present(internal_energy)) sampling_limiter='linear'
     ok=.false.;nvar=reactive_nvar(size(species));candidate_theta=1
+    thermal_slip=.false.
+    if(present(isothermal_slip_faces)) thermal_slip=isothermal_slip_faces
+    if(any(thermal_slip)) then
+      if(any(thermal_slip.and.faces/='slip_wall')) return
+      if(.not.flags(2).or..not.present(wall_temperature)) return
+      if(size(wall_temperature)/=6) return
+    endif
     if(.not.ieee_is_finite(dt).or.dt<=0) return
     if(size(transport)/=size(species).or..not.valid_reactive_boundaries_3d(faces)) return
+    if(present(frame).neqv.present(domain_lower)) return
+    if(present(frame)) then
+      if(.not.frame%is_valid().or..not.all(ieee_is_finite(domain_lower))) return
+    endif
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if(.not.valid) return
+    if(present(internal_energy)) then
+      if(.not.internal_energy%is_valid(tree)) return
+      do peer=1,size(tree%nodes)
+        if(size(internal_energy%fields(peer)%values,1)/=1) return
+        if(.not.all(ieee_is_finite(internal_energy%fields(peer)%values))) return
+      enddo
+    endif
+    np=nvar+1+merge(1,0,present(internal_energy))
     depth=-1
     if(present(target_depth)) then
       depth=target_depth
@@ -68,8 +105,8 @@ contains
       do peer=1,size(tree%nodes)
         if(tree%nodes(peer)%level>=depth) cycle
         if(.not.allocated(coarse_start%fields(peer)%values).or..not.allocated(coarse_end%fields(peer)%values)) return
-        if(any(shape(coarse_start%fields(peer)%values)/=[nvar+1,tree%nodes(peer)%shape])) return
-        if(any(shape(coarse_end%fields(peer)%values)/=[nvar+1,tree%nodes(peer)%shape])) return
+        if(any(shape(coarse_start%fields(peer)%values)/=[np,tree%nodes(peer)%shape])) return
+        if(any(shape(coarse_end%fields(peer)%values)/=[np,tree%nodes(peer)%shape])) return
         if(.not.all(ieee_is_finite(coarse_start%fields(peer)%values))) return
         if(.not.all(ieee_is_finite(coarse_end%fields(peer)%values))) return
       end do
@@ -79,14 +116,22 @@ contains
     if(present(inflow_state)) then
       if(.not.present(inflow_temperature)) return
       if(any(shape(inflow_state)/=[nvar,6]).or.size(inflow_temperature)/=6) return
-      allocate(inlet(nvar+1,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+      allocate(inlet(np,6));inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+      if(present(internal_energy)) then
+        inlet(np,:)=0
+        do held_face=1,6
+          if(inlet(1,held_face)<=0) cycle
+          inlet(np,held_face)=inlet(5,held_face)-.5_dp*sum(inlet(2:4,held_face)**2)/inlet(1,held_face)
+        enddo
+      endif
     end if
     allocate(packed%fields(size(tree%nodes)),flux(size(tree%nodes)))
     do peer=1,size(tree%nodes)
       n=tree%nodes(peer)%shape
-      allocate(packed%fields(peer)%values(nvar+1,n(1),n(2),n(3)))
+      allocate(packed%fields(peer)%values(np,n(1),n(2),n(3)))
       packed%fields(peer)%values(:nvar,:,:,:)=state%fields(peer)%values
       packed%fields(peer)%values(nvar+1,:,:,:)=temperature%fields(peer)%values(1,:,:,:)
+      if(present(internal_energy)) packed%fields(peer)%values(np:np,:,:,:)=internal_energy%fields(peer)%values
     end do
     if(present(coarse_start)) then
       do peer=1,size(tree%nodes)
@@ -101,11 +146,22 @@ contains
       n=tree%nodes(peer)%shape
       call fill_amr_patch_tree_ghosts_3d(tree,packed,peer,faces,ghost,valid, &
         viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-        coarse_limiter='mc',species_count=size(species), &
+        coarse_limiter=sampling_limiter,species_count=size(species), &
         species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-        coarse_future=coarse_end,coarse_fractions=coarse_fractions)
+        coarse_future=coarse_end,coarse_fractions=coarse_fractions, &
+        frame=frame,domain_lower=domain_lower,root_spacing=root_spacing, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy))
       if (.not.valid) return
-      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid)
+      ordinary=state%fields(peer)%values
+      if(present(frame)) then
+        lower=domain_lower+real(origin(:,peer),dp)*h(:,peer)
+        call convert_regular_energy_3d(frame,lower,h(:,peer),ordinary,0,.false.,valid)
+        if(.not.valid) return
+        call convert_regular_energy_3d(frame,lower,h(:,peer),ghost,2,.false.,valid)
+        if(.not.valid) return
+      endif
+      call apply_amr_tree_pressure_ghosts_3d(tree,species,peer,faces,outlet_pressure,ghost,valid, &
+      stored_internal_energy=present(internal_energy))
       if (.not.valid) return
       allocate(fx(nvar,n(1)+1,n(2),n(3)),fy(nvar,n(1),n(2)+1,n(3)),fz(nvar,n(1),n(2),n(3)+1))
       local_faces='outflow';level=tree%nodes(peer)%level+1
@@ -113,9 +169,20 @@ contains
         if (origin(axis,peer)==0) local_faces(2*axis-1)=faces(2*axis-1)
         if (origin(axis,peer)+int(n(axis),int64)==domain(axis,level)) local_faces(2*axis)=faces(2*axis)
       end do
-      call physical_transport_ghosted_fluxes_3d(species,transport,state%fields(peer)%values, &
+      ! MOL face primitives follow pinned pc_ctoprim (total energy). Keep the
+      ! held field in donor interpolation and evolution, and retain the default
+      ! held-energy path for CTU and rotating-frame callers.
+      if(present(internal_energy).and..not.use_total_energy) then
+        sampled_h=internal_energy%fields(peer)%values(1,:,:,:)
+        sampled_ghost_h=ghost(np,:,:,:)
+      endif
+      local_thermal_slip=thermal_slip.and.local_faces=='slip_wall'
+      call physical_transport_ghosted_fluxes_3d(species,transport,ordinary, &
         temperature%fields(peer)%values(1,:,:,:),ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer),dt,local_faces, &
-        flags(1),flags(2),flags(3),flags(4),fx,fy,fz,local_theta,valid,wall_temperature,wall_velocity)
+        flags(1),flags(2),flags(3),flags(4),fx,fy,fz,local_theta,valid,wall_temperature,wall_velocity, &
+          constant_coefficients=constant_coefficients, &
+        internal_energy_density=sampled_h,internal_energy_ghost=sampled_ghost_h, &
+        isothermal_slip_faces=local_thermal_slip)
       candidate_theta=min(candidate_theta,local_theta)
       if (.not.valid) return
       do k=1,n(3)
@@ -140,7 +207,13 @@ contains
   end subroutine compute_sdc_amr_patch_tree_transport_3d
 
   subroutine compute_amr_patch_tree_transport_timestep_3d(tree,species,transport,state,temperature, &
-      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,ok,faces,wall_temperature)
+      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,ok,faces,wall_temperature, &
+      constant_coefficients,internal_energy,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_slip(6),local_thermal_slip(6)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    real(dp), allocatable :: sampled_h(:,:,:)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(amr_tree_state_3d), intent(in) :: state,temperature
@@ -159,35 +232,55 @@ contains
     integer :: node,n(3),axis,level
     logical :: valid
     ok=.false.
+    thermal_slip=.false.
+    if(present(isothermal_slip_faces)) thermal_slip=isothermal_slip_faces
+    if(any(thermal_slip)) then
+      if(.not.present(faces).or..not.conduction.or..not.present(wall_temperature)) return
+      if(any(thermal_slip.and.faces/='slip_wall')) return
+      if(size(wall_temperature)/=6) return
+    endif
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     if (present(faces)) then
       if (.not.valid_reactive_boundaries_3d(faces)) return
-      if (any(faces=='isothermal_wall')) then
+      if (any(faces=='isothermal_wall').or.any(thermal_slip)) then
         if (.not.conduction.or..not.present(wall_temperature)) return
         if (size(wall_temperature)/=6) return
       end if
     end if
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if (.not.valid) return
+    if(present(internal_energy)) then
+      if(.not.internal_energy%is_valid(tree)) return
+      do node=1,size(tree%nodes)
+        if(size(internal_energy%fields(node)%values,1)/=1) return
+        if(.not.all(ieee_is_finite(internal_energy%fields(node)%values))) return
+      enddo
+    endif
     candidate=huge(1.0_dp);diffusivity=0
     do node=1,size(tree%nodes)
       n=tree%nodes(node)%shape
+      if(present(internal_energy)) sampled_h=internal_energy%fields(node)%values(1,:,:,:)
       call reactive_transport_timestep_3d(species,transport,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
-        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid)
+        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=sampled_h)
       if (.not.valid) return
       candidate=min(candidate,local_dt);diffusivity=max(diffusivity,local_diffusivity)
       if (present(faces)) then
-        if (any(faces=='isothermal_wall')) then
+        if (any(faces=='isothermal_wall').or.any(thermal_slip)) then
           local_faces='outflow';level=tree%nodes(node)%level+1
           do axis=1,3
-            if (origin(axis,node)==0.and.faces(2*axis-1)=='isothermal_wall') &
-              local_faces(2*axis-1)='isothermal_wall'
-            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and.faces(2*axis)=='isothermal_wall') &
-              local_faces(2*axis)='isothermal_wall'
+            if (origin(axis,node)==0.and. &
+                (faces(2*axis-1)=='isothermal_wall'.or.thermal_slip(2*axis-1))) &
+              local_faces(2*axis-1)=faces(2*axis-1)
+            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and. &
+                (faces(2*axis)=='isothermal_wall'.or.thermal_slip(2*axis))) &
+              local_faces(2*axis)=faces(2*axis)
           end do
+          local_thermal_slip=thermal_slip.and.local_faces=='slip_wall'
           call reactive_isothermal_timestep_3d(species,transport,state%fields(node)%values, &
-            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid)
+            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=sampled_h,isothermal_slip_faces=local_thermal_slip)
           if (.not.valid) return
           candidate=min(candidate,wall_dt)
         end if
@@ -362,7 +455,9 @@ contains
   subroutine advance_amr_patch_tree_transport_level_3d(tree,species,transport,state,temperature,depth,root_spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,integrated_flux,minimum_theta,ok, &
       coarse_start,coarse_end,fractions_start,fractions_end,inflow_state,inflow_temperature, &
-      wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure)
+      wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -392,6 +487,9 @@ contains
     integer :: peer,n(3),dims(3),nvar,stage,i,j,k,endpoint,axis,level
     logical :: valid
     ok=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     call prepare(tree,species,state,temperature,root_spacing,h,valid)
     if (.not.valid) return
     if (depth<0.or.depth>=tree%level_count()) return
@@ -460,7 +558,8 @@ contains
         end do
         call physical_transport_ghosted_fluxes_3d(species,transport,candidate%fields(peer)%values, &
           temps%fields(peer)%values(1,:,:,:),ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,peer),dt,local_faces, &
-          viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,local_theta,valid,wall_temperature,wall_velocity)
+          viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,local_theta,valid,wall_temperature,wall_velocity, &
+          constant_coefficients=constant_coefficients)
         if (.not.valid) return
         theta=min(theta,local_theta)
         do k=1,n(3)

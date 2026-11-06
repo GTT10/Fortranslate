@@ -5,7 +5,8 @@ program test_spray_mpi_amr_tree
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,initialize_amr_patch_tree_3d
   use spray_parcel_mod, only: spray_parcel
-  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,create_mpi_amr_virtual_particles, &
+  use spray_mpi_amr_tree_mod, only: migrate_amr_tree_spray_parcels,migrate_eb_tree_spray_parcels, &
+    create_mpi_amr_virtual_particles, &
     create_mpi_amr_ghost_particles,redistribute_mpi_amr_ghost_particles,create_mpi_amr_level_particles, &
     spray_level_population,collect_mpi_amr_level_particles,initialize_mpi_amr_sdc_populations, &
     redistribute_mpi_amr_level_particles,refresh_mpi_amr_level_copies,redistribute_mpi_amr_subtree_particles
@@ -40,6 +41,7 @@ program test_spray_mpi_amr_tree
   saved=parcels;saved_mass=masses
   call check_physical_levels()
   call check_sdc_populations()
+  call check_history_migration()
   call check_level_redistribution()
   do p=1,size(parcels)
     parcels(p)%position=[merge(1.125_dp,3.875_dp,mod(parcels(p)%id,2_int64)==1),.25_dp,.25_dp]
@@ -180,19 +182,56 @@ program test_spray_mpi_amr_tree
   if (rank==0) print *, 'PASS: AMR spray MPI migration'
   call MPI_Finalize(ierr)
 contains
+  subroutine check_history_migration()
+    type(spray_parcel), allocatable :: moved(:),old(:)
+    real(dp), allocatable :: mass(:,:),history(:),old_history(:),old_mass(:,:)
+    real(dp) :: phi(0:16,0:16,0:16)
+    moved=saved;mass=saved_mass
+    history=real(moved%id,dp)*.125_dp
+    old=moved;old_history=history
+    call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,moved,zero,spacing, &
+      [.true.,.false.,.false.],0,ok,mass,tab_tangent_history=history)
+    call require(.not.ok,'history migration capacity rejection')
+    call require(all(moved%id==old%id).and.all(mass==saved_mass).and.all(history==old_history), &
+      'capacity failure preserves TAB history and parcels')
+    call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,moved,zero,spacing, &
+      [.true.,.false.,.false.],100,ok,mass,tab_tangent_history=history)
+    call require(ok,'history rank migration')
+    call require(all(history==real(moved%id,dp)*.125_dp),'sorted receive TAB history matches IDs')
+    call require(size(history)==size(moved),'empty ranks retain matching history size')
+    call migrate_amr_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,moved,zero,spacing, &
+      [.true.,.false.,.false.],100,ok,mass,0,history)
+    call require(ok.and.size(moved)==merge(2*nranks,0,rank==0),'history coarse owner migration')
+    call require(all(history==real(moved%id,dp)*.125_dp),'coarse migration retains TAB history')
+    old=moved;old_mass=mass;old_history=history
+    phi=1._dp
+    if(rank==0) phi(8,8,8)=2._dp
+    call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,phi,moved,zero,spacing,100,ok,mass, &
+      periodic=[.true.,.false.,.false.],tab_tangent_history=history)
+    call require(.not.ok,'EB geometry disagreement after private history migration')
+    call require(all(moved%id==old%id).and.all(mass==old_mass).and.all(history==old_history), &
+      'EB late failure preserves history and parcel inventories')
+    phi=1._dp
+    call migrate_eb_tree_spray_parcels(MPI_COMM_WORLD,tree,owners,phi,moved,zero,spacing,100,ok,mass, &
+      periodic=[.true.,.false.,.false.],tab_tangent_history=history)
+    call require(ok,'EB history migration')
+    call require(all(history==real(moved%id,dp)*.125_dp),'EB history follows sorted IDs')
+  end subroutine check_history_migration
   subroutine check_level_redistribution()
     type(spray_parcel), allocatable :: moved(:),old(:)
-    real(dp), allocatable :: mass(:,:),old_mass(:,:)
+    real(dp), allocatable :: mass(:,:),old_mass(:,:),history(:),old_history(:)
     integer, allocatable :: nodes(:),old_nodes(:)
     integer :: a,seen(2*nranks)
     moved=saved;mass=saved_mass;allocate(nodes(size(moved)),source=4)
+    history=real(moved%id,dp)*.125_dp
     do a=1,size(moved)
       moved(a)%position(1)=1.125_dp
     end do
     call redistribute_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,moved,mass,nodes,zero,spacing, &
-      [.true.,.false.,.false.],2,1,100,ok)
+      [.true.,.false.,.false.],2,1,100,ok,tab_tangent_history=history)
     call require(ok.and.size(moved)==merge(2*nranks,0,rank==nranks-1),'physical crossing stays on fine owner')
     call require(all(nodes==4),'physical crossing stays on fine level in grow region')
+    call require(all(history==real(moved%id,dp)*.125_dp),'level migration TAB history')
     seen=0
     do a=1,size(moved)
       seen(int(moved(a)%id))=seen(int(moved(a)%id))+1
@@ -202,11 +241,12 @@ contains
     call MPI_Allreduce(MPI_IN_PLACE,seen,size(seen),MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     call require(all(seen==1),'all live physical IDs retained across valid edge')
     if(size(moved)>0) moved(1)%position(1)=2._dp
-    old=moved;old_mass=mass;old_nodes=nodes
+    old=moved;old_mass=mass;old_nodes=nodes;old_history=history
     call redistribute_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,moved,mass,nodes,zero,spacing, &
-      [.true.,.false.,.false.],2,1,100,ok)
+      [.true.,.false.,.false.],2,1,100,ok,tab_tangent_history=history)
     call require(.not.ok.and.size(moved)==size(old),'escaping physical parcel rejects instead of disappearing')
     call require(all(moved%id==old%id).and.all(mass==old_mass).and.all(nodes==old_nodes),'escape rollback payload')
+    call require(all(history==old_history),'escape rollback TAB history')
     do a=1,size(moved)
       call require(all(moved(a)%position==old(a)%position),'escape rollback coordinates')
     end do
@@ -215,9 +255,10 @@ contains
       moved(1)%mass=0;mass(:,1)=0;moved(1)%position=4._dp
     end if
     call redistribute_mpi_amr_level_particles(MPI_COMM_WORLD,tree,owners,moved,mass,nodes,zero,spacing, &
-      [.true.,.false.,.false.],0,0,100,ok)
+      [.true.,.false.,.false.],0,0,100,ok,tab_tangent_history=history)
     call require(ok.and.size(moved)==merge(2*nranks-1,0,rank==0),'root physical routing removes only dead parcels')
     call require(all(nodes==1),'root level retained over refined cells')
+    call require(all(history==real(moved%id,dp)*.125_dp),'retirement keeps TAB history aligned')
     call require(all(moved%id/=1_int64),'dead physical parcel removed before position lookup')
   end subroutine check_level_redistribution
   subroutine check_sdc_populations()

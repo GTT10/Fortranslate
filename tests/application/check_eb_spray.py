@@ -25,6 +25,7 @@ p.add_argument('--khrt', action='store_true')
 p.add_argument('--outflow', action='store_true')
 p.add_argument('--force', action='store_true')
 p.add_argument('--difmag', type=float)
+p.add_argument('--state-redist-order', type=int, choices=(0, 2, 4))
 p.add_argument('--impacts', choices=('deposit', 'splash'))
 a = p.parse_args()
 assert not a.inlet_composition or (a.inflow and a.restart)
@@ -124,6 +125,10 @@ if a.force:
 exe = str(a.exe.resolve())
 if a.difmag is not None:
     gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d', f'&reactive_eb_3d\n difmag={a.difmag},', 1)
+    (work / 'gas.nml').write_text(gas)
+if a.state_redist_order is not None:
+    gas = (work / 'gas.nml').read_text().replace('&reactive_eb_3d',
+        f'&reactive_eb_3d\n state_redist_max_order={a.state_redist_order},', 1)
     (work / 'gas.nml').write_text(gas)
 result = subprocess.run([exe, 'gas.nml', 'spray.nml'], cwd=work, capture_output=True, text=True)
 (work / 'run.log').write_text(result.stdout + result.stderr)
@@ -258,6 +263,19 @@ if a.restart:
         before = next(line for line in full_log.splitlines() if line.startswith(label))
         after = next(line for line in run.stdout.splitlines() if line.startswith(label))
         assert before == after, (label, work)
+    if a.state_redist_order is not None:
+        changed_order = 0 if a.state_redist_order else 2
+        altered = resume.replace(f'state_redist_max_order={a.state_redist_order}',
+                                 f'state_redist_max_order={changed_order}', 1)
+        (work / 'changed_order.nml').write_text(altered)
+        rejected = subprocess.run([exe, 'changed_order.nml', 'spray.nml'], cwd=work,
+                                  capture_output=True, text=True)
+        (work / 'changed_order.log').write_text(rejected.stdout + rejected.stderr)
+        assert rejected.returncode != 0, work
+        assert 'incompatible spray checkpoint' in (rejected.stdout + rejected.stderr).lower(), work
+        assert (work / 'gas.csv').read_bytes() == full_gas
+        assert (work / 'gas.csv.particles.csv').read_bytes() == full_particles
+        assert (work / 'gas.csv.films.csv').read_bytes() == full_films
     if a.ctu:
         altered = resume.replace("hydro_method='plm_ctu'", "hydro_method='pcm'")
         (work / 'changed_hydro.nml').write_text(altered)

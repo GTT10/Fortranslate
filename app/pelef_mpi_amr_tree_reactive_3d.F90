@@ -50,7 +50,9 @@ program pelef_mpi_amr_tree_reactive_3d
   call read_reactive_3d_configuration( &
     trim(input_path), config, ok, message, &
     allow_pressure_outlet=.true.,allow_mach_inlet=.true.,allow_characteristic_ppm=.true.,allow_difmag=.true., &
-    allow_sdc=.true.,allow_external_forcing=.true.,allow_sdc_cvode=cvode_available)
+    allow_sdc=.true.,allow_mol=.true.,allow_external_forcing=.true.,allow_sdc_cvode=cvode_available, &
+    allow_dual_energy=.true.,allow_godunov_dual_energy=.true., &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     call fatal('Invalid MPI tree command or input')

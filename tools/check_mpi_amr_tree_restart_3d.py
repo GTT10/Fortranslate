@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from amr_tree_checkpoint_test_support import checkpoint_records
 
 
 def main():
@@ -139,13 +140,11 @@ def main():
                 3, 'Invalid MPI tree restart checkpoint/context')
             compare()
         if args.indexed:
-            assert saved.startswith(b'PELEF_AMR_TREE_3D_CHECKPOINT_V2\n')
-            first, length, rest = saved.split(b'\n', 2)
-            context_size = int(length)
-            context, records = rest[:context_size], rest[context_size:].splitlines(keepends=True)
+            prefix, records, ledger_index, tag = checkpoint_records(saved)
+            assert tag == b'PELEF_AMR_TREE_3D_CHECKPOINT_V2'
             nodes = int(records[0].split()[0])
-            records[nodes + 2] = b'1\n'  # First relative node offset must be zero.
-            checkpoint.write_bytes(first + b'\n' + length + b'\n' + context + b''.join(records))
+            records[nodes + ledger_index] = b'1\n'  # First relative node offset must be zero.
+            checkpoint.write_bytes(prefix + b''.join(records))
             run('wrong_index', config + restart, 3, 'Invalid MPI tree restart checkpoint/context')
             compare()
             checkpoint.write_bytes(saved)
@@ -176,13 +175,11 @@ def main():
         checkpoint.write_bytes(saved[:saved.rfind(b'END_AMR_TREE_CHECKPOINT')])
         run('truncated', config + restart, 3, 'Invalid MPI tree restart checkpoint/context')
         # Corrupt only the finite boundary ledger; the physics/context remain unchanged.
-        first, length, rest = saved.split(b'\n', 2)
-        count = int(length)
-        context, records = rest[:count], rest[count:].splitlines(keepends=True)
-        ledger = records[2].split()
+        prefix, records, ledger_index, _ = checkpoint_records(saved)
+        ledger = records[ledger_index].split()
         ledger[len(ledger) // 2] = b'1.0'
-        records[2] = b' '.join(ledger) + b'\n'
-        checkpoint.write_bytes(first + b'\n' + length + b'\n' + context + b''.join(records))
+        records[ledger_index] = b' '.join(ledger) + b'\n'
+        checkpoint.write_bytes(prefix + b''.join(records))
         run('wrong_ledger', config + restart, 3, 'Tree restart boundary ledger mismatch')
         checkpoint.write_bytes(saved)
         run('alias', config + save.replace("'tree.chk'", "'./tree_hotspot.csv'"), 3,

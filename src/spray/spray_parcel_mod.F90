@@ -26,6 +26,10 @@ module spray_parcel_mod
     real(dp) :: heat_capacity_coefficients(4)=0.0_dp,heat_capacity_temperature_range(2)=0.0_dp
     real(dp) :: normal_boiling_temperature=0.0_dp
     real(dp) :: molecular_weight=0.0_dp ! zero uses the mapped gas species
+    character(len=24) :: viscosity_model='supplied'
+    real(dp) :: viscosity=0,viscosity_coefficients(4)=0,viscosity_temperature_range(2)=0
+    character(len=16) :: conductivity_model='supplied'
+    real(dp) :: conductivity=0,conductivity_coefficients(4)=0,conductivity_temperature_range(2)=0
   end type
   type, public :: spray_nozzle_model
     character(len=16) :: profile='legacy'
@@ -46,9 +50,11 @@ module spray_parcel_mod
     real(dp) :: khrt_initial_count=0,khrt_shed_volume=0
   end type
   type, public :: spray_options
+    logical :: fixed_parts=.false.
     logical :: khrt_children=.false.
     real(dp) :: khrt_reference_diameter_cubed=0
     real(dp) :: khrt_parcel_factor=-1 ! -1: symmetric quadrature; [0,1]: reference count and sampled azimuth
+    real(dp) :: etab_parcel_factor=-1 ! -1: legacy clone split; [0,1]: pinned TAB replacement
     real(dp) :: khrt_b0=.61_dp,khrt_b1=7.0_dp,khrt_c3=1.0_dp
     real(dp) :: maximum_multiplicity=0.0_dp
     integer :: maximum_parcels=1000000
@@ -71,16 +77,51 @@ module spray_parcel_mod
     real(dp) :: surface_fraction = 0.0_dp, ambient_fraction = 0.0_dp
     real(dp) :: vapor_enthalpy = 0.0_dp
     real(dp) :: vapor_cp = 0.0_dp ! zero retains the supplied-film cp fallback
+    real(dp) :: pressure = 0.0_dp, liquid_molecular_weight = 0.0_dp
   end type
+  public :: compute_spray_timestep
   public :: initialize_spray_liquid, valid_spray_liquid, valid_spray_parcel
   public :: valid_spray_options, parcel_diameter, liquid_energy, parcel_totals
   public :: spray_transfer_rates, advance_parcel_frozen_film, saturation_mole_fraction
   public :: liquid_heat_capacity_at_temperature
   public :: watson_latent_heat, pelemp_boiling_temperature,resolved_liquid_molecular_weight
+  public :: liquid_transfer_properties
+  public :: liquid_evaporation_energy
+  public :: positive_log1p
+  public :: liquid_conductivity_at_temperature
   public :: select_spray_liquid
   public :: inject_cone_ports
+  public :: liquid_component_viscosity_at_temperature
   public :: inject_cone_parcels, liquid_density_at_temperature, liquid_viscosity_at_temperature
 contains
+  pure subroutine compute_spray_timestep(parcels,spacing,cfl,fixed_parts,maximum_injection_speed,dt,ok)
+    type(spray_parcel), intent(in) :: parcels(:)
+    real(dp), intent(in) :: spacing(3),cfl,maximum_injection_speed
+    logical, intent(in) :: fixed_parts
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+    real(dp) :: frequency
+    integer :: p
+    dt=0;ok=.false.
+    if(.not.all(ieee_is_finite([spacing,cfl,maximum_injection_speed]))) return
+    if(any(spacing<=0).or.cfl<=0.or.maximum_injection_speed<0) return
+    if(fixed_parts) then
+      dt=huge(1._dp);ok=.true.;return
+    endif
+    ! Pinned estTimestep uses dx[0] for the maximum configured jet speed.
+    frequency=maximum_injection_speed/spacing(1)
+    do p=1,size(parcels)
+      if(parcels(p)%id<=0.or.parcels(p)%mass<=0) cycle
+      if(.not.all(ieee_is_finite(parcels(p)%velocity))) return
+      frequency=max(frequency,maxval(abs(parcels(p)%velocity)/spacing))
+    enddo
+    if(.not.ieee_is_finite(frequency)) return
+    dt=huge(1._dp)
+    if(frequency>0) dt=cfl/frequency
+    ok=ieee_is_finite(dt).and.dt>0
+    if(.not.ok) dt=0
+  end subroutine compute_spray_timestep
+
   pure real(dp) function resolved_liquid_molecular_weight(liquid,gas_molecular_weight) result(weight)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: gas_molecular_weight
@@ -187,6 +228,7 @@ contains
     if (.not. all(ieee_is_finite([l%density, l%heat_capacity, l%reference_temperature, &
         l%reference_pressure, l%latent_heat, l%reference_energy]))) return
     if (.not.ieee_is_finite(l%molecular_weight)) return
+    if (.not.valid_liquid_conductivity(l).or..not.valid_liquid_viscosity(l)) return
     if (l%molecular_weight/=0) then
       if (l%molecular_weight<1e-3_dp.or.l%molecular_weight>1e5_dp) return
     end if
@@ -308,6 +350,11 @@ contains
     if (o%khrt_parcel_factor/=-1) then
       if(o%khrt_parcel_factor<0.or.o%khrt_parcel_factor>1.or..not.o%khrt_children) return
     endif
+    if (.not.ieee_is_finite(o%etab_parcel_factor)) return
+    if (o%etab_parcel_factor/=-1) then
+      if(o%etab_parcel_factor<0.or.o%etab_parcel_factor>1) return
+      if(o%breakup_model/='etab'.or.o%maximum_multiplicity<=0) return
+    endif
     if (.not.ieee_is_finite(o%khrt_reference_diameter_cubed)) return
     if (o%khrt_children) then
       if (o%breakup_model/='khrt') return
@@ -403,13 +450,212 @@ contains
     rho=candidate
   end function
 
-  pure real(dp) function parcel_diameter(p, liquid) result(d)
+  pure logical function valid_liquid_viscosity(liquid) result(ok)
+    type(spray_liquid), intent(in) :: liquid
+    ok=.false.
+    if(.not.all(ieee_is_finite([liquid%viscosity,liquid%viscosity_coefficients, &
+      liquid%viscosity_temperature_range]))) return
+    select case(liquid%viscosity_model)
+    case('supplied')
+      if(liquid%viscosity/=0.or.any(liquid%viscosity_coefficients/=0).or. &
+        any(liquid%viscosity_temperature_range/=0)) return
+    case('constant')
+      if(liquid%viscosity<1e-10_dp.or.liquid%viscosity>1e3_dp) return
+      if(any(liquid%viscosity_coefficients/=0).or.any(liquid%viscosity_temperature_range/=0)) return
+    case('inverse-temperature')
+      if(liquid%viscosity/=0.or.maxval(abs(liquid%viscosity_coefficients))>1e20_dp) return
+      if(liquid%viscosity_temperature_range(1)<1.or.liquid%viscosity_temperature_range(2)>1e5_dp) return
+      if(liquid%viscosity_temperature_range(2)<=liquid%viscosity_temperature_range(1)) return
+    case default
+      return
+    end select
+    ok=.true.
+  end function
+
+  pure real(dp) function liquid_component_viscosity_at_temperature(liquid,temperature,pressure,molecular_weight) &
+      result(value)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: temperature
+    real(dp), optional, intent(in) :: pressure,molecular_weight
+    real(dp) :: t,tboil,mw,candidate
+    logical :: valid
+    value=0
+    if(.not.valid_spray_liquid(liquid).or..not.ieee_is_finite(temperature)) return
+    if(temperature<1.or.temperature>1e5_dp) return
+    t=temperature
+    if(present(pressure).and.liquid%boiling_model=='pelemp-cap') then
+      mw=liquid%molecular_weight
+      if(present(molecular_weight)) mw=resolved_liquid_molecular_weight(liquid,molecular_weight)
+      call pelemp_boiling_temperature(liquid%latent_heat,liquid%reference_temperature,liquid%normal_boiling_temperature, &
+        liquid%critical_temperature,mw,pressure,tboil,valid)
+      if(.not.valid) return
+      t=min(t,tboil)
+    endif
+    select case(liquid%viscosity_model)
+    case('constant')
+      candidate=liquid%viscosity
+    case('inverse-temperature')
+      if(t<liquid%viscosity_temperature_range(1).or.t>liquid%viscosity_temperature_range(2)) return
+      candidate=liquid%viscosity_coefficients(1)+((liquid%viscosity_coefficients(4)/t+ &
+        liquid%viscosity_coefficients(3))/t+liquid%viscosity_coefficients(2))/t
+    case default
+      return
+    end select
+    if(.not.ieee_is_finite(candidate)) return
+    if(candidate<1e-10_dp.or.candidate>1e3_dp) return
+    value=candidate
+  end function
+
+  pure logical function valid_liquid_conductivity(liquid) result(ok)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp) :: a,b,c,disc,t,roots(2)
+    integer :: i
+    ok=.false.
+    if (.not.all(ieee_is_finite([liquid%conductivity,liquid%conductivity_coefficients, &
+        liquid%conductivity_temperature_range]))) return
+    select case(liquid%conductivity_model)
+    case('supplied')
+      if(liquid%conductivity/=0.or.any(liquid%conductivity_coefficients/=0).or. &
+          any(liquid%conductivity_temperature_range/=0)) return
+    case('constant')
+      if(liquid%conductivity<=0.or.liquid%conductivity>1e4_dp) return
+      if(any(liquid%conductivity_coefficients/=0).or.any(liquid%conductivity_temperature_range/=0)) return
+    case('polynomial')
+      if(liquid%conductivity/=0.or.maxval(abs(liquid%conductivity_coefficients))>1e10_dp) return
+      if(liquid%conductivity_temperature_range(1)<1.or.liquid%conductivity_temperature_range(2)>1e5_dp) return
+      if(liquid%conductivity_temperature_range(2)<=liquid%conductivity_temperature_range(1)) return
+      do i=1,2
+        if(liquid_conductivity_at_temperature(liquid,liquid%conductivity_temperature_range(i))<=0) return
+      enddo
+      a=3*liquid%conductivity_coefficients(4);b=2*liquid%conductivity_coefficients(3)
+      c=liquid%conductivity_coefficients(2);roots=liquid%conductivity_temperature_range(1)
+      if(a/=0) then
+        disc=b*b-4*a*c
+        if(disc>=0) then
+          t=-.5_dp*(b+sign(sqrt(disc),b))
+          if(abs(t)<=abs(a)*1e5_dp) roots(1)=t/a
+          if(t/=0) then
+            if(abs(c)<=abs(t)*1e5_dp) roots(2)=c/t
+          endif
+        endif
+      else if(b/=0) then
+        if(abs(c)<=abs(b)*1e5_dp) roots(1)=-c/b
+      endif
+      do i=1,2
+        if(roots(i)<liquid%conductivity_temperature_range(1).or. &
+            roots(i)>liquid%conductivity_temperature_range(2)) cycle
+        if(liquid_conductivity_at_temperature(liquid,roots(i))<=0) return
+      enddo
+    case default
+      return
+    end select
+    ok=.true.
+  end function
+
+  pure real(dp) function liquid_conductivity_at_temperature(liquid,temperature,pressure,molecular_weight) result(value)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: temperature
+    real(dp), optional, intent(in) :: pressure,molecular_weight
+    real(dp) :: t,tboil,mw,candidate
+    logical :: valid
+    value=0
+    if(.not.ieee_is_finite(temperature)) return
+    if(temperature<1.or.temperature>1e5_dp) return
+    t=temperature
+    if(present(pressure).and.liquid%boiling_model=='pelemp-cap') then
+      mw=liquid%molecular_weight
+      if(present(molecular_weight)) mw=resolved_liquid_molecular_weight(liquid,molecular_weight)
+      call pelemp_boiling_temperature(liquid%latent_heat,liquid%reference_temperature,liquid%normal_boiling_temperature, &
+        liquid%critical_temperature,mw,pressure,tboil,valid)
+      if(.not.valid) return
+      t=min(t,tboil)
+    endif
+    select case(liquid%conductivity_model)
+    case('constant')
+      candidate=liquid%conductivity
+    case('polynomial')
+      if(t<liquid%conductivity_temperature_range(1).or.t>liquid%conductivity_temperature_range(2)) return
+      candidate=liquid%conductivity_coefficients(1)+t*(liquid%conductivity_coefficients(2)+ &
+        t*(liquid%conductivity_coefficients(3)+t*liquid%conductivity_coefficients(4)))
+    case default
+      return
+    end select
+    if(.not.ieee_is_finite(candidate)) return
+    if(candidate<=0.or.candidate>1e4_dp) return
+    value=candidate
+  end function
+
+  pure subroutine liquid_transfer_properties(liquid,temperature,pressure,molecular_weight,density,cp,ok)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: temperature,pressure,molecular_weight
+    real(dp), intent(out) :: density,cp
+    logical, intent(out) :: ok
+    real(dp) :: property_temperature,boiling_temperature
+    density=0;cp=0;ok=.false.
+    if (.not.valid_spray_liquid(liquid)) return
+    if (.not.ieee_is_finite(temperature)) return
+    if (temperature<1.or.temperature>1e5_dp) return
+    property_temperature=temperature
+    if (liquid%boiling_model=='pelemp-cap') then
+      call pelemp_boiling_temperature(liquid%latent_heat,liquid%reference_temperature,liquid%normal_boiling_temperature, &
+        liquid%critical_temperature,resolved_liquid_molecular_weight(liquid,molecular_weight),pressure, &
+        boiling_temperature,ok)
+      if (.not.ok) return
+      property_temperature=min(temperature,boiling_temperature)
+    endif
+    density=liquid_density_at_temperature(liquid,property_temperature)
+    cp=liquid_heat_capacity_at_temperature(liquid,property_temperature)
+    ok=density>0.and.cp>0
+  end subroutine
+
+  pure subroutine liquid_evaporation_energy(liquid,temperature,energy,ok,pressure,molecular_weight)
+    type(spray_liquid), intent(in) :: liquid
+    real(dp), intent(in) :: temperature
+    real(dp), intent(out) :: energy
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: pressure,molecular_weight
+    real(dp) :: surface_temperature,boiling_temperature,mw
+    energy=0;ok=.false.
+    if(.not.valid_spray_liquid(liquid)) return
+    if(.not.ieee_is_finite(temperature)) return
+    if(temperature<1.or.temperature>1e5_dp) return
+    surface_temperature=temperature
+    if(present(pressure)) then
+      if(.not.ieee_is_finite(pressure)) return
+      if(pressure<1e-6_dp.or.pressure>1e12_dp) return
+      if(liquid%boiling_model=='pelemp-cap') then
+        mw=liquid%molecular_weight
+        if(present(molecular_weight)) mw=resolved_liquid_molecular_weight(liquid,molecular_weight)
+        call pelemp_boiling_temperature(liquid%latent_heat,liquid%reference_temperature, &
+          liquid%normal_boiling_temperature,liquid%critical_temperature,mw,pressure,boiling_temperature,ok)
+        if(.not.ok) return
+        surface_temperature=min(temperature,.99_dp*boiling_temperature)
+      endif
+    endif
+    ! Pinned Drag.H latent heat uses h_gas(Tdrop) - h_liquid(Tsurface).
+    ! Stored liquid energy continues to use the actual parcel temperature.
+    if(liquid_heat_capacity_at_temperature(liquid,surface_temperature)<=0) then
+      ok=.false.;return
+    endif
+    energy=liquid_energy(liquid,surface_temperature)
+    ok=ieee_is_finite(energy)
+  end subroutine
+
+  pure real(dp) function parcel_diameter(p, liquid,pressure,molecular_weight) result(d)
     type(spray_parcel), intent(in) :: p
     type(spray_liquid), intent(in) :: liquid
-    real(dp) :: rho
+    real(dp), optional, intent(in) :: pressure,molecular_weight
+    real(dp) :: rho,cp,mw
+    logical :: valid
     d = 0.0_dp
     if (.not. valid_spray_liquid(liquid) .or. .not. valid_spray_parcel(p)) return
     rho=liquid_density_at_temperature(liquid,p%temperature)
+    if(present(pressure)) then
+      mw=liquid%molecular_weight
+      if(present(molecular_weight)) mw=molecular_weight
+      call liquid_transfer_properties(liquid,p%temperature,pressure,mw,rho,cp,valid)
+      if(.not.valid) return
+    endif
     if (rho<=0) return
     if (p%mass > 0.0_dp) d = (6.0_dp*p%mass/(pi*rho))**(1.0_dp/3.0_dp)
   end function
@@ -540,7 +786,7 @@ contains
     type(spray_options), intent(in) :: o
     real(dp), intent(out) :: inverse_tau, heat_coefficient, mass_coefficient
     logical, intent(out) :: ok
-    real(dp) :: rho
+    real(dp) :: rho,liquid_cp
     real(dp) :: d, re, cdre, pr, sc, bm, bt, old_bt, logbm, sh0, nu0, sh, nu, phi, factor, f2,heat_cp
     integer :: iteration
     inverse_tau=0.0_dp; heat_coefficient=0.0_dp; mass_coefficient=0.0_dp
@@ -552,7 +798,8 @@ contains
     if (f%density <= 0.0_dp .or. f%density > 1.0e8_dp) return
     if (f%viscosity < 1.0e-15_dp .or. f%viscosity > 1.0e5_dp) return
     if (f%conductivity < 1.0e-15_dp .or. f%conductivity > 1.0e8_dp) return
-    if (f%diffusivity < 1.0e-20_dp .or. f%diffusivity > 1.0e8_dp) return
+    if (f%diffusivity < 0.0_dp .or. f%diffusivity > 1.0e8_dp) return
+    if (o%evaporation.and.f%diffusivity < 1.0e-20_dp) return
     if (f%cp <= 0.0_dp .or. f%cp > 1.0e10_dp) return
     if (f%vapor_cp<0.or.f%vapor_cp>1e10_dp) return
     if (f%gas_temperature < 1.0_dp .or. f%gas_temperature > 1.0e5_dp) return
@@ -562,12 +809,16 @@ contains
     if (p%mass == 0.0_dp) then
       ok=.true.; return
     end if
-    if (liquid_heat_capacity_at_temperature(l,p%temperature)<=0) return
-    rho=liquid_density_at_temperature(l,p%temperature)
-    if (rho<=0) return
-    d=parcel_diameter(p,l)
+    call liquid_transfer_properties(l,p%temperature,f%pressure,f%liquid_molecular_weight,rho,liquid_cp,ok)
+    if (.not.ok) return
+    ok=.false.
+    d=(6*p%mass/(pi*rho))**(1._dp/3)
     if (d < 1.0e-12_dp) return
-    re=f%density*d*norm2(f%gas_velocity-p%velocity)/f%viscosity
+    if(o%fixed_parts) then
+      re=f%density*d*norm2(f%gas_velocity)/f%viscosity
+    else
+      re=f%density*d*norm2(f%gas_velocity-p%velocity)/f%viscosity
+    end if
     cdre=24.0_dp*(1.0_dp+0.15_dp*re**0.687_dp)
     if (re >= 1000.0_dp) cdre=0.44_dp*re
     if (o%drag_model=='pelephysics') then
@@ -586,7 +837,8 @@ contains
       end if
     end if
     pr=f%viscosity*f%cp/f%conductivity
-    sc=f%viscosity/(f%density*f%diffusivity)
+    sc=0
+    if(o%evaporation) sc=f%viscosity/(f%density*f%diffusivity)
     sh0=2.0_dp+0.6_dp*sqrt(re)*sc**(1.0_dp/3.0_dp)
     nu0=2.0_dp+0.6_dp*sqrt(re)*pr**(1.0_dp/3.0_dp)
     if (o%abramzon_sirignano) then
@@ -599,9 +851,9 @@ contains
     if (o%abramzon_sirignano) bm=min(20.0_dp,bm)
     heat_cp=f%cp
     if (f%vapor_cp>0) heat_cp=f%vapor_cp
-    logbm=log(1.0_dp+bm)
+    logbm=positive_log1p(bm)
     sh=sh0; nu=nu0; factor=1.0_dp
-    if (o%abramzon_sirignano .and. bm > 1.0e-12_dp) then
+    if (o%abramzon_sirignano .and. bm > 1.0e-15_dp) then
       sh=2.0_dp+(sh0-2.0_dp)/blowing_factor(bm)
       phi=heat_cp*f%density*f%diffusivity*sh/(f%conductivity*nu0)
       if (phi*logbm>100.0_dp) return
@@ -619,8 +871,11 @@ contains
       end do
       if (iteration > 100) return
       nu=2.0_dp+(nu0-2.0_dp)/blowing_factor(bt)
-      if (bt > 1.0e-12_dp) factor=log(1.0_dp+bt)/bt
+      if (bt > 0) factor=positive_log1p(bt)/bt
     end if
+    ! calcHeatCoeff returns zero at B_M<=C_eps when vapor is present;
+    ! the no-vapor branch instead retains the uncorrected Nusselt number.
+    if(o%abramzon_sirignano.and.o%evaporation.and.f%surface_fraction>0.and.bm<=1e-15_dp) nu=0
     if (o%drag) inverse_tau=3.0_dp*f%viscosity*cdre/(4.0_dp*rho*d*d)
     if (o%heat) heat_coefficient=pi*f%conductivity*d*nu*factor
     if (o%evaporation) mass_coefficient=pi*f%density*f%diffusivity*sh*logbm
@@ -630,10 +885,20 @@ contains
   pure real(dp) function blowing_factor(b) result(f)
     real(dp), intent(in) :: b
     f=1.0_dp
-    if (b > 1.0e-12_dp) f=(1.0_dp+b)**0.7_dp*log(1.0_dp+b)/b
+    if (b > 0) f=(1.0_dp+b)**0.7_dp*positive_log1p(b)/b
   end function
 
-  subroutine advance_parcel_frozen_film(p, l, f, o, dt, q, transfer, ok)
+  pure real(dp) function positive_log1p(x) result(value)
+    real(dp), intent(in) :: x
+    real(dp) :: rounded_sum
+    ! Correct addition rounding; the x->0 limit also covers 1+x==1.
+    ! This implements the reference log1p without a compiler extension.
+    rounded_sum=1+x
+    value=x
+    if(rounded_sum/=1) value=log(rounded_sum)*(x/(rounded_sum-1))
+  end function
+
+  subroutine advance_parcel_frozen_film(p, l, f, o, dt, q, transfer, ok, force_change)
     type(spray_parcel), intent(in) :: p
     type(spray_liquid), intent(in) :: l
     type(spray_film), intent(in) :: f
@@ -642,19 +907,25 @@ contains
     type(spray_parcel), intent(out) :: q
     real(dp), intent(out) :: transfer(5)
     logical, intent(out) :: ok
+    real(dp), optional, intent(out) :: force_change(5)
+    real(dp) :: constraint(5)
+    type(spray_parcel) :: stationary
     real(dp) :: rho
     real(dp) :: invtau, heat, masscoef, d, d2, dm, mbar, decay, latent, rate, equilibrium,liquid_cp
     q=p; transfer=0.0_dp; ok=.false.
+    if(present(force_change)) force_change=0
+    if(o%fixed_parts.and..not.present(force_change)) return
+    constraint=0
     if (.not. ieee_is_finite(dt)) return
     if (dt < 0.0_dp .or. dt > 1.0e6_dp) return
     call spray_transfer_rates(p,l,f,o,invtau,heat,masscoef,ok)
     if (.not. ok) return
     if (dt == 0.0_dp .or. p%mass == 0.0_dp) return
     ok=.false.
-    if (liquid_heat_capacity_at_temperature(l,p%temperature)<=0) return
-    rho=liquid_density_at_temperature(l,p%temperature)
-    if (rho<=0) return
-    d=parcel_diameter(p,l)
+    call liquid_transfer_properties(l,p%temperature,f%pressure,f%liquid_molecular_weight,rho,liquid_cp,ok)
+    if (.not.ok) return
+    ok=.false.
+    d=(6*p%mass/(pi*rho))**(1._dp/3)
     d2=max(0.0_dp,d*d-4.0_dp*masscoef*dt/(pi*rho))
     q%mass=min(p%mass,(pi*rho/6.0_dp)*d2**1.5_dp)
     ! Avoid drift when no mass transfer is requested.
@@ -663,6 +934,11 @@ contains
     q%velocity=f%gas_velocity+(p%velocity-f%gas_velocity)*exp(-min(700.0_dp,invtau*dt))
     if (.not. o%drag) q%velocity=p%velocity
     q%position=p%position+0.5_dp*dt*(p%velocity+q%velocity)
+    if(o%fixed_parts) then
+      q%velocity=0;q%position=p%position
+      constraint(2:4)=-p%mass*p%multiplicity*(p%velocity+dt*invtau*f%gas_velocity)
+      constraint(5)=-.5_dp*p%mass*p%multiplicity*sum(p%velocity**2)
+    end if
     if (q%mass > 0.0_dp) then
       dm=p%mass-q%mass
       mbar=0.5_dp*(p%mass+q%mass)
@@ -670,10 +946,11 @@ contains
       if (masscoef > 0.0_dp .and. latent <= 0.0_dp) then
         q=p; return
       end if
-      liquid_cp=liquid_heat_capacity_at_temperature(l,p%temperature)
       rate=dm/dt
       if (heat > 0.0_dp) then
         equilibrium=f%gas_temperature-rate*latent/heat
+        if (o%abramzon_sirignano.and.o%evaporation) &
+          equilibrium=max(f%gas_temperature,p%temperature)-rate*latent/heat
         decay=exp(-min(700.0_dp,heat*dt/(mbar*liquid_cp)))
         q%temperature=equilibrium+(p%temperature-equilibrium)*decay
       else
@@ -684,17 +961,26 @@ contains
       q=p; return
     end if
     if (q%mass>0) then
-      if (liquid_density_at_temperature(l,q%temperature)<=0.or. &
-          liquid_heat_capacity_at_temperature(l,q%temperature)<=0) then
+      call liquid_transfer_properties(l,q%temperature,f%pressure,f%liquid_molecular_weight,rho,liquid_cp,ok)
+      if (.not.ok) then
         q=p; return
       end if
     end if
     ! Discrete equal-and-opposite exchange includes evaporated momentum and
     ! kinetic energy. Do not add separate latent heat or drag-work terms again.
-    transfer=parcel_totals(p,l)-parcel_totals(q,l)
-    ok=all(ieee_is_finite(transfer))
+    transfer=parcel_totals(p,l)-parcel_totals(q,l)+constraint
+    if(o%fixed_parts) then
+      ! Evaluate the gas source on the reference stationary state directly;
+      ! subtracting and re-adding the initial kinetic energy loses precision.
+      stationary=p;stationary%velocity=0
+      transfer=parcel_totals(stationary,l)-parcel_totals(q,l)
+      transfer(2:4)=-p%mass*p%multiplicity*dt*invtau*f%gas_velocity
+    end if
+    ok=all(ieee_is_finite(transfer)).and.all(ieee_is_finite(constraint))
     if (.not. ok) then
       q=p; transfer=0.0_dp
+    else
+      if(present(force_change)) force_change=constraint
     end if
   end subroutine
 
@@ -702,7 +988,7 @@ contains
       half_angle,diameter,temperature,parcels,ok,diameter_shape,diameter_min,diameter_max, &
       port_speeds,port_diameters,port_temperatures,port_angles,materials,diameter_weighting, &
       diameter_distribution,diameter_std,port_size_options,nozzle_radius,port_nozzle_radii, &
-      nozzle_model,port_nozzle_models)
+      nozzle_model,port_nozzle_models,reference_breakup)
     type(spray_liquid), intent(in) :: liquid
     type(spray_nozzle_model), intent(in), optional :: nozzle_model,port_nozzle_models(:)
     type(spray_nozzle_model) :: local_nozzle
@@ -716,6 +1002,7 @@ contains
     integer(int64), intent(in) :: first_id
     type(spray_parcel), allocatable, intent(out) :: parcels(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: reference_breakup
     character(len=*), intent(in), optional :: diameter_weighting,diameter_distribution
     real(dp), intent(in), optional :: diameter_std
     real(dp), intent(in), optional :: diameter_shape,diameter_min,diameter_max
@@ -780,11 +1067,12 @@ contains
           centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
           port_size_options(port)%shape,port_size_options(port)%minimum,port_size_options(port)%maximum, &
           port_size_options(port)%weighting,port_size_options(port)%distribution,port_size_options(port)%std, &
-          local_radius,local_nozzle)
+          local_radius,local_nozzle,reference_breakup)
       else
       call inject_cone_parcels(material,total_mass*(fractions(port)/fraction_sum),number,first_id+int(offset,int64), &
         centers(:,port),axes(:,port),local_speed,local_angle,local_diameter,local_temperature,port_parcels,ok, &
-        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,local_radius,local_nozzle)
+        diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std, &
+        local_radius,local_nozzle,reference_breakup)
       end if
       if (.not.ok) return
       if (present(materials)) port_parcels%material_id=port
@@ -796,7 +1084,7 @@ contains
 
   subroutine inject_cone_parcels(liquid, total_mass, number, first_id, center, axis, speed, &
       half_angle, diameter, temperature, parcels, ok, diameter_shape, diameter_min, diameter_max, &
-      diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
+      diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model,reference_breakup)
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass, center(3), axis(3), speed, half_angle, diameter, temperature
     integer, intent(in) :: number
@@ -808,6 +1096,7 @@ contains
     real(dp), intent(in), optional :: nozzle_radius
     real(dp) :: radius,radial_position,position(3)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: reference_breakup
     character(len=*), intent(in), optional :: diameter_weighting,diameter_distribution
     real(dp), intent(in), optional :: diameter_std
     character(len=8) :: weighting
@@ -1003,6 +1292,10 @@ contains
       end if
       parcels%multiplicity=weight
     end if
+    ! SprayInjection.H stores N0 after the represented count is finalized.
+    if(present(reference_breakup)) then
+      if(reference_breakup) parcels%khrt_initial_count=parcels%multiplicity
+    endif
     ok=.true.
   end subroutine
 end module spray_parcel_mod

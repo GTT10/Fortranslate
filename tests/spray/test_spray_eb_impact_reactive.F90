@@ -174,6 +174,28 @@ program test_spray_eb_impact_reactive
     call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
       'split composite conservation')
   end do
+  ! Reference ETAB children also pass through the EB impact dispatcher.
+  state=saved;temperature=saved_t
+  deallocate(drops,masses);allocate(drops(1),masses(2,1))
+  drops(1)=saved_drop;drops(1)%velocity=[0._dp,0._dp,50._dp];masses=saved_mass
+  options%etab_parcel_factor=.5_dp;options%maximum_parcels=5
+  last_id=100;boundary=42;wall=42;chemical=42;theta=42
+  call advance()
+  call require(.not.ok.and.steps==0.and.last_id==100.and.split_created==0,'reference ETAB impact capacity rollback')
+  call require(size(drops)==1.and.all(masses==saved_mass),'reference ETAB impact parcel rollback')
+  call require(size(films)==0.and.all(state==saved).and.all(temperature==saved_t), &
+    'reference ETAB impact state rollback')
+  options%maximum_parcels=16
+  call inventory(before)
+  call advance()
+  call require(ok.and.size(drops)==10.and.last_id==110.and.split_created==10,'reference ETAB impact children')
+  call require(all(drops%id==[(int(100+i,int64),i=1,10)]),'reference ETAB impact ID sequence')
+  call require(all(drops%parent_id==1).and.all(drops%multiplicity==10),'reference ETAB impact lineage')
+  call require(size(films)==0,'reference ETAB impact fluid trajectory')
+  call inventory(after)
+  call require(all(abs(after-before-boundary-wall-chemical)<=3e-12_dp*max(abs(before),abs(after),1e-30_dp)), &
+    'reference ETAB impact composite conservation')
+  options%etab_parcel_factor=-1
   state=saved;temperature=saved_t
   deallocate(drops,masses);allocate(drops(1),masses(2,1))
   drops(1)=saved_drop;drops(1)%velocity=[1000._dp,0._dp,0._dp];masses=saved_mass

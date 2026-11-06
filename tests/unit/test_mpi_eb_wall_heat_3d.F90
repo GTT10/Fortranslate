@@ -1,6 +1,7 @@
 program test_mpi_eb_wall_heat_3d
   use mpi_f08
   use precision_mod, only: dp
+  use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use transport_database_mod, only: gas_transport_species,load_h2o2_elementary_transport
@@ -114,6 +115,7 @@ program test_mpi_eb_wall_heat_3d
   call compute_eb_tree_wall_transport_3d(species,transport,serial,extended,.true.,.false.,400._dp, &
     serial_rate,serial_exchange,serial_frequency,ok)
   call require(ok,'serial source after rejection')
+  call check_held_wall()
   do mode=1,2
     owners=[0,0,mod(1,ranks)]
     if(mode==2) owners=0
@@ -263,6 +265,63 @@ program test_mpi_eb_wall_heat_3d
   if(rank==0) print *, 'PASS: cross-owner donors, composite wall heat, SDC source and collective rejection',expected
   call MPI_Finalize(status)
 contains
+  subroutine check_held_wall()
+    type(eb_reactive_tree_3d) :: trial
+    type(amr_tree_state_3d) :: stored,held,gas,temperature,reference,pending,previous
+    real(dp) :: held_exchange(nv),reference_exchange(nv),previous_exchange(nv),held_frequency,reference_frequency
+    real(dp) :: previous_frequency,held_power
+    integer :: layout,p,dims(3),partition(3)
+    call mixture_mass_properties(species,y,500._dp,mw,rgas,cp,cv,gamma,enthalpy,energy,entropy,ok)
+    call require(ok,'held wall independent NASA')
+    trial=visc_serial;allocate(stored%fields(3))
+    do p=1,3
+      dims=topology%nodes(p)%shape
+      allocate(stored%fields(p)%values(1,dims(1),dims(2),dims(3)),source=energy)
+      trial%nodes(p)%state(5,:,:,:)=-1.e20_dp
+    enddo
+    call compute_eb_tree_wall_transport_3d(species,transport,trial,extended,.true.,.true.,400._dp, &
+      reference,reference_exchange,reference_frequency,ok,internal_energy=stored)
+    call require(ok,'serial actual held wall family')
+    call require(abs(reference_exchange(5)-expected)<1.e-12_dp*abs(expected), &
+      'independent composite held heat ledger')
+    call require(maxval(abs(reference_exchange(2:4)-visc_reference(2:4)))< &
+      1.e-12_dp*maxval(abs(visc_reference)),'independent composite held traction')
+    do layout=1,2
+      partition=[0,0,mod(1,ranks)]
+      if(layout==2) partition=0
+      allocate(held%fields(3),gas%fields(3),temperature%fields(3))
+      do p=1,3
+        if(partition(p)/=rank) cycle
+        dims=topology%nodes(p)%shape
+        held%fields(p)=stored%fields(p);gas%fields(p)%values=trial%nodes(p)%state
+        allocate(temperature%fields(p)%values(1,dims(1),dims(2),dims(3)),source=500._dp)
+      enddo
+      call compute_mpi_eb_wall_transport_3d(species,transport,topology,partition,geometry,extended,gas,temperature, &
+        .true.,.true.,400._dp,pending,held_exchange,held_frequency,MPI_COMM_WORLD,ok,internal_energy=held)
+      call require(ok,'distributed actual held thermal/viscous wall')
+      call require(all(held_exchange==reference_exchange).and.held_frequency==reference_frequency, &
+        'exact composite held wall ledgers/frequency')
+      do p=1,3
+        if(partition(p)/=rank) cycle
+        call require(all(pending%fields(p)%values==reference%fields(p)%values),'exact owner held wall rates')
+      enddo
+      previous=pending;previous_exchange=held_exchange;previous_frequency=held_frequency
+      if(partition(3)==rank) held%fields(3)%values(1,1,1,1)=ieee_value(0._dp,ieee_quiet_nan)
+      call compute_mpi_eb_wall_transport_3d(species,transport,topology,partition,geometry,extended,gas,temperature, &
+        .true.,.true.,400._dp,pending,held_exchange,held_frequency,MPI_COMM_WORLD,ok,internal_energy=held)
+      call require(.not.ok.and.all(held_exchange==previous_exchange).and.held_frequency==previous_frequency, &
+        'remote held wall donor refusal ledgers')
+      do p=1,3
+        if(partition(p)/=rank) cycle
+        call require(all(pending%fields(p)%values==previous%fields(p)%values),'remote held wall rate rollback')
+      enddo
+      if(partition(3)==rank) held%fields(3)=stored%fields(3)
+      call compute_mpi_eb_wall_heat_3d(species,transport,topology,partition,geometry,extended,gas,temperature,400._dp, &
+        pending,held_power,held_frequency,MPI_COMM_WORLD,ok,internal_energy=held)
+      call require(ok.and.held_power==reference_exchange(5),'held heat-only MPI API')
+      deallocate(held%fields,gas%fields,temperature%fields)
+    enddo
+  end subroutine check_held_wall
   subroutine compare_serial_wall(heating,scheme)
     logical, intent(in) :: heating
     integer, intent(in) :: scheme

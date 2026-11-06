@@ -48,7 +48,8 @@ program pelef_amr_reactive_3d_selected
   call get_command_argument(1, input_path)
   call read_reactive_3d_configuration( &
     trim(input_path), config, ok, message, allow_selected=.true., allow_pressure_outlet=.true., &
-    allow_characteristic_ppm=.true.,allow_difmag=.true.)
+    allow_characteristic_ppm=.true.,allow_difmag=.true., &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
@@ -137,14 +138,16 @@ program pelef_amr_reactive_3d_selected
     requested_temperature_maximum = config%initial_temperature / &
       (1.0_dp - config%density_wave_amplitude)
   end select
-  call validate_selected_temperature_range( &
-    "Selected static 3D AMR", requested_temperature_minimum, &
-    requested_temperature_maximum, common_temperature_minimum, &
-    common_temperature_maximum, ok, message)
-  if (.not. ok) then
-    write(*, '(a)') trim(message)
-    error stop 2
-  end if
+  if(.not.config%pinned_eos_extrapolation) then
+    call validate_selected_temperature_range( &
+      "Selected static 3D AMR", requested_temperature_minimum, &
+      requested_temperature_maximum, common_temperature_minimum, &
+      common_temperature_maximum, ok, message)
+    if (.not. ok) then
+      write(*, '(a)') trim(message)
+      error stop 2
+    end if
+  endif
 
   call resolve_reactive_3d_selected_composition( &
     config, species, mole_fractions, ok, message)

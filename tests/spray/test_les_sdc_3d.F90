@@ -5,8 +5,23 @@ module les_sdc_halo_test_mod
   logical :: sdc_failure=.false.
   integer :: sdc_calls=0
   integer :: halo_calls=0,source_halo_calls=0
+  integer :: auxiliary_calls=0,auxiliary_stages(3)=0
+  logical :: auxiliary_failure=.false.
 contains
-  subroutine sdc_test_halos(state,temp,time,width,viscous,ghost,gt,valid)
+  subroutine sdc_test_auxiliary(state,temp,time,interval,stage,rate,valid)
+    real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time,interval
+    integer, intent(in) :: stage
+    real(dp), intent(out) :: rate(:,:,:,:)
+    logical, intent(out) :: valid
+    auxiliary_calls=auxiliary_calls+1
+    if(auxiliary_calls<=3) auxiliary_stages(auxiliary_calls)=stage
+    rate=0;rate(2,:,:,:)=merge(100._dp,50._dp,stage==2)
+    valid=time>=0.and.interval>0.and..not.(auxiliary_failure.and.stage==2)
+  end subroutine sdc_test_auxiliary
+  subroutine sdc_test_halos(state,temp,time,width,viscous,ghost,gt,valid, &
+      internal_energy_density,internal_energy_ghost)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), optional, intent(out) :: internal_energy_ghost(:,:,:)
     real(dp), intent(in) :: state(:,:,:,:),temp(:,:,:),time
     integer, intent(in) :: width
     logical, intent(in) :: viscous
@@ -16,7 +31,8 @@ contains
     halo_calls=halo_calls+1;valid=.false.;ghost=0;gt=0
     if(sdc_failure.and.time>0) return
     faces='periodic'
-    call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,valid,ghost_width=width,viscous_wall=viscous)
+    call fill_reactive_boundary_ghosts_3d(state,temp,faces,ghost,gt,valid,ghost_width=width,viscous_wall=viscous, &
+      internal_energy_density=internal_energy_density,internal_energy_ghost=internal_energy_ghost)
   end subroutine sdc_test_halos
   subroutine sdc_test_source_halos(source,time,ghost,valid)
     real(dp), intent(in) :: source(:,:,:,:),time
@@ -37,7 +53,8 @@ contains
   end subroutine sdc_test_source_halos
 end module les_sdc_halo_test_mod
 program test_les_sdc_3d
-  use les_sdc_halo_test_mod, only: sdc_test_halos,sdc_test_source_halos,sdc_failure,halo_calls
+  use les_sdc_halo_test_mod, only: sdc_test_halos,sdc_test_source_halos,sdc_failure,halo_calls, &
+    sdc_test_auxiliary,auxiliary_calls,auxiliary_stages,auxiliary_failure
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -50,7 +67,7 @@ program test_les_sdc_3d
   type(gas_transport_species), allocatable :: transport(:)
   real(dp) :: initial(12,4,4,4),it(4,4,4),u(12,4,4,4),t(4,4,4),reference(12,4,4,4),rt(4,4,4)
   real(dp) :: q(12),sound,h(3),dt,boundary(12),source(12),diffusion,before(12),after(12),scale(12)
-  real(dp) :: ref_boundary(12),ref_source(12),wall_t(6),maximum
+  real(dp) :: ref_boundary(12),ref_source(12),wall_t(6),maximum,auxiliary(12)
   real(dp) :: fx(12,0:4,4,4),fy(12,4,0:4,4),fz(12,4,4,0:4),expected(12,4,4,4)
   real(dp) :: estimate(12,4,4,4,3)
   integer :: i,j,k,c,mode,b,iteration
@@ -152,6 +169,29 @@ program test_les_sdc_3d
   call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,.17_dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
     flux_x=fx(:,1:,:,:),flux_y=fy,flux_z=fz)
   call require(.not.ok.and.all(u==initial).and.all(fx==45),'malformed LES face shape rejects atomically')
+  u=initial;t=it;auxiliary=0;auxiliary_calls=0;auxiliary_stages=-1
+  call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,0._dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+    external_force=[10._dp,-20._dp,30._dp],transport=transport,transport_flags=[.false.,.false.,.false.,.false.], &
+    auxiliary_source=sdc_test_auxiliary,auxiliary_change=auxiliary)
+  call require(ok,'serial LES SDC auxiliary source')
+  call require(auxiliary_calls==3.and.all(auxiliary_stages==[0,1,2]),'auxiliary old and iteration stage indices')
+  call require(abs(auxiliary(2)-75._dp*dt*64*product(h))<1e-28_dp,'auxiliary half-kick inventory')
+  call require(abs(source(2)-10._dp*dt*64*product(h))<1e-28_dp,'force inventory excludes auxiliary source')
+  do c=1,12
+    after(c)=sum(u(c,:,:,:))*product(h)
+  enddo
+  scale=max(abs(before),abs(after),1e-30_dp)
+  call require(maxval(abs(after-before-source-boundary-auxiliary)/scale)<3e-12_dp, &
+    'separate serial gas external and auxiliary inventories')
+  reference=u;rt=t;boundary=41;source=42;auxiliary=43;diffusion=44
+  auxiliary_failure=.true.;auxiliary_calls=0
+  call advance_les_sdc_3d(species,u,t,h,dt,0._dp,2,0._dp,.7_dp,.7_dp,boundary,source,diffusion,ok, &
+    external_force=[10._dp,-20._dp,30._dp],auxiliary_source=sdc_test_auxiliary,auxiliary_change=auxiliary)
+  call require(.not.ok.and.auxiliary_calls==3,'late serial auxiliary failure')
+  call require(all(u==reference).and.all(t==rt),'auxiliary failure gas temperature rollback')
+  call require(all(boundary==41).and.all(source==42).and.all(auxiliary==43).and.diffusion==44, &
+    'auxiliary failure ledgers rollback')
+  auxiliary_failure=.false.
   print *, 'PASS: LES SDC four closures, transport, boundaries; residual ',maximum
 contains
   subroutine require(condition,label)

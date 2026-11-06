@@ -4,7 +4,8 @@ program test_mpi_eb_tree_halo_3d
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
-  use reactive_1d_mod, only: reactive_nvar
+  use reactive_1d_mod, only: reactive_nvar,reactive_nprim,reactive_conserved_to_primitive, &
+    reactive_primitive_to_conserved,reactive_pelec_flux_x
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,initialize_amr_patch_tree_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d,build_axis_plane_eb_geometry_3d,coarsen_eb_geometry_3d
@@ -99,6 +100,9 @@ program test_mpi_eb_tree_halo_3d
       call require(all(ghost%fields(node)%values==reference),'exact serial face U and inactive zeros')
       call require(all(gh_t%fields(node)%values(1,:,:,:)==reference_t),'exact serial face T')
     end do
+    call temperature_seed_checks()
+    call separate_momentum_checks()
+    call paired_pressure_checks()
     call wide_checks()
     call wide_checks(.true.)
     call prescribed_checks()
@@ -131,6 +135,305 @@ program test_mpi_eb_tree_halo_3d
   if (rank==0) print *, 'PASS: MPI EB face halos, exact serial parity and rollback'
   call MPI_Finalize(status)
 contains
+  subroutine temperature_seed_checks()
+    type(eb_reactive_tree_3d) :: sample
+    type(amr_tree_state_3d) :: gas,temp,out_u,out_t,kept_u,kept_t
+    real(dp) :: su(nv,0:5,0:5,0:5),stemp(0:5,0:5,0:5),kept_su(nv,0:5,0:5,0:5),kept_st(0:5,0:5,0:5)
+    real(dp) :: expected
+    integer :: p
+    sample=tree
+    do p=1,5
+      sample%nodes(p)%temperature=sample%nodes(p)%temperature+10._dp
+    enddo
+    expected=sample%nodes(1)%temperature(1,1,4)
+    call fill_reactive_eb_tree_halo_3d(species,sample,2,su,stemp,ok)
+    call require(ok,'default seed fixture validates')
+    call require(abs(stemp(2,2,5)-expected)>1._dp,'default halo recovers physical temperature')
+    call fill_reactive_eb_tree_halo_3d(species,sample,2,su,stemp,ok,preserve_temperature_seed=.true.)
+    call require(ok,'serial preserved-seed halo validates')
+    call require(stemp(2,2,5)==expected,'serial coarse-fine halo preserves temperature seed')
+    kept_su=su;kept_st=stemp
+    gas=local;temp=lt
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      temp%fields(p)%values=temp%fields(p)%values+10._dp
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      preserve_temperature_seed=.true.)
+    call require(ok,'MPI preserved-seed halo validates')
+    if(owners(2)==rank) then
+      call require(out_t%fields(2)%values(1,2,2,5)==expected,'MPI coarse-fine halo preserves temperature seed')
+      call require(all(out_u%fields(2)%values==su),'preserved-seed exact serial MPI gas')
+      call require(all(out_t%fields(2)%values(1,:,:,:)==stemp),'preserved-seed exact serial MPI temperature')
+    endif
+    kept_u=out_u;kept_t=out_t
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      preserve_temperature_seed=rank==0)
+    call require(.not.ok,'rank-disagreeing temperature-seed policy rejected')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(out_u%fields(p)%values==kept_u%fields(p)%values).and. &
+        all(out_t%fields(p)%values==kept_t%fields(p)%values),'seed-policy refusal rolls back halos')
+    enddo
+    sample%nodes(1)%state(1,1,1,4)=-1._dp
+    call fill_reactive_eb_tree_halo_3d(species,sample,2,su,stemp,ok,preserve_temperature_seed=.true.)
+    call require(.not.ok,'preserving seed still rejects invalid serial state')
+    call require(all(su==kept_su).and.all(stemp==kept_st),'invalid serial seed-state rollback')
+    if(owners(1)==rank) gas%fields(1)%values(1,1,1,4)=-1._dp
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      preserve_temperature_seed=.true.)
+    call require(.not.ok,'preserving seed still rejects invalid MPI state')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(out_u%fields(p)%values==kept_u%fields(p)%values).and. &
+        all(out_t%fields(p)%values==kept_t%fields(p)%values),'invalid MPI seed-state rollback')
+    enddo
+  end subroutine temperature_seed_checks
+  subroutine separate_momentum_checks()
+    type(eb_reactive_tree_3d) :: sample
+    type(eb_geometry_3d) :: extended(5)
+    type(amr_tree_state_3d) :: gas,temp,held,all_held,metrics,out_u,out_t,out_h,out_v
+    type(amr_tree_state_3d) :: legacy_u,legacy_t,legacy_h,legacy_v,keep_u,keep_t,keep_h,keep_v
+    real(dp) :: su(nv,-1:6,-1:6,-1:6),stemp(-1:6,-1:6,-1:6),sh(-1:6,-1:6,-1:6),sv(-1:6,-1:6,-1:6)
+    real(dp) :: spacing(3),lo(3),hi(3),difference,total_difference,density,scale
+    integer :: p,i,j,k
+    sample=tree
+    allocate(gas%fields(5),temp%fields(5),held%fields(5),all_held%fields(5),metrics%fields(5))
+    do p=1,5
+      do k=1,4
+      do j=1,4
+      do i=1,4
+        if(sample%nodes(p)%geometry%volume_fraction(i,j,k)<=0) cycle
+        sample%nodes(p)%state(:,i,j,k)=(1+.01_dp*i)*sample%nodes(p)%state(:,i,j,k)
+        density=sample%nodes(p)%state(1,i,j,k)
+        sample%nodes(p)%state(5,i,j,k)=sample%nodes(p)%state(5,i,j,k)- &
+          .5_dp*sample%nodes(p)%state(3,i,j,k)**2/density
+        sample%nodes(p)%state(3,i,j,k)=0
+        if(mod(i,2)==0) sample%nodes(p)%state(3,i,j,k)=-real(i,dp)*1.e-26_dp
+      enddo
+      enddo
+      enddo
+      allocate(all_held%fields(p)%values(1,4,4,4))
+      all_held%fields(p)%values=0
+      do k=1,4
+      do j=1,4
+      do i=1,4
+        if(sample%nodes(p)%geometry%volume_fraction(i,j,k)<=0) cycle
+        all_held%fields(p)%values(1,i,j,k)=sample%nodes(p)%state(5,i,j,k)- &
+          .5_dp*sum(sample%nodes(p)%state(2:4,i,j,k)**2)/sample%nodes(p)%state(1,i,j,k)
+      enddo
+      enddo
+      enddo
+      spacing=[geometry(p)%dx,geometry(p)%dy,geometry(p)%dz]
+      lo=[geometry(p)%x_lower,geometry(p)%y_lower,geometry(p)%z_lower]-2*spacing
+      hi=[geometry(p)%x_upper,geometry(p)%y_upper,geometry(p)%z_upper]+2*spacing
+      call build_axis_plane_eb_geometry_3d(8,8,8,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+        'z',.31_dp,extended(p),ok)
+      call require(ok,'candidate halo extended geometry')
+      if(owners(p)/=rank) cycle
+      gas%fields(p)%values=sample%nodes(p)%state
+      allocate(temp%fields(p)%values(1,4,4,4))
+      temp%fields(p)%values(1,:,:,:)=sample%nodes(p)%temperature
+      held%fields(p)=all_held%fields(p)
+      allocate(metrics%fields(p)%values(1,-1:6,-1:6,-1:6))
+      metrics%fields(p)%values(1,:,:,:)=extended(p)%volume_fraction
+      metrics%fields(p)%values(1,1:4,1:4,1:4)=geometry(p)%volume_fraction
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=out_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=out_h,coarse_geometry=extended,separate_momentum=.true.)
+    call require(ok,'candidate MPI prepared halo')
+    do p=1,5
+      call require(allocated(out_u%fields(p)%values).eqv.(owners(p)==rank),'candidate owner-local halo')
+      if(owners(p)/=rank) cycle
+      call fill_reactive_eb_tree_halo_3d(species,sample,p,su,stemp,ok,ghost_volume_fraction=sv,halo_width=2, &
+        target_volume_fraction=metrics%fields(p)%values(1,:,:,:),internal_energy=all_held, &
+        ghost_internal_energy=sh,coarse_geometry=extended,separate_momentum=.true.)
+      call require(ok,'candidate serial prepared halo')
+      scale=max(1._dp,maxval(abs(su)))
+      call require(maxval(abs(out_u%fields(p)%values-su))<=2.e-12_dp*scale,'candidate serial MPI gas parity')
+      call require(maxval(abs(out_t%fields(p)%values(1,:,:,:)-stemp))<=2.e-9_dp,'candidate temperature parity')
+      call require(maxval(abs(out_h%fields(p)%values(1,:,:,:)-sh))<=2.e-12_dp*scale,'candidate held energy parity')
+      call require(all(out_v%fields(p)%values(1,:,:,:)==sv),'candidate exact volume fractions')
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,legacy_u,legacy_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=legacy_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=legacy_h,coarse_geometry=extended)
+    call require(ok,'legacy prepared halo remains available')
+    difference=0
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      difference=max(difference,maxval(abs(legacy_u%fields(p)%values-out_u%fields(p)%values)))
+    enddo
+    call MPI_Allreduce(difference,total_difference,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,status)
+    call require(status==MPI_SUCCESS.and.total_difference>1.e-10_dp,'candidate changes noisy-momentum scalar halo')
+    keep_u=out_u;keep_t=out_t;keep_h=out_h;keep_v=out_v
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=out_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=out_h,coarse_geometry=extended,separate_momentum=rank==0)
+    call require(.not.ok,'mixed momentum policy collectively refused')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(out_u%fields(p)%values==keep_u%fields(p)%values).and. &
+        all(out_t%fields(p)%values==keep_t%fields(p)%values).and. &
+        all(out_h%fields(p)%values==keep_h%fields(p)%values).and. &
+        all(out_v%fields(p)%values==keep_v%fields(p)%values),'mixed policy leaves every halo unchanged')
+    enddo
+    su=123;stemp=456
+    call fill_reactive_eb_tree_halo_3d(species,sample,2,su,stemp,ok,separate_momentum=.true.)
+    call require(.not.ok.and.all(su==123).and.all(stemp==456),'candidate requires prepared coarse stencil')
+  end subroutine separate_momentum_checks
+
+  subroutine paired_pressure_checks()
+    type(eb_reactive_tree_3d) :: sample
+    type(eb_geometry_3d) :: extended(5)
+    type(amr_tree_state_3d) :: gas,temp,held,all_held,metrics,out_u,out_t,out_h,out_v
+    type(amr_tree_state_3d) :: legacy_u,legacy_t,legacy_h,legacy_v,keep_u,keep_t,keep_h,keep_v
+    real(dp) :: su(nv,-1:6,-1:6,-1:6),stemp(-1:6,-1:6,-1:6),sh(-1:6,-1:6,-1:6),sv(-1:6,-1:6,-1:6)
+    real(dp) :: spacing(3),lo(3),hi(3),difference,total_difference,density,scale
+    real(dp) :: primitive(reactive_nprim(size(species))),recovered,speed
+    real(dp) :: flux(nv),face_density,face_velocity,face_pressure
+    integer :: p,i,j,k
+    sample=tree
+    allocate(gas%fields(5),temp%fields(5),held%fields(5),all_held%fields(5),metrics%fields(5))
+    do p=1,5
+      do k=1,4
+      do j=1,4
+      do i=1,4
+        if(sample%nodes(p)%geometry%volume_fraction(i,j,k)<=0) cycle
+        call reactive_conserved_to_primitive(species,sample%nodes(p)%state(:,i,j,k), &
+          sample%nodes(p)%temperature(i,j,k),primitive,recovered,speed,ok)
+        call require(ok,'pressure fixture primitive')
+        primitive(6:)=0;primitive(size(primitive))=1 ! N2, 390--620 K within the pinned EOS range.
+        primitive(1)=.25_dp+.02_dp*(p+i+j);primitive(2:4)=[10._dp,-2._dp,3._dp];primitive(5)=60000
+        call reactive_primitive_to_conserved(species,primitive,sample%nodes(p)%state(:,i,j,k), &
+          sample%nodes(p)%temperature(i,j,k),speed,ok)
+        call require(ok,'isobaric variable-temperature fixture')
+      enddo
+      enddo
+      enddo
+      allocate(all_held%fields(p)%values(1,4,4,4))
+      all_held%fields(p)%values=0
+      do k=1,4
+      do j=1,4
+      do i=1,4
+        if(sample%nodes(p)%geometry%volume_fraction(i,j,k)<=0) cycle
+        all_held%fields(p)%values(1,i,j,k)=sample%nodes(p)%state(5,i,j,k)- &
+          .5_dp*sum(sample%nodes(p)%state(2:4,i,j,k)**2)/sample%nodes(p)%state(1,i,j,k)
+      enddo
+      enddo
+      enddo
+      spacing=[geometry(p)%dx,geometry(p)%dy,geometry(p)%dz]
+      lo=[geometry(p)%x_lower,geometry(p)%y_lower,geometry(p)%z_lower]-2*spacing
+      hi=[geometry(p)%x_upper,geometry(p)%y_upper,geometry(p)%z_upper]+2*spacing
+      call build_axis_plane_eb_geometry_3d(8,8,8,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+        'z',.31_dp,extended(p),ok)
+      call require(ok,'candidate halo extended geometry')
+      if(owners(p)/=rank) cycle
+      gas%fields(p)%values=sample%nodes(p)%state
+      allocate(temp%fields(p)%values(1,4,4,4))
+      temp%fields(p)%values(1,:,:,:)=sample%nodes(p)%temperature
+      held%fields(p)=all_held%fields(p)
+      allocate(metrics%fields(p)%values(1,-1:6,-1:6,-1:6))
+      metrics%fields(p)%values(1,:,:,:)=extended(p)%volume_fraction
+      metrics%fields(p)%values(1,1:4,1:4,1:4)=geometry(p)%volume_fraction
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=out_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=out_h,coarse_geometry=extended,separate_momentum=.true.,consistent_velocity=.true., &
+      paired_pressure=.true.)
+    call require(ok,'candidate MPI prepared halo')
+    do p=1,5
+      call require(allocated(out_u%fields(p)%values).eqv.(owners(p)==rank),'candidate owner-local halo')
+      if(owners(p)/=rank) cycle
+      call fill_reactive_eb_tree_halo_3d(species,sample,p,su,stemp,ok,ghost_volume_fraction=sv,halo_width=2, &
+        target_volume_fraction=metrics%fields(p)%values(1,:,:,:),internal_energy=all_held, &
+        ghost_internal_energy=sh,coarse_geometry=extended,separate_momentum=.true.,consistent_velocity=.true., &
+      paired_pressure=.true.)
+      call require(ok,'candidate serial prepared halo')
+      scale=max(1._dp,maxval(abs(su)))
+      call require(maxval(abs(out_u%fields(p)%values-su))<=2.e-12_dp*scale,'candidate serial MPI gas parity')
+      call require(maxval(abs(out_t%fields(p)%values(1,:,:,:)-stemp))<=2.e-9_dp,'candidate temperature parity')
+      call require(maxval(abs(out_h%fields(p)%values(1,:,:,:)-sh))<=2.e-12_dp*scale,'candidate held energy parity')
+      call require(all(out_v%fields(p)%values(1,:,:,:)==sv),'candidate exact volume fractions')
+      do k=-1,6
+      do j=-1,6
+      do i=-1,6
+        if(sv(i,j,k)<=0) cycle
+        call reactive_conserved_to_primitive(species,su(:,i,j,k),stemp(i,j,k),primitive,recovered,speed,ok, &
+          internal_energy_density=sh(i,j,k))
+        call require(ok.and.abs(primitive(5)-60000._dp)<1.e-7_dp,'paired pressure isobaric halo and covered state')
+        if(i<6) then
+          if(sv(i+1,j,k)>0) then
+            call reactive_pelec_flux_x(species,su(:,i,j,k),su(:,i+1,j,k),stemp(i,j,k),stemp(i+1,j,k), &
+              flux,ok,face_density,face_velocity,face_pressure)
+            call require(ok.and.abs(face_pressure-60000._dp)<1.e-7_dp,'paired pressure Riemann interface pressure')
+            call require(abs(face_velocity-10._dp)<1.e-9_dp,'paired pressure Riemann interface velocity')
+            call require(abs(flux(2)-10._dp*flux(1)-60000._dp)<1.e-7_dp, &
+              'paired pressure separates advected momentum and pressure flux')
+          endif
+        endif
+      enddo
+      enddo
+      enddo
+      call require(all(gas%fields(p)%values==sample%nodes(p)%state),'pressure representation preserves input gas')
+      call require(all(held%fields(p)%values==all_held%fields(p)%values),'pressure representation preserves input held')
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,legacy_u,legacy_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=legacy_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=legacy_h,coarse_geometry=extended)
+    call require(ok,'legacy prepared halo remains available')
+    difference=0
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      difference=max(difference,maxval(abs(legacy_u%fields(p)%values-out_u%fields(p)%values)))
+    enddo
+    call MPI_Allreduce(difference,total_difference,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,status)
+    call require(status==MPI_SUCCESS.and.total_difference>1.e-10_dp,'pressure representation changes nonlinear EOS restriction')
+    keep_u=out_u;keep_t=out_t;keep_h=out_h;keep_v=out_v
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=out_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=out_h,coarse_geometry=extended,separate_momentum=.true.,consistent_velocity=.true., &
+      paired_pressure=rank==0)
+    call require(.not.ok,'mixed momentum policy collectively refused')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(out_u%fields(p)%values==keep_u%fields(p)%values).and. &
+        all(out_t%fields(p)%values==keep_t%fields(p)%values).and. &
+        all(out_h%fields(p)%values==keep_h%fields(p)%values).and. &
+        all(out_v%fields(p)%values==keep_v%fields(p)%values),'mixed policy leaves every halo unchanged')
+    enddo
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=out_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=out_h,coarse_geometry=extended,separate_momentum=.true.,consistent_velocity=.true., &
+      paired_pressure=.true.,connected_directions=rank==0)
+    call require(.not.ok,'mixed connected-direction policy collectively refused')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(out_u%fields(p)%values==keep_u%fields(p)%values).and. &
+        all(out_t%fields(p)%values==keep_t%fields(p)%values).and. &
+        all(out_h%fields(p)%values==keep_h%fields(p)%values).and. &
+        all(out_v%fields(p)%values==keep_v%fields(p)%values),'mixed connected policy leaves every halo unchanged')
+    enddo
+    if(owners(1)==rank) held%fields(1)%values(1,4,4,4)=ieee_value(0._dp,ieee_quiet_nan)
+    call fill_mpi_eb_tree_halo_3d(species,topology,owners,geometry,gas,temp,out_u,out_t,MPI_COMM_WORLD,ok, &
+      ghost_volume_fraction=out_v,halo_width=2,target_volume_fraction=metrics,internal_energy=held, &
+      ghost_internal_energy=out_h,coarse_geometry=extended,separate_momentum=.true., &
+      consistent_velocity=.true.,paired_pressure=.true.)
+    call require(.not.ok,'paired pressure remote held EOS refusal')
+    do p=1,5
+      if(owners(p)/=rank) cycle
+      call require(all(out_u%fields(p)%values==keep_u%fields(p)%values).and. &
+        all(out_t%fields(p)%values==keep_t%fields(p)%values).and. &
+        all(out_h%fields(p)%values==keep_h%fields(p)%values).and. &
+        all(out_v%fields(p)%values==keep_v%fields(p)%values),'pressure EOS refusal rolls back every halo')
+    enddo
+    su=123;stemp=456
+    call fill_reactive_eb_tree_halo_3d(species,sample,2,su,stemp,ok,separate_momentum=.true., &
+      consistent_velocity=.true.,paired_pressure=.true.)
+    call require(.not.ok.and.all(su==123).and.all(stemp==456),'candidate requires prepared coarse stencil')
+  end subroutine paired_pressure_checks
+
   subroutine periodic_checks(walls)
     logical, optional, intent(in) :: walls
     type(amr_tree_state_3d) :: volume

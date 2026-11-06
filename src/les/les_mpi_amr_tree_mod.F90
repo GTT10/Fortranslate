@@ -6,6 +6,9 @@ module les_mpi_amr_tree_mod
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use reactive_1d_mod, only: reactive_nvar
+  use rotating_frame_3d_mod, only: rotating_frame_3d
+  use reactive_mol_3d_mod, only: convert_regular_energy_3d
+  use les_amr_patch_tree_mod, only: convert_amr_les_tree_energy_3d
   use les_dynamic_smagorinsky_mod, only: compute_dynamic_les_rhs_ghosted_3d
   use les_filter_3d_mod, only: les_filter_weights
   use les_smagorinsky_3d_mod, only: compute_les_ghosted_rhs_3d
@@ -21,11 +24,17 @@ module les_mpi_amr_tree_mod
   implicit none
   private
   public :: advance_mpi_amr_tree_les_3d,compute_mpi_amr_tree_les_timestep_3d,compute_mpi_amr_tree_les_rhs_3d
+  public :: agree_les_frame_3d
 contains
   subroutine compute_mpi_amr_tree_les_rhs_3d(tree,owners,species,state,temperature,root_spacing,faces, &
       cs,prt,sct,rates,flux,maximum_diffusivity,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,fractions)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,target_depth,coarse_start,coarse_end,fractions, &
+      frame,domain_lower,internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    character(len=:), allocatable :: sampling_limiter
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -59,26 +68,40 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6),mach(6),tin(6),pin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
-    type(amr_tree_state_3d) :: candidate,packed,ghosts
+    type(amr_tree_state_3d) :: candidate,packed,ghosts,future_ordinary
     real(dp), allocatable :: h(:,:),inlet(:,:)
-    real(dp) :: largest,diffusivity,global_diffusivity
+    real(dp) :: largest,diffusivity,global_diffusivity,lower(3),rotation(7),rotation_min(7),rotation_max(7)
     integer :: n(3),axis,level
     character(len=32) :: local_faces(6)
+    real(dp), allocatable :: sampled_h(:,:,:)
+    integer :: np,held_face,held_flag,held_low,held_high
     integer :: node,nvar,rank,status,ios,parent
     real(dp) :: controls(36),low(36),high(36)
     real(dp), allocatable :: reference_inlet(:,:)
     character(len=64) :: options(9),reference_options(9)
-    integer :: flags(3),min_flags(3),max_flags(3)
+    integer :: flags(5),min_flags(5),max_flags(5),axis_min,axis_max
     real(dp) :: walls(24),reference_walls(24)
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     logical :: valid
+    if(present(coarse_limiter)) sampling_limiter=coarse_limiter
+    if(present(internal_energy)) sampling_limiter='linear'
     ok=.false.
     nvar=reactive_nvar(size(species))
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
     if (.not.valid) return
+    held_flag=merge(1,0,present(internal_energy))
+    call MPI_Allreduce(held_flag,held_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(held_flag,held_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.held_low/=held_high) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+    endif
+    np=nvar+1+held_flag
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
     pressure=0
@@ -120,6 +143,11 @@ contains
     valid=valid.and.all(ieee_is_finite(pin)).and.all(pin>=0).and.all(pin<=1e15_dp)
     valid=valid.and..not.any(pin>0.and.mach<0)
     valid=valid.and.all(ieee_is_finite(tin)).and..not.any(tin<=0.and.mach>=0)
+    valid=valid.and.(present(frame).eqv.present(domain_lower))
+    if(present(frame)) then
+      valid=valid.and.frame%is_valid()
+      if(present(domain_lower)) valid=valid.and.all(ieee_is_finite(domain_lower))
+    endif
     call agree(valid)
     if(.not.valid) return
     controls=[root_spacing,.2_dp,pressure,cs,prt,sct,isotropic,real(filter_ratio,dp),real(grid,dp), &
@@ -153,12 +181,24 @@ contains
     call MPI_Allreduce(controls,high,36,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(low/=high)) return
-    flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)),merge(1,0,present(coarse_limiter))]
-    call MPI_Allreduce(flags,min_flags,3,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[merge(1,0,present(wall_temperature)),merge(1,0,present(wall_velocity)), &
+      merge(1,0,present(coarse_limiter)),merge(1,0,present(frame)),merge(1,0,present(domain_lower))]
+    call MPI_Allreduce(flags,min_flags,size(flags),MPI_INTEGER,MPI_MIN,comm,status)
     if (status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,max_flags,3,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,max_flags,size(flags),MPI_INTEGER,MPI_MAX,comm,status)
     if (status/=MPI_SUCCESS) return
     if (any(min_flags/=max_flags)) return
+    if(present(frame)) then
+      call MPI_Allreduce(frame%axis,axis_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame%axis,axis_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.axis_min/=axis_max) return
+      rotation=[domain_lower,frame%angular_speed,frame%axis_point]
+      call MPI_Allreduce(rotation,rotation_min,size(rotation),MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(rotation,rotation_max,size(rotation),MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.any(rotation_min/=rotation_max)) return
+    endif
     options(:6)=faces;options(7)='pcm';options(8)=selected_model;options(9)=filter
     if (present(coarse_limiter)) options(7)=coarse_limiter
     reference_options=options
@@ -175,10 +215,17 @@ contains
       end if
       call agree(valid)
       if (.not.valid) return
-      allocate(inlet(nvar+1,6),reference_inlet(nvar+1,6),stat=ios)
+      allocate(inlet(np,6),reference_inlet(np,6),stat=ios)
       valid=ios==0;call agree(valid)
       if (.not.valid) return
       inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+      if(present(internal_energy)) then
+        inlet(np,:)=0
+        do held_face=1,6
+          if(inlet(1,held_face)<=0) cycle
+          inlet(np,held_face)=inlet(5,held_face)-.5_dp*sum(inlet(2:4,held_face)**2)/inlet(1,held_face)
+        enddo
+      endif
       reference_inlet=inlet
       call MPI_Bcast(reference_inlet,size(reference_inlet),MPI_DOUBLE_PRECISION,0,comm,status)
       if (status/=MPI_SUCCESS) return
@@ -208,9 +255,9 @@ contains
       if(valid) valid=all(ieee_is_finite(fractions)).and.all(fractions>=0).and.all(fractions<=1)
       call agree(valid)
       if(.not.valid) return
-      call validate_mpi_amr_tree_local_3d(tree,owners,coarse_start,nvar+1,comm,valid,maximum_depth=depth-1)
+      call validate_mpi_amr_tree_local_3d(tree,owners,coarse_start,np,comm,valid,maximum_depth=depth-1)
       if(.not.valid) return
-      call validate_mpi_amr_tree_local_3d(tree,owners,coarse_end,nvar+1,comm,valid,maximum_depth=depth-1)
+      call validate_mpi_amr_tree_local_3d(tree,owners,coarse_end,np,comm,valid,maximum_depth=depth-1)
       if(.not.valid) return
     end if
     allocate(h(3,size(tree%nodes)),packed%fields(size(tree%nodes)),result(size(tree%nodes)),stat=ios)
@@ -226,20 +273,46 @@ contains
     do node=1,size(tree%nodes)
       if(owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
-      allocate(packed%fields(node)%values(nvar+1,n(1),n(2),n(3)),stat=ios)
+      allocate(packed%fields(node)%values(np,n(1),n(2),n(3)),stat=ios)
       if(ios/=0) exit
       packed%fields(node)%values(:nvar,:,:,:)=state%fields(node)%values
       packed%fields(node)%values(nvar+1,:,:,:)=temperature%fields(node)%values(1,:,:,:)
+      if(present(internal_energy)) packed%fields(node)%values(np:np,:,:,:)=internal_energy%fields(node)%values
       if(tree%nodes(node)%level<depth) packed%fields(node)%values=coarse_start%fields(node)%values
+      if(present(frame)) then
+        ! Convert owner donors before the halo exchange and coarse interpolation.
+        lower=domain_lower+real(origin(:,node),dp)*h(:,node)
+        call convert_regular_energy_3d(frame,lower,h(:,node),packed%fields(node)%values,0,.false.,valid)
+        if(.not.valid) exit
+      endif
       candidate%fields(node)%values=0
     end do
-    valid=ios==0;call agree(valid)
+    valid=valid.and.ios==0;call agree(valid)
     if(.not.valid) return
-    call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,valid, &
-      viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-      coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width, &
-      coarse_future=coarse_end,coarse_fractions=fractions,depth=depth, &
-      species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+    if(present(frame).and.present(coarse_end)) then
+      future_ordinary=coarse_end
+      do node=1,size(tree%nodes)
+        if(owners(node)/=rank.or.tree%nodes(node)%level>=depth) cycle
+        lower=domain_lower+real(origin(:,node),dp)*h(:,node)
+        call convert_regular_energy_3d(frame,lower,h(:,node),future_ordinary%fields(node)%values,0,.false.,valid)
+        if(.not.valid) exit
+      enddo
+      call agree(valid)
+      if(.not.valid) return
+      call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,np,faces,ghosts,comm,valid, &
+        viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
+        coarse_limiter=sampling_limiter,species_count=size(species),ghost_width=width, &
+        coarse_future=future_ordinary,coarse_fractions=fractions,depth=depth, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy))
+    else
+      call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,np,faces,ghosts,comm,valid, &
+        viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
+        coarse_limiter=sampling_limiter,species_count=size(species),ghost_width=width, &
+        coarse_future=coarse_end,coarse_fractions=fractions,depth=depth, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy))
+    endif
     if(.not.valid) return
     largest=0
     do node=1,size(tree%nodes)
@@ -247,7 +320,8 @@ contains
       if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
       n=tree%nodes(node)%shape
       associate(ghost=>ghosts%fields(node)%values)
-        call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid,ghost_width=width)
+        call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid,ghost_width=width, &
+        stored_internal_energy=present(internal_energy))
         if(.not.valid) exit
         local_faces='outflow';level=tree%nodes(node)%level+1
         do axis=1,3
@@ -259,16 +333,18 @@ contains
         if(ios/=0) then
           valid=.false.;exit
         end if
+      if(present(internal_energy)) sampled_h=ghost(np,:,:,:)
         if(dynamic) then
           call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
             h(:,node),filter,filter_ratio,width,candidate%fields(node)%values, &
             result(node)%x,result(node)%y,result(node)%z,valid,grid,harmonic,diffusivity, &
-            boundary_faces=local_faces,wall_temperature=wall_temperature)
+            boundary_faces=local_faces,wall_temperature=wall_temperature, &
+              internal_energy_density=sampled_h)
         else
           call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,node), &
             cs,prt,sct,candidate%fields(node)%values,diffusivity,valid,boundary_faces=local_faces, &
             wall_temperature=wall_temperature,model=selected_model,ci=isotropic, &
-            fx=result(node)%x,fy=result(node)%y,fz=result(node)%z)
+            fx=result(node)%x,fy=result(node)%y,fz=result(node)%z,internal_energy_density=sampled_h)
         end if
         if(.not.valid) exit
         largest=max(largest,diffusivity)
@@ -291,10 +367,14 @@ contains
       if(ierr==MPI_SUCCESS) condition=result
     end subroutine agree
   end subroutine compute_mpi_amr_tree_les_rhs_3d
-  subroutine compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,root_spacing,cfl,faces, &
+  recursive subroutine compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,state,temperature,root_spacing,cfl,faces, &
       cs,prt,sct,dt,maximum_diffusivity,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure)
+      test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure,frame,domain_lower,internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    character(len=:), allocatable :: sampling_limiter
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -320,12 +400,15 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6),mach(6),tin(6),pin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
-    type(amr_tree_state_3d) :: initial,temps,packed,ghosts
+    type(amr_tree_state_3d), allocatable :: timestep_h
+    type(amr_tree_state_3d) :: initial,temps,packed,ghosts,ordinary
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: candidate_dt,largest,diffusivity,rate,global_dt,global_diffusivity
     real(dp), allocatable :: rhs(:,:,:,:)
     integer :: n(3),axis,level
     character(len=32) :: local_faces(6)
+    real(dp), allocatable :: sampled_h(:,:,:)
+    integer :: np,held_face,held_flag,held_low,held_high
     integer :: node,nvar,rank,status,ios,parent
     real(dp) :: controls(36),low(36),high(36)
     real(dp), allocatable :: reference_inlet(:,:)
@@ -336,8 +419,37 @@ contains
     integer, allocatable :: ratios(:)
     integer(int64) :: factor
     logical :: valid
+    if(present(coarse_limiter)) sampling_limiter=coarse_limiter
+    if(present(internal_energy)) sampling_limiter='linear'
     ok=.false.
     nvar=reactive_nvar(size(species))
+    held_flag=merge(1,0,present(internal_energy))
+    call MPI_Allreduce(held_flag,held_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(held_flag,held_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.held_low/=held_high) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+    endif
+    np=nvar+1+held_flag
+    call agree_les_frame_3d(frame,domain_lower,comm,valid)
+    if(.not.valid) return
+    if(present(frame)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
+      if(.not.valid) return
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      ordinary=state
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.false.,valid,owners,rank)
+      call agree(valid)
+      if(.not.valid) return
+      call compute_mpi_amr_tree_les_timestep_3d(tree,owners,species,ordinary,temperature,root_spacing,cfl,faces, &
+        cs,prt,sct,dt,maximum_diffusivity,comm,ok, &
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+        test_model,test_ratio,grid_ratio,harmonic_mean,subcycle,inflow_mach,inflow_pressure,internal_energy=internal_energy)
+      return
+    endif
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
@@ -438,10 +550,17 @@ contains
       end if
       call agree(valid)
       if (.not.valid) return
-      allocate(inlet(nvar+1,6),reference_inlet(nvar+1,6),stat=ios)
+      allocate(inlet(np,6),reference_inlet(np,6),stat=ios)
       valid=ios==0;call agree(valid)
       if (.not.valid) return
       inlet(:nvar,:)=inflow_state;inlet(nvar+1,:)=inflow_temperature
+      if(present(internal_energy)) then
+        inlet(np,:)=0
+        do held_face=1,6
+          if(inlet(1,held_face)<=0) cycle
+          inlet(np,held_face)=inlet(5,held_face)-.5_dp*sum(inlet(2:4,held_face)**2)/inlet(1,held_face)
+        enddo
+      endif
       reference_inlet=inlet
       call MPI_Bcast(reference_inlet,size(reference_inlet),MPI_DOUBLE_PRECISION,0,comm,status)
       if (status/=MPI_SUCCESS) return
@@ -489,6 +608,11 @@ contains
     if (.not.valid) return
     call average_down_mpi_amr_tree_3d(tree,owners,initial,nvar,comm,valid)
     if (.not.valid) return
+    if(present(internal_energy)) then
+      allocate(timestep_h);timestep_h=internal_energy
+      call average_down_mpi_amr_tree_3d(tree,owners,timestep_h,1,comm,valid)
+      if(.not.valid) return
+    endif
     call recover_tree(initial,temps,valid)
     if (.not.valid) return
     allocate(packed%fields(size(tree%nodes)),stat=ios)
@@ -497,24 +621,27 @@ contains
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
-      allocate(packed%fields(node)%values(nvar+1,n(1),n(2),n(3)),stat=ios)
+      allocate(packed%fields(node)%values(np,n(1),n(2),n(3)),stat=ios)
       if (ios/=0) exit
       packed%fields(node)%values(:nvar,:,:,:)=initial%fields(node)%values
       packed%fields(node)%values(nvar+1,:,:,:)=temps%fields(node)%values(1,:,:,:)
+      if(present(internal_energy)) packed%fields(node)%values(np:np,:,:,:)=timestep_h%fields(node)%values
     end do
     valid=ios==0;call agree(valid)
     if (.not.valid) return
-    call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,nvar+1,faces,ghosts,comm,valid, &
+    call fill_mpi_amr_tree_ghosts_3d(tree,owners,packed,np,faces,ghosts,comm,valid, &
       viscous_wall=.true.,inflow_state=inlet,wall_velocity=wall_velocity, &
-      coarse_limiter=coarse_limiter,species_count=size(species),ghost_width=width, &
-        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      coarse_limiter=sampling_limiter,species_count=size(species),ghost_width=width, &
+        species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+        stored_internal_energy=present(internal_energy),limit_internal_energy=present(internal_energy))
     if (.not.valid) return
     candidate_dt=1e6_dp;largest=0
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape
       associate(ghost=>ghosts%fields(node)%values)
-        call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid,ghost_width=width)
+        call apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,valid,ghost_width=width, &
+        stored_internal_energy=present(internal_energy))
         if (.not.valid) exit
         local_faces='outflow';level=tree%nodes(node)%level+1
         do axis=1,3
@@ -525,6 +652,7 @@ contains
         if (ios/=0) then
           valid=.false.;exit
         end if
+      if(present(internal_energy)) sampled_h=ghost(np,:,:,:)
         if(dynamic) then
           block
             real(dp), allocatable :: fx(:,:,:,:),fy(:,:,:,:),fz(:,:,:,:)
@@ -533,12 +661,13 @@ contains
             valid=ios==0
             if(valid) call compute_dynamic_les_rhs_ghosted_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:), &
               h(:,node),filter,filter_ratio,width,rhs,fx,fy,fz,valid,grid,harmonic,diffusivity, &
-              boundary_faces=local_faces,wall_temperature=wall_temperature)
+              boundary_faces=local_faces,wall_temperature=wall_temperature, &
+              internal_energy_density=sampled_h)
           end block
         else
         call compute_les_ghosted_rhs_3d(species,ghost(:nvar,:,:,:),ghost(nvar+1,:,:,:),n,h(:,node), &
           cs,prt,sct,rhs,diffusivity,valid,boundary_faces=local_faces,wall_temperature=wall_temperature, &
-          model=selected_model,ci=isotropic)
+          model=selected_model,ci=isotropic,internal_energy_density=sampled_h)
         end if
         if (.not.valid) exit
         rate=diffusivity*sum(1._dp/h(:,node)**2)/real(counts(level),dp)
@@ -559,7 +688,7 @@ contains
       type(amr_tree_state_3d), intent(in) :: u
       type(amr_tree_state_3d), intent(inout) :: t
       logical, intent(out) :: success
-      call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,u,t,comm,success)
+      call recover_mpi_amr_tree_temperatures_3d(tree,owners,species,u,t,comm,success,internal_energy=timestep_h)
     end subroutine
     subroutine agree(condition)
       logical, intent(inout) :: condition
@@ -587,10 +716,12 @@ contains
       if (success) call move_alloc(copy%fields,destination%fields)
     end subroutine
   end subroutine compute_mpi_amr_tree_les_timestep_3d
-  subroutine advance_mpi_amr_tree_les_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
+  recursive subroutine advance_mpi_amr_tree_les_3d(tree,owners,species,state,temperature,root_spacing,dt,faces, &
       cs,prt,sct,boundary_change,maximum_correction,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
-      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure,frame,domain_lower)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -616,7 +747,7 @@ contains
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6),mach(6),tin(6),pin(6)
     character(len=*), optional, intent(in) :: coarse_limiter
-    type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature
+    type(amr_tree_state_3d) :: initial,candidate,temps,first_temperature,ordinary,ordinary_t
     real(dp), allocatable :: h(:,:),inlet(:,:)
     real(dp) :: first_budget(size(boundary_change)),second_budget(size(boundary_change)), &
       first_max,second_max
@@ -629,8 +760,31 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     logical :: valid
+    real(dp) :: rotated_budget(size(boundary_change)),rotated_max
     ok=.false.
     nvar=reactive_nvar(size(species))
+    call agree_les_frame_3d(frame,domain_lower,comm,valid)
+    if(.not.valid) return
+    if(present(frame)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
+      if(.not.valid) return
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      ordinary=state;ordinary_t=temperature
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.false.,valid,owners,rank)
+      call agree(valid)
+      if(.not.valid) return
+      call advance_mpi_amr_tree_les_3d(tree,owners,species,ordinary,ordinary_t,root_spacing,dt,faces, &
+        cs,prt,sct,rotated_budget,rotated_max,comm,valid, &
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,model,ci, &
+        test_model,test_ratio,grid_ratio,harmonic_mean,inflow_mach,inflow_pressure)
+      if(.not.valid) return
+      call convert_amr_les_tree_energy_3d(tree,ordinary,root_spacing,frame,domain_lower,.true.,valid,owners,rank)
+      call agree(valid)
+      if(.not.valid) return
+      state=ordinary;temperature=ordinary_t;boundary_change=rotated_budget;maximum_correction=rotated_max;ok=.true.
+      return
+    endif
     call validate_mpi_amr_tree_local_3d(tree,owners,state,nvar,comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
@@ -947,4 +1101,39 @@ contains
       if (success) call move_alloc(copy%fields,destination%fields)
     end subroutine
   end subroutine advance_mpi_amr_tree_les_3d
+  subroutine agree_les_frame_3d(frame,domain_lower,comm,ok)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    integer :: flags(2),low_flags(2),high_flags(2),axis_min,axis_max,status
+    real(dp) :: values(7),minimum(7),maximum(7)
+    logical :: valid,agreed
+    ok=.false.
+    flags=[merge(1,0,present(frame)),merge(1,0,present(domain_lower))]
+    call MPI_Allreduce(flags,low_flags,2,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high_flags,2,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(low_flags/=high_flags).or.flags(1)/=flags(2)) return
+    if(.not.present(frame)) then
+      ok=.true.;return
+    endif
+    valid=frame%is_valid().and.all(ieee_is_finite(domain_lower))
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(.not.agreed) return
+    call MPI_Allreduce(frame%axis,axis_min,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(frame%axis,axis_max,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(axis_min/=axis_max) return
+    values=[frame%angular_speed,frame%axis_point,domain_lower]
+    call MPI_Allreduce(values,minimum,7,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(values,maximum,7,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    if(any(minimum/=maximum)) return
+    ok=.true.
+  end subroutine agree_les_frame_3d
 end module

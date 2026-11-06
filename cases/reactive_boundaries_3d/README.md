@@ -11,6 +11,32 @@ BDF; the run log identifies the backend. Unsupported builds and hierarchy
 applications reject this selection. See the
 [focused application checks](../../docs/validation/sdc-cvode-app-20260927.md).
 
+## Constant viscosity and conductivity
+
+The regular fixed/selected gas front ends accept prescribed viscosity and
+conductivity with physical boundaries when `time_integrator='sdc'` and
+`transport_enabled=.true.`. Add this separate group to the input file:
+
+```fortran
+&reactive_constant_transport
+  enabled=.true., viscosity=1e-5, conductivity=.02
+  bulk_viscosity=3e-5, diffusivity=2e-5
+/
+```
+
+Values are finite, nonnegative SI coefficients. Both transport stages, inlet
+diffusion limits, isothermal wall heat flux and the wall timestep use these
+values. `bulk_viscosity` adds the isotropic viscous stress (Pa s). `diffusivity`
+is the pinned transport coefficient **rho D**, in kg/(m s); each species receives
+the same supplied coefficient before the correction velocity enforces zero net
+mass flux. Its default `-1` retains molecular species diffusion; a nonnegative
+value selects constant rho D, including zero to disable that flux. Omitted bulk
+viscosity is zero. Disable `species_diffusion_enabled` and
+`barodiffusion_enabled` for viscosity/conduction only. An explicitly nonzero
+`thermal_diffusion_ratio` is rejected because the pinned PeleC solver rejects
+Soret effects. The optional HIT coefficient mode is described in
+[the HIT guide](../reactive_hit_3d/README.md).
+
 ## Boundary input
 
 `pelef_reactive_3d` and the selected-mechanism front end accept six face
@@ -195,3 +221,88 @@ uniform reacting example with transport and external forcing; this is a
 bounded numerical example, not physical ignition validation.
 `sdc_outflow.nml` exercises a reacting hotspot with external force and outflow.
 Set `transport_enabled=.true.` in that example to include molecular transport.
+
+## Regular MOL
+
+`pelef_reactive_3d` and its selected-mechanism variant also accept
+`time_integrator='mol'` with `reconstruction='characteristic_plm'` and
+`riemann_solver='pelec'`. `sdc_iterations` selects the reacting MOL iteration
+count; nonreacting gas uses one trapezoidal pass. Molecular transport, external
+forcing, regular LES and native/CVODE reactor interfaces share this driver.
+`mol_lax_friedrichs=.true.` selects LF fluxes instead of the default acoustic
+solver. Other applications must explicitly enable MOL input before accepting
+this mode. Bounded fixed/native reacting, wall/LES and conservation checks
+pass; selected/CVODE execution and pinned full-trajectory comparison remain open.
+
+## Automatic timestep controls
+
+The regular gas applications accept:
+
+```fortran
+&reactive_timestep
+  maximum_dt=1e-9, initial_timestep_factor=1, maximum_timestep_growth=1.1
+/
+```
+
+The first estimate is scaled by `initial_timestep_factor`; later estimates
+can grow by at most `maximum_timestep_growth` relative to the last accepted
+interval. CFL, transport and `maximum_dt` limits apply before this policy; the
+final-time cap follows it, with the reference 0.1% stop-time snap.
+
+`initial_dt=0` and `fixed_dt=0` disable prescribed steps by default;
+nonpositive values retain this reference convention. A positive
+`initial_dt` overrides the first estimate and its factor, even when above
+`maximum_dt`. A positive `fixed_dt` bypasses physical timestep estimates and
+later growth limits; it must not exceed `maximum_dt`. Without `initial_dt`,
+the first fixed step still receives `initial_timestep_factor`. Both modes
+retain the final-time cap, do not retry a rejected gas update, and bind their
+values to checkpoint identity. These controls follow the pinned reference;
+the user must choose a stable prescribed interval.
+
+
+## Regular gas restart
+
+The fixed and selected regular gas applications accept a separate group:
+
+```fortran
+&reactive_restart
+  checkpoint_file='gas.chk', stop_after_steps=1
+/
+```
+
+Set `restart_file='gas.chk'` to continue. Split, SDC and MOL use the same
+transactional format; SDC/MOL retain saved reaction rates and accepted heat.
+The V2 application snapshot also stores the last accepted interval. Both
+timestep controls participate in restart identity; old application snapshots
+without interval history are incompatible.
+The file also contains cumulative boundary/forcing inventories and initial
+conserved totals. All physics, material data, resolved transport and initial
+fields are matched before loading. Output path, requested final time and
+maximum step count may change. The writer completes a same-directory `.tmp`
+file before atomically replacing the destination; an existing `.tmp` is
+rejected. The reader rejects incomplete, nonfinite or incompatible records
+and inconsistent cumulative Euler inventories before publishing state.
+Native fixed split/SDC/MOL continuation has exact CSV and checkpoint checks;
+selected/CVODE and compiler-to-compiler portability remain separate checks.
+
+## Regular MOL rotating frame
+
+The fixed and selected regular gas applications accept this separate group:
+
+```fortran
+&reactive_rotation
+ enabled=.true., axis=2, angular_speed=300, axis_point=.02,-.03,.01
+/
+```
+
+Select `time_integrator='mol'` and characteristic PLM/PeleC reconstruction.
+Input axes 0/1/2 denote x/y/z, angular speed is in rad/s, and the axis point
+is in domain coordinates. Initial velocities and prescribed inlet velocities
+are relative velocities. Initial conditions and inlet energy templates use
+ordinary relative total energy; the application converts its stored state to
+`rho*(e + |v_relative|^2/2 - Phi)`. CSV `rhoE` and checkpoint energy retain that
+rotating variable, while pressure and temperature are recovered with `Phi`.
+The complete frame participates in restart identity; changing or disabling it
+rejects continuation. Molecular and LES transport evaluate private ordinary
+energy fields. MPI Cartesian rotation and full trajectory qualification remain
+open.

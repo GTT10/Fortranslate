@@ -1,5 +1,6 @@
 program test_eb_tree_checkpoint_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+  use dual_energy_mod, only: dual_energy_policy
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: nasa7_species
   use thermo_database_mod, only: load_h2o2_elementary_thermo
@@ -13,6 +14,7 @@ program test_eb_tree_checkpoint_3d
   use eb_reactive_patch_tree_3d_mod, only: eb_reactive_tree_3d,initialize_reactive_eb_tree_3d, &
     average_down_reactive_eb_tree_3d,integrate_reactive_eb_tree_3d,advance_reactive_eb_tree_hydro_3d
   use eb_reactive_tree_checkpoint_3d_mod, only: eb_tree_checkpoint_3d,reactive_eb_tree_checkpoint_record_3d
+  use eb_reactive_tree_checkpoint_3d_mod, only: checkpoint_held_restriction_matches_3d
   use simulation_config_reactive_eb_3d_mod, only: reactive_eb_3d_config
   use reactive_eb_3d_driver_mod, only: initialize_reactive_eb_density_sheet_3d
   implicit none
@@ -162,12 +164,131 @@ program test_eb_tree_checkpoint_3d
   call unchanged_tree()
   call require(restored%time==17._dp,'topology metadata rollback')
   close(stream)
+  call check_direct_child_restriction()
+  call check_held_restriction_policy()
   call check_sdc_record()
+  call check_eos_record()
   deallocate(u,t)
   end do
   end do
   print *, 'test_eb_tree_checkpoint_3d: PASS'
 contains
+  subroutine check_direct_child_restriction()
+    type(eb_reactive_tree_3d) :: direct,cascade,original
+    real(dp) :: expected,weight
+    integer :: ii,jj,kk
+    logical :: valid
+    original=tree
+    ! Node 2 is itself covered by node 4. A saved reset of its donor energy
+    ! must reach the root without first being overwritten from grandchildren.
+    original%nodes(2)%state(5,3:4,3:4,2:3)=original%nodes(2)%state(5,3:4,3:4,2:3)+100._dp
+    direct=original;cascade=original
+    expected=0;weight=0
+    do kk=1,2
+    do jj=3,4
+    do ii=3,4
+      weight=weight+original%nodes(2)%geometry%volume_fraction(ii,jj,kk)
+      expected=expected+original%nodes(2)%geometry%volume_fraction(ii,jj,kk)* &
+        original%nodes(2)%state(5,ii,jj,kk)
+    enddo
+    enddo
+    enddo
+    call require(weight>0,'direct-child test fluid weight')
+    expected=expected/weight
+    call average_down_reactive_eb_tree_3d(species,direct,valid,direct_children=.true.)
+    call require(valid,'direct-child multilevel restriction')
+    call require(abs(direct%nodes(1)%state(5,2,2,2)-expected)<=2.e-12_dp*max(1._dp,abs(expected)), &
+      'root uses saved immediate child energy')
+    call average_down_reactive_eb_tree_3d(species,cascade,valid)
+    call require(valid,'ordinary cascading multilevel restriction')
+    call require(abs(cascade%nodes(1)%state(5,2,2,2)-direct%nodes(1)%state(5,2,2,2))>1._dp, &
+      'fixture distinguishes saved children from cascading restriction')
+  end subroutine check_direct_child_restriction
+
+  subroutine check_held_restriction_policy()
+    type(dual_energy_policy) :: policy
+    real(dp) :: actual(nv,4,4,4),restricted(nv,4,4,4),held(1,4,4,4),original_held(1,4,4,4)
+    integer :: ii,jj,kk
+    restricted=tree%nodes(1)%state
+    original_held=0
+    do kk=1,4
+    do jj=1,4
+    do ii=1,4
+      if(restricted(1,ii,jj,kk)<=0) cycle
+      original_held(1,ii,jj,kk)=restricted(5,ii,jj,kk)- &
+        sum(restricted(2:4,ii,jj,kk)**2)/(2*restricted(1,ii,jj,kk))
+    enddo
+    enddo
+    enddo
+    ! A covered fluid donor has positive unresolved kinetic variance after restriction.
+    call require(tree%nodes(1)%geometry%volume_fraction(1,1,2)>0,'policy test covered fluid')
+    ! The cold density-sheet fixture has negative formation energy. Select a
+    ! positive held energy explicitly to exercise the eta2 reset branch.
+    original_held(1,1,1,2)=1.e6_dp
+    restricted(5,1,1,2)=original_held(1,1,1,2)+ &
+      sum(restricted(2:4,1,1,2)**2)/(2*restricted(1,1,1,2))+100._dp
+    actual=restricted;held=original_held
+    policy%eta2=2;policy%allow_negative_energy=.false.
+    call require(checkpoint_held_restriction_matches_3d(species,tree%topology,1,tree%nodes(1)%geometry, &
+      actual,held,restricted,original_held,tree%nodes(1)%temperature,policy),'raw restriction accepted')
+    actual(5,1,1,2)=actual(5,1,1,2)-100._dp
+    call require(checkpoint_held_restriction_matches_3d(species,tree%topology,1,tree%nodes(1)%geometry, &
+      actual,held,restricted,original_held,tree%nodes(1)%temperature,policy),'covered total energy reset accepted')
+    policy%update_total_from_internal=.false.
+    call require(.not.checkpoint_held_restriction_matches_3d(species,tree%topology,1,tree%nodes(1)%geometry, &
+      actual,held,restricted,original_held,tree%nodes(1)%temperature,policy),'disabled total energy reset rejects changed energy')
+    policy%update_total_from_internal=.true.
+    actual(3,1,1,2)=actual(3,1,1,2)+1._dp
+    call require(.not.checkpoint_held_restriction_matches_3d(species,tree%topology,1,tree%nodes(1)%geometry, &
+      actual,held,restricted,original_held,tree%nodes(1)%temperature,policy),'covered momentum corruption rejected')
+    actual(3,1,1,2)=restricted(3,1,1,2)
+    held(1,1,1,2)=held(1,1,1,2)+1._dp
+    call require(.not.checkpoint_held_restriction_matches_3d(species,tree%topology,1,tree%nodes(1)%geometry, &
+      actual,held,restricted,original_held,tree%nodes(1)%temperature,policy),'covered held energy corruption rejected')
+    held=original_held
+    actual(5,1,1,4)=actual(5,1,1,4)+100._dp
+    call require(.not.checkpoint_held_restriction_matches_3d(species,tree%topology,1,tree%nodes(1)%geometry, &
+      actual,held,restricted,original_held,tree%nodes(1)%temperature,policy),'uncovered energy corruption rejected')
+  end subroutine check_held_restriction_policy
+
+  subroutine check_eos_record()
+    integer :: file,mode
+    type(eb_tree_checkpoint_3d) :: source_record
+    real(dp) :: current(nv)
+    saved=tree
+    call integrate_reactive_eb_tree_3d(tree,current,ok)
+    call require(ok,'EOS restart inventory')
+    source_record=record;source_record%initial=current;source_record%scale=abs(current)
+    source_record%boundary=0*current;source_record%wall=0*current;source_record%chemical=0*current
+    do mode=0,1
+      species%pinned_eos_extrapolation=mode==1;config%pinned_eos_extrapolation=mode==1
+      open(newunit=file,status='scratch',form='formatted',action='readwrite')
+      call reactive_eb_tree_checkpoint_record_3d(file,.false.,species,reactions,transport,config, &
+        tree,source_record,ok,message)
+      call require(ok,'EOS-mode tree record write')
+      rewind(file)
+      call reactive_eb_tree_checkpoint_record_3d(file,.true.,species,reactions,transport,config, &
+        tree,restored,ok,message)
+      call require(ok,'EOS-mode tree record same-mode read')
+      call unchanged_tree()
+      if(mode==1) then
+        species%pinned_eos_temperature_min=300;species%pinned_eos_temperature_max=4000
+        rewind(file);restored%time=17
+        call reactive_eb_tree_checkpoint_record_3d(file,.true.,species,reactions,transport,config, &
+          tree,restored,ok,message)
+        call require(.not.ok.and.restored%time==17,'changed tree EOS bounds rollback')
+        call unchanged_tree()
+        species%pinned_eos_temperature_min=0;species%pinned_eos_temperature_max=0
+      endif
+      species%pinned_eos_extrapolation=mode==0;config%pinned_eos_extrapolation=mode==0
+      rewind(file);restored%time=17
+      call reactive_eb_tree_checkpoint_record_3d(file,.true.,species,reactions,transport,config, &
+        tree,restored,ok,message)
+      call require(.not.ok.and.restored%time==17,'cross-mode tree EOS transactional refusal')
+      call unchanged_tree();close(file)
+    enddo
+    species%pinned_eos_extrapolation=.false.;config%pinned_eos_extrapolation=.false.
+  end subroutine check_eos_record
   subroutine check_sdc_record()
     type(eb_tree_checkpoint_3d) :: source_record,target_record
     type(reactive_eb_3d_config) :: cfg
@@ -181,9 +302,10 @@ contains
     source_record%forcing=1.e-8_dp+0*current
     source_record%initial=current-source_record%forcing
     source_record%time=1.e-8_dp;source_record%minimum_dt=1.e-8_dp;source_record%steps=1
-    do mode=1,2
-      cfg%chemistry_enabled=mode==1
-      if(mode==1) then
+    do mode=1,4
+      cfg%state_redist_max_order=2*(1+mod(mode-1,2))
+      cfg%chemistry_enabled=mod(mode,2)==1
+      if(cfg%chemistry_enabled) then
         allocate(source_record%reaction_source%fields(count))
         do p=1,count
           allocate(source_record%reaction_source%fields(p)%values(nv-4,4,4,4),source=-real(p,dp))
@@ -191,16 +313,38 @@ contains
       else
         deallocate(source_record%reaction_source%fields)
       end if
+      if(allocated(source_record%heat_release%fields)) deallocate(source_record%heat_release%fields)
+      if(mode>=3) then
+        allocate(source_record%heat_release%fields(count))
+        do p=1,count
+          allocate(source_record%heat_release%fields(p)%values(1,4,4,4),source=(-1._dp)**p*real(p,dp)*1.e9_dp)
+        enddo
+      endif
       open(newunit=unit,status='scratch',form='formatted',action='readwrite')
       call reactive_eb_tree_checkpoint_record_3d(unit,.false.,species,reactions,transport,cfg, &
         tree,source_record,ok,message)
       call require(ok,'write SDC tree: '//trim(message))
       rewind(unit)
+      cfg%state_redist_max_order=0;target_record%time=17
+      saved=tree
+      call reactive_eb_tree_checkpoint_record_3d(unit,.true.,species,reactions,transport,cfg, &
+        tree,target_record,ok,message)
+      call require(.not.ok.and.target_record%time==17,'changed high-order checkpoint rejects transactionally')
+      call unchanged_tree()
+      cfg%state_redist_max_order=2*(1+mod(mode-1,2))
+      rewind(unit)
       call reactive_eb_tree_checkpoint_record_3d(unit,.true.,species,reactions,transport,cfg, &
         tree,target_record,ok,message)
       call require(ok,'read SDC tree: '//trim(message))
       call require(all(target_record%forcing==source_record%forcing),'SDC forcing exact round trip')
-      if(mode==1) then
+      call require(allocated(target_record%heat_release%fields).eqv.(mode>=3),'heat presence round trip')
+      if(mode>=3) then
+        do p=1,count
+          call require(all(target_record%heat_release%fields(p)%values== &
+            source_record%heat_release%fields(p)%values),'signed stage heat exact round trip')
+        enddo
+      endif
+      if(cfg%chemistry_enabled) then
         do p=1,count
           call require(all(target_record%reaction_source%fields(p)%values== &
             source_record%reaction_source%fields(p)%values),'SDC reaction exact round trip')
@@ -211,10 +355,12 @@ contains
         write(unit,'(a)') 'END_EB_TREE_CHECKPOINT'
         endfile(unit);rewind(unit)
         target_record%forcing=17;target_record%reaction_source%fields(1)%values=19
+        if(mode>=3) target_record%heat_release%fields(1)%values=23
         saved=tree
         call reactive_eb_tree_checkpoint_record_3d(unit,.true.,species,reactions,transport,cfg, &
           tree,target_record,ok,message)
-        call require(.not.ok,'late SDC source NaN rejects')
+        call require(.not.ok,'late SDC diagnostic NaN rejects')
+        if(mode>=3) call require(all(target_record%heat_release%fields(1)%values==23),'late heat metadata rollback')
         call unchanged_tree()
         call require(all(target_record%forcing==17).and.all(target_record%reaction_source%fields(1)%values==19), &
           'SDC source metadata rollback')

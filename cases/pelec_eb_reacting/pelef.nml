@@ -1,0 +1,17 @@
+! Matched to pinned PeleC EB-C3 with LiDryer, SI units.
+! Uniform reacting gas with a planar cut wall; no AMR or transport claim.
+&eb_tree
+ root_shape=8,8,8,child_count=0,
+ domain_lower=0,0,0,domain_upper=.01,.01,.01,
+ geometry_type='plane',plane_axis='z',plane_position=.0031,
+ regular_density=9.97359295821423908e-02,cut_density=9.97359295821423908e-02,initial_pressure=101325,
+ composition_count=3,composition_species='H2','O2','N2',
+ composition_mole_fractions=4.87146886020635383e-01,2.55768100667125242e-01,2.57085013312239430e-01,
+ time_integrator='sdc',sdc_reactor='cvode',sdc_iterations=2,mol_mode=.true.,
+ hydro_method='plm_ctu',riemann_solver='pelec',boundary_faces=6*'outflow',
+ redistribution='none',dual_energy_enabled=.true.,dual_energy_eta2=2,
+ allow_negative_energy=.false.,pinned_eos_extrapolation=.true.,
+ chemistry_enabled=.true.,transport_enabled=.false.,
+ rtol=1.e-10,atol=1.e-14,time_step=1.e-7,final_time=3.e-7,maximum_steps=3,
+ output_interval_steps=1,output_file='result.csv',
+/

@@ -460,7 +460,7 @@ contains
               reshape(filtered_quantities(1:9,i,j,k),[3,3]),filtered_quantities(10:12,i,j,k), &
               reshape(filtered_quantities(13:21,i,j,k),[3,3]),filtered_quantities(22,i,j,k), &
               filtered_quantities(23:25,i,j,k),reshape(test_quantities(13:21,i,j,k),[3,3]), &
-              test_quantities(22,i,j,k),test_quantities(23:25,i,j,k),raw(:,i,j,k),valid)
+              test_quantities(22,i,j,k),test_quantities(23:25,i,j,k),raw(:,i,j,k),valid,si_units=.true.)
             if (.not.valid) return
           end do
         end do

@@ -3,6 +3,7 @@ module spray_eb_drift_mod
   use spray_parcel_mod, only: spray_parcel, valid_spray_parcel
   use spray_coupling_3d_mod, only: valid_spray_boundary_faces
   use spray_eb_intersection_mod, only: intersect_spray_level_set
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -13,7 +14,7 @@ contains
   ! change is particle inventory after minus before (the wall receives -change).
   ! Publish the entire population and diagnostics only after every path succeeds.
   subroutine drift_spray_level_set(phi,lower,upper,dt,maximum_hits,parcels,change,hits,ok, &
-      outer_faces,specific_energy,outer_change,wall_contact)
+      outer_faces,specific_energy,outer_change,wall_contact,frame,energy_conversion)
     real(dp), intent(in) :: phi(0:,0:,0:),lower(3),upper(3),dt
     integer, intent(in) :: maximum_hits
     type(spray_parcel), intent(inout) :: parcels(:)
@@ -21,11 +22,13 @@ contains
     integer, intent(inout) :: hits
     logical, intent(out) :: ok
     logical, optional, intent(inout) :: wall_contact(:)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(inout) :: energy_conversion
     logical :: contacted(size(parcels))
     character(len=*), optional, intent(in) :: outer_faces(6)
     real(dp), optional, intent(in) :: specific_energy(:)
     real(dp), optional, intent(inout) :: outer_change(5)
-    real(dp) :: exterior(5),exit_fraction,test_fraction,old_velocity(3),event_change(5)
+    real(dp) :: exterior(5),exit_fraction,test_fraction,old_velocity(3),event_change(5),potential,conversion
     integer :: axis,face,exit_face,dims(3)
     type(spray_parcel), allocatable :: trial(:)
     real(dp) :: remaining,finish(3),fraction,position(3),normal(3),vn,delta(5),weight
@@ -47,6 +50,9 @@ contains
     if (any((upper-lower)/real(shape(phi)-1,dp)<1e-12_dp)) return
     if(present(outer_faces).neqv.present(specific_energy)) return
     if(present(outer_faces).neqv.present(outer_change)) return
+    if(present(frame)) then
+      if(.not.frame%is_valid().or..not.present(outer_change)) return
+    end if
     if(present(outer_faces)) then
       if(.not.valid_spray_boundary_faces(outer_faces)) return
       if(size(specific_energy)/=size(parcels)) return
@@ -65,7 +71,7 @@ contains
     end if
     allocate(trial(size(parcels)),stat=allocation_status)
     if (allocation_status/=0) return
-    trial=parcels;delta=0;exterior=0;count=0
+    trial=parcels;delta=0;exterior=0;count=0;conversion=0
     hit=.false.;fraction=0;position=0;normal=0;cell=0
     do p=1,size(trial)
       if (.not.valid_spray_parcel(trial(p))) return
@@ -116,6 +122,12 @@ contains
             exterior(1)=exterior(1)-weight
             exterior(2:4)=exterior(2:4)-weight*trial(p)%velocity
             exterior(5)=exterior(5)-weight*(specific_energy(p)+.5_dp*sum(trial(p)%velocity**2))
+            if(present(frame)) then
+              call rotating_potential_3d(frame,trial(p)%position,potential,valid)
+              if(.not.valid) return
+              exterior(5)=exterior(5)+weight*potential
+              conversion=conversion+weight*potential
+            end if
             trial(p)%mass=0
           case default
             contacted(p)=.true.
@@ -155,7 +167,9 @@ contains
         delta(5)=delta(5)+.5_dp*weight*(sum(trial(p)%velocity**2)-sum(parcels(p)%velocity**2))
       end if
     end do
+    if(.not.ieee_is_finite(conversion)) return
     if(present(outer_change)) outer_change=exterior
+    if(present(energy_conversion)) energy_conversion=conversion
     if(present(wall_contact)) wall_contact=contacted
     parcels=trial;change=delta;hits=count;ok=.true.
   end subroutine

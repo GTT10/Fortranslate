@@ -1,11 +1,12 @@
 module amr_reactive_3d_checkpoint_mod
+  use reactive_checkpoint_context_mod, only: write_selected_checkpoint_context
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use elementary_kinetics_mod, only: reaction_kind_tsang,reaction_kind_tsang_activated
   use elementary_kinetics_mod, only: reaction_kind_chebyshev, chebyshev_capacity
   use elementary_kinetics_mod, only: reaction_kind_plog
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_eos_policy_identity
   use elementary_kinetics_mod, only: &
     reaction_kind_sri,reaction_kind_sri_activated, elementary_reaction, valid_elementary_reaction, &
     valid_arrhenius_rate, valid_troe_parameters
@@ -51,6 +52,14 @@ module amr_reactive_3d_checkpoint_mod
   public :: read_amr_reactive_3d_checkpoint
 
 contains
+  pure function checkpoint_eos_identity(flow,species) result(identity)
+    type(reactive_3d_config), intent(in) :: flow
+    type(nasa7_species), intent(in) :: species(:)
+    character(len=256) :: identity
+    identity=trim(flow%thermo_model)
+    if(all(species%pinned_eos_extrapolation)) identity=trim(identity)//'|'//trim(nasa7_eos_policy_identity(species))
+  end function checkpoint_eos_identity
+
   pure function checkpoint_reconstruction_identity(flow) result(identity)
     type(reactive_3d_config), intent(in) :: flow
     character(len=128) :: identity
@@ -535,7 +544,7 @@ contains
         species(species_index)%high_coefficients
       if (status /= 0) go to 900
     end do
-    write(unit, '(a)', iostat=status) trim(flow_config%thermo_model)
+    write(unit, '(a)', iostat=status) trim(checkpoint_eos_identity(flow_config,species))
     if (status /= 0) go to 900
     write(unit, '(a)', iostat=status) trim(flow_config%riemann_solver)
     if (status /= 0) go to 900
@@ -820,7 +829,7 @@ contains
     end do
     read(unit, '(a)', iostat=status) stored_thermo
     if (status /= 0) go to 900
-    if (trim(stored_thermo) /= trim(flow_config%thermo_model)) go to 900
+    if (trim(stored_thermo) /= trim(checkpoint_eos_identity(flow_config,species))) go to 900
     read(unit, '(a)', iostat=status) stored_solver
     if (status /= 0) go to 900
     if (trim(stored_solver) /= trim(flow_config%riemann_solver)) go to 900
@@ -1181,7 +1190,7 @@ contains
     end do
     read(unit, '(a)', iostat=status) stored_thermo
     if (status /= 0) go to 900
-    if (trim(stored_thermo) /= trim(flow_config%thermo_model)) go to 900
+    if (trim(stored_thermo) /= trim(checkpoint_eos_identity(flow_config,species))) go to 900
     read(unit, '(a)', iostat=status) stored_solver
     if (status /= 0) go to 900
     if (trim(stored_solver) /= trim(flow_config%riemann_solver)) go to 900
@@ -1656,122 +1665,7 @@ contains
 #endif
   end subroutine fixed_checkpoint_context
 
-  subroutine write_selected_checkpoint_context( &
-      unit, reactions, bundle_sha256, chemistry_integrator, &
-      base_mole_fractions, relative_tolerance, absolute_tolerance, status, fixed_model)
-    integer, intent(in) :: unit
-    type(elementary_reaction), intent(in) :: reactions(:)
-    character(len=*), intent(in) :: bundle_sha256, chemistry_integrator
-    real(dp), intent(in) :: base_mole_fractions(:)
-    real(dp), intent(in) :: relative_tolerance, absolute_tolerance
-    integer, intent(out) :: status
 
-    logical, optional, intent(in) :: fixed_model
-    character(len=16) :: context_marker
-    integer :: reaction_index, efficiency_size,plog_index
-
-    context_marker="SELECTED_CONTEXT"
-    if (present(fixed_model)) then
-      if (fixed_model) context_marker="FIXED_CONTEXT"
-    end if
-    status = 0
-    write(unit, '(a)', iostat=status) trim(context_marker)
-    if (status /= 0) return
-    write(unit, '(a)', iostat=status) trim(bundle_sha256)
-    if (status /= 0) return
-    write(unit, '(a)', iostat=status) trim(chemistry_integrator)
-    if (status /= 0) return
-    write(unit, '(i0)', iostat=status) size(base_mole_fractions)
-    if (status /= 0) return
-    write(unit, '(*(es27.18e3,1x))', iostat=status) base_mole_fractions
-    if (status /= 0) return
-    write(unit, '(a)', iostat=status) "REACTIONS"
-    if (status /= 0) return
-    write(unit, '(i0)', iostat=status) size(reactions)
-    if (status /= 0) return
-    do reaction_index = 1, size(reactions)
-      efficiency_size = 0
-      if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
-        efficiency_size = &
-          size(reactions(reaction_index)%third_body_efficiencies)
-      end if
-      write(unit, '(a)', iostat=status) &
-        trim(reactions(reaction_index)%equation)
-      if (status /= 0) return
-      write(unit, '(*(i0,1x))', iostat=status) &
-        reactions(reaction_index)%kind, &
-        merge(1, 0, reactions(reaction_index)%reversible), &
-        merge(1, 0, &
-          allocated(reactions(reaction_index)%third_body_efficiencies)), &
-        efficiency_size, &
-        size(reactions(reaction_index)%reactant_stoich), &
-        size(reactions(reaction_index)%product_stoich)
-      if (status /= 0) return
-      write(unit, '(*(es27.18e3,1x))', iostat=status) &
-        reactions(reaction_index)%reactant_stoich
-      if (status /= 0) return
-      write(unit, '(*(es27.18e3,1x))', iostat=status) &
-        reactions(reaction_index)%product_stoich
-      if (status /= 0) return
-      write(unit, '(*(es27.18e3,1x))', iostat=status) &
-        reactions(reaction_index)%forward_rate%pre_exponential, &
-        reactions(reaction_index)%forward_rate%temperature_exponent, &
-        reactions(reaction_index)%forward_rate%activation_energy, &
-        reactions(reaction_index)%low_pressure_rate%pre_exponential, &
-        reactions(reaction_index)%low_pressure_rate%temperature_exponent, &
-        reactions(reaction_index)%low_pressure_rate%activation_energy, &
-        reactions(reaction_index)%high_pressure_rate%pre_exponential, &
-        reactions(reaction_index)%high_pressure_rate%temperature_exponent, &
-        reactions(reaction_index)%high_pressure_rate%activation_energy
-      if (status /= 0) return
-      write(unit, '(i0)', iostat=status) &
-        merge(1, 0, reactions(reaction_index)%troe%enabled)
-      if (status /= 0) return
-      write(unit, '(*(es27.18e3,1x))', iostat=status) &
-        reactions(reaction_index)%troe%alpha, &
-        reactions(reaction_index)%troe%temperature_3, &
-        reactions(reaction_index)%troe%temperature_1, &
-        reactions(reaction_index)%troe%temperature_2
-      if (status /= 0) return
-      if (reactions(reaction_index)%kind==reaction_kind_sri.or. &
-          reactions(reaction_index)%kind==reaction_kind_sri_activated) then
-        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%sri
-        if (status/=0) return
-      end if
-      if (reactions(reaction_index)%kind==reaction_kind_tsang.or. &
-          reactions(reaction_index)%kind==reaction_kind_tsang_activated) then
-        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%tsang
-        if (status/=0) return
-      end if
-      if (reactions(reaction_index)%kind==reaction_kind_chebyshev) then
-        write(unit,'(2(i0,1x))',iostat=status) reactions(reaction_index)%chebyshev_shape
-        if (status/=0) return
-        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%chebyshev_bounds
-        if (status/=0) return
-        write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%chebyshev
-        if (status/=0) return
-      end if
-      if (reactions(reaction_index)%kind==reaction_kind_plog) then
-        write(unit,'(i0)',iostat=status) reactions(reaction_index)%plog_count
-        if (status/=0) return
-        do plog_index=1,reactions(reaction_index)%plog_count
-          write(unit,'(*(es27.18e3,1x))',iostat=status) reactions(reaction_index)%plog(:,plog_index)
-          if (status/=0) return
-        end do
-      end if
-      if (allocated(reactions(reaction_index)%third_body_efficiencies)) then
-        write(unit, '(*(es27.18e3,1x))', iostat=status) &
-          reactions(reaction_index)%third_body_efficiencies
-        if (status /= 0) return
-      end if
-    end do
-    write(unit, '(a)', iostat=status) "CHEMISTRY_CONTROLS"
-    if (status /= 0) return
-    write(unit, '(*(es27.18e3,1x))', iostat=status) &
-      relative_tolerance, absolute_tolerance
-    if (status /= 0) return
-    write(unit, '(a)', iostat=status) "END_"//trim(context_marker)
-  end subroutine write_selected_checkpoint_context
 
   subroutine read_selected_checkpoint_context( &
       unit, reactions, bundle_sha256, chemistry_integrator, &
@@ -2301,12 +2195,13 @@ contains
   end subroutine checkpoint_levels_synchronized
 
   subroutine checkpoint_temperature_is_consistent( &
-      species, state, temperature, consistent)
+      species, state, temperature, consistent,internal_energy_density)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     logical, intent(out) :: consistent
 
     real(dp), allocatable :: recovered_temperature(:, :, :)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
     logical :: local_ok
 
     consistent = .false.
@@ -2314,7 +2209,7 @@ contains
       size(state, 2), size(state, 3), size(state, 4)))
     call recover_reactive_temperatures_3d( &
       species, state, temperature, size(state, 2), size(state, 3), &
-      size(state, 4), recovered_temperature, local_ok)
+      size(state, 4), recovered_temperature, local_ok,internal_energy_density=internal_energy_density)
     if (.not. local_ok) return
     consistent = all(checkpoint_real_matches( &
       temperature, recovered_temperature))

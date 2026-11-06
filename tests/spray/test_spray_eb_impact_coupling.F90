@@ -156,7 +156,8 @@ program test_spray_eb_impact_coupling
     call require(ok,'KH source update')
     if(mode==3) then
       call require(size(drops)==4.and.size(films)==1.and.last_id==104,'wall takes precedence over KH')
-      call require(all(drops%khrt_initial_count==0),'splash children have no KH pending inventory')
+      call require(all(drops%khrt_initial_count==drops%multiplicity).and.all(drops%khrt_shed_volume==0), &
+        'splash children initialize their own KH count and empty shed inventory')
     else
       call require(size(drops)==5.and.last_id==104.and.size(films)==0,'KH four-child release')
       call require(all(drops(2:)%id==[101_int64,102_int64,103_int64,104_int64]),'KH retired ID preservation')

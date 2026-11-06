@@ -1,5 +1,325 @@
 # Completion roadmap
 
+## Completion gates for the CPU/MPI release
+
+The next release target is an explicitly scoped CPU/MPI alternative to the
+pinned PeleC revision below. Algorithm compatibility and physical validation
+are separate gates. GPU execution, new models beyond the pinned reference,
+and fuels outside the selected mechanism contract require their own scope
+decision; they must not silently enlarge this release or be called supported.
+The following gates own the remaining work. The chronological detail below
+is supporting evidence, not a list of new implementation tasks.
+
+| Gate | Responsibility and existing starting point | Required evidence to close the gate |
+| --- | --- | --- |
+| C0: freeze scope and source | `references/pelec_baseline.json`, `docs/pelec_mapping.md`, current source including uncommitted/untracked numerical files | Reconcile stale mapping entries with current code; list required operators, application paths and explicit exclusions. Record source/dependency/input hashes and the observable, time, scale and tolerance for each acceptance case before comparison. |
+| C1: reacting mesh integration | `cases/reactive_eb_tree_3d`, held-MOL native recovery, `check_eb_tree_reacting_restart.py` | Actual reacting H2/O2/N2 evolution through common/recursive steps, conservative regrid and changed-rank restart, independent gas/element/UEINT inventories, and transactional refusal. Nonzero-material partial recovery and prepared/routed sources still require distinct cases. |
+| C2: fixed-reference trajectories | Existing Sod/HIT, `check_amr_tree_mol_reference.py`, gas transport and chemistry oracles | Matched gas/species time histories for required hydro, reaction, transport, boundary and AMR/EB combinations, plus mesh/time convergence. Preserve the original pinned solver as the authority; diagnostic variants are not replacement baselines. |
+| C3: coupled particles and LES | `cases/spray_reference`, `cases/spray_jet_3d`, `cases/spray_a_reference_3d`, existing LES comparisons | Resolve gas and particle trajectory differences; progress from single-drop exchange to nonreacting breakup/AMR/walls and then reacting spray. Complete the declared duration and audit gas, liquid, wall and exterior budgets. |
+| C4: research and resource envelope | Selected fuel mechanism and declared production case | Specify fuel/conditions/observables; establish physical comparison separately from parent-solver agreement. Measure runtime, peak memory, parallel scaling and output/restart cost at useful mesh/particle sizes. |
+| C5: reproducible release | Existing serial/MPI, selected chemistry, optional CVODE and install workflows | Rerun the required configuration matrix and installed applications at one source identity, including rank-changing restart; report failures/skips and resolve licensing before distribution. |
+
+C2's smallest matched comparisons accompany C1 fixes rather than waiting
+until integration is finished. C3 follows its dependency cases; broad C5
+qualification follows numerical stabilization. Existing implementation is
+reused, not rebuilt merely because an older mapping row says "not started".
+
+
+### C2 evidence routing and open comparisons
+
+This table routes the existing cases to their authority; it is not a new,
+smaller release matrix. C0 must still freeze required combinations. A checker
+being implemented, an old pass, an isolated diagnostic and a current
+source-bound trajectory are separate evidence classes.
+
+| Comparison family | Contract / checker | Current boundary and required next evidence |
+| --- | --- | --- |
+| Regular hydro/HIT and two-level nonreacting MOL | `tools/check_hit_evolution_reference.py`, `references/pelec_amr_mol.json`, `tools/check_amr_tree_mol_reference.py` | Reuse frozen source/input hashes and all declared clock/iteration cases. The 2026-10-28 current-source serial four-case audit passes MOL1 with common/recursive clocks, but MOL2 fails both (maximum scaled difference about 3.4e-4; native mass drift about -1e-6 while PeleF conserves). See [the audit](validation/amr-mol-reference-20261019.md). An isolated native one-expression registration correction removes both differences to roundoff while preserving MOL1 outputs; the original reference remains unchanged and failed. This register/conservation conflict remains open and is separate from reacting EB. |
+| Reacting regular AMR | `references/pelec_tgreact_amr.json`, `tools/check_tgreact_amr_reference.py` | Current-source serial MOL2 common/recursive clocks with imported/computed initial reaction history pass the original four-time field and inventory gates through 300 ns with transport off and with pinned Simple molecular transport; see [the dated comparison](validation/tgreact-amr-reference-20261019.md). The corrected ordinary old-state/pressure path passes the original n8 and n16 recursive transport gates through 300 ns; serial/MPI exact tests and rank-changing restart pass. The previous 13-gate n8 failure remains dated diagnostic evidence. A fresh GNU/OpenMPI n8 recursive probe passes the original reference gates for MPI2/MPI3 and imported/computed histories, with serial byte identity. Common-clock MPI3, recursive n16 and n8/dt25-ns comparisons also pass. Stationary adiabatic slip/no-slip x-wall serial/MPI controls pass original field and boundary-ledger gates; n8 no-slip covers both clocks. First-order extrapolation x boundaries pass n4 recursive serial/MPI3 field and open-inventory checks with transport off/on, plus n8 transport with common/recursive clocks. Stationary 500 K isothermal no-slip x walls pass n4/n16 recursive and n8 common/recursive serial/MPI3 original gates through 300 ns, with exact serial/MPI state/budget CSVs. Temporal self-differences decrease at n8, but n4/n8/n16 energy/temperature evolution differences increase in both solvers and peak at the wall; spatial convergence remains open. A 2050 K wall control separates the remaining interface error: first-predictor pressure sensitivity traces to density-extremum shared interpolation limiting; 96 same-input slopes match the pinned AMReX kernel exactly. This bounded shared-policy finding does not close spatial convergence or authorize changing the reference method. The subsequent n32/2050 K failure is resolved by matching total-energy transport primitives and no-slip tangential ghost reflection. Corrected n8/n16/n32 comparisons pass original trajectory gates through300 ns; n16 serial/MPI and n32 MPI/isolated serial outputs are exact. The wall-transport MOL rank-changing restart also passes with explicit covered-energy-reset checkpoint validation. Corrected z-momentum increment Linf remains nonmonotone at100/200 ns in both solvers; the matched dt50-ns three-grid study also passes reference gates but retains that nonmonotonicity. Paired stage/face-pressure and native-donor diagnostics identify shared component limiting of ghost normal velocity. An isolated independent-momentum control has decreasing all-field state/increment L1/Linf grid differences and passing conservation through300ns, but fails original reference limits and is not adopted. The shared default remains unchanged; extrapolation n4/n8/n16 passes trajectory and candidate open-ledger gates, but density/energy/temperature increment maxima remain nonmonotone at physical boundary cells. A matched zero-initial-velocity control passes reference gates and greatly reduces those maxima, but leaves nonmonotone interface density/energy/temperature maxima. Nonreacting controls and exact stage/flux replay isolate a species-transport pressure response under the held-energy reset. An initial-symmetry transport-ghost intervention nearly removes the first-predictor pressure mismatch but reduces the100-ns momentum difference by only28%; it is diagnostic and unadopted. The n32/dt50ns outflow trajectory and MPI3 comparison pass original gates with14 exact serial CSVs;8/16/32 maximum norms decrease at250/300ns but retain early-time nonmonotonicity. Earlier failures remain dated evidence. Explicit isothermal slip now passes bounded n4/500 K common/recursive serial/MPI3 reference gates and fixed/selected application/restart checks. Its n8/n16 reference gates also pass with exact serial/MPI outputs, but the500 K wall spatial audit remains nonconvergent. Convergence evidence remains open, alongside extrapolation and other thermal-wall convergence, other open prescriptions and moving walls. EB agreement cannot substitute for this family. |
+| Reacting planar EB-AMR | `references/pelec_tgreact_eb_amr.json`, `tools/check_tgreact_eb_amr_reference.py`; [application evidence](validation/eb-full-cvode-application-20261024.md) | Distinguish the reference probe from the actual application, and canonical from native-activation compatibility. Serial n32/12.5-ns/200-ns evidence is bounded; n32/6.25-ns field failures and maximum-norm convergence remain open. |
+| CPU/MPI trajectory equivalence | Shared EB-tree frontend, selected mechanism identity and the same native field/inventory authority | Focused n8 serial/MPI/rank-changing restart exists. The frozen activation-compatible n32 MPI2/12.5-ns/200-ns run passes all 17 original native field comparisons, serial byte identity, clocks and inventory; independently rechecked in `build/pelef-mpi2-time12-activation200-ordinary-20261028/verified.json`. This is not a fresh current-source release matrix, and the short-step/convergence gates remain open. |
+| Temporal/spatial convergence | `tools/analyze_eb_temporal_convergence.py`, `tools/compare_tgreact_eb_meshes.py`, frozen parent references | Declining weighted norms and a localized shared-limiter sensitivity do not close nonmonotone maximum norms or failed original trajectory limits. Diagnostic native variants never replace the pinned authority. |
+
+The newest pressure/source/halo/flux/chemistry controls are maintained only in
+the dated application record. Do not repeat arbitrary tolerance/rounding
+sweeps solely to obtain a favorable member of the n32 family. Progress on
+independent C2 obligations does not remove that family's unresolved gates.
+
+The regular serial/MPI application now independently initializes fresh MOL
+reaction history with level clocks and preserves restored checkpoint history.
+The computed-history TGReact comparison and selected LiDryer continuation pass
+([initialization record](validation/mol-initial-reactions-20261019.md)).
+The gas EB startup connection also passes fluid-mask/rollback and recursive
+reacting regrid/changed-rank continuation checks
+([EB initialization](validation/eb-initial-reactions-20261019.md)).
+Remaining C1/C2 work includes matched spatial reaction/transport evolution
+with refinement/convergence; the nonreacting MOL2
+register/conservation difference remains open.
+The ordinary nonrotating EB-AMR comparison now passes the original pinned
+300 ns field/budget gates after consistent total-energy pressure recovery for
+faces and walls. Focused serial/MPI/restart tests pass; fixed-reference
+mesh/time convergence remains open
+([current evidence](validation/eb-default-localization-20261023.md)).
+The earlier diagnostic progression below records why intermediate corrections
+alone did not close those field gates.
+Ordinary held serial/MPI closure now connects the missing flux re-reflux
+redistribution even with NoRedist. At 300 ns this reduces density error by
+about 72 times and x-momentum error by about 10 times, but the field gate
+still fails ([re-reflux correction](validation/eb-no-redist-rereflux-20261019.md)).
+Connected held-MOL coarse/fine halo interpolation now matches initial native
+conserved values to roundoff in the diagnostic; endpoint maxima are nearly
+unchanged ([halo correction](validation/eb-mol-linear-halo-20261019.md)).
+Ordinary held transport now uses the full spatially interpolated neighborhood,
+with serial/MPI restart checks passing, but endpoint field gates remain open.
+Primitive energy substitution alone did not improve the coupled trajectory.
+Transport centroid reconstruction with conservative species/enthalpy limiting
+and two-sided interface viscous gradients are now implemented and checked.
+Fine-level total/held-energy reset timing after parent re-reflux is now
+corrected in ordinary reacting NoRedist MOL, with actual held EOS and repair
+fallback preserved. First-step field limits pass; the 300 ns temperature
+error falls to `1.10e-4 K`, but twelve later density/momentum/energy limits
+still fail ([evidence](validation/eb-energy-sync-20261020.md)). Importing the
+native 100 ns state and reaction history reproduces nearly the same next-step
+error; accumulated startup/history error is not its main cause. Covered coarse donor
+energy is now repaired after restriction and retained through driver entry/
+exit; its gap is at roundoff, but the twelve field failures remain nearly
+unchanged ([record](validation/eb-covered-energy-20261020.md)). A native diagnostic
+using UEINT consistently for spatial pressure and transport temperature now
+satisfies every original field limit through 300 ns. This identifies the
+dominant remaining gap as the spatial energy-policy difference
+([record](validation/eb-held-policy-20261020.md)); it does not close the
+unmodified pinned-reference gate. Keep that gate open and preserve the
+held-energy cancellation contract rather than making further flux/reset
+changes merely to erase this policy difference. A completed 100/50/25 ns
+study finds observed orders near 1.1--1.2 in both implementations; the 1.2
+microsecond trajectory retains conservation but fails O2/H2O field limits
+from 1.0 microsecond ([record](validation/eb-temporal-study-20261020.md)).
+The native activation-energy conversion is now isolated: an explicitly
+generated compatibility mechanism removes all six longer O2/H2O exceedances
+against held-EOS native through 1.2 microseconds, without altering the
+canonical mechanism ([record](validation/eb-native-activation-20261020.md)).
+The variable-grid 16-cubed pilot passes through 100 ns with 50 ns root steps
+([record](validation/eb-mesh-pilot-20261021.md)). The common-50-ns 8/16 pair and
+conservative fluid-volume restriction now separate initial sampling from
+evolution differences ([record](validation/eb-mesh-restriction-20261021.md)).
+The 8/16/32 diagnostic now passes all field and budget gates through 100 ns
+with explicit tighter chemistry and caloric inverse controls. Forced-CVODE
+admission and temperature-residual amplification have focused corrections
+([EOS record](validation/eb-eos-convergence-20261021.md),
+[forced-reactor record](validation/eb-forced-cvode-20261021.md)).
+Observed evolution orders are not uniformly second order. The fixed 33-point
+profile explains its first-order initial-temperature differences. The separate
+129-point cosine-profile study passes all three grids and restores near-second
+order endpoint temperature/density/H2O, but gas evolution-increment orders
+remain about 1.1--1.5 in both solvers. Regional saved-field analysis does not
+localize the discrepancy solely to the wall. Separate temporal, limiter and
+refinement-interface effects before assigning the remaining order loss,
+keeping the frozen-profile result intact
+([three-grid record](validation/eb-three-grid-20261021.md)).
+Fixed 8/16 meshes now also pass 50/25/12.5 ns time refinement. Observed
+temporal orders remain near one in both solvers, while quartering the step
+changes density/energy/temperature spatial differences by less than 1%.
+Initial-flow, limiter and interface effects therefore remain the next
+spatial diagnostics ([time record](validation/eb-smooth-time-refinement-20261021.md)).
+The initially stationary control passes 8/16 but exposes 19 field-limit
+failures at 32. Saved coarse stencils show shared-limiter sensitivity to
+near-zero transverse momentum.
+Resolve this case before claiming robust spatial agreement
+([stationary record](validation/eb-stationary-control-20261021.md)).
+Live-stage intervention and a matched diagnostic ablation now identify
+shared momentum limiting as the stationary first-step amplification mechanism.
+An opt-in [bounded momentum kernel](design_decisions/eb-halo-momentum-limiter.md)
+now reaches common/recursive held MOL. Kernel/operator, serial/MPI retry and
+full-history replay checks pass, including policy mismatch refusal. Application
+input/checkpoint dispatch and fixed/selected common/recursive lifecycle checks
+pass, including changed-rank restart and policy-mismatch refusal
+([application evidence](validation/eb-momentum-application-20261021.md)).
+The stationary matched-candidate 8/16/32 field comparison passes, but
+evolved temperature/energy orders are only 0.26/0.46; endpoint near-second
+order is dominated by initial restriction differences. Most evolved error
+lies near coarse-fine interfaces and cut cells
+([spatial diagnostic](validation/eb-momentum-stationary-mesh-20261021.md)).
+Candidate convergence and adoption remain open. Halving the step changes
+8/16 evolved temperature/energy differences by less than1%; further blind
+grid sweeps are not the next action. The next focused C2 discriminator is
+an initial spatial-operator audit: capture coarse-fine ghost pressure and
+normal mass/momentum/energy fluxes before chemistry, correlate them with the
+covered-coarse restriction pressure difference, and compare periodic interface
+and cut-cell controls. Preserve conservative restriction and the original
+reference path; change numerical policy only after this isolates a cause.
+The initial production-operator audit is now implemented and the eight
+8-grid controls complete. Nonuniform interfaces have a 0.275 Pa halo pressure
+offset before chemistry, with mass flux strongly correlated with pressure
+jump; the disturbance persists without cut cells and vanishes for uniform
+states. Initial shared/separate momentum results coincide. Covered-coarse
+held-EOS pressure and stored-temperature pressure differ, so the next step is
+a conservative restriction/interpolation stencil audit using the actual EOS,
+not a pressure reset ([initial audit](validation/eb-initial-interface-20261021.md)).
+The independent stencil reconstruction now reproduces all adjacent gas/held
+halos exactly, with child-mean and fluid-volume restriction errors below
+2.5e-16. The worst interpolated EOS pressure falls below all donor/neighbor
+pressures; EOS-consistent temperature guesses do not change it. A regular
+control with recomputed conservative restriction retains the pressure deficit.
+The next numerical candidate must therefore address thermodynamic pressure
+reconstruction while retaining conservation and spatial accuracy, rather than
+repairing donor indexing ([stencil audit](validation/eb-initial-stencil-20261021.md)).
+A common conservative pressure-envelope slope contraction was also tested:
+it suppresses 48/128 planar linear stencils nearly to PCM (minimum factor
+1.81e-8). It is not adopted on the strength of pressure boundedness alone;
+retain resolved spatial gradients in the next thermodynamic reconstruction.
+A paired spatial-pressure diagnostic now retains interpolated density,
+momentum and species, but derives covered coarse pressure from volume-averaged
+fine EOS pressure and reconstructs auxiliary energies on both sides of the
+interface. The planar initial energy-flux mismatch falls from64.98 to9.52e-8
+W/m2; fine-only pressure repair instead worsens it to203.57 W/m2.
+This is an operator-local policy experiment, not conservative energy
+prolongation or application adoption. Qualify time evolution, reflux and
+held-energy work before threading it through serial/MPI applications
+([pressure representation](validation/eb-pressure-ghost-20261021.md)).
+The paired candidate now also passes a private 50 ns forward-Euler hydro
+increment with production gas/scalar reflux on stationary and three moving
+controls. Composite mass/energy/species errors stay below6.5e-15 and held
+energy below2.3e-15. Stationary pressure remains at roundoff; moving pressure
+offsets improve fromabout0.0196 Pa to0.000327/0.000104 Pa. This advances the
+one-step conservation discriminator only; repeated staged hydro and actual
+held-MOL/reacting closure remain next
+([one-step record](validation/eb-pressure-step-20261021.md)).
+The paired diagnostic now reevaluates both stages of synchronous SSPRK2.
+Stationary equilibrium holds through200 ns and moving pressure error is
+0.001247 Pa versus0.061235 Pa originally, with closed composite inventories.
+However, local E-H-KE gaps accumulate and largely cancel in the global sum;
+the completed50/25 ns equal-endpoint comparison changes pressure by0.0053%
+and local energy gap by-0.56%, so time-step reduction does not remove it. Route this through actual
+held closure with explicit numerical-energy accounting before application
+adoption ([staged diagnostic](validation/eb-pressure-evolution-20261022.md)).
+The existing cell dual-energy reset is now tested after accepted diagnostic
+RK steps with signed and absolute correction ledgers. It closes the local
+E-H-KE identity and passes correction-accounted budgets, while moving pressure
+error stays0.001247 Pa. Residual pressure error is therefore not cured by
+reset alone. Full prepared-MOL/re-reflux and spatial-accuracy qualification
+remain open ([reset diagnostic](validation/eb-pressure-reset-20261022.md)).
+Cell-history localization now places the paired moving residual on the coarse
+level, with nearly equal cut/full-cell maxima. A regular geometry ablation
+retains the error; coarse advection versus interface synchronization on a
+consistent smooth initializer is the next discriminator
+([localization evidence](validation/eb-pressure-location-20261022.md)).
+A smooth 900 K H2/N2 contact now passes initial restriction to4.41e-16.
+It preserves pressure through the first Euler stage but develops a fine
+pressure error during the second spatial update, followed by a coarse
+interface error during synchronization. Initial paired pressure alone is
+therefore insufficient: audit stage-updated material/held flux consistency
+before production adoption
+([stage synchronization record](validation/eb-pressure-sync-20261022.md)).
+The paired pressure representation is now wired into ordinary serial/MPI
+common and recursive held MOL with explicit policy/restart admission
+([application integration](validation/eb-pressure-application-20261022.md)).
+Time-consistent recursive ancestor history is implemented; see the
+[recursive/native MOL evidence](validation/eb-pressure-recursive-20261022.md).
+The bounded nonisothermal pressure-refinement check is now complete:
+8/16/32 pressure errors decrease from 0.001271 to 0.0001390 to 0.00001456 Pa
+with closed correction-accounted budgets
+([mesh evidence](validation/eb-pressure-mesh-20261022.md)).
+The reacting reference comparison is now executed and fails the unchanged
+field gates; paired temperature difference is 0.239 K versus 0.000110 K
+for the default. The four-policy ablation places the dominant departure at separate momentum
+(0.241 K), with consistent velocity and paired pressure slightly reducing the
+temperature difference. Assess variable-velocity accuracy of that limiter
+before choosing a numerical correction
+([reacting evidence](validation/eb-pressure-reacting-20261022.md)).
+Recorded-stencil replay now confirms the limiter formulas to 1.12e-16;
+48/384 scalar factors change when resolved momentum is excluded, while
+initial coarse/fine flux mismatch decreases
+([attribution](validation/eb-momentum-attribution-20261022.md)).
+Keep original-policy parity and candidate accuracy as separate gates. The
+analytic shear 8/16/32 four-policy comparison is now complete: most integrated
+errors improve with momentum separation, but z-momentum L2 and transverse
+Linf behavior leave all-field convergence open
+([analytic results](validation/eb-shear-analytic-20261022.md)).
+The 16-grid localization/time-step/regular comparison is complete: maxima
+remain coarse/fine-adjacent, paired cut-case maxima change less than 0.3% on
+time halving, and regular geometry reduces candidate maxima without removing
+them. Next separate coarse/fine reconstruction/flux effects from wall coupling
+using operator-local evidence; the regular ablation also changes fluid volume
+and wall position. The completed initial operator audit finds zero transverse
+rates and roundoff-level halo pressure errors for all eight cases, but nonzero
+streamwise/density/energy rates. The first-step trace now brackets resolved pressure error between the first
+fine spatial exit and the next predictor spatial entry, before closure/reflux.
+The sampled cellwise predictor balance now closes to roundoff and attributes
+99.4–99.9% of representative pressure drops to density change before recover;
+the reset leaves rho/H/pressure unchanged. The saved six-face balance reproduces the density change entirely through
+the x coarse/fine face; cut ghosts retain the parent mean because the pinned
+3x3x3 connectivity guard disables tangential interpolation near the wall.
+The isolated connected-direction candidate completed one root step: all
+nonzero cut-field norms improve with momentum separation, regular outputs
+match and budgets pass, but default y-momentum L2 worsens 5.47%. The completed 200 ns 8/16/32 comparison confirms decreasing separated-policy
+L1/L2 errors, but y-momentum Linf is nonmonotone and z-momentum Linf convergence
+is weak. The optional planner kernel passes its focused test. Application dispatch and lifecycle/policy identity are implemented behind
+a false-default selector requiring separate momentum; all nine focused integration
+checks pass, as recorded in the [application record](validation/eb-connected-application-20261022.md). The planner now rejects disconnected retained diagonals; sphere
+and corner donor-enumeration tests pass, but general geometry flow accuracy
+and volume-weighted reconstruction conservation remain unqualified;
+The production serial recursive 16-cell/50 ns cut/regular comparison matches
+all 32 diagnostic tables against the candidate (enabled) or original (default),
+with budgets below 6.06e-14 ([evidence](validation/eb-connected-shear-integration-20261023.md));
+local-error convergence remains an explicit open gate. The saved maxima
+separate cut-plane y errors from full-volume x/z-interface z errors; next
+compare directional pressure/flux differences at those two locations before
+changing the limiter ([audit](validation/eb-shear-local-convergence-20261023.md)). Do not tune the limiter solely to match the pinned policy.
+The smooth-contact defect is now traced to independently limited density and
+momentum: fine halos violate constant velocity by0.0888 m/s. A further opt-in
+interpolator couples advected momentum to the limited density slope and limits
+relative momentum. In the paired diagnostic it reduces the200 ns pressure
+offset from0.0015503 Pa to2.91e-11 Pa, with conserved child averages and closed
+composite budgets. Existing policy histories remain unchanged. Carry this
+candidate through full held-MOL and nonuniform-temperature/cut controls before
+application exposure ([velocity correction](validation/eb-contact-velocity-20261022.md)).
+Planar cut-cell controls now retain the smooth isothermal contact to2.91e-11 Pa
+with the velocity candidate. The imported nonuniform-temperature control
+remains at0.001247 Pa with or without it, despite closed budgets. Separate
+thermal reconstruction/mixing error from the solved constant-velocity defect
+before treating the candidate as a general interface correction
+([cut-cell controls](validation/eb-velocity-cut-20261022.md)).
+A flux-free local EOS discriminator now shows that conservative mixing of
+nonisothermal donors alone produces0.001004 Pa pressure departure; equalizing
+composition retains it, while equalizing temperature reduces it to roundoff.
+This is not a decomposition of the MOL trajectory and does not close its field
+gate. Preserve the explicit energy budget when qualifying thermal pressure
+behavior; do not equate all nonzero pressure error with faulty synchronization
+([mixing discriminator](validation/eb-thermal-mixing-20261022.md)).
+The velocity-consistent candidate is now threaded through ordinary serial/MPI
+held-MOL hydro/transport halos, common/recursive stages, retry and replay
+policy identity, and application restart metadata. Fixed/selected common and recursive lifecycle, selected hot reacting,
+regrid and2-to-3-rank restart checks pass. Pressure reconstruction remains
+separate and diagnostic-only; physical/reference pressure convergence is
+still open ([application integration](validation/eb-velocity-application-20261022.md)).
+Default reference interpolation is unchanged.
+The opt-in caloric mode is also exposed in the ordinary EB-tree namelist;
+selected-mechanism serial/MPI regrid/restart and policy-mismatch refusal pass
+([application record](validation/eb-eos-application-20261021.md)).
+Establish asymptotic time/spatial
+convergence with explicit energy and mechanism conventions; the current time
+trend is not second order. Keep the original-reference result separately
+visible. Extend inlet and
+missing same-level spatial stencils beyond their current PCM fallback separately.
+
+The first new application gate uses a reactive H2/O2/N2 mixture rather than
+the pure-N2 chemistry-path control. It must demonstrate a nonzero chemical
+change and a reaction-off intervention, not just enable a chemistry flag.
+Its small mesh and short duration do not qualify ignition, production AMR,
+native partial-source recovery, or fixed-PeleC trajectories.
+
+For each numerical increment, retain one reproducible failure or missing
+capability, the smallest necessary change, and its acceptance result. Report
+which gate advanced. A new low-level recovery branch must identify the
+required application case it enables. Conservation-preserving deviations
+from upstream cleanup need their own activation/convergence evidence; do not
+silently treat them as exact algorithm parity or weaken their checks.
+
+Long jobs retain a process identity, immutable input/source identity, logs
+and a completion/resume condition. Work on independent checks while they
+run; when only waiting remains, hand back the job record without repeated
+polling. Elapsed days do not reset the completion plan.
+
 ## Definition and frozen reference
 
 A selected PeleC responsibility is complete only when it has an independent
@@ -11,6 +331,36 @@ The reference is PeleC `development`
 `bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8`; recursive dependencies are pinned in
 [the manifest](../references/pelec_baseline.json). Changing that baseline must
 identify affected numerical signatures and acceptance criteria.
+
+Ordinary held MOL has [full-root replay evidence](validation/native-mol-root-replay-20261011.md),
+[joint gas/UEINT spatial-weight evidence](validation/native-mol-weighted-root-replay-20261011.md)
+and [sub-parent replay evidence](validation/native-mol-subparent-replay-20261012.md).
+Explicit observed windows now restore ancestor clocks/endpoints and open
+parent families. Native current-stock admission now resolves the observed
+future-fine root refusal and qualifies actual nonzero gas/UEINT receipt payment;
+see the [funding record](validation/native-mol-future-source-funding-20261012.md).
+Explicit frozen root/first-fine replay with nonzero material pending receipts
+now has [full-mechanism evidence](validation/native-mol-material-replay-20261013.md).
+Automatic weighted recovery of completely observed ordinary held MOL parent
+windows now has [natural closure evidence](validation/native-mol-automatic-parent-20261014.md).
+Selected common-clock [observed-source capture](validation/native-mol-source-prefix-20261014.md)
+now retains the actual gas/UEINT packets without future entries. Explicit
+[common-clock consumption](validation/native-mol-prefix-consumer-20261015.md)
+rebuilds spatial operators and evaluates newly reached stages once. Recursive
+common-clock retries now have [retry and rollback evidence](validation/native-mol-recursive-prefix-retry-20261015.md).
+Successful partial single-root recovery now has
+[serial/MPI inventory and rollback evidence](validation/native-mol-partial-root-recovery-20261016.md).
+Partial root recovery now completes descendants with
+[composite inventories and late-child rollback](validation/native-mol-partial-descendants-20261016.md).
+Partial leaf fine-clock recovery under an open root now has
+[mixed-leaf serial/MPI and explicit-prefix evidence](validation/native-mol-partial-fine-20261016.md).
+Partial sub-parent clocks with descendants and continuation from a
+complete-clock prefix now have [focused evidence](validation/native-mol-window-prefix-20261018.md).
+The next gates are broader partial-window replacement and accepted partial
+recovery with nonzero pending material funding. Automatic nonzero-material
+sub-parent recovery now has [controlled three-level evidence](validation/native-mol-automatic-material-20261014.md).
+Prepared/routed consumers, broader material debt topologies and pinned solver
+trajectories remain separate completion gates.
 
 The pinned reference rejects non-regular EB cells for Smagorinsky, Dynamic,
 WALE and Vreman LES. Cut-cell LES is therefore a future model extension, not a
@@ -61,11 +411,18 @@ Forced chemistry now carries rotating energy and density forcing
 ([reaction evidence](validation/rotating-reaction-20260927.md)).
 Serial transport and embedded-wall energy adapters are connected
 ([transport evidence](validation/rotating-transport-20260927.md)).
-Complete the fixed-reference 3D MOL path through MPI owner-local transfer/stepping, conservative remapping, timestep selection,
-boundary/initial states, budgets and checkpoint identity. Frame axis, origin
-and angular speed must agree across ranks and restarts. Coupled-physics time integration
-and application support remain open; source/flux kernel agreement alone does
-not satisfy this responsibility.
+MPI owner-local transfer/stepping, conservative remapping, timestep selection,
+boundary/initial states, budgets and checkpoint identity now carry the frame in
+the serial and MPI gas applications. Frame axis, origin and angular speed must
+agree across restarts. MPI EB spray now converts particle/film sampling and
+deposition, LES states, inventories, injection and outflow to rotating energy.
+The pinned [particle setup](https://github.com/Pele-Suite/PeleC/blob/bf0e1fd15040f0f5609cd9042b9f1b868e0e95f8/Source/Particle.cpp)
+passes constant external forcing to the pinned
+[droplet update](https://github.com/Pele-Suite/PelePhysics/blob/6e8026fc6ed121c07e32c9d3fe1d1c919bafc64b/Source/Spray/Drag.H);
+the inspected path has no position-dependent rotating particle force. Compare
+particle trajectories and complete boundary/force ledgers against that fixed
+behavior before deciding whether any extension is needed. Source/flux
+kernel agreement alone does not satisfy this responsibility.
 
 ## Consolidation versus solver completion
 

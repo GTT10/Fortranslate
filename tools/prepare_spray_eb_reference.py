@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 from check_mechanism_provenance import check
-from pelephysics_transport_import import regenerate_simple_transport
+from pinned_eos_reference import reference_eos_options, reference_fuel_temperature
 
 
 def main():
@@ -33,8 +33,8 @@ def main():
             or bundle['reactions'] != [] or bundle['species'] != ['NC7H16', 'O2', 'N2']
             or bundle['source']['sha256'] != mechanism['files']['yaml']['sha256']):
         raise ValueError('Expected pinned reaction-free heptane bundle')
-    if bundle.get('simple_transport') != regenerate_simple_transport(bundle, args.bundle.parent):
-        raise ValueError('Pinned Simple transport fits required')
+    eos = reference_eos_options(bundle, args.bundle.parent)
+    fuel_reference_temperature = reference_fuel_temperature(source['example.inp'])
     lines = source['initspraydata_3d.dat'].decode().splitlines()
     if int(lines[0]) != 5 or len(lines) != 6:
         raise ValueError('Expected five upstream initial particles')
@@ -77,6 +77,9 @@ def main():
  time_step=1e-7,final_time={fmt(args.final_time)},maximum_steps=100000,maximum_step_retries=12,
  time_integrator='sdc',mol_mode=.true.,sdc_iterations=2,automatic_timestep=.true.,hydro_cfl=.3,
  chemistry_enabled=.false.,transport_enabled=.true.,simple_transport_enabled=.true.,
+ pinned_eos_extrapolation=.true.,
+ pinned_eos_temperature_min={fmt(eos['pinned_eos_temperature_min'])},
+ pinned_eos_temperature_max={fmt(eos['pinned_eos_temperature_max'])},
  hydro_method='plm_ctu',riemann_solver='pelec',redistribution='state_redist',
  boundary_faces=4*'no_slip_wall',2*'periodic',
  embedded_wall_temperature=1500,embedded_noslip=.true.,
@@ -97,7 +100,7 @@ def main():
  particle_options%mixture_time_scheme='euler',
  nc=1,number=1,vapor_names(1)='NC7H16',fractions(1)=1,
  densities(1)=693,heat_capacities(1)=2248.3,
- reference_temperatures(1)=300,reference_pressures(1)=101325,latent_heats(1)=363000,
+ reference_temperatures(1)={fmt(fuel_reference_temperature)},reference_pressures(1)=101325,latent_heats(1)=363000,
  mixture_vapor_pressure_models(1)='antoine',
  mixture_antoine_coefficients(:,1)=4.02832,1268.636,-56.199,1e5,
  mixture_antoine_temperature_ranges(:,1)=300,371.6,
@@ -118,6 +121,7 @@ def main():
         adaptations.append('Changed final time for connection check')
     (args.output/'preparation.json').write_text(json.dumps(dict(
         reference=manifest, bundle_sha256=hashlib.sha256(args.bundle.read_bytes()).hexdigest(),
+        eos=eos, fuel_reference_temperature_K=fuel_reference_temperature,
         cells=n, final_time_s=args.final_time, hydrodynamic_update="mol", initial_gas_temperature_K=1500,
         initial_pressure_Pa=1.01325e6, initial_mass_fractions=dict(O2=.233, N2=.767),
         plane_point_m=point, upstream_plane_normal=normal, particles=particles,

@@ -1,0 +1,47 @@
+{
+  "case": "Pinned TGReact: nonuniform LiDryer reacting planar EB-AMR, recursive MOL2, Simple molecular transport",
+  "steps": 3,
+  "dt_s": 1e-07,
+  "root_shape": [
+    8,
+    8,
+    8
+  ],
+  "domain_m": [
+    0.01,
+    0.01,
+    0.01
+  ],
+  "acceptance": {
+    "initial_scaled": 1e-11,
+    "temperature_absolute_K": 0.001,
+    "species_mass_fraction_absolute": 1e-07,
+    "density_scaled": 1e-08,
+    "energy_scaled": 1e-08,
+    "momentum_absolute_kg_m2_s": 1e-06,
+    "inventory_relative": 1e-10,
+    "energy_budget_relative": 1e-08,
+    "minimum_H2_consumption_fraction": 1e-06,
+    "H2_consumption_relative": 0.001,
+    "minimum_initial_temperature_span_K": 10,
+    "minimum_initial_speed_m_s": 1
+  },
+  "input_sha256": {
+    "inputs": "02916d66cb6014521c5712dbefccd4251dfdf1e5f516c70202f131e0b2cc5f76",
+    "profile.csv": "cb9d6f058f23430399d8d75b2448ace3897b4d716b62eb5ca9b4dbbc556334ef",
+    "grids.dat": "f224a51cd527b49114c83a69385f1cc4ce84e062b537401716ab8cd5b8b7cbcf"
+  },
+  "plane_z_m": 0.0033,
+  "fine_coarse_box": [
+    [
+      1,
+      1,
+      1
+    ],
+    [
+      4,
+      4,
+      4
+    ]
+  ]
+}

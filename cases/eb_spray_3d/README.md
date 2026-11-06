@@ -18,6 +18,10 @@ particle solver, binding gas and particle geometry. `level_set.dat` begins with
 cell counts and then nodal values in Fortran order (x fastest); positive is fluid.
 The supplied plane is x=1.25 mm in a 4 mm cube with 1 mm cells.
 
+For `redistribution='state_redist'`, `gas.nml` accepts
+`state_redist_max_order=0`, `2` or `4` (default `0`). The selected order applies
+to the gas update between particle half steps and must match on restart.
+
 `spray.nml` has an `eb_spray` group:
 
 - `nc` (1–16), `vapor_names`, `densities`, `heat_capacities`,

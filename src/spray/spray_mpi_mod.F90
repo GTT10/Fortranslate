@@ -22,18 +22,23 @@ module spray_mpi_mod
     adjust_reactive_artificial_viscosity_3d
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
-    advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
+    advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film, &
+    apply_mixture_breakup_viscosity,liquid_mixture_viscosity
   use spray_breakup_mod, only: split_spray_parcels,advance_spray_breakup,advance_khrt_shedding, &
     construct_khrt_children,spray_khrt_release,spray_khrt_shedding_state, &
-    khrt_reference_child_count,construct_reference_khrt_children,khrt_reference_uniforms
+    khrt_reference_child_count,construct_reference_khrt_children,construct_reference_etab_children,khrt_reference_uniforms
   use spray_coupling_3d_mod, only: particle_boundary_stencil,valid_spray_boundary_faces,apply_parcel_boundaries
   use spray_wall_impact_mod, only: spray_wall_film,valid_wall_component_inventory,spray_wall_options,valid_wall_film, &
     valid_wall_options,wall_liquid_conductivity_at_temperature,mixture_wall_film_rates,advance_mixture_wall_film_exchange, &
     classify_wall_impact,resolve_mixture_wall_impact,mixture_impact_boiling_temperature
   use spray_partition_mod
+  use spray_wall_impact_mod, only: pelec_splash_critical_parameter
+  use reactive_transport_3d_mod, only: valid_constant_transport_coefficients
   implicit none
   private
-  public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels,inject_mpi_cone_parcels
+  public :: migrate_spray_parcels,reserve_spray_ids,split_mpi_spray_parcels, &
+    split_mpi_reference_etab_parcels,inject_mpi_cone_parcels
+  public :: compute_mpi_spray_timestep
   public :: advance_mpi_khrt_shedding
   public :: fill_mpi_spray_ghosts
   public :: impact_mpi_planar_walls
@@ -47,6 +52,80 @@ module spray_mpi_mod
   public :: advance_mpi_mixture_coupling,advance_mpi_mixture_reaction
   public :: sample_mpi_spray_field,deposit_mpi_spray_field,deposit_mpi_spray_gas
 contains
+  subroutine compute_mpi_spray_timestep(comm,parcels,spacing,cfl,fixed_parts,maximum_injection_speed,dt,ok)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_parcel), intent(in) :: parcels(:)
+    real(dp), intent(in) :: spacing(3),cfl,maximum_injection_speed
+    logical, intent(in) :: fixed_parts
+    real(dp), intent(out) :: dt
+    logical, intent(out) :: ok
+    real(dp) :: controls(5),minimum(5),maximum(5),frequency,global_frequency
+    integer :: fixed,low_fixed,high_fixed,p,status
+    logical :: valid,agreed
+    dt=0;ok=.false.
+    controls=[spacing,cfl,maximum_injection_speed]
+    valid=all(ieee_is_finite(controls))
+    valid=valid.and.all(spacing>0).and.cfl>0.and.maximum_injection_speed>=0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(controls,minimum,5,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,5,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(minimum/=maximum)) return
+    fixed=merge(1,0,fixed_parts)
+    call MPI_Allreduce(fixed,low_fixed,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(fixed,high_fixed,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low_fixed/=high_fixed) return
+    ! Fixed particles impose no motion bound, including configured jets.
+    if(fixed_parts) then
+      dt=huge(1._dp);ok=.true.;return
+    endif
+    ! Pinned estTimestep uses the first cell width for a jet speed.
+    frequency=maximum_injection_speed/spacing(1)
+    do p=1,size(parcels)
+      if(parcels(p)%id<=0.or.parcels(p)%mass<=0) cycle
+      if(.not.all(ieee_is_finite(parcels(p)%velocity))) then
+        valid=.false.;exit
+      endif
+      frequency=max(frequency,maxval(abs(parcels(p)%velocity)/spacing))
+    enddo
+    valid=valid.and.ieee_is_finite(frequency)
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+    if(status/=MPI_SUCCESS.or..not.agreed) return
+    call MPI_Allreduce(frequency,global_frequency,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS) return
+    dt=huge(1._dp)
+    if(global_frequency>0) dt=cfl/global_frequency
+    ok=ieee_is_finite(dt).and.dt>0
+    if(.not.ok) dt=0
+  end subroutine compute_mpi_spray_timestep
+
+  subroutine agree_mpi_spray_constant_transport(coefficients,comm,ok)
+    real(dp), optional, intent(in) :: coefficients(:)
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    integer :: flags(2),lo(2),hi(2),status
+    real(dp) :: values(4),low(4),high(4)
+    flags=0;values=0;ok=.false.
+    if(present(coefficients)) then
+      flags(1)=size(coefficients)
+      if(valid_constant_transport_coefficients(coefficients)) then
+        flags(2)=1;values(1:size(coefficients))=coefficients
+      endif
+    else
+      flags(2)=1
+    endif
+    call MPI_Allreduce(flags,lo,2,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,hi,2,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(lo/=hi).or.lo(2)/=1) return
+    call MPI_Allreduce(values,low,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(values,high,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    ok=.true.
+  end subroutine agree_mpi_spray_constant_transport
   ! Validate and agree controls before periodic/no-op dispatch in coupled entries.
   subroutine validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,faces,ok)
     type(MPI_Comm), intent(in) :: comm
@@ -216,10 +295,12 @@ contains
   end subroutine
 
   subroutine impact_mpi_planar_walls(comm,components,properties,settings,faces,molecular_weights,pressure, &
-      previous,lower,upper,parcels,component_mass,films,film_mass,last_id,hit,wall_change,ok)
+      previous,lower,upper,parcels,component_mass,films,film_mass,last_id,hit,wall_change,ok,breakup_properties)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: properties
+    type(spray_options), optional, intent(in) :: breakup_properties(:)
+    type(spray_options) :: selected
     type(spray_wall_options), intent(in) :: settings
     character(len=*), intent(in) :: faces(6)
     real(dp), intent(in) :: molecular_weights(:),pressure(:),previous(:,:),lower(3),upper(3)
@@ -234,8 +315,10 @@ contains
     real(dp), allocatable :: location(:,:),normal(:,:),data(:,:),diameters(:),thickness(:)
     logical, allocatable :: crossed(:)
     real(dp) :: bounds(6),low(6),high(6),delta(3),earliest,fraction,boundary,rho,cp,e,boil,mu,un
-    real(dp) :: y(size(components)),sigma
-    integer :: np,nc,p,a,f,face,ne,n,ierr
+    real(dp) :: y(size(components)),sigma,periodic_length(3)
+    real(dp), allocatable :: material_values(:,:),reference_values(:,:)
+    character(len=24), allocatable :: material_names(:),reference_names(:)
+    integer :: np,nc,p,a,f,face,ne,n,ierr,nmaterials,minimum_materials,maximum_materials
     logical :: valid,agreed
     ok=.false.;wall_change=0
     valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
@@ -244,6 +327,33 @@ contains
     valid=valid.and.maxval(abs([lower,upper]))<=1e9_dp
     call agree()
     if (.not.agreed) return
+    nmaterials=-1
+    if(present(breakup_properties)) nmaterials=size(breakup_properties)
+    call MPI_Allreduce(nmaterials,minimum_materials,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(nmaterials,maximum_materials,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.minimum_materials/=maximum_materials) return
+    if(present(breakup_properties)) then
+      valid=nmaterials>=1.and.nmaterials<=16
+      do p=1,nmaterials
+        valid=valid.and.valid_spray_options(breakup_properties(p))
+      enddo
+      call agree();if(.not.agreed) return
+      allocate(material_values(8,nmaterials),material_names(nmaterials))
+      do p=1,nmaterials
+        material_values(:,p)=[breakup_properties(p)%surface_tension,breakup_properties(p)%liquid_viscosity, &
+          breakup_properties(p)%liquid_viscosity_coefficients,breakup_properties(p)%liquid_viscosity_temperature_range]
+        material_names(p)=breakup_properties(p)%liquid_viscosity_model
+      enddo
+      reference_values=material_values;reference_names=material_names
+      call MPI_Bcast(reference_values,size(reference_values),MPI_DOUBLE_PRECISION,0,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      call MPI_Bcast(reference_names,24*nmaterials,MPI_CHARACTER,0,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      valid=all(ieee_is_finite(material_values)).and.all(material_values==reference_values).and. &
+        all(material_names==reference_names)
+      call agree();if(.not.agreed) return
+    endif
     np=size(parcels);nc=size(components)
     valid=np<=125000.and.nc>=1.and.nc<=16.and.size(molecular_weights)==nc.and.size(pressure)==np
     valid=valid.and.all(shape(previous)==[3,np]).and.all(shape(component_mass)==[nc,np])
@@ -254,6 +364,7 @@ contains
     do p=1,np
       valid=valid.and.valid_component_inventory(parcels(p),component_mass(:,p))
       valid=valid.and.all(previous(:,p)>=lower).and.all(previous(:,p)<upper)
+      if(present(breakup_properties)) valid=valid.and.parcels(p)%material_id>=1.and.parcels(p)%material_id<=nmaterials
     end do
     call agree()
     if (.not.agreed) return
@@ -290,31 +401,45 @@ contains
         if (faces(2*a)=='periodic') location(a,ne)=lower(a)+modulo(location(a,ne)-lower(a),upper(a)-lower(a))
       end do
     end do
-    allocate(data(6,ne),diameters(ne));data=0;sigma=properties%surface_tension
+    allocate(data(6,ne),diameters(ne));data=0
     do n=1,ne
-      p=indices(n);y=component_mass(:,p)/parcels(p)%mass
-      call liquid_mixture_properties(components,y,parcels(p)%temperature,rho,cp,e,valid)
+      p=indices(n);y=component_mass(:,p)/parcels(p)%mass;selected=properties
+      if(present(breakup_properties)) then
+        a=parcels(p)%material_id
+        ! Evaluate the validated material as a whole: an inverse-temperature
+        ! viscosity model requires its matching breakup configuration.
+        selected=breakup_properties(a)
+      endif
+      sigma=selected%surface_tension
+      call liquid_mixture_properties(components,y,parcels(p)%temperature,rho,cp,e,valid,pressure(p),molecular_weights)
       if (.not.valid) exit
       call mixture_impact_boiling_temperature(components,y,molecular_weights,pressure(p),boil,valid)
       if (.not.valid) exit
-      mu=liquid_viscosity_at_temperature(properties,parcels(p)%temperature)
+      mu=liquid_viscosity_at_temperature(selected,parcels(p)%temperature)
+      call liquid_mixture_viscosity(components,y,parcels(p)%temperature, &
+        liquid_viscosity_at_temperature(selected,parcels(p)%temperature),mu,valid,pressure(p),molecular_weights)
+      if(.not.valid) exit
       valid=mu>0.and.sigma>=1e-8_dp.and.sigma<=1e3_dp
       if (.not.valid) exit
       diameters(n)=(6*parcels(p)%mass/(acos(-1.0_dp)*rho))**(1.0_dp/3.0_dp)
       un=abs(dot_product(parcels(p)%velocity,normal(:,n)))
       data(5,n)=rho*diameters(n)*un**2/sigma;data(6,n)=un*diameters(n)*rho/mu
       data(1,n)=sqrt(data(5,n)*sqrt(data(6,n)));data(2,n)=settings%temperature(wall_faces(n))/boil
-      data(3,n)=(26.788_dp*log(pressure(p)*1e-5_dp)+33.546_dp)* &
-        exp(-.006_dp*(settings%temperature(wall_faces(n))-260))+36
+      data(3,n)=pelec_splash_critical_parameter(pressure(p),settings%temperature(wall_faces(n)))
     end do
     call agree()
     if (.not.agreed) return
+    periodic_length=0
+    do a=1,3
+      if(faces(2*a)=='periodic') periodic_length(a)=upper(a)-lower(a)
+    enddo
     call sample_mpi_wall_film_thickness(comm,films,location(:,:ne),normal(:,:ne), &
-      1e-10_dp*maxval(upper-lower),thickness,valid)
+      1e-10_dp*maxval(upper-lower),thickness,valid,periodic_length)
     if (.not.valid) return
     data(4,:)=thickness/diameters
     call resolve_mpi_wall_impacts(comm,components,parcels,component_mass,indices(:ne),location(:,:ne),normal(:,:ne),data, &
-      settings%contact_angle,films,film_mass,properties%maximum_parcels,settings%maximum_films,last_id,wall_change,valid)
+      settings%contact_angle,films,film_mass,properties%maximum_parcels,settings%maximum_films,last_id,wall_change,valid, &
+      pressure,molecular_weights,reference_parent_position=properties%mixture_time_scheme=='euler')
     if (.not.valid) return
     call move_alloc(crossed,hit);ok=.true.
   contains
@@ -418,7 +543,8 @@ contains
   ! Resolve supplied wall events. data rows: Kv,T/Tboil,Kcrit,film/d,We,Re.
   ! Geometry crossing and film-overlap queries remain the caller's responsibility.
   subroutine resolve_mpi_wall_impacts(comm,components,parcels,component_mass,indices,locations,normals,data, &
-      contact_angle,films,film_mass,maximum_parcels,maximum_films,last_id,wall_change,ok)
+      contact_angle,films,film_mass,maximum_parcels,maximum_films,last_id,wall_change,ok,pressure,gas_molecular_weights, &
+      reference_parent_position)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -429,6 +555,8 @@ contains
     integer(int64), intent(inout) :: last_id
     real(dp), intent(out) :: wall_change(5)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: reference_parent_position
+    real(dp), optional, intent(in) :: pressure(:),gas_molecular_weights(:)
     type(spray_parcel), allocatable :: candidate(:),children(:)
     type(spray_wall_film), allocatable :: patches(:)
     type(spray_wall_film) :: deposited
@@ -436,8 +564,16 @@ contains
     real(dp) :: film_components(size(components)),budget(5),ledger(5),global_ledger(5),alpha,speed,un,splashed,deposit
     integer :: ne,np,nc,nf,n,p,q,number,cursor,film_cursor,kind,ierr
     integer(int64) :: next_id,first_id,child_id
-    logical :: valid,agreed
+    logical :: valid,agreed,rebound_policy
+    integer :: policy,policy_low,policy_high
     ok=.false.;wall_change=0
+    rebound_policy=.false.
+    if(present(reference_parent_position)) rebound_policy=reference_parent_position
+    policy=merge(1,0,rebound_policy)
+    call MPI_Allreduce(policy,policy_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(policy,policy_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.policy_low/=policy_high) return
     valid=allocated(parcels).and.allocated(component_mass).and.allocated(films).and.allocated(film_mass)
     call agree()
     if (.not.agreed) return
@@ -448,6 +584,7 @@ contains
     valid=valid.and.maximum_parcels>=np.and.maximum_parcels<=1000000
     valid=valid.and.maximum_films>=nf.and.maximum_films<=1000000
     valid=valid.and.all(indices>=1).and.all(indices<=np)
+    if(present(pressure)) valid=valid.and.size(pressure)==np
     call agree()
     if (.not.agreed) return
     valid=all(ieee_is_finite(normals)).and.all(ieee_is_finite(locations)).and.all(ieee_is_finite(data))
@@ -486,9 +623,17 @@ contains
     do n=1,ne
       p=indices(n);film_components=0;child_id=0
       if (cursor<np+number) child_id=first_id+int(cursor-np,int64)
-      call resolve_mixture_wall_impact(candidate(p),components,masses(:,p),locations(:,n),normals(:,n), &
-        data(1,n),data(2,n),data(3,n),data(4,n),data(5,n),data(6,n),contact_angle, &
-        child_id,children,child_mass,deposited,film_components,budget,kind,valid)
+      if(present(pressure)) then
+        call resolve_mixture_wall_impact(candidate(p),components,masses(:,p),locations(:,n),normals(:,n), &
+          data(1,n),data(2,n),data(3,n),data(4,n),data(5,n),data(6,n),contact_angle, &
+          child_id,children,child_mass,deposited,film_components,budget,kind,valid,pressure(p),gas_molecular_weights, &
+          reference_parent_position=rebound_policy)
+      else
+        call resolve_mixture_wall_impact(candidate(p),components,masses(:,p),locations(:,n),normals(:,n), &
+          data(1,n),data(2,n),data(3,n),data(4,n),data(5,n),data(6,n),contact_angle, &
+          child_id,children,child_mass,deposited,film_components,budget,kind,valid, &
+          reference_parent_position=rebound_policy)
+      endif
       if (.not.valid) exit
       q=size(children)
       valid=q<=np+number-cursor
@@ -612,8 +757,12 @@ contains
         trial=patches;next_mass=masses;change=0;trial_ledger=0;valid=.true.
         do p=1,np
           if (patches(p)%mass<=0) cycle
+          call reactive_conserved_to_primitive(species,samples(:nvar,p),samples(nvar+1,p),primitive,tg,sound,valid)
+          if (.not.valid) exit
           call advance_mixture_wall_film_exchange(trial(p),components,next_mass(:,p),rates(:,p)*dt,hv(:,p), &
-            qg(p)*dt,qw(p)*dt,wall_options%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true.)
+            qg(p)*dt,qw(p)*dt,wall_options%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true., &
+            pressure=primitive(5),gas_molecular_weights=species(components%vapor_index)%molecular_weight, &
+            euler_temperature=options%mixture_time_scheme=='euler')
           if (valid.and.trial(p)%mass>0) valid= &
             wall_liquid_conductivity_at_temperature(wall_options,trial(p)%material_id,trial(p)%temperature)>0
           if (.not.valid) exit
@@ -763,7 +912,10 @@ contains
 
   subroutine advance_mpi_spray_transport(comm,species,transport,state,temperature,spacing,cells,dt,enabled,minimum_theta,ok, &
       faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure, &
-      inflow_mach,inflow_pressure)
+      inflow_mach,inflow_pressure, &
+      constant_coefficients)
+    logical :: constant_agreed
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(MPI_Comm), intent(in) :: comm
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     real(dp) :: pressure(6)
@@ -793,6 +945,8 @@ contains
     if (present(outlet_pressure)) pressure=outlet_pressure
     if (present(boundary_change)) boundary_change=0
     ok=.false.;minimum_theta=1;accepted_theta=1;nvar=size(state,1)
+    call agree_mpi_spray_constant_transport(constant_coefficients,comm,constant_agreed)
+    if(.not.constant_agreed) return
     call validate_mpi_mach_controls(comm,inflow_mach,inflow_pressure,faces,agreed)
     if(.not.agreed) return
     call MPI_Comm_rank(comm,rank,ierr)
@@ -870,7 +1024,8 @@ contains
         call agree()
         if (.not.agreed) return
         call physical_transport_ghosted_fluxes_3d(species,transport,gas,temp,halo,halo_t,extent,spacing,dt, &
-          local_faces,enabled(1),enabled(2),enabled(3),enabled(4),fx,fy,fz,local_theta,valid,wall_temperature,velocity)
+          local_faces,enabled(1),enabled(2),enabled(3),enabled(4),fx,fy,fz,local_theta,valid,wall_temperature,velocity, &
+          constant_coefficients=constant_coefficients)
         call agree()
         if (.not.agreed) return
         rate=0
@@ -914,7 +1069,8 @@ contains
         end do
         call reactive_transport_ghosted_fluxes_3d(species,transport,halo,halo_t,nx,ny,nz, &
           spacing(1),spacing(2),spacing(3),dt,enabled(1),enabled(2),enabled(3),enabled(4), &
-          fx,fy,fz,local_theta,valid,theta_cell_output=theta)
+          fx,fy,fz,local_theta,valid,theta_cell_output=theta, &
+          constant_coefficients=constant_coefficients)
         call agree()
         if (.not.agreed) return
         theta_send=theta(nx,:,:)
@@ -928,7 +1084,8 @@ contains
         call reactive_transport_ghosted_fluxes_3d(species,transport,halo,halo_t,nx,ny,nz, &
           spacing(1),spacing(2),spacing(3),dt,enabled(1),enabled(2),enabled(3),enabled(4),fx,fy,fz,local_theta,valid, &
           exterior_theta_x_lower=theta_left,exterior_theta_x_upper=theta_right, &
-          periodic_theta_y=.true.,periodic_theta_z=.true.)
+          periodic_theta_y=.true.,periodic_theta_z=.true., &
+          constant_coefficients=constant_coefficients)
         call agree()
         if (.not.agreed) return
       end if
@@ -1398,7 +1555,10 @@ contains
       hydro_solver,hydro_limiter,transport_flags,last_id,les_settings, &
       boundary_faces,boundary_change,inflow_state,inflow_temperature,wall_temperature,wall_velocity, &
       wall_films,film_mass,film_settings,les_model,les_test_filter,les_test_ratio,les_grid_ratio, &
-      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure,hydro_reconstruction,difmag)
+      les_harmonic_mean,les_ci,outlet_pressure,inflow_mach,inflow_pressure,hydro_reconstruction,difmag,source_change, &
+      constant_coefficients)
+    logical :: constant_agreed
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
@@ -1439,7 +1599,8 @@ contains
     real(dp), allocatable :: patch_mass(:,:)
     integer :: first_film_steps,last_film_steps
     real(dp), allocatable :: stage_change(:)
-    real(dp) :: ledger(size(state,1))
+    real(dp) :: ledger(size(state,1)),force_ledger(size(state,1)),stage_force(5)
+    real(dp), optional, intent(inout) :: source_change(:)
     real(dp) :: sgs(3)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
@@ -1451,7 +1612,9 @@ contains
     integer :: ierr,first_steps,last_steps,method_code,hydro_code,limit_code,nranks,reconstruction_code
     logical :: valid,agreed,enabled(4)
     character(len=256) :: message
-    ok=.false.;substeps=0;method_code=0;ledger=0
+    ok=.false.;substeps=0;method_code=0;ledger=0;force_ledger=0
+    call agree_mpi_spray_constant_transport(constant_coefficients,comm,constant_agreed)
+    if(.not.constant_agreed) return
     reconstruction_code=1
     if(present(hydro_reconstruction)) then
       reconstruction_code=0
@@ -1544,6 +1707,8 @@ contains
     valid=valid.and.viscosity>=0
     if(present(difmag)) valid=valid.and.present(hydro_solver)
     if(present(hydro_reconstruction)) valid=valid.and.present(hydro_solver)
+    valid=valid.and.(.not.options%fixed_parts.or.present(source_change))
+    if(present(source_change)) valid=valid.and.size(source_change)==size(state,1)
     call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (.not.agreed) return
@@ -1572,12 +1737,15 @@ contains
     if (present(wall_films)) then
       call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
         lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change, &
-        patches,patch_mass,film_settings)
+        patches,patch_mass,film_settings, &
+        force_change=stage_force)
     else
       call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-        lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change)
+        lower,spacing,cells,parts,.5_dp*interval,first_steps,valid,candidate_id,boundary_faces,stage_change, &
+        force_change=stage_force)
     end if
     if (.not.valid) return
+    force_ledger(:5)=force_ledger(:5)+stage_force
     if (allocated(stage_change)) ledger=ledger+stage_change
     chemistry_interval=interval
     if (present(hydro_solver)) chemistry_interval=.5_dp*interval
@@ -1590,7 +1758,8 @@ contains
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
           enabled,transport_theta,valid,boundary_faces,stage_change,inflow_state,inflow_temperature, &
           wall_temperature,wall_velocity,outlet_pressure=pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
+          constant_coefficients=constant_coefficients)
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
@@ -1633,7 +1802,8 @@ contains
         call advance_mpi_spray_transport(comm,species,transport,gas,temp,spacing,cells,.5_dp*interval, &
           enabled,transport_theta,valid,boundary_faces,stage_change,inflow_state,inflow_temperature, &
           wall_temperature,wall_velocity,outlet_pressure=pressure, &
-          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure)
+          inflow_mach=inflow_mach,inflow_pressure=inflow_pressure, &
+          constant_coefficients=constant_coefficients)
         if (.not.valid) return
         if (allocated(stage_change)) ledger=ledger+stage_change
       end if
@@ -1645,12 +1815,15 @@ contains
     if (present(wall_films)) then
       call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
         lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change, &
-        patches,patch_mass,film_settings)
+        patches,patch_mass,film_settings, &
+        force_change=stage_force)
     else
       call advance_mpi_mixture_coupling(comm,species,transport,components,options,gas,temp,drops,masses, &
-        lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change)
+        lower,spacing,cells,parts,.5_dp*interval,last_steps,valid,candidate_id,boundary_faces,stage_change, &
+        force_change=stage_force)
     end if
     if (.not.valid) return
+    force_ledger(:5)=force_ledger(:5)+stage_force
     if (allocated(stage_change)) ledger=ledger+stage_change
     if (present(wall_films)) then
       call advance_mpi_film_coupling(comm,species,transport,components,options,film_settings,gas,temp, &
@@ -1668,9 +1841,10 @@ contains
       substeps=0;return
     end if
     substeps=substeps+last_film_steps
-    if (.not.all(ieee_is_finite(ledger))) then
+    if (.not.all(ieee_is_finite(ledger)).or..not.all(ieee_is_finite(force_ledger))) then
       substeps=0;return
     end if
+    if(present(source_change)) source_change=force_ledger
     if (present(boundary_change)) boundary_change=ledger
     state=gas;temperature=temp
     call move_alloc(drops,parcels);call move_alloc(masses,component_mass)
@@ -1685,32 +1859,41 @@ contains
   ! gas_energy(p) is the gas energy increment at original parent p (not a rate).
   ! The caller must deposit it transactionally with these candidates.
   subroutine advance_mpi_khrt_shedding(comm,components,options,parcels,component_mass,gas_density, &
-      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible,reference_factor,gas_momentum)
+      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible,reference_factor,gas_momentum,pressure,gas_molecular_weights, &
+      birth_positions,child_drift_dt,make_new_drops,breakup_properties)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: options
+    type(spray_options), optional, intent(in) :: breakup_properties(:)
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), allocatable, intent(inout) :: component_mass(:,:),gas_energy(:)
     real(dp), intent(in) :: gas_density(:),gas_velocity(:,:),reynolds(:),dt
     integer(int64), intent(inout) :: last_id
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: eligible(:)
+    logical, optional, intent(in) :: eligible(:),make_new_drops
     real(dp), optional, intent(in) :: reference_factor
     real(dp), allocatable, optional, intent(inout) :: gas_momentum(:,:)
+    real(dp), optional, intent(in) :: pressure(:),gas_molecular_weights(:)
+    real(dp), optional, intent(in) :: birth_positions(:,:),child_drift_dt
     real(dp), allocatable :: momentum(:,:),uniforms(:)
     real(dp) :: exchange(4),factor
-    logical :: reference
+    logical :: reference,allow_births
     integer, allocatable :: child_counts(:)
     type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
     type(spray_khrt_release), allocatable :: releases(:)
     type(spray_khrt_shedding_state) :: pending
     type(spray_liquid) :: effective
+    type(spray_parcel) :: birth_parent
+    type(spray_options) :: breakup_options
     real(dp), allocatable :: masses(:,:),fractions(:,:),energy(:),result_mass(:,:)
-    real(dp) :: rho,cp,e,axis(3),bounds(3),low(3),high(3)
-    integer :: np,nc,p,n,number,cursor,ierr
+    real(dp) :: rho,cp,e,axis(3),bounds(10),low(10),high(10),birth_dt
+    real(dp), allocatable :: material_values(:,:),reference_values(:,:)
+    character(len=24), allocatable :: material_names(:),reference_names(:)
+    integer :: np,nc,p,n,number,cursor,ierr,nmaterials
     integer(int64) :: next_id,first_id
     logical :: valid,agreed
-    ok=.false.
+    ok=.false.;allow_births=.true.
+    if(present(make_new_drops)) allow_births=make_new_drops
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
     factor=options%khrt_parcel_factor
@@ -1730,14 +1913,53 @@ contains
     valid=valid.and.size(gas_density)==np.and.size(reynolds)==np.and.all(shape(gas_velocity)==[3,np])
     valid=valid.and.ieee_is_finite(dt).and.dt>=0.and.dt<=1e6_dp
     if(present(eligible)) valid=valid.and.size(eligible)==np
+    if(present(pressure)) valid=valid.and.size(pressure)==np
+    if(present(birth_positions)) then
+      valid=valid.and.all(shape(birth_positions)==[3,np])
+      if(valid) valid=all(ieee_is_finite(birth_positions))
+      if(valid) valid=all(abs(birth_positions)<=1e9_dp)
+    endif
+    if(present(child_drift_dt)) then
+      if(valid) valid=ieee_is_finite(child_drift_dt)
+      if(valid) valid=child_drift_dt>=0.and.child_drift_dt<=1e6_dp
+    endif
+    nmaterials=-1
+    if(present(breakup_properties)) then
+      nmaterials=size(breakup_properties)
+      valid=valid.and.nmaterials>=1.and.nmaterials<=16
+      do p=1,nmaterials
+        valid=valid.and.valid_spray_options(breakup_properties(p))
+      enddo
+      valid=valid.and.all(parcels%material_id>=1).and.all(parcels%material_id<=nmaterials)
+    endif
     call agree()
     if (.not.agreed) return
-    bounds=[dt,0._dp,0._dp]
+    bounds=[dt,0._dp,0._dp,merge(1._dp,0._dp,options%fixed_parts),merge(1._dp,0._dp,present(birth_positions)), &
+      merge(1._dp,0._dp,present(child_drift_dt)),0._dp, &
+      merge(1._dp,0._dp,present(make_new_drops)),merge(1._dp,0._dp,allow_births),real(nmaterials,dp)]
+    if(present(child_drift_dt)) bounds(7)=child_drift_dt
     if(reference) bounds(2:3)=[1._dp,factor]
-    call MPI_Allreduce(bounds,low,3,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(bounds,low,10,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(bounds,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(bounds,high,10,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.any(low/=high)) return
+    if(present(breakup_properties)) then
+      allocate(material_values(8,nmaterials),material_names(nmaterials))
+      do p=1,nmaterials
+        material_values(:,p)=[breakup_properties(p)%surface_tension,breakup_properties(p)%liquid_viscosity, &
+          breakup_properties(p)%liquid_viscosity_coefficients,breakup_properties(p)%liquid_viscosity_temperature_range]
+        material_names(p)=breakup_properties(p)%liquid_viscosity_model
+      enddo
+      reference_values=material_values;reference_names=material_names
+      call MPI_Bcast(reference_values,size(reference_values),MPI_DOUBLE_PRECISION,0,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      call MPI_Bcast(reference_names,24*nmaterials,MPI_CHARACTER,0,comm,ierr)
+      if(ierr/=MPI_SUCCESS) return
+      valid=all(ieee_is_finite(material_values)).and.all(material_values==reference_values).and. &
+        all(material_names==reference_names)
+      call agree();if(.not.agreed) return
+    endif
+    breakup_options=options;breakup_options%khrt_parcel_factor=factor
     candidate=parcels;masses=component_mass
     allocate(releases(np),fractions(nc,np),energy(np),momentum(3,np),child_counts(np))
     energy=0;fractions=0;number=0;momentum=0;child_counts=0
@@ -1750,7 +1972,12 @@ contains
         if(.not.eligible(p)) cycle
       end if
       fractions(:,p)=masses(:,p)/candidate(p)%mass
-      call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
+      if(present(pressure)) then
+        call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid, &
+          pressure(p),gas_molecular_weights)
+      else
+        call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
+      endif
       if (.not.valid) exit
       effective=components(1);effective%density_model='constant';effective%density=rho
       effective%density_coefficients=0;effective%density_temperature_range=0
@@ -1759,9 +1986,25 @@ contains
       effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=e
       effective%boiling_model='reject';effective%critical_temperature=0
       effective%normal_boiling_temperature=0
+      breakup_options=options;breakup_options%khrt_parcel_factor=factor
+      if(present(breakup_properties)) then
+        n=candidate(p)%material_id
+        breakup_options%surface_tension=breakup_properties(n)%surface_tension
+        breakup_options%liquid_viscosity=breakup_properties(n)%liquid_viscosity
+        breakup_options%liquid_viscosity_model=breakup_properties(n)%liquid_viscosity_model
+        breakup_options%liquid_viscosity_coefficients=breakup_properties(n)%liquid_viscosity_coefficients
+        breakup_options%liquid_viscosity_temperature_range=breakup_properties(n)%liquid_viscosity_temperature_range
+      endif
+      if(present(pressure)) then
+        call apply_mixture_breakup_viscosity(components,fractions(:,p),candidate(p)%temperature,breakup_options, &
+          valid,pressure(p),gas_molecular_weights)
+      else
+        call apply_mixture_breakup_viscosity(components,fractions(:,p),candidate(p)%temperature,breakup_options,valid)
+      endif
+      if(.not.valid) exit
       pending=spray_khrt_shedding_state(candidate(p)%khrt_initial_count,candidate(p)%khrt_shed_volume)
-      call advance_khrt_shedding(candidate(p),effective,options,gas_density(p),gas_velocity(:,p),reynolds(p), &
-        dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid)
+      call advance_khrt_shedding(candidate(p),effective,breakup_options,gas_density(p),gas_velocity(:,p),reynolds(p), &
+        dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid,make_new_drops=allow_births)
       if (.not.valid) exit
       candidate(p)%khrt_initial_count=pending%initial_count;candidate(p)%khrt_shed_volume=pending%shed_volume
       masses(:,p)=candidate(p)%mass*fractions(:,p)
@@ -1784,19 +2027,24 @@ contains
     do p=1,np
       if (releases(p)%mass<=0) cycle
       axis=candidate(p)%velocity
-      if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
+      if (norm2(axis)<1e-12_dp.and..not.reference) axis=gas_velocity(:,p)-candidate(p)%velocity
+      birth_parent=candidate(p);birth_dt=merge(dt,0._dp,options%fixed_parts)
+      if(present(birth_positions)) then
+        birth_parent%position=birth_positions(:,p);birth_dt=dt
+      endif
+      if(present(child_drift_dt)) birth_dt=child_drift_dt
       if(reference) then
         if(allocated(uniforms)) deallocate(uniforms)
         allocate(uniforms(child_counts(p)))
         call khrt_reference_uniforms(candidate(p)%id,last_id,uniforms)
-        call construct_reference_khrt_children(candidate(p),releases(p),axis,factor,uniforms, &
-          first_id+int(cursor-np,int64),children,exchange,valid)
+        call construct_reference_khrt_children(birth_parent,releases(p),axis,factor,uniforms, &
+          first_id+int(cursor-np,int64),children,exchange,valid,drift_dt=birth_dt)
         if(valid) then
           momentum(:,p)=exchange(:3);energy(p)=exchange(4)
         endif
       else
-        call construct_khrt_children(candidate(p),releases(p),axis, &
-          first_id+int(cursor-np,int64),children,energy(p),valid)
+        call construct_khrt_children(birth_parent,releases(p),axis, &
+          first_id+int(cursor-np,int64),children,energy(p),valid,drift_dt=birth_dt)
       endif
       if (.not.valid) exit
       result(cursor+1:cursor+child_counts(p))=children
@@ -1821,7 +2069,7 @@ contains
 
   subroutine advance_mpi_mixture_coupling(comm,species,transport,components,options,state,temperature, &
       parcels,component_mass,lower,spacing,cells,parts,interval,substeps,ok,last_id,boundary_faces,boundary_change, &
-      wall_films,film_mass,film_settings)
+      wall_films,film_mass,film_settings,force_change)
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -1834,6 +2082,8 @@ contains
     integer, intent(in) :: cells(3),parts(3)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: force_change(5)
+    real(dp) :: local_force(5),global_force(5),trial_force(5),parcel_force(5),split_dt
     character(len=*), optional, intent(in) :: boundary_faces(6)
     real(dp), optional, intent(out) :: boundary_change(:)
     type(spray_wall_film), allocatable, optional, intent(inout) :: wall_films(:)
@@ -1847,8 +2097,12 @@ contains
     integer(int64), optional, intent(inout) :: last_id
     integer(int64) :: accepted_id,trial_id
     real(dp), allocatable :: reynolds(:),child_momentum(:,:),child_energy(:)
+    real(dp), allocatable :: etab_tangent(:),trial_tangent(:),split_positions(:,:),split_feedback(:,:),split_change(:,:)
+    real(dp), allocatable :: etab_origins(:,:),etab_intervals(:)
+    real(dp) :: etab_delta,split_controls(2),split_low(2),split_high(2),last_dt
     integer :: child_flag,low_flag,high_flag
     type(spray_parcel), allocatable :: drops(:),trial(:),survivors(:)
+    type(spray_options) :: parcel_breakup_options
     type(spray_liquid) :: effective
     type(spray_film) :: film
     real(dp) :: old_mass
@@ -1856,18 +2110,22 @@ contains
     real(dp), allocatable :: masses(:,:),next_mass(:,:),kept_mass(:,:),positions(:,:),field(:,:,:,:),samples(:,:)
     real(dp), allocatable :: primitive(:,:),tg(:),change(:,:)
     real(dp) :: elapsed,dt,local_dt,min_interval,max_interval,sound,invtau,heat,rho,cp,e,tdot,speed
+    real(dp) :: surface_energy
     real(dp) :: y(size(components)),rates(size(components)),hv(size(components)),length(3)
     integer :: p,n,np,nvar,nc,ierr,attempt,count_steps,kept,min_nc,max_nc
     logical :: valid,agreed,accepted
     character(len=32) :: faces(6)
-    faces='periodic';ledger=0;wall_ledger=0
+    faces='periodic';ledger=0;wall_ledger=0;local_force=0
     if (present(boundary_faces)) faces=boundary_faces
     if (present(boundary_change)) boundary_change=0
     ok=.false.;substeps=0
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
+    valid=valid.and.(.not.options%fixed_parts.or.present(force_change))
     valid=valid.and.ieee_is_finite(interval)
     valid=valid.and.interval>=0.and.interval<=1e6_dp
     valid=valid.and.(.not.options%khrt_children.or.present(last_id))
+    valid=valid.and.(options%etab_parcel_factor<0.or.present(last_id))
+    valid=valid.and.(options%maximum_multiplicity<=0.or.present(last_id))
     valid=valid.and.size(components)>=1.and.size(components)<=16
     valid=valid.and.valid_spray_boundary_faces(faces)
     if (present(boundary_change)) valid=valid.and.size(boundary_change)==size(state,1)
@@ -1875,11 +2133,18 @@ contains
     if (present(wall_films)) valid=valid.and.present(boundary_faces).and.present(last_id)
     call agree()
     if (.not.agreed) return
-    child_flag=merge(1,0,options%khrt_children)+2*merge(1,0,present(boundary_faces))+4*merge(1,0,present(wall_films))
+    child_flag=merge(1,0,options%khrt_children)+2*merge(1,0,present(boundary_faces))+ &
+      4*merge(1,0,present(wall_films))+8*merge(1,0,options%etab_parcel_factor>=0)+ &
+      16*merge(1,0,options%fixed_parts)+32*merge(1,0,present(force_change))
     call MPI_Allreduce(child_flag,low_flag,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(child_flag,high_flag,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS.or.low_flag/=high_flag) return
+    split_controls=[options%maximum_multiplicity,options%etab_parcel_factor]
+    call MPI_Allreduce(split_controls,split_low,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(split_controls,split_high,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(split_low/=split_high)) return
     accepted_id=0
     if (present(last_id)) accepted_id=last_id
     np=size(parcels);nc=size(components);nvar=size(state,1)
@@ -1906,6 +2171,12 @@ contains
     call agree()
     if (.not.agreed) return
     gas=state;temp=temperature;drops=parcels;masses=component_mass
+    last_dt=0
+    if(options%etab_parcel_factor>=0) then
+      allocate(etab_tangent(size(drops)));etab_tangent=0
+      etab_origins=reshape([(drops(p)%position,p=1,size(drops))],[3,size(drops)])
+      etab_intervals=spread(0._dp,1,size(drops))
+    endif
     if (present(wall_films)) then
       valid=allocated(wall_films).and.allocated(film_mass)
       call agree()
@@ -1952,19 +2223,29 @@ contains
         call mixture_transfer_rates(species,transport,primitive(:,p),tg(p),drops(p),components,y,options, &
           invtau,heat,rates,hv,valid)
         if (.not.valid) exit
-        call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid)
+        call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid,primitive(5,p), &
+          species(components%vapor_index)%molecular_weight)
         if (.not.valid) exit
         if (invtau>0) local_dt=min(local_dt,options%max_fractional_change/invtau)
         tdot=heat*(tg(p)-drops(p)%temperature)
+        if(options%abramzon_sirignano.and.options%evaporation) tdot=heat*max(0._dp,tg(p)-drops(p)%temperature)
         do n=1,nc
           if (rates(n)>0.and.y(n)>mixture_trace_fraction) &
             local_dt=min(local_dt,options%max_fractional_change*masses(n,p)/rates(n))
-          tdot=tdot-rates(n)*(hv(n)-liquid_energy(components(n),drops(p)%temperature))
+          if(rates(n)==0) cycle
+          surface_energy=liquid_energy(components(n),drops(p)%temperature)
+          if(options%mixture_time_scheme=='euler') then
+            call liquid_evaporation_energy(components(n),drops(p)%temperature,surface_energy,valid, &
+              primitive(5,p),species(components(n)%vapor_index)%molecular_weight)
+            if(.not.valid) exit
+          endif
+          tdot=tdot-rates(n)*(hv(n)-surface_energy)
         end do
+        if(.not.valid) exit
         tdot=tdot/(drops(p)%mass*cp)
         if (abs(tdot)>0) local_dt=min(local_dt,min(2.0_dp,options%max_fractional_change*drops(p)%temperature)/abs(tdot))
         speed=max(maxval(abs(drops(p)%velocity)),maxval(abs(primitive(2:4,p))))
-        if (speed>0) local_dt=min(local_dt,options%particle_cfl*minval(spacing)/speed)
+        if (speed>0.and..not.options%fixed_parts) local_dt=min(local_dt,options%particle_cfl*minval(spacing)/speed)
       end do
       call agree()
       if (.not.agreed) return
@@ -1973,15 +2254,20 @@ contains
       accepted=.false.
       do attempt=1,30
         if (dt<=0.or.elapsed+dt<=elapsed) exit
-        trial=drops;next_mass=masses;change=0;valid=.true.;trial_id=accepted_id;reynolds=0;trial_ledger=0
+        trial=drops;next_mass=masses;change=0;valid=.true.;trial_id=accepted_id;reynolds=0;trial_ledger=0;trial_force=0
+        if(options%etab_parcel_factor>=0) trial_tangent=etab_tangent
         do p=1,np
           if (drops(p)%mass<=0) cycle
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
-            next_mass(:,p),options,dt,change(:,p),valid)
+            next_mass(:,p),options,dt,change(:,p),valid,force_change=parcel_force)
           if (.not.valid) exit
+          trial_force=trial_force+parcel_force
+          valid=all(ieee_is_finite(trial_force))
+          if(.not.valid) exit
           if (trial(p)%mass>0.and.options%breakup_model/='none') then
             old_mass=trial(p)%mass;y=next_mass(:,p)/old_mass
-            call liquid_mixture_properties(components,y,trial(p)%temperature,rho,cp,e,valid)
+            call liquid_mixture_properties(components,y,trial(p)%temperature,rho,cp,e,valid,primitive(5,p), &
+              species(components%vapor_index)%molecular_weight)
             if (.not.valid) exit
             effective=components(1);effective%density=rho;effective%density_model='constant'
             effective%density_coefficients=0;effective%density_temperature_range=0
@@ -1993,12 +2279,22 @@ contains
             call build_mixture_film(species,transport,primitive(:,p),tg(p),trial(p),components,y,options, &
               film,rates,hv,valid)
             if (.not.valid) exit
+            parcel_breakup_options=options
+            call apply_mixture_breakup_viscosity(components,y,trial(p)%temperature,parcel_breakup_options,valid, &
+              primitive(5,p),species(components%vapor_index)%molecular_weight)
+            if(.not.valid) exit
             if (options%khrt_children) then
               reynolds(p)=film%density*norm2(primitive(2:4,p)-trial(p)%velocity)* &
                 parcel_diameter(trial(p),effective)/film%viscosity
             else
-              call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
-                film%density,film%viscosity,dt,valid)
+              if(options%etab_parcel_factor>=0) then
+                call advance_spray_breakup(trial(p),effective,parcel_breakup_options,primitive(1,p),primitive(2:4,p), &
+                  film%density,film%viscosity,dt,valid,etab_delta)
+                if(valid) trial_tangent(p)=trial_tangent(p)+etab_delta
+              else
+                call advance_spray_breakup(trial(p),effective,parcel_breakup_options,primitive(1,p),primitive(2:4,p), &
+                  film%density,film%viscosity,dt,valid)
+              endif
               if (.not.valid) exit
               next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
             end if
@@ -2008,7 +2304,9 @@ contains
         call agree()
         if (agreed.and.options%khrt_children) then
           call advance_mpi_khrt_shedding(comm,components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid,gas_momentum=child_momentum)
+            primitive(2:4,:),reynolds,dt,trial_id,child_energy,valid,gas_momentum=child_momentum, &
+            pressure=primitive(5,:),gas_molecular_weights=species(components%vapor_index)%molecular_weight, &
+            birth_positions=positions)
           if (valid) valid=size(trial)<=125000
           call agree()
           if (agreed) then
@@ -2019,16 +2317,16 @@ contains
         impact_wall=0
         if (agreed.and.present(wall_films)) then
           trial_patches=patches;trial_patch_mass=patch_mass
-          call prepare_impacts()
+          if (.not.options%fixed_parts) call prepare_impacts()
           call agree()
-          if (agreed) then
+          if (agreed.and..not.options%fixed_parts) then
             call impact_mpi_planar_walls(comm,components,options,film_settings,faces,mw,impact_pressure,impact_previous, &
               lower,lower+length,trial,next_mass,trial_patches,trial_patch_mass,trial_id,hit,impact_wall,valid)
             if (valid) valid=size(trial)<=125000
             call agree()
           end if
         end if
-        if (agreed.and.present(boundary_faces)) then
+        if (agreed.and.present(boundary_faces).and..not.options%fixed_parts) then
           call apply_boundaries()
           call agree()
         end if
@@ -2042,8 +2340,21 @@ contains
         dt=.5_dp*dt
       end do
       if (.not.accepted) return
+      if(options%etab_parcel_factor>=0) then
+        etab_origins=reshape([(trial(p)%position,p=1,size(trial))],[3,size(trial)])
+        etab_origins(:,:np)=positions
+        etab_intervals=spread(0._dp,1,size(trial));etab_intervals(:np)=dt
+      endif
       drops=trial;masses=next_mass;gas=next_gas;temp=next_temp;accepted_id=trial_id
+      if(options%etab_parcel_factor>=0) then
+        if(size(trial)>size(trial_tangent)) &
+          trial_tangent=[trial_tangent,spread(0._dp,1,size(trial)-size(trial_tangent))]
+        etab_tangent=trial_tangent
+        last_dt=dt
+      endif
       ledger=ledger+trial_ledger
+      local_force=local_force+trial_force
+      valid=all(ieee_is_finite(local_force));call agree();if(.not.agreed) return
       if (present(wall_films)) then
         patches=trial_patches;patch_mass=trial_patch_mass;wall_ledger=wall_ledger+impact_wall
         kept=count(drops%mass>0);survivors=pack(drops,drops%mass>0)
@@ -2052,10 +2363,40 @@ contains
           if (drops(p)%mass<=0) cycle
           kept=kept+1;kept_mass(:,kept)=masses(:,p)
         end do
+        if(options%etab_parcel_factor>=0) then
+          etab_tangent=pack(etab_tangent,drops%mass>0)
+          etab_origins=transpose(reshape([(pack(etab_origins(p,:),drops%mass>0),p=1,3)],[kept,3]))
+          etab_intervals=pack(etab_intervals,drops%mass>0)
+        endif
         call move_alloc(survivors,drops);call move_alloc(kept_mass,masses)
       end if
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
+    if(options%etab_parcel_factor>=0.and.interval>0) then
+      split_dt=last_dt
+      call split_mpi_reference_etab_parcels(comm,drops,masses,options%maximum_multiplicity, &
+        options%maximum_parcels,options%etab_parcel_factor,etab_tangent,split_dt,accepted_id, &
+        split_positions,split_feedback,valid,birth_positions=etab_origins,birth_intervals=etab_intervals)
+      if(.not.valid) return
+      allocate(split_change(nvar,size(split_positions,2)));split_change=0
+      split_change(2:5,:)=split_feedback
+      next_gas=gas;next_temp=temp
+      call deposit_mpi_spray_gas(comm,species,next_gas,next_temp,split_positions,split_change, &
+        lower,spacing,cells,parts,faces,valid)
+      if(.not.valid) return
+      gas=next_gas;temp=next_temp
+      if(present(boundary_faces).and..not.options%fixed_parts) then
+        trial=drops;next_mass=masses;trial_ledger=0
+        call apply_boundaries()
+        call agree()
+        if(.not.agreed) return
+        drops=trial;masses=next_mass;ledger=ledger+trial_ledger
+      else
+        do p=1,size(drops)
+          drops(p)%position=lower+modulo(drops(p)%position-lower,length)
+        enddo
+      endif
+    endif
     np=size(drops)
     kept=count(drops%mass>0);allocate(survivors(kept),kept_mass(nc,kept));kept=0
     do p=1,np
@@ -2066,6 +2407,11 @@ contains
       [faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic'], &
       options%maximum_parcels,valid,kept_mass)
     if (.not.valid) return
+    if(options%maximum_multiplicity>0.and.options%etab_parcel_factor<0) then
+      call split_mpi_spray_parcels(comm,survivors,options%maximum_multiplicity, &
+        options%maximum_parcels,accepted_id,valid,kept_mass)
+      if(.not.valid) return
+    endif
     if (present(wall_films)) then
       call migrate_mpi_wall_films(comm,patches,patch_mass,lower,spacing,cells,parts,film_settings%maximum_films,valid)
       if (.not.valid) return
@@ -2074,6 +2420,9 @@ contains
     if (ierr/=MPI_SUCCESS) return
     global_ledger(:5)=global_ledger(:5)-wall_ledger
     if (.not.all(ieee_is_finite(global_ledger))) return
+    call MPI_Allreduce(local_force,global_force,5,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    valid=all(ieee_is_finite(global_force));call agree();if(.not.agreed) return
     if (present(boundary_change)) boundary_change=global_ledger
     state=gas;temperature=temp
     call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
@@ -2081,6 +2430,7 @@ contains
     if (present(wall_films)) then
       call move_alloc(patches,wall_films);call move_alloc(patch_mass,film_mass)
     end if
+    if(present(force_change)) force_change=global_force
     substeps=count_steps;ok=.true.
   contains
     subroutine prepare_impacts()
@@ -2294,20 +2644,26 @@ contains
     end subroutine
   end subroutine
 
-  subroutine deposit_mpi_spray_field(comm,field,positions,contributions,lower,spacing,cells,parts,faces,ok)
+  subroutine deposit_mpi_spray_field(comm,field,positions,contributions,lower,spacing,cells,parts,faces,ok,containing_cell)
     type(MPI_Comm), intent(in) :: comm
     real(dp), intent(inout) :: field(:,:,:,:)
     real(dp), intent(in) :: positions(:,:),contributions(:,:),lower(3),spacing(3)
     integer, intent(in) :: cells(3),parts(3)
     character(len=*), intent(in) :: faces(6)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: containing_cell
     integer :: rank,nranks,ierr,nvar,np,nrequests,nreceived,p,n,r,q,i,v,cell(3),first(3),local_cells(3)
-    integer :: config(13),minimum(13),maximum(13),indices(3,8)
+    integer :: ndonors
+    integer :: config(14),minimum(14),maximum(14),indices(3,8)
     integer, allocatable :: owners(:),requests(:,:),incoming(:,:),counts(:),offsets(:),received(:),displacements(:),cursor(:)
     integer, allocatable :: order(:)
     real(dp), allocatable :: weights(:),packed(:,:),answers(:,:),candidate(:,:,:,:)
     real(dp) :: w(8),bounds(6),minbounds(6),maxbounds(6),center(3),volume,old,delta
-    logical :: valid,agreed,periodic(3)
+    logical :: valid,agreed,periodic(3),cell_feedback
+    cell_feedback=.false.
+    if(present(containing_cell)) cell_feedback=containing_cell
+    ndonors=8
+    if(cell_feedback) ndonors=1
     ok=.false.;np=size(positions,2);nvar=size(field,1)
     call MPI_Comm_rank(comm,rank,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -2320,7 +2676,7 @@ contains
     valid=valid.and.all(shape(contributions)==[nvar,np]).and.all(ieee_is_finite(contributions))
     call agree()
     if (.not.agreed) return
-    config(1:6)=[cells,parts];config(13)=nvar
+    config(1:6)=[cells,parts];config(13)=nvar;config(14)=ndonors
     do i=1,6
       select case(trim(faces(i)))
       case('periodic');config(6+i)=1
@@ -2332,9 +2688,9 @@ contains
       end select
     end do
     bounds=[lower,spacing]
-    call MPI_Allreduce(config,minimum,13,MPI_INTEGER,MPI_MIN,comm,ierr)
+    call MPI_Allreduce(config,minimum,14,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,maximum,13,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,maximum,14,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,minbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -2351,14 +2707,14 @@ contains
     call agree()
     if (.not.agreed) return
     periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
-    nrequests=8*np
+    nrequests=ndonors*np
     allocate(owners(nrequests),requests(3,nrequests),weights(nrequests),order(nrequests))
     allocate(counts(nranks),offsets(nranks),received(nranks),displacements(nranks),cursor(nranks));counts=0
     do p=1,np
-      call particle_boundary_stencil(positions(:,p),lower,spacing,cells,faces,indices,w,valid)
+      call feedback_stencil(positions(:,p),indices,w,valid)
       if (.not.valid) exit
-      do n=1,8
-        q=8*(p-1)+n;center=lower+(real(indices(:,n),dp)-.5_dp)*spacing
+      do n=1,ndonors
+        q=ndonors*(p-1)+n;center=lower+(real(indices(:,n),dp)-.5_dp)*spacing
         r=spray_cartesian_owner(center,lower,spacing,cells,parts,periodic)
         if (r<0) then
           valid=.false.;exit
@@ -2375,9 +2731,9 @@ contains
     end do
     cursor=offsets
     do p=1,np
-      call particle_boundary_stencil(positions(:,p),lower,spacing,cells,faces,indices,w,valid)
-      do n=1,8
-        q=8*(p-1)+n;r=owners(q);cursor(r)=cursor(r)+1
+      call feedback_stencil(positions(:,p),indices,w,valid)
+      do n=1,ndonors
+        q=ndonors*(p-1)+n;r=owners(q);cursor(r)=cursor(r)+1
         requests(:,cursor(r))=indices(:,n);order(q)=cursor(r)
       end do
     end do
@@ -2396,8 +2752,8 @@ contains
       incoming,3*received,3*displacements,MPI_INTEGER,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     do p=1,np
-      do n=1,8
-        q=8*(p-1)+n;packed(:,order(q))=weights(q)*contributions(:,p)/volume
+      do n=1,ndonors
+        q=ndonors*(p-1)+n;packed(:,order(q))=weights(q)*contributions(:,p)/volume
       end do
     end do
     call MPI_Alltoallv(packed,nvar*counts,nvar*offsets,MPI_DOUBLE_PRECISION, &
@@ -2427,6 +2783,38 @@ contains
     if (.not.agreed) return
     field=candidate;ok=.true.
   contains
+    subroutine feedback_stencil(position,indices,weights,accepted)
+      real(dp), intent(in) :: position(3)
+      integer, intent(out) :: indices(3,8)
+      real(dp), intent(out) :: weights(8)
+      logical, intent(out) :: accepted
+      real(dp) :: coordinate,length
+      integer :: axis
+      if(.not.cell_feedback) then
+        call particle_boundary_stencil(position,lower,spacing,cells,faces,indices,weights,accepted)
+        return
+      endif
+      ! Integer routing preserves containing-cell support exactly, including
+      ! rank interfaces. CIC remains the default for legacy coupling callers.
+      indices=1;weights=0;weights(1)=1;accepted=.false.
+      do axis=1,3
+        length=spacing(axis)*real(cells(axis),dp)
+        coordinate=position(axis)-lower(axis)
+        if(.not.ieee_is_finite(coordinate)) return
+        if(periodic(axis)) then
+          coordinate=modulo(coordinate,length)
+        else if(coordinate<0.or.coordinate>length) then
+          return
+        endif
+        if(coordinate/spacing(axis)>=real(cells(axis),dp)) then
+          indices(axis,1)=cells(axis)
+        else
+          indices(axis,1)=max(1,floor(coordinate/spacing(axis))+1)
+        endif
+      enddo
+      accepted=.true.
+    end subroutine
+
     subroutine agree()
       call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
       if (ierr/=MPI_SUCCESS) agreed=.false.
@@ -2435,7 +2823,8 @@ contains
 
   subroutine inject_mpi_cone_parcels(comm,liquid,total_mass,number,center,axis,speed,half_angle,diameter,temperature, &
       maximum_parcels,last_id,parcels,injected_totals,ok,components,fractions,component_mass, &
-      diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,nozzle_radius,nozzle_model)
+      diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution,diameter_std,nozzle_radius, &
+      nozzle_model,reference_breakup)
     type(MPI_Comm), intent(in) :: comm
     type(spray_liquid), intent(in) :: liquid
     real(dp), intent(in) :: total_mass,center(3),axis(3),speed,half_angle,diameter,temperature
@@ -2444,6 +2833,7 @@ contains
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
     real(dp), intent(out) :: injected_totals(:)
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: reference_breakup
     type(spray_liquid), optional, intent(in) :: components(:)
     real(dp), optional, intent(in) :: fractions(:)
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
@@ -2454,10 +2844,19 @@ contains
     type(spray_liquid) :: material
     real(dp), allocatable :: masses(:,:)
     real(dp) :: rho,cp,e,ledger(size(injected_totals)),inventory(5)
-    integer :: p,c,nc,lo,hi,old_count,ierr
+    integer :: p,c,nc,lo,hi,old_count,ierr,reference_flag
     integer(int64) :: next_id,first_id
     logical :: valid,agreed,mixed
     ok=.false.;injected_totals=0;nc=0;mixed=present(components)
+    reference_flag=0
+    if(present(reference_breakup)) then
+      reference_flag=1
+      if(reference_breakup) reference_flag=2
+    endif
+    call MPI_Allreduce(reference_flag,lo,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(reference_flag,hi,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.lo/=hi) return
     valid=allocated(parcels).and.maximum_parcels>=1.and.maximum_parcels<=1000000
     valid=valid.and.number>=0.and.number<=1000000.and.last_id>=0.and.size(injected_totals)>=6
     valid=valid.and.(mixed.eqv.present(fractions)).and.(mixed.eqv.present(component_mass))
@@ -2505,7 +2904,7 @@ contains
     allocate(born(0));ledger=0
     if (number>0) call inject_cone_parcels(material,total_mass,number,first_id,center,axis,speed,half_angle,diameter, &
       temperature,born,valid,diameter_shape,diameter_min,diameter_max,diameter_weighting,diameter_distribution, &
-      diameter_std,nozzle_radius,nozzle_model)
+      diameter_std,nozzle_radius,nozzle_model,reference_breakup)
     if (valid) then
       do p=1,size(born)
         inventory=parcel_totals(born(p),material);ledger(1:5)=ledger(1:5)+inventory
@@ -2536,6 +2935,119 @@ contains
       call move_alloc(masses,component_mass)
     end if
     call move_alloc(candidate,parcels);last_id=next_id;injected_totals=ledger;ok=.true.
+  end subroutine
+
+  ! Replace ETAB parents collectively. Feedback is indexed by the original
+  ! local parent order so the caller can deposit it before committing the step.
+  subroutine split_mpi_reference_etab_parcels(comm,parcels,component_mass,maximum_multiplicity, &
+      maximum_parcels,factor,tangential_speed,drift_dt,last_id,positions,feedback,ok,birth_positions,birth_intervals)
+    type(MPI_Comm), intent(in) :: comm
+    type(spray_parcel), allocatable, intent(inout) :: parcels(:)
+    real(dp), allocatable, intent(inout) :: component_mass(:,:)
+    real(dp), intent(in) :: maximum_multiplicity,factor,tangential_speed(:),drift_dt
+    integer, intent(in) :: maximum_parcels
+    integer(int64), intent(inout) :: last_id
+    real(dp), allocatable, intent(inout) :: positions(:,:),feedback(:,:)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: birth_positions(:,:),birth_intervals(:)
+    type(spray_parcel) :: birth_parent
+    type(spray_parcel), allocatable :: candidate(:),children(:),survivors(:)
+    real(dp), allocatable :: masses(:,:),kept_mass(:,:),uniforms(:),pending_positions(:,:),pending_feedback(:,:)
+    real(dp) :: controls(6),minimum(6),maximum(6),exchange(4),birth_dt
+    integer, allocatable :: child_counts(:)
+    integer :: np,nc,p,n,number,total,cursor,kept,ierr
+    integer(int64) :: next_id,first_id,base_id
+    logical :: valid,agreed
+    ok=.false.
+    valid=allocated(parcels).and.allocated(component_mass)
+    valid=valid.and.ieee_is_finite(maximum_multiplicity).and.ieee_is_finite(factor).and.ieee_is_finite(drift_dt)
+    valid=valid.and.maximum_multiplicity>=1e-12_dp.and.maximum_multiplicity<=1e18_dp
+    valid=valid.and.factor>=0.and.factor<=1.and.drift_dt>=0.and.drift_dt<=1e6_dp
+    valid=valid.and.maximum_parcels>=1.and.maximum_parcels<=1000000.and.last_id>=0
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    controls=[maximum_multiplicity,factor,drift_dt,real(maximum_parcels,dp), &
+      merge(1._dp,0._dp,present(birth_positions)),merge(1._dp,0._dp,present(birth_intervals))]
+    call MPI_Allreduce(controls,minimum,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(controls,maximum,6,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any(minimum/=maximum)) return
+    np=size(parcels);nc=size(component_mass,1)
+    valid=np<=maximum_parcels.and.nc>=1.and.nc<=16
+    valid=valid.and.size(component_mass,2)==np.and.size(tangential_speed)==np
+    if(present(birth_positions)) then
+      valid=valid.and.all(shape(birth_positions)==[3,np])
+      if(valid) valid=all(ieee_is_finite(birth_positions))
+      if(valid) valid=all(abs(birth_positions)<=1e9_dp)
+    endif
+    if(present(birth_intervals)) then
+      valid=valid.and.size(birth_intervals)==np
+      if(valid) valid=all(ieee_is_finite(birth_intervals))
+      if(valid) valid=all(birth_intervals>=0).and.all(birth_intervals<=drift_dt)
+    endif
+    valid=valid.and.all(ieee_is_finite(tangential_speed))
+    if(valid) valid=all(tangential_speed>=0).and.all(tangential_speed<=1e7_dp)
+    if(valid) then
+      do p=1,np
+        valid=valid_component_inventory(parcels(p),component_mass(:,p)).and.parcels(p)%id<=last_id
+        if(p>1) valid=valid.and.parcels(p)%id>parcels(p-1)%id
+        if(.not.valid) exit
+      enddo
+    endif
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    allocate(child_counts(np),pending_positions(3,np),pending_feedback(4,np))
+    child_counts=0;pending_feedback=0;number=0;total=np
+    do p=1,np
+      pending_positions(:,p)=parcels(p)%position
+      if(present(birth_positions)) pending_positions(:,p)=birth_positions(:,p)
+      if(parcels(p)%mass<=0.or.parcels(p)%multiplicity<=maximum_multiplicity) cycle
+      call khrt_reference_child_count(parcels(p)%multiplicity,factor, &
+        maximum_parcels-total+1,child_counts(p),valid)
+      if(.not.valid) exit
+      number=number+child_counts(p);total=total-1+child_counts(p)
+    enddo
+    valid=valid.and.total<=maximum_parcels.and.number<=1000000
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    base_id=last_id;next_id=last_id;first_id=0
+    call reserve_spray_ids(comm,number,next_id,first_id,valid)
+    if(.not.valid) return
+    allocate(candidate(np+number),masses(nc,np+number))
+    candidate(:np)=parcels;masses(:,:np)=component_mass;cursor=np
+    do p=1,np
+      if(child_counts(p)==0) cycle
+      allocate(uniforms(child_counts(p)))
+      call khrt_reference_uniforms(parcels(p)%id,base_id,uniforms)
+      exchange=0
+      birth_parent=parcels(p);birth_dt=drift_dt
+      if(present(birth_positions)) birth_parent%position=birth_positions(:,p)
+      if(present(birth_intervals)) birth_dt=birth_intervals(p)
+      call construct_reference_etab_children(birth_parent,parcels(p)%velocity,factor,tangential_speed(p),uniforms, &
+        first_id+int(cursor-np,int64),children,exchange,valid,birth_dt)
+      deallocate(uniforms)
+      if(.not.valid) exit
+      pending_feedback(:,p)=exchange
+      candidate(p)%mass=0;masses(:,p)=0
+      candidate(cursor+1:cursor+child_counts(p))=children
+      do n=1,child_counts(p)
+        masses(:,cursor+n)=component_mass(:,p)
+      enddo
+      cursor=cursor+child_counts(p)
+    enddo
+    call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.agreed) return
+    call assign_parent_child_ids(comm,candidate,np,base_id,valid)
+    if(.not.valid) return
+    kept=count(candidate%mass>0)
+    allocate(survivors(kept),kept_mass(nc,kept));kept=0
+    do p=1,size(candidate)
+      if(candidate(p)%mass<=0) cycle
+      kept=kept+1;survivors(kept)=candidate(p);kept_mass(:,kept)=masses(:,p)
+    enddo
+    call move_alloc(survivors,parcels);call move_alloc(kept_mass,component_mass)
+    call move_alloc(pending_positions,positions);call move_alloc(pending_feedback,feedback)
+    last_id=next_id;ok=.true.
   end subroutine
 
   subroutine split_mpi_spray_parcels(comm,parcels,maximum_multiplicity,maximum_parcels,last_id,ok,component_mass)
@@ -2706,7 +3218,8 @@ contains
     first_id=next_first;last_id=last_id+total;ok=.true.
   end subroutine
 
-  subroutine migrate_spray_parcels(comm,parcels,lower,spacing,cells,parts,periodic,maximum_parcels,ok,component_mass,gather_rank)
+  subroutine migrate_spray_parcels(comm,parcels,lower,spacing,cells,parts,periodic,maximum_parcels,ok, &
+      component_mass,gather_rank,tab_tangent_history)
     integer, intent(in), optional :: gather_rank
     type(MPI_Comm), intent(in) :: comm
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -2715,10 +3228,11 @@ contains
     logical, intent(in) :: periodic(3)
     logical, intent(out) :: ok
     real(dp), allocatable, optional, intent(inout) :: component_mass(:,:)
+    real(dp), allocatable, optional, intent(inout) :: tab_tangent_history(:)
     type(spray_parcel), allocatable :: outgoing(:)
-    real(dp), allocatable :: masses(:,:)
+    real(dp), allocatable :: masses(:,:),history(:)
     integer, allocatable :: counts(:),offsets(:)
-    integer :: rank,nranks,ierr,nc,p,r,config(11),lo(11),hi(11),destination
+    integer :: rank,nranks,ierr,nc,p,r,config(12),lo(12),hi(12),destination
     real(dp) :: bounds(6),minbounds(6),maxbounds(6)
     logical :: valid,global_valid
     ok=.false.
@@ -2735,14 +3249,21 @@ contains
       if (allocated(component_mass)) nc=size(component_mass,1)
       valid=valid.and.nc>=1.and.nc<=16
     end if
+    if(present(tab_tangent_history)) then
+      valid=valid.and.allocated(tab_tangent_history)
+      if(allocated(tab_tangent_history).and.allocated(parcels)) then
+        valid=valid.and.size(tab_tangent_history)==size(parcels)
+        valid=valid.and.all(ieee_is_finite(tab_tangent_history)).and.all(tab_tangent_history>=0)
+      endif
+    endif
     valid=valid.and.destination>=-1.and.destination<nranks
     valid=valid.and.all(ieee_is_finite([lower,spacing]))
     call agree()
     if (.not.global_valid) return
-    config=[cells,parts,merge(1,0,periodic),nc,destination];bounds=[lower,spacing]
-    call MPI_Allreduce(config,lo,11,MPI_INTEGER,MPI_MIN,comm,ierr)
+    config=[cells,parts,merge(1,0,periodic),nc,destination,merge(1,0,present(tab_tangent_history))];bounds=[lower,spacing]
+    call MPI_Allreduce(config,lo,12,MPI_INTEGER,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
-    call MPI_Allreduce(config,hi,11,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call MPI_Allreduce(config,hi,12,MPI_INTEGER,MPI_MAX,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     call MPI_Allreduce(bounds,minbounds,6,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
@@ -2754,12 +3275,22 @@ contains
     if (.not.global_valid) return
     valid=product(parts)==nranks
     outgoing=parcels
+    if(present(tab_tangent_history)) history=tab_tangent_history
     if (valid) then
       if (present(component_mass)) then
         masses=component_mass
-        call partition_spray_parcels(outgoing,lower,spacing,cells,parts,periodic,counts,offsets,valid,masses)
+        if(present(tab_tangent_history)) then
+          call partition_spray_parcels(outgoing,lower,spacing,cells,parts,periodic,counts,offsets,valid,masses,history)
+        else
+          call partition_spray_parcels(outgoing,lower,spacing,cells,parts,periodic,counts,offsets,valid,masses)
+        endif
       else
-        call partition_spray_parcels(outgoing,lower,spacing,cells,parts,periodic,counts,offsets,valid)
+        if(present(tab_tangent_history)) then
+          call partition_spray_parcels(outgoing,lower,spacing,cells,parts,periodic,counts,offsets,valid, &
+            tab_tangent_history=history)
+        else
+          call partition_spray_parcels(outgoing,lower,spacing,cells,parts,periodic,counts,offsets,valid)
+        endif
       end if
     end if
     call agree()
@@ -2771,9 +3302,17 @@ contains
       end do
     end if
     if (present(component_mass)) then
-      call exchange_spray_parcel_bins(comm,outgoing,counts,offsets,maximum_parcels,valid,masses)
+      if(present(tab_tangent_history)) then
+        call exchange_spray_parcel_bins(comm,outgoing,counts,offsets,maximum_parcels,valid,masses,history)
+      else
+        call exchange_spray_parcel_bins(comm,outgoing,counts,offsets,maximum_parcels,valid,masses)
+      endif
     else
-      call exchange_spray_parcel_bins(comm,outgoing,counts,offsets,maximum_parcels,valid)
+      if(present(tab_tangent_history)) then
+        call exchange_spray_parcel_bins(comm,outgoing,counts,offsets,maximum_parcels,valid,tab_tangent_history=history)
+      else
+        call exchange_spray_parcel_bins(comm,outgoing,counts,offsets,maximum_parcels,valid)
+      endif
     end if
     if (.not.valid) return
     do p=1,size(outgoing)
@@ -2787,6 +3326,7 @@ contains
     if (.not.global_valid) return
     call move_alloc(outgoing,parcels)
     if (present(component_mass)) call move_alloc(masses,component_mass)
+    if(present(tab_tangent_history)) call move_alloc(history,tab_tangent_history)
     ok=.true.
   contains
     subroutine agree()

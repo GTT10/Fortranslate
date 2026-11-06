@@ -276,8 +276,15 @@ contains
       end select
       call fill_sdc_eb_tree_source_halo_3d(saved,rates,1,3,halo,ok,boundary_faces=labels)
       call require(ok,'SDC scalar physical extrapolation')
-      call require(all(halo(:,-2,-2,4)==rates%fields(1)%values(:,1,1,4)), &
-        'SDC physical source has no reflection or inlet state')
+      if(mode<=3) then
+        ! Wall donor positions mirror like gas/geometry; source components
+        ! retain their signs. This supersedes the earlier clamped-wall test.
+        call require(all(halo(:,-2,-2,4)==rates%fields(1)%values(:,3,3,4)), &
+          'SDC wall source mirrors donor position without component sign changes')
+      else
+        call require(all(halo(:,-2,-2,4)==rates%fields(1)%values(:,1,1,4)), &
+          'SDC inlet source extrapolates without prescribed gas state')
+      endif
       call require(all(halo(:,:, :,1)==0),'SDC solid source ignored')
     end do
     do z=-2,7

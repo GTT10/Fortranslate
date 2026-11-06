@@ -7,7 +7,8 @@ module spray_eb_step_mod
   use spray_parcel_mod
   use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties, &
     advance_mixture_frozen_gas,mixture_transfer_rates,mixture_trace_fraction,build_mixture_film
-  use spray_breakup_mod, only: advance_spray_breakup,advance_mixture_khrt_shedding
+  use spray_breakup_mod, only: advance_spray_breakup,advance_mixture_khrt_shedding, &
+    construct_configured_etab_children,khrt_reference_child_count
   use eb_geometry_3d_mod, only: eb_geometry_3d
   use spray_eb_field_mod, only: sample_eb_spray_field,deposit_eb_spray_gas
   use spray_eb_intersection_mod, only: intersect_spray_level_set
@@ -23,7 +24,7 @@ module spray_eb_step_mod
 contains
   ! Preserve the original fixed-population interface for specular callers.
   subroutine advance_eb_mixture_coupling(species,transport,components,options,g,phi,state,temperature, &
-      parcels,component_mass,interval,substeps,boundary_change,ok)
+      parcels,component_mass,interval,substeps,boundary_change,ok,force_change)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
@@ -34,17 +35,18 @@ contains
     type(spray_parcel), intent(inout) :: parcels(:)
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: force_change(5)
     type(spray_parcel), allocatable :: drops(:)
     real(dp), allocatable :: masses(:,:)
     drops=parcels;masses=component_mass
     call advance_eb_mixture_coupling_allocated(species,transport,components,options,g,phi,state,temperature, &
-      drops,masses,interval,substeps,boundary_change,ok)
+      drops,masses,interval,substeps,boundary_change,ok,force_change=force_change)
     if (.not.ok) return
     parcels=drops;component_mass=masses
   end subroutine
   subroutine advance_eb_mixture_coupling_allocated(species,transport,components,options,g,phi,state,temperature, &
       parcels,component_mass,interval,substeps,boundary_change,ok,wall_options,films,film_mass,last_id,model_rejected, &
-      outer_faces,outer_change)
+      outer_faces,outer_change,force_change)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(spray_liquid), intent(in) :: components(:)
@@ -74,21 +76,27 @@ contains
     logical, optional, intent(out) :: model_rejected
     integer, intent(out) :: substeps
     logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: force_change(5)
+    real(dp) :: force_ledger(5),trial_force(5),parcel_force(5),motion_dt
     type(spray_parcel), allocatable :: drops(:),trial(:)
     type(spray_liquid) :: effective
     type(spray_film) :: film
     real(dp), allocatable :: gas(:,:,:,:),temp(:,:,:),next_gas(:,:,:,:),next_temp(:,:,:),field(:,:,:,:)
     real(dp), allocatable :: masses(:,:),next_mass(:,:),positions(:,:),samples(:,:),primitive(:,:),tg(:),change(:,:)
     real(dp) :: elapsed,dt,sound,invtau,heat,rho,cp,e,tdot,speed,old_mass,h(3),lower(3),upper(3),exchange(5),ledger(5)
+    real(dp) :: surface_energy
     real(dp) :: y(size(components)),rates(size(components)),hv(size(components))
     integer :: np,nc,nvar,p,n,attempt,count_steps,hits,film_steps
     real(dp) :: film_change(5)
     real(dp), allocatable :: reynolds(:),child_momentum(:,:),child_energy(:),impact_pressures(:)
+    real(dp), allocatable :: etab_tangent(:),trial_tangent(:)
+    real(dp) :: etab_delta,last_dt
     logical, allocatable :: eligible(:)
     real(dp) :: crossing_fraction,crossing_position(3),crossing_normal(3)
     integer :: crossing_cell(3),parent
     logical :: crossing,valid,accepted,periodic(3)
-    ok=.false.;substeps=0
+    ok=.false.;substeps=0;force_ledger=0
+    if(options%fixed_parts.and..not.present(force_change)) return
     if (present(model_rejected)) model_rejected=.false.
     if (.not.g%is_valid().or..not.valid_spray_options(options)) return
     if (.not.ieee_is_finite(interval)) return
@@ -106,6 +114,7 @@ contains
     if (present(films).neqv.impacts) return
     if (present(film_mass).neqv.impacts) return
     if ((impacts.or.options%khrt_children).and..not.present(last_id)) return
+    if (options%etab_parcel_factor>=0.and..not.present(last_id)) return
     watermark=0
     if (present(last_id)) then
       watermark=last_id
@@ -159,6 +168,10 @@ contains
     if(impacts.and.present(outer_faces)) allocate(impact_exterior(5+nc))
     lower=[g%x_lower,g%y_lower,g%z_lower];upper=[g%x_upper,g%y_upper,g%z_upper];h=[g%dx,g%dy,g%dz]
     gas=state;temp=temperature;drops=parcels;masses=component_mass;ledger=0
+    last_dt=0
+    if(options%etab_parcel_factor>=0) then
+      allocate(etab_tangent(size(drops)));etab_tangent=0
+    endif
     allocate(positions(3,np),change(nvar,np),primitive(nvar,np),tg(np),field(nvar+1,g%nx,g%ny,g%nz))
     do p=1,np
       positions(:,p)=drops(p)%position
@@ -190,35 +203,52 @@ contains
         call mixture_transfer_rates(species,transport,primitive(:,p),tg(p),drops(p),components,y,options, &
           invtau,heat,rates,hv,valid)
         if (.not.valid) exit
-        call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid)
+        call liquid_mixture_properties(components,y,drops(p)%temperature,rho,cp,e,valid,primitive(5,p), &
+          species(components%vapor_index)%molecular_weight)
         if (.not.valid) exit
         if (invtau>0) dt=min(dt,options%max_fractional_change/invtau)
         tdot=heat*(tg(p)-drops(p)%temperature)
+        if(options%abramzon_sirignano.and.options%evaporation) tdot=heat*max(0._dp,tg(p)-drops(p)%temperature)
         do n=1,nc
           if (rates(n)>0.and.y(n)>mixture_trace_fraction) &
             dt=min(dt,options%max_fractional_change*masses(n,p)/rates(n))
-          tdot=tdot-rates(n)*(hv(n)-liquid_energy(components(n),drops(p)%temperature))
+          if(rates(n)==0) cycle
+          surface_energy=liquid_energy(components(n),drops(p)%temperature)
+          if(options%mixture_time_scheme=='euler') then
+            call liquid_evaporation_energy(components(n),drops(p)%temperature,surface_energy,valid, &
+              primitive(5,p),species(components(n)%vapor_index)%molecular_weight)
+            if(.not.valid) exit
+          endif
+          tdot=tdot-rates(n)*(hv(n)-surface_energy)
         end do
+        if(.not.valid) exit
         tdot=tdot/(drops(p)%mass*cp)
         if (abs(tdot)>0) dt=min(dt,min(2.0_dp,options%max_fractional_change*drops(p)%temperature)/abs(tdot))
         speed=max(maxval(abs(drops(p)%velocity)),maxval(abs(primitive(2:4,p))))
-        if (speed>0) dt=min(dt,options%particle_cfl*minval(h)/speed)
+        if (speed>0.and..not.options%fixed_parts) dt=min(dt,options%particle_cfl*minval(h)/speed)
       end do
       if (.not.valid) return
       if(allocated(reynolds)) deallocate(reynolds,eligible)
       allocate(reynolds(np),eligible(np));reynolds=0;eligible=.true.
       accepted=.false.
       do attempt=1,30
+        trial_force=0;motion_dt=dt
+        if(options%fixed_parts) motion_dt=0
         if (dt<=0.or.elapsed+dt<=elapsed) exit
         trial=drops;next_mass=masses;change=0;valid=.true.;next_watermark=watermark
+        if(options%etab_parcel_factor>=0) trial_tangent=etab_tangent
         do p=1,np
           if (drops(p)%mass<=0) cycle
           call advance_mixture_frozen_gas(species,transport,primitive(:,p),tg(p),trial(p),components, &
-            next_mass(:,p),options,dt,change(:,p),valid)
+            next_mass(:,p),options,dt,change(:,p),valid,force_change=parcel_force)
           if (.not.valid) exit
+          trial_force=trial_force+parcel_force
+          valid=all(ieee_is_finite(trial_force))
+          if(.not.valid) exit
           if (trial(p)%mass>0.and.options%breakup_model/='none') then
             old_mass=trial(p)%mass;y=next_mass(:,p)/old_mass
-            call liquid_mixture_properties(components,y,trial(p)%temperature,rho,cp,e,valid)
+            call liquid_mixture_properties(components,y,trial(p)%temperature,rho,cp,e,valid,primitive(5,p), &
+              species(components%vapor_index)%molecular_weight)
             if (.not.valid) exit
             effective=components(1);effective%density=rho;effective%density_model='constant'
             effective%density_coefficients=0;effective%density_temperature_range=0
@@ -234,8 +264,14 @@ contains
               reynolds(p)=film%density*norm2(primitive(2:4,p)-trial(p)%velocity)* &
                 parcel_diameter(trial(p),effective)/film%viscosity
             else
-            call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
-              film%density,film%viscosity,dt,valid)
+            if(options%etab_parcel_factor>=0) then
+              call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
+                film%density,film%viscosity,dt,valid,etab_delta)
+              if(valid) trial_tangent(p)=trial_tangent(p)+etab_delta
+            else
+              call advance_spray_breakup(trial(p),effective,options,primitive(1,p),primitive(2:4,p), &
+                film%density,film%viscosity,dt,valid)
+            endif
             if (.not.valid) exit
             next_mass(:,p)=next_mass(:,p)*(trial(p)%mass/old_mass)
             end if
@@ -249,13 +285,13 @@ contains
           eligible=.true.
           do p=1,np
             if(trial(p)%mass<=0) cycle
-            clipped_finish=trial(p)%position+dt*trial(p)%velocity
+            clipped_finish=trial(p)%position+motion_dt*trial(p)%velocity
             if(present(outer_faces)) then
               ! Follow wrapped/reflecting flight before deciding on KH release.
               ! The preview remains private; actual parents and children drift later.
               preview(1)=trial(p);preview_contact=.false.
               preview_change=0;preview_exterior=0;preview_hits=0
-              call drift_spray_level_set(phi,lower,upper,dt,32,preview,preview_change,preview_hits, &
+              call drift_spray_level_set(phi,lower,upper,motion_dt,32,preview,preview_change,preview_hits, &
                 valid,outer_faces,[0._dp],preview_exterior,preview_contact)
               if(.not.valid) exit
               eligible(p)=.not.preview_contact(1)
@@ -268,7 +304,9 @@ contains
             eligible(p)=.not.crossing
           end do
           if(valid) call advance_mixture_khrt_shedding(components,options,trial,next_mass,primitive(1,:), &
-            primitive(2:4,:),reynolds,dt,next_watermark,child_energy,valid,eligible,gas_momentum=child_momentum)
+            primitive(2:4,:),reynolds,dt,next_watermark,child_energy,valid,eligible,gas_momentum=child_momentum, &
+            pressure=primitive(5,:),gas_molecular_weights=species(components%vapor_index)%molecular_weight, &
+            child_drift_dt=0._dp)
           if(valid) valid=size(trial)<=125000
           if(valid) then
             change(2:4,:)=change(2:4,:)+child_momentum
@@ -300,7 +338,8 @@ contains
                 next_gas,next_temp,next_patches,next_patch_mass,dt,film_steps,film_change,valid,periodic)
             end if
             rejected=.false.
-            if (valid) call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
+            if (valid.and..not.options%fixed_parts) &
+              call advance_mixture_level_set_impacts(phi,lower,upper,dt,wall_options%maximum_hits, &
               min(125000,options%maximum_parcels),wall_options%maximum_films,components,options,molecular_weights, &
               101325._dp,wall_options%temperature,wall_options%contact_angle,trial,next_mass, &
               next_patches,next_patch_mass,next_watermark,exchange,hits,valid,impact_pressures,rejected, &
@@ -326,7 +365,7 @@ contains
               if(.not.valid) exit
               liquid_energies(p)=e
             end do
-            if(valid) call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid, &
+            if(valid) call drift_spray_level_set(phi,lower,upper,motion_dt,32,trial,exchange,hits,valid, &
               outer_faces,liquid_energies,trial_exterior(:5))
             if(valid) then
               do p=1,size(trial)
@@ -339,7 +378,7 @@ contains
               end do
             end if
           else
-            call drift_spray_level_set(phi,lower,upper,dt,32,trial,exchange,hits,valid)
+            call drift_spray_level_set(phi,lower,upper,motion_dt,32,trial,exchange,hits,valid)
           end if
         end if
         exchange=exchange+film_change
@@ -349,7 +388,14 @@ contains
         dt=.5_dp*dt
       end do
       if (.not.accepted) return
+      force_ledger=force_ledger+trial_force
+      if(.not.all(ieee_is_finite(force_ledger))) return
       gas=next_gas;temp=next_temp;drops=trial;masses=next_mass;ledger=ledger+exchange
+      if(options%etab_parcel_factor>=0) then
+        if(size(trial)>size(trial_tangent)) &
+          trial_tangent=[trial_tangent,spread(0._dp,1,size(trial)-size(trial_tangent))]
+        etab_tangent=trial_tangent;last_dt=dt
+      endif
       exterior=exterior+trial_exterior
       watermark=next_watermark
       if (impacts) then
@@ -357,12 +403,129 @@ contains
       end if
       elapsed=elapsed+dt;count_steps=count_steps+1
     end do
+    if(options%etab_parcel_factor>=0.and.interval>0) then
+      call split_reference_eb_etab(valid)
+      if(.not.valid) return
+    endif
     state=gas;temperature=temp;parcels=drops;component_mass=masses
     if (impacts) then
       films=patches;film_mass=patch_mass
     end if
     if(present(last_id)) last_id=watermark
     if(present(outer_change)) outer_change=exterior
+    if(present(force_change)) force_change=force_ledger
     boundary_change=ledger;substeps=count_steps;ok=.true.
+  contains
+    subroutine split_reference_eb_etab(split_ok)
+      logical, intent(out) :: split_ok
+      type(spray_parcel), allocatable :: replacement(:),children(:),all_children(:)
+      real(dp), allocatable :: replacement_mass(:,:),all_mass(:,:),split_positions(:,:),split_change(:,:)
+      real(dp), allocatable :: child_energies(:),child_pressures(:)
+      real(dp) :: child_wall(5),child_exterior(5),impact_outflow(5+nc),compensation(4),fraction(nc)
+      integer :: source,child,number,kept,total,cursor,created,child_hits,c
+      logical :: ready,impact_rejected
+      split_ok=.false.;total=0;kept=0
+      if(size(etab_tangent)/=size(drops)) return
+      do source=1,size(drops)
+        if(drops(source)%mass<=0.or.drops(source)%multiplicity<=options%maximum_multiplicity) then
+          total=total+1;kept=kept+1;cycle
+        endif
+        number=0
+        call khrt_reference_child_count(drops(source)%multiplicity,options%etab_parcel_factor, &
+          min(125000,options%maximum_parcels)-total,number,ready)
+        if(.not.ready) return
+        total=total+number
+      enddo
+      if(total==kept) then
+        split_ok=.true.;return
+      endif
+      if(watermark>huge(watermark)-int(total-kept,int64)) return
+      created=total-kept
+      allocate(all_children(created),all_mass(nc,created),child_energies(created),child_pressures(created), &
+        split_positions(3,size(drops)),split_change(nvar,size(drops)))
+      split_change=0;cursor=0
+      do source=1,size(drops)
+        split_positions(:,source)=drops(source)%position
+      enddo
+      do source=1,size(drops)
+        if(drops(source)%mass<=0.or.drops(source)%multiplicity<=options%maximum_multiplicity) cycle
+        fraction=masses(:,source)/drops(source)%mass
+        call liquid_mixture_properties(components,fraction,drops(source)%temperature,rho,cp,e,ready)
+        if(.not.ready) return
+        compensation=0
+        call construct_configured_etab_children(drops(source),drops(source)%velocity, &
+          options%etab_parcel_factor,etab_tangent(source),watermark,created-cursor, &
+          children,compensation,ready)
+        if(.not.ready) return
+        split_change(2:5,source)=compensation
+        do child=1,size(children)
+          cursor=cursor+1;all_children(cursor)=children(child);all_mass(:,cursor)=masses(:,source)
+          child_energies(cursor)=e;child_pressures(cursor)=101325._dp
+          if(source<=size(primitive,2)) child_pressures(cursor)=primitive(5,source)
+        enddo
+        watermark=watermark+int(size(children),int64)
+      enddo
+      if(cursor/=created) return
+      child_wall=0;child_hits=0;child_exterior=0;impact_outflow=0
+      if(options%fixed_parts) then
+        ready=.true.
+      else if(impacts) then
+        impact_rejected=.false.
+        if(present(outer_faces)) then
+          call advance_mixture_level_set_impacts(phi,lower,upper,last_dt,wall_options%maximum_hits, &
+            min(125000,options%maximum_parcels)-kept,wall_options%maximum_films,components,options, &
+            molecular_weights,101325._dp,wall_options%temperature,wall_options%contact_angle, &
+            all_children,all_mass,patches,patch_mass,watermark,child_wall,child_hits,ready, &
+            child_pressures,impact_rejected,impact_outflow,outer_faces)
+        else
+          call advance_mixture_level_set_impacts(phi,lower,upper,last_dt,wall_options%maximum_hits, &
+            min(125000,options%maximum_parcels)-kept,wall_options%maximum_films,components,options, &
+            molecular_weights,101325._dp,wall_options%temperature,wall_options%contact_angle, &
+            all_children,all_mass,patches,patch_mass,watermark,child_wall,child_hits,ready, &
+            child_pressures,impact_rejected)
+        endif
+        if(impact_rejected) then
+          if(present(model_rejected)) model_rejected=.true.
+          return
+        endif
+        if(.not.ready) return
+        exterior(:5)=exterior(:5)+impact_outflow(:5)
+        do c=1,nc
+          exterior(5+components(c)%vapor_index)=exterior(5+components(c)%vapor_index)+impact_outflow(5+c)
+        enddo
+      else
+        if(present(outer_faces)) then
+          call drift_spray_level_set(phi,lower,upper,last_dt,32,all_children,child_wall,child_hits,ready, &
+            outer_faces,child_energies,child_exterior)
+        else
+          call drift_spray_level_set(phi,lower,upper,last_dt,32,all_children,child_wall,child_hits,ready)
+        endif
+        if(.not.ready) return
+        exterior(:5)=exterior(:5)+child_exterior
+        do child=1,size(all_children)
+          if(all_children(child)%mass>0) cycle
+          do c=1,nc
+            exterior(5+components(c)%vapor_index)=exterior(5+components(c)%vapor_index)- &
+              all_mass(c,child)*all_children(child)%multiplicity
+          enddo
+          all_mass(:,child)=0
+        enddo
+      endif
+      ledger=ledger+child_wall
+      if(kept+size(all_children)>min(125000,options%maximum_parcels)) return
+      allocate(replacement(kept+size(all_children)),replacement_mass(nc,size(replacement)))
+      cursor=0
+      do source=1,size(drops)
+        if(drops(source)%mass>0.and.drops(source)%multiplicity>options%maximum_multiplicity) cycle
+        cursor=cursor+1;replacement(cursor)=drops(source);replacement_mass(:,cursor)=masses(:,source)
+      enddo
+      replacement(kept+1:)=all_children;replacement_mass(:,kept+1:)=all_mass
+      next_gas=gas;next_temp=temp
+      call deposit_eb_spray_gas(species,g,phi,split_positions,split_change,next_gas,next_temp,ready,periodic)
+      if(.not.ready) return
+      gas=next_gas;temp=next_temp
+      call move_alloc(replacement,drops);call move_alloc(replacement_mass,masses)
+      split_ok=.true.
+    end subroutine
   end subroutine
 end module

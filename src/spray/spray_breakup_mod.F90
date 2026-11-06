@@ -6,10 +6,11 @@ module spray_breakup_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use precision_mod, only: dp
   use spray_parcel_mod
-  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties
+  use spray_mixture_mod, only: valid_component_inventory,liquid_mixture_properties,apply_mixture_breakup_viscosity
   implicit none
   private
   public :: advance_etab_breakup, advance_khrt_breakup, advance_spray_breakup, split_spray_parcels
+  public :: advance_tab_no_birth_khrt
   type, public :: spray_khrt_shedding_state
     real(dp) :: initial_count=0,shed_volume=0
   end type
@@ -19,6 +20,7 @@ module spray_breakup_mod
   public :: advance_khrt_shedding,construct_khrt_children,advance_mixture_khrt_shedding
   public :: construct_configured_khrt_children
   public :: khrt_reference_child_count,construct_reference_khrt_children,khrt_reference_uniforms
+  public :: construct_reference_etab_children,construct_configured_etab_children
 contains
   ! Stateless xorshift64 samples keyed by persistent parent ID and pre-release
   ! global ID watermark. No rank-local RNG state is advanced on rejection.
@@ -54,7 +56,7 @@ contains
   end subroutine
 
   subroutine construct_reference_khrt_children(parent,release,axis,exponent,uniforms,first_id, &
-      children,gas_exchange,ok)
+      children,gas_exchange,ok,drift_dt)
     type(spray_parcel), intent(in) :: parent
     type(spray_khrt_release), intent(in) :: release
     real(dp), intent(in) :: axis(3),exponent,uniforms(:)
@@ -63,11 +65,16 @@ contains
     ! Momentum and total-energy compensation; mass/species do not change.
     real(dp), intent(inout) :: gas_exchange(4)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: drift_dt
     type(spray_parcel), allocatable :: candidate(:)
     real(dp) :: normal(3),testvec(3),psi_axis(3),beta_axis(3),dv(3),angle,exchange(4),weight
     integer :: number,n,stat
     ok=.false.
     if(.not.valid_spray_parcel(parent)) return
+    if(present(drift_dt)) then
+      if(.not.ieee_is_finite(drift_dt)) return
+      if(drift_dt<0.or.drift_dt>1e6_dp) return
+    endif
     if(.not.all(ieee_is_finite([axis,release%mass,release%drop_mass,release%multiplicity, &
         release%diameter,release%tangential_speed]))) return
     if(maxval(abs(axis))>1e9_dp) return
@@ -100,6 +107,7 @@ contains
       candidate(n)=parent;candidate(n)%id=first_id+int(n-1,int64);candidate(n)%parent_id=parent%id
       candidate(n)%mass=release%drop_mass;candidate(n)%multiplicity=weight
       candidate(n)%velocity=parent%velocity+dv
+      if(present(drift_dt)) candidate(n)%position=parent%position+drift_dt*candidate(n)%velocity
       candidate(n)%deformation=0;candidate(n)%deformation_rate=0;candidate(n)%rt_time=0
       candidate(n)%khrt_initial_count=weight;candidate(n)%khrt_shed_volume=0
       if(.not.valid_spray_parcel(candidate(n))) return
@@ -116,7 +124,96 @@ contains
     end function
   end subroutine
 
-  subroutine construct_configured_khrt_children(options,parent,release,axis,watermark,capacity,children,exchange,ok)
+  ! TABBreakup.H / SpraySB.cpp: replace an overpopulated ETAB parcel with
+  ! sampled transverse children. Gas compensation closes the PeleF inventory.
+  subroutine construct_reference_etab_children(parent,axis,exponent,tangential_speed,uniforms,first_id, &
+      children,gas_exchange,ok,drift_dt)
+    type(spray_parcel), intent(in) :: parent
+    real(dp), intent(in) :: axis(3),exponent,tangential_speed,uniforms(:)
+    integer(int64), intent(in) :: first_id
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    real(dp), intent(inout) :: gas_exchange(4)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: drift_dt
+    type(spray_parcel), allocatable :: candidate(:)
+    real(dp) :: normal(3),testvec(3),psi_axis(3),beta_axis(3),dv(3),angle,weight,exchange(4)
+    integer :: number,n,stat
+    ok=.false.
+    if(.not.valid_spray_parcel(parent).or.parent%mass<=0) return
+    if(.not.all(ieee_is_finite([axis,exponent,tangential_speed,uniforms]))) return
+    if(maxval(abs(axis))>1e9_dp.or.norm2(axis)<1e-12_dp) return
+    if(tangential_speed<0.or.tangential_speed>1e7_dp) return
+    if(present(drift_dt)) then
+      if(.not.ieee_is_finite(drift_dt)) return
+      if(drift_dt<0.or.drift_dt>1e6_dp) return
+    endif
+    number=0
+    call khrt_reference_child_count(parent%multiplicity,exponent,size(uniforms),number,ok)
+    if(.not.ok) return
+    ok=.false.
+    if(size(uniforms)/=number.or.any(uniforms<0).or.any(uniforms>=1)) return
+    if(first_id<=parent%id.or.first_id>huge(first_id)-int(number-1,int64)) return
+    normal=axis/norm2(axis);testvec=[1._dp,0._dp,0._dp]
+    psi_axis=cross(testvec,normal)
+    if(norm2(psi_axis)<1e-5_dp) then
+      testvec=[0._dp,1._dp,0._dp];psi_axis=cross(testvec,normal)
+    endif
+    psi_axis=psi_axis/norm2(psi_axis)
+    beta_axis=cross(psi_axis,normal);beta_axis=beta_axis/norm2(beta_axis)
+    allocate(candidate(number),stat=stat)
+    if(stat/=0) return
+    weight=parent%multiplicity/real(number,dp);exchange=0
+    do n=1,number
+      angle=2*acos(-1._dp)*uniforms(n)
+      dv=tangential_speed*(sin(angle)*psi_axis+cos(angle)*beta_axis)
+      candidate(n)=parent;candidate(n)%id=first_id+int(n-1,int64);candidate(n)%parent_id=parent%id
+      candidate(n)%multiplicity=weight;candidate(n)%velocity=parent%velocity+dv
+      if(present(drift_dt)) candidate(n)%position=parent%position+drift_dt*candidate(n)%velocity
+      ! Native TAB children retain N0=N_s for the no-birth KHRT fallback.
+      candidate(n)%khrt_initial_count=weight;candidate(n)%khrt_shed_volume=0
+      if(.not.valid_spray_parcel(candidate(n))) return
+      exchange(:3)=exchange(:3)-parent%mass*weight*dv
+      exchange(4)=exchange(4)-parent%mass*weight*(dot_product(parent%velocity,dv)+.5_dp*sum(dv**2))
+    enddo
+    if(.not.all(ieee_is_finite(exchange))) return
+    call move_alloc(candidate,children);gas_exchange=exchange;ok=.true.
+  contains
+    pure function cross(a,b) result(c)
+      real(dp), intent(in) :: a(3),b(3)
+      real(dp) :: c(3)
+      c=[a(2)*b(3)-a(3)*b(2),a(3)*b(1)-a(1)*b(3),a(1)*b(2)-a(2)*b(1)]
+    end function
+  end subroutine
+
+  ! Keep the count, samples and ID reservation in one transactional entry point.
+  ! The caller owns gas deposition and the parent replacement on acceptance.
+  subroutine construct_configured_etab_children(parent,axis,exponent,tangential_speed,watermark,capacity, &
+      children,exchange,ok,drift_dt)
+    type(spray_parcel), intent(in) :: parent
+    real(dp), intent(in) :: axis(3),exponent,tangential_speed
+    integer(int64), intent(in) :: watermark
+    integer, intent(in) :: capacity
+    type(spray_parcel), allocatable, intent(inout) :: children(:)
+    real(dp), intent(inout) :: exchange(4)
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: drift_dt
+    real(dp), allocatable :: uniforms(:)
+    real(dp) :: pending(4)
+    integer :: number
+    ok=.false.;number=0;pending=0
+    if(watermark<parent%id.or.capacity<1) return
+    call khrt_reference_child_count(parent%multiplicity,exponent,capacity,number,ok)
+    if(.not.ok) return
+    ok=.false.
+    if(watermark>huge(watermark)-int(number,int64)) return
+    allocate(uniforms(number))
+    call khrt_reference_uniforms(parent%id,watermark,uniforms)
+    call construct_reference_etab_children(parent,axis,exponent,tangential_speed,uniforms, &
+      watermark+1_int64,children,pending,ok,drift_dt)
+    if(ok) exchange=pending
+  end subroutine
+
+  subroutine construct_configured_khrt_children(options,parent,release,axis,watermark,capacity,children,exchange,ok,drift_dt)
     type(spray_options), intent(in) :: options
     type(spray_parcel), intent(in) :: parent
     type(spray_khrt_release), intent(in) :: release
@@ -126,6 +223,7 @@ contains
     type(spray_parcel), allocatable, intent(inout) :: children(:)
     real(dp), intent(inout) :: exchange(4)
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: drift_dt
     real(dp), allocatable :: uniforms(:)
     real(dp) :: pending(4)
     integer :: number
@@ -141,15 +239,16 @@ contains
       allocate(uniforms(number))
       call khrt_reference_uniforms(parent%id,watermark,uniforms)
       call construct_reference_khrt_children(parent,release,axis,options%khrt_parcel_factor,uniforms, &
-        watermark+1_int64,children,pending,ok)
+        watermark+1_int64,children,pending,ok,drift_dt)
     else
-      call construct_khrt_children(parent,release,axis,watermark+1_int64,children,pending(4),ok)
+      call construct_khrt_children(parent,release,axis,watermark+1_int64,children,pending(4),ok,drift_dt)
     endif
     if(ok) exchange=pending
   end subroutine
 
   subroutine advance_mixture_khrt_shedding(components,options,parcels,component_mass,gas_density, &
-      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible,reference_factor,gas_momentum)
+      gas_velocity,reynolds,dt,last_id,gas_energy,ok,eligible,reference_factor,gas_momentum,pressure, &
+      gas_molecular_weights,child_drift_dt,make_new_drops)
     type(spray_liquid), intent(in) :: components(:)
     type(spray_options), intent(in) :: options
     type(spray_parcel), allocatable, intent(inout) :: parcels(:)
@@ -157,23 +256,26 @@ contains
     real(dp), intent(in) :: gas_density(:),gas_velocity(:,:),reynolds(:),dt
     integer(int64), intent(inout) :: last_id
     logical, intent(out) :: ok
-    logical, optional, intent(in) :: eligible(:)
+    logical, optional, intent(in) :: eligible(:),make_new_drops
     real(dp), optional, intent(in) :: reference_factor
     real(dp), allocatable, optional, intent(inout) :: gas_momentum(:,:)
+    real(dp), optional, intent(in) :: pressure(:),gas_molecular_weights(:),child_drift_dt
     real(dp), allocatable :: momentum(:,:),uniforms(:)
     real(dp) :: exchange(4),factor
-    logical :: reference
+    logical :: reference,allow_births
     integer, allocatable :: child_counts(:)
     type(spray_parcel), allocatable :: candidate(:),children(:),result(:)
     type(spray_khrt_release), allocatable :: releases(:)
     type(spray_khrt_shedding_state) :: pending
     type(spray_liquid) :: effective
+    type(spray_options) :: breakup_options
     real(dp), allocatable :: masses(:,:),fractions(:,:),energy(:),result_mass(:,:)
-    real(dp) :: rho,cp,e,axis(3)
+    real(dp) :: rho,cp,e,axis(3),birth_dt
     integer :: np,nc,p,n,number,cursor
     integer(int64) :: next_id,first_id
     logical :: valid
-    ok=.false.
+    ok=.false.;allow_births=.true.
+    if(present(make_new_drops)) allow_births=make_new_drops
     valid=allocated(parcels).and.allocated(component_mass).and.valid_spray_options(options)
     valid=valid.and.options%breakup_model=='khrt'.and.options%khrt_children
     factor=options%khrt_parcel_factor
@@ -187,12 +289,20 @@ contains
     endif
     if(reference.or.present(reference_factor)) valid=valid.and.present(gas_momentum)
     if (.not.valid) return
+    breakup_options=options;breakup_options%khrt_parcel_factor=factor
     np=size(parcels);nc=size(components)
     valid=np<=1000000.and.nc>=1.and.nc<=16.and.all(shape(component_mass)==[nc,np])
     valid=valid.and.size(gas_density)==np.and.size(reynolds)==np.and.all(shape(gas_velocity)==[3,np])
     valid=valid.and.ieee_is_finite(dt).and.dt>=0.and.dt<=1e6_dp
     if(present(eligible)) valid=valid.and.size(eligible)==np
+    if(present(pressure)) valid=valid.and.size(pressure)==np
+    if(present(child_drift_dt)) then
+      if(valid) valid=ieee_is_finite(child_drift_dt)
+      if(valid) valid=child_drift_dt>=0.and.child_drift_dt<=1e6_dp
+    endif
     if (.not.valid) return
+    birth_dt=merge(dt,0._dp,options%fixed_parts)
+    if(present(child_drift_dt)) birth_dt=child_drift_dt
     if (last_id<0) return
     candidate=parcels;masses=component_mass
     allocate(releases(np),fractions(nc,np),energy(np),momentum(3,np),child_counts(np))
@@ -206,7 +316,12 @@ contains
         if(.not.eligible(p)) cycle
       end if
       fractions(:,p)=masses(:,p)/candidate(p)%mass
-      call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
+      if(present(pressure)) then
+        call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid, &
+          pressure(p),gas_molecular_weights)
+      else
+        call liquid_mixture_properties(components,fractions(:,p),candidate(p)%temperature,rho,cp,e,valid)
+      endif
       if (.not.valid) exit
       effective=components(1);effective%density_model='constant';effective%density=rho
       effective%density_coefficients=0;effective%density_temperature_range=0
@@ -215,9 +330,17 @@ contains
       effective%reference_temperature=candidate(p)%temperature;effective%reference_energy=e
       effective%boiling_model='reject';effective%critical_temperature=0
       effective%normal_boiling_temperature=0
+      breakup_options=options;breakup_options%khrt_parcel_factor=factor
+      if(present(pressure)) then
+        call apply_mixture_breakup_viscosity(components,fractions(:,p),candidate(p)%temperature,breakup_options, &
+          valid,pressure(p),gas_molecular_weights)
+      else
+        call apply_mixture_breakup_viscosity(components,fractions(:,p),candidate(p)%temperature,breakup_options,valid)
+      endif
+      if(.not.valid) exit
       pending=spray_khrt_shedding_state(candidate(p)%khrt_initial_count,candidate(p)%khrt_shed_volume)
-      call advance_khrt_shedding(candidate(p),effective,options,gas_density(p),gas_velocity(:,p),reynolds(p), &
-        dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid)
+      call advance_khrt_shedding(candidate(p),effective,breakup_options,gas_density(p),gas_velocity(:,p),reynolds(p), &
+        dt,options%khrt_reference_diameter_cubed,pending,releases(p),valid,make_new_drops=allow_births)
       if (.not.valid) exit
       candidate(p)%khrt_initial_count=pending%initial_count;candidate(p)%khrt_shed_volume=pending%shed_volume
       masses(:,p)=candidate(p)%mass*fractions(:,p)
@@ -240,19 +363,19 @@ contains
     do p=1,np
       if (releases(p)%mass<=0) cycle
       axis=candidate(p)%velocity
-      if (norm2(axis)<1e-12_dp) axis=gas_velocity(:,p)-candidate(p)%velocity
+      if (norm2(axis)<1e-12_dp.and..not.reference) axis=gas_velocity(:,p)-candidate(p)%velocity
       if(reference) then
         if(allocated(uniforms)) deallocate(uniforms)
         allocate(uniforms(child_counts(p)))
         call khrt_reference_uniforms(candidate(p)%id,last_id,uniforms)
         call construct_reference_khrt_children(candidate(p),releases(p),axis,factor,uniforms, &
-          first_id+int(cursor-np,int64),children,exchange,valid)
+          first_id+int(cursor-np,int64),children,exchange,valid,drift_dt=birth_dt)
         if(valid) then
           momentum(:,p)=exchange(:3);energy(p)=exchange(4)
         endif
       else
         call construct_khrt_children(candidate(p),releases(p),axis, &
-          first_id+int(cursor-np,int64),children,energy(p),valid)
+          first_id+int(cursor-np,int64),children,energy(p),valid,drift_dt=birth_dt)
       endif
       if (.not.valid) exit
       result(cursor+1:cursor+child_counts(p))=children
@@ -266,7 +389,7 @@ contains
     if(present(gas_momentum)) call move_alloc(momentum,gas_momentum)
     last_id=next_id;ok=.true.
   end subroutine
-  subroutine construct_khrt_children(parent,release,axis,first_id,children,gas_energy,ok)
+  subroutine construct_khrt_children(parent,release,axis,first_id,children,gas_energy,ok,drift_dt)
     type(spray_parcel), intent(in) :: parent
     type(spray_khrt_release), intent(in) :: release
     real(dp), intent(in) :: axis(3)
@@ -274,11 +397,16 @@ contains
     type(spray_parcel), allocatable, intent(inout) :: children(:)
     real(dp), intent(out) :: gas_energy
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: drift_dt
     type(spray_parcel) :: candidate(4)
     real(dp) :: normal(3),helper(3),tangent(3),other(3),directions(3,4),energy
     integer :: n
     ok=.false.;gas_energy=0
     if (.not.valid_spray_parcel(parent)) return
+    if(present(drift_dt)) then
+      if(.not.ieee_is_finite(drift_dt)) return
+      if(drift_dt<0.or.drift_dt>1e6_dp) return
+    endif
     if (.not.all(ieee_is_finite([axis,release%mass,release%drop_mass,release%multiplicity, &
         release%diameter,release%tangential_speed]))) return
     if (norm2(axis)<1e-12_dp.or.maxval(abs(axis))>1e9_dp) return
@@ -296,6 +424,7 @@ contains
       candidate(n)=parent;candidate(n)%id=first_id+int(n-1,int64);candidate(n)%parent_id=parent%id
       candidate(n)%mass=release%drop_mass;candidate(n)%multiplicity=release%multiplicity/4
       candidate(n)%velocity=parent%velocity+release%tangential_speed*directions(:,n)
+      if(present(drift_dt)) candidate(n)%position=parent%position+drift_dt*candidate(n)%velocity
       candidate(n)%deformation=0;candidate(n)%deformation_rate=0;candidate(n)%rt_time=0
       candidate(n)%khrt_initial_count=0;candidate(n)%khrt_shed_volume=0
       if (.not.valid_spray_parcel(candidate(n))) return
@@ -307,7 +436,7 @@ contains
   end subroutine
 
   subroutine advance_khrt_shedding(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt, &
-      reference_diameter_cubed,state,release,ok)
+      reference_diameter_cubed,state,release,ok,make_new_drops)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid
     type(spray_options), intent(in) :: options
@@ -315,11 +444,14 @@ contains
     type(spray_khrt_shedding_state), intent(inout) :: state
     type(spray_khrt_release), intent(out) :: release
     logical, intent(out) :: ok
+    logical, optional, intent(in) :: make_new_drops
+    logical :: allow_release
     type(spray_parcel) :: candidate
     type(spray_khrt_shedding_state) :: pending
     type(spray_khrt_release) :: emitted
-    real(dp) :: old_radius,new_radius,rs,wave,frequency,total,rho,ns,remaining
-    release=spray_khrt_release();emitted=release;ok=.false.
+    real(dp) :: old_radius,new_radius,rs,wave,frequency,total,rho,ns,remaining,min_radius
+    release=spray_khrt_release();emitted=release;ok=.false.;allow_release=.true.
+    if(present(make_new_drops)) allow_release=make_new_drops
     if (.not.all(ieee_is_finite([reference_diameter_cubed,state%initial_count,state%shed_volume]))) return
     if (reference_diameter_cubed<=0.or.reference_diameter_cubed>1e24_dp) return
     if (state%initial_count<0.or.state%initial_count>1e18_dp.or.state%shed_volume<0.or.state%shed_volume>1e24_dp) return
@@ -330,19 +462,24 @@ contains
     ok=.false.
     if (wave>0) then
       rho=liquid_density_at_temperature(liquid,parcel%temperature)
+      min_radius=.5_dp*options%minimum_diameter
+      if (options%khrt_parcel_factor>=0) min_radius=4._dp*(3.e-16_dp/(4._dp*acos(-1._dp)*rho))**(1._dp/3._dp)
       total=parcel%mass*parcel%multiplicity
       old_radius=.5_dp*parcel_diameter(parcel,liquid)
       new_radius=.5_dp*parcel_diameter(candidate,liquid)
-      if (pending%initial_count==0) pending%initial_count=parcel%multiplicity
+      ! ReitzKHRT.H uses stored N0 even when it is zero. Legacy parcels
+      ! without injection state retain their deferred initialization.
+      if (pending%initial_count==0.and.options%khrt_parcel_factor<0) pending%initial_count=parcel%multiplicity
       pending%shed_volume=pending%shed_volume+pending%initial_count*max(0.0_dp,old_radius**3-new_radius**3)
       rs=options%khrt_b0*wave
       ns=pending%shed_volume/rs**3
-      if (pending%shed_volume/(parcel%multiplicity*old_radius**3)>.9_dp) then
-        rs=max(rs,.5_dp*options%minimum_diameter)
+      if (allow_release.and.pending%shed_volume/(parcel%multiplicity*old_radius**3)>.9_dp) then
+        rs=max(rs,min_radius)
         emitted%mass=total;candidate%mass=0
         pending%shed_volume=0;pending%initial_count=0
-      else if (8*pending%shed_volume/max(reference_diameter_cubed,epsilon(1.0_dp)*1e-6_dp)>.03_dp.and. &
-          rs>.5_dp*options%minimum_diameter.and.ns>parcel%multiplicity) then
+      else if (allow_release.and. &
+          8*pending%shed_volume/max(reference_diameter_cubed,epsilon(1.0_dp)*1e-6_dp)>.03_dp.and. &
+          rs>min_radius.and.ns>parcel%multiplicity) then
         ! pending volume is N*r^3, not kg or geometric sphere volume.
         emitted%mass=4*acos(-1.0_dp)*rho*pending%shed_volume/3
         remaining=total-emitted%mass
@@ -365,13 +502,25 @@ contains
     parcel=candidate;state=pending;release=emitted;ok=.true.
   end subroutine
 
-  subroutine advance_spray_breakup(parcel,liquid,options,gas_density,gas_velocity,film_density,gas_viscosity,dt,ok)
+  subroutine advance_spray_breakup(parcel,liquid,options,gas_density,gas_velocity,film_density,gas_viscosity,dt,ok, &
+      tangential_speed,reynolds_number)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid
     type(spray_options), intent(in) :: options
     real(dp), intent(in) :: gas_density,gas_velocity(3),film_density,gas_viscosity,dt
     logical, intent(out) :: ok
+    real(dp), optional, intent(out) :: tangential_speed
+    real(dp), optional, intent(in) :: reynolds_number
     real(dp) :: reynolds
+    if(present(tangential_speed)) tangential_speed=0
+    ok=.false.
+    if(present(reynolds_number)) then
+      if(.not.ieee_is_finite(reynolds_number)) return
+      if(reynolds_number<0.or.reynolds_number>1e30_dp) return
+    endif
+    if(options%etab_parcel_factor>=0.and..not.present(tangential_speed)) then
+      ok=.false.;return
+    endif
     if (trim(options%breakup_model)=='khrt') then
       ok=.false.
       if (.not.all(ieee_is_finite([film_density,gas_viscosity]))) return
@@ -380,31 +529,79 @@ contains
       if (.not.all(ieee_is_finite(gas_velocity))) return
       if (maxval(abs(gas_velocity))>1e7_dp) return
       reynolds=film_density*sqrt(sum((gas_velocity-parcel%velocity)**2))*parcel_diameter(parcel,liquid)/gas_viscosity
+      if(present(reynolds_number)) reynolds=reynolds_number
       call advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds,dt,ok)
     else
-      call advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok)
+      if(present(tangential_speed).and.trim(options%breakup_model)=='etab') then
+        ok=.false.
+        if (.not.all(ieee_is_finite([film_density,gas_viscosity]))) return
+        if (film_density<=0.or.film_density>1e8_dp.or.gas_viscosity<1e-12_dp.or.gas_viscosity>1e3_dp) return
+        reynolds=film_density*sqrt(sum((gas_velocity-parcel%velocity)**2))*parcel_diameter(parcel,liquid)/gas_viscosity
+        if(present(reynolds_number)) reynolds=reynolds_number
+        call advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok,reynolds,tangential_speed)
+      else
+        call advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok)
+      endif
     end if
   end subroutine
 
+  ! Pinned SprayParticles.cpp enters KHRT after TAB on a no-birth MK.
+  ! Native BM1/BM2 are shared; preserve PeleF's separate KHRT-only fields.
+  subroutine advance_tab_no_birth_khrt(parcel,liquid,options,gas_density,gas_velocity,reynolds,dt,ok)
+    type(spray_parcel), intent(inout) :: parcel
+    type(spray_liquid), intent(in) :: liquid
+    type(spray_options), intent(in) :: options
+    real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds,dt
+    logical, intent(out) :: ok
+    type(spray_parcel) :: candidate
+    type(spray_options) :: kh_options
+    real(dp) :: old_radius,new_radius,wave,frequency,clock
+    logical :: valid
+    ok=.false.
+    if(.not.valid_spray_options(options).or..not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid)) return
+    if(options%breakup_model/='etab'.or.options%etab_parcel_factor<0) return
+    kh_options=options;kh_options%breakup_model='khrt';kh_options%etab_parcel_factor=-1
+    kh_options%khrt_children=.true.;kh_options%khrt_parcel_factor=0
+    kh_options%khrt_reference_diameter_cubed=1e-25_dp
+    candidate=parcel;clock=parcel%deformation_rate
+    old_radius=.5_dp*parcel_diameter(parcel,liquid)
+    call advance_khrt_breakup(candidate,liquid,kh_options,gas_density,gas_velocity,reynolds,dt,valid, &
+      wave,frequency,shared_rt_time=clock)
+    if(.not.valid) return
+    if(wave>0) then
+      new_radius=.5_dp*parcel_diameter(candidate,liquid)
+      candidate%deformation=parcel%deformation+parcel%khrt_initial_count*(old_radius**3-new_radius**3)
+    endif
+    candidate%deformation_rate=clock
+    if(.not.valid_spray_parcel(candidate)) return
+    parcel=candidate;ok=.true.
+  end subroutine advance_tab_no_birth_khrt
+
   ! ReitzKHRT.H representative-drop branch (make_new_drops=false).
-  subroutine advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt,ok,kh_wave,kh_frequency)
+  subroutine advance_khrt_breakup(parcel,liquid,options,gas_density,gas_velocity,reynolds_number,dt,ok, &
+      kh_wave,kh_frequency,shared_rt_time)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid
     type(spray_options), intent(in) :: options
     real(dp), intent(in) :: gas_density,gas_velocity(3),reynolds_number,dt
     real(dp), intent(out), optional :: kh_wave,kh_frequency
+    real(dp), optional, intent(inout) :: shared_rt_time
+    real(dp) :: clock
     real(dp) :: release_wave,release_frequency
     logical, intent(out) :: ok
     type(spray_parcel) :: candidate
     real(dp) :: rho,liquid_mu
-    real(dp) :: radius,child,speed,re,cd,we,z,t,lambda,omega,tau,acceleration,momdiff,rate,total
+    real(dp) :: radius,child,speed,re,cd,we,z,t,lambda,omega,tau,acceleration,momdiff,rate,total,min_radius
     logical :: rt_breakup
     real(dp), parameter :: pi=acos(-1.0_dp)
+    clock=parcel%rt_time
+    if(present(shared_rt_time)) clock=shared_rt_time
     if (present(kh_wave)) kh_wave=0
     if (present(kh_frequency)) kh_frequency=0
     release_wave=0;release_frequency=0
     ok=.false.
     if (.not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid).or..not.valid_spray_options(options)) return
+    if(.not.ieee_is_finite(clock).or.abs(clock)>1e20_dp) return
     if (trim(options%breakup_model)/='khrt') return
     if (.not.all(ieee_is_finite([gas_density,gas_velocity,reynolds_number,dt]))) return
     if (gas_density<=0.or.gas_density>1e8_dp.or.reynolds_number<0.or.reynolds_number>1e30_dp) return
@@ -417,7 +614,10 @@ contains
     liquid_mu=liquid_viscosity_at_temperature(options,parcel%temperature)
     if (liquid_mu<=0) return
     candidate=parcel;radius=.5_dp*parcel_diameter(parcel,liquid);child=radius
-    if (radius<=.5_dp*options%minimum_diameter) then
+    min_radius=.5_dp*options%minimum_diameter
+    if (options%khrt_parcel_factor>=0) min_radius=4._dp*(3.e-16_dp/(4._dp*pi*rho))**(1._dp/3._dp)
+    if ((options%khrt_parcel_factor>=0.and.radius<min_radius).or. &
+        (options%khrt_parcel_factor<0.and.radius<=min_radius)) then
       ok=.true.;return
     end if
     speed=sqrt(sum((gas_velocity-parcel%velocity)**2));total=parcel%mass*parcel%multiplicity
@@ -433,22 +633,22 @@ contains
     we=gas_density*speed**2*radius/options%surface_tension
     z=liquid_mu/sqrt(rho*radius*options%surface_tension)
     t=z*sqrt(we);rt_breakup=.false.
-    if (candidate%rt_time>=0) then
+    if (clock>=0) then
       acceleration=.375_dp*cd*gas_density*speed**2/(rho*radius)
       momdiff=acceleration*(rho-gas_density)
       if (momdiff>0) then
         omega=sqrt(2/(3*sqrt(3*options%surface_tension))*momdiff*sqrt(momdiff)/(rho+gas_density))
         lambda=options%khrt_c3*pi/sqrt(momdiff/(3*options%surface_tension))
         if (radius<lambda) then
-          candidate%rt_time=0
+          clock=0
         else
-          candidate%rt_time=candidate%rt_time+dt
+          clock=clock+dt
         end if
-        if (candidate%rt_time>1/omega.and.lambda<radius) then
-          child=lambda;candidate%rt_time=0;rt_breakup=.true.
+        if (clock>1/omega.and.lambda<radius) then
+          child=lambda;clock=0;rt_breakup=.true.
         end if
       else
-        candidate%rt_time=0
+        clock=0
       end if
     end if
     if (.not.rt_breakup) then
@@ -460,15 +660,17 @@ contains
         release_wave=lambda;release_frequency=omega
         rate=dt/tau
         child=(rate*options%khrt_b0*lambda+radius)/(1+rate)
-        candidate%rt_time=0
+        clock=0
       end if
     end if
-    child=max(.5_dp*options%minimum_diameter,child)
+    if (options%khrt_parcel_factor<0) child=max(min_radius,child)
     if (child<radius) then
       candidate%mass=parcel%mass*(child/radius)**3
       candidate%multiplicity=total/candidate%mass
     end if
+    if(.not.present(shared_rt_time)) candidate%rt_time=clock
     if (.not.valid_spray_parcel(candidate)) return
+    if(present(shared_rt_time)) shared_rt_time=clock
     if (present(kh_wave)) kh_wave=release_wave
     if (present(kh_frequency)) kh_frequency=release_frequency
     parcel=candidate;ok=.true.
@@ -562,19 +764,28 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok)
+  subroutine advance_etab_breakup(parcel,liquid,options,gas_density,gas_velocity,dt,ok,reynolds_number,tangential_speed)
     type(spray_parcel), intent(inout) :: parcel
     type(spray_liquid), intent(in) :: liquid
     type(spray_options), intent(in) :: options
     real(dp), intent(in) :: gas_density,gas_velocity(3),dt
     logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: reynolds_number
+    real(dp), optional, intent(out) :: tangential_speed
     type(spray_parcel) :: candidate
     real(dp) :: rho,liquid_mu
-    real(dp) :: radius,child,td,omega2,omega,we,wer,amplitude,y,ydot,yn,ydn
+    real(dp) :: radius,child,min_radius,td,omega2,omega,we,wer,amplitude,y,ydot,yn,ydn
     real(dp) :: elapsed,step,speed,phi,angle,event_time,kbr,etb,ratio,total_mass
+    real(dp) :: reynolds,drag_coefficient,rsmr,ae2,tangent_total
     real(dp), parameter :: pi=acos(-1.0_dp)
     integer :: iteration
     ok=.false.
+    if(present(tangential_speed)) tangential_speed=0
+    if(present(tangential_speed).neqv.present(reynolds_number)) return
+    if(present(reynolds_number)) then
+      if(.not.ieee_is_finite(reynolds_number)) return
+      if(reynolds_number<0.or.reynolds_number>1e30_dp) return
+    endif
     if (.not.valid_spray_parcel(parcel).or..not.valid_spray_liquid(liquid).or..not.valid_spray_options(options)) return
     if (.not.all(ieee_is_finite([gas_density,gas_velocity,dt]))) return
     if (gas_density<=0.or.gas_density>1e8_dp.or.maxval(abs(gas_velocity))>1e7_dp.or.dt<0.or.dt>1e6_dp) return
@@ -587,11 +798,19 @@ contains
     liquid_mu=liquid_viscosity_at_temperature(options,parcel%temperature)
     if (liquid_mu<=0) return
     candidate=parcel; radius=0.5_dp*parcel_diameter(parcel,liquid)
+    min_radius=4._dp*(3.e-16_dp/(4._dp*pi*rho))**(1._dp/3._dp)
+    if (radius<min_radius) then
+      ok=.true.;return
+    endif
     speed=sqrt(sum((gas_velocity-parcel%velocity)**2))
     total_mass=parcel%mass*parcel%multiplicity
-    y=parcel%deformation; ydot=parcel%deformation_rate; elapsed=0
+    y=parcel%deformation; ydot=parcel%deformation_rate; elapsed=0;tangent_total=0
+    if(present(reynolds_number)) then
+      reynolds=reynolds_number
+      call drag_law()
+    endif
     do iteration=1,options%maximum_substeps
-      if (elapsed>=dt.or.radius<=0.5_dp*options%minimum_diameter) exit
+      if (elapsed>=dt) exit
       td=rho*radius**2/(5.0_dp*liquid_mu)
       omega2=8.0_dp*options%surface_tension/(rho*radius**3)-1.0_dp/td**2
       if (omega2<=0) then
@@ -623,7 +842,18 @@ contains
         kbr=(2.0_dp/9.0_dp)*((sqrt(80.0_dp)-1)*(we/80.0_dp)**4+1)*omega
         if (we>=80) kbr=(2.0_dp/9.0_dp)*omega*sqrt(we)
         etb=acos(max(-1.0_dp,min(1.0_dp,1.0_dp-1.0_dp/wer)))/omega
-        child=max(0.5_dp*options%minimum_diameter,radius*exp(-kbr*etb))
+        child=radius*exp(-kbr*etb)
+        if (.not.ieee_is_finite(child).or.child<=0) return
+        if(present(tangential_speed)) then
+          ! Pinned PeleC evaluates this dimensionful rsmr expression in cm.
+          ! Evaluate both radii in CGS here; the final radius factor stays SI.
+          rsmr=sqrt((100._dp*radius)**3/(100._dp*child)**2)
+          ae2=3._dp*(1._dp-100._dp*radius/rsmr+5._dp*drag_coefficient*we/72._dp)*omega2
+          if(.not.ieee_is_finite(ae2).or.ae2<0) return
+          tangent_total=tangent_total+.5_dp*radius*sqrt(ae2)
+          reynolds=reynolds*child/radius
+          call drag_law()
+        endif
         ratio=child/radius
         candidate%mass=candidate%mass*ratio**3
         candidate%multiplicity=total_mass/candidate%mass
@@ -636,6 +866,21 @@ contains
     if (iteration>options%maximum_substeps.and.elapsed<dt) return
     candidate%deformation=y; candidate%deformation_rate=ydot
     if (.not.valid_spray_parcel(candidate)) return
+    if(present(tangential_speed)) then
+      if(.not.ieee_is_finite(tangent_total).or.tangent_total>1e7_dp) return
+      tangential_speed=tangent_total
+    endif
     parcel=candidate; ok=.true.
+  contains
+    subroutine drag_law()
+      drag_coefficient=0
+      if(reynolds>1000._dp) then
+        drag_coefficient=.424_dp
+      else if(reynolds>1._dp) then
+        drag_coefficient=24._dp/reynolds*(1._dp+reynolds**(2._dp/3._dp)/6._dp)
+      else if(reynolds>0._dp) then
+        drag_coefficient=24._dp/reynolds
+      endif
+    end subroutine
   end subroutine
 end module

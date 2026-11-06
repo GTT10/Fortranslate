@@ -1,5 +1,6 @@
 module reactive_eb_2d_application_mod
   use precision_mod, only: dp
+  use simulation_config_reactive_2d_mod, only: configure_reactive_2d_eos
   use constants_mod, only: pelef_version
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
@@ -23,6 +24,8 @@ contains
     character(len=*), intent(in) :: application_label, bundle_sha256
     type(reactive_eb_2d_config), intent(in) :: config
     type(nasa7_species), intent(in) :: species(:)
+    type(nasa7_species), allocatable :: eos_species(:)
+    logical :: eos_policy_ok
     type(elementary_reaction), intent(in) :: reactions(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in), optional :: base_mole_fractions(:)
@@ -40,28 +43,30 @@ contains
     logical :: ok
     integer :: steps
 
-    if (size(species) < 2 .or. size(reactions) < 1 .or. &
-        size(transport) /= size(species)) then
+    call configure_reactive_2d_eos(species,config%flow,eos_species,eos_policy_ok)
+    if(.not.eos_policy_ok) error stop 'Invalid 2D application EOS policy'
+    if (size(eos_species) < 2 .or. size(reactions) < 1 .or. &
+        size(transport) /= size(eos_species)) then
       error stop "Reactive EB 2D application data have incompatible dimensions"
     end if
     if (present(base_mole_fractions)) then
-      if (size(base_mole_fractions) /= size(species)) then
+      if (size(base_mole_fractions) /= size(eos_species)) then
         error stop "Reactive EB 2D composition has incompatible dimensions"
       end if
     end if
 
     call simulate_reactive_eb_2d( &
-      species, reactions, config, state, temperature, geometry, time, steps, &
+      eos_species, reactions, config, state, temperature, geometry, time, steps, &
       initial_integrals, final_integrals, minimum_dt, base_density, ok, &
       transport, minimum_transport_theta, base_mole_fractions, &
       chemistry_integrator)
     if (.not. ok) error stop "Reactive EB 2D simulation failed"
     call write_reactive_eb_2d_csv( &
-      config%flow%output_file, species, config, state, temperature, &
+      config%flow%output_file, eos_species, config, state, temperature, &
       geometry, time, ok)
     if (.not. ok) error stop "Reactive EB 2D output failed"
     call reactive_eb_extrema_2d( &
-      species, state, temperature, geometry, minimum_density, &
+      eos_species, state, temperature, geometry, minimum_density, &
       maximum_density, minimum_pressure, maximum_pressure, &
       minimum_temperature, maximum_temperature, maximum_speed, &
       maximum_closure_error, ok)

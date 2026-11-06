@@ -2,6 +2,7 @@ module amr_patch_tree_ghost_3d_mod
   use, intrinsic :: iso_fortran_env, only: int64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d,convert_rotating_energy_3d
   use nasa7_thermo_mod, only: nasa7_species
   use slope_limiter_mod, only: limited_slope
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
@@ -65,7 +66,10 @@ contains
 
   ! Packed ghosts hold conserved components followed by one temperature guess.
   ! Call on a private buffer after ordinary tree ghost sampling.
-  subroutine apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,ok,ghost_width)
+  subroutine apply_amr_tree_pressure_ghosts_3d(tree,species,node,faces,pressure,ghost,ok,ghost_width,stored_internal_energy, &
+      frame,domain_lower,root_spacing)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3),root_spacing(3)
     type(amr_patch_tree_3d), intent(in) :: tree
     type(nasa7_species), intent(in) :: species(:)
     integer, intent(in) :: node
@@ -76,8 +80,11 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:)
     integer, allocatable :: ratios(:)
     integer, optional, intent(in) :: ghost_width
-    integer :: n(3),nv,axis,level,width,bounds(2,3)
-    real(dp) :: local_pressure(6)
+    logical, optional, intent(in) :: stored_internal_energy
+    logical :: stored,pressure_cell,converted
+    real(dp), allocatable :: candidate(:,:,:,:),sampled_h(:,:,:)
+    integer :: n(3),nv,np,axis,level,width,bounds(2,3),i,j,k,idx(3)
+    real(dp) :: local_pressure(6),spacing(3),position(3),energy
     ok=.true.
     if (.not.present(pressure)) return
     ok=.false.
@@ -93,7 +100,11 @@ contains
     if(present(ghost_width)) width=ghost_width
     if(width<1.or.width>128) return
     if(any(n>huge(1)-2*width)) return
-    if (any(shape(ghost)/=[nv+1,n+2*width])) return
+    stored=.false.
+    if(present(stored_internal_energy)) stored=stored_internal_energy
+    np=nv+1
+    if(stored) np=np+1
+    if (any(shape(ghost)/=[np,n+2*width])) return
     bounds(1,:)=width+1;bounds(2,:)=width+n
     level=tree%nodes(node)%level+1;local_pressure=0
     ! A wide halo can cross the physical boundary even for an interior patch.
@@ -108,13 +119,80 @@ contains
         bounds(2,axis)=int(domain(axis,level)-origin(axis,node))+width
       end if
     end do
-    call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,ghost(:nv,:,:,:),ghost(nv+1,:,:,:),ok, &
-      ghost_width=width,boundary_cells=bounds)
+    if(stored) sampled_h=ghost(np,:,:,:)
+    candidate=ghost
+    if(present(frame)) then
+      ok=.false.
+      if(.not.present(domain_lower).or..not.present(root_spacing)) return
+      if(.not.frame%is_valid()) return
+      if(.not.all(ieee_is_finite([domain_lower,root_spacing])).or.any(root_spacing<=0)) return
+      if(all(local_pressure==0)) then
+        ok=.true.;return
+      endif
+      spacing=root_spacing
+      do axis=2,level
+        spacing=spacing/real(ratios(axis),dp)
+      enddo
+      ! The pressure boundary EOS expects E = rho e + kinetic energy. Its
+      ! interior donors and output ghosts must use the same convention.
+      do k=1,n(3)+2*width
+      do j=1,n(2)+2*width
+      do i=1,n(1)+2*width
+        position=domain_lower+(real(origin(:,node),dp)+real([i,j,k]-width,dp)-.5_dp)*spacing
+        call convert_rotating_energy_3d(frame,position,candidate(1,i,j,k),candidate(5,i,j,k),.false.,energy,converted)
+        if(.not.converted) return
+        candidate(5,i,j,k)=energy
+      enddo
+      enddo
+      enddo
+    endif
+    call fill_pressure_outlet_ghosts_3d(species,n,faces,local_pressure,candidate(:nv,:,:,:),candidate(nv+1,:,:,:),ok, &
+      ghost_width=width,boundary_cells=bounds,internal_energy_ghost=sampled_h)
+    if(.not.ok) return
+    if(stored) candidate(np,:,:,:)=sampled_h
+    if(stored.or.present(frame)) then
+      ! Pressure ghosts prescribe a new thermodynamic state. Other ghosts and
+      ! valid cells retain the independently transported internal energy.
+      ok=.false.
+      do k=1,n(3)+2*width
+      do j=1,n(2)+2*width
+      do i=1,n(1)+2*width
+        idx=[i,j,k];pressure_cell=.false.
+        do axis=1,3
+          if(local_pressure(2*axis-1)>0.and.idx(axis)<bounds(1,axis)) pressure_cell=.true.
+          if(local_pressure(2*axis)>0.and.idx(axis)>bounds(2,axis)) pressure_cell=.true.
+        enddo
+        if(.not.pressure_cell) then
+          ! Preserve all untouched cells bit for bit, including independent
+          ! rho e. A conversion round trip is not an identity in floating point.
+          candidate(:,i,j,k)=ghost(:,i,j,k)
+          cycle
+        endif
+        if(candidate(1,i,j,k)<=0) return
+        if(stored) then
+          candidate(np,i,j,k)=candidate(5,i,j,k)-.5_dp*sum(candidate(2:4,i,j,k)**2)/candidate(1,i,j,k)
+          if(.not.ieee_is_finite(candidate(np,i,j,k))) return
+        endif
+        if(present(frame)) then
+          position=domain_lower+(real(origin(:,node),dp)+real([i,j,k]-width,dp)-.5_dp)*spacing
+          call convert_rotating_energy_3d(frame,position,candidate(1,i,j,k),candidate(5,i,j,k),.true.,energy,converted)
+          if(.not.converted) return
+          candidate(5,i,j,k)=energy
+        endif
+      enddo
+      enddo
+      enddo
+    endif
+    ghost=candidate;ok=.true.
   end subroutine
 
   subroutine fill_amr_patch_tree_ghosts_3d(tree,state,node,faces,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
       coarse_future,coarse_fractions,coarse_limiter,species_count,ghost_width, &
-      species,inflow_mach,inflow_temperature,inflow_pressure)
+      species,inflow_mach,inflow_temperature,inflow_pressure,limit_internal_energy,stored_internal_energy, &
+      frame,domain_lower,root_spacing)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3),root_spacing(3)
+    logical, optional, intent(in) :: limit_internal_energy,stored_internal_energy
     type(nasa7_species), optional, intent(in) :: species(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -142,7 +220,7 @@ contains
     if (present(species_count)) nspecies=species_count
     if (nspecies<0.or.nspecies>nvar-5) return
     if (present(coarse_limiter)) then
-      if (coarse_limiter/='mc'.and.coarse_limiter/='minmod') return
+      if (coarse_limiter/='mc'.and.coarse_limiter/='minmod'.and.coarse_limiter/='linear') return
     end if
     if (present(coarse_future).neqv.present(coarse_fractions)) return
     if (present(coarse_future)) then
@@ -163,7 +241,9 @@ contains
     if (present(coarse_future)) reader%future=>coarse_future
     call sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall, &
       inflow_state,wall_velocity,coarse_fractions,coarse_limiter,species_count,ghost_width=ghost_width, &
-      species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure)
+      species=species,inflow_mach=inflow_mach,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
+      limit_internal_energy=limit_internal_energy,stored_internal_energy=stored_internal_energy, &
+      frame=frame,domain_lower=domain_lower,root_spacing=root_spacing)
   end subroutine fill_amr_patch_tree_ghosts_3d
 
   subroutine read_serial_cell(self,node,index,future,value,ok)
@@ -182,7 +262,11 @@ contains
 
   subroutine sample_amr_patch_tree_ghosts_3d(tree,nvar,node,faces,reader,ghost,ok,viscous_wall,inflow_state,wall_velocity, &
       coarse_fractions,coarse_limiter,species_count,planning,validate_only,ghost_width, &
-      species,inflow_mach,inflow_temperature,inflow_pressure)
+      species,inflow_mach,inflow_temperature,inflow_pressure,limit_internal_energy,stored_internal_energy, &
+      frame,domain_lower,root_spacing)
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3),root_spacing(3)
+    logical, optional, intent(in) :: limit_internal_energy,stored_internal_energy
     type(nasa7_species), optional, intent(in) :: species(:)
     real(dp), optional, intent(in) :: inflow_mach(6),inflow_temperature(6),inflow_pressure(6)
     type(amr_patch_tree_3d), intent(in) :: tree
@@ -206,8 +290,9 @@ contains
     integer :: i,j,k,axis,face,inlet,level,source_level,source,local(3),dims(3),ios
     real(dp) :: endpoint(nvar)
     real(dp) :: shift(3),old_momentum(3),rho,fraction,mach(6),pin(6)
-    logical :: reflect(3),viscous,found,valid,plan,interpolate
-    integer :: nspecies,width,bounces,bounce,wall_faces(128)
+    real(dp) :: frame_spacing(3,tree%level_count()),frame_lower(3)
+    logical :: reflect(3),viscous,found,valid,plan,interpolate,include_internal,stored_internal
+    integer :: nspecies,width,bounces,bounce,wall_faces(128),ninterp,conserved_count,temperature_component
     ok=.false.
     plan=.false.
     if (present(planning)) plan=planning
@@ -217,12 +302,34 @@ contains
     if (.not.tree%is_valid()) return
     if (node<1.or.node>size(tree%nodes)) return
     if (.not.valid_reactive_boundaries_3d(faces)) return
+    if(present(frame)) then
+      if(.not.present(domain_lower).or..not.present(root_spacing)) return
+      if(.not.frame%is_valid()) return
+      if(.not.all(ieee_is_finite([domain_lower,root_spacing])).or.any(root_spacing<=0)) return
+    endif
     if (nvar<5.or.any(tree%nodes(node)%shape>huge(1)-2*width)) return
+    stored_internal=.false.
+    if(present(stored_internal_energy)) stored_internal=stored_internal_energy
+    include_internal=.false.
+    if(present(limit_internal_energy)) include_internal=limit_internal_energy
+    if(include_internal) then
+      if(.not.present(coarse_limiter)) return
+      if(coarse_limiter/='linear') return
+    endif
+    if(stored_internal.and..not.include_internal) return
+    ! Stored layout: conserved components, temperature, then rho e.
+    ! Existing callers retain the virtual E-KE limiter component.
+    ninterp=nvar+merge(1,0,include_internal.and..not.stored_internal)
+    conserved_count=nvar-1-merge(1,0,stored_internal)
+    temperature_component=conserved_count+1
     nspecies=0
     if (present(species_count)) nspecies=species_count
     if (nspecies<0.or.nspecies>nvar-5) return
+    if(stored_internal) then
+      if(nspecies<1.or.nvar/=7+nspecies) return
+    endif
     if (present(coarse_limiter)) then
-      if (coarse_limiter/='mc'.and.coarse_limiter/='minmod') return
+      if (coarse_limiter/='mc'.and.coarse_limiter/='minmod'.and.coarse_limiter/='linear') return
     end if
     if (present(coarse_fractions)) then
       if (size(coarse_fractions)/=tree%nodes(node)%level) return
@@ -244,7 +351,7 @@ contains
     if(any(pin>0.and.mach<0)) return
     if(any(mach>=0)) then
       if(.not.present(species).or..not.present(inflow_temperature)) return
-      if(nvar/=6+size(species)) return
+      if(nvar/=6+size(species)+merge(1,0,stored_internal)) return
       if(present(species_count)) then
         if(species_count/=size(species)) return
       end if
@@ -266,6 +373,12 @@ contains
     if (present(viscous_wall)) viscous=viscous_wall
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,ok)
     if (.not.ok) return
+    if(present(frame)) then
+      frame_lower=domain_lower;frame_spacing(:,1)=root_spacing
+      do i=2,size(ratios)
+        frame_spacing(:,i)=frame_spacing(:,i-1)/real(ratios(i),dp)
+      enddo
+    endif
     ok=.false.
     level=tree%nodes(node)%level+1;extent=domain(:,level);dims=tree%nodes(node)%shape+2*width
     allocate(candidate(nvar,dims(1),dims(2),dims(3)),stat=ios)
@@ -349,7 +462,7 @@ contains
           end if
           if (plan) cycle
           if (inlet>0) then
-            call apply_inlet(candidate(:,i,j,k),inlet,valid)
+            call apply_inlet(candidate(:,i,j,k),inlet,coordinate,level,valid)
             if(.not.valid) return
           end if
           old_momentum=candidate(2:4,i,j,k)
@@ -369,24 +482,51 @@ contains
     if (.not.all(ieee_is_finite(candidate))) return
     call move_alloc(candidate,ghost);ok=.true.
   contains
-    subroutine apply_inlet(value,boundary,success)
+    subroutine apply_inlet(value,boundary,cell_index,cell_level,success)
       real(dp), intent(inout) :: value(:)
       integer, intent(in) :: boundary
+      integer(int64), intent(in) :: cell_index(3)
+      integer, intent(in) :: cell_level
       logical, intent(out) :: success
       real(dp) :: donor(nvar)
+      real(dp) :: position(3),energy
+      real(dp), allocatable :: donor_held
       success=.true.
+      if(present(frame)) position=frame_lower+(real(cell_index,dp)+.5_dp)*frame_spacing(:,cell_level)
       if(mach(boundary)<0) then
         value=inflow_state(:,boundary)
+        if(present(frame)) then
+          call convert_rotating_energy_3d(frame,position,value(1),value(5),.true.,energy,success)
+          if(success) value(5)=energy
+        endif
         return
       end if
       donor=value
+      if(stored_internal) allocate(donor_held,source=donor(nvar))
+      if(present(frame)) then
+        call convert_rotating_energy_3d(frame,position,donor(1),donor(5),.false.,energy,success)
+        if(.not.success) return
+        donor(5)=energy
+      endif
       if(pin(boundary)>0) then
-        call mach_inlet_ghost_3d(species,donor(:nvar-1),donor(nvar),boundary,inflow_temperature(boundary), &
-          mach(boundary),value(:nvar-1),value(nvar),success,inlet_pressure=pin(boundary))
+        call mach_inlet_ghost_3d(species,donor(:conserved_count),donor(temperature_component), &
+          boundary,inflow_temperature(boundary), &
+          mach(boundary),value(:conserved_count),value(temperature_component),success,inlet_pressure=pin(boundary), &
+          internal_energy_density=donor_held)
       else
-        call mach_inlet_ghost_3d(species,donor(:nvar-1),donor(nvar),boundary,inflow_temperature(boundary), &
-          mach(boundary),value(:nvar-1),value(nvar),success)
+        call mach_inlet_ghost_3d(species,donor(:conserved_count),donor(temperature_component), &
+          boundary,inflow_temperature(boundary), &
+          mach(boundary),value(:conserved_count),value(temperature_component),success,internal_energy_density=donor_held)
       end if
+      if(.not.success) return
+      ! Mach-inlet EOS publishes ordinary total energy. Retain rho e before
+      ! adapting only the total-energy component to rotating storage.
+      if(stored_internal) value(nvar)=value(5)-.5_dp*sum(value(2:4)**2)/value(1)
+      if(present(frame)) then
+        call convert_rotating_energy_3d(frame,position,value(1),value(5),.true.,energy,success)
+        if(.not.success) return
+        value(5)=energy
+      endif
     end subroutine apply_inlet
 
     subroutine interpolate_donor(center_index,donor_level,fine_index,value,success)
@@ -394,15 +534,31 @@ contains
       integer, intent(in) :: donor_level
       real(dp), intent(inout) :: value(:)
       logical, intent(out) :: success
-      real(dp) :: center(nvar),neighbor(nvar),minus(nvar,3),plus(nvar,3),slopes(nvar,3)
-      real(dp) :: minimum(nvar),maximum(nvar),offset(3),radius(nvar),theta,half_width(3)
-      integer(int64) :: query(3),factor(3)
+      real(dp) :: center(ninterp),neighbor(ninterp),minus(ninterp,3),plus(ninterp,3),slopes(ninterp,3)
+      real(dp) :: inward(ninterp,3,2)
+      real(dp) :: minimum(ninterp),maximum(ninterp),offset(3),radius(ninterp),theta,half_width(3),scale,dc,df,db,limited
+      integer(int64) :: query(3),factor(3),coarse_lower(3),coarse_upper(3)
       integer :: di,dj,dk,direction,component,delta(3)
-      logical :: good
-      success=.false.;center=value;minimum=center;maximum=center
+      logical :: good,low_inlet(3),high_inlet(3),low_second(3),high_second(3)
+      success=.false.;center(:nvar)=value
+      if(include_internal) then
+        ! Default pc_rst_int_e runs at each endpoint before FillPatch. Read
+        ! the endpoint energies separately; deriving rhoe after momentum
+        ! time interpolation would introduce a kinetic-energy cross term.
+        call sample_neighbor(center_index,donor_level,center,good)
+        if(.not.good) return
+      endif
+      minimum=center;maximum=center
       factor=domain(:,level)/domain(:,donor_level)
       offset=(real(modulo(fine_index,factor),dp)+.5_dp)/real(factor,dp)-.5_dp
       half_width=.5_dp*(1.0_dp-1.0_dp/real(factor,dp))
+      ! MFCellConsLinInterp::CoarseBox coarsens the destination region and
+      ! grows it by one. Test second-neighbor availability in that buffer,
+      ! including its physical ghosts, rather than in the valid domain.
+      coarse_lower=max(0_int64,origin(:,node)-int(width,int64))/factor
+      coarse_upper=min(domain(:,level)-1,origin(:,node)+int(dims+width-1,int64))/factor
+      low_second=center_index<coarse_upper
+      high_second=center_index>coarse_lower
       ! Corner bounds retain affine fields in multiple dimensions. Sampling
       ! only face extrema would unnecessarily flatten a diagonal linear field.
       do dk=-1,1
@@ -422,11 +578,73 @@ contains
           end do
         end do
       end do
+      low_inlet=.false.;high_inlet=.false.
+      if (coarse_limiter=='linear') then
+        do direction=1,3
+          if (factor(direction)<=1) cycle
+          low_inlet(direction)=center_index(direction)==0.and.faces(2*direction-1)=='inflow'
+          high_inlet(direction)=center_index(direction)==domain(direction,donor_level)-1.and. &
+            faces(2*direction)=='inflow'
+          ! Include second inward cells in the sparse reader's planning pass.
+          ! A narrow coarse buffer uses the three-point boundary stencil.
+          if (low_inlet(direction).and.low_second(direction)) then
+            query=center_index;query(direction)=query(direction)+2
+            call sample_neighbor(query,donor_level,inward(:,direction,1),good)
+            if (.not.good) return
+          endif
+          if (high_inlet(direction).and.high_second(direction)) then
+            query=center_index;query(direction)=query(direction)-2
+            call sample_neighbor(query,donor_level,inward(:,direction,2),good)
+            if (.not.good) return
+          endif
+        enddo
+      endif
       if (plan) then
         success=.true.;return
       end if
+      if (coarse_limiter=='linear') then
+        ! Pinned AMReX mf_lincc_interp: share the limiter among components
+        ! independently in each direction. Inflow maps to ext_dir and uses
+        ! the pinned one-sided slope. Outflow is foextrap; wall components
+        ! reflect. Neither changes the centered slope formula.
+        slopes=0
+        do direction=1,3
+          if (factor(direction)<=1) cycle
+          scale=1
+          do component=1,ninterp
+            dc=.5_dp*(plus(component,direction)-minus(component,direction))
+            if (low_inlet(direction)) then
+              if (low_second(direction)) then
+                dc=-(16._dp/15)*minus(component,direction)+.5_dp*center(component)+ &
+                  (2._dp/3)*plus(component,direction)-.1_dp*inward(component,direction,1)
+              else
+                dc=.25_dp*(plus(component,direction)+5*center(component)-6*minus(component,direction))
+              endif
+            endif
+            if (high_inlet(direction)) then
+              if (high_second(direction)) then
+                dc=(16._dp/15)*plus(component,direction)-.5_dp*center(component)- &
+                  (2._dp/3)*minus(component,direction)+.1_dp*inward(component,direction,2)
+              else
+                dc=-.25_dp*(minus(component,direction)+5*center(component)-6*plus(component,direction))
+              endif
+            endif
+            df=2*(plus(component,direction)-center(component))
+            db=2*(center(component)-minus(component,direction))
+            limited=0
+            if (df*db>=0) limited=min(abs(df),abs(db))
+            limited=sign(min(limited,abs(dc)),dc)
+            if (dc/=0) scale=min(scale,limited/dc)
+            slopes(component,direction)=dc
+          end do
+          slopes(:,direction)=scale*slopes(:,direction)
+        end do
+        value=center(:nvar)+matmul(slopes(:nvar,:),offset)
+        success=all(ieee_is_finite(value))
+        return
+      end if
       do direction=1,3
-        do component=1,nvar
+        do component=1,ninterp
           call limited_slope(center(component)-minus(component,direction), &
             plus(component,direction)-center(component),coarse_limiter,slopes(component,direction),good)
           if (.not.good) return
@@ -435,14 +653,14 @@ contains
         if (nspecies>0) slopes(5+nspecies,direction)=slopes(1,direction)-sum(slopes(6:4+nspecies,direction))
       end do
       radius=matmul(abs(slopes),half_width);theta=1
-      do component=1,nvar
+      do component=1,ninterp
         if (radius(component)<=0) cycle
         theta=min(theta,max(0.0_dp,min(maximum(component)-center(component), &
           center(component)-minimum(component)))/radius(component))
       end do
       ! One scale for all components and all children retains affine closure
       ! and a zero-mean correction over a complete donor-cell subdivision.
-      value=center+theta*matmul(slopes,offset)
+      value=center(:nvar)+theta*matmul(slopes(:nvar,:),offset)
       success=all(ieee_is_finite(value))
     end subroutine
     subroutine sample_neighbor(query,requested_level,value,success)
@@ -452,7 +670,7 @@ contains
       logical, intent(out) :: success
       integer(int64) :: position(3),bounds(3)
       integer :: direction,boundary,reservoir,depth,peer,index(3)
-      real(dp) :: future_value(nvar)
+      real(dp) :: future_value(ninterp)
       real(dp) :: velocity_shift(3),momentum(3),blend,density
       logical :: flip(3)
       position=query;bounds=domain(:,requested_level);flip=.false.;velocity_shift=0;reservoir=0
@@ -485,15 +703,21 @@ contains
           if (any(position<origin(:,peer))) cycle
           if (any(position-origin(:,peer)>=int(tree%nodes(peer)%shape,int64))) cycle
           index=int(position-origin(:,peer))+1
-          call reader%read(peer,index,.false.,value,success)
+          call reader%read(peer,index,.false.,value(:nvar),success)
+          if (.not.success) return
+          call append_internal(value,position,depth,success)
           if (.not.success) return
           if (present(coarse_fractions)) then
             blend=coarse_fractions(depth)
             if (blend==1) then
-              call reader%read(peer,index,.true.,value,success)
+              call reader%read(peer,index,.true.,value(:nvar),success)
+              if (.not.success) return
+              call append_internal(value,position,depth,success)
               if (.not.success) return
             else if (blend>0) then
-              call reader%read(peer,index,.true.,future_value,success)
+              call reader%read(peer,index,.true.,future_value(:nvar),success)
+              if (.not.success) return
+              call append_internal(future_value,position,depth,success)
               if (.not.success) return
               value=(1-blend)*value+blend*future_value
             end if
@@ -506,7 +730,9 @@ contains
       if (.not.success) return
       if (plan) return
       if (reservoir>0) then
-        call apply_inlet(value,reservoir,success)
+        call apply_inlet(value(:nvar),reservoir,query,requested_level,success)
+        if(.not.success) return
+        call append_internal(value,query,requested_level,success)
         if(.not.success) return
       end if
       momentum=value(2:4)
@@ -523,5 +749,27 @@ contains
       end if
       success=all(ieee_is_finite(value))
     end subroutine
+    subroutine append_internal(value,cell_index,cell_level,success)
+      real(dp), intent(inout) :: value(:)
+      integer(int64), intent(in) :: cell_index(3)
+      integer, intent(in) :: cell_level
+      logical, intent(out) :: success
+      real(dp) :: velocity(3),potential,position(3)
+      success=.true.
+      if(.not.include_internal.or.stored_internal) return
+      value(nvar+1)=0
+      if(plan) return
+      success=value(1)>0
+      if(.not.success) return
+      velocity=value(2:4)/value(1)
+      value(nvar+1)=value(5)-.5_dp*value(1)*sum(velocity**2)
+      if(present(frame)) then
+        position=frame_lower+(real(cell_index,dp)+.5_dp)*frame_spacing(:,cell_level)
+        call rotating_potential_3d(frame,position,potential,success)
+        if(.not.success) return
+        value(nvar+1)=value(nvar+1)+value(1)*potential
+      endif
+      success=ieee_is_finite(value(nvar+1))
+    end subroutine append_internal
   end subroutine sample_amr_patch_tree_ghosts_3d
 end module amr_patch_tree_ghost_3d_mod

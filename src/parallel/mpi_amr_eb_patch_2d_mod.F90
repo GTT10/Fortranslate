@@ -4229,7 +4229,8 @@ contains
     local_ok = local_ok .and. size(species) >= 1 .and. &
       all(ieee_is_finite(numeric_controls)) .and. dt > 0.0_dp .and. &
       selected_target > 0.0_dp .and. selected_target <= 1.0_dp .and. &
-      (state_redist_max_order == 0 .or. state_redist_max_order == 2) .and. &
+      (state_redist_max_order == 0 .or. state_redist_max_order == 2 .or. &
+       state_redist_max_order == 4) .and. &
       sparse_patch_set%nvar == nvar .and. &
       sparse_patch_set%is_valid( &
         distribution, coarse_geometry, patch_set_template)
@@ -5980,7 +5981,8 @@ contains
     local_ok = local_ok .and. size(species) >= 1 .and. &
       all(ieee_is_finite(numeric_controls)) .and. dt > 0.0_dp .and. &
       selected_target > 0.0_dp .and. selected_target <= 1.0_dp .and. &
-      (state_redist_max_order == 0 .or. state_redist_max_order == 2) .and. &
+      (state_redist_max_order == 0 .or. state_redist_max_order == 2 .or. &
+       state_redist_max_order == 4) .and. &
       all(shape(coarse_state) == &
         [nvar, coarse_geometry%nx, coarse_geometry%ny]) .and. &
       all(shape(coarse_temperature) == &
@@ -6706,7 +6708,8 @@ contains
       ieee_is_finite(target_volume_fraction) .and. &
       target_volume_fraction > 0.0_dp .and. &
       target_volume_fraction <= 1.0_dp .and. &
-      (state_redist_max_order == 0 .or. state_redist_max_order == 2) .and. &
+      (state_redist_max_order == 0 .or. state_redist_max_order == 2 .or. &
+       state_redist_max_order == 4) .and. &
       distribution%is_valid(coarse_geometry, patch_set)
     if (local_ok) call validate_reactive_boundary_set_2d(boundaries, local_ok)
     if (local_ok) then

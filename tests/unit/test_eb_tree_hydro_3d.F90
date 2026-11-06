@@ -2,7 +2,7 @@ program test_eb_tree_hydro_3d
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use simulation_config_reactive_3d_mod, only: mach_inlet_ghost_3d
   use precision_mod, only: dp
-  use nasa7_thermo_mod, only: nasa7_species
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_transient_mass_properties
   use thermo_database_mod, only: load_h2o2_elementary_thermo
   use reactive_1d_mod, only: reactive_nvar,reactive_conserved_to_primitive,reactive_primitive_to_conserved
   use amr_hierarchy_3d_mod, only: amr_patch_3d,initialize_amr_patch_3d
@@ -106,11 +106,63 @@ program test_eb_tree_hydro_3d
     boundary=17;wall=19
     call advance_reactive_eb_tree_hydro_3d(species,'pelec',1.e-8_dp,tree,boundary,wall,ok, &
       difmag=coefficient,extended_geometry=extended)
-    call require(.not.ok.and.all(boundary==17).and.all(wall==19),'cold Riemann star rejects below mechanism range')
-    call unchanged_tree()
+    ! Transient Riemann states may use the positive-temperature polynomial
+    ! outside fitted bounds; accepted cells must still satisfy strict recovery.
+    call require(ok,'cold CTU transient extrapolation admitted')
+    call integrate_reactive_eb_tree_3d(tree,after,ok)
+    call require(ok,'cold CTU inventory')
+    residual=maxval(abs(after-before-boundary-wall)/max(1._dp,abs(before)))
+    call require(residual<3.e-14_dp,'cold CTU conservation including wall')
+    do node=1,count
+    do k=1,4
+    do j=1,4
+    do i=1,4
+      if(tree%nodes(node)%geometry%volume_fraction(i,j,k)<=0) cycle
+      call reactive_conserved_to_primitive(species,tree%nodes(node)%state(:,i,j,k), &
+        tree%nodes(node)%temperature(i,j,k),expected,et,sound,ok)
+      call require(ok,'cold CTU accepted cell strict recovery')
+      call require(et>=maxval(species%temperature_min).and.et<=minval(species%temperature_max), &
+        'cold CTU accepted cell within mechanism range')
+    enddo
+    enddo
+    enddo
+    enddo
+    tree=saved
+    ! Build a real out-of-range cell, rather than rejecting a transient face.
+    block
+      real(dp) :: cold,cp,cv,h,e,entropy,energy,rho
+      integer :: sp
+      logical :: valid
+      ctu_start=saved
+      cold=.5_dp*maxval(species%temperature_min)
+      invalid_cell: do k=1,4
+      do j=1,4
+      do i=1,4
+        if(tree%nodes(count)%geometry%volume_fraction(i,j,k)<=0) cycle
+        rho=tree%nodes(count)%state(1,i,j,k);energy=0
+        do sp=1,size(species)
+          call nasa7_transient_mass_properties(species(sp),cold,cp,cv,h,e,entropy,valid)
+          call require(valid,'out-of-range cell fixture polynomial')
+          energy=energy+tree%nodes(count)%state(5+sp,i,j,k)*e
+        enddo
+        tree%nodes(count)%state(5,i,j,k)=energy+sum(tree%nodes(count)%state(2:4,i,j,k)**2)/(2*rho)
+        tree%nodes(count)%temperature(i,j,k)=cold
+        call reactive_conserved_to_primitive(species,tree%nodes(count)%state(:,i,j,k), &
+          cold,expected,et,sound,valid)
+        call require(.not.valid,'out-of-range cell fixture rejected by strict EOS')
+        exit invalid_cell
+      enddo
+      enddo
+      enddo invalid_cell
+      saved=tree;boundary=17;wall=19
+      call advance_reactive_eb_tree_hydro_3d(species,'pelec',1.e-8_dp,tree,boundary,wall,ok, &
+        difmag=coefficient,extended_geometry=extended)
+      call require(.not.ok.and.all(boundary==17).and.all(wall==19),'cold cell refuses transaction')
+      call unchanged_tree()
+      saved=ctu_start;tree=saved
+    end block
   end if
   ! Retain discontinuous densities with a uniform 1000 K thermodynamic fixture.
-  ! The original cold case above remains an explicit rejection test.
   do node=1,count
   do k=1,4
   do j=1,4

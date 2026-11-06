@@ -113,6 +113,7 @@ program pelef_reactive_2d_selected
   end select
   call include_isothermal_wall_temperatures( &
     config, requested_temperature_minimum, requested_temperature_maximum)
+  if(.not.config%pinned_eos_extrapolation) then
   call validate_selected_temperature_range( &
     "Selected reactive 2D", requested_temperature_minimum, &
     requested_temperature_maximum, common_temperature_minimum, &
@@ -120,6 +121,8 @@ program pelef_reactive_2d_selected
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
+  end if
+
   end if
 
   call resolve_reactive_2d_selected_composition( &

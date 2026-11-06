@@ -2,7 +2,7 @@ module mixture_thermo_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use precision_mod, only: dp
   use nasa7_thermo_mod, only: &
-    nasa7_species, valid_nasa7_species, nasa7_mass_properties, &
+    nasa7_species,nasa7_eos_bounds, valid_nasa7_species, nasa7_mass_properties, &
     universal_gas_constant
   implicit none
   private
@@ -31,9 +31,16 @@ contains
     real(dp), intent(in) :: mass_fractions(:)
 
     integer :: i
+    real(dp) :: eos_lower,eos_upper
+    logical :: eos_ok
 
     valid = .false.
     if (size(species) < 1 .or. size(mass_fractions) /= size(species)) return
+    if(any(species%pinned_eos_extrapolation.neqv.species(1)%pinned_eos_extrapolation)) return
+    if(species(1)%pinned_eos_extrapolation) then
+      call nasa7_eos_bounds(species,eos_lower,eos_upper,eos_ok)
+      if(.not.eos_ok) return
+    endif
     do i = 1, size(species)
       if (.not. valid_nasa7_species(species(i))) return
     end do
@@ -383,11 +390,11 @@ contains
     real(dp) :: lower, upper, energy_lower, energy_upper
     real(dp) :: molecular_weight, gas_constant, cp, cv, gamma
     real(dp) :: enthalpy, internal_energy, entropy
-    real(dp) :: residual, candidate, tolerance, step
+    real(dp) :: residual, candidate, tolerance, step, pinned_temperature_tolerance
     real(dp) :: lower_limit, upper_limit
-    real(dp) :: working_temperature
+    real(dp) :: working_temperature,boundary_cv_lower,boundary_cv_upper,extrapolated_temperature
     logical :: properties_ok, local_ok, candidate_ok
-    integer :: iteration
+    integer :: iteration,pinned_iterations
 
     temperature = 0.0_dp
     ok = .false.
@@ -398,15 +405,98 @@ contains
     call mixture_temperature_bounds(species, lower, upper, properties_ok)
     if (.not. properties_ok) return
 
+    if(species(1)%pinned_eos_extrapolation) then
+      call nasa7_eos_bounds(species,lower,upper,properties_ok)
+      if(.not.properties_ok) return
+    end if
+
     call mixture_mass_properties( &
       species, mass_fractions, lower, molecular_weight, gas_constant, cp, cv, &
       gamma, enthalpy, energy_lower, entropy, properties_ok)
     if (.not. properties_ok) return
+    boundary_cv_lower=cv
     call mixture_mass_properties( &
       species, mass_fractions, upper, molecular_weight, gas_constant, cp, cv, &
       gamma, enthalpy, energy_upper, entropy, properties_ok)
     if (.not. properties_ok) return
     if (.not. all(ieee_is_finite([energy_lower, energy_upper]))) return
+    boundary_cv_upper=cv
+    if(species(1)%pinned_eos_extrapolation) then
+      ! Pinned Fuego/GET_T_GIVEN_EY uses the boundary mixture Cv and linear
+      ! extrapolation, rather than an out-of-fit polynomial inverse or clamp.
+      if(target_internal_energy<energy_lower.or.target_internal_energy>energy_upper) then
+        if(target_internal_energy<energy_lower) then
+          call subtract_finite(target_internal_energy,energy_lower,residual,local_ok)
+          if(.not.local_ok) return
+          call divide_finite(residual,boundary_cv_lower,step,local_ok)
+          if(.not.local_ok) return
+          extrapolated_temperature=lower
+        else
+          call subtract_finite(target_internal_energy,energy_upper,residual,local_ok)
+          if(.not.local_ok) return
+          call divide_finite(residual,boundary_cv_upper,step,local_ok)
+          if(.not.local_ok) return
+          extrapolated_temperature=upper
+        endif
+        call add_finite(extrapolated_temperature,step,local_ok)
+        if(.not.local_ok.or.extrapolated_temperature<=0) return
+        ! Qualify the returned positive temperature before publication. This
+        ! preserves finite polynomial/mixture heat-capacity guards at extremes.
+        call mixture_mass_properties(species,mass_fractions,extrapolated_temperature,molecular_weight, &
+          gas_constant,cp,cv,gamma,enthalpy,internal_energy,entropy,properties_ok)
+        if(.not.properties_ok) return
+        temperature=extrapolated_temperature;ok=.true.
+        return
+      endif
+      ! Pinned GET_T_GIVEN_EY default (without CONVERGENCE): 200 updates,
+      ! |dT| < 1e-6 K before applying the last update, with +/-100 K steps.
+      ! Its explicit CONVERGENCE mode instead uses 5000 updates and 1e-12 K.
+      ! Keep the strict library inverse and its tighter residual gate below.
+      pinned_iterations=200;pinned_temperature_tolerance=1e-6_dp
+      if(species(1)%pinned_eos_convergence) then
+        pinned_iterations=5000;pinned_temperature_tolerance=1e-12_dp
+      endif
+      working_temperature=initial_guess
+      if(working_temperature<lower.or.working_temperature>upper) then
+        call subtract_finite(energy_upper,energy_lower,residual,local_ok)
+        if(.not.local_ok) return
+        call divide_finite(upper-lower,residual,step,local_ok)
+        if(.not.local_ok) return
+        call subtract_finite(target_internal_energy,energy_lower,residual,local_ok)
+        if(.not.local_ok) return
+        call multiply_finite(step,residual,candidate,local_ok)
+        if(.not.local_ok) return
+        working_temperature=lower
+        call add_finite(working_temperature,candidate,local_ok)
+        if(.not.local_ok) return
+      endif
+      do iteration=1,pinned_iterations
+        call mixture_mass_properties(species,mass_fractions,working_temperature,molecular_weight, &
+          gas_constant,cp,cv,gamma,enthalpy,internal_energy,entropy,properties_ok)
+        if(.not.properties_ok) return
+        call subtract_finite(target_internal_energy,internal_energy,residual,local_ok)
+        if(.not.local_ok) return
+        call divide_finite(residual,cv,step,local_ok)
+        if(.not.local_ok) return
+        if(step>100._dp) then
+          step=100._dp
+        else if(step< -100._dp) then
+          step=-100._dp
+        else if(abs(step)<pinned_temperature_tolerance) then
+          exit
+        endif
+        call add_finite(working_temperature,step,local_ok)
+        if(.not.local_ok) return
+      enddo
+      ! Fuego accepts the returned iterate, including iteration exhaustion.
+      ! Unrepresentable/nonphysical properties still fail before publication.
+      call mixture_mass_properties(species,mass_fractions,working_temperature,molecular_weight, &
+        gas_constant,cp,cv,gamma,enthalpy,internal_energy,entropy,properties_ok)
+      if(.not.properties_ok) return
+      temperature=working_temperature;ok=.true.
+      if(present(iterations)) iterations=min(iteration,pinned_iterations)
+      return
+    endif
 
     tolerance = 1.0e-11_dp * max(1.0_dp, abs(target_internal_energy))
     if (.not. ieee_is_finite(tolerance)) return
@@ -450,7 +540,7 @@ contains
       ! bracket with adjacent representable endpoints is already fully resolved.
       if(energy_lower<=target_internal_energy.and.target_internal_energy<=energy_upper) then
         if(nearest(lower,1._dp)>=upper.and. &
-          .not.any(lower<=species%temperature_mid.and.upper>species%temperature_mid)) then
+          .not.any(lower<species%temperature_mid.and.upper>=species%temperature_mid)) then
           temperature=lower
           if(abs(energy_upper-target_internal_energy)<abs(energy_lower-target_internal_energy)) temperature=upper
           ok=.true.

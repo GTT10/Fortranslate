@@ -14,31 +14,53 @@ module spray_mpi_amr_film_step_mod
     advance_mixture_wall_film_exchange,advance_mixture_wall_film_frozen
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use spray_mpi_amr_film_mod, only: migrate_mpi_amr_wall_films,spray_level_film_population,refresh_mpi_eb_film_copies
+  use spray_mpi_amr_film_mod, only: refresh_mpi_amr_film_copies
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_tree_spray_field,deposit_mpi_amr_tree_spray_gas
   use spray_mpi_amr_field_mod, only: sample_mpi_amr_particle_halo,deposit_mpi_amr_particle_halo, &
     sum_mpi_amr_particle_source_halo,deposit_mpi_amr_tree_spray_field
+  use spray_mpi_amr_step_mod, only: convert_mpi_amr_tree_rotating_energy,validate_mpi_spray_internal_energy_halo
+  use rotating_frame_3d_mod, only: rotating_frame_3d
   use mpi_eb_tree_halo_3d_mod, only: fill_mpi_eb_tree_halo_3d
   use eb_geometry_3d_mod, only: eb_geometry_3d
   implicit none
   private
   public :: advance_mpi_amr_film_coupling,kick_mpi_eb_film_halo,advance_mpi_eb_film_sdc_stage
+  public :: advance_mpi_amr_film_sdc_stage,advance_mpi_amr_recursive_film_stage,append_mpi_amr_film_births
   public :: advance_mpi_eb_recursive_film_stage,finish_mpi_eb_film_level,append_mpi_eb_film_births
   type, public :: spray_sdc_film_stage
     integer :: next_stage=0,iterations=0,depth=-1
     real(dp) :: time=0,interval=0,old_wall(5)=0
     logical :: exports_physical=.false.,births_attached=.false.
+    logical :: has_frame=.false.,has_geometry=.false.,has_internal_energy=.false.
+    integer :: frame_axis=0
+    real(dp) :: frame_values(4)=0._dp,frame_source_change=0._dp
     type(spray_level_film_population) :: midpoint(3)
     type(amr_tree_state_3d) :: old_source,old_remainder,old_physical_source
   end type spray_sdc_film_stage
 contains
   ! Deposits created after the old particle exchange receive only the final
   ! film half kick. Keep existing midpoint films, rates and copies unchanged.
+  subroutine append_mpi_amr_film_births(comm,tree,owners,lower,spacing,grow,maximum_films,films,mass,work,ok,periodic)
+    type(MPI_Comm), intent(in) :: comm
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),grow,maximum_films
+    real(dp), intent(in) :: lower(3),spacing(3)
+    type(spray_wall_film), intent(in) :: films(:)
+    real(dp), intent(in) :: mass(:,:)
+    type(spray_sdc_film_stage), intent(inout) :: work
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: periodic(3)
+    call append_mpi_eb_film_births(comm,tree,owners,lower,spacing,grow,maximum_films, &
+      films=films,mass=mass,work=work,ok=ok,periodic=periodic)
+  end subroutine append_mpi_amr_film_births
+
   subroutine append_mpi_eb_film_births(comm,tree,owners,lower,spacing,grow,maximum_films,phi,films,mass,work,ok,periodic)
     logical, optional, intent(in) :: periodic(3)
     type(MPI_Comm), intent(in) :: comm
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:),grow,maximum_films
-    real(dp), intent(in) :: lower(3),spacing(3),phi(0:,0:,0:)
+    real(dp), intent(in) :: lower(3),spacing(3)
+    real(dp), optional, intent(in) :: phi(0:,0:,0:)
     type(spray_wall_film), intent(in) :: films(:)
     real(dp), intent(in) :: mass(:,:)
     type(spray_sdc_film_stage), intent(inout) :: work
@@ -120,12 +142,118 @@ contains
   end subroutine finish_mpi_eb_film_level
 
   ! The full film hierarchy remains private to the outer gas transaction.
+  subroutine advance_mpi_amr_recursive_film_stage(comm,species,transport,components,options,wall_options,tree,owners, &
+      gas_halo,temperature_halo,width,target_level,grow,maximum_films,physical,virtuals,ghosts,work, &
+      lower,spacing,time,interval,stage,iterations,faces,source,remainder,wall_change,ok,physical_source,frame,common_step, &
+      internal_energy_halo)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy_halo
+    logical, optional, intent(in) :: common_step
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_wall_options), intent(in) :: wall_options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:),width,target_level,grow,maximum_films
+    type(spray_level_film_population), intent(inout) :: physical(:),virtuals(:),ghosts(:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    real(dp), intent(in) :: lower(3),spacing(3),time,interval
+    integer, intent(in) :: stage,iterations
+    type(spray_sdc_film_stage), intent(inout) :: work(:)
+    character(len=*), intent(in) :: faces(6)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(amr_tree_state_3d), allocatable :: physical_delta
+    type(spray_sdc_film_stage) :: candidate
+    type(spray_level_film_population) :: group(3),new_virtual,next_ghost
+    type(amr_tree_state_3d) :: change,leftover
+    real(dp) :: wall(5),tolerance,finish
+    integer :: levels,level,p,status,flags(6),low(6),high(6)
+    real(dp) :: times(2),low_time(2),high_time(2)
+    logical :: valid,agreed,periodic(3),common
+    common=.false.
+    if(present(common_step)) common=common_step
+    ok=.false.;valid=tree%is_valid()
+    if(valid) valid=size(owners)==size(tree%nodes)
+    call agree();if(.not.agreed) return
+    call validate_mpi_spray_internal_energy_halo(comm,owners,gas_halo,internal_energy_halo,valid)
+    if(.not.valid) return
+    levels=tree%level_count();level=target_level+1
+    valid=all([size(physical),size(virtuals),size(ghosts),size(work)]==levels)
+    valid=valid.and.level>=1.and.level<=levels.and.all(ieee_is_finite([time,interval]))
+    valid=valid.and.time>=0.and.interval>0
+    valid=valid.and.all((faces([1,3,5])=='periodic').eqv.(faces([2,4,6])=='periodic'))
+    call agree();if(.not.agreed) return
+    flags=[levels,target_level,stage,iterations,merge(1,0,present(frame)),merge(1,0,common)];times=[time,interval]
+    call MPI_Allreduce(flags,low,6,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(flags,high,6,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    call MPI_Allreduce(times,low_time,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(times,high_time,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.any(low_time/=high_time)) return
+    tolerance=32*epsilon(1._dp)*max(abs(time),interval,tiny(1._dp))
+    if(stage==0) then
+      ! Current level and descendants must start together; parents have already
+      ! completed their provisional interval before recursive descent.
+      do p=level,levels
+        finish=work(p)%time+work(p)%interval
+        valid=valid.and.work(p)%next_stage==0.and.abs(finish-time)<=tolerance
+      end do
+      if(level>1) then
+        if(common) then
+          ! Common intervals enter all old stages before any new stage.
+          valid=valid.and.work(level-1)%next_stage==1.and.work(level-1)%iterations==iterations
+          valid=valid.and.work(level-1)%time==time.and.work(level-1)%interval==interval
+        else
+          valid=valid.and.work(level-1)%iterations>0.and.work(level-1)%next_stage==0
+          valid=valid.and.time>=work(level-1)%time-tolerance
+          valid=valid.and.interval<=work(level-1)%time+work(level-1)%interval-time+tolerance
+        end if
+      end if
+    end if
+    call agree();if(.not.agreed) return
+    periodic=[faces(1)=='periodic',faces(3)=='periodic',faces(5)=='periodic']
+    if(present(physical_source)) allocate(physical_delta)
+    candidate=work(level);group(1)=physical(level);group(2)=virtuals(level);group(3)=ghosts(level)
+    if(stage==0) then
+      call refresh_mpi_amr_film_copies(comm,tree,owners,physical,lower,spacing,target_level,grow, &
+        maximum_films,new_virtual,next_ghost,valid,periodic)
+      if(.not.valid) return
+      group(2)=new_virtual
+    end if
+    call advance_mpi_amr_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners, &
+      gas_halo,temperature_halo,width,target_level,group,candidate,lower,spacing,periodic,time,interval,stage,iterations, &
+      change,leftover,wall,valid,physical_delta,frame,internal_energy_halo=internal_energy_halo)
+    if(.not.valid) return
+    physical(level)=group(1);virtuals(level)=group(2);ghosts(level)=group(3);work(level)=candidate
+    if(stage==0.and.level<levels) ghosts(level+1)=next_ghost
+    if(present(physical_source)) call move_alloc(physical_delta%fields,physical_source%fields)
+    call move_alloc(change%fields,source%fields);call move_alloc(leftover%fields,remainder%fields)
+    wall_change=wall;ok=.true.
+  contains
+    subroutine agree()
+      call MPI_Allreduce(valid,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS) agreed=.false.
+    end subroutine agree
+  end subroutine advance_mpi_amr_recursive_film_stage
+
   subroutine advance_mpi_eb_recursive_film_stage(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
       state,temperature,width,target_level,grow,maximum_films,physical,virtuals,ghosts,work, &
       time,interval,stage,iterations,faces, &
       source,remainder,wall_change,ok,nodal_phi,centroids,target_volume_fraction, &
       ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
-      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source)
+      inflow_state,inflow_mach,inflow_temperature,inflow_pressure,physical_source,frame,common_step, &
+      internal_energy,ancestor_internal_energy_start,ancestor_internal_energy_end)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    type(amr_tree_state_3d), optional, intent(in) :: ancestor_internal_energy_start,ancestor_internal_energy_end
+    logical, optional, intent(in) :: common_step
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -153,9 +281,17 @@ contains
     type(spray_level_film_population) :: group(3),new_virtual,next_ghost
     type(amr_tree_state_3d) :: change,leftover,halo,halo_t,volume
     real(dp) :: wall(5),lower(3),spacing(3),tolerance,finish
-    integer :: levels,level,p,status,flags(4),low(4),high(4)
+    type(amr_tree_state_3d), allocatable :: held_halo
+    integer :: held_allocation_status
+    integer :: levels,level,p,status,flags(6),low(6),high(6)
     real(dp) :: times(2),low_time(2),high_time(2)
-    logical :: valid,agreed,periodic(3)
+    logical :: valid,agreed,periodic(3),common
+    common=.false.
+    if(present(common_step)) common=common_step
+    call validate_mpi_spray_internal_energy_halo(comm,owners,state,internal_energy,valid)
+    if(.not.valid) then
+      ok=.false.;return
+    endif
     ok=.false.;valid=tree%is_valid().and.size(geometry)==size(owners)
     if(valid) valid=size(owners)==size(tree%nodes)
     call agree();if(.not.agreed) return
@@ -165,10 +301,10 @@ contains
     valid=valid.and.time>=0.and.interval>0
     valid=valid.and.all((faces([1,3,5])=='periodic').eqv.(faces([2,4,6])=='periodic'))
     call agree();if(.not.agreed) return
-    flags=[levels,target_level,stage,iterations];times=[time,interval]
-    call MPI_Allreduce(flags,low,4,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[levels,target_level,stage,iterations,merge(1,0,present(frame)),merge(1,0,common)];times=[time,interval]
+    call MPI_Allreduce(flags,low,6,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,high,4,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,high,6,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
     call MPI_Allreduce(times,low_time,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
@@ -183,9 +319,15 @@ contains
         valid=valid.and.work(p)%next_stage==0.and.abs(finish-time)<=tolerance
       end do
       if(level>1) then
-        valid=valid.and.work(level-1)%iterations>0.and.work(level-1)%next_stage==0
-        valid=valid.and.time>=work(level-1)%time-tolerance
-        valid=valid.and.interval<=work(level-1)%time+work(level-1)%interval-time+tolerance
+        if(common) then
+          ! Common intervals enter all old stages before any new stage.
+          valid=valid.and.work(level-1)%next_stage==1.and.work(level-1)%iterations==iterations
+          valid=valid.and.work(level-1)%time==time.and.work(level-1)%interval==interval
+        else
+          valid=valid.and.work(level-1)%iterations>0.and.work(level-1)%next_stage==0
+          valid=valid.and.time>=work(level-1)%time-tolerance
+          valid=valid.and.interval<=work(level-1)%time+work(level-1)%interval-time+tolerance
+        end if
       end if
     end if
     call agree();if(.not.agreed) return
@@ -200,16 +342,30 @@ contains
       if(.not.valid) return
       group(2)=new_virtual
     end if
+    if(present(internal_energy)) then
+      allocate(held_halo,stat=held_allocation_status)
+      call MPI_Allreduce(held_allocation_status==0,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS.or..not.agreed) return
+    endif
     if(stage==0.or.stage==iterations) then
       call fill_mpi_eb_tree_halo_3d(species,tree,owners,geometry,state,temperature,halo,halo_t,comm,valid, &
         ancestor_start,ancestor_end,temperature_start,temperature_end,ancestor_fraction, &
         inflow_mach,inflow_temperature,inflow_pressure,volume,width,target_volume_fraction, &
-        faces,inflow_state,restrict_snapshot=.false.)
+        faces,inflow_state,restrict_snapshot=.false.,frame=frame, &
+        internal_energy=internal_energy,ghost_internal_energy=held_halo, &
+        ancestor_internal_energy_start=ancestor_internal_energy_start, &
+        ancestor_internal_energy_end=ancestor_internal_energy_end)
       if(.not.valid) return
+      if(present(frame)) then
+        call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,halo,lower,spacing,frame,.false., &
+          valid,geometry,width)
+        if(.not.valid) return
+      end if
     end if
     call advance_mpi_eb_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
       halo,halo_t,width,target_level,group,candidate,lower,spacing,periodic,time,interval,stage,iterations, &
-      volume,nodal_phi,centroids,change,leftover,wall,valid,physical_delta)
+      volume,nodal_phi,centroids,change,leftover,wall,valid,physical_delta,frame, &
+        internal_energy_halo=held_halo)
     if(.not.valid) return
     physical(level)=group(1);virtuals(level)=group(2);ghosts(level)=group(3);work(level)=candidate
     if(stage==0.and.level<levels) ghosts(level+1)=next_ghost
@@ -225,9 +381,12 @@ contains
 
   ! Populations are physical / virtual / ghost. Their halos are supplied at
   ! the current gas stage time by the recursive owner. Sources returned are rates.
-  subroutine advance_mpi_eb_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
+  ! Regular-grid films share the same staged exchange and publication contract.
+  subroutine advance_mpi_amr_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners, &
       gas_halo,temperature_halo,width,target_level,populations,work,lower,spacing,periodic,time,interval,stage,iterations, &
-      fluid_fraction,nodal_phi,centroids,source,remainder,wall_change,ok,physical_source)
+      source,remainder,wall_change,ok,physical_source,frame, &
+      internal_energy_halo)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy_halo
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -235,10 +394,43 @@ contains
     type(spray_options), intent(in) :: options
     type(spray_wall_options), intent(in) :: wall_options
     type(amr_patch_tree_3d), intent(in) :: tree
-    type(eb_geometry_3d), intent(in) :: geometry(:)
     integer, intent(in) :: owners(:),width,target_level,stage,iterations
-    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo,fluid_fraction,centroids
-    real(dp), intent(in) :: lower(3),spacing(3),time,interval,nodal_phi(0:,0:,0:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(spray_level_film_population), intent(inout) :: populations(3)
+    type(spray_sdc_film_stage), intent(inout) :: work
+    real(dp), intent(in) :: lower(3),spacing(3),time,interval
+    logical, intent(in) :: periodic(3)
+    type(amr_tree_state_3d), intent(inout) :: source,remainder
+    real(dp), intent(inout) :: wall_change(5)
+    logical, intent(out) :: ok
+    type(amr_tree_state_3d), optional, intent(inout) :: physical_source
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    call advance_mpi_eb_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners, &
+      gas_halo=gas_halo,temperature_halo=temperature_halo,width=width,target_level=target_level, &
+      populations=populations,work=work,lower=lower,spacing=spacing,periodic=periodic,time=time,interval=interval, &
+      stage=stage,iterations=iterations,source=source,remainder=remainder,wall_change=wall_change,ok=ok, &
+      physical_source=physical_source,frame=frame,internal_energy_halo=internal_energy_halo)
+  end subroutine advance_mpi_amr_film_sdc_stage
+
+  subroutine advance_mpi_eb_film_sdc_stage(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
+      gas_halo,temperature_halo,width,target_level,populations,work,lower,spacing,periodic,time,interval,stage,iterations, &
+      fluid_fraction,nodal_phi,centroids,source,remainder,wall_change,ok,physical_source,frame, &
+      internal_energy_halo)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy_halo
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    type(MPI_Comm), intent(in) :: comm
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    type(spray_liquid), intent(in) :: components(:)
+    type(spray_options), intent(in) :: options
+    type(spray_wall_options), intent(in) :: wall_options
+    type(amr_patch_tree_3d), intent(in) :: tree
+    type(eb_geometry_3d), optional, intent(in) :: geometry(:)
+    integer, intent(in) :: owners(:),width,target_level,stage,iterations
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), intent(in) :: lower(3),spacing(3),time,interval
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     logical, intent(in) :: periodic(3)
     type(spray_level_film_population), intent(inout) :: populations(3)
     type(spray_sdc_film_stage), intent(inout) :: work
@@ -251,10 +443,13 @@ contains
     type(amr_tree_state_3d) :: total,leftover,part,part_remainder,exported
     type(amr_tree_state_3d), allocatable :: physical_delta
     real(dp) :: half_interval,wall(5),physical_wall(5),times(2),lowtime(2),hightime(2)
-    integer :: flags(5),lowflags(5),highflags(5),population,status
+    real(dp) :: frame_values(4),low_frame(4),high_frame(4),physical_conversion
+    integer :: flags(8),lowflags(8),highflags(8),population,status,low_axis,high_axis
     logical :: valid,agreed
-    ok=.false.;times=[time,interval]
+    ok=.false.;times=[time,interval];physical_conversion=0
     valid=all(ieee_is_finite(times)).and.time>=0.and.interval>0.and.interval<=1e6_dp
+    valid=valid.and.(present(geometry).eqv.present(fluid_fraction))
+    valid=valid.and.(present(geometry).eqv.present(nodal_phi)).and.(present(geometry).eqv.present(centroids))
     valid=valid.and.iterations>=1.and.stage>=0.and.stage<=iterations
     if(stage==0) then
       valid=valid.and.work%next_stage==0
@@ -262,13 +457,33 @@ contains
       valid=valid.and.work%next_stage==stage.and.work%iterations==iterations.and.work%depth==target_level
       valid=valid.and.work%time==time.and.work%interval==interval
       valid=valid.and.(work%exports_physical.eqv.present(physical_source))
+      valid=valid.and.(work%has_frame.eqv.present(frame))
+      valid=valid.and.(work%has_internal_energy.eqv.present(internal_energy_halo))
+      valid=valid.and.(work%has_geometry.eqv.present(geometry))
+      if(present(frame)) then
+        valid=valid.and.work%frame_axis==frame%axis
+        valid=valid.and.all(work%frame_values==[frame%angular_speed,frame%axis_point])
+      end if
     end if
+    if(present(frame)) valid=valid.and.frame%is_valid()
     call agree();if(.not.agreed) return
-    flags=[width,target_level,stage,iterations,merge(1,0,present(physical_source))]
-    call MPI_Allreduce(flags,lowflags,5,MPI_INTEGER,MPI_MIN,comm,status)
+    flags=[width,target_level,stage,iterations,merge(1,0,present(physical_source)), &
+      merge(1,0,present(frame)),merge(1,0,present(geometry)),merge(1,0,present(internal_energy_halo))]
+    call MPI_Allreduce(flags,lowflags,8,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(flags,highflags,5,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(flags,highflags,8,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(lowflags/=highflags)) return
+    if(present(frame)) then
+      call MPI_Allreduce(frame%axis,low_axis,1,MPI_INTEGER,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame%axis,high_axis,1,MPI_INTEGER,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.low_axis/=high_axis) return
+      frame_values=[frame%angular_speed,frame%axis_point]
+      call MPI_Allreduce(frame_values,low_frame,4,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
+      if(status/=MPI_SUCCESS) return
+      call MPI_Allreduce(frame_values,high_frame,4,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
+      if(status/=MPI_SUCCESS.or.any(low_frame/=high_frame)) return
+    end if
     call MPI_Allreduce(times,lowtime,2,MPI_DOUBLE_PRECISION,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(times,hightime,2,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
@@ -292,19 +507,31 @@ contains
         allocated(trial(population)%probes).and.allocated(trial(population)%nodes)
     end do
     call agree();if(.not.agreed) return
-    if(present(physical_source)) allocate(physical_delta)
+    if(present(physical_source).or.present(frame)) allocate(physical_delta)
     do population=1,3
       call kick_mpi_eb_film_halo(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
         gas_halo,temperature_halo,width,target_level,trial(population)%nodes,trial(population)%probes, &
         trial(population)%films,trial(population)%component_mass,lower,spacing,periodic,half_interval, &
-        fluid_fraction,nodal_phi,centroids,part,part_remainder,wall,valid,physical_delta)
+        fluid_fraction,nodal_phi,centroids,part,part_remainder,wall,valid,physical_delta, &
+        internal_energy_halo=internal_energy_halo)
       if(.not.valid) return
+      if(present(frame)) then
+        call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,part,lower,spacing,frame,.true.,valid,geometry)
+        if(.not.valid) return
+        call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,part_remainder,lower,spacing, &
+          frame,.true.,valid,geometry,width)
+        if(.not.valid) return
+        if(allocated(physical_delta).and.population==1) then
+          call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,physical_delta,lower,spacing, &
+            frame,.true.,valid,geometry,energy_change=physical_conversion)
+          if(.not.valid) return
+        end if
+      end if
       call remove_depleted(trial(population))
       if(population==1) then
         total=part;leftover=part_remainder;physical_wall=wall
-        if(present(physical_source)) then
-          exported=physical_delta;deallocate(physical_delta)
-        end if
+        if(present(physical_source)) exported=physical_delta
+        if(allocated(physical_delta)) deallocate(physical_delta)
       else
         call add_field(total,part);if(.not.agreed) return
         call add_field(leftover,part_remainder);if(.not.agreed) return
@@ -316,15 +543,25 @@ contains
       call to_rate(exported);if(.not.agreed) return
     end if
     if(stage==0) then
-      candidate%births_attached=.false.
+      candidate%births_attached=.false.;candidate%frame_source_change=physical_conversion
       candidate%time=time;candidate%interval=interval;candidate%depth=target_level;candidate%iterations=iterations
       candidate%midpoint=trial;candidate%old_source=total;candidate%old_remainder=leftover;candidate%old_wall=physical_wall
       candidate%exports_physical=present(physical_source)
+      candidate%has_internal_energy=present(internal_energy_halo)
+      candidate%has_frame=present(frame);candidate%has_geometry=present(geometry)
+      candidate%frame_axis=0;candidate%frame_values=0
+      if(present(frame)) then
+        candidate%frame_axis=frame%axis
+        candidate%frame_values=[frame%angular_speed,frame%axis_point]
+      end if
       if(present(physical_source)) candidate%old_physical_source=exported
     else
       valid=all(ieee_is_finite(candidate%old_wall))
       if(valid) valid=.not.any(physical_wall>huge(1._dp)-max(candidate%old_wall,0._dp)).and. &
         .not.any(physical_wall< -huge(1._dp)-min(candidate%old_wall,0._dp))
+      call agree();if(.not.agreed) return
+      candidate%frame_source_change=candidate%frame_source_change+physical_conversion
+      valid=ieee_is_finite(candidate%frame_source_change)
       call agree();if(.not.agreed) return
       physical_wall=physical_wall+candidate%old_wall
     end if
@@ -396,7 +633,9 @@ contains
   ! Zero-mass outputs must be removed before a subsequent film call.
   subroutine kick_mpi_eb_film_halo(comm,species,transport,components,options,wall_options,tree,owners,geometry, &
       gas_halo,temperature_halo,width,target_level,nodes,probes,films,film_mass,lower,spacing,periodic,dt, &
-      fluid_fraction,nodal_phi,centroids,source,remainder,wall_change,ok,physical_source)
+      fluid_fraction,nodal_phi,centroids,source,remainder,wall_change,ok,physical_source, &
+      internal_energy_halo)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy_halo
     type(MPI_Comm), intent(in) :: comm
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
@@ -404,10 +643,12 @@ contains
     type(spray_options), intent(in) :: options
     type(spray_wall_options), intent(in) :: wall_options
     type(amr_patch_tree_3d), intent(in) :: tree
-    type(eb_geometry_3d), intent(in) :: geometry(:)
+    type(eb_geometry_3d), optional, intent(in) :: geometry(:)
     integer, intent(in) :: owners(:),width,target_level,nodes(:)
-    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo,fluid_fraction,centroids
-    real(dp), intent(in) :: probes(:,:),lower(3),spacing(3),dt,nodal_phi(0:,0:,0:)
+    type(amr_tree_state_3d), intent(in) :: gas_halo,temperature_halo
+    type(amr_tree_state_3d), optional, intent(in) :: fluid_fraction,centroids
+    real(dp), intent(in) :: probes(:,:),lower(3),spacing(3),dt
+    real(dp), optional, intent(in) :: nodal_phi(0:,0:,0:)
     logical, intent(in) :: periodic(3)
     type(spray_wall_film), intent(inout) :: films(:)
     real(dp), intent(inout) :: film_mass(:,:)
@@ -416,7 +657,7 @@ contains
     logical, intent(out) :: ok
     type(amr_tree_state_3d), optional, intent(inout) :: physical_source
     type(spray_wall_film), allocatable :: candidate(:)
-    real(dp), allocatable :: masses(:,:),sampled(:,:),sampled_t(:,:),change(:,:)
+    real(dp), allocatable :: masses(:,:),sampled(:,:),sampled_t(:,:),change(:,:),sampled_h(:,:),held_point
     type(amr_tree_state_3d) :: raw,routed,leftover,physical_delta
     real(dp) :: primitive(reactive_nvar(size(species))),tg,sound,conductivity,wall_energy
     real(dp) :: ledger,global_ledger,controls(3),low(3),high(3)
@@ -425,6 +666,8 @@ contains
     character(len=9) :: wall_faces(6)
     ok=.false.;nv=reactive_nvar(size(species));nc=size(components);wall_faces='slip_wall'
     valid=tree%is_valid().and.valid_spray_options(options).and.valid_wall_options(wall_options,wall_faces)
+    valid=valid.and.(present(geometry).eqv.present(fluid_fraction))
+    valid=valid.and.(present(geometry).eqv.present(nodal_phi)).and.(present(geometry).eqv.present(centroids))
     valid=valid.and.all(wall_options%temperature==wall_options%temperature(1)).and.ieee_is_finite(dt)
     valid=valid.and.dt>=0.and.dt<=1e6_dp.and.nc>=1.and.nc<=min(16,size(species))
     valid=valid.and.size(transport)==size(species).and.size(films)<=wall_options%maximum_films
@@ -451,16 +694,28 @@ contains
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.any(low/=high)) return
+    call validate_mpi_spray_internal_energy_halo(comm,owners,gas_halo,internal_energy_halo,valid)
+    if(.not.valid) return
     call sample_mpi_amr_particle_halo(comm,tree,owners,gas_halo,nv,width,nodes,probes,lower,spacing, &
       periodic,sampled,valid,fluid_fraction,nodal_phi,centroids)
     if(.not.valid) return
     call sample_mpi_amr_particle_halo(comm,tree,owners,temperature_halo,1,width,nodes,probes,lower,spacing, &
       periodic,sampled_t,valid,fluid_fraction,nodal_phi,centroids)
     if(.not.valid) return
+    if(present(internal_energy_halo)) then
+      call sample_mpi_amr_particle_halo(comm,tree,owners,internal_energy_halo,1,width,nodes,probes,lower,spacing, &
+        periodic,sampled_h,valid,fluid_fraction,nodal_phi,centroids)
+      if(.not.valid) return
+      allocate(held_point,stat=status)
+      call MPI_Allreduce(status==0,agreed,1,MPI_LOGICAL,MPI_LAND,comm,status)
+      if(status/=MPI_SUCCESS.or..not.agreed) return
+    endif
     candidate=films;masses=film_mass;allocate(change(nv,size(films)));change=0;ledger=0
     if(wall_options%evolve) then
       do p=1,size(films)
-        call reactive_conserved_to_primitive(species,sampled(:,p),sampled_t(1,p),primitive,tg,sound,valid)
+        if(present(internal_energy_halo)) held_point=sampled_h(1,p)
+        call reactive_conserved_to_primitive(species,sampled(:,p),sampled_t(1,p),primitive,tg,sound,valid, &
+          internal_energy_density=held_point)
         if(.not.valid) exit
         conductivity=wall_liquid_conductivity_at_temperature(wall_options,films(p)%material_id,films(p)%temperature)
         call advance_mixture_wall_film_frozen(candidate(p),components,masses(:,p),species,transport,primitive,tg, &
@@ -516,8 +771,9 @@ contains
   ! All model tables/options are identical across ranks by caller contract.
   subroutine advance_mpi_amr_film_coupling(comm,species,transport,components,options,wall_options,state,temperature, &
       tree,owners,films,film_mass,lower,spacing,interval,faces,substeps,boundary_change,ok,eb_geometry,nodal_phi, &
-      gas_change,maximum_level)
+      gas_change,maximum_level,frame)
     integer, optional, intent(in) :: maximum_level
+    type(rotating_frame_3d), optional, intent(in) :: frame
     type(amr_tree_state_3d), optional, intent(inout) :: gas_change
     type(amr_tree_state_3d) :: integrated_change
     type(amr_tree_state_3d), allocatable :: trial_change
@@ -553,9 +809,14 @@ contains
     real(dp) :: ledger,trial_ledger,global_ledger,controls(3),low(3),high(3)
     integer :: np,nc,nvar,p,c,axis,face,attempt,count_steps,ierr,node,shape3(3)
     logical :: valid,agreed,accepted,eb
-    integer :: flag,lowflag,highflag
+    integer :: flag,lowflag,highflag,frame_flag,frame_low,frame_high
     real(dp) :: probe_offset,wall_temperature
     ok=.false.;substeps=0
+    frame_flag=merge(1,0,present(frame))
+    call MPI_Allreduce(frame_flag,frame_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    if(ierr/=MPI_SUCCESS) return
+    call MPI_Allreduce(frame_flag,frame_high,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.frame_low/=frame_high) return
     export_flag=merge(1,0,present(gas_change))
     call MPI_Allreduce(export_flag,export_low,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) return
@@ -602,6 +863,10 @@ contains
     call agree();if (.not.agreed) return
     periodic=faces([1,3,5])=='periodic'
     gas=state;temp=temperature;patches=films;masses=film_mass
+    if(present(frame)) then
+      call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,gas,lower,spacing,frame,.false.,valid,eb_geometry)
+      if(.not.valid) return
+    end if
     ! Validate the tree and closed film positions before any stencil lookup.
     call migrate_mpi_amr_wall_films(comm,tree,owners,patches,masses,lower,spacing,wall_options%maximum_films,valid, &
       nodal_phi,maximum_level,periodic=periodic)
@@ -702,8 +967,12 @@ contains
         trial=patches;next_mass=masses;change=0;trial_ledger=0;valid=.true.
         do p=1,np
           if (patches(p)%mass<=0) cycle
+          call reactive_conserved_to_primitive(species,samples(:nvar,p),samples(nvar+1,p),primitive,tg,sound,valid)
+          if (.not.valid) exit
           call advance_mixture_wall_film_exchange(trial(p),components,next_mass(:,p),rates(:,p)*dt,hv(:,p), &
-            qg(p)*dt,qw(p)*dt,wall_options%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true.)
+            qg(p)*dt,qw(p)*dt,wall_options%minimum_height,change(:,p),wall_energy,valid,deplete_traces=.true., &
+            pressure=primitive(5),gas_molecular_weights=species(components%vapor_index)%molecular_weight, &
+            euler_temperature=options%mixture_time_scheme=='euler')
           if (valid.and.trial(p)%mass>0) valid= &
             wall_liquid_conductivity_at_temperature(wall_options,trial(p)%material_id,trial(p)%temperature)>0
           if (.not.valid) exit
@@ -749,6 +1018,15 @@ contains
     call MPI_Allreduce(ledger,global_ledger,1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     if (ierr/=MPI_SUCCESS) return
     if (.not.ieee_is_finite(global_ledger)) return
+    if(present(frame)) then
+      call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,gas,lower,spacing,frame,.true.,valid,eb_geometry)
+      if(.not.valid) return
+      if(present(gas_change)) then
+        call convert_mpi_amr_tree_rotating_energy(comm,tree,owners,integrated_change,lower,spacing, &
+          frame,.true.,valid,eb_geometry)
+        if(.not.valid) return
+      end if
+    end if
     call move_alloc(gas%fields,state%fields);call move_alloc(temp%fields,temperature%fields)
     call move_alloc(kept,films);call move_alloc(kept_mass,film_mass)
     if(present(gas_change)) call move_alloc(integrated_change%fields,gas_change%fields)

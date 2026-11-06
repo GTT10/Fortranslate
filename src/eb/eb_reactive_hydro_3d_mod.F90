@@ -11,8 +11,8 @@ module eb_reactive_hydro_3d_mod
   use reactive_2d_mod, only: reactive_riemann_flux_y
   use reactive_directional_flux_3d_mod, only: reactive_riemann_flux_z
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d,extract_eb_geometry_3d
-  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
+    eb_geometry_3d, eb_covered_cell_3d,eb_regular_cell_3d,extract_eb_geometry_3d
+  use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d,valid_eb_integrated_flux_3d
   use eb_reactive_wall_flux_3d_mod, only: &
     reactive_eb_flux_divergence_3d,reactive_eb_slip_wall_source_3d,interpolate_reactive_eb_centroid_fluxes_3d
   use eb_reactive_redistribution_3d_mod, only: &
@@ -31,13 +31,17 @@ module eb_reactive_hydro_3d_mod
     ! Normal face index starts at zero, tangential indices at one.
     real(dp), allocatable :: left(:,:,:,:),right(:,:,:,:),flux(:,:,:,:)
     real(dp), allocatable :: energy_left(:,:,:),energy_right(:,:,:),pressure(:,:,:),velocity(:,:,:)
+    ! Independent intensive UEINT Riemann flux, captured only on request.
+    real(dp), allocatable :: internal_energy_flux(:,:,:)
   end type eb_plm_face_prediction_3d
   public :: compute_reactive_eb_plm_normal_fluxes_3d,apply_reactive_eb_transverse_3d
   public :: compute_reactive_eb_plm_ctu_fluxes_3d,advance_reactive_eb_plm_ctu_3d
+  public :: compute_eb_godunov_pressure_work_3d
   public :: compute_sdc_eb_hydro_3d,compute_sdc_eb_boundary_hydro_3d
   public :: advance_reactive_eb_boundary_ctu_3d
   public :: advance_reactive_eb_outflow_ctu_3d
   public :: compute_reactive_eb_flattening_3d
+  public :: limit_reactive_eb_flux_correction_3d,correct_reactive_eb_spatial_hydro_flux_3d
   public :: predict_reactive_eb_plm_cell_3d
   public :: reactive_eb_outflow_riemann_fluxes_3d,reactive_eb_riemann_fluxes_3d
   public :: advance_reactive_eb_euler_3d
@@ -49,6 +53,368 @@ module eb_reactive_hydro_3d_mod
   end interface
 
 contains
+
+  ! Correct the whole spatial CTU region before its valid crop and ML
+  ! redistribution. The caller supplies actual grown state/source/geometry;
+  ! the retained hydro residual includes the EB wall pressure contribution.
+  subroutine correct_reactive_eb_spatial_hydro_flux_3d(geometry,state,source,dt,hydro_rate,flux,baseline,ok, &
+      internal_energy_rate,internal_energy_flux,internal_energy_baseline)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: state(:,:,:,:),source(:,:,:,:),dt
+    real(dp), intent(inout) :: hydro_rate(:,:,:,:)
+    type(eb_integrated_flux_3d), intent(inout) :: flux
+    type(eb_integrated_flux_3d), intent(in) :: baseline
+    logical, intent(out) :: ok
+    real(dp), optional, intent(inout) :: internal_energy_rate(:,:,:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: internal_energy_flux
+    type(eb_integrated_flux_3d), optional, intent(in) :: internal_energy_baseline
+    type(eb_integrated_flux_3d) :: held_original,held_low,held_limited,held_delta
+    real(dp), allocatable :: held_candidate(:,:,:)
+    real(dp) :: held_increment
+    integer :: held_options
+    logical :: held
+    type(eb_integrated_flux_3d) :: original,low,limited,delta
+    real(dp), allocatable :: candidate(:,:,:,:)
+    real(dp) :: areas(3),volume,increment(size(state,1)),endpoint(size(state,1))
+    integer :: n(3),nv,i,j,k,c
+    logical :: good
+    ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=size(state,1)
+    held_options=count([present(internal_energy_rate),present(internal_energy_flux),present(internal_energy_baseline)])
+    if(held_options/=0.and.held_options/=3) return
+    held=held_options==3
+    if(.not.geometry%is_valid().or.nv<6.or..not.ieee_is_finite(dt).or.dt<=0) return
+    if(any(shape(state)/=[nv,n]).or.any(shape(source)/=[nv,n]).or.any(shape(hydro_rate)/=[nv,n])) return
+    if(held) then
+      if(any(shape(internal_energy_rate)/=n)) return
+      if(.not.all(ieee_is_finite(internal_energy_rate))) return
+      if(.not.valid_eb_integrated_flux_3d(internal_energy_flux,geometry,1).or. &
+        .not.valid_eb_integrated_flux_3d(internal_energy_baseline,geometry,1)) return
+      if(dt<1) then
+        if(maxval(abs(internal_energy_flux%x))>huge(1._dp)*dt.or. &
+          maxval(abs(internal_energy_flux%y))>huge(1._dp)*dt.or. &
+          maxval(abs(internal_energy_flux%z))>huge(1._dp)*dt) return
+        if(maxval(abs(internal_energy_baseline%x))>huge(1._dp)*dt.or. &
+          maxval(abs(internal_energy_baseline%y))>huge(1._dp)*dt.or. &
+          maxval(abs(internal_energy_baseline%z))>huge(1._dp)*dt) return
+      endif
+    endif
+    if(.not.allocated(flux%x).or..not.allocated(flux%y).or..not.allocated(flux%z)) return
+    if(.not.allocated(baseline%x).or..not.allocated(baseline%y).or..not.allocated(baseline%z)) return
+    if(any(shape(flux%x)/=[nv,n(1)+1,n(2),n(3)]).or. &
+      any(shape(flux%y)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(flux%z)/=[nv,n(1),n(2),n(3)+1])) return
+    if(any(shape(baseline%x)/=shape(flux%x)).or.any(shape(baseline%y)/=shape(flux%y)).or. &
+      any(shape(baseline%z)/=shape(flux%z))) return
+    if(.not.all(ieee_is_finite(state)).or..not.all(ieee_is_finite(source)).or. &
+      .not.all(ieee_is_finite(hydro_rate))) return
+    if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+      .not.all(ieee_is_finite(flux%z))) return
+    if(.not.all(ieee_is_finite(baseline%x)).or..not.all(ieee_is_finite(baseline%y)).or. &
+      .not.all(ieee_is_finite(baseline%z))) return
+    if(dt<1) then
+      if(maxval(abs(flux%x))>huge(1._dp)*dt.or.maxval(abs(flux%y))>huge(1._dp)*dt.or. &
+        maxval(abs(flux%z))>huge(1._dp)*dt) return
+      if(maxval(abs(baseline%x))>huge(1._dp)*dt.or.maxval(abs(baseline%y))>huge(1._dp)*dt.or. &
+        maxval(abs(baseline%z))>huge(1._dp)*dt) return
+    endif
+    original=flux;low=baseline
+    original%x=original%x/dt;original%y=original%y/dt;original%z=original%z/dt
+    low%x=low%x/dt;low%y=low%y/dt;low%z=low%z/dt;limited=original
+    if(held) then
+      held_original=internal_energy_flux;held_low=internal_energy_baseline
+      held_original%x=held_original%x/dt;held_original%y=held_original%y/dt;held_original%z=held_original%z/dt
+      held_low%x=held_low%x/dt;held_low%y=held_low%y/dt;held_low%z=held_low%z/dt;held_limited=held_original
+      call limit_reactive_eb_flux_correction_3d(geometry,state,low,limited,dt,good,source=source, &
+        internal_energy_baseline=held_low,internal_energy_flux=held_limited)
+    else
+      call limit_reactive_eb_flux_correction_3d(geometry,state,low,limited,dt,good,source=source)
+    endif
+    if(.not.good) return
+    where(limited%x==original%x)
+      limited%x=flux%x
+    elsewhere
+      limited%x=dt*limited%x
+    endwhere
+    where(limited%y==original%y)
+      limited%y=flux%y
+    elsewhere
+      limited%y=dt*limited%y
+    endwhere
+    where(limited%z==original%z)
+      limited%z=flux%z
+    elsewhere
+      limited%z=dt*limited%z
+    endwhere
+    delta=limited;delta%x=delta%x-flux%x;delta%y=delta%y-flux%y;delta%z=delta%z-flux%z
+    if(held) then
+      where(held_limited%x==held_original%x)
+        held_limited%x=internal_energy_flux%x
+      elsewhere
+        held_limited%x=dt*held_limited%x
+      endwhere
+      where(held_limited%y==held_original%y)
+        held_limited%y=internal_energy_flux%y
+      elsewhere
+        held_limited%y=dt*held_limited%y
+      endwhere
+      where(held_limited%z==held_original%z)
+        held_limited%z=internal_energy_flux%z
+      elsewhere
+        held_limited%z=dt*held_limited%z
+      endwhere
+      held_delta=held_limited
+      held_delta%x=held_delta%x-internal_energy_flux%x
+      held_delta%y=held_delta%y-internal_energy_flux%y
+      held_delta%z=held_delta%z-internal_energy_flux%z
+      held_candidate=internal_energy_rate
+    endif
+    candidate=hydro_rate;areas=[geometry%dy*geometry%dz,geometry%dx*geometry%dz,geometry%dx*geometry%dy]
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%volume_fraction(i,j,k)<=0) cycle
+      volume=dt*geometry%dx*geometry%dy*geometry%dz*geometry%volume_fraction(i,j,k)
+      if(.not.ieee_is_finite(volume).or.volume<=0) return
+      increment=( &
+        areas(1)*(geometry%x_face_fraction(i-1,j,k)*delta%x(:,i-1,j,k)- &
+          geometry%x_face_fraction(i,j,k)*delta%x(:,i,j,k))+ &
+        areas(2)*(geometry%y_face_fraction(i,j-1,k)*delta%y(:,i,j-1,k)- &
+          geometry%y_face_fraction(i,j,k)*delta%y(:,i,j,k))+ &
+        areas(3)*(geometry%z_face_fraction(i,j,k-1)*delta%z(:,i,j,k-1)- &
+          geometry%z_face_fraction(i,j,k)*delta%z(:,i,j,k)))/volume
+      if(any(increment/=0)) candidate(:,i,j,k)=hydro_rate(:,i,j,k)+increment
+      if(held) then
+        held_increment=( &
+          areas(1)*(geometry%x_face_fraction(i-1,j,k)*held_delta%x(1,i-1,j,k)- &
+            geometry%x_face_fraction(i,j,k)*held_delta%x(1,i,j,k))+ &
+          areas(2)*(geometry%y_face_fraction(i,j-1,k)*held_delta%y(1,i,j-1,k)- &
+            geometry%y_face_fraction(i,j,k)*held_delta%y(1,i,j,k))+ &
+          areas(3)*(geometry%z_face_fraction(i,j,k-1)*held_delta%z(1,i,j,k-1)- &
+            geometry%z_face_fraction(i,j,k)*held_delta%z(1,i,j,k)))/volume
+        ! Only the advective increment changes. Preserve the captured pdivu
+        ! residual, including exact identity when this face family is unchanged.
+        if(held_increment/=0) held_candidate(i,j,k)=internal_energy_rate(i,j,k)+held_increment
+      endif
+      do c=1,nv
+        if(c>=2.and.c<=5) cycle
+        if(increment(c)==0) cycle
+        candidate(c,i,j,k)=( &
+          areas(1)*(geometry%x_face_fraction(i-1,j,k)*limited%x(c,i-1,j,k)- &
+            geometry%x_face_fraction(i,j,k)*limited%x(c,i,j,k))+ &
+          areas(2)*(geometry%y_face_fraction(i,j-1,k)*limited%y(c,i,j-1,k)- &
+            geometry%y_face_fraction(i,j,k)*limited%y(c,i,j,k))+ &
+          areas(3)*(geometry%z_face_fraction(i,j,k-1)*limited%z(c,i,j,k-1)- &
+            geometry%z_face_fraction(i,j,k)*limited%z(c,i,j,k)))/volume
+      enddo
+      endpoint=state(:,i,j,k)+dt*(candidate(:,i,j,k)+source(:,i,j,k))
+      if(any(.not.ieee_is_finite(endpoint)).or.endpoint(1)<=0.or.any(endpoint(6:)<0)) return
+    enddo
+    enddo
+    enddo
+    if(held) then
+      if(.not.all(ieee_is_finite(held_candidate)).or..not.all(ieee_is_finite(held_limited%x)).or. &
+        .not.all(ieee_is_finite(held_limited%y)).or..not.all(ieee_is_finite(held_limited%z))) return
+    endif
+    hydro_rate=candidate;flux=limited
+    if(held) then
+      internal_energy_rate=held_candidate;internal_energy_flux=held_limited
+    endif
+    ok=.true.
+  end subroutine correct_reactive_eb_spatial_hydro_flux_3d
+
+  ! Baseline and corrected fluxes are intensive and have identical physical
+  ! face bounds. One coefficient per face scales every conserved component.
+  ! The baseline forward state, including the supplied source, must already
+  ! have nonnegative density and species. This routine does not repair it.
+  ! peer_alpha supplies the opposite boundary donors in one halo layer,
+  ! indexed 0:N+1 on each axis. Obtain both patches' allowances from the
+  ! original baseline/corrected pair, exchange them, and reapply to that
+  ! original pair. Shared fluxes and apertures must agree before this call.
+  ! Without peer_alpha boundary faces only constrain the local donor.
+  ! alpha_output component 1 is density; components 2: are species in order.
+  subroutine limit_reactive_eb_flux_correction_3d(geometry,state,baseline,flux,dt,ok,source,alpha_output,peer_alpha, &
+      internal_energy_baseline,internal_energy_flux)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(in) :: state(:,:,:,:),dt
+    type(eb_integrated_flux_3d), intent(in) :: baseline
+    type(eb_integrated_flux_3d), intent(inout) :: flux
+    logical, intent(out) :: ok
+    real(dp), optional, intent(in) :: source(:,:,:,:)
+    real(dp), allocatable, optional, intent(inout) :: alpha_output(:,:,:,:)
+    real(dp), optional, intent(in) :: peer_alpha(:,0:,0:,0:)
+    type(eb_integrated_flux_3d), optional, intent(in) :: internal_energy_baseline
+    type(eb_integrated_flux_3d), optional, intent(inout) :: internal_energy_flux
+    type(eb_integrated_flux_3d) :: candidate,held_candidate
+    real(dp), allocatable :: alpha(:,:,:,:),available(:,:,:,:)
+    real(dp) :: volume,cell_volume,areas(3),budget,outgoing,delta,theta,face_area
+    integer :: n(3),nv,nc,i,j,k,c,component,axis,face(3),left(3),right(3),lo(3),hi(3)
+    ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=size(state,1);nc=nv-4
+    if(nv<6.or..not.geometry%is_valid().or.any(shape(state)/=[nv,n])) return
+    if(.not.ieee_is_finite(dt).or.dt<=0) return
+    if(present(source)) then
+      if(any(shape(source)/=[nv,n])) return
+    endif
+    if(present(peer_alpha)) then
+      if(any(shape(peer_alpha)/=[nc,n+2])) return
+      if(any(.not.ieee_is_finite(peer_alpha))) return
+      if(any(peer_alpha<0).or.any(peer_alpha>1)) return
+    endif
+    if(.not.valid_flux(baseline).or..not.valid_flux(flux)) return
+    volume=geometry%dx*geometry%dy*geometry%dz
+    areas=[geometry%dy*geometry%dz,geometry%dx*geometry%dz,geometry%dx*geometry%dy]
+    if(.not.ieee_is_finite(volume).or.volume<=0.or.any(.not.ieee_is_finite(areas))) return
+    if(present(internal_energy_baseline).neqv.present(internal_energy_flux)) return
+    if(present(internal_energy_flux)) then
+      if(.not.valid_eb_integrated_flux_3d(internal_energy_baseline,geometry,1).or. &
+        .not.valid_eb_integrated_flux_3d(internal_energy_flux,geometry,1)) return
+      held_candidate=internal_energy_flux
+    endif
+    candidate=flux
+    allocate(alpha(nc,n(1),n(2),n(3)),available(nc,n(1),n(2),n(3)))
+    alpha=1;available=0
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%volume_fraction(i,j,k)<=0) cycle
+      if(any(.not.ieee_is_finite(state(:,i,j,k)))) return
+      if(present(source)) then
+        if(any(.not.ieee_is_finite(source(:,i,j,k)))) return
+      endif
+      cell_volume=volume*geometry%volume_fraction(i,j,k)
+      do c=1,nc
+        component=c+4
+        if(c==1) component=1
+        budget=cell_volume*state(component,i,j,k)
+        if(present(source)) budget=budget+dt*cell_volume*source(component,i,j,k)
+        outgoing=0
+        do axis=1,3
+          face=[i,j,k];face(axis)=face(axis)-1
+          face_area=areas(axis)*aperture(axis,face)
+          budget=budget+dt*face_area*value(baseline,axis,component,face)
+          delta=value(flux,axis,component,face)-value(baseline,axis,component,face)
+          outgoing=outgoing+dt*face_area*max(0._dp,-delta)
+          face(axis)=face(axis)+1
+          face_area=areas(axis)*aperture(axis,face)
+          budget=budget-dt*face_area*value(baseline,axis,component,face)
+          delta=value(flux,axis,component,face)-value(baseline,axis,component,face)
+          outgoing=outgoing+dt*face_area*max(0._dp,delta)
+        enddo
+        if(.not.ieee_is_finite(budget).or..not.ieee_is_finite(outgoing)) return
+        if(budget<0) return
+        available(c,i,j,k)=budget
+        ! A smaller outgoing face can disappear when added to a saturated
+        ! budget. Apply the existing margin at equality too, so cancelling
+        ! the baseline inflow cannot leave that represented face unbalanced.
+        if(outgoing>=budget.and.outgoing>0) alpha(c,i,j,k)=(budget/outgoing)*(1-16*epsilon(1._dp))
+      enddo
+    enddo
+    enddo
+    enddo
+    do axis=1,3
+      lo=1;lo(axis)=0;hi=n
+      do k=lo(3),hi(3)
+      do j=lo(2),hi(2)
+      do i=lo(1),hi(1)
+        face=[i,j,k]
+        if(aperture(axis,face)<=0) cycle
+        left=face;right=face;right(axis)=right(axis)+1
+        theta=1
+        do c=1,nc
+          component=c+4
+          if(c==1) component=1
+          delta=value(flux,axis,component,face)-value(baseline,axis,component,face)
+          if(delta>0.and.left(axis)>0) theta=min(theta,alpha(c,left(1),left(2),left(3)))
+          if(delta<0.and.right(axis)<=n(axis)) theta=min(theta,alpha(c,right(1),right(2),right(3)))
+          if(present(peer_alpha)) then
+            if(delta>0.and.left(axis)==0) theta=min(theta,peer_alpha(c,left(1),left(2),left(3)))
+            if(delta<0.and.right(axis)==n(axis)+1) theta=min(theta,peer_alpha(c,right(1),right(2),right(3)))
+          endif
+        enddo
+        if(theta>=1) cycle
+        select case(axis)
+        case(1);candidate%x(:,i,j,k)=baseline%x(:,i,j,k)+theta*(flux%x(:,i,j,k)-baseline%x(:,i,j,k))
+        case(2);candidate%y(:,i,j,k)=baseline%y(:,i,j,k)+theta*(flux%y(:,i,j,k)-baseline%y(:,i,j,k))
+        case(3);candidate%z(:,i,j,k)=baseline%z(:,i,j,k)+theta*(flux%z(:,i,j,k)-baseline%z(:,i,j,k))
+        end select
+        ! The extra held face uses exactly the gas face allowance. No
+        ! internal-energy clipping or second acceptance coefficient is used.
+        if(present(internal_energy_flux)) then
+          select case(axis)
+          case(1);held_candidate%x(:,i,j,k)=internal_energy_baseline%x(:,i,j,k)+ &
+            theta*(internal_energy_flux%x(:,i,j,k)-internal_energy_baseline%x(:,i,j,k))
+          case(2);held_candidate%y(:,i,j,k)=internal_energy_baseline%y(:,i,j,k)+ &
+            theta*(internal_energy_flux%y(:,i,j,k)-internal_energy_baseline%y(:,i,j,k))
+          case(3);held_candidate%z(:,i,j,k)=internal_energy_baseline%z(:,i,j,k)+ &
+            theta*(internal_energy_flux%z(:,i,j,k)-internal_energy_baseline%z(:,i,j,k))
+          end select
+        endif
+      enddo
+      enddo
+      enddo
+    enddo
+    if(.not.valid_flux(candidate)) return
+    if(present(internal_energy_flux)) then
+      if(.not.valid_eb_integrated_flux_3d(held_candidate,geometry,1)) return
+    endif
+    ! Check represented budgets as well as the analytic allowance; a tiny
+    ! negative roundoff is a rejected transaction, never a species clip.
+    do k=1,n(3)
+    do j=1,n(2)
+    do i=1,n(1)
+      if(geometry%volume_fraction(i,j,k)<=0) cycle
+      do c=1,nc
+        component=c+4
+        if(c==1) component=1
+        budget=available(c,i,j,k)
+        do axis=1,3
+          face=[i,j,k];face(axis)=face(axis)-1
+          budget=budget+dt*areas(axis)*aperture(axis,face)* &
+            (value(candidate,axis,component,face)-value(baseline,axis,component,face))
+          face(axis)=face(axis)+1
+          budget=budget-dt*areas(axis)*aperture(axis,face)* &
+            (value(candidate,axis,component,face)-value(baseline,axis,component,face))
+        enddo
+        if(.not.ieee_is_finite(budget).or.budget<0) return
+      enddo
+    enddo
+    enddo
+    enddo
+    call move_alloc(candidate%x,flux%x);call move_alloc(candidate%y,flux%y);call move_alloc(candidate%z,flux%z)
+    if(present(alpha_output)) call move_alloc(alpha,alpha_output)
+    if(present(internal_energy_flux)) then
+      call move_alloc(held_candidate%x,internal_energy_flux%x)
+      call move_alloc(held_candidate%y,internal_energy_flux%y)
+      call move_alloc(held_candidate%z,internal_energy_flux%z)
+    endif
+    ok=.true.
+  contains
+    logical function valid_flux(f) result(valid)
+      type(eb_integrated_flux_3d), intent(in) :: f
+      valid=.false.
+      if(.not.allocated(f%x).or..not.allocated(f%y).or..not.allocated(f%z)) return
+      if(any(shape(f%x)/=[nv,n(1)+1,n(2),n(3)]).or. &
+        any(shape(f%y)/=[nv,n(1),n(2)+1,n(3)]).or.any(shape(f%z)/=[nv,n(1),n(2),n(3)+1])) return
+      if(any(lbound(f%x)/=[1,0,1,1]).or.any(lbound(f%y)/=[1,1,0,1]).or. &
+        any(lbound(f%z)/=[1,1,1,0])) return
+      valid=all(ieee_is_finite(f%x)).and.all(ieee_is_finite(f%y)).and.all(ieee_is_finite(f%z))
+    end function valid_flux
+    real(dp) function value(f,d,index_component,index) result(v)
+      type(eb_integrated_flux_3d), intent(in) :: f
+      integer, intent(in) :: d,index_component,index(3)
+      select case(d)
+      case(1);v=f%x(index_component,index(1),index(2),index(3))
+      case(2);v=f%y(index_component,index(1),index(2),index(3))
+      case(3);v=f%z(index_component,index(1),index(2),index(3))
+      end select
+    end function value
+    real(dp) function aperture(d,index) result(v)
+      integer, intent(in) :: d,index(3)
+      select case(d)
+      case(1);v=geometry%x_face_fraction(index(1),index(2),index(3))
+      case(2);v=geometry%y_face_fraction(index(1),index(2),index(3))
+      case(3);v=geometry%z_face_fraction(index(1),index(2),index(3))
+      end select
+    end function aperture
+  end subroutine limit_reactive_eb_flux_correction_3d
 
   logical function valid_plm_boundary(boundary) result(valid)
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
@@ -170,7 +536,8 @@ contains
 
   subroutine compute_sdc_eb_boundary_hydro_3d(species,state,temperature,extended,dt,conserved_source, &
       hydro_rate,integrated_flux,boundary_change,wall_change,ok,boundary_faces,difmag,order,shock_flattening, &
-      inflow_state,inflow_temperature)
+      inflow_state,inflow_temperature,baseline_flux,internal_energy_state,internal_energy_rate, &
+      internal_energy_integrated_flux,internal_energy_baseline_flux,internal_energy_pressure_work,inflow_internal_energy)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: extended
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt,conserved_source(:,:,:,:)
@@ -181,22 +548,33 @@ contains
     real(dp), optional, intent(in) :: difmag,inflow_state(:,:),inflow_temperature(:)
     integer, optional, intent(in) :: order
     logical, optional, intent(in) :: shock_flattening
+    type(eb_integrated_flux_3d), optional, intent(inout) :: baseline_flux,internal_energy_integrated_flux, &
+      internal_energy_baseline_flux
+    real(dp), optional, intent(in) :: internal_energy_state(:,:,:),inflow_internal_energy(:)
+    real(dp), optional, intent(inout) :: internal_energy_rate(:,:,:),internal_energy_pressure_work(:,:,:)
     real(dp), allocatable :: unused(:,:,:,:),unused_t(:,:,:)
     allocate(unused,mold=state);allocate(unused_t,mold=temperature)
     call advance_reactive_eb_boundary_ctu_3d(species,state,temperature,extended,dt,unused,unused_t,ok, &
       boundary_faces,difmag=difmag,integrated_flux=integrated_flux,boundary_change=boundary_change, &
       wall_change=wall_change,order=order,shock_flattening=shock_flattening,inflow_state=inflow_state, &
-      inflow_temperature=inflow_temperature,conserved_source=conserved_source,hydro_rate=hydro_rate)
+      inflow_temperature=inflow_temperature,conserved_source=conserved_source,hydro_rate=hydro_rate, &
+      baseline_flux=baseline_flux,internal_energy_state=internal_energy_state,internal_energy_rate=internal_energy_rate, &
+      internal_energy_integrated_flux=internal_energy_integrated_flux, &
+      internal_energy_baseline_flux=internal_energy_baseline_flux,internal_energy_pressure_work=internal_energy_pressure_work, &
+      inflow_internal_energy=inflow_internal_energy)
   end subroutine compute_sdc_eb_boundary_hydro_3d
 
   subroutine advance_reactive_eb_boundary_ctu_3d(species,state,temperature,extended,dt, &
       new_state,new_temperature,ok,boundary_faces, &
       redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,shock_flattening, &
-      inflow_state,inflow_temperature,conserved_source,hydro_rate)
+      inflow_state,inflow_temperature,conserved_source,hydro_rate, &
+      state_redist_max_order,baseline_flux,internal_energy_state,internal_energy_rate,internal_energy_integrated_flux, &
+      internal_energy_baseline_flux,internal_energy_pressure_work,inflow_internal_energy)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
     type(eb_geometry_3d), intent(in) :: extended
     real(dp), intent(inout) :: new_state(:,:,:,:),new_temperature(:,:,:)
+    integer, optional, intent(in) :: state_redist_max_order
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: difmag,target_volume_fraction
@@ -208,6 +586,13 @@ contains
     real(dp), optional, intent(in) :: inflow_state(:,:),inflow_temperature(:)
     real(dp), optional, intent(in) :: conserved_source(:,:,:,:)
     real(dp), optional, intent(inout) :: hydro_rate(:,:,:,:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: baseline_flux,internal_energy_integrated_flux, &
+      internal_energy_baseline_flux
+    real(dp), optional, intent(in) :: internal_energy_state(:,:,:),inflow_internal_energy(:)
+    real(dp), optional, intent(inout) :: internal_energy_rate(:,:,:),internal_energy_pressure_work(:,:,:)
+    real(dp), allocatable :: held_ghost(:,:,:)
+    integer :: held_options
+    logical :: held
     real(dp), allocatable :: source_ghost(:,:,:,:)
     character(len=32) :: source_faces(6)
     real(dp) :: shift(3)
@@ -218,6 +603,24 @@ contains
     integer :: n(3),nv,i,j,k,donor(3),inlet,axis
     logical :: valid,use_flattening
     ok=.false.;nv=reactive_nvar(size(species));n=shape(temperature)
+    held_options=count([present(internal_energy_state),present(internal_energy_rate),present(internal_energy_integrated_flux)])
+    if(held_options/=0.and.held_options/=3) return
+    held=held_options==3
+    if(held) then
+      if(.not.present(hydro_rate)) return
+      if(any(shape(internal_energy_state)/=n).or.any(shape(internal_energy_rate)/=n)) return
+      if(present(internal_energy_pressure_work)) then
+        if(any(shape(internal_energy_pressure_work)/=n)) return
+      endif
+      if(present(internal_energy_baseline_flux).and..not.present(baseline_flux)) return
+      if(present(inflow_internal_energy)) then
+        if(size(inflow_internal_energy)/=6) return
+        if(.not.all(ieee_is_finite(inflow_internal_energy))) return
+      endif
+    else
+      if(present(internal_energy_pressure_work).or.present(internal_energy_baseline_flux).or. &
+        present(inflow_internal_energy)) return
+    endif
     if(.not.valid_reactive_boundaries_3d(boundary_faces)) return
     if(any(boundary_faces=='inflow')) then
       if(.not.present(inflow_state).or..not.present(inflow_temperature)) return
@@ -238,6 +641,7 @@ contains
     allocate(ghost(nv,-2:n(1)+9,-2:n(2)+9,-2:n(3)+9),gt(-2:n(1)+9,-2:n(2)+9,-2:n(3)+9), &
       vf(-2:n(1)+9,-2:n(2)+9,-2:n(3)+9),flat(0:n(1)+7,0:n(2)+7,0:n(3)+7))
     vf=extended%volume_fraction;ghost=0;gt=0;flat=1
+    if(held) allocate(held_ghost(-2:n(1)+9,-2:n(2)+9,-2:n(3)+9),source=0._dp)
     do k=-2,n(3)+9
     do j=-2,n(2)+9
     do i=-2,n(1)+9
@@ -246,11 +650,22 @@ contains
       if(.not.valid) return
       if(inlet>0) then
         ghost(:,i,j,k)=inflow_state(:,inlet);gt(i,j,k)=inflow_temperature(inlet)
+        if(held) then
+          if(present(inflow_internal_energy)) then
+            held_ghost(i,j,k)=inflow_internal_energy(inlet)
+          else
+            ! A prescribed gas inlet initializes its UEINT consistently.
+            ! Explicit independent inlet UEINT may instead be supplied.
+            if(inflow_state(1,inlet)<=0) return
+            held_ghost(i,j,k)=inflow_state(5,inlet)-.5_dp*sum(inflow_state(2:4,inlet)**2)/inflow_state(1,inlet)
+          endif
+        endif
       else
         ! Open target geometry cannot obtain fluid state from a covered donor.
         if(extended%volume_fraction(donor(1)+6,donor(2)+6,donor(3)+6)<=0) return
         ghost(:,i,j,k)=state(:,donor(1),donor(2),donor(3))
         gt(i,j,k)=temperature(donor(1),donor(2),donor(3))
+        if(held) held_ghost(i,j,k)=internal_energy_state(donor(1),donor(2),donor(3))
       end if
       do axis=1,3
         if(reflect(axis)) ghost(axis+1,i,j,k)=-ghost(axis+1,i,j,k)
@@ -284,7 +699,11 @@ contains
     candidate=state;ct=temperature
     call advance_reactive_eb_plm_ctu_3d(species,working,ghost,gt,vf,dt,flat,candidate,ct,ok, &
       redistribution,difmag,integrated_flux,boundary_change,wall_change,target_volume_fraction,order,boundary, &
-      source_ghost,hydro_rate)
+      source_ghost,hydro_rate, &
+      state_redist_max_order=state_redist_max_order,baseline_flux=baseline_flux, &
+      internal_energy_state=held_ghost,internal_energy_rate=internal_energy_rate, &
+      internal_energy_integrated_flux=internal_energy_integrated_flux, &
+      internal_energy_baseline_flux=internal_energy_baseline_flux,internal_energy_pressure_work=internal_energy_pressure_work)
     if(.not.ok.or.present(hydro_rate)) return
     ! Existing application and split operators preserve covered-cell storage.
     do k=1,n(3)
@@ -302,8 +721,169 @@ contains
   ! geometry. Physical boundary filling/flattening remain caller responsibilities.
   ! Uses the same extended geometry/ghost layout as the CTU advance.
   ! Returns conservative rates before redistribution and time-integrated flux densities.
+  ! Pinned Hydro.H pc_eb_pdivu, with one geometry/face halo around output.
+  ! Regular cells use face-pressure averages; cut cells use cell pressure and
+  ! owner-cell connectivity for the centroid velocity stencil on BOTH faces.
+  ! This is a non-face source in raw UEINT, before ML redistribution.
+  subroutine compute_eb_godunov_pressure_work_3d(geometry,prediction,cell_pressure,pressure_work,ok)
+    type(eb_geometry_3d), intent(in) :: geometry
+    type(eb_plm_face_prediction_3d), intent(in) :: prediction(3)
+    real(dp), intent(in) :: cell_pressure(:,:,:)
+    real(dp), intent(inout) :: pressure_work(:,:,:)
+    logical, intent(out) :: ok
+    real(dp), allocatable :: candidate(:,:,:)
+    real(dp) :: dxinv(3),components(3),value,vm,vp,pm,pp,apm,app,weighted,term,factor
+    integer :: n(3),axis,i,j,k,owner(3),minus(3),plus(3),expected(3),lower(3)
+    logical :: good
+    ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz]
+    if(.not.geometry%is_valid().or.any(n<3)) return
+    if(any(shape(cell_pressure)/=n).or.any(shape(pressure_work)/=n-2)) return
+    if(min(geometry%dx,geometry%dy,geometry%dz)<1._dp/huge(1._dp)) return
+    dxinv=1._dp/[geometry%dx,geometry%dy,geometry%dz]
+    do axis=1,3
+      if(.not.allocated(prediction(axis)%pressure).or..not.allocated(prediction(axis)%velocity)) return
+      expected=n;expected(axis)=expected(axis)+1;lower=1;lower(axis)=0
+      if(any(shape(prediction(axis)%pressure)/=expected).or.any(shape(prediction(axis)%velocity)/=expected)) return
+      if(any(lbound(prediction(axis)%pressure)/=lower).or.any(lbound(prediction(axis)%velocity)/=lower)) return
+    enddo
+    allocate(candidate(n(1)-2,n(2)-2,n(3)-2),source=0._dp)
+    do k=2,n(3)-1
+    do j=2,n(2)-1
+    do i=2,n(1)-1
+      if(geometry%volume_fraction(i,j,k)<=0) cycle
+      owner=[i,j,k];components=0
+      if(geometry%cell_type(i,j,k)==eb_regular_cell_3d) then
+        do axis=1,3
+          minus=owner;minus(axis)=minus(axis)-1;plus=owner
+          vm=prediction(axis)%velocity(minus(1),minus(2),minus(3))
+          vp=prediction(axis)%velocity(plus(1),plus(2),plus(3))
+          pm=prediction(axis)%pressure(minus(1),minus(2),minus(3))
+          pp=prediction(axis)%pressure(plus(1),plus(2),plus(3))
+          if(.not.all(ieee_is_finite([vm,vp,pm,pp]))) return
+          call add_value(vp,-vm,value,good);if(.not.good) return
+          call add_value(pm,pp,weighted,good);if(.not.good) return
+          call multiply_value(weighted,value,term,good);if(.not.good) return
+          call multiply_value(term,dxinv(axis),components(axis),good);if(.not.good) return
+        enddo
+        call add_value(components(1),components(2),value,good);if(.not.good) return
+        call add_value(value,components(3),weighted,good);if(.not.good) return
+        value=.5_dp*weighted
+      else
+        if(.not.ieee_is_finite(cell_pressure(i,j,k)).or.cell_pressure(i,j,k)<=0) return
+        do axis=1,3
+          minus=owner;minus(axis)=minus(axis)-1;plus=owner
+          call face_velocity(axis,minus,vm,apm,good);if(.not.good) return
+          call face_velocity(axis,plus,vp,app,good);if(.not.good) return
+          call add_value(app*vp,-apm*vm,value,good);if(.not.good) return
+          call multiply_value(dxinv(axis),value,components(axis),good);if(.not.good) return
+        enddo
+        call add_value(components(1),components(2),value,good);if(.not.good) return
+        call add_value(value,components(3),weighted,good);if(.not.good) return
+        if(geometry%volume_fraction(i,j,k)<1._dp/huge(1._dp)) return
+        call multiply_value(1._dp/geometry%volume_fraction(i,j,k),cell_pressure(i,j,k),factor,good)
+        if(.not.good) return
+        call multiply_value(factor,weighted,value,good);if(.not.good) return
+      endif
+      if(.not.ieee_is_finite(value)) return
+      candidate(i-1,j-1,k-1)=value
+    enddo
+    enddo
+    enddo
+    pressure_work=candidate;ok=.true.
+  contains
+    subroutine face_velocity(direction,face,value,aperture,good)
+      integer, intent(in) :: direction,face(3)
+      real(dp), intent(out) :: value,aperture
+      logical, intent(out) :: good
+      real(dp) :: offset(2),fraction(2),weight,next_value,accumulated
+      integer :: b,c,shift(2),cell(3),donor(3),s,t
+      good=.false.;value=0;fraction=0
+      b=merge(2,1,direction==1);c=merge(2,3,direction==3)
+      select case(direction)
+      case(1)
+        aperture=geometry%x_face_fraction(face(1),face(2),face(3))
+        offset=[geometry%x_face_centroid_y(face(1),face(2),face(3)), &
+          geometry%x_face_centroid_z(face(1),face(2),face(3))]
+      case(2)
+        aperture=geometry%y_face_fraction(face(1),face(2),face(3))
+        offset=[geometry%y_face_centroid_x(face(1),face(2),face(3)), &
+          geometry%y_face_centroid_z(face(1),face(2),face(3))]
+      case(3)
+        aperture=geometry%z_face_fraction(face(1),face(2),face(3))
+        offset=[geometry%z_face_centroid_x(face(1),face(2),face(3)), &
+          geometry%z_face_centroid_y(face(1),face(2),face(3))]
+      end select
+      if(aperture<=0) then
+        good=.true.;return
+      endif
+      if(aperture<1) then
+        ! The pinned 3-D kernel uses the positive-side cell flag for each
+        ! face, including the upper face. Only axial tangential connections
+        ! enter this stencil; their bits equal that cell's open apertures.
+        cell=face;cell(direction)=cell(direction)+1
+        shift=int(sign(1._dp,offset))
+        if(tangent_connected(cell,b,shift(1))) fraction(1)=abs(offset(1))
+        if(tangent_connected(cell,c,shift(2))) fraction(2)=abs(offset(2))
+      else
+        shift=0
+      endif
+      do t=0,1
+      do s=0,1
+        weight=merge(fraction(1),1-fraction(1),s==1)*merge(fraction(2),1-fraction(2),t==1)
+        if(weight==0) cycle
+        donor=face;donor(b)=donor(b)+s*shift(1);donor(c)=donor(c)+t*shift(2)
+        next_value=prediction(direction)%velocity(donor(1),donor(2),donor(3))
+        if(.not.ieee_is_finite(next_value)) return
+        call add_value(value,weight*next_value,accumulated,good);if(.not.good) return
+        value=accumulated
+      enddo
+      enddo
+      good=.true.
+    end subroutine face_velocity
+    logical function tangent_connected(cell,direction,shift) result(connected)
+      integer, intent(in) :: cell(3),direction,shift
+      integer :: face(3)
+      connected=.false.
+      if(geometry%volume_fraction(cell(1),cell(2),cell(3))<=0) return
+      face=cell
+      if(shift<0) face(direction)=face(direction)-1
+      select case(direction)
+      case(1);connected=geometry%x_face_fraction(face(1),face(2),face(3))>0
+      case(2);connected=geometry%y_face_fraction(face(1),face(2),face(3))>0
+      case(3);connected=geometry%z_face_fraction(face(1),face(2),face(3))>0
+      end select
+    end function tangent_connected
+    subroutine add_value(a,b,c,good)
+      real(dp), intent(in) :: a,b
+      real(dp), intent(out) :: c
+      logical, intent(out) :: good
+      good=.false.
+      if(b>0) then
+        if(a>huge(1._dp)-b) return
+      else if(b<0) then
+        if(a< -huge(1._dp)-b) return
+      endif
+      c=a+b;good=ieee_is_finite(c)
+    end subroutine add_value
+    subroutine multiply_value(a,b,c,good)
+      real(dp), intent(in) :: a,b
+      real(dp), intent(out) :: c
+      logical, intent(out) :: good
+      good=.false.
+      if(abs(a)>1) then
+        if(abs(b)>huge(1._dp)/abs(a)) return
+      else if(abs(b)>1) then
+        if(abs(a)>huge(1._dp)/abs(b)) return
+      endif
+      c=a*b;good=ieee_is_finite(c)
+    end subroutine multiply_value
+  end subroutine compute_eb_godunov_pressure_work_3d
+
   subroutine compute_sdc_eb_hydro_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
-      conserved_source,hydro_rate,integrated_flux,boundary_change,wall_change,ok,difmag,order,boundary)
+      conserved_source,hydro_rate,integrated_flux,boundary_change,wall_change,ok,difmag,order,boundary,baseline_flux, &
+      internal_energy_state,internal_energy_rate,internal_energy_integrated_flux, &
+      internal_energy_baseline_flux,internal_energy_pressure_work,spatial_flux_weight)
+    real(dp), optional, intent(in) :: spatial_flux_weight
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
@@ -314,6 +894,10 @@ contains
     real(dp), optional, intent(in) :: difmag
     integer, optional, intent(in) :: order
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
+    type(eb_integrated_flux_3d), optional, intent(inout) :: baseline_flux
+    real(dp), optional, intent(in) :: internal_energy_state(-2:,-2:,-2:)
+    real(dp), optional, intent(inout) :: internal_energy_rate(:,:,:),internal_energy_pressure_work(:,:,:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: internal_energy_integrated_flux,internal_energy_baseline_flux
     real(dp), allocatable :: unused_state(:,:,:,:),unused_temperature(:,:,:)
     integer :: n(3),nv
     ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=reactive_nvar(size(species))
@@ -322,18 +906,26 @@ contains
     call advance_reactive_eb_plm_ctu_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
       unused_state,unused_temperature,ok,difmag=difmag,integrated_flux=integrated_flux, &
       boundary_change=boundary_change,wall_change=wall_change,order=order,boundary=boundary, &
-      conserved_source=conserved_source,hydro_rate=hydro_rate)
+      conserved_source=conserved_source,hydro_rate=hydro_rate,baseline_flux=baseline_flux, &
+      internal_energy_state=internal_energy_state,internal_energy_rate=internal_energy_rate, &
+      internal_energy_integrated_flux=internal_energy_integrated_flux, &
+      internal_energy_baseline_flux=internal_energy_baseline_flux,internal_energy_pressure_work=internal_energy_pressure_work, &
+      spatial_flux_weight=spatial_flux_weight)
   end subroutine compute_sdc_eb_hydro_3d
 
   subroutine advance_reactive_eb_plm_ctu_3d(species,geometry,ghost,temperature,volume_fraction,dt,flattening, &
       new_state,new_temperature,ok,redistribution,difmag,integrated_flux,boundary_change,wall_change, &
-      target_volume_fraction,order,boundary,conserved_source,hydro_rate)
+      target_volume_fraction,order,boundary,conserved_source,hydro_rate,baseline_flux, &
+      state_redist_max_order,internal_energy_state,internal_energy_rate,internal_energy_integrated_flux, &
+      internal_energy_baseline_flux,internal_energy_pressure_work,spatial_flux_weight)
+    real(dp), optional, intent(in) :: spatial_flux_weight
     type(nasa7_species), intent(in) :: species(:)
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
     real(dp), intent(in) :: dt,flattening(0:,0:,0:)
     real(dp), intent(inout) :: new_state(:,:,:,:),new_temperature(:,:,:)
+    integer, optional, intent(in) :: state_redist_max_order
     logical, intent(out) :: ok
     character(len=*), optional, intent(in) :: redistribution
     real(dp), optional, intent(in) :: difmag,target_volume_fraction
@@ -342,17 +934,50 @@ contains
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
     real(dp), optional, intent(in) :: conserved_source(:,:,:,:)
     real(dp), optional, intent(inout) :: hydro_rate(:,:,:,:)
-    type(eb_plm_face_prediction_3d) :: prediction(3)
-    type(eb_geometry_3d) :: margin,physical
-    type(eb_integrated_flux_3d) :: flux
+    type(eb_integrated_flux_3d), optional, intent(inout) :: baseline_flux
+    real(dp), optional, intent(in) :: internal_energy_state(-2:,-2:,-2:)
+    real(dp), optional, intent(inout) :: internal_energy_rate(:,:,:),internal_energy_pressure_work(:,:,:)
+    type(eb_integrated_flux_3d), optional, intent(inout) :: internal_energy_integrated_flux,internal_energy_baseline_flux
+    type(eb_integrated_flux_3d) :: held_raw,held_flux,held_low
+    real(dp), allocatable :: held_rhs(:,:,:),pwork(:,:,:),cell_pressure(:,:,:)
+    real(dp) :: held_volume
+    integer :: held_options
+    logical :: held
+    type(eb_plm_face_prediction_3d) :: prediction(3),low_prediction(3)
+    type(eb_geometry_3d) :: margin,physical,redist_halo
+    type(eb_integrated_flux_3d) :: flux,low_flux,blended_flux,blended_held_flux
+    real(dp) :: face_weight
     real(dp), allocatable :: state(:,:,:,:),temp(:,:,:),candidate(:,:,:,:),ct(:,:,:),rhs(:,:,:,:)
     real(dp) :: coefficient,target,total,recovered,speed,q(reactive_nvar(size(species)))
     real(dp) :: inventory_boundary(reactive_nvar(size(species))),wall(reactive_nvar(size(species)))
     integer :: n(3),m(3),nv,i,j,k,a,lo(4),hi(4),wall_lo(3),wall_hi(3)
+    character(len=32) :: redist_faces(6)
     character(len=16) :: method
     logical :: valid,no_slip(6)
     ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
     if(any(n<7).or..not.geometry%is_valid()) return
+    face_weight=1
+    if(present(spatial_flux_weight)) then
+      if(.not.present(hydro_rate)) return
+      face_weight=spatial_flux_weight
+      if(.not.ieee_is_finite(face_weight)) return
+      if(face_weight<0.or.face_weight>1) return
+    endif
+    held_options=count([present(internal_energy_state),present(internal_energy_rate),present(internal_energy_integrated_flux)])
+    if(held_options/=0.and.held_options/=3) return
+    held=held_options==3
+    if(held) then
+      ! The tree integrator owns the stored scalar and energy reset. This
+      ! prepared patch operator returns its raw spatial family atomically.
+      if(.not.present(hydro_rate)) return
+      if(any(shape(internal_energy_state)/=n+6).or.any(shape(internal_energy_rate)/=n-6)) return
+      if(present(internal_energy_pressure_work)) then
+        if(any(shape(internal_energy_pressure_work)/=n-6)) return
+      endif
+      if(present(internal_energy_baseline_flux).and..not.present(baseline_flux)) return
+    else
+      if(present(internal_energy_pressure_work).or.present(internal_energy_baseline_flux)) return
+    endif
     if(any(shape(new_state)/=[nv,n-6]).or.any(shape(new_temperature)/=n-6)) return
     if(.not.ieee_is_finite(dt).or.dt<=0) return
     coefficient=.1_dp;target=.5_dp;method='none'
@@ -365,6 +990,7 @@ contains
       if(method/='none'.or..not.present(conserved_source)) return
       if(any(shape(hydro_rate)/=[nv,n-6])) return
     end if
+    if(present(baseline_flux).and..not.present(hydro_rate)) return
     if(present(boundary_change)) then
       if(size(boundary_change)/=nv) return
     end if
@@ -372,7 +998,8 @@ contains
       if(size(wall_change)/=nv) return
     end if
     call compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,valid,order,boundary=boundary,conserved_source=conserved_source)
+      dt,flattening,prediction,valid,order,boundary=boundary,conserved_source=conserved_source, &
+      capture_internal_energy_flux=held)
     if(.not.valid) return
     call extract_eb_geometry_3d(geometry,[3,3,3],n-2,margin,valid)
     if(.not.valid) return
@@ -382,11 +1009,21 @@ contains
       no_slip=boundary%faces=='no_slip_wall'.or.boundary%faces=='isothermal_wall'
       wall_lo=boundary%lower-3;wall_hi=boundary%upper-2
     end if
+    if(held) then
+    call adjust_reactive_artificial_viscosity_3d(ghost(:,2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+      m,[geometry%dx,geometry%dy,geometry%dz],coefficient,no_slip, &
+      prediction(1)%flux,prediction(2)%flux,prediction(3)%flux,valid, &
+      volume_fraction(2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+      margin%x_face_fraction>0,margin%y_face_fraction>0,margin%z_face_fraction>0,wall_lo,wall_hi, &
+      internal_energy_state(2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+      prediction(1)%internal_energy_flux,prediction(2)%internal_energy_flux,prediction(3)%internal_energy_flux)
+    else
     call adjust_reactive_artificial_viscosity_3d(ghost(:,2:n(1)-1,2:n(2)-1,2:n(3)-1), &
       m,[geometry%dx,geometry%dy,geometry%dz],coefficient,no_slip, &
       prediction(1)%flux,prediction(2)%flux,prediction(3)%flux,valid, &
       volume_fraction(2:n(1)-1,2:n(2)-1,2:n(3)-1), &
       margin%x_face_fraction>0,margin%y_face_fraction>0,margin%z_face_fraction>0,wall_lo,wall_hi)
+    endif
     if(.not.valid) return
     ! The viscosity API deliberately treats zero as identity. Godunov still
     ! normalizes species flux when viscosity is disabled.
@@ -409,6 +1046,68 @@ contains
     call interpolate_reactive_eb_centroid_fluxes_3d(margin,prediction(1)%flux,prediction(2)%flux,prediction(3)%flux, &
       flux%x,flux%y,flux%z,valid)
     if(.not.valid) return
+    if(held) then
+      allocate(held_raw%x(1,0:margin%nx,margin%ny,margin%nz), &
+        held_raw%y(1,margin%nx,0:margin%ny,margin%nz),held_raw%z(1,margin%nx,margin%ny,0:margin%nz))
+      held_raw%x(1,:,:,:)=prediction(1)%internal_energy_flux
+      held_raw%y(1,:,:,:)=prediction(2)%internal_energy_flux
+      held_raw%z(1,:,:,:)=prediction(3)%internal_energy_flux
+      allocate(held_flux%x(1,0:m(1),m(2),m(3)),held_flux%y(1,m(1),0:m(2),m(3)), &
+        held_flux%z(1,m(1),m(2),0:m(3)))
+      call interpolate_reactive_eb_centroid_fluxes_3d(margin,held_raw%x,held_raw%y,held_raw%z, &
+        held_flux%x,held_flux%y,held_flux%z,valid)
+      if(.not.valid) return
+    endif
+    if(present(baseline_flux).or.face_weight<1) then
+      ! Piecewise-constant normal fluxes are the candidate low-order baseline.
+      ! Omit transverse forcing, viscosity and centroid corrections; those
+      ! belong to the full correction. Its forward density/species budget
+      ! still must be checked with the actual interval and complete source.
+      call compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
+        dt,flattening,low_prediction,valid,order=1,boundary=boundary,capture_internal_energy_flux=held)
+      if(.not.valid) return
+      allocate(low_flux%x(nv,0:m(1),m(2),m(3)),low_flux%y(nv,m(1),0:m(2),m(3)), &
+        low_flux%z(nv,m(1),m(2),0:m(3)))
+      low_flux%x=low_prediction(1)%flux(:,3:n(1)-3,4:n(2)-3,4:n(3)-3)
+      low_flux%y=low_prediction(2)%flux(:,4:n(1)-3,3:n(2)-3,4:n(3)-3)
+      low_flux%z=low_prediction(3)%flux(:,4:n(1)-3,4:n(2)-3,3:n(3)-3)
+      low_flux%x=dt*low_flux%x;low_flux%y=dt*low_flux%y;low_flux%z=dt*low_flux%z
+      if(any(.not.ieee_is_finite(low_flux%x)).or.any(.not.ieee_is_finite(low_flux%y)).or. &
+        any(.not.ieee_is_finite(low_flux%z))) return
+      if(present(internal_energy_baseline_flux).or.(held.and.face_weight<1)) then
+        allocate(held_low%x(1,0:m(1),m(2),m(3)),held_low%y(1,m(1),0:m(2),m(3)),held_low%z(1,m(1),m(2),0:m(3)))
+        held_low%x(1,:,:,:)=dt*low_prediction(1)%internal_energy_flux(3:n(1)-3,4:n(2)-3,4:n(3)-3)
+        held_low%y(1,:,:,:)=dt*low_prediction(2)%internal_energy_flux(4:n(1)-3,3:n(2)-3,4:n(3)-3)
+        held_low%z(1,:,:,:)=dt*low_prediction(3)%internal_energy_flux(4:n(1)-3,4:n(2)-3,3:n(3)-3)
+        if(.not.all(ieee_is_finite(held_low%x)).or..not.all(ieee_is_finite(held_low%y)).or. &
+          .not.all(ieee_is_finite(held_low%z))) return
+      endif
+    endif
+    if(face_weight<1) then
+      ! A single native interval coefficient acts on both face families.
+      ! Work with integrated faces so zero returns the exact PCM baseline;
+      ! their intensity determines advection, while pdivu stays native.
+      blended_flux=low_flux
+      if(face_weight>0) then
+        blended_flux%x=(1-face_weight)*low_flux%x+face_weight*(dt*flux%x)
+        blended_flux%y=(1-face_weight)*low_flux%y+face_weight*(dt*flux%y)
+        blended_flux%z=(1-face_weight)*low_flux%z+face_weight*(dt*flux%z)
+      endif
+      flux%x=blended_flux%x/dt;flux%y=blended_flux%y/dt;flux%z=blended_flux%z/dt
+      if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
+        .not.all(ieee_is_finite(flux%z))) return
+      if(held) then
+        blended_held_flux=held_low
+        if(face_weight>0) then
+          blended_held_flux%x=(1-face_weight)*held_low%x+face_weight*(dt*held_flux%x)
+          blended_held_flux%y=(1-face_weight)*held_low%y+face_weight*(dt*held_flux%y)
+          blended_held_flux%z=(1-face_weight)*held_low%z+face_weight*(dt*held_flux%z)
+        endif
+        held_flux%x=blended_held_flux%x/dt;held_flux%y=blended_held_flux%y/dt;held_flux%z=blended_held_flux%z/dt
+        if(.not.all(ieee_is_finite(held_flux%x)).or..not.all(ieee_is_finite(held_flux%y)).or. &
+          .not.all(ieee_is_finite(held_flux%z))) return
+      endif
+    endif
     call extract_eb_geometry_3d(geometry,[4,4,4],n-3,physical,valid)
     if(.not.valid) return
     state=ghost(:,4:n(1)-3,4:n(2)-3,4:n(3)-3);temp=temperature(4:n(1)-3,4:n(2)-3,4:n(3)-3)
@@ -423,17 +1122,68 @@ contains
     allocate(rhs(nv,m(1),m(2),m(3)))
     call reactive_eb_flux_divergence_3d(species,state,temp,physical,flux%x,flux%y,flux%z,rhs,valid)
     if(.not.valid) return
+    if(held) then
+      allocate(cell_pressure(margin%nx,margin%ny,margin%nz),source=0._dp)
+      allocate(pwork(m(1),m(2),m(3)),held_rhs(m(1),m(2),m(3)),source=0._dp)
+      do k=2,margin%nz-1
+      do j=2,margin%ny-1
+      do i=2,margin%nx-1
+        if(margin%volume_fraction(i,j,k)<=0) cycle
+        if(margin%cell_type(i,j,k)==eb_regular_cell_3d) cycle
+        call reactive_conserved_to_primitive(species,ghost(:,i+2,j+2,k+2),temperature(i+2,j+2,k+2), &
+          q,recovered,speed,valid)
+        if(.not.valid) return
+        cell_pressure(i,j,k)=q(5)
+      enddo
+      enddo
+      enddo
+      call compute_eb_godunov_pressure_work_3d(margin,prediction,cell_pressure,pwork,valid)
+      if(.not.valid) return
+      held_volume=physical%dx*physical%dy*physical%dz
+      do k=1,m(3)
+      do j=1,m(2)
+      do i=1,m(1)
+        if(physical%volume_fraction(i,j,k)<=0) cycle
+        held_rhs(i,j,k)=( &
+          physical%dy*physical%dz*(physical%x_face_fraction(i-1,j,k)*held_flux%x(1,i-1,j,k)- &
+            physical%x_face_fraction(i,j,k)*held_flux%x(1,i,j,k))+ &
+          physical%dx*physical%dz*(physical%y_face_fraction(i,j-1,k)*held_flux%y(1,i,j-1,k)- &
+            physical%y_face_fraction(i,j,k)*held_flux%y(1,i,j,k))+ &
+          physical%dx*physical%dy*(physical%z_face_fraction(i,j,k-1)*held_flux%z(1,i,j,k-1)- &
+            physical%z_face_fraction(i,j,k)*held_flux%z(1,i,j,k)))/ &
+          (held_volume*physical%volume_fraction(i,j,k))-pwork(i,j,k)
+      enddo
+      enddo
+      enddo
+      if(face_weight<1) then
+        held_flux=blended_held_flux
+      else
+      held_flux%x=dt*held_flux%x;held_flux%y=dt*held_flux%y;held_flux%z=dt*held_flux%z
+      endif
+      if(.not.all(ieee_is_finite(held_rhs)).or..not.all(ieee_is_finite(held_flux%x)).or. &
+        .not.all(ieee_is_finite(held_flux%y)).or..not.all(ieee_is_finite(held_flux%z))) return
+    endif
     call hydro_inventory_changes(species,state,temp,physical,dt,flux,inventory_boundary,wall,valid)
     if(.not.valid) return
     if(present(hydro_rate)) then
       if(.not.all(ieee_is_finite(rhs))) return
+      if(face_weight<1) then
+        flux=blended_flux
+      else
       flux%x=dt*flux%x;flux%y=dt*flux%y;flux%z=dt*flux%z
+      endif
       if(.not.all(ieee_is_finite(flux%x)).or..not.all(ieee_is_finite(flux%y)).or. &
         .not.all(ieee_is_finite(flux%z))) return
       hydro_rate=rhs
       if(present(integrated_flux)) integrated_flux=flux
       if(present(boundary_change)) boundary_change=inventory_boundary
       if(present(wall_change)) wall_change=wall
+      if(present(baseline_flux)) baseline_flux=low_flux
+      if(held) then
+        internal_energy_rate=held_rhs;internal_energy_integrated_flux=held_flux
+        if(present(internal_energy_baseline_flux)) internal_energy_baseline_flux=held_low
+        if(present(internal_energy_pressure_work)) internal_energy_pressure_work=pwork
+      endif
       ok=.true.;return
     end if
     allocate(candidate,mold=state);allocate(ct,mold=temp)
@@ -441,7 +1191,21 @@ contains
     case('flux_redist')
       call advance_reactive_eb_redistributed_3d(species,state,temp,physical,rhs,dt,candidate,ct,valid)
     case('state_redist')
-      call advance_reactive_eb_state_redistributed_3d(species,state,temp,physical,rhs,dt,candidate,ct,valid,target)
+      ! A prepared patch may have peer/ancestor halos rather than physical
+      ! ghosts. Only a complete physical domain can use zero exterior dUdt.
+      valid=.false.
+      if(present(boundary)) valid=all(boundary%lower==4).and.all(boundary%upper==n-3)
+      if(valid) then
+        redist_faces=boundary%faces
+        call extract_eb_geometry_3d(geometry,[2,2,2],n-1,redist_halo,valid)
+        if(.not.valid) return
+        call advance_reactive_eb_state_redistributed_3d(species,state,temp,physical,rhs,dt,candidate,ct,valid,target, &
+          max_order=state_redist_max_order,boundary_state=ghost(:,2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+          boundary_geometry=redist_halo,boundary_faces=redist_faces)
+      else
+        call advance_reactive_eb_state_redistributed_3d(species,state,temp,physical,rhs,dt,candidate,ct,valid,target, &
+          max_order=state_redist_max_order)
+      endif
     case('none')
       candidate=state;ct=temp
       do k=1,m(3)
@@ -474,22 +1238,31 @@ contains
   ! Output indices describe cells 3:N-2, shifted down by two. Fluxes are intensive
   ! face-center values, before viscosity or centroid interpolation.
   subroutine compute_reactive_eb_plm_ctu_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,ok,order,source,source_energy,boundary,conserved_source)
+      dt,flattening,prediction,ok,order,source,source_energy,boundary,conserved_source,normal_prediction, &
+      capture_internal_energy_flux)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
     real(dp), intent(in) :: dt,flattening(0:,0:,0:)
     type(eb_plm_face_prediction_3d), intent(inout) :: prediction(3)
+    ! Uncorrected normal predictors use the same cropped face indices as prediction.
+    ! This aligns the two stages for conservative face correction budgets.
+    type(eb_plm_face_prediction_3d), optional, intent(inout) :: normal_prediction(3)
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
+    logical, optional, intent(in) :: capture_internal_energy_flux
+    logical :: capture_held
+    real(dp) :: held_flux
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
     real(dp), optional, intent(in) :: source(:,:,:,:),source_energy(:,:,:),conserved_source(:,:,:,:)
     real(dp), allocatable :: forcing(:,:,:,:),forcing_energy(:,:,:)
-    type(eb_plm_face_prediction_3d) :: normal(3),corner(3,3),final(3),candidate(3)
+    type(eb_plm_face_prediction_3d) :: normal(3),corner(3,3),final(3),candidate(3),normal_candidate(3)
     real(dp), allocatable :: gamma(:,:,:),sound(:,:,:)
     real(dp) :: q(reactive_nvar(size(species))),recovered,speed,spacing(3)
-    integer :: n(3),nv,i,j,k,axis,t,lo(3),hi(3),idx(3),other(2),m
+    integer :: n(3),nv,i,j,k,axis,t,lo(3),hi(3),other(2),m
     logical :: valid
+    capture_held=.false.
+    if(present(capture_internal_energy_flux)) capture_held=capture_internal_energy_flux
     ok=.false.;n=[geometry%nx,geometry%ny,geometry%nz];nv=reactive_nvar(size(species))
     if(any(n<5)) return
     if(.not.valid_plm_boundary(boundary)) return
@@ -502,7 +1275,7 @@ contains
       if(any(shape(source)/=[nv,n]).or.any(shape(source_energy)/=n)) return
     end if
     call compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,normal,valid,order,boundary)
+      dt,flattening,normal,valid,order,boundary,capture_internal_energy_flux)
     if(.not.valid) return
     spacing=[geometry%dx,geometry%dy,geometry%dz]
     allocate(gamma(n(1),n(2),n(3)),sound(n(1),n(2),n(3)));gamma=0;sound=0
@@ -558,26 +1331,40 @@ contains
       end do
       end do
       end do
-      associate(c=>candidate(axis),f=>final(axis))
-      idx=lo-2
-      allocate(c%left(nv,idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
-        c%right(nv,idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
-        c%flux(nv,idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
-        c%energy_left(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
-        c%energy_right(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
-        c%pressure(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2), &
-        c%velocity(idx(1):hi(1)-2,idx(2):hi(2)-2,idx(3):hi(3)-2))
-      c%left=f%left(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      c%right=f%right(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      c%flux=f%flux(:,lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      c%energy_left=f%energy_left(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      c%energy_right=f%energy_right(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      c%pressure=f%pressure(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      c%velocity=f%velocity(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3))
-      end associate
+      call crop_prediction(final(axis),lo,hi,candidate(axis))
+      if(present(normal_prediction)) call crop_prediction(normal(axis),lo,hi,normal_candidate(axis))
     end do
+    if(present(normal_prediction)) normal_prediction=normal_candidate
     prediction=candidate;ok=.true.
   contains
+    ! Shift the normal and final stages together, including auxiliary Riemann
+    ! states used by viscosity and centroid interpolation. Publish only on success.
+    subroutine crop_prediction(f,lower,upper,c)
+      type(eb_plm_face_prediction_3d), intent(in) :: f
+      integer, intent(in) :: lower(3),upper(3)
+      type(eb_plm_face_prediction_3d), intent(out) :: c
+      integer :: idx(3)
+      idx=lower-2
+      allocate(c%left(nv,idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2), &
+        c%right(nv,idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2), &
+        c%flux(nv,idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2), &
+        c%energy_left(idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2), &
+        c%energy_right(idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2), &
+        c%pressure(idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2), &
+        c%velocity(idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2))
+      c%left=f%left(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      c%right=f%right(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      c%flux=f%flux(:,lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      c%energy_left=f%energy_left(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      c%energy_right=f%energy_right(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      c%pressure=f%pressure(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      c%velocity=f%velocity(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      if(allocated(f%internal_energy_flux)) then
+        allocate(c%internal_energy_flux(idx(1):upper(1)-2,idx(2):upper(2)-2,idx(3):upper(3)-2))
+        c%internal_energy_flux=f%internal_energy_flux(lower(1):upper(1),lower(2):upper(2),lower(3):upper(3))
+      endif
+    end subroutine crop_prediction
+
     real(dp) function area(direction,index) result(value)
       integer, intent(in) :: direction,index(3)
       select case(direction)
@@ -645,13 +1432,20 @@ contains
       swap=ql(2);ql(2)=ql(direction+1);ql(direction+1)=swap
       swap=qr(2);qr(2)=qr(direction+1);qr(direction+1)=swap
       cell=index;cell(direction)=cell(direction)+1
+      if(capture_held) then
+      call reactive_pelec_primitive_flux_x(species,ql,qr, &
+        .5_dp*(sound(index(1),index(2),index(3))+sound(cell(1),cell(2),cell(3))), &
+        f,success,interface_pressure=pface,interface_velocity=uface,passive_upwind=.true.,internal_energy_flux=held_flux)
+      else
       call reactive_pelec_primitive_flux_x(species,ql,qr, &
         .5_dp*(sound(index(1),index(2),index(3))+sound(cell(1),cell(2),cell(3))), &
         f,success,interface_pressure=pface,interface_velocity=uface,passive_upwind=.true.)
+      endif
       if(.not.success) return
       swap=f(2);f(2)=f(direction+1);f(direction+1)=swap
       result%flux(:,index(1),index(2),index(3))=f
       result%pressure(index(1),index(2),index(3))=pface;result%velocity(index(1),index(2),index(3))=uface
+      if(capture_held) result%internal_energy_flux(index(1),index(2),index(3))=held_flux
     end subroutine correct_face
   end subroutine compute_reactive_eb_plm_ctu_fluxes_3d
 
@@ -723,13 +1517,16 @@ contains
   ! First Godunov stage only: intensive normal fluxes before transverse,
   ! viscosity, centroid interpolation or aperture/area integration.
   subroutine compute_reactive_eb_plm_normal_fluxes_3d(species,geometry,ghost,temperature,volume_fraction, &
-      dt,flattening,prediction,ok,order,boundary)
+      dt,flattening,prediction,ok,order,boundary,capture_internal_energy_flux)
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: geometry
     real(dp), intent(in) :: ghost(:,-2:,-2:,-2:),temperature(-2:,-2:,-2:),volume_fraction(-2:,-2:,-2:)
     real(dp), intent(in) :: dt,flattening(0:,0:,0:)
     type(eb_plm_face_prediction_3d), intent(inout) :: prediction(3)
     type(eb_plm_boundary_3d), optional, intent(in) :: boundary
+    logical, optional, intent(in) :: capture_internal_energy_flux
+    logical :: capture_held
+    real(dp) :: held_flux
     logical, intent(out) :: ok
     integer, optional, intent(in) :: order
     type(eb_plm_face_prediction_3d) :: candidate(3)
@@ -739,6 +1536,8 @@ contains
     real(dp) :: f(reactive_nvar(size(species))),el,er,ignored,aperture,spacing(3),recovered,speed,swap,pface,uface
     integer :: n(3),nv,axis,i,j,k,idx(3),lo(3),hi(3),cell(3),point(3),offset,side,selected
     logical :: covered(-2:2),valid
+    capture_held=.false.
+    if(present(capture_internal_energy_flux)) capture_held=capture_internal_energy_flux
     ok=.false.;nv=reactive_nvar(size(species));selected=4
     if(present(order)) selected=order
     if(.not.valid_plm_boundary(boundary)) return
@@ -779,6 +1578,9 @@ contains
         result%velocity(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)))
       result%left=0;result%right=0;result%flux=0;result%energy_left=0;result%energy_right=0
       result%pressure=0;result%velocity=0
+      if(capture_held) then
+        allocate(result%internal_energy_flux(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)),source=0._dp)
+      endif
       do k=lo(3),hi(3)
       do j=lo(2),hi(2)
       do i=lo(1),hi(1)
@@ -813,11 +1615,17 @@ contains
         swap=ql(2);ql(2)=ql(axis+1);ql(axis+1)=swap
         swap=qr(2);qr(2)=qr(axis+1);qr(axis+1)=swap
         cell=idx;cell(axis)=cell(axis)+1
+        if(capture_held) then
+        call reactive_pelec_primitive_flux_x(species,ql,qr,.5_dp*(sound(i,j,k)+sound(cell(1),cell(2),cell(3))), &
+          f,valid,interface_pressure=pface,interface_velocity=uface,passive_upwind=.true.,internal_energy_flux=held_flux)
+        else
         call reactive_pelec_primitive_flux_x(species,ql,qr,.5_dp*(sound(i,j,k)+sound(cell(1),cell(2),cell(3))), &
           f,valid,interface_pressure=pface,interface_velocity=uface,passive_upwind=.true.)
+        endif
         if(.not.valid) return
         swap=f(2);f(2)=f(axis+1);f(axis+1)=swap
         result%flux(:,i,j,k)=f;result%pressure(i,j,k)=pface;result%velocity(i,j,k)=uface
+        if(capture_held) result%internal_energy_flux(i,j,k)=held_flux
       end do
       end do
       end do
@@ -1278,7 +2086,8 @@ contains
 
   subroutine advance_reactive_eb_state_redistributed_euler_3d( &
       species, state, temperature, geometry, solver, dt, new_state, &
-      new_temperature, ok, target_volume_fraction, boundary_change, wall_change, difmag)
+      new_temperature, ok, target_volume_fraction, boundary_change, wall_change, difmag, &
+      state_redist_max_order)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -1286,6 +2095,7 @@ contains
     real(dp), intent(in) :: dt
     real(dp), intent(out) :: new_state(:, :, :, :)
     real(dp), intent(out) :: new_temperature(:, :, :)
+    integer, optional, intent(in) :: state_redist_max_order
     logical, intent(out) :: ok
     real(dp), optional, intent(in) :: difmag
     real(dp), optional, intent(inout) :: boundary_change(:),wall_change(:)
@@ -1333,7 +2143,8 @@ contains
     if (present(target_volume_fraction)) target = target_volume_fraction
     call advance_reactive_eb_state_redistributed_3d( &
       species, state, temperature, geometry, rhs, dt, new_state, &
-      new_temperature, local_ok, target)
+      new_temperature, local_ok, target, &
+      max_order=state_redist_max_order)
     if (.not. local_ok) return
     if (present(boundary_change)) boundary_change=boundary
     if (present(wall_change)) wall_change=wall

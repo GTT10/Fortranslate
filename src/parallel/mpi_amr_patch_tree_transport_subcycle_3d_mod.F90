@@ -16,12 +16,18 @@ module mpi_amr_patch_tree_transport_subcycle_3d_mod
   use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use mpi_amr_patch_tree_transport_level_3d_mod, only: advance_mpi_amr_tree_transport_level_3d
   use amr_patch_tree_reflux_3d_mod, only: amr_tree_flux_3d
+  use mpi_amr_patch_tree_transport_3d_mod, only: agree_mpi_constant_transport_coefficients, &
+    agree_mpi_thermal_slip_faces
   implicit none
   private
   public :: compute_mpi_amr_tree_subcycle_transport_timestep_3d,advance_mpi_amr_tree_subcycle_transport_3d
 contains
   subroutine compute_mpi_amr_tree_subcycle_transport_timestep_3d(tree,owners,species,transport,state,temperature, &
-      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,comm,ok,faces,wall_temperature)
+      root_spacing,cfl,viscosity,conduction,diffusion,dt,maximum_diffusivity,comm,ok,faces,wall_temperature, &
+      constant_coefficients,internal_energy,isothermal_slip_faces)
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    real(dp), allocatable :: sampled_h(:,:,:)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -39,23 +45,41 @@ contains
     integer(int64), allocatable :: origin(:,:),domain(:,:),counts(:)
     integer, allocatable :: ratios(:)
     character(len=32) :: local_faces(6)
+    integer :: held_flag,held_low,held_high
     integer :: node,n(3),axis,level,rank,status,ios
     integer :: flags(5),min_flags(5),max_flags(5)
     real(dp) :: controls(10),low(10),high(10),global_dt,global_diffusivity
     character(len=64) :: options(6),reference_options(6)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_slip(6)
     logical :: valid
+    ok=.false.
+    call agree_mpi_thermal_slip_faces(isothermal_slip_faces,comm,thermal_slip,ok,faces,conduction,wall_temperature)
+    if(.not.ok) return
+    ok=.false.
+    call agree_mpi_constant_transport_coefficients(constant_coefficients,comm,ok,species=species)
+    if(.not.ok) return
     ok=.false.
     call validate_mpi_amr_tree_local_3d(tree,owners,state,reactive_nvar(size(species)),comm,valid)
     if (.not.valid) return
     call validate_mpi_amr_tree_local_3d(tree,owners,temperature,1,comm,valid)
     if (.not.valid) return
+    held_flag=merge(1,0,present(internal_energy))
+    call MPI_Allreduce(held_flag,held_low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(held_flag,held_high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.held_low/=held_high) return
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+    endif
     call MPI_Comm_rank(comm,rank,status)
     if (status/=MPI_SUCCESS) return
     controls=0;controls(:4)=[root_spacing,cfl]
     valid=all(ieee_is_finite(controls)).and.all(controls(:4)>0).and.size(transport)==size(species)
     if (present(faces)) then
       if (.not.valid_reactive_boundaries_3d(faces)) valid=.false.
-      if (any(faces=='isothermal_wall')) then
+      if (any(faces=='isothermal_wall').or.any(thermal_slip)) then
         if (.not.conduction.or..not.present(wall_temperature)) valid=.false.
       end if
     end if
@@ -105,22 +129,27 @@ contains
     do node=1,size(tree%nodes)
       if (owners(node)/=rank) cycle
       n=tree%nodes(node)%shape;level=tree%nodes(node)%level+1
+      if(present(internal_energy)) sampled_h=internal_energy%fields(node)%values(1,:,:,:)
       call reactive_transport_timestep_3d(species,transport,state%fields(node)%values,temperature%fields(node)%values(1,:,:,:), &
-        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid)
+        n(1),n(2),n(3),h(1,node),h(2,node),h(3,node),cfl,viscosity,conduction,diffusion,local_dt,local_diffusivity,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=sampled_h)
       if (.not.valid) exit
       if (local_dt<=huge(1._dp)/real(counts(level),dp)) candidate=min(candidate,local_dt*real(counts(level),dp))
       diffusivity=max(diffusivity,local_diffusivity)
       if (present(faces)) then
-        if (any(faces=='isothermal_wall')) then
+        if (any(faces=='isothermal_wall').or.any(thermal_slip)) then
           local_faces='outflow';level=tree%nodes(node)%level+1
           do axis=1,3
-            if (origin(axis,node)==0.and.faces(2*axis-1)=='isothermal_wall') &
-              local_faces(2*axis-1)='isothermal_wall'
-            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and.faces(2*axis)=='isothermal_wall') &
-              local_faces(2*axis)='isothermal_wall'
+            if (origin(axis,node)==0.and.(faces(2*axis-1)=='isothermal_wall'.or.thermal_slip(2*axis-1))) &
+              local_faces(2*axis-1)=faces(2*axis-1)
+            if (origin(axis,node)+int(n(axis),int64)==domain(axis,level).and. &
+                (faces(2*axis)=='isothermal_wall'.or.thermal_slip(2*axis))) &
+              local_faces(2*axis)=faces(2*axis)
           end do
           call reactive_isothermal_timestep_3d(species,transport,state%fields(node)%values, &
-            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid)
+            temperature%fields(node)%values(1,:,:,:),h(:,node),local_faces,wall_temperature,cfl,wall_dt,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=sampled_h, &
+          isothermal_slip_faces=thermal_slip.and.local_faces=='slip_wall')
           if (.not.valid) exit
           if (wall_dt<=huge(1._dp)/real(counts(level),dp)) candidate=min(candidate,wall_dt*real(counts(level),dp))
         end if
@@ -146,7 +175,10 @@ contains
   subroutine advance_mpi_amr_tree_subcycle_transport_3d(tree,owners,species,transport,state,temperature,spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,boundary_change,maximum_correction,minimum_theta,comm,ok, &
       inflow_state,inflow_temperature,wall_temperature,wall_velocity,coarse_limiter,level_steps,outlet_pressure, &
-      inflow_mach,inflow_pressure)
+      inflow_mach,inflow_pressure, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    logical :: constant_agreed
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
     type(MPI_Comm), intent(in) :: comm
@@ -172,6 +204,8 @@ contains
     integer :: nvar,node,n(3),rank,status,ios
     logical :: valid
     ok=.false.
+    call agree_mpi_constant_transport_coefficients(constant_coefficients,comm,constant_agreed,species=species)
+    if(.not.constant_agreed) return
     call layout(tree,owners,species,state,temperature,spacing,origin,domain,ratios,counts,comm,valid)
     if (.not.valid) return
     nvar=reactive_nvar(size(species))
@@ -242,7 +276,8 @@ contains
       call advance_mpi_amr_tree_transport_level_3d(tree,owners,species,transport,candidate,temps,depth,spacing,local_dt, &
         faces,viscosity,conduction,diffusion,barodiffusion,total,local_theta,comm,good, &
         old_endpoint,new_endpoint,fraction0,fraction1,inflow_state,inflow_temperature, &
-        wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure)
+        wall_temperature,wall_velocity,coarse_limiter,outlet_pressure,inflow_mach,inflow_pressure, &
+        constant_coefficients=constant_coefficients)
       if (.not.good) return
       theta=min(theta,local_theta)
       executed(depth+1)=executed(depth+1)+1

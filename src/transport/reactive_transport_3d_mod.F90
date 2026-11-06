@@ -5,8 +5,8 @@ module reactive_transport_3d_mod
   use constants_mod, only: mechanism_species_capacity
   use precision_mod, only: dp
   use state_indices_mod, only: irho, imx, imy, imz, iet
-  use nasa7_thermo_mod, only: nasa7_species
-  use mixture_thermo_mod, only: mixture_mass_properties
+  use nasa7_thermo_mod, only: nasa7_species,nasa7_mass_properties
+  use mixture_thermo_mod, only: mixture_mass_properties,mole_fractions_from_mass_fractions
   use gas_transport_mod, only: gas_transport_species
   use mixture_transport_mod, only: mixture_transport_coefficients,simple_bulk_viscosity
   use reactive_1d_mod, only: &
@@ -14,11 +14,13 @@ module reactive_transport_3d_mod
     reactive_mass_fraction_component, reactive_conserved_to_primitive
   use reactive_transport_2d_mod, only: &
     face_transport_data, species_face_flux
+  use gas_transport_mod, only: valid_constant_transport_coefficients
   implicit none
   private
 
   real(dp), parameter :: species_safety = 0.90_dp
 
+  public :: valid_constant_transport_coefficients
   public :: reactive_isothermal_timestep_3d,wall_heat_transfer_3d
   public :: reactive_transport_fluxes_3d
   public :: physical_transport_fluxes_3d, physical_transport_budget_3d
@@ -31,6 +33,7 @@ module reactive_transport_3d_mod
   public :: advance_reactive_transport_3d
 
 contains
+
 
   pure logical function finite_product_fits(left, right) result(fits)
     real(dp), intent(in) :: left, right
@@ -356,7 +359,9 @@ contains
 
   subroutine recover_transport_primitives_3d( &
       species, state, temperature, nx, ny, nz, primitive, &
-      checked_temperature, ok)
+      checked_temperature, ok,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     integer, intent(in) :: nx, ny, nz
@@ -371,6 +376,11 @@ contains
     primitive = 0.0_dp
     checked_temperature = 0.0_dp
     ok = .false.
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=[nx,ny,nz])) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_cell)
+    endif
     nvar = reactive_nvar(size(species))
     nprim = reactive_nprim(size(species))
     if (.not. valid_transport_shapes_3d( &
@@ -387,10 +397,11 @@ contains
     do k = 1, nz
       do j = 1, ny
         do i = 1, nx
+          if(allocated(held_cell)) held_cell=internal_energy_density(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature(i, j, k), &
             primitive(:, i, j, k), checked_temperature(i, j, k), &
-            sound_speed, local_ok)
+            sound_speed, local_ok,internal_energy_density=held_cell)
           if (.not. local_ok) return
         end do
       end do
@@ -516,14 +527,237 @@ contains
     ok = .true.
   end subroutine face_velocity_gradient
 
+  ! Each cell workspace belongs to one flux invocation. Only face endpoints
+  ! are prepared, preserving the validation boundary of unused halo corners.
+  ! Layout: mole fractions, enthalpies, diffusion, mu, kappa, bulk, ready.
+  subroutine prepare_simple_transport_cell(species, transport, primitive, temperature, use_bulk, cell, ok)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: primitive(:), temperature
+    logical, intent(in) :: use_bulk
+    real(dp), intent(inout) :: cell(:)
+    logical, intent(out) :: ok
+    real(dp) :: cp, cv, energy, entropy
+    integer :: n, k
+
+    n = size(species)
+    ok = .true.
+    if (cell(3*n+4) == 1.0_dp) return
+    call mixture_transport_coefficients(species, transport, primitive(6:), temperature, primitive(5), &
+      cell(3*n+1), cell(3*n+2), cell(2*n+1:3*n), ok)
+    if (.not. ok) return
+    call mole_fractions_from_mass_fractions(species, primitive(6:), cell(1:n), ok)
+    if (.not. ok) return
+    do k = 1, n
+      call nasa7_mass_properties(species(k), temperature, cp, cv, cell(n+k), energy, entropy, ok)
+      if (.not. ok) return
+    end do
+    cell(3*n+3) = 0.0_dp
+    if (use_bulk) then
+      call simple_bulk_viscosity(species, transport, primitive(6:), temperature, cell(3*n+3), ok)
+      if (.not. ok) return
+    end if
+    cell(3*n+4) = 1.0_dp
+  end subroutine prepare_simple_transport_cell
+
+  ! Match the public 2D face helper's quotient guard exactly.
+  pure subroutine cached_face_quotient(numerator, denominator, value, ok)
+    real(dp), intent(in) :: numerator, denominator
+    real(dp), intent(out) :: value
+    logical, intent(out) :: ok
+    value = 0.0_dp
+    ok = .false.
+    if (.not. ieee_is_finite(numerator)) return
+    if (.not. ieee_is_finite(denominator)) return
+    if (abs(denominator) <= 0.0_dp) return
+    if (abs(denominator) < 1.0_dp) then
+      if (abs(numerator) > huge(1.0_dp)*abs(denominator)) return
+    end if
+    value = numerator/denominator
+    if (.not. ieee_is_finite(value)) then
+      value = 0.0_dp
+      return
+    end if
+    ok = .true.
+  end subroutine cached_face_quotient
+
+  pure subroutine checked_array_sum(values, total, ok)
+    real(dp), intent(in) :: values(:)
+    real(dp), intent(out) :: total
+    logical, intent(out) :: ok
+    real(dp) :: candidate
+    integer :: i
+    total = 0.0_dp
+    do i = 1, size(values)
+      call checked_sum(total, values(i), candidate, ok)
+      if (.not. ok) then
+        total = 0.0_dp
+        return
+      end if
+      total = candidate
+    end do
+    ok = .true.
+  end subroutine checked_array_sum
+
+  pure real(dp) function positive_harmonic_mean(a, b) result(value)
+    real(dp), intent(in) :: a, b
+    value = 0.0_dp
+    if (min(a,b) > 0.0_dp) value = min(a,b)/(.5_dp+.5_dp*min(a,b)/max(a,b))
+  end function positive_harmonic_mean
+
+  subroutine cached_simple_face_data( &
+      species, transport, left_primitive, right_primitive, left_temperature, &
+      right_temperature, viscosity, conductivity, diffusion, yleft, yright, &
+      yface, xleft, xright, hface, ok, left_cell, right_cell)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: left_primitive(:), right_primitive(:)
+    real(dp), intent(in) :: left_temperature, right_temperature
+    real(dp), intent(out) :: viscosity, conductivity, diffusion(:)
+    real(dp), intent(out) :: yleft(:), yright(:), yface(:)
+    real(dp), intent(out) :: xleft(:), xright(:), hface(:)
+    logical, intent(out) :: ok
+
+    real(dp), intent(in) :: left_cell(:), right_cell(:)
+
+    real(dp) :: tface, pface
+    real(dp) :: candidate_viscosity, candidate_conductivity
+    real(dp) :: mu_left,mu_right,k_left,k_right,rho_face,rd_left,rd_right,rd_face
+    real(dp) :: d_left(size(species)),d_right(size(species))
+    real(dp) :: midpoint, composition_total
+    real(dp), allocatable :: candidate_diffusion(:), candidate_yleft(:)
+    real(dp), allocatable :: candidate_yright(:), candidate_yface(:)
+    real(dp), allocatable :: candidate_xleft(:), candidate_xright(:)
+    real(dp), allocatable :: candidate_hface(:)
+    logical :: local_ok
+    integer :: k, nspecies
+
+    viscosity = 0.0_dp
+    conductivity = 0.0_dp
+    diffusion = 0.0_dp
+    yleft = 0.0_dp
+    yright = 0.0_dp
+    yface = 0.0_dp
+    xleft = 0.0_dp
+    xright = 0.0_dp
+    hface = 0.0_dp
+    ok = .false.
+    nspecies = size(species)
+    if (nspecies < 1) return
+    if (size(transport) /= nspecies .or. &
+        size(left_primitive) /= reactive_nprim(nspecies) .or. &
+        size(right_primitive) /= reactive_nprim(nspecies) .or. &
+        size(diffusion) /= nspecies .or. size(yleft) /= nspecies .or. &
+        size(yright) /= nspecies .or. size(yface) /= nspecies .or. &
+        size(xleft) /= nspecies .or. size(xright) /= nspecies .or. &
+        size(hface) /= nspecies) return
+
+    if (.not. all(ieee_is_finite(left_primitive))) return
+    if (.not. all(ieee_is_finite(right_primitive))) return
+    if (.not. ieee_is_finite(left_temperature)) return
+    if (.not. ieee_is_finite(right_temperature)) return
+    if (left_temperature <= 0.0_dp) return
+    if (right_temperature <= 0.0_dp) return
+    if (left_primitive(1) <= 0.0_dp) return
+    if (right_primitive(1) <= 0.0_dp) return
+    if (left_primitive(5) <= 0.0_dp) return
+    if (right_primitive(5) <= 0.0_dp) return
+
+    allocate(candidate_diffusion(nspecies), candidate_yleft(nspecies))
+    allocate(candidate_yright(nspecies), candidate_yface(nspecies))
+    allocate(candidate_xleft(nspecies), candidate_xright(nspecies))
+    allocate(candidate_hface(nspecies))
+    candidate_diffusion = 0.0_dp
+    candidate_yleft = 0.0_dp
+    candidate_yright = 0.0_dp
+    candidate_yface = 0.0_dp
+    candidate_xleft = 0.0_dp
+    candidate_xright = 0.0_dp
+    candidate_hface = 0.0_dp
+    candidate_viscosity = 0.0_dp
+    candidate_conductivity = 0.0_dp
+
+    do k = 1, nspecies
+      candidate_yleft(k) = left_primitive(reactive_mass_fraction_component(k))
+      candidate_yright(k) = right_primitive(reactive_mass_fraction_component(k))
+    end do
+    if (.not. all(ieee_is_finite(candidate_yleft))) return
+    if (.not. all(ieee_is_finite(candidate_yright))) return
+    do k = 1, nspecies
+      call checked_midpoint( &
+        candidate_yleft(k), candidate_yright(k), midpoint, local_ok)
+      if (.not. local_ok) return
+      candidate_yface(k) = max(0.0_dp, midpoint)
+    end do
+    call checked_array_sum(candidate_yface, composition_total, local_ok)
+    if (.not. local_ok) return
+    if (composition_total <= tiny(1.0_dp)) return
+    do k = 1, nspecies
+      call cached_face_quotient( &
+        candidate_yface(k), composition_total, midpoint, local_ok)
+      if (.not. local_ok) return
+      candidate_yface(k) = midpoint
+    end do
+    call checked_midpoint(left_temperature, right_temperature, tface, local_ok)
+    if (.not. local_ok) return
+    call checked_midpoint(left_primitive(5), right_primitive(5), pface, local_ok)
+    if (.not. local_ok) return
+    if(allocated(transport(1)%simple_binary)) then
+      ! Pinned PeleC moves cell transport coefficients to faces by harmonic mean.
+      mu_left = left_cell(3*nspecies+1)
+      mu_right = right_cell(3*nspecies+1)
+      k_left = left_cell(3*nspecies+2)
+      k_right = right_cell(3*nspecies+2)
+      d_left = left_cell(2*nspecies+1:3*nspecies)
+      d_right = right_cell(2*nspecies+1:3*nspecies)
+      candidate_viscosity=positive_harmonic_mean(mu_left,mu_right)
+      candidate_conductivity=positive_harmonic_mean(k_left,k_right)
+      call checked_midpoint(left_primitive(1),right_primitive(1),rho_face,local_ok)
+      if(.not.local_ok) return
+      do k=1,nspecies
+        call checked_product(left_primitive(1),d_left(k),rd_left,local_ok)
+        if(.not.local_ok) return
+        call checked_product(right_primitive(1),d_right(k),rd_right,local_ok)
+        if(.not.local_ok) return
+        rd_face=positive_harmonic_mean(rd_left,rd_right)
+        call cached_face_quotient(rd_face,rho_face,candidate_diffusion(k),local_ok)
+        if(.not.local_ok) return
+      end do
+    end if
+    candidate_xleft = left_cell(1:nspecies)
+    candidate_xright = right_cell(1:nspecies)
+    do k = 1, nspecies
+      call checked_midpoint(left_cell(nspecies+k), right_cell(nspecies+k), candidate_hface(k), local_ok)
+      if (.not. local_ok) return
+    end do
+    if (.not. ieee_is_finite(candidate_viscosity)) return
+    if (candidate_viscosity <= 0.0_dp) return
+    if (.not. ieee_is_finite(candidate_conductivity)) return
+    if (candidate_conductivity <= 0.0_dp) return
+    if (.not. all(ieee_is_finite(candidate_diffusion))) return
+    if (any(candidate_diffusion < 0.0_dp)) return
+    if (.not. all(ieee_is_finite(candidate_hface))) return
+    viscosity = candidate_viscosity
+    conductivity = candidate_conductivity
+    diffusion = candidate_diffusion
+    yleft = candidate_yleft
+    yright = candidate_yright
+    yface = candidate_yface
+    xleft = candidate_xleft
+    xright = candidate_xright
+    hface = candidate_hface
+    ok = .true.
+  end subroutine cached_simple_face_data
+
   subroutine assemble_periodic_transport_face( &
       species, transport, left_primitive, right_primitive, &
       left_temperature, right_temperature, spacing, normal, gradient, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, flux, &
-      species_energy, ok,constant_coefficients)
+      species_energy, ok,constant_coefficients,left_cell,right_cell)
     ! Optional [dynamic viscosity, thermal conductivity] in SI units.
-    real(dp), optional, intent(in) :: constant_coefficients(2)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(inout) :: left_cell(:), right_cell(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: left_primitive(:), right_primitive(:)
@@ -538,21 +772,28 @@ contains
     real(dp), allocatable :: diffusion(:), yleft(:), yright(:), yface(:)
     real(dp), allocatable :: xleft(:), xright(:), hface(:), species_flux(:)
     real(dp) :: molecular_weight,gas_constant,cp,cv,gamma,enthalpy,energy,entropy
-    real(dp) :: bulk,left_bulk,right_bulk
+    real(dp) :: bulk,left_bulk,right_bulk,hleft,hright
     real(dp) :: viscosity, conductivity, density_face, pressure_face
     real(dp) :: divergence, tau_normal(3), velocity_face(3)
     real(dp) :: viscous_power
     real(dp) :: divergence_partial, strain_sum, correction_factor
     real(dp) :: normal_correction, temperature_difference, conductive_term
-    logical :: local_ok
+    logical :: local_ok,prescribed_diffusion,use_cell_cache
     integer :: component, species_index, nspecies
 
     flux = 0.0_dp
     species_energy = 0.0_dp
     ok = .false.
     if(present(constant_coefficients)) then
-      if(.not.all(ieee_is_finite(constant_coefficients))) return
-      if(any(constant_coefficients<0)) return
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    end if
+    prescribed_diffusion=.false.
+    if(present(constant_coefficients)) then
+      if(size(constant_coefficients)==4) prescribed_diffusion=constant_coefficients(4)>=0
+    endif
+    use_cell_cache = .false.
+    if (present(left_cell) .and. present(right_cell)) then
+      use_cell_cache = size(left_cell) > 0 .and. size(right_cell) > 0
     end if
     nspecies = size(species)
     if (.not. all(ieee_is_finite(left_primitive)) .or. &
@@ -571,7 +812,7 @@ contains
     allocate(diffusion(nspecies), yleft(nspecies), yright(nspecies))
     allocate(yface(nspecies), xleft(nspecies), xright(nspecies))
     allocate(hface(nspecies), species_flux(nspecies))
-    if(present(constant_coefficients).and..not.species_diffusion_enabled) then
+    if(present(constant_coefficients).and.(.not.species_diffusion_enabled.or.prescribed_diffusion)) then
       ! Prescribed viscosity/conductivity without species diffusion needs only
       ! thermodynamics. Do not evaluate unused Lennard-Jones transport data.
       if(min(left_primitive(1),right_primitive(1),left_primitive(5),right_primitive(5))<=0) return
@@ -584,12 +825,40 @@ contains
       if(.not.local_ok) return
       yface=.5_dp*yleft+.5_dp*yright
       xleft=0;xright=0;hface=0;diffusion=0
+      if(prescribed_diffusion.and.species_diffusion_enabled) then
+        density_face=.5_dp*left_primitive(1)+.5_dp*right_primitive(1)
+        if(.not.finite_quotient_fits(constant_coefficients(4),density_face)) return
+        diffusion=constant_coefficients(4)/density_face
+        call mole_fractions_from_mass_fractions(species,yleft,xleft,local_ok)
+        if(.not.local_ok) return
+        call mole_fractions_from_mass_fractions(species,yright,xright,local_ok)
+        if(.not.local_ok) return
+        do species_index=1,nspecies
+          call nasa7_mass_properties(species(species_index),left_temperature,cp,cv,hleft,energy,entropy,local_ok)
+          if(.not.local_ok) return
+          call nasa7_mass_properties(species(species_index),right_temperature,cp,cv,hright,energy,entropy,local_ok)
+          if(.not.local_ok) return
+          hface(species_index)=.5_dp*hleft+.5_dp*hright
+        enddo
+      endif
       viscosity=constant_coefficients(1);conductivity=constant_coefficients(2)
+    else
+    if (use_cell_cache) then
+      call prepare_simple_transport_cell(species, transport, left_primitive, left_temperature, &
+        viscosity_enabled, left_cell, local_ok)
+      if (.not. local_ok) return
+      call prepare_simple_transport_cell(species, transport, right_primitive, right_temperature, &
+        viscosity_enabled, right_cell, local_ok)
+      if (.not. local_ok) return
+      call cached_simple_face_data(species, transport, left_primitive, right_primitive, &
+        left_temperature, right_temperature, viscosity, conductivity, diffusion, &
+        yleft, yright, yface, xleft, xright, hface, local_ok, left_cell, right_cell)
     else
     call face_transport_data( &
       species, transport, left_primitive, right_primitive, &
       left_temperature, right_temperature, viscosity, conductivity, &
       diffusion, yleft, yright, yface, xleft, xright, hface, local_ok)
+    end if
     end if
     if (.not. local_ok) then
       call reset_transport_face_outputs_3d(flux, species_energy)
@@ -638,8 +907,15 @@ contains
       return
     end if
     bulk=0
+    if(present(constant_coefficients)) then
+      if(size(constant_coefficients)==4) bulk=constant_coefficients(3)
+    endif
     if(viscosity_enabled.and..not.present(constant_coefficients)) then
       if(allocated(transport(1)%simple_binary)) then
+        if (use_cell_cache) then
+          left_bulk = left_cell(3*nspecies+3)
+          right_bulk = right_cell(3*nspecies+3)
+        else
         call simple_bulk_viscosity(species,transport,yleft,left_temperature,left_bulk,local_ok)
         if(.not.local_ok) then
           call reset_transport_face_outputs_3d(flux,species_energy);return
@@ -647,6 +923,7 @@ contains
         call simple_bulk_viscosity(species,transport,yright,right_temperature,right_bulk,local_ok)
         if(.not.local_ok) then
           call reset_transport_face_outputs_3d(flux,species_energy);return
+        end if
         end if
         if(min(left_bulk,right_bulk)>0) bulk=2*min(left_bulk,right_bulk)/(1+min(left_bulk,right_bulk)/max(left_bulk,right_bulk))
       end if
@@ -773,7 +1050,7 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, flux, &
       species_energy, ok,constant_coefficients)
     ! Optional [dynamic viscosity, thermal conductivity] in SI units.
-    real(dp), optional, intent(in) :: constant_coefficients(2)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: left_primitive(:), right_primitive(:)
@@ -797,9 +1074,11 @@ contains
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
-      flux_x, flux_y, flux_z, minimum_theta, ok,constant_coefficients)
+      flux_x, flux_y, flux_z, minimum_theta, ok,constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
     ! Optional [dynamic viscosity, thermal conductivity] in SI units.
-    real(dp), optional, intent(in) :: constant_coefficients(2)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -813,6 +1092,8 @@ contains
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
 
+    real(dp), allocatable :: cell_cache(:, :, :, :)
+    integer :: cache_size
     real(dp), allocatable :: primitive(:, :, :, :)
     real(dp), allocatable :: checked_temperature(:, :, :)
     real(dp), allocatable :: species_energy_x(:, :, :)
@@ -832,9 +1113,13 @@ contains
     minimum_theta = 1.0_dp
     ok = .false.
     if(present(constant_coefficients)) then
-      if(.not.all(ieee_is_finite(constant_coefficients))) return
-      if(any(constant_coefficients<0)) return
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
     end if
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=[nx,ny,nz])) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_cell)
+    endif
     nvar = reactive_nvar(size(species))
     nprim = reactive_nprim(size(species))
     if (.not. all(ieee_is_finite([dx, dy, dz, dt]))) return
@@ -855,6 +1140,14 @@ contains
       return
     end if
 
+    ! Zero-width storage keeps ordinary transport and explicit constants on
+    ! the original path. Simple cell data never survives this invocation.
+    cache_size = 0
+    if (.not. present(constant_coefficients) .and. size(transport) > 0) then
+      if (allocated(transport(1)%simple_binary)) cache_size = 3*size(species)+4
+    end if
+    allocate(cell_cache(cache_size, nx, ny, nz))
+    cell_cache = 0.0_dp
     allocate(primitive(nprim, nx, ny, nz))
     allocate(checked_temperature(nx, ny, nz))
     allocate(species_energy_x(nx, ny, nz))
@@ -866,7 +1159,7 @@ contains
     species_energy_z = 0.0_dp
     call recover_transport_primitives_3d( &
       species, state, temperature, nx, ny, nz, primitive, &
-      checked_temperature, local_ok)
+      checked_temperature, local_ok,internal_energy_density)
     if (.not. local_ok) then
       call reset_transport_flux_outputs_3d( &
         flux_x, flux_y, flux_z, minimum_theta)
@@ -897,7 +1190,8 @@ contains
             checked_temperature(next_i, j, k), dx, 1, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_x(:, i, j, k), species_energy_x(i, j, k), local_ok,constant_coefficients)
+            flux_x(:, i, j, k), species_energy_x(i, j, k), local_ok,constant_coefficients, &
+            cell_cache(:,i,j,k), cell_cache(:,next_i,j,k))
           if (.not. local_ok) then
             call reset_transport_flux_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta)
@@ -919,7 +1213,8 @@ contains
             checked_temperature(i, next_j, k), dy, 2, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_y(:, i, j, k), species_energy_y(i, j, k), local_ok,constant_coefficients)
+            flux_y(:, i, j, k), species_energy_y(i, j, k), local_ok,constant_coefficients, &
+            cell_cache(:,i,j,k), cell_cache(:,i,next_j,k))
           if (.not. local_ok) then
             call reset_transport_flux_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta)
@@ -941,7 +1236,8 @@ contains
             checked_temperature(i, j, next_k), dz, 3, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_z(:, i, j, k), species_energy_z(i, j, k), local_ok,constant_coefficients)
+            flux_z(:, i, j, k), species_energy_z(i, j, k), local_ok,constant_coefficients, &
+            cell_cache(:,i,j,k), cell_cache(:,i,j,next_k))
           if (.not. local_ok) then
             call reset_transport_flux_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta)
@@ -1222,7 +1518,9 @@ contains
       species_diffusion_enabled, barodiffusion_enabled, &
       flux_x, flux_y, flux_z, minimum_theta, ok, theta_cell_output, &
       exterior_theta_x_lower, exterior_theta_x_upper, &
-      periodic_theta_y, periodic_theta_z)
+      periodic_theta_y, periodic_theta_z, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, 0:, 0:, 0:), temperature(0:, 0:, 0:)
@@ -1240,6 +1538,8 @@ contains
     real(dp), intent(in), optional :: exterior_theta_x_upper(:, :)
     logical, intent(in), optional :: periodic_theta_y, periodic_theta_z
 
+    real(dp), allocatable :: cell_cache(:, :, :, :)
+    integer :: cache_size
     real(dp), allocatable :: primitive(:, :, :, :)
     real(dp), allocatable :: checked_temperature(:, :, :)
     real(dp), allocatable :: species_energy_x(:, :, :)
@@ -1258,6 +1558,9 @@ contains
     flux_z = 0.0_dp
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (present(theta_cell_output)) theta_cell_output = 1.0_dp
     use_periodic_theta_y = .false.
     use_periodic_theta_z = .false.
@@ -1304,6 +1607,14 @@ contains
       return
     end if
 
+    ! Zero-width storage keeps ordinary transport and explicit constants on
+    ! the original path. Simple cell data never survives this invocation.
+    cache_size = 0
+    if (.not. present(constant_coefficients) .and. size(transport) > 0) then
+      if (allocated(transport(1)%simple_binary)) cache_size = 3*size(species)+4
+    end if
+    allocate(cell_cache(cache_size, 0:nx+1, 0:ny+1, 0:nz+1))
+    cell_cache = 0.0_dp
     allocate(primitive(nprim, 0:nx + 1, 0:ny + 1, 0:nz + 1))
     allocate(checked_temperature(0:nx + 1, 0:ny + 1, 0:nz + 1))
     do k = 0, nz + 1
@@ -1344,7 +1655,9 @@ contains
             checked_temperature(i + 1, j, k), dx, 1, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_x(:, i, j, k), species_energy_x(i, j, k), local_ok)
+            flux_x(:, i, j, k), species_energy_x(i, j, k), local_ok, &
+            constant_coefficients=constant_coefficients, &
+            left_cell=cell_cache(:,i,j,k), right_cell=cell_cache(:,i+1,j,k))
           if (.not. local_ok) then
             call reset_transport_ghosted_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta, theta_cell_output)
@@ -1369,7 +1682,9 @@ contains
             checked_temperature(i, j + 1, k), dy, 2, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_y(:, i, j, k), species_energy_y(i, j, k), local_ok)
+            flux_y(:, i, j, k), species_energy_y(i, j, k), local_ok, &
+            constant_coefficients=constant_coefficients, &
+            left_cell=cell_cache(:,i,j,k), right_cell=cell_cache(:,i,j+1,k))
           if (.not. local_ok) then
             call reset_transport_ghosted_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta, theta_cell_output)
@@ -1394,7 +1709,9 @@ contains
             checked_temperature(i, j, k + 1), dz, 3, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            flux_z(:, i, j, k), species_energy_z(i, j, k), local_ok)
+            flux_z(:, i, j, k), species_energy_z(i, j, k), local_ok, &
+            constant_coefficients=constant_coefficients, &
+            left_cell=cell_cache(:,i,j,k), right_cell=cell_cache(:,i,j,k+1))
           if (.not. local_ok) then
             call reset_transport_ghosted_outputs_3d( &
               flux_x, flux_y, flux_z, minimum_theta, theta_cell_output)
@@ -1625,8 +1942,9 @@ contains
   subroutine reactive_transport_timestep_3d( &
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, &
       transport_cfl, viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, dt, maximum_diffusivity, ok,constant_coefficients)
-    real(dp), optional, intent(in) :: constant_coefficients(2)
+      species_diffusion_enabled, dt, maximum_diffusivity, ok,constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -1637,7 +1955,7 @@ contains
     real(dp), intent(out) :: dt, maximum_diffusivity
     logical, intent(out) :: ok
 
-    real(dp), allocatable :: primitive(:), mass_fractions(:), diffusion(:)
+    real(dp), allocatable :: primitive(:), mass_fractions(:), diffusion(:),held
     real(dp) :: checked_temperature, sound_speed, viscosity, conductivity
     real(dp) :: molecular_weight, gas_constant, cp, cv, gamma
     real(dp) :: enthalpy, internal_energy, entropy, candidate, denominator
@@ -1646,15 +1964,21 @@ contains
     real(dp) :: inverse_dx_squared, inverse_dy_squared, inverse_dz_squared
     real(dp) :: metric_partial, metric_sum
     real(dp) :: bulk
-    logical :: local_ok
+    logical :: local_ok,prescribed_diffusion
     integer :: i, j, k, species_index, nspecies, nvar
 
     dt = 0.0_dp
     maximum_diffusivity = 0.0_dp
+    prescribed_diffusion=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) then
+        dt=0;maximum_diffusivity=0;ok=.false.;return
+      endif
+      if(size(constant_coefficients)==4) prescribed_diffusion=constant_coefficients(4)>=0
+    endif
     ok = .false.
     if(present(constant_coefficients)) then
-      if(.not.all(ieee_is_finite(constant_coefficients))) return
-      if(any(constant_coefficients<0)) return
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
     end if
     nspecies = size(species)
     nvar = reactive_nvar(nspecies)
@@ -1666,6 +1990,11 @@ contains
           state, temperature, nvar, nx, ny, nz)) return
     if (.not. all(ieee_is_finite(state)) .or. &
         .not. all(ieee_is_finite(temperature))) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held)
+    endif
     if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &
         species_diffusion_enabled)) then
       dt = huge(1.0_dp)
@@ -1677,9 +2006,10 @@ contains
     do k = 1, nz
       do j = 1, ny
         do i = 1, nx
+          if(present(internal_energy_density)) held=internal_energy_density(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature(i, j, k), primitive, &
-            checked_temperature, sound_speed, local_ok)
+            checked_temperature, sound_speed, local_ok,internal_energy_density=held)
           if (.not. local_ok) then
             call reset_transport_timestep_outputs_3d( &
               dt, maximum_diffusivity)
@@ -1695,9 +2025,15 @@ contains
             mass_fractions(species_index) = &
               primitive(reactive_mass_fraction_component(species_index))
           end do
-          if(present(constant_coefficients).and..not.species_diffusion_enabled) then
+          if(present(constant_coefficients).and.(.not.species_diffusion_enabled.or.prescribed_diffusion)) then
             viscosity=constant_coefficients(1);conductivity=constant_coefficients(2)
             diffusion=0;local_ok=.true.
+            if(prescribed_diffusion.and.species_diffusion_enabled) then
+              if(.not.finite_quotient_fits(constant_coefficients(4),primitive(1))) then
+                call reset_transport_timestep_outputs_3d(dt,maximum_diffusivity);return
+              endif
+              diffusion=constant_coefficients(4)/primitive(1)
+            endif
           else
           call mixture_transport_coefficients( &
             species, transport, mass_fractions, checked_temperature, &
@@ -1746,6 +2082,9 @@ contains
               return
             end if
             bulk=0
+            if(present(constant_coefficients)) then
+              if(size(constant_coefficients)==4) bulk=constant_coefficients(3)
+            endif
             if(.not.present(constant_coefficients)) then
               if(allocated(transport(1)%simple_binary)) then
                 call simple_bulk_viscosity(species,transport,mass_fractions,checked_temperature,bulk,local_ok)
@@ -1754,6 +2093,9 @@ contains
                 end if
               end if
             end if
+            if(.not.finite_sum_fits((4._dp/3._dp)*viscosity,bulk)) then
+              call reset_transport_timestep_outputs_3d(dt,maximum_diffusivity);return
+            endif
             numerator = (4.0_dp / 3.0_dp) * viscosity+bulk
             if (.not. finite_quotient_fits( &
                 numerator, primitive(1))) then
@@ -1884,7 +2226,10 @@ contains
     ok = .true.
   end subroutine reactive_transport_timestep_3d
 
-  subroutine wall_heat_transfer_3d(species,transport,cell,tguess,wall_t,dx,heat,rate,ok)
+  subroutine wall_heat_transfer_3d(species,transport,cell,tguess,wall_t,dx,heat,rate,ok,constant_coefficients, &
+      internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(in) :: internal_energy_density
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: cell(:),tguess,wall_t,dx
@@ -1895,13 +2240,20 @@ contains
     heat=0.0_dp; rate=0.0_dp; ok=.false.
     if (.not.all(ieee_is_finite([wall_t,dx]))) return
     if (wall_t<=0.0_dp.or.dx<=0.0_dp) return
-    call reactive_conserved_to_primitive(species,cell,tguess,q,t,sound,ok)
+    call reactive_conserved_to_primitive(species,cell,tguess,q,t,sound,ok,internal_energy_density=internal_energy_density)
     if (.not.ok) return
     ! Check the specified wall temperature against the mechanism thermo range.
     call mixture_mass_properties(species,q(6:),wall_t,mw,gas_r,cp,cv,gamma,h,e,entropy,ok)
     if (.not.ok) return
-    call mixture_transport_coefficients(species,transport,q(6:),wall_t,q(5),mu,kappa,diffusion,ok)
-    if (.not.ok) return
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) then
+        ok=.false.;return
+      endif
+      kappa=constant_coefficients(2)
+    else
+      call mixture_transport_coefficients(species,transport,q(6:),wall_t,q(5),mu,kappa,diffusion,ok)
+      if (.not.ok) return
+    endif
     call mixture_mass_properties(species,q(6:),t,mw,gas_r,cp,cv,gamma,h,e,entropy,ok)
     if (.not.ok) return
     call checked_difference(wall_t,t,delta,ok)
@@ -1921,7 +2273,13 @@ contains
     call checked_product(2.0_dp,value,rate,ok)
   end subroutine wall_heat_transfer_3d
 
-  subroutine reactive_isothermal_timestep_3d(species,transport,u,t,spacing,faces,wall_t,cfl,dt,ok)
+  subroutine reactive_isothermal_timestep_3d(species,transport,u,t,spacing,faces,wall_t,cfl,dt,ok, &
+      constant_coefficients,internal_energy_density,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_faces(6)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_cell
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),spacing(3),wall_t(6),cfl
@@ -1931,10 +2289,24 @@ contains
     real(dp) :: heat,rate,cell_rate,max_rate,value
     integer :: n(3),i,j,k,a,face,idx(3)
     dt=0.0_dp; ok=.false.; n=shape(t)
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_cell)
+    endif
     if (any(n<1)) return
     if (.not.valid_transport_shapes_3d(u,t,reactive_nvar(size(species)),n(1),n(2),n(3))) return
     if (.not.valid_reactive_boundaries_3d(faces).or..not.ieee_is_finite(cfl)) return
     if (cfl<=0.0_dp.or.cfl>0.5_dp) return
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
+    thermal_faces=faces=='isothermal_wall'
+    if(present(isothermal_slip_faces)) then
+      if(any(isothermal_slip_faces.and.faces/='slip_wall')) return
+      thermal_faces=thermal_faces.or.isothermal_slip_faces
+    endif
+    if(any(thermal_faces.and.(.not.ieee_is_finite(wall_t).or.wall_t<=0))) return
     max_rate=0.0_dp
     do k=1,n(3)
       do j=1,n(2)
@@ -1944,9 +2316,10 @@ contains
             a=(face+1)/2
             if (modulo(face,2)==1.and.idx(a)/=1) cycle
             if (modulo(face,2)==0.and.idx(a)/=n(a)) cycle
-            if (faces(face)/='isothermal_wall') cycle
+            if (.not.thermal_faces(face)) cycle
+            if(allocated(held_cell)) held_cell=internal_energy_density(i,j,k)
             call wall_heat_transfer_3d(species,transport,u(:,i,j,k),t(i,j,k),wall_t(face), &
-              spacing(a),heat,rate,ok)
+              spacing(a),heat,rate,ok,constant_coefficients,held_cell)
             if (.not.ok) return
             call checked_sum(cell_rate,rate,value,ok)
             if (.not.ok) return
@@ -1967,9 +2340,15 @@ contains
   ! species donor budgets. Only physical face fluxes enter the update.
   subroutine physical_transport_fluxes_3d(species,transport,u,t,n,spacing,dt,faces, &
       viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients,internal_energy_density,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_faces(6)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held_ghost(:,:,:)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),spacing(3),dt
@@ -1981,7 +2360,12 @@ contains
     real(dp), allocatable :: ghost(:,:,:,:),gt(:,:,:)
     integer :: dims(3),nv
     ok=.false.
-    if (any(faces=='isothermal_wall')) then
+    thermal_faces=faces=='isothermal_wall'
+    if(present(isothermal_slip_faces)) then
+      if(any(isothermal_slip_faces.and.faces/='slip_wall')) return
+      thermal_faces=thermal_faces.or.isothermal_slip_faces
+    endif
+    if (any(thermal_faces)) then
       if (.not.conduction.or..not.present(wall_temperature)) return
       if (size(wall_temperature)/=6) return
     end if
@@ -1989,26 +2373,41 @@ contains
       if (.not.viscosity.and.any(abs(wall_velocity)>0.0_dp)) return
     end if
     dims=n+4; nv=size(u,1)
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      if(.not.all(ieee_is_finite(internal_energy_density))) return
+      allocate(held_ghost(dims(1),dims(2),dims(3)))
+    endif
     allocate(ghost(nv,dims(1),dims(2),dims(3)),gt(dims(1),dims(2),dims(3)))
     if(present(inflow_pressure).and..not.present(inflow_mach)) return
     if(present(inflow_mach)) then
       call fill_mach_inlet_boundary_ghosts_3d(species,u,t,faces,inflow_mach,ghost,gt,ok, &
         inflow_state=inflow_state,inflow_temperature=inflow_temperature,inflow_pressure=inflow_pressure, &
-        viscous_wall=.true.,wall_velocity=wall_velocity)
+        viscous_wall=.true.,wall_velocity=wall_velocity, &
+        internal_energy_density=internal_energy_density,internal_energy_ghost=held_ghost)
     else
     call fill_reactive_boundary_ghosts_3d(u,t,faces,ghost,gt,ok,viscous_wall=.true., &
-      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity)
+      inflow_state=inflow_state,inflow_temperature=inflow_temperature,wall_velocity=wall_velocity, &
+      internal_energy_density=internal_energy_density,internal_energy_ghost=held_ghost)
     end if
     if (.not.ok) return
-    call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,ok)
+    call fill_pressure_outlet_ghosts_3d(species,n,faces,outlet_pressure,ghost,gt,ok,internal_energy_ghost=held_ghost)
     if(.not.ok) return
     call physical_transport_ghosted_fluxes_3d(species,transport,u,t,ghost,gt,n,spacing,dt,faces, &
-      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok,wall_temperature,wall_velocity)
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok,wall_temperature,wall_velocity,constant_coefficients, &
+      internal_energy_density=internal_energy_density,internal_energy_ghost=held_ghost, &
+      isothermal_slip_faces=isothermal_slip_faces)
   end subroutine
 
   ! Caller supplies two valid layers, including neighbor donor budgets.
   subroutine physical_transport_ghosted_fluxes_3d(species,transport,u,t,ghost,gt,n,spacing,dt,faces, &
-      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok,wall_temperature,wall_velocity)
+      viscosity,conduction,diffusion,barodiffusion,fx,fy,fz,theta,ok,wall_temperature,wall_velocity,constant_coefficients, &
+      internal_energy_density,internal_energy_ghost,isothermal_slip_faces)
+    logical, optional, intent(in) :: isothermal_slip_faces(6)
+    logical :: thermal_faces(6)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:),internal_energy_ghost(:,:,:)
+    real(dp), allocatable :: held_cell
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: u(:,:,:,:),t(:,:,:),ghost(:,:,:,:),gt(:,:,:),spacing(3),dt
@@ -2023,12 +2422,23 @@ contains
     integer :: dims(3),face,a,i,j,k,idx(3),wall_index
     ok=.false.;theta=1
     dims=n+4
+    if(present(internal_energy_density).neqv.present(internal_energy_ghost)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n).or.any(shape(internal_energy_ghost)/=dims)) return
+      if(.not.all(ieee_is_finite(internal_energy_density)).or..not.all(ieee_is_finite(internal_energy_ghost))) return
+      allocate(held_cell)
+    endif
     if (any(n<1).or.any(shape(u)/=[size(species)+5,n]).or.any(shape(t)/=n)) return
     if (any(shape(ghost)/=[size(species)+5,dims]).or.any(shape(gt)/=dims)) return
     if (any(shape(fx)/=[size(species)+5,n(1)+1,n(2),n(3)])) return
     if (any(shape(fy)/=[size(species)+5,n(1),n(2)+1,n(3)])) return
     if (any(shape(fz)/=[size(species)+5,n(1),n(2),n(3)+1])) return
-    if (any(faces=='isothermal_wall')) then
+    thermal_faces=faces=='isothermal_wall'
+    if(present(isothermal_slip_faces)) then
+      if(any(isothermal_slip_faces.and.faces/='slip_wall')) return
+      thermal_faces=thermal_faces.or.isothermal_slip_faces
+    endif
+    if (any(thermal_faces)) then
       if (.not.conduction.or..not.present(wall_temperature)) return
       if (size(wall_temperature)/=6) return
     end if
@@ -2038,14 +2448,15 @@ contains
     end if
     allocate(gx,mold=ghost);allocate(gy,mold=ghost);allocate(gz,mold=ghost)
     call reactive_transport_fluxes_3d(species,transport,ghost,gt,dims(1),dims(2),dims(3), &
-      spacing(1),spacing(2),spacing(3),dt,viscosity,conduction,diffusion,barodiffusion,gx,gy,gz,theta,ok)
+      spacing(1),spacing(2),spacing(3),dt,viscosity,conduction,diffusion,barodiffusion,gx,gy,gz,theta,ok, &
+      constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_ghost)
     if (.not.ok) return
     fx=gx(:,2:n(1)+2,3:n(2)+2,3:n(3)+2)
     fy=gy(:,3:n(1)+2,2:n(2)+2,3:n(3)+2)
     fz=gz(:,3:n(1)+2,3:n(2)+2,2:n(3)+2)
     ! Wall energy flux is viscous traction dot wall velocity plus conduction.
     ! Direct thermal flux avoids nonphysical extrapolated ghost temperatures.
-    if (any(faces=='isothermal_wall').or.present(wall_velocity)) then
+    if (any(thermal_faces).or.present(wall_velocity)) then
       do k=1,n(3)
         do j=1,n(2)
           do i=1,n(1)
@@ -2055,11 +2466,12 @@ contains
               if (modulo(face,2)==1.and.idx(a)/=1) cycle
               if (modulo(face,2)==0.and.idx(a)/=n(a)) cycle
               wall_index=merge(0,n(a),modulo(face,2)==1)
-              if (faces(face)/='isothermal_wall'.and.faces(face)/='no_slip_wall') cycle
+              if (.not.thermal_faces(face).and.faces(face)/='no_slip_wall') cycle
               heat=0.0_dp
-              if (faces(face)=='isothermal_wall') then
+              if (thermal_faces(face)) then
+                if(allocated(held_cell)) held_cell=internal_energy_density(i,j,k)
                 call wall_heat_transfer_3d(species,transport,u(:,i,j,k),t(i,j,k),wall_temperature(face), &
-                  spacing(a),heat,rate,ok)
+                  spacing(a),heat,rate,ok,constant_coefficients,held_cell)
                 if (.not.ok) return
                 if (modulo(face,2)==0) heat=-heat
               end if
@@ -2141,7 +2553,9 @@ contains
       dx, dy, dz, dt, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, output_state, &
       output_temperature, minimum_theta, ok, boundary_faces, boundary_change, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     type(nasa7_species), intent(in) :: species(:)
@@ -2175,6 +2589,9 @@ contains
     output_temperature = 0.0_dp
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     nvar = reactive_nvar(size(species))
     faces='periodic'
     if (present(boundary_faces)) faces=boundary_faces
@@ -2214,7 +2631,8 @@ contains
       call physical_transport_fluxes_3d(species,transport,input_state,input_temperature,[nx,ny,nz], &
         [dx,dy,dz],dt,faces,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled, &
         barodiffusion_enabled,flux_x,flux_y,flux_z,minimum_theta,local_ok, &
-        inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+        inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+        constant_coefficients=constant_coefficients)
     else
       allocate(flux_x(nvar, nx, ny, nz), flux_y(nvar, nx, ny, nz))
       allocate(flux_z(nvar, nx, ny, nz))
@@ -2222,7 +2640,8 @@ contains
         species, transport, input_state, input_temperature, nx, ny, nz, &
         dx, dy, dz, dt, viscosity_enabled, thermal_conduction_enabled, &
         species_diffusion_enabled, barodiffusion_enabled, &
-        flux_x, flux_y, flux_z, minimum_theta, local_ok)
+        flux_x, flux_y, flux_z, minimum_theta, local_ok, &
+        constant_coefficients=constant_coefficients)
     end if
     if (.not. local_ok) then
       call reset_transport_euler_outputs_3d( &
@@ -2384,7 +2803,9 @@ contains
       species, transport, state, temperature, nx, ny, nz, dx, dy, dz, &
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, minimum_theta, ok, boundary_faces, boundary_change, &
-      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      inflow_state,inflow_temperature,wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     real(dp), intent(in), optional :: inflow_state(:,:),inflow_temperature(:),wall_temperature(:),wall_velocity(:,:)
     real(dp), optional, intent(in) :: outlet_pressure(6),inflow_mach(6),inflow_pressure(6)
     type(nasa7_species), intent(in) :: species(:)
@@ -2416,6 +2837,9 @@ contains
 
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     nvar = reactive_nvar(size(species))
     if (present(boundary_change)) then
       boundary_change=0.0_dp
@@ -2456,14 +2880,16 @@ contains
       dx, dy, dz, interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, stage_state, &
       stage_temperature, theta1, local_ok, boundary_faces, change1, inflow_state, inflow_temperature, &
-      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients=constant_coefficients)
     if (.not. local_ok) return
     call reactive_transport_euler_update_3d( &
       species, transport, stage_state, stage_temperature, nx, ny, nz, &
       dx, dy, dz, interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, euler_state, &
       euler_temperature, theta2, local_ok, boundary_faces, change2, inflow_state, inflow_temperature, &
-      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure)
+      wall_temperature,wall_velocity,outlet_pressure,inflow_mach,inflow_pressure, &
+      constant_coefficients=constant_coefficients)
     if (.not. local_ok) return
     if (.not. all(ieee_is_finite(stage_state)) .or. &
         .not. all(ieee_is_finite(stage_temperature)) .or. &

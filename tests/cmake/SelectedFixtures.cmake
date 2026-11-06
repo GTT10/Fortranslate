@@ -239,6 +239,139 @@ add_test(NAME regression_selected_eb_tree_3d
 set_tests_properties(regression_selected_eb_tree_3d PROPERTIES TIMEOUT 180)
 
 if(PELEF_ENABLE_MPI)
+  add_test(NAME regression_selected_eb_tree_stop_roundoff
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_stop_roundoff.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_stop_roundoff")
+  set_tests_properties(regression_selected_eb_tree_stop_roundoff
+    PROPERTIES PROCESSORS 3 TIMEOUT 240 LABELS "amr;eb;application;restart")
+  add_test(NAME regression_selected_eb_tree_mol_cell_trace
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_mol_cell_trace.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_mol_cell_trace")
+  set_tests_properties(regression_selected_eb_tree_mol_cell_trace
+    PROPERTIES PROCESSORS 2 TIMEOUT 180 LABELS "amr;eb;application;diagnostics")
+  add_test(NAME regression_selected_eb_tree_initial_state
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_initial_state.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_initial_state")
+  set_tests_properties(regression_selected_eb_tree_initial_state
+    PROPERTIES PROCESSORS 3 TIMEOUT 180 LABELS "amr;eb;application;initialization")
+  if(PELEF_ENABLE_SUNDIALS)
+    add_test(NAME regression_selected_eb_tree_hot_cvode_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_hot_cvode_restart" --hot-cvode)
+    set_tests_properties(regression_selected_eb_tree_hot_cvode_restart
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application")
+    add_test(NAME regression_selected_eb_tree_full_cvode_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_full_cvode_restart" --full-cvode)
+    set_tests_properties(regression_selected_eb_tree_full_cvode_restart
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application")
+    add_test(NAME regression_selected_eb_tree_converged_cvode_restart
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_converged_cvode_restart"
+        --hot-cvode --pinned-eos-convergence)
+    set_tests_properties(regression_selected_eb_tree_converged_cvode_restart
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;eos")
+    add_test(NAME regression_selected_eb_tree_pressure_restart_common
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_pressure_restart_common"
+        --hot-cvode --pinned-eos-convergence --paired-pressure)
+    set_tests_properties(regression_selected_eb_tree_pressure_restart_common
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;pressure")
+add_test(NAME regression_selected_eb_tree_pressure_restart_recursive
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_pressure_restart_recursive"
+        --hot-cvode --pinned-eos-convergence --paired-pressure --subcycling)
+    set_tests_properties(regression_selected_eb_tree_pressure_restart_recursive
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;pressure")
+    add_test(NAME regression_selected_eb_tree_connected_restart_common
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_connected_restart_common"
+        --hot-cvode --pinned-eos-convergence --paired-pressure --connected-directions)
+    set_tests_properties(regression_selected_eb_tree_connected_restart_common
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;connected")
+add_test(NAME regression_selected_eb_tree_connected_restart_recursive
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_connected_restart_recursive"
+        --hot-cvode --pinned-eos-convergence --paired-pressure --connected-directions --subcycling)
+    set_tests_properties(regression_selected_eb_tree_connected_restart_recursive
+      PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;connected")
+    foreach(momentum_clock IN ITEMS common recursive)
+      set(momentum_clock_args)
+      if(momentum_clock STREQUAL "recursive")
+        list(APPEND momentum_clock_args --subcycling)
+      endif()
+      add_test(NAME regression_selected_eb_tree_momentum_restart_${momentum_clock}
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+          --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+          --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+          --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_momentum_restart_${momentum_clock}"
+          --hot-cvode --pinned-eos-convergence --separate-momentum ${momentum_clock_args})
+      set_tests_properties(regression_selected_eb_tree_momentum_restart_${momentum_clock}
+        PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;momentum")
+      add_test(NAME regression_selected_eb_tree_velocity_restart_${momentum_clock}
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+          --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+          --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+          --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_velocity_restart_${momentum_clock}"
+          --hot-cvode --pinned-eos-convergence --consistent-velocity ${momentum_clock_args})
+      set_tests_properties(regression_selected_eb_tree_velocity_restart_${momentum_clock}
+        PROPERTIES PROCESSORS 3 TIMEOUT 300 LABELS "chemistry;cvode;amr;eb;restart;application;velocity")
+    endforeach()
+  endif()
+  foreach(reacting_clock IN ITEMS common recursive)
+    set(reacting_clock_args)
+    if(reacting_clock STREQUAL "recursive")
+      list(APPEND reacting_clock_args --subcycling)
+    endif()
+    add_test(NAME regression_selected_eb_tree_reacting_restart_${reacting_clock}
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_reacting_restart.py"
+        --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+        --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+        --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_reacting_restart_${reacting_clock}"
+        ${reacting_clock_args})
+    set_tests_properties(regression_selected_eb_tree_reacting_restart_${reacting_clock}
+      PROPERTIES PROCESSORS 3 TIMEOUT 900 LABELS "chemistry;amr;eb;restart;application")
+  endforeach()
+  add_test(NAME regression_selected_eb_tree_held_application
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_held_app.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_held_application" --selected --chemistry --subcycling)
+  set_tests_properties(regression_selected_eb_tree_held_application PROPERTIES PROCESSORS 3 TIMEOUT 600)
+  add_test(NAME regression_selected_eb_tree_godunov_held_application
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_held_app.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_godunov_held_application"
+      --selected --godunov --chemistry --iterations 2 --state-redist --transport-off)
+  set_tests_properties(regression_selected_eb_tree_godunov_held_application PROPERTIES PROCESSORS 3 TIMEOUT 600)
+  add_test(NAME regression_selected_eb_tree_godunov_held_recursive_smoke
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/application/check_eb_tree_held_app.py"
+      --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
+      --mpi "$<TARGET_FILE:test_selected_full_mpi_reactive_eb_tree_3d>" --mpiexec "${MPIEXEC_EXECUTABLE}"
+      --work "${CMAKE_CURRENT_BINARY_DIR}/selected_eb_tree_godunov_held_recursive_smoke"
+      --selected --godunov --chemistry --iterations 2 --state-redist --transport-off --subcycling --smoke-only)
+  set_tests_properties(regression_selected_eb_tree_godunov_held_recursive_smoke PROPERTIES TIMEOUT 180)
   add_test(NAME regression_selected_mpi_eb_tree_3d
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/check_mpi_eb_tree_application_3d.py"
       --serial "$<TARGET_FILE:test_selected_full_reactive_eb_tree_3d>"
@@ -263,3 +396,57 @@ add_test(NAME regression_amr_tree_mach_restart_3d
     --case-dir "${PROJECT_SOURCE_DIR}/cases/amr_tree_reactive_3d"
     --work-dir "${CMAKE_CURRENT_BINARY_DIR}/amr_tree_mach_restart_3d" --mach-inlet --subcycling)
 set_tests_properties(regression_amr_tree_mach_restart_3d PROPERTIES TIMEOUT 300)
+# Small executable for importing pinned reference states into the production
+# tree integrator. External plotfiles are supplied explicitly, not fetched by CI.
+add_executable(test_amr_tree_mol_reference
+  "${PROJECT_SOURCE_DIR}/tools/reference_probes/amr_tree_mol_probe.F90"
+  "${PROJECT_SOURCE_DIR}/src/physics/thermo_database_mod.F90")
+set_target_properties(test_amr_tree_mol_reference PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/amr_mol_reference_modules")
+target_link_libraries(test_amr_tree_mol_reference PRIVATE pelef_selected_amr_tree_reactive_3d_runtime)
+
+if(PELEF_ENABLE_SUNDIALS)
+  set(PELEF_TEST_LIDRYER_EB_MPI_OPTION)
+  if(PELEF_ENABLE_MPI)
+    set(PELEF_TEST_LIDRYER_EB_MPI_OPTION
+      MPI_REACTIVE_EB_TREE_3D_NAME test_lidryer_mpi_reactive_eb_tree_3d)
+  endif()
+  pelef_add_mechanism_bundle(
+    NAME lidryer_reference
+    BUNDLE "${PROJECT_SOURCE_DIR}/mechanisms/lidryer.json"
+    SOURCE "${PROJECT_SOURCE_DIR}/mechanisms/lidryer.yaml"
+    PROBE_NAME test_lidryer_reference_bundle
+    REACTIVE_EB_TREE_3D_NAME test_lidryer_reactive_eb_tree_3d
+    ${PELEF_TEST_LIDRYER_EB_MPI_OPTION})
+  add_executable(test_amr_tree_reacting_reference
+    "${PROJECT_SOURCE_DIR}/tools/reference_probes/amr_tree_reacting_probe.F90")
+  target_link_libraries(test_amr_tree_reacting_reference PRIVATE
+    lidryer_reference_mechanism pelef_selected_amr_tree_reactive_3d_runtime pelef_selected_cvode_runtime)
+  if(PELEF_ENABLE_MPI)
+    add_executable(test_mpi_amr_tree_reacting_reference
+      "${PROJECT_SOURCE_DIR}/tools/reference_probes/amr_tree_reacting_probe.F90")
+    target_compile_definitions(test_mpi_amr_tree_reacting_reference PRIVATE PELEF_REFERENCE_MPI)
+    target_link_libraries(test_mpi_amr_tree_reacting_reference PRIVATE lidryer_reference_mechanism
+      pelef_selected_mpi_amr_tree_reactive_3d_runtime pelef_selected_cvode_runtime MPI::MPI_Fortran)
+  endif()
+  add_executable(test_eb_tree_reacting_reference
+    "${PROJECT_SOURCE_DIR}/tools/reference_probes/eb_tree_reacting_probe.F90")
+  target_link_libraries(test_eb_tree_reacting_reference PRIVATE
+    lidryer_reference_mechanism pelef_selected_reactive_eb_3d_runtime pelef_selected_cvode_runtime)
+  if(PELEF_ENABLE_MPI)
+    add_executable(test_eb_tree_initial_reaction unit/test_eb_tree_initial_reaction.F90)
+    target_link_libraries(test_eb_tree_initial_reaction PRIVATE lidryer_reference_mechanism
+      pelef_selected_mpi_eb_tree_3d_runtime MPI::MPI_Fortran)
+    add_test(NAME unit_eb_tree_initial_reaction_3
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_eb_tree_initial_reaction> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_eb_tree_initial_reaction_3 PROPERTIES TIMEOUT 60 PROCESSORS 3)
+    add_executable(test_amr_tree_initial_reaction unit/test_amr_tree_initial_reaction.F90)
+    target_link_libraries(test_amr_tree_initial_reaction PRIVATE lidryer_reference_mechanism
+      pelef_selected_mpi_amr_tree_reactive_3d_runtime MPI::MPI_Fortran)
+    add_test(NAME unit_amr_tree_initial_reaction_3
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_amr_tree_initial_reaction> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_amr_tree_initial_reaction_3 PROPERTIES TIMEOUT 60 PROCESSORS 3)
+  endif()
+endif()

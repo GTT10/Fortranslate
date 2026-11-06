@@ -12,13 +12,13 @@ program test_amr_patch_tree_remap_3d
   implicit none
   type(amr_patch_tree_3d) :: old_tree,new_tree,root_tree,bad_tree
   type(amr_patch_3d) :: old_patches(2),new_patches(3)
-  type(amr_tree_state_3d) :: old,new,saved,sync,old_t,new_t,saved_t,guess,old_ir,new_ir,saved_ir
+  type(amr_tree_state_3d) :: old,new,saved,sync,old_t,new_t,saved_t,guess,old_ir,new_ir,saved_ir,old_heat,new_heat,saved_heat
   type(nasa7_species), allocatable :: species(:)
   integer(int64), allocatable :: origin(:,:),domain(:,:)
   integer, allocatable :: ratios(:)
   real(dp) :: root(2,2,2,2),dense(2,24,24,24),expected(2),before(2),after(2)
   real(dp) :: gas(12,2,2,2),temp(1,2,2,2),q(12),sound,gas_before(12),gas_after(12)
-  real(dp) :: ir_before(8),ir_after(8)
+  real(dp) :: ir_before(8),ir_after(8),heat_before(1),heat_after(1)
   integer :: node,i,j,k,c,n(3),lo(3),hi(3),factor(3)
   logical :: ok
   call initialize_amr_patch_3d(2,2,2,1,1,1,2,1,2,2,old_patches(1),ok)
@@ -122,11 +122,19 @@ program test_amr_patch_tree_remap_3d
   end do
   call composite_integrals_amr_patch_tree_3d(old_tree,old_ir,[.5_dp,.5_dp,.5_dp],ir_before,ok)
   call require(ok,'source inventory')
-  call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,new_tree,species,new,new_t,ok,old_ir,new_ir)
+  old_heat=old_t
+  do node=1,size(old_tree%nodes)
+    old_heat%fields(node)%values=real((-1)**node*node,dp)*1.e9_dp
+  end do
+  call composite_integrals_amr_patch_tree_3d(old_tree,old_heat,[.5_dp,.5_dp,.5_dp],heat_before,ok)
+  call require(ok,'signed heat inventory')
+  call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,new_tree,species,new,new_t,ok,old_ir,new_ir,old_heat,new_heat)
   call require(ok,'reactive remap')
   call composite_integrals_amr_patch_tree_3d(new_tree,new_ir,[.5_dp,.5_dp,.5_dp],ir_after,ok)
   call require(ok.and.maxval(abs(ir_after-ir_before))<2e-12_dp,'signed source conservation')
-  saved_ir=new_ir
+  saved_ir=new_ir;saved_heat=new_heat
+  call composite_integrals_amr_patch_tree_3d(new_tree,new_heat,[.5_dp,.5_dp,.5_dp],heat_after,ok)
+  call require(ok.and.all(abs(heat_after-heat_before)<2e-12_dp*max(1._dp,abs(heat_before))),'heat conservation')
   call composite_integrals_amr_patch_tree_3d(new_tree,new,[.5_dp,.5_dp,.5_dp],gas_after,ok)
   call require(ok.and.maxval(abs(gas_after-gas_before)/max(1.0_dp,abs(gas_before)))<2e-12_dp,'gas conservation')
   call remap_amr_patch_tree_3d(old_tree,old_t,new_tree,guess,ok)
@@ -137,14 +145,61 @@ program test_amr_patch_tree_remap_3d
     call require(maxval(abs(sum(new%fields(node)%values(6:,:,:,:),dim=1)- &
       new%fields(node)%values(1,:,:,:)))<1e-12_dp,'species closure')
   end do
+  call retained_energy_remap()
   saved=new;saved_t=new_t
   old%fields(3)%values(5,:,:,:)=-1e12_dp
-  call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,new_tree,species,new,new_t,ok,old_ir,new_ir)
+  call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,new_tree,species,new,new_t,ok,old_ir,new_ir,old_heat,new_heat)
   call require(.not.ok,'nonphysical candidate rejection')
   call same(new,saved,'reactive rollback')
   call same(new_t,saved_t,'temperature rollback')
   call same(new_ir,saved_ir,'source rollback after EOS failure')
+  call same(new_heat,saved_heat,'heat rollback after EOS failure')
 contains
+  subroutine retained_energy_remap()
+    type(amr_tree_state_3d) :: held,actual,expected_held,gas_out,t_out,keep_gas,keep_t,keep_held
+    type(amr_patch_tree_3d) :: target
+    real(dp) :: initial(1),final(1)
+    integer :: peer,geometry
+    held=old_t
+    do peer=1,size(old_tree%nodes)
+      held%fields(peer)%values(1,:,:,:)=.8_dp*old%fields(peer)%values(5,:,:,:)
+    enddo
+    call composite_integrals_amr_patch_tree_3d(old_tree,held,[.5_dp,.5_dp,.5_dp],initial,ok)
+    call require(ok,'retained initial inventory')
+    do geometry=1,3
+      target=new_tree
+      if(geometry==2) target=root_tree
+      if(geometry==3) target=old_tree
+      call remap_amr_patch_tree_3d(old_tree,held,target,expected_held,ok)
+      call require(ok,'retained geometric oracle')
+      call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,target,species,gas_out,t_out,ok, &
+        old_internal_energy=held,internal_energy=actual)
+      call require(ok,'retained reactive remap')
+      call same(actual,expected_held,'retained conservative overlap')
+      call composite_integrals_amr_patch_tree_3d(target,actual,[.5_dp,.5_dp,.5_dp],final,ok)
+      call require(ok.and.all(abs(final-initial)<2e-12_dp*max(1._dp,abs(initial))),'retained scalar conservation')
+      keep_gas=gas_out;keep_t=t_out;keep_held=actual
+      call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,target,species,gas_out,t_out,ok)
+      call require(ok,'legacy remap oracle')
+      call same(gas_out,keep_gas,'retained remap preserves total energy')
+      call require(maxval(abs(t_out%fields(1)%values-keep_t%fields(1)%values))>1._dp, &
+        'retained EOS uses independent scalar')
+      t_out=keep_t
+      held%fields(3)%values=-1e12_dp
+      call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,target,species,gas_out,t_out,ok, &
+        old_internal_energy=held,internal_energy=actual)
+      call require(.not.ok,'retained late EOS rejection')
+      call same(gas_out,keep_gas,'retained gas rollback')
+      call same(t_out,keep_t,'retained temperature rollback')
+      call same(actual,keep_held,'retained scalar rollback')
+      held%fields(3)%values(1,:,:,:)=.8_dp*old%fields(3)%values(5,:,:,:)
+      call remap_amr_patch_tree_reactive_3d(old_tree,old,old_t,target,species,gas_out,t_out,ok, &
+        old_internal_energy=held)
+      call require(.not.ok,'retained paired output required')
+      call same(gas_out,keep_gas,'retained presence rollback')
+    enddo
+  end subroutine retained_energy_remap
+
   subroutine overflow_rejection()
     type(amr_patch_tree_3d) :: binary,ternary
     type(amr_patch_3d) :: p2(39),p3(23)

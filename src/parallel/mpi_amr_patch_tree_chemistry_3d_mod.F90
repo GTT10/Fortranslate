@@ -1,4 +1,5 @@
 module mpi_amr_patch_tree_chemistry_3d_mod
+  use, intrinsic :: iso_fortran_env, only: int64
   use mpi_amr_tree_work_mod, only: tree_work_start,tree_work_stop
   use mpi_f08
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -7,8 +8,9 @@ module mpi_amr_patch_tree_chemistry_3d_mod
   use nasa7_thermo_mod, only: nasa7_species
   use elementary_kinetics_mod, only: elementary_reaction
   use reactive_1d_mod, only: reactive_nvar
+  use rotating_frame_3d_mod, only: rotating_frame_3d,rotating_potential_3d
   use reactive_3d_mod, only: advance_reactive_chemistry_3d,react_sdc_state_3d
-  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d
+  use amr_patch_tree_3d_mod, only: amr_patch_tree_3d,amr_tree_state_3d,amr_tree_integer_layout_3d
   use mpi_amr_patch_tree_hydro_3d_mod, only: advance_mpi_amr_tree_hydro_3d
   use mpi_amr_patch_tree_cells_3d_mod, only: validate_mpi_amr_tree_local_3d
   use mpi_amr_patch_tree_restriction_3d_mod, only: average_down_mpi_amr_tree_3d
@@ -17,9 +19,78 @@ module mpi_amr_patch_tree_chemistry_3d_mod
   private
   public :: advance_mpi_amr_tree_chemistry_3d,advance_mpi_amr_tree_strang_3d,clone_mpi_amr_tree_inputs_3d
   public :: react_sdc_mpi_amr_tree_3d
+  public :: initialize_mpi_amr_tree_reaction_source_3d
 contains
+  ! Owner-local counterpart of the serial fresh-start initializer. No public
+  ! field is published until every level and rank accepts the complete trial.
+  subroutine initialize_mpi_amr_tree_reaction_source_3d(tree,owners,species,reactions,state,temperature,dt,subcycling, &
+      rtol,atol,reaction_source,comm,ok,evaluate_reaction,internal_energy,frame,domain_lower,root_spacing)
+    type(amr_patch_tree_3d), intent(in) :: tree
+    integer, intent(in) :: owners(:)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    type(amr_tree_state_3d), intent(in) :: state,temperature
+    real(dp), intent(in) :: dt,rtol,atol
+    logical, intent(in) :: subcycling
+    type(amr_tree_state_3d), intent(inout) :: reaction_source
+    type(MPI_Comm), intent(in) :: comm
+    logical, intent(out) :: ok
+    procedure(forced_reactor_integrator), optional :: evaluate_reaction
+    type(amr_tree_state_3d), optional, intent(in) :: internal_energy
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3),root_spacing(3)
+    type(amr_tree_state_3d) :: candidate,temps,rates,sources
+    type(amr_tree_state_3d), allocatable :: held
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    integer :: node,depth,nv,rank,status,mode,low,high
+    real(dp) :: level_dt
+    logical :: valid
+    ok=.false.;nv=reactive_nvar(size(species));mode=merge(1,0,subcycling)
+    call MPI_Allreduce(mode,low,1,MPI_INTEGER,MPI_MIN,comm,status)
+    if(status/=MPI_SUCCESS) return
+    call MPI_Allreduce(mode,high,1,MPI_INTEGER,MPI_MAX,comm,status)
+    if(status/=MPI_SUCCESS.or.low/=high) return
+    call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),state,temperature,candidate,temps,comm,rank,valid)
+    if(.not.valid) return
+    call validate_mpi_amr_tree_local_3d(tree,owners,reaction_source,nv-4,comm,valid)
+    if(.not.valid) return
+    call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+    call agree(comm,valid)
+    if(.not.valid) return
+    rates=state;sources=reaction_source
+    if(present(internal_energy)) then
+      allocate(held);held=internal_energy
+    endif
+    do node=1,size(tree%nodes)
+      if(owners(node)/=rank) cycle
+      rates%fields(node)%values=0;sources%fields(node)%values=0
+    enddo
+    level_dt=dt
+    do depth=0,tree%level_count()-1
+      call react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,state,temperature,rates,level_dt,rtol,atol, &
+        candidate,temps,sources,comm,valid,target_depth=depth,evaluate_reaction=evaluate_reaction, &
+        internal_energy=held,old_internal_energy=internal_energy,frame=frame, &
+        domain_lower=domain_lower,root_spacing=root_spacing)
+      if(.not.valid) return
+      if(depth==0) then
+        call average_down_mpi_amr_tree_3d(tree,owners,sources,nv-4,comm,valid)
+        if(.not.valid) return
+      endif
+      if(subcycling.and.depth<tree%level_count()-1) level_dt=level_dt/real(ratios(depth+2),dp)
+    enddo
+    call move_alloc(sources%fields,reaction_source%fields);ok=.true.
+  end subroutine initialize_mpi_amr_tree_reaction_source_3d
+
   subroutine react_sdc_mpi_amr_tree_3d(tree,owners,species,reactions,old_state,old_temperature,nonreacting_rates, &
-      dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth,evaluate_reaction)
+      dt,rtol,atol,state,temperature,reaction_source,comm,ok,target_depth,evaluate_reaction,heat_release,internal_energy, &
+      frame,domain_lower,root_spacing,old_internal_energy)
+    type(amr_tree_state_3d), optional, intent(in) :: old_internal_energy
+    type(rotating_frame_3d), optional, intent(in) :: frame
+    real(dp), optional, intent(in) :: domain_lower(3),root_spacing(3)
+    type(amr_tree_state_3d), optional, intent(inout) :: heat_release
+    type(amr_tree_state_3d), optional, intent(inout) :: internal_energy
+    type(amr_tree_state_3d), allocatable :: heat,auxiliary
     procedure(forced_reactor_integrator), optional :: evaluate_reaction
     type(amr_patch_tree_3d), intent(in) :: tree
     integer, intent(in) :: owners(:)
@@ -33,10 +104,31 @@ contains
     integer, optional, intent(in) :: target_depth
     type(amr_tree_state_3d) :: candidate,temps,sources
     real(dp) :: controls(3),low(3),high(3),work_stamp
-    integer :: rank,status,ios,node,n(3),nv,depth,counts(4),min_counts(4),max_counts(4)
+    integer(int64), allocatable :: origin(:,:),domain(:,:)
+    integer, allocatable :: ratios(:)
+    real(dp), allocatable :: frame_h(:,:),node_potential(:,:,:)
+    real(dp) :: position(3)
+    integer :: rank,status,ios,node,n(3),nv,depth,counts(7),min_counts(7),max_counts(7),i,j,k
     logical :: valid
+    real(dp), allocatable :: node_heat(:,:,:),node_auxiliary(:,:,:),node_old_auxiliary(:,:,:)
+    integer :: heat_supplied,heat_min,heat_max,heat_status
     ok=.false.;controls=[dt,rtol,atol];depth=-1;nv=reactive_nvar(size(species))
+    heat_supplied=merge(1,0,present(heat_release))
+    call MPI_Allreduce(heat_supplied,heat_min,1,MPI_INTEGER,MPI_MIN,comm,heat_status)
+    if(heat_status/=MPI_SUCCESS) return
+    call MPI_Allreduce(heat_supplied,heat_max,1,MPI_INTEGER,MPI_MAX,comm,heat_status)
+    if(heat_status/=MPI_SUCCESS.or.heat_min/=heat_max) return
     valid=all(ieee_is_finite(controls)).and.min(dt,rtol,atol)>0
+    valid=valid.and.(present(frame).eqv.present(domain_lower))
+    if(present(frame)) then
+      valid=valid.and.present(root_spacing)
+      valid=valid.and.frame%is_valid()
+      if(present(domain_lower)) valid=valid.and.all(ieee_is_finite(domain_lower))
+      if(present(root_spacing)) then
+        valid=valid.and.all(ieee_is_finite(root_spacing))
+        valid=valid.and.all(root_spacing>0)
+      endif
+    endif
     if(present(target_depth)) then
       depth=target_depth
       if(depth<0) valid=.false.
@@ -48,12 +140,36 @@ contains
     call MPI_Allreduce(controls,high,3,MPI_DOUBLE_PRECISION,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(low/=high)) return
-    counts=[size(species),size(reactions),depth,merge(1,0,present(evaluate_reaction))]
-    call MPI_Allreduce(counts,min_counts,4,MPI_INTEGER,MPI_MIN,comm,status)
+    counts=[size(species),size(reactions),depth,merge(1,0,present(evaluate_reaction)), &
+      merge(1,0,present(internal_energy)),merge(1,0,present(frame)),merge(1,0,present(old_internal_energy))]
+    call MPI_Allreduce(counts,min_counts,size(counts),MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
-    call MPI_Allreduce(counts,max_counts,4,MPI_INTEGER,MPI_MAX,comm,status)
+    call MPI_Allreduce(counts,max_counts,size(counts),MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS) return
     if(any(min_counts/=max_counts)) return
+    if(present(old_internal_energy)) then
+      if(.not.present(internal_energy)) return
+      call validate_mpi_amr_tree_local_3d(tree,owners,old_internal_energy,1,comm,valid)
+      if(.not.valid) return
+      call MPI_Comm_rank(comm,rank,status)
+      if(status/=MPI_SUCCESS) return
+      do node=1,size(tree%nodes)
+        if(owners(node)/=rank) cycle
+        if(.not.all(ieee_is_finite(old_internal_energy%fields(node)%values))) valid=.false.
+      enddo
+      call agree(comm,valid)
+      if(.not.valid) return
+    endif
+    if(present(frame)) then
+      call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
+      call agree(comm,valid)
+      if(.not.valid) return
+      allocate(frame_h(3,size(tree%nodes)))
+      frame_h(:,1)=root_spacing
+      do node=2,size(tree%nodes)
+        frame_h(:,node)=frame_h(:,tree%nodes(node)%parent)/real(tree%nodes(node)%patch%refinement_ratio,dp)
+      enddo
+    endif
     call clone_mpi_amr_tree_inputs_3d(tree,owners,size(species),old_state,old_temperature, &
       candidate,temps,comm,rank,valid)
     if(.not.valid) return
@@ -90,21 +206,74 @@ contains
     if(.not.valid) return
     ! All valid cells participate, including covered parents. Synchronization
     ! belongs to the SDC driver, after hydro/transport and child intervals.
+    if(present(heat_release)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,heat_release,1,comm,valid)
+      if(.not.valid) return
+      allocate(heat);heat=heat_release
+    endif
+    if(present(internal_energy)) then
+      call validate_mpi_amr_tree_local_3d(tree,owners,internal_energy,1,comm,valid)
+      if(.not.valid) return
+      do node=1,size(tree%nodes)
+        if(owners(node)/=rank) cycle
+        valid=valid.and.all(ieee_is_finite(internal_energy%fields(node)%values))
+      enddo
+      call agree(comm,valid)
+      if(.not.valid) return
+      allocate(auxiliary);auxiliary=internal_energy
+    endif
     do node=1,size(tree%nodes)
       if(owners(node)/=rank) cycle
       if(depth>=0.and.tree%nodes(node)%level/=depth) cycle
+      n=tree%nodes(node)%shape
       work_stamp=tree_work_start()
+      if(present(heat_release)) allocate(node_heat(n(1),n(2),n(3)),source=0._dp)
+      if(present(internal_energy)) allocate(node_auxiliary(n(1),n(2),n(3)),source=0._dp)
+      if(present(old_internal_energy)) &
+        allocate(node_old_auxiliary,source=old_internal_energy%fields(node)%values(1,:,:,:))
+      if(present(frame)) then
+        allocate(node_potential(n(1),n(2),n(3)))
+        do k=1,n(3)
+        do j=1,n(2)
+        do i=1,n(1)
+          position=domain_lower+(real(origin(:,node),dp)+real([i,j,k],dp)-.5_dp)*frame_h(:,node)
+          call rotating_potential_3d(frame,position,node_potential(i,j,k),valid)
+          if(.not.valid) exit
+        enddo
+        if(.not.valid) exit
+        enddo
+        if(.not.valid) exit
+        enddo
+        if(.not.valid) then
+          call tree_work_stop(node,work_stamp)
+          exit
+        endif
+      endif
       call react_sdc_state_3d(species,reactions,old_state%fields(node)%values, &
         old_temperature%fields(node)%values(1,:,:,:),nonreacting_rates%fields(node)%values,dt,rtol,atol, &
-        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid,evaluate_reaction)
+        candidate%fields(node)%values,temps%fields(node)%values(1,:,:,:),sources%fields(node)%values,valid,evaluate_reaction, &
+          heat_release=node_heat,internal_energy_density=node_auxiliary,rotating_potential=node_potential, &
+          old_internal_energy_density=node_old_auxiliary)
       call tree_work_stop(node,work_stamp)
       if(.not.valid) exit
+      if(allocated(node_potential)) deallocate(node_potential)
+      if(allocated(node_old_auxiliary)) deallocate(node_old_auxiliary)
+      if(present(internal_energy)) then
+        auxiliary%fields(node)%values(1,:,:,:)=node_auxiliary
+        deallocate(node_auxiliary)
+      endif
+      if(present(heat_release)) then
+        heat%fields(node)%values(1,:,:,:)=node_heat
+        deallocate(node_heat)
+      endif
     end do
     call agree(comm,valid)
     if(.not.valid) return
     call move_alloc(candidate%fields,state%fields)
     call move_alloc(temps%fields,temperature%fields)
     call move_alloc(sources%fields,reaction_source%fields)
+    if(present(internal_energy)) internal_energy=auxiliary
+    if(present(heat_release)) heat_release=heat
     ok=.true.
   end subroutine react_sdc_mpi_amr_tree_3d
 

@@ -1,6 +1,7 @@
 module mpi_reactive_1d_mod
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use mpi_f08
+  use mpi_reactive_eos_policy_mod, only: agree_mpi_reactive_eos_1d
   use precision_mod, only: dp
   use mpi_domain_1d_mod, only: &
     mpi_domain_1d, exchange_periodic_halo_1d
@@ -62,6 +63,11 @@ contains
     call collective_logical_and( &
       domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if
@@ -137,6 +143,11 @@ contains
     call collective_logical_and( &
       domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if
@@ -239,6 +250,11 @@ contains
       ok = .false.
       return
     end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
+      ok = .false.
+      return
+    end if
     call collective_chemistry_integrator_consensus( &
       domain, chemistry_integrator, integrator_consensus_ok)
     if (.not. integrator_consensus_ok) then
@@ -305,6 +321,11 @@ contains
     call collective_logical_and( &
       domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if
@@ -407,6 +428,11 @@ contains
     call collective_logical_and( &
       domain, local_ok, global_ok, reduction_ok)
     if (.not. reduction_ok .or. .not. global_ok) then
+      ok = .false.
+      return
+    end if
+    call agree_mpi_reactive_eos_1d(species, domain%comm, global_ok)
+    if (.not. global_ok) then
       ok = .false.
       return
     end if

@@ -34,10 +34,17 @@ program test_spray_eb_reactive
   character(len=16), parameter :: wall_modes(3)=[character(len=16)::'slip_wall','no_slip_wall','isothermal_wall']
   real(dp) :: ledger(5),interval=1e-8_dp
   real(dp), allocatable :: primitive(:),cell(:),y(:),state(:,:,:,:),saved(:,:,:,:),before(:),after(:),expected(:)
-  integer :: i,j,k,nv,nitrogen,steps
+  integer :: i,j,k,nv,nitrogen,steps,requested_order=0,read_status
+  character(len=16) :: order_argument
   logical :: ok
   allocate(drops(1),masses(2,1))
   call get_command_argument(1,mode)
+  if(command_argument_count()>1) then
+    call get_command_argument(2,order_argument)
+    read(order_argument,*,iostat=read_status) requested_order
+    call require(read_status==0,'order argument')
+    call require(requested_order==0.or.requested_order==2.or.requested_order==4,'supported order argument')
+  end if
   do i=0,4
     phi(i,:,:)=real(i,dp)*.001_dp-.00125_dp
   end do
@@ -94,6 +101,19 @@ program test_spray_eb_reactive
   call require(all(state==saved).and.all(temperature==saved_t).and.all(masses==saved_mass),'gas and composition rollback')
   call require(all(drops(1)%position==saved_drop%position).and.all(boundary==42).and.all(wall==42).and. &
     all(chemical==42).and.theta==42,'particle and wall ledger rollback')
+  ! Invalid reconstruction order rejects before publishing either particle
+  ! half, gas state or its inventory ledgers, for the allocated API as well.
+  solver="rusanov"
+  call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
+    drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
+    2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,state_redist_max_order=1)
+  call require(.not.ok.and.steps==0,'invalid order rejection before coupling')
+  call require(all(state==saved).and.all(temperature==saved_t).and.all(masses==saved_mass), &
+    'invalid order gas temperature and component rollback')
+  call require(all(drops(1)%position==saved_drop%position).and.all(drops(1)%velocity==saved_drop%velocity).and. &
+    drops(1)%mass==saved_drop%mass.and.drops(1)%temperature==saved_drop%temperature.and. &
+    all(boundary==42).and.all(wall==42).and.all(chemical==42).and.theta==42, &
+    'invalid order particle and ledger rollback')
   solver="rusanov"
   if(mode=='ctu') solver='pelec'
   call inventory(before)
@@ -190,20 +210,47 @@ program test_spray_eb_reactive
     call require(.not.ok.and.all(state==saved).and.all(masses==saved_mass).and.all(boundary==42), &
       'invalid wall temperature coupled rollback')
   end if
+  call check_fixed_reactive()
   print *, 'PASS: reactive EB gas and spray composition with atomic ledgers'
 contains
+  subroutine check_fixed_reactive()
+    options%fixed_parts=.true.;options%mixture_time_scheme='euler'
+    state=saved;temperature=saved_t;drops(1)=saved_drop;masses=saved_mass
+    accel=0
+    if(allocated(force)) deallocate(force)
+    call advance()
+    call require(.not.ok.and.all(state==saved).and.all(masses==saved_mass), &
+      'fixed reactive requires constraint ledger')
+    allocate(force(nv));force=46;solver='invalid'
+    call advance()
+    call require(.not.ok.and.all(force==46).and.all(state==saved).and.all(masses==saved_mass), &
+      'fixed reactive whole-step constraint rollback')
+    solver='rusanov';if(mode=='ctu') solver='pelec'
+    accel=[1000._dp,-2000._dp,3000._dp]
+    call inventory(before)
+    call advance()
+    call require(ok,'fixed reactive accepted step with gas body force')
+    call inventory(after)
+    call require(all(abs(after-before-boundary-wall-chemical-force)<= &
+      3e-12_dp*max(abs(before),abs(after),1e-30_dp)),'fixed reactive gas parcel external closure')
+    call require(all(drops(1)%position==saved_drop%position).and.all(drops(1)%velocity==0), &
+      'fixed reactive particle ignores body force and movement')
+    call require(drops(1)%temperature>350.and.drops(1)%mass<saved_drop%mass,'fixed reactive evaporation')
+    options%fixed_parts=.false.
+  end subroutine check_fixed_reactive
   subroutine advance_open()
     call advance_eb_spray_reactive_allocated(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
       2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
       extended_geometry=extended,boundary_faces=faces,inflow_state=inlet,inflow_temperature=inlet_t, &
-      wall_temperature=wall_t)
+      wall_temperature=wall_t,state_redist_max_order=requested_order)
   end subroutine
   subroutine advance()
     call advance_eb_spray_reactive(species,reactions,transport,liquids,options,g,phi,state,temperature, &
       drops,masses,interval,solver,'state_redist',.true.,.true.,.true.,.true.,.true.,.true., &
       2e-7_dp,1e-12_dp,steps,theta,boundary,wall,chemical,ok,chemistry_integrator='implicit', &
-      acceleration=accel,source_change=force,extended_geometry=extended)
+      acceleration=accel,source_change=force,extended_geometry=extended, &
+      state_redist_max_order=requested_order)
   end subroutine
   subroutine inventory(total)
     real(dp), intent(out) :: total(:)

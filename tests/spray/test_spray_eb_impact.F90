@@ -22,7 +22,7 @@ program test_spray_eb_impact
   type(spray_wall_film) :: film
   real(dp), allocatable :: child_mass(:,:)
   real(dp) :: phi(0:2,0:2,0:2),masses(2),film_mass(2),wall(5),fraction,normal(3),previous(3)
-  real(dp) :: y(2),mw(2),rho,cp,e,amount,before(5),after(5),inventory(2),temperature,speed
+  real(dp) :: y(2),mw(2),rho,cp,e,amount,before(5),after(5),inventory(2),temperature,speed,expected_position(3)
   integer :: i,j,k,mode,p,regime
   integer(int64) :: first_id=2_int64
   character(len=16) :: faces(6)
@@ -104,6 +104,42 @@ program test_spray_eb_impact
     end do
     call require(all(abs(after+wall-before)<=1e-12_dp*max(abs(before),1e-20_dp)),'interval budget')
     call require(all(abs(inventory-original%mass*original%multiplicity*y)<1e-23_dp),'interval components')
+    if(mode==2) then
+      population(1)=original;population(1)%position=previous;population_mass(:,1)=original%mass*y
+      watermark=1;options%mixture_time_scheme='euler'
+      call advance_interval(5,1)
+      call require(ok.and.hits==1.and.size(population)==1.and.watermark==1,'Euler EB rebound interval')
+      expected_position=original%position-(1+dot_product(population(1)%velocity,normal)/speed)* &
+        dot_product(original%position-[.5_dp,.5_dp,.5_dp],normal)*normal
+      call require(maxval(abs(population(1)%position-expected_position))<1e-14_dp, &
+        'Euler EB rebound corrects completed endpoint exactly once')
+      options%mixture_time_scheme='conservative'
+    endif
+    if(mode==3) then
+      deallocate(population,population_mass,patches,patch_mass)
+      allocate(population(1),population_mass(2,1),patches(0),patch_mass(2,0))
+      population(1)=original;population(1)%position=previous;population_mass(:,1)=original%mass*y
+      watermark=1;wall=42;hits=43;options%mixture_time_scheme='euler'
+      call advance_interval(5,1)
+      call require(ok.and.hits==1.and.watermark==5.and.size(population)==4,'Euler splash birth interval')
+      do p=1,size(population)
+        call require(maxval(abs(population(p)%position-children(p)%position))<1e-14_dp, &
+          'Euler splash children stay at reference birth position')
+      enddo
+      options%mixture_time_scheme='conservative'
+      parent=original;masses=original%mass*y
+      call impact_mixture_level_set(phi,[0._dp,0._dp,0._dp],[1._dp,1._dp,1._dp],previous,parent, &
+        liquids,masses,options,mw,10000._dp,temperature,0._dp,acos(-1._dp)/3,first_id, &
+        children,child_mass,film,film_mass,wall,fraction,regime,hit,ok)
+      call require(ok.and.hit.and.regime==impact_dry.and.size(children)==4, &
+        'low-pressure EB impact accepts signed critical parameter')
+      inventory=masses*parent%multiplicity+film_mass
+      do p=1,size(children)
+        inventory=inventory+children(p)%multiplicity*child_mass(:,p)
+      enddo
+      call require(all(abs(inventory-original%mass*original%multiplicity*y)<1e-23_dp), &
+        'low-pressure EB impact conserves component inventory')
+    endif
     deallocate(population,population_mass,patches,patch_mass)
   end do
   parent=original;masses=parent%mass*y;parent%position=[.7_dp,.7_dp,.5_dp]

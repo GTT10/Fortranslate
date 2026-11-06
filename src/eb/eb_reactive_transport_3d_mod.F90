@@ -11,11 +11,13 @@ module eb_reactive_transport_3d_mod
   use reactive_transport_3d_mod, only: &
     reactive_transport_face_flux_3d, reactive_transport_timestep_3d,wall_heat_transfer_3d
   use eb_geometry_3d_mod, only: &
-    eb_geometry_3d, eb_covered_cell_3d,periodic_eb_faces_match
+    eb_geometry_3d, eb_covered_cell_3d,periodic_eb_faces_match,extract_eb_geometry_3d
   use eb_reactive_reflux_3d_mod, only: eb_integrated_flux_3d
+  use eb_reactive_wall_flux_3d_mod, only: interpolate_reactive_eb_centroid_fluxes_3d
   use eb_wall_heat_source_3d_mod, only: compute_eb_wall_heat_source_3d
   use eb_reactive_redistribution_3d_mod, only: &
     advance_reactive_eb_state_redistributed_3d
+  use reactive_transport_3d_mod, only: valid_constant_transport_coefficients
   implicit none
   private
 
@@ -38,6 +40,7 @@ module eb_reactive_transport_3d_mod
   public :: reactive_eb_transport_timestep_3d,reactive_eb_transport_patch_timestep_3d
   public :: reactive_eb_transport_fluxes_rhs_3d
   public :: reactive_eb_transport_rhs_3d
+  public :: compute_sdc_eb_transport_halo_3d
   public :: compute_sdc_eb_transport_3d
   public :: reactive_eb_transport_euler_update_3d
   public :: advance_reactive_eb_transport_3d,advance_reactive_eb_transport_patch_euler_3d
@@ -47,7 +50,11 @@ contains
   ! Rates are per fluid volume; exported flux densities include dt, not aperture.
   subroutine compute_sdc_eb_transport_3d(species,transport,state,temperature,geometry,dt,flags, &
       transport_rate,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces,physical_faces,wall_temperature, &
-      embedded_wall_temperature,embedded_wall_energy,embedded_frequency)
+      embedded_wall_temperature,embedded_wall_energy,embedded_frequency,physical_box, &
+      constant_coefficients,internal_energy_density,ghost_internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:),internal_energy_density(:,:,:)
+    real(dp), optional, intent(in) :: ghost_internal_energy_density(0:,0:,0:)
+    integer, optional, intent(in) :: physical_box(3,2)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -68,6 +75,9 @@ contains
     integer :: nv,n(3)
     logical :: valid
     ok=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if(.not.ieee_is_finite(dt)) return
     if(dt<=0.or..not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
     if(present(embedded_wall_temperature).neqv.present(embedded_wall_energy)) return
@@ -79,12 +89,15 @@ contains
     allocate(flux%x(nv,0:n(1),n(2),n(3)),flux%y(nv,n(1),0:n(2),n(3)),flux%z(nv,n(1),n(2),0:n(3)))
     call reactive_eb_transport_fluxes_rhs_3d(species,transport,state,temperature,geometry,dt, &
       flags(1),flags(2),flags(3),flags(4),rhs,flux%x,flux%y,flux%z,theta,valid, &
-      ghost_state,ghost_temperature,faces,physical_faces,wall_temperature)
+      ghost_state,ghost_temperature,faces,physical_faces,wall_temperature,physical_box, &
+          constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_density, &
+          ghost_internal_energy_density=ghost_internal_energy_density)
     if(.not.valid) return
     if(present(embedded_wall_temperature)) then
       allocate(heat(n(1),n(2),n(3)))
       call compute_eb_wall_heat_source_3d(species,transport,state,temperature,geometry,[1,1,1],n, &
-        embedded_wall_temperature,heat,wall_power,wall_frequency,valid)
+        embedded_wall_temperature,heat,wall_power,wall_frequency,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_density)
       if(.not.valid) return
       rhs(iet,:,:,:)=rhs(iet,:,:,:)+heat
       wall_energy=dt*wall_power
@@ -100,9 +113,100 @@ contains
     end if
   end subroutine compute_sdc_eb_transport_3d
 
+  ! Six prepared state/geometry layers permit a grow-3 spatial RHS. Input
+  ! energy is the ordinary inertial energy, as in the existing transport API.
+  ! Physical labels/closed faces apply to the central valid box, while the
+  ! surrounding RHS is computed at this resolution from explicit donors.
+  subroutine compute_sdc_eb_transport_halo_3d(species,transport,state,temperature,geometry,dt,flags, &
+      transport_rate,integrated_flux,spatial_rate_halo,minimum_theta,ok,faces,physical_faces,wall_temperature, &
+      embedded_wall_temperature,embedded_wall_energy,embedded_frequency, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:),internal_energy_density(:,:,:)
+    real(dp), allocatable :: center_held(:,:,:),ghost_held(:,:,:)
+    type(nasa7_species), intent(in) :: species(:)
+    type(gas_transport_species), intent(in) :: transport(:)
+    real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),dt
+    type(eb_geometry_3d), intent(in) :: geometry
+    logical, intent(in) :: flags(4)
+    real(dp), intent(inout) :: transport_rate(:,:,:,:),minimum_theta
+    type(eb_integrated_flux_3d), intent(inout) :: integrated_flux
+    real(dp), allocatable, intent(inout) :: spatial_rate_halo(:,:,:,:)
+    logical, intent(out) :: ok
+    logical, optional, intent(in) :: faces(6)
+    character(len=*), optional, intent(in) :: physical_faces(6)
+    real(dp), optional, intent(in) :: wall_temperature(6),embedded_wall_temperature
+    real(dp), optional, intent(inout) :: embedded_wall_energy,embedded_frequency
+    type(eb_geometry_3d) :: working
+    type(eb_integrated_flux_3d) :: grown_flux,valid_flux
+    real(dp), allocatable :: rhs(:,:,:,:),halo(:,:,:,:),heat(:,:,:),valid_heat(:,:,:)
+    integer :: n(3),valid_n(3),grown(3),window(3,2),nv
+    real(dp) :: theta,power,frequency,ignored_power,ignored_frequency,wall_energy
+    logical :: good
+    ok=.false.;nv=reactive_nvar(size(species));n=[geometry%nx,geometry%ny,geometry%nz]
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
+    valid_n=n-12;grown=n-4
+    if(any(valid_n<1).or..not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
+    if(any(shape(transport_rate)/=[nv,valid_n])) return
+    if(present(embedded_wall_temperature).neqv.present(embedded_wall_energy)) return
+    if(present(embedded_wall_temperature).neqv.present(embedded_frequency)) return
+    if(present(embedded_wall_temperature).and..not.flags(2)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n)) return
+      center_held=internal_energy_density(3:n(1)-2,3:n(2)-2,3:n(3)-2)
+      ghost_held=internal_energy_density(2:n(1)-1,2:n(2)-1,2:n(3)-1)
+    endif
+    call extract_eb_geometry_3d(geometry,[3,3,3],n-2,working,good)
+    if(.not.good) return
+    window(:,1)=5;window(:,2)=valid_n+4
+    allocate(rhs(nv,grown(1),grown(2),grown(3)))
+    call compute_sdc_eb_transport_3d(species,transport,state(:,3:n(1)-2,3:n(2)-2,3:n(3)-2), &
+      temperature(3:n(1)-2,3:n(2)-2,3:n(3)-2),working,dt,flags,rhs,grown_flux,theta,good, &
+      state(:,2:n(1)-1,2:n(2)-1,2:n(3)-1),temperature(2:n(1)-1,2:n(2)-1,2:n(3)-1), &
+      faces,physical_faces,wall_temperature,physical_box=window, &
+          constant_coefficients=constant_coefficients,internal_energy_density=center_held, &
+          ghost_internal_energy_density=ghost_held)
+    if(.not.good) return
+    if(present(embedded_wall_temperature)) then
+      allocate(heat(grown(1),grown(2),grown(3)),valid_heat(valid_n(1),valid_n(2),valid_n(3)))
+      call compute_eb_wall_heat_source_3d(species,transport,state,temperature,geometry,[3,3,3],n-2, &
+        embedded_wall_temperature,heat,ignored_power,ignored_frequency,good, &
+          constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_density)
+      if(.not.good) return
+      rhs(iet,:,:,:)=rhs(iet,:,:,:)+heat
+      call compute_eb_wall_heat_source_3d(species,transport,state,temperature,geometry,[7,7,7],n-6, &
+        embedded_wall_temperature,valid_heat,power,frequency,good, &
+          constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_density)
+      if(.not.good) return
+      wall_energy=dt*power
+      if(.not.ieee_is_finite(wall_energy)) return
+    endif
+    if(.not.all(ieee_is_finite(rhs))) return
+    allocate(halo(nv,n(1),n(2),n(3)),source=0._dp)
+    halo(:,4:n(1)-3,4:n(2)-3,4:n(3)-3)=rhs(:,2:grown(1)-1,2:grown(2)-1,2:grown(3)-1)
+    allocate(valid_flux%x(nv,0:valid_n(1),valid_n(2),valid_n(3)), &
+      valid_flux%y(nv,valid_n(1),0:valid_n(2),valid_n(3)),valid_flux%z(nv,valid_n(1),valid_n(2),0:valid_n(3)))
+    valid_flux%x=grown_flux%x(:,4:valid_n(1)+4,5:valid_n(2)+4,5:valid_n(3)+4)
+    valid_flux%y=grown_flux%y(:,5:valid_n(1)+4,4:valid_n(2)+4,5:valid_n(3)+4)
+    valid_flux%z=grown_flux%z(:,5:valid_n(1)+4,5:valid_n(2)+4,4:valid_n(3)+4)
+    transport_rate=rhs(:,5:valid_n(1)+4,5:valid_n(2)+4,5:valid_n(3)+4)
+    integrated_flux=valid_flux
+    call move_alloc(halo,spatial_rate_halo)
+    minimum_theta=theta
+    if(present(embedded_wall_temperature)) then
+      embedded_wall_energy=wall_energy;embedded_frequency=frequency
+    endif
+    ok=.true.
+  end subroutine compute_sdc_eb_transport_halo_3d
+
   ! Rate from the same half-cell heat-transfer law used by wall face fluxes.
   ! Multiplying by aperture/kappa accounts for the actual fluid heat capacity.
-  subroutine reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,geometry,faces,wall_t,cfl,dt,ok)
+  subroutine reactive_eb_isothermal_timestep_3d(species,transport,state,temperature,geometry,faces,wall_t,cfl,dt,ok, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),wall_t(6),cfl
@@ -114,7 +218,14 @@ contains
     integer :: n(3),idx(3),i,j,k,face,axis,side
     logical :: valid
     dt=0;ok=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if(.not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) return
+      allocate(held)
+    endif
     if(.not.valid_reactive_boundaries_3d(faces).or..not.ieee_is_finite(cfl)) return
     if(cfl<=0.or.cfl>.5_dp) return
     n=[geometry%nx,geometry%ny,geometry%nz];spacing=[geometry%dx,geometry%dy,geometry%dz]
@@ -123,6 +234,7 @@ contains
     do j=1,n(2)
     do i=1,n(1)
       if(geometry%cell_type(i,j,k)==eb_covered_cell_3d) cycle
+      if(present(internal_energy_density)) held=internal_energy_density(i,j,k)
       idx=[i,j,k];cell_rate=0;vf=geometry%volume_fraction(i,j,k)
       if(vf<=0) return
       do face=1,6
@@ -137,7 +249,8 @@ contains
         end select
         if(area<=0) cycle
         call wall_heat_transfer_3d(species,transport,state(:,i,j,k),temperature(i,j,k), &
-          wall_t(face),spacing(axis),heat,rate,valid)
+          wall_t(face),spacing(axis),heat,rate,valid, &
+          constant_coefficients=constant_coefficients,internal_energy_density=held)
         if(.not.valid) return
         weighted=rate*area
         if(weighted>huge(1._dp)*vf) return
@@ -163,7 +276,11 @@ contains
   ! Bounds from open face donors only. Edge/corner and covered-face padding may
   ! be zero or nonfinite and must never enter the physical timestep estimate.
   subroutine reactive_eb_halo_bounds_3d(species,transport,geometry,ghost,temperature, &
-      transport_enabled,viscosity,conduction,diffusion,speeds,maximum_diffusivity,ok)
+      transport_enabled,viscosity,conduction,diffusion,speeds,maximum_diffusivity,ok, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(in) :: internal_energy_density(0:,0:,0:)
+    real(dp), allocatable :: held(:,:,:),cell_held
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -176,9 +293,16 @@ contains
     integer :: n(3),axis,side,first(3),last(3),i,j,k
     logical :: valid
     speeds=0;maximum_diffusivity=0;ok=.false.;candidate=0;maximum=0
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (.not.geometry%is_valid()) return
     n=[geometry%nx,geometry%ny,geometry%nz]
     if (any(shape(ghost)/=[size(u,1),n+2]).or.any(shape(temperature)/=n+2)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=n+2)) return
+      allocate(held(1,1,1),cell_held)
+    endif
     do axis=1,3
     do side=0,1
       first=1;last=n;first(axis)=side*(n(axis)+1);last(axis)=first(axis)
@@ -191,14 +315,19 @@ contains
         case(3);area=geometry%z_face_fraction(i,j,side*n(3))
         end select
         if (area<=0) cycle
-        call reactive_conserved_to_primitive(species,ghost(:,i,j,k),temperature(i,j,k),q,recovered,sound,valid)
+        if(present(internal_energy_density)) then
+          cell_held=internal_energy_density(i,j,k);held=cell_held
+        endif
+        call reactive_conserved_to_primitive(species,ghost(:,i,j,k),temperature(i,j,k),q,recovered,sound,valid, &
+          internal_energy_density=cell_held)
         if (.not.valid) return
         candidate(:3)=max(candidate(:3),abs(q(2:4))+sound)
         candidate(4)=max(candidate(4),sum(abs(q(2:4)))+sound)
         if (transport_enabled) then
           u(:,1,1,1)=ghost(:,i,j,k);t(1,1,1)=recovered
           call reactive_transport_timestep_3d(species,transport,u,t,1,1,1,1._dp,1._dp,1._dp,.5_dp, &
-            viscosity,conduction,diffusion,dt,dmax,valid)
+            viscosity,conduction,diffusion,dt,dmax,valid, &
+            constant_coefficients=constant_coefficients,internal_energy_density=held)
           if (.not.valid) return
           maximum=max(maximum,dmax)
         end if
@@ -213,7 +342,9 @@ contains
   ! patches. The caller supplies a small-cell-limited diffusion timestep.
   subroutine advance_reactive_eb_transport_patch_euler_3d(species,transport,geometry,dt,viscosity,conduction, &
       diffusion,barodiffusion,state,temperature,integrated_flux,minimum_theta,ok,ghost_state,ghost_temperature,faces, &
-      physical_faces,wall_temperature)
+      physical_faces,wall_temperature, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -232,6 +363,9 @@ contains
     integer :: i,j,k,nvar
     logical :: valid
     ok=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (.not.ieee_is_finite(dt)) return
     if (dt<=0._dp) return
     if (.not.valid_transport_shapes(species,transport,state,temperature,geometry)) return
@@ -241,7 +375,8 @@ contains
       flux%y(nvar,geometry%nx,0:geometry%ny,geometry%nz),flux%z(nvar,geometry%nx,geometry%ny,0:geometry%nz))
     call reactive_eb_transport_fluxes_rhs_3d(species,transport,state,temperature,geometry,dt, &
       viscosity,conduction,diffusion,barodiffusion,rhs,flux%x,flux%y,flux%z,theta,valid, &
-      ghost_state,ghost_temperature,faces,physical_faces,wall_temperature)
+      ghost_state,ghost_temperature,faces,physical_faces,wall_temperature, &
+          constant_coefficients=constant_coefficients)
     if (.not.valid) return
     allocate(candidate,source=state);allocate(temps,source=temperature)
     do k=1,geometry%nz
@@ -283,7 +418,9 @@ contains
 
   subroutine recover_active_primitives( &
       species, state, temperature, geometry, primitive, &
-      checked_temperature, ok)
+      checked_temperature, ok,internal_energy_density)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
+    real(dp), allocatable :: held
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
     type(eb_geometry_3d), intent(in) :: geometry
@@ -305,14 +442,19 @@ contains
         size(primitive, 4) /= geometry%nz .or. &
         any(shape(checked_temperature) /= &
           [geometry%nx, geometry%ny, geometry%nz])) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) return
+      allocate(held)
+    endif
     do k = 1, geometry%nz
       do j = 1, geometry%ny
         do i = 1, geometry%nx
           if (geometry%cell_type(i, j, k) == eb_covered_cell_3d) cycle
+          if(allocated(held)) held=internal_energy_density(i,j,k)
           call reactive_conserved_to_primitive( &
             species, state(:, i, j, k), temperature(i, j, k), &
             primitive(:, i, j, k), checked_temperature(i, j, k), &
-            sound_speed, local_ok)
+            sound_speed, local_ok,internal_energy_density=held)
           if (.not. local_ok) return
         end do
       end do
@@ -395,7 +537,10 @@ contains
   subroutine reactive_eb_transport_timestep_3d( &
       species, transport, state, temperature, geometry, transport_cfl, &
       viscosity_enabled, thermal_conduction_enabled, &
-      species_diffusion_enabled, dt, maximum_diffusivity, ok)
+      species_diffusion_enabled, dt, maximum_diffusivity, ok, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -408,14 +553,22 @@ contains
 
     real(dp), allocatable :: active_state(:, :, :, :)
     real(dp), allocatable :: active_temperature(:, :, :)
+    real(dp), allocatable :: active_internal(:,:,:)
     logical :: found_active
     integer :: i, j, k, reference_i, reference_j, reference_k
 
     dt = 0.0_dp
     maximum_diffusivity = 0.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (.not. valid_transport_shapes( &
           species, transport, state, temperature, geometry)) return
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) return
+      allocate(active_internal,source=internal_energy_density)
+    endif
     found_active = .false.
     reference_i = 0
     reference_j = 0
@@ -445,6 +598,8 @@ contains
             state(:, reference_i, reference_j, reference_k)
           active_temperature(i, j, k) = &
             temperature(reference_i, reference_j, reference_k)
+          if(present(internal_energy_density)) active_internal(i,j,k)= &
+            internal_energy_density(reference_i,reference_j,reference_k)
         end do
       end do
     end do
@@ -453,7 +608,8 @@ contains
       geometry%nx, geometry%ny, geometry%nz, geometry%dx, geometry%dy, &
       geometry%dz, transport_cfl, viscosity_enabled, &
       thermal_conduction_enabled, species_diffusion_enabled, dt, &
-      maximum_diffusivity, ok)
+      maximum_diffusivity, ok, &
+      constant_coefficients=constant_coefficients,internal_energy_density=active_internal)
   end subroutine reactive_eb_transport_timestep_3d
 
   ! Small-cell estimate for a plain Euler patch. Unlike the redistributed
@@ -462,7 +618,10 @@ contains
   ! disabled. Embedded walls have zero molecular flux and add no conductance.
   subroutine reactive_eb_transport_patch_timestep_3d(species,transport,state,temperature,geometry,transport_cfl, &
       viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,dt,maximum_diffusivity,ok, &
-      donor_diffusivity)
+      donor_diffusivity, &
+      constant_coefficients,internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
+    real(dp), optional, intent(in) :: internal_energy_density(:,:,:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:,:,:,:),temperature(:,:,:),transport_cfl
@@ -475,12 +634,16 @@ contains
     integer :: i,j,k
     logical :: valid
     dt=0._dp;maximum_diffusivity=0._dp;ok=.false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (present(donor_diffusivity)) then
       if (.not.ieee_is_finite(donor_diffusivity)) return
       if (donor_diffusivity<0._dp) return
     end if
     call reactive_eb_transport_timestep_3d(species,transport,state,temperature,geometry,transport_cfl, &
-      viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,base_dt,diffusivity,valid)
+      viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled,base_dt,diffusivity,valid, &
+      constant_coefficients=constant_coefficients,internal_energy_density=internal_energy_density)
     if (.not.valid) return
     if (.not.(viscosity_enabled.or.thermal_conduction_enabled.or.species_diffusion_enabled)) then
       dt=huge(1._dp);ok=.true.;return
@@ -536,7 +699,7 @@ contains
   subroutine limit_reactive_eb_transport_fluxes_3d( &
       species, state, geometry, dt, x_flux, y_flux, z_flux, &
       species_energy_x, species_energy_y, species_energy_z, &
-      minimum_theta, ok,periodic)
+      minimum_theta, ok,periodic,physical_box,image_periodic)
     type(nasa7_species), intent(in) :: species(:)
     real(dp), intent(in) :: state(:, :, :, :), dt
     type(eb_geometry_3d), intent(in) :: geometry
@@ -549,6 +712,8 @@ contains
     real(dp), intent(out) :: minimum_theta
     logical, intent(out) :: ok
     logical, intent(in) :: periodic(3)
+    integer, optional, intent(in) :: physical_box(3,2)
+    logical, optional, intent(in) :: image_periodic(3)
 
     real(dp), allocatable :: theta_cell(:, :, :)
     real(dp) :: outgoing, available, candidate, theta_face
@@ -617,6 +782,14 @@ contains
           end if
           if(periodic(1).and.(face_i==0.or.face_i==geometry%nx)) &
             theta_face=min(theta_face,theta_cell(1,j,k),theta_cell(geometry%nx,j,k))
+          if(present(physical_box).and.present(image_periodic)) then
+            if(image_periodic(1).and.(face_i==physical_box(1,1)-1.or.face_i==physical_box(1,2))) then
+              if(j>=physical_box(2,1).and.j<=physical_box(2,2).and.k>=physical_box(3,1).and.k<=physical_box(3,2)) &
+                theta_face=min(theta_face,theta_cell(physical_box(1,1)-1,j,k), &
+                  theta_cell(physical_box(1,1),j,k),theta_cell(physical_box(1,2),j,k), &
+                  theta_cell(physical_box(1,2)+1,j,k))
+            endif
+          endif
           call limit_species_face( &
             x_flux(:, face_i, j, k), species_energy_x(face_i, j, k), &
             size(species), theta_face)
@@ -639,6 +812,14 @@ contains
           end if
           if(periodic(2).and.(face_j==0.or.face_j==geometry%ny)) &
             theta_face=min(theta_face,theta_cell(i,1,k),theta_cell(i,geometry%ny,k))
+          if(present(physical_box).and.present(image_periodic)) then
+            if(image_periodic(2).and.(face_j==physical_box(2,1)-1.or.face_j==physical_box(2,2))) then
+              if(i>=physical_box(1,1).and.i<=physical_box(1,2).and.k>=physical_box(3,1).and.k<=physical_box(3,2)) &
+                theta_face=min(theta_face,theta_cell(i,physical_box(2,1)-1,k), &
+                  theta_cell(i,physical_box(2,1),k),theta_cell(i,physical_box(2,2),k), &
+                  theta_cell(i,physical_box(2,2)+1,k))
+            endif
+          endif
           call limit_species_face( &
             y_flux(:, i, face_j, k), species_energy_y(i, face_j, k), &
             size(species), theta_face)
@@ -661,6 +842,14 @@ contains
           end if
           if(periodic(3).and.(face_k==0.or.face_k==geometry%nz)) &
             theta_face=min(theta_face,theta_cell(i,j,1),theta_cell(i,j,geometry%nz))
+          if(present(physical_box).and.present(image_periodic)) then
+            if(image_periodic(3).and.(face_k==physical_box(3,1)-1.or.face_k==physical_box(3,2))) then
+              if(i>=physical_box(1,1).and.i<=physical_box(1,2).and.j>=physical_box(2,1).and.j<=physical_box(2,2)) &
+                theta_face=min(theta_face,theta_cell(i,j,physical_box(3,1)-1), &
+                  theta_cell(i,j,physical_box(3,1)),theta_cell(i,j,physical_box(3,2)), &
+                  theta_cell(i,j,physical_box(3,2)+1))
+            endif
+          endif
           call limit_species_face( &
             z_flux(:, i, j, face_k), species_energy_z(i, j, face_k), &
             size(species), theta_face)
@@ -675,11 +864,44 @@ contains
       minimum_theta >= 0.0_dp .and. minimum_theta <= 1.0_dp
   end subroutine limit_reactive_eb_transport_fluxes_3d
 
+  subroutine centroid_transport_fluxes(geometry,x,y,z,hx,hy,hz,ok)
+    type(eb_geometry_3d), intent(in) :: geometry
+    real(dp), intent(inout) :: x(:,0:,:,:),y(:,:,0:,:),z(:,:,:,0:)
+    real(dp), intent(inout) :: hx(0:,:,:),hy(:,0:,:),hz(:,:,0:)
+    logical, intent(out) :: ok
+    type(eb_integrated_flux_3d) :: raw,centroid
+    integer :: n(3),m(3),nv
+    n=[geometry%nx,geometry%ny,geometry%nz];m=n-2;nv=size(x,1)
+    allocate(raw%x(nv+1,0:n(1),n(2),n(3)),raw%y(nv+1,n(1),0:n(2),n(3)), &
+      raw%z(nv+1,n(1),n(2),0:n(3)),centroid%x(nv+1,0:m(1),m(2),m(3)), &
+      centroid%y(nv+1,m(1),0:m(2),m(3)),centroid%z(nv+1,m(1),m(2),0:m(3)))
+    raw%x(:nv,:,:,:)=x;raw%y(:nv,:,:,:)=y;raw%z(:nv,:,:,:)=z
+    raw%x(nv+1,:,:,:)=hx;raw%y(nv+1,:,:,:)=hy;raw%z(nv+1,:,:,:)=hz
+    call interpolate_reactive_eb_centroid_fluxes_3d(geometry,raw%x,raw%y,raw%z, &
+      centroid%x,centroid%y,centroid%z,ok,mol_stencil=.true.)
+    if(.not.ok) return
+    x(:,1:m(1)+1,2:m(2)+1,2:m(3)+1)=centroid%x(:nv,:,:,:)
+    y(:,2:m(1)+1,1:m(2)+1,2:m(3)+1)=centroid%y(:nv,:,:,:)
+    z(:,2:m(1)+1,2:m(2)+1,1:m(3)+1)=centroid%z(:nv,:,:,:)
+    hx(1:m(1)+1,2:m(2)+1,2:m(3)+1)=centroid%x(nv+1,:,:,:)
+    hy(2:m(1)+1,1:m(2)+1,2:m(3)+1)=centroid%y(nv+1,:,:,:)
+    hz(2:m(1)+1,2:m(2)+1,1:m(3)+1)=centroid%z(nv+1,:,:,:)
+  end subroutine centroid_transport_fluxes
+
   subroutine reactive_eb_transport_fluxes_rhs_3d( &
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces,physical_faces,wall_temperature)
+      x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, &
+      boundary_faces,physical_faces,wall_temperature,physical_box, &
+      constant_coefficients,internal_energy_density,ghost_internal_energy_density)
+    real(dp), optional, intent(in) :: constant_coefficients(:),internal_energy_density(:,:,:)
+    real(dp), optional, intent(in) :: ghost_internal_energy_density(0:,0:,0:)
+    real(dp), allocatable :: held
+    integer, optional, intent(in) :: physical_box(3,2)
+    type(eb_geometry_3d) :: boundary_geometry
+    integer :: phase,phases,window(3,2),face_position,opposite_face
+    logical :: window_faces(6),image_periodic(3),face_periodic,enabled
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -722,6 +944,9 @@ contains
     z_flux = 0.0_dp
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     nvar = reactive_nvar(size(species))
     nprim = reactive_nprim(size(species))
     if (.not. valid_transport_shapes( &
@@ -743,6 +968,15 @@ contains
         (barodiffusion_enabled .and. &
           .not. species_diffusion_enabled)) return
     if (present(ghost_state).neqv.present(ghost_temperature)) return
+    if(present(ghost_internal_energy_density)) then
+      if(.not.present(internal_energy_density).or..not.present(ghost_state)) return
+      if(any(shape(ghost_internal_energy_density)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
+    endif
+    if(present(internal_energy_density)) then
+      if(any(shape(internal_energy_density)/=shape(temperature))) return
+      if(present(ghost_state).and..not.present(ghost_internal_energy_density)) return
+      allocate(held)
+    endif
     enabled_faces=present(ghost_state)
     if (present(boundary_faces)) enabled_faces=boundary_faces
     if (any(enabled_faces).and..not.present(ghost_state)) return
@@ -750,13 +984,28 @@ contains
       if (any(shape(ghost_state)/=[nvar,geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
       if (any(shape(ghost_temperature)/=[geometry%nx+2,geometry%ny+2,geometry%nz+2])) return
     end if
+    window(:,1)=1;window(:,2)=[geometry%nx,geometry%ny,geometry%nz]
+    phases=1;window_faces=enabled_faces;image_periodic=.false.
+    if(present(physical_box)) then
+      if(.not.present(ghost_state)) return
+      window=physical_box
+      if(any(window(:,1)<2).or.any(window(:,2)>[geometry%nx,geometry%ny,geometry%nz]-1)) return
+      if(any(window(:,2)<window(:,1))) return
+      phases=2;enabled_faces=.true.
+      call extract_eb_geometry_3d(geometry,window(:,1),window(:,2),boundary_geometry,local_ok)
+      if(.not.local_ok) return
+    endif
     periodic=.false.
     if(present(physical_faces)) then
       if(.not.valid_reactive_boundaries_3d(physical_faces)) return
-      if(.not.periodic_eb_faces_match(geometry,physical_faces)) return
+      if(present(physical_box)) then
+        if(.not.periodic_eb_faces_match(boundary_geometry,physical_faces)) return
+      else
+        if(.not.periodic_eb_faces_match(geometry,physical_faces)) return
+      endif
       do axis=1,3
         periodic(axis)=physical_faces(2*axis-1)=='periodic'
-        if(periodic(axis).and..not.all(enabled_faces(2*axis-1:2*axis))) return
+        if(periodic(axis).and..not.all(window_faces(2*axis-1:2*axis))) return
       end do
       if(any(physical_faces=='isothermal_wall')) then
         if(.not.thermal_conduction_enabled.or..not.present(wall_temperature)) return
@@ -764,6 +1013,9 @@ contains
     else
       if(present(wall_temperature)) return
     end if
+    if(present(physical_box)) then
+      image_periodic=periodic;periodic=.false.
+    endif
     if (.not. (viscosity_enabled .or. thermal_conduction_enabled .or. &
         species_diffusion_enabled)) then
       ok = .true.
@@ -780,7 +1032,7 @@ contains
     species_energy_z = 0.0_dp
     call recover_active_primitives( &
       species, state, temperature, geometry, primitive, &
-      checked_temperature, local_ok)
+      checked_temperature, local_ok,internal_energy_density)
     if (.not. local_ok) return
 
     do k = 1, geometry%nz
@@ -798,7 +1050,8 @@ contains
             checked_temperature(i + 1, j, k), geometry%dx, 1, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            x_flux(:, i, j, k), species_energy_x(i, j, k), local_ok)
+            x_flux(:, i, j, k), species_energy_x(i, j, k), local_ok, &
+          constant_coefficients=constant_coefficients)
           if (.not. local_ok) return
         end do
       end do
@@ -818,7 +1071,8 @@ contains
             checked_temperature(i, j + 1, k), geometry%dy, 2, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            y_flux(:, i, j, k), species_energy_y(i, j, k), local_ok)
+            y_flux(:, i, j, k), species_energy_y(i, j, k), local_ok, &
+          constant_coefficients=constant_coefficients)
           if (.not. local_ok) return
         end do
       end do
@@ -838,7 +1092,8 @@ contains
             checked_temperature(i, j, k + 1), geometry%dz, 3, gradient, &
             viscosity_enabled, thermal_conduction_enabled, &
             species_diffusion_enabled, barodiffusion_enabled, &
-            z_flux(:, i, j, k), species_energy_z(i, j, k), local_ok)
+            z_flux(:, i, j, k), species_energy_z(i, j, k), local_ok, &
+          constant_coefficients=constant_coefficients)
           if (.not. local_ok) return
         end do
       end do
@@ -849,16 +1104,35 @@ contains
     if (any(enabled_faces)) then
       allocate(donor_primitive(nprim),left(nprim),right(nprim),boundary_flux(nvar))
       spacing=[geometry%dx,geometry%dy,geometry%dz]
+      do phase=1,phases
       do axis=1,3
         do side=0,1
-          if (.not.enabled_faces(2*axis-1+side)) cycle
-          if(periodic(axis).and.side==1) cycle
+          face_periodic=periodic(axis);enabled=enabled_faces(2*axis-1+side)
           start=1;finish=[geometry%nx,geometry%ny,geometry%nz]
-          start(axis)=side*finish(axis);finish(axis)=start(axis)
+          opposite_face=finish(axis)
+          if(phase==2) then
+            face_periodic=image_periodic(axis);enabled=window_faces(2*axis-1+side)
+            start=window(:,1);finish=window(:,2);opposite_face=window(axis,2)
+          else if(.not.enabled) then
+            cycle
+          endif
+          if(face_periodic.and.side==1) cycle
+          face_position=merge(start(axis)-1,finish(axis),side==0)
+          start(axis)=face_position;finish(axis)=face_position
           do k=start(3),finish(3)
             do j=start(2),finish(2)
               do i=start(1),finish(1)
-                inside=max(1,[i,j,k]);outside=inside;outside(axis)=inside(axis)+2*side-1
+                inside=[i,j,k]
+                if(side==0) inside(axis)=inside(axis)+1
+                outside=inside;outside(axis)=inside(axis)+2*side-1
+                if(.not.enabled) then
+                  select case(axis)
+                  case(1);x_flux(:,i,j,k)=0;species_energy_x(i,j,k)=0
+                  case(2);y_flux(:,i,j,k)=0;species_energy_y(i,j,k)=0
+                  case(3);z_flux(:,i,j,k)=0;species_energy_z(i,j,k)=0
+                  end select
+                  cycle
+                endif
                 select case(axis)
                 case(1)
                   face_area=geometry%x_face_fraction(i,j,k)
@@ -869,22 +1143,27 @@ contains
                 end select
                 if (face_area<=0._dp) cycle
                 if (geometry%cell_type(inside(1),inside(2),inside(3))==eb_covered_cell_3d) return
-                if(periodic(axis)) then
+                if(face_periodic) then
                   opposite=inside
                   select case(axis)
-                  case(1);opposite(axis)=geometry%nx;other_area=geometry%x_face_fraction(geometry%nx,j,k)
-                  case(2);opposite(axis)=geometry%ny;other_area=geometry%y_face_fraction(i,geometry%ny,k)
-                  case(3);opposite(axis)=geometry%nz;other_area=geometry%z_face_fraction(i,j,geometry%nz)
+                  case(1);opposite(axis)=opposite_face;other_area=geometry%x_face_fraction(opposite_face,j,k)
+                  case(2);opposite(axis)=opposite_face;other_area=geometry%y_face_fraction(i,opposite_face,k)
+                  case(3);opposite(axis)=opposite_face;other_area=geometry%z_face_fraction(i,j,opposite_face)
                   end select
                   if(other_area<=0) return
                   if(geometry%cell_type(opposite(1),opposite(2),opposite(3))==eb_covered_cell_3d) return
                   donor_primitive=primitive(:,opposite(1),opposite(2),opposite(3))
                   donor_temperature=checked_temperature(opposite(1),opposite(2),opposite(3))
                   area_ratio=face_area/other_area
+                else if(phase==2) then
+                  donor_primitive=primitive(:,outside(1),outside(2),outside(3))
+                  donor_temperature=checked_temperature(outside(1),outside(2),outside(3))
+                  if(geometry%cell_type(outside(1),outside(2),outside(3))==eb_covered_cell_3d) return
                 else
+                  if(allocated(held)) held=ghost_internal_energy_density(outside(1),outside(2),outside(3))
                   call reactive_conserved_to_primitive(species,ghost_state(:,outside(1),outside(2),outside(3)), &
                     ghost_temperature(outside(1),outside(2),outside(3)),donor_primitive,donor_temperature, &
-                    sound_speed,local_ok)
+                    sound_speed,local_ok,internal_energy_density=held)
                   if (.not.local_ok) return
                 end if
                 left=primitive(:,inside(1),inside(2),inside(3));right=left
@@ -902,13 +1181,25 @@ contains
                     gradient(v,d)=active_velocity_derivative(primitive,geometry,inside(1),inside(2),inside(3),v,d,periodic)
                   end do
                 end do
-                if(periodic(axis)) then
+                if(phase==2) then
+                  ! Prepared neighborhoods contain both tangential stencils at
+                  ! patch interfaces, including nonperiodic coarse/fine faces.
+                  if(side==0) then
+                    call active_face_velocity_gradient(primitive,geometry,outside(1),outside(2),outside(3), &
+                      inside(1),inside(2),inside(3),axis,gradient,periodic)
+                  else
+                    call active_face_velocity_gradient(primitive,geometry,inside(1),inside(2),inside(3), &
+                      outside(1),outside(2),outside(3),axis,gradient,periodic)
+                  endif
+                else if(face_periodic) then
                   call active_face_velocity_gradient(primitive,geometry,opposite(1),opposite(2),opposite(3), &
                     inside(1),inside(2),inside(3),axis,gradient,periodic)
                 end if
                 label=''
                 face=2*axis-1+side
-                if(present(physical_faces)) label=physical_faces(face)
+                if(present(physical_faces)) then
+                  if(.not.present(physical_box).or.phase==2) label=physical_faces(face)
+                endif
                 select case(label)
                 case('slip_wall')
                   do d=1,3
@@ -921,7 +1212,8 @@ contains
                 end select
                 call reactive_transport_face_flux_3d(species,transport,left,right,left_t,right_t,spacing(axis),axis, &
                   gradient,viscosity_enabled,thermal_conduction_enabled,species_diffusion_enabled, &
-                  barodiffusion_enabled,boundary_flux,species_energy,local_ok)
+                  barodiffusion_enabled,boundary_flux,species_energy,local_ok, &
+          constant_coefficients=constant_coefficients)
                 if (.not.local_ok) return
                 select case(label)
                 case('slip_wall','no_slip_wall','isothermal_wall')
@@ -932,9 +1224,11 @@ contains
                       if(v/=axis) boundary_flux(v+1)=0
                     end do
                   else if(label=='isothermal_wall') then
+                    if(allocated(held)) held=internal_energy_density(inside(1),inside(2),inside(3))
                     call wall_heat_transfer_3d(species,transport,state(:,inside(1),inside(2),inside(3)), &
                       checked_temperature(inside(1),inside(2),inside(3)),wall_temperature(face), &
-                      spacing(axis),wall_heat,wall_rate,local_ok)
+                      spacing(axis),wall_heat,wall_rate,local_ok, &
+          constant_coefficients=constant_coefficients,internal_energy_density=held)
                     if(.not.local_ok) return
                     boundary_flux(iet)=real(1-2*side,dp)*wall_heat
                   end if
@@ -942,21 +1236,21 @@ contains
                 select case(axis)
                 case(1)
                   x_flux(:,i,j,k)=boundary_flux;species_energy_x(i,j,k)=species_energy
-                  if(periodic(axis)) then
-                    x_flux(:,geometry%nx,j,k)=area_ratio*boundary_flux
-                    species_energy_x(geometry%nx,j,k)=area_ratio*species_energy
+                  if(face_periodic) then
+                    x_flux(:,opposite_face,j,k)=area_ratio*boundary_flux
+                    species_energy_x(opposite_face,j,k)=area_ratio*species_energy
                   end if
                 case(2)
                   y_flux(:,i,j,k)=boundary_flux;species_energy_y(i,j,k)=species_energy
-                  if(periodic(axis)) then
-                    y_flux(:,i,geometry%ny,k)=area_ratio*boundary_flux
-                    species_energy_y(i,geometry%ny,k)=area_ratio*species_energy
+                  if(face_periodic) then
+                    y_flux(:,i,opposite_face,k)=area_ratio*boundary_flux
+                    species_energy_y(i,opposite_face,k)=area_ratio*species_energy
                   end if
                 case(3)
                   z_flux(:,i,j,k)=boundary_flux;species_energy_z(i,j,k)=species_energy
-                  if(periodic(axis)) then
-                    z_flux(:,i,j,geometry%nz)=area_ratio*boundary_flux
-                    species_energy_z(i,j,geometry%nz)=area_ratio*species_energy
+                  if(face_periodic) then
+                    z_flux(:,i,j,opposite_face)=area_ratio*boundary_flux
+                    species_energy_z(i,j,opposite_face)=area_ratio*species_energy
                   end if
                 end select
               end do
@@ -964,11 +1258,42 @@ contains
           end do
         end do
       end do
+      end do
     end if
+    if(present(physical_box)) then
+      ! Reconstruct before limiting: donor stock must constrain the actual
+      ! open-face flux, with the same weights on diffusing species enthalpy.
+      call centroid_transport_fluxes(geometry,x_flux,y_flux,z_flux, &
+        species_energy_x,species_energy_y,species_energy_z,local_ok)
+      if(.not.local_ok) return
+      ! A centroid stencil may reach tangential donor rows outside the valid
+      ! box. Reapply impermeable/disabled-face constraints to its result.
+      do axis=1,3
+      do side=0,1
+        face=2*axis-1+side;label=''
+        if(present(physical_faces)) label=physical_faces(face)
+        if(window_faces(face).and.label/='slip_wall'.and.label/='no_slip_wall'.and.label/='isothermal_wall') cycle
+        start=window(:,1);finish=window(:,2)
+        face_position=merge(start(axis)-1,finish(axis),side==0)
+        start(axis)=face_position;finish(axis)=face_position
+        do k=start(3),finish(3)
+        do j=start(2),finish(2)
+        do i=start(1),finish(1)
+          select case(axis)
+          case(1);call constrain_face(x_flux(:,i,j,k),species_energy_x(i,j,k))
+          case(2);call constrain_face(y_flux(:,i,j,k),species_energy_y(i,j,k))
+          case(3);call constrain_face(z_flux(:,i,j,k),species_energy_z(i,j,k))
+          end select
+        enddo
+        enddo
+        enddo
+      enddo
+      enddo
+    endif
     call limit_reactive_eb_transport_fluxes_3d( &
       species, state, geometry, dt, x_flux, y_flux, z_flux, &
       species_energy_x, species_energy_y, species_energy_z, &
-      minimum_theta, local_ok,periodic)
+      minimum_theta, local_ok,periodic,physical_box,image_periodic)
     if (.not. local_ok) return
 
     x_area = geometry%dy * geometry%dz
@@ -1001,6 +1326,22 @@ contains
       end do
     end do
     ok = all(ieee_is_finite(rhs))
+  contains
+    subroutine constrain_face(flux,enthalpy_flux)
+      real(dp), intent(inout) :: flux(:),enthalpy_flux
+      integer :: component
+      if(.not.window_faces(face)) then
+        flux=0;enthalpy_flux=0
+        return
+      endif
+      flux(1)=0;flux(6:)=0;enthalpy_flux=0
+      if(label/='isothermal_wall') flux(iet)=0
+      if(label=='slip_wall') then
+        do component=1,3
+          if(component/=axis) flux(component+1)=0
+        enddo
+      endif
+    end subroutine constrain_face
   end subroutine reactive_eb_transport_fluxes_rhs_3d
 
   ! Optional caller-prepared donors use one halo layer (indices 0:n+1).
@@ -1010,7 +1351,9 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux,physical_faces,wall_temperature)
+      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux,physical_faces,wall_temperature, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -1042,7 +1385,8 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
       x_flux, y_flux, z_flux, minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, &
-      physical_faces,wall_temperature)
+      physical_faces,wall_temperature, &
+          constant_coefficients=constant_coefficients)
     if (.not.ok) return
     if (present(integrated_flux)) then
       x_flux=dt*x_flux;y_flux=dt*y_flux;z_flux=dt*z_flux
@@ -1062,7 +1406,9 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, new_state, new_temperature, &
-      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux,physical_faces,wall_temperature)
+      minimum_theta, ok, ghost_state, ghost_temperature, boundary_faces, integrated_flux,physical_faces,wall_temperature, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(in) :: state(:, :, :, :), temperature(:, :, :)
@@ -1086,6 +1432,9 @@ contains
 
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (.not. valid_transport_shapes( &
           species, transport, state, temperature, geometry) .or. &
         any(shape(new_state) /= shape(state)) .or. &
@@ -1111,7 +1460,8 @@ contains
       species, transport, state, temperature, geometry, dt, &
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, rhs, &
-      minimum_theta, local_ok, ghost_state, ghost_temperature, boundary_faces, flux,physical_faces,wall_temperature)
+      minimum_theta, local_ok, ghost_state, ghost_temperature, boundary_faces, flux,physical_faces,wall_temperature, &
+      constant_coefficients=constant_coefficients)
     if (.not. local_ok) return
     allocate(candidate,mold=state);allocate(candidate_temperature,mold=temperature)
     call advance_reactive_eb_state_redistributed_3d( &
@@ -1128,7 +1478,9 @@ contains
       viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, minimum_theta, ok, prepare_halo, integrated_flux, &
-      boundary_faces,inflow_state,inflow_temperature,wall_temperature)
+      boundary_faces,inflow_state,inflow_temperature,wall_temperature, &
+      constant_coefficients)
+    real(dp), optional, intent(in) :: constant_coefficients(:)
     type(nasa7_species), intent(in) :: species(:)
     type(gas_transport_species), intent(in) :: transport(:)
     real(dp), intent(inout) :: state(:, :, :, :), temperature(:, :, :)
@@ -1161,6 +1513,9 @@ contains
 
     minimum_theta = 1.0_dp
     ok = .false.
+    if(present(constant_coefficients)) then
+      if(.not.valid_constant_transport_coefficients(constant_coefficients)) return
+    endif
     if (.not. valid_transport_shapes( &
           species, transport, state, temperature, geometry) .or. &
         .not. ieee_is_finite(interval) .or. interval < 0.0_dp .or. &
@@ -1216,7 +1571,8 @@ contains
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, stage_state, stage_temperature, theta_one, &
-      local_ok,ghost,ghost_temperature,faces,flux_one,boundary_faces,wall_temperature)
+      local_ok,ghost,ghost_temperature,faces,flux_one,boundary_faces,wall_temperature, &
+      constant_coefficients=constant_coefficients)
     if (.not. local_ok) return
     if (present(prepare_halo).or.present(boundary_faces)) then
       if(present(prepare_halo)) then
@@ -1234,7 +1590,8 @@ contains
       interval, viscosity_enabled, thermal_conduction_enabled, &
       species_diffusion_enabled, barodiffusion_enabled, &
       target_volume_fraction, euler_state, euler_temperature, theta_two, &
-      local_ok,ghost,ghost_temperature,faces,flux_two,boundary_faces,wall_temperature)
+      local_ok,ghost,ghost_temperature,faces,flux_two,boundary_faces,wall_temperature, &
+      constant_coefficients=constant_coefficients)
     if (.not. local_ok) return
 
     allocate(candidate_state, source=0.5_dp * (initial_state + euler_state))

@@ -12,19 +12,35 @@ import unittest
 
 PARSER = argparse.ArgumentParser()
 PARSER.add_argument('--exe', required=True, type=Path)
+PARSER.add_argument('--mol', action='store_true')
+PARSER.add_argument('--work', type=Path)
+PARSER.add_argument('--sdc-reactor', choices=('implicit', 'cvode'), default='implicit')
 ARGS, REST = PARSER.parse_known_args()
 EXE = ARGS.exe.resolve()
 
 
 class SprayApplication(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix='pelef-spray-cli-')
-        self.root = Path(self.directory.name)
+        self.directory = None
+        if ARGS.work:
+            ARGS.work.mkdir(parents=True, exist_ok=True)
+            self.root = Path(tempfile.mkdtemp(prefix='pelef-spray-cli-', dir=ARGS.work.resolve()))
+        else:
+            self.directory = tempfile.TemporaryDirectory(prefix='pelef-spray-cli-')
+            self.root = Path(self.directory.name)
 
     def tearDown(self):
-        self.directory.cleanup()
+        if self.directory:
+            self.directory.cleanup()
 
     def run_case(self, name, extra='', fail=False, common='', file_group=''):
+        if ARGS.mol:
+            common = common.replace("time_integrator='sdc'", "time_integrator='mol'")
+            common = common.replace("hydro_reconstruction='characteristic_ppm'",
+                                    "hydro_reconstruction='characteristic_plm'")
+            extra = extra.replace("time_integrator='sdc'", "time_integrator='mol'")
+            extra = extra.replace("hydro_reconstruction='characteristic_ppm'",
+                                  "hydro_reconstruction='characteristic_plm'")
         path = self.root / (name + '.nml')
         path.write_text(f'''&spray
  cells=2,2,2, hydro_reconstruction='pcm', chemistry_enabled=.false.,
@@ -46,7 +62,7 @@ class SprayApplication(unittest.TestCase):
         with (self.root / (name+'.history.csv')).open() as stream:
             return [{k: float(v) for k, v in row.items()} for row in csv.DictReader(stream)]
 
-    def check_balance(self, name):
+    def check_balance(self, name, final_time=1e-6):
         rows = self.history(name)
         self.assertGreater(len(rows), 1)
         for row in rows:
@@ -55,8 +71,199 @@ class SprayApplication(unittest.TestCase):
             self.assertLess(abs(row['energy_error']), 2e-12*max(abs(row['total_energy']), 1e-12))
             self.assertLess(max(abs(row[k]) for k in ['px_error','py_error','pz_error']), 1e-18)
             self.assertGreater(row['tmin'], 0)
-        self.assertEqual(rows[-1]['time'], 1e-6)
+        self.assertEqual(rows[-1]['time'], final_time)
         return rows
+
+    def test_serial_particle_sdc_restart(self):
+        base = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                "mixture_count=1,mixture_vapor_names='H2O',mixture_fractions=1,"
+                "mixture_densities=1000,mixture_cps=4184,"
+                "mixture_reference_temperatures=373.15,mixture_reference_pressures=101325,"
+                "mixture_latent_heats=2257000,evaporation_enabled=.false.,")
+        self.run_case('sdc_full', base)
+        expected = self.check_balance('sdc_full')
+        checkpoint = self.root / 'sdc.chk'
+        self.run_case('sdc_stop', base + f"stop_after_steps=2,checkpoint_file='{checkpoint}',")
+        self.run_case('sdc_resume', base + f"restart_file='{checkpoint}',")
+        self.assertEqual(expected[-1], self.history('sdc_resume')[-1])
+        for name in ('sdc_full', 'sdc_resume'):
+            with (self.root / f'{name}.gas.csv').open() as stream:
+                heat = [float(row['heat_release_W_m3']) for row in csv.DictReader(stream)]
+            self.assertTrue(heat and all(value == 0 for value in heat))
+        self.assertEqual((self.root / 'sdc_full.gas.csv').read_bytes(),
+                         (self.root / 'sdc_resume.gas.csv').read_bytes())
+        self.run_case('sdc_changed', base.replace('sdc_iterations=2', 'sdc_iterations=3') +
+                      f"restart_file='{checkpoint}',", fail=True)
+        self.assertFalse((self.root / 'sdc_changed.history.csv').exists())
+
+    @unittest.skipUnless(ARGS.mol, "MOL fixture requires --mol")
+    def test_mol_checkpoint_flux_selection(self):
+        self.assertTrue(ARGS.mol)
+        base = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                "final_time=2e-8,maximum_dt=1e-8,evaporation_enabled=.false.,")
+        checkpoint = self.root / 'mol.chk'
+        self.run_case('mol_stop', base + f"stop_after_steps=1,checkpoint_file='{checkpoint}',")
+        self.run_case('mol_lf_changed', base + f"restart_file='{checkpoint}',mol_lax_friedrichs=.true.,", fail=True)
+        self.assertFalse((self.root / 'mol_lf_changed.history.csv').exists())
+        self.run_case('mol_lf_full', base + 'mol_lax_friedrichs=.true.,')
+        self.check_balance('mol_lf_full', final_time=2e-8)
+
+    def test_serial_reacting_sdc_heat_restart(self):
+        controls = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                    "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                    "chemistry_enabled=.true.,gas_temperature=1000,"
+                    "mole_names='H2','O2','N2',mole_amounts=2,1,3.76,"
+                    "final_time=2e-8,maximum_dt=1e-8,evaporation_enabled=.false.,"
+                    f"chemistry_method='{ARGS.sdc_reactor}',")
+        self.run_case('heat_full', controls)
+        archive = self.root / 'heat.chk'
+        self.run_case('heat_stop', controls + f"stop_after_steps=1,checkpoint_file='{archive}',")
+        self.run_case('heat_resume', controls + f"restart_file='{archive}',")
+        for suffix in ('gas.csv', 'parcels.csv'):
+            self.assertEqual((self.root / f'heat_full.{suffix}').read_bytes(),
+                             (self.root / f'heat_resume.{suffix}').read_bytes())
+        self.assertEqual(self.history('heat_full')[-1], self.history('heat_resume')[-1])
+        with (self.root / 'heat_full.gas.csv').open() as stream:
+            heat = [float(row['heat_release_W_m3']) for row in csv.DictReader(stream)]
+        self.assertEqual(len(heat), 64)
+        self.assertTrue(all(math.isfinite(value) for value in heat))
+        self.assertGreater(max(abs(value) for value in heat), 0)
+        records = archive.read_text().splitlines()
+        magic_index = 1 if records[0] == 'PELEF_SPRAY_TIMESTEP_HISTORY_V1' else 0
+        self.assertTrue(records[magic_index].endswith('_IR_V1_HEAT_V1'))
+        self.assertEqual(records[-1], 'END_PELEF_SPRAY_CHECKPOINT')
+        # These fields follow all parcels and films, with one row per grid cell.
+        legacy = self.root / 'legacy_heat.chk'
+        zero_seed = self.root / 'zero_seed_heat.chk'
+        seeded = records.copy()
+        rate_components = len(seeded[-129].split())
+        seeded[-129:-65] = [' '.join(['0'] * rate_components)] * 64
+        zero_seed.write_text('\n'.join(seeded) + '\n')
+        records[magic_index] = records[magic_index].removesuffix('_IR_V1_HEAT_V1')
+        legacy.write_text('\n'.join(records[:-129] + [records[-1]]) + '\n')
+        self.run_case('heat_legacy_resume', controls + f"restart_file='{legacy}',")
+        self.run_case('heat_zero_seed_resume', controls + f"restart_file='{zero_seed}',")
+        for suffix in ('gas.csv', 'parcels.csv'):
+            self.assertEqual((self.root / f'heat_zero_seed_resume.{suffix}').read_bytes(),
+                             (self.root / f'heat_legacy_resume.{suffix}').read_bytes())
+        # A legacy restore at the stop time emits no claim of a stored heat field.
+        stopped = controls.replace('final_time=2e-8', 'final_time=1e-8')
+        self.run_case('heat_legacy_only', stopped + f"restart_file='{legacy}',")
+        with (self.root / 'heat_legacy_only.gas.csv').open() as stream:
+            self.assertNotIn('heat_release_W_m3', csv.DictReader(stream).fieldnames)
+
+    def test_serial_single_particle_sdc_restart(self):
+        base = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                "evaporation_enabled=.true.,mass_flow_rate=1e-5,"
+                "injection_start=2e-7,injection_end=6e-7,injection_interval=2e-7,")
+        self.run_case('single_sdc_full', base)
+        expected = self.check_balance('single_sdc_full')
+        self.assertGreater(expected[-1]['injected_mass'], 0)
+        self.assertLess(expected[-1]['liquid_mass'], 1e-10 + expected[-1]['injected_mass'])
+        checkpoint = self.root / 'single_sdc.chk'
+        self.run_case('single_sdc_stop', base + f"stop_after_steps=4,checkpoint_file='{checkpoint}',")
+        self.run_case('single_sdc_resume', base + f"restart_file='{checkpoint}',")
+        self.assertEqual(expected[-1], self.history('single_sdc_resume')[-1])
+        self.run_case('single_split_resume', base.replace("time_integrator='sdc'", "time_integrator='split'") +
+                      f"restart_file='{checkpoint}',", fail=True)
+        self.assertFalse((self.root / 'single_split_resume.history.csv').exists())
+
+    def test_serial_sdc_port_materials_restart(self):
+        controls = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                    "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                    "injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+                    "injection_port_axes=1,0,0,-1,0,0,injection_port_fractions=.25,.75,"
+                    "mass_flow_rate=1e-4,injection_start=1e-7,injection_end=4e-7,injection_interval=2e-7,")
+        materials = ("port_vapor_names='H2O','H2O2',port_liquid_densities=1000,1400,"
+                     "port_liquid_cps=4184,2600,port_reference_temperatures=373.15,420,"
+                     "port_latent_heats=2.257e6,1.5e6,")
+        mixture = ("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+                   "mixture_densities=1000,800,mixture_cps=4184,2000,"
+                   "mixture_reference_temperatures=373.15,350,mixture_latent_heats=2257000,1e6,"
+                   "port_mixture_fractions(:,1)=.2,.8,")
+        for index, liquid in enumerate((materials, mixture)):
+            with self.subTest(liquid=index):
+                name = f'sdc_materials{index}'
+                base = controls + liquid
+                checkpoint = self.root / f'{name}.chk'
+                self.run_case(name, base)
+                expected = self.check_balance(name)
+                with (self.root / f'{name}.parcels.csv').open() as stream:
+                    particles = list(csv.DictReader(stream))
+                self.assertEqual({int(p['material_id']) for p in particles}, {1, 2})
+                if index == 0:
+                    for parcel in particles:
+                        density = 1000 if int(parcel['material_id']) == 1 else 1400
+                        mass = density * math.pi / 6 * float(parcel['diameter'])**3
+                        self.assertAlmostEqual(float(parcel['mass']) / mass, 1, delta=1e-12)
+                with (self.root / f'{name}.gas.csv').open() as stream:
+                    gas = list(csv.DictReader(stream))
+                for species in ('H2O', 'H2O2'):
+                    self.assertGreater(sum(float(g[f'rhoY_{species}']) for g in gas), 0)
+                self.run_case(name+'_stop', base + f"stop_after_steps=3,checkpoint_file='{checkpoint}',")
+                self.run_case(name+'_resume', base + f"restart_file='{checkpoint}',")
+                self.assertEqual(expected[-1], self.history(name+'_resume')[-1])
+                for suffix in ('gas.csv', 'parcels.csv'):
+                    self.assertEqual((self.root / f'{name}.{suffix}').read_bytes(),
+                                     (self.root / f'{name}_resume.{suffix}').read_bytes())
+                changed = base.replace('cps=4184,2600', 'cps=4184,2700') if index == 0 else base.replace('(:,1)=.2,.8', '(:,1)=.3,.7')
+                result = self.run_case(name+'_changed', changed + f"restart_file='{checkpoint}',", fail=True)
+                self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+
+    def test_serial_sdc_birth_id_restart(self):
+        base = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                "breakup_model='etab',surface_tension=.072,liquid_viscosity=.001,"
+                "maximum_multiplicity=10,maximum_parcels=1000,"
+                "mass_flow_rate=1e-5,injection_start=2e-7,injection_end=6e-7,injection_interval=2e-7,")
+        self.run_case('sdc_birth_full', base)
+        expected = self.check_balance('sdc_birth_full')
+        self.assertGreater(expected[-1]['live_parcels'], 6)
+        checkpoint = self.root / 'sdc_birth.chk'
+        full_checkpoint = self.root / 'sdc_birth_full.chk'
+        resumed_checkpoint = self.root / 'sdc_birth_resume.chk'
+        self.run_case('sdc_birth_stop', base + f"stop_after_steps=4,checkpoint_file='{checkpoint}',")
+        self.run_case('sdc_birth_reference', base + f"checkpoint_file='{full_checkpoint}',")
+        self.run_case('sdc_birth_resume', base + f"restart_file='{checkpoint}',checkpoint_file='{resumed_checkpoint}',")
+        self.assertEqual(expected[-1], self.history('sdc_birth_resume')[-1])
+        self.assertEqual(full_checkpoint.read_bytes(), resumed_checkpoint.read_bytes())
+        for suffix in ('gas.csv', 'parcels.csv'):
+            self.assertEqual((self.root / f'sdc_birth_full.{suffix}').read_bytes(),
+                             (self.root / f'sdc_birth_resume.{suffix}').read_bytes())
+
+    def test_serial_sdc_reference_etab_restart(self):
+        base = ("time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+                "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',"
+                "breakup_model='etab',etab_parcel_factor=.8,maximum_multiplicity=10,"
+                "surface_tension=.072,liquid_viscosity=.001,injection_speed=1000,cone_angle=0,"
+                "heat_enabled=.false.,evaporation_enabled=.false.,drag_enabled=.false.,"
+                "transport_enabled=.false.,maximum_parcels=1000,")
+        checkpoint = self.root / 'sdc_etab.chk'
+        self.run_case('sdc_etab_full', base)
+        expected = self.check_balance('sdc_etab_full')
+        with (self.root / 'sdc_etab_full.parcels.csv').open() as stream:
+            particles = list(csv.DictReader(stream))
+        self.assertTrue(any(int(row['id']) > 2 for row in particles))
+        self.run_case('sdc_etab_stop', base + f"stop_after_steps=4,checkpoint_file='{checkpoint}',")
+        self.run_case('sdc_etab_resume', base + f"restart_file='{checkpoint}',")
+        self.assertEqual(expected[-1], self.history('sdc_etab_resume')[-1])
+        for suffix in ('gas.csv', 'parcels.csv'):
+            self.assertEqual((self.root / f'sdc_etab_full.{suffix}').read_bytes(),
+                             (self.root / f'sdc_etab_resume.{suffix}').read_bytes())
+
+    def test_future_jet_particle_timestep(self):
+        controls = ('initial_liquid_mass=0,injection_speed=20000,'
+                    'injection_start=2e-6,injection_end=3e-6,')
+        self.run_case('future_jet_cfl', controls)
+        history = self.history('future_jet_cfl')
+        self.assertEqual(history[0]['live_parcels'], 0)
+        self.assertAlmostEqual(history[1]['time']/5e-8, 1, places=13)
+        self.run_case('fixed_future_jet', controls + 'fixed_parts=.true.,')
+        history = self.history('fixed_future_jet')
+        self.assertAlmostEqual(history[1]['time']/1e-7, 1, places=13)
 
     def test_port_mixture_compositions_restart(self):
         base=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
@@ -406,7 +613,15 @@ class SprayApplication(unittest.TestCase):
         self.run_case('lambda_unused_port', common=cases[0]+'port_wall_conductivities(3)=.5,', fail=True)
 
     def test_mixed_wall_cli_restart(self):
-        common=("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
+        self.check_mixed_wall_cli_restart('')
+
+    def test_serial_sdc_mixed_wall_cli_restart(self):
+        self.check_mixed_wall_cli_restart(
+            "time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+            "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',")
+
+    def check_mixed_wall_cli_restart(self, controls):
+        common=controls+("mixture_count=2,mixture_vapor_names='H2O','H2O2',mixture_fractions=.6,.4,"
                 "mixture_densities=1000,800,mixture_cps=4184,2000,"
                 "mixture_reference_temperatures=373.15,350,mixture_latent_heats=2257000,1e6,"
                 "boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
@@ -443,13 +658,21 @@ class SprayApplication(unittest.TestCase):
                                  (self.root/f'{name}_resumed.{suffix}').read_bytes())
 
     def test_wall_film_restart(self):
-        common = ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
+        self.check_wall_film_restart('')
+
+    def test_serial_sdc_wall_film_restart(self):
+        self.check_wall_film_restart(
+            "time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+            "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',")
+
+    def check_wall_film_restart(self, controls):
+        common = controls + ("boundary_faces='periodic','periodic','periodic','periodic','no_slip_wall','no_slip_wall',"
                   "wall_impact_faces=.false.,.false.,.false.,.false.,.true.,.false.,"
                   "surface_tension=.072,liquid_viscosity=.001,"
                   "injection_center=.002,.002,5e-7,injection_axis=0,0,-1,cone_angle=0,parcel_count=1,"
                   "mole_names='N2','','',mole_amounts=1,0,0,gas_temperature=900,"
                   "drag_enabled=.false.,heat_enabled=.false.,evaporation_enabled=.false.,transport_enabled=.false.,")
-        for speed in [10, 300]:
+        for speed in ([1, 300] if controls else [10, 300]):
             name = f'wall{speed}'
             settings = common+f'injection_speed={speed},'
             checkpoint = self.root/f'{name}.chk'
@@ -462,9 +685,10 @@ class SprayApplication(unittest.TestCase):
             self.assertAlmostEqual(sum(float(f['mass']) for f in films)/history[-1]['film_mass'], 1, delta=1e-13)
             with (self.root/f'{name}.parcels.csv').open() as stream:
                 parcels = list(csv.DictReader(stream))
-            self.assertEqual(len(parcels), 1 if speed == 10 else 5)
+            expected_count = (0 if speed == 1 else 4) if controls else (1 if speed == 10 else 5)
+            self.assertEqual(len(parcels), expected_count)
             if speed == 300:
-                self.assertEqual([int(p['parent_id']) for p in parcels], [0, 1, 1, 1, 1])
+                self.assertEqual([int(p['parent_id']) for p in parcels], [1]*4 if controls else [0, 1, 1, 1, 1])
             self.run_case(name+'stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
             self.run_case(name+'resumed', f"restart_file='{checkpoint}',", common=settings)
             for suffix in ['gas.csv', 'parcels.csv', 'films.csv']:
@@ -476,7 +700,9 @@ class SprayApplication(unittest.TestCase):
             self.assertIn('incompatible spray checkpoint', result.stdout.lower())
             lines = checkpoint.read_text().splitlines()
             values = lines[-2].split()
-            values[-1] = '-1'
+            # Modern checkpoints end with heat rows; negative heat is valid.
+            # A nonfinite record must be rejected in both legacy and modern forms.
+            values[-1] = 'NaN'
             lines[-2] = ' '.join(values)
             bad = self.root/f'{name}_bad.chk'
             bad.write_text('\n'.join(lines)+'\n')
@@ -509,7 +735,15 @@ class SprayApplication(unittest.TestCase):
         self.run_case('cp_unused', common='port_cp_coefficients(1,1)=4000,', fail=True)
 
     def test_port_breakup_properties_restart(self):
-        common = ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
+        self.check_port_breakup_properties_restart('')
+
+    def test_serial_sdc_port_breakup_properties_restart(self):
+        self.check_port_breakup_properties_restart(
+            "time_integrator='sdc',sdc_iterations=2,cells=4,4,4,"
+            "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',")
+
+    def check_port_breakup_properties_restart(self, controls):
+        common = controls + ("injection_port_count=2,injection_port_centers=.001,.001,.001,.002,.001,.001,"
                   "injection_port_axes=1,0,0,1,0,0,injection_port_fractions=.5,.5,"
                   "injection_speed=500,cone_angle=0,gas_pressure=1e7,"
                   "surface_tension=.072,liquid_viscosity=.001,"
@@ -786,6 +1020,50 @@ class SprayApplication(unittest.TestCase):
                                        common=settings.replace('373.15', '374.15'))
                 self.assertIn('incompatible spray checkpoint', result.stdout.lower())
                 self.run_case(name+'_invalid', common=settings.replace('373.15', '800'), fail=True)
+
+    def test_component_viscosity_restart(self):
+        liquid = ("mixture_count=2,mixture_vapor_names=2*'H2O',mixture_fractions=.6,.4,"
+                  "mixture_densities=1000,1000,mixture_cps=4184,4184,"
+                  "mixture_reference_temperatures=373.15,373.15,"
+                  "mixture_latent_heats=2257000,2257000,drop_temperature=330,"
+                  "breakup_model='khrt',surface_tension=.072,liquid_viscosity=.001,"
+                  "injection_speed=200,heat_enabled=.false.,evaporation_enabled=.false.,")
+        models = ("mixture_viscosity_models='inverse-temperature','constant',"
+                  "mixture_viscosity_coefficients(:,1)=.0002,.264,0,0,"
+                  "mixture_viscosity_temperature_ranges(:,1)=250,600,"
+                  "mixture_viscosities(2)=.001,")
+        for scheme in ('split', 'sdc'):
+            with self.subTest(scheme=scheme):
+                controls = f"time_integrator='{scheme}',"
+                if scheme == 'sdc':
+                    controls += ("sdc_iterations=2,cells=4,4,4,"
+                                 "hydro_reconstruction='characteristic_ppm',riemann_solver='pelec',")
+                name = 'component_mu_' + scheme
+                base = controls + liquid
+                settings = base.replace("liquid_viscosity=.001,", "") + models
+                self.run_case(name+'_supplied', common=base)
+                self.run_case(name, common=settings)
+                self.check_balance(name)
+                with (self.root / (name+'.parcels.csv')).open() as stream:
+                    actual = list(csv.DictReader(stream))
+                with (self.root / (name+'_supplied.parcels.csv')).open() as stream:
+                    expected = list(csv.DictReader(stream))
+                self.assertEqual(len(actual), len(expected))
+                for got, want in zip(actual, expected):
+                    for key in got:
+                        self.assertTrue(math.isclose(float(got[key]), float(want[key]),
+                                                     rel_tol=2e-12, abs_tol=1e-30), key)
+                checkpoint = self.root / (name+'.chk')
+                self.run_case(name+'_stop', f"stop_after_steps=3,checkpoint_file='{checkpoint}',", common=settings)
+                self.run_case(name+'_resumed', f"restart_file='{checkpoint}',", common=settings)
+                for suffix in ('gas.csv', 'parcels.csv'):
+                    self.assertEqual((self.root / f'{name}.{suffix}').read_bytes(),
+                                     (self.root / f'{name}_resumed.{suffix}').read_bytes())
+                result = self.run_case(name+'_changed', f"restart_file='{checkpoint}',", fail=True,
+                                       common=settings.replace('.264', '.265'))
+                self.assertIn('incompatible spray checkpoint', result.stdout.lower())
+                self.assertFalse((self.root / (name+'_changed.history.csv')).exists())
+                self.run_case(name+'_unused', common=settings+"mixture_viscosities(3)=.001,", fail=True)
 
     def test_viscosity_temperature_restart(self):
         settings = ("breakup_model='khrt',surface_tension=.072,"

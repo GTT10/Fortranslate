@@ -168,6 +168,16 @@ K_{c,r}
 \left(\frac{p^\circ}{R_uT}\right)^{\Delta\nu_r}.
 \]
 
+The library reaction record also permits an explicit
+`equilibrium_reference_gas_constant` in J/(kmol K). Its default is `R_u`;
+an explicit value replaces only `R_u` in the reference concentration
+`p^circ/(R_u T)`. It does not change NASA7 thermodynamics, the equation of
+state, Arrhenius activation energies, or pressure-dependent forward rates.
+This supports source-derived kinetic conventions in explicit library callers;
+no application input or checkpoint option selects it. Existing mechanism
+loaders retain the default. Nonpositive/nonfinite values and unrepresentable
+reference concentrations are rejected.
+
 The reverse constant and progress rate are
 
 \[
@@ -2862,3 +2872,21 @@ Standalone serial/MPI tree reaction/hydro Strang APIs now forward pressure
 targets as well. A focused two-rank reacting test reproduces serial state,
 temperature and diagnostics exactly and retains transactional failure behavior;
 see [tree Strang evidence](validation/pressure-outlet-tree-strang-20260918.md).
+
+### Full-coordinate CVODE error weights
+
+The library entry `advance_forced_reactor_cvode_full` accepts an optional
+`absolute_tolerances` array with one entry per species density (kg/m3), followed
+by one temperature entry (K). Each effective entry is the minimum of the
+requested entry and the existing scalar `atol`; the option cannot loosen that
+caller bound. Omitting the array retains the existing scalar CVODE tolerance
+path. Wrong length, nonfinite or nonpositive entries reject before publishing
+state, including zero-duration calls. Failed solves retain the existing exact
+rollback and release the temporary SUNDIALS tolerance vector.
+
+The array is a library control, not an application input or restart policy.
+For the pinned-native diagnostic, species entries of1e-15 kg/m3 and a temperature
+entry of1e-18 K express the native CGS absolute weights while retaining any
+stricter caller cap. Matching weights does not establish complete solver parity;
+reaction conventions, floating-point arithmetic and evolved AMR behavior are
+separate checks.

@@ -458,7 +458,7 @@ contains
     real(dp), allocatable :: plm_flux_z(:, :, :, :)
     real(dp), allocatable :: recovered_temperature(:, :, :), integrals(:)
     real(dp) :: cell_temperature, bad_values(2), bad_value
-    real(dp) :: dt, dx_test, dy_test, dz_test, cfl_test
+    real(dp) :: dt, uniform_dt, dx_test, dy_test, dz_test, cfl_test
     real(dp) :: interval_test, rtol_test, atol_test, theta
     logical :: local_ok, halting_supported, saved_halting
     integer :: i, j, k, nvar, bad_index, spacing_index, tolerance_index
@@ -496,6 +496,15 @@ contains
         end do
       end do
     end do
+    ! A cell-local bound must not depend on how an MPI slab is partitioned.
+    call compute_reactive_cfl_timestep_3d(species,state,temperature,nx,ny,nz,dx,2*dy,3*dz,.35_dp,uniform_dt,local_ok)
+    if(.not.local_ok.or.uniform_dt<=0) return
+    call compute_reactive_cfl_timestep_3d(species,state(:,:1,:1,:1),temperature(:1,:1,:1), &
+      1,1,1,dx,2*dy,3*dz,.35_dp,dt,local_ok)
+    if(.not.local_ok.or.dt/=uniform_dt) return
+    call compute_reactive_cfl_timestep_3d(species,state(:,:0,:,:),temperature(:0,:,:), &
+      0,ny,nz,dx,2*dy,3*dz,.35_dp,dt,local_ok)
+    if(local_ok.or.dt/=0) return
     saved_state = state
     saved_temperature = temperature
     saved_plm_state = plm_state

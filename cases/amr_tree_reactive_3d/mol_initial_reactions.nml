@@ -1,0 +1,18 @@
+! LiDryer selected application: fresh MOL history, recursive clocks and restart.
+&reactive_3d
+ nx=4,ny=4,nz=4,x_upper=.01,y_upper=.01,z_upper=.01,
+ final_time=2e-7,maximum_steps=2,
+ problem='reactive_hotspot',thermo_model='selected',
+ composition_count=3,composition_species='H2','O2','N2',
+ composition_mole_fractions=.487146886020635383,.255768100667125242,.257085013312239430,
+ initial_temperature=2000,initial_pressure=101325,
+ initial_velocity_x=5,initial_velocity_y=0,initial_velocity_z=0,
+ hotspot_temperature_rise=50,hotspot_center_x=.005,hotspot_center_y=.005,hotspot_center_z=.005,hotspot_width=.003,
+ time_integrator='mol',sdc_iterations=2,sdc_reactor='cvode',
+ reconstruction='characteristic_plm',riemann_solver='pelec',boundary_condition='periodic',
+ chemistry_enabled=.true.,transport_enabled=.false.,
+ chemistry_relative_tolerance=1e-10,chemistry_absolute_tolerance=1e-14,
+ dual_energy_eta2=2,allow_negative_energy=.false.,pinned_eos_extrapolation=.true.,
+ output_file='result.csv'
+/
+&amr_tree_timestepping subcycling=.true.,fixed_dt=1e-7 /

@@ -34,7 +34,8 @@ program pelef_reactive_eb_3d
   call get_command_argument(1, input_path)
   call read_reactive_eb_3d_configuration( &
     trim(input_path), config, ok, message,allow_difmag=.true.,allow_ctu=.true., &
-    allow_boundaries=.true.,allow_inlet_composition=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available)
+    allow_boundaries=.true.,allow_inlet_composition=.true.,allow_sdc=.true.,allow_sdc_cvode=cvode_available, &
+    allow_pinned_eos=.true.)
   if (.not. ok) then
     write(*, '(a)') trim(message)
     error stop 2
