@@ -9,7 +9,9 @@ program test_mpi_eb_held_reset_ledger_3d
   use transport_database_mod, only: load_h2o2_full_transport
   use gas_transport_mod, only: gas_transport_species
   use mixture_thermo_mod, only: mixture_specific_gas_constant,temperature_from_internal_energy,mixture_mass_properties
-  use constant_volume_reactor_mod, only: advance_forced_reactor_interval
+  use constant_volume_reactor_mod, only: advance_forced_reactor_interval,forced_reactor_admission,forced_reactor_integrator, &
+    check_forced_reactor_admission,reaction_admission_accepted,reaction_admission_unknown, &
+    reaction_admission_provider_refused
   use eb_reactive_transfer_3d_mod, only: recover_reactive_eb_cell_3d
   use amr_patch_tree_remap_3d_mod, only: covered
   use reactive_1d_mod, only: reactive_nvar,reactive_primitive_to_conserved
@@ -48,8 +50,12 @@ program test_mpi_eb_held_reset_ledger_3d
   logical :: reactor_mode,caloric_provider,kinetic_reactor,builtin_reactor,reactor_audit_ok=.true.
   real(dp) :: caloric_rate,mix_mw,mix_rg,mix_cp,mix_cv,mix_gamma,mix_h,mix_e,mix_s
   integer :: caloric_denials=0,reactor_replenishments=0
-  character(len=16) :: reactor_request,reset_request
+  character(len=16) :: reactor_request,reset_request,case_selection
+  integer :: selected_mode=-1,selected_iterations=-1,completed_cases=0
   integer :: reactor_audits=0
+  integer :: admission_calls=0,admission_status,last_admission_status
+  real(dp), allocatable :: admitted_packet(:)
+  logical :: admission_mode,admission_packet_exact=.true.
   integer :: seed_observations=0
   real(dp) :: reactor_minimum_temperature=huge(1._dp)
   logical :: source_transport_flags(4)
@@ -62,9 +68,11 @@ program test_mpi_eb_held_reset_ledger_3d
   call get_command_argument(2,source_kind)
   call get_command_argument(3,reactor_request)
   call get_command_argument(4,reset_request)
-  kinetic_reactor=reactor_request=='kinetic'.or.reactor_request=='builtin'
+  call get_command_argument(5,case_selection)
+  admission_mode=reactor_request=='admit_kinetic'.or.reactor_request=='admit_inert'
+  kinetic_reactor=reactor_request=='kinetic'.or.reactor_request=='builtin'.or.reactor_request=='admit_kinetic'
   builtin_reactor=reactor_request=='builtin'
-  reactor_mode=reactor_request=='reactor'.or.kinetic_reactor
+  reactor_mode=reactor_request=='reactor'.or.kinetic_reactor.or.admission_mode
   caloric_provider=source_kind=='caloric_provider'
   diffusive_source=source_kind=='diffusive_corrector_material'
   source_transport_flags=.false.
@@ -84,6 +92,15 @@ program test_mpi_eb_held_reset_ledger_3d
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,status)
   call require(nranks==3,'two owners and one idle rank')
+  select case(trim(case_selection))
+  case('')
+  case('godunov1');selected_mode=0;selected_iterations=1
+  case('godunov2');selected_mode=0;selected_iterations=2
+  case('mol1');selected_mode=1;selected_iterations=1
+  case('mol2');selected_mode=1;selected_iterations=2
+  case default
+    call require(.false.,'unknown held reset case selector')
+  end select
   call check_accepted_clock_prefixes()
   owners=[0,2]
   call load_h2o2_full_thermo(species,good);call require(good,'thermo')
@@ -193,8 +210,15 @@ program test_mpi_eb_held_reset_ledger_3d
     call MPI_Finalize(status)
     stop
   endif
+  if(admission_mode.and.(reset_request=='unknown'.or.reset_request=='refused'.or.reset_request=='actual_refused'.or. &
+    reset_request=='missing'.or.reset_request=='mismatch')) then
+    call check_admission_refusal()
+    call MPI_Finalize(status)
+    stop
+  endif
   if(requested_mode=='eos_source') call check_policy_refusal()
   do mode=0,1
+    if(selected_mode>=0.and.mode/=selected_mode) cycle
     mol=mode==1
     if(mol) then
       stage_geometry=mol_extended
@@ -202,12 +226,26 @@ program test_mpi_eb_held_reset_ledger_3d
       stage_geometry=extended
     endif
     do iterations=1,2
+      if(selected_iterations>=0.and.iterations/=selected_iterations) cycle
       if(allocated(serial_record)) deallocate(serial_record)
       if(allocated(mpi_record)) deallocate(mpi_record)
       if(material_source.and..not.mol) allocate(serial_record,mpi_record)
       reactor_audit_ok=.true.;reactor_audits=0;reactor_minimum_temperature=huge(1._dp)
       serial=initial;serial_h=initial_h;serial_prefix=prefix;serial_work=42;serial_projection=43;serial_closure=44
       if(reactor_mode.and..not.builtin_reactor) then
+      if(admission_mode) then
+        call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,reactor_mode, &
+        source_transport_flags,forcing,1e-8_dp,1e-12_dp,serial,stage_geometry,faces, &
+        boundary,wall,chemical,external,theta,good, &
+        redistribution=redistribution_method,mol_mode=mol, &
+        internal_energy=serial_h,internal_energy_flux=serial_faces,energy_policy=policy,energy_correction=serial_prefix, &
+        internal_energy_pressure_work_change=serial_work, &
+        internal_energy_projection_change=serial_projection, &
+        internal_energy_closure_change=serial_closure,auxiliary_source=serial_source, &
+        auxiliary_change=aux,auxiliary_has_internal_energy=.true., &
+        evaluate_reaction=audit_reactor,evaluate_reaction_admission=audit_admission, &
+        reaction_admission_status=admission_status,godunov_interval_history=serial_record)
+      else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,reactor_mode, &
         source_transport_flags,forcing,1e-8_dp,1e-12_dp,serial,stage_geometry,faces, &
         boundary,wall,chemical,external,theta,good, &
@@ -218,6 +256,7 @@ program test_mpi_eb_held_reset_ledger_3d
         internal_energy_closure_change=serial_closure,auxiliary_source=serial_source, &
         auxiliary_change=aux,auxiliary_has_internal_energy=.true., &
         evaluate_reaction=audit_reactor,godunov_interval_history=serial_record)
+      endif
       else
         call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,reactor_mode, &
         source_transport_flags,forcing,1e-8_dp,1e-12_dp,serial,stage_geometry,faces, &
@@ -230,7 +269,11 @@ program test_mpi_eb_held_reset_ledger_3d
         auxiliary_change=aux,auxiliary_has_internal_energy=.true., &
         godunov_interval_history=serial_record)
       endif
+      if(.not.good.and.rank==0.and.admission_mode) print *, &
+        'ADMISSION_FAILURE serial:',mol,iterations,admission_status,admission_calls,reactor_audits
       call require(good,'serial accepted held SDC iterate')
+      if(admission_mode) call require(admission_status==reaction_admission_accepted.and.admission_packet_exact, &
+        'serial accepted exact actual admission packet')
       if(caloric_provider) call check_caloric_admission()
       if(kinetic_reactor) call check_kinetic_changes()
       if(reactor_mode.and..not.builtin_reactor) &
@@ -257,8 +300,20 @@ program test_mpi_eb_held_reset_ledger_3d
       call require(residual<=3e-12_dp,'serial reset ledger counts actual accepted forcing only')
       call localize(initial,initial_h,gas,temp,held)
       mpi_prefix=prefix;mpi_work=42;mpi_projection=43;mpi_closure=44
-      reactor_audit_ok=.true.;reactor_audits=0
+      reactor_audit_ok=.true.;reactor_audits=0;admission_calls=0
       if(reactor_mode.and..not.builtin_reactor) then
+      if(admission_mode) then
+        call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,stage_geometry, &
+        dt,iterations,reactor_mode,source_transport_flags,forcing,1e-8_dp,1e-12_dp, &
+        faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,good,redistribution=redistribution_method,mol_mode=mol, &
+        internal_energy=held,internal_energy_flux=mpi_faces,energy_policy=policy,energy_correction=mpi_prefix, &
+        internal_energy_pressure_work_change=mpi_work, &
+        internal_energy_projection_change=mpi_projection, &
+        internal_energy_closure_change=mpi_closure,auxiliary_source=native_mpi_auxiliary, &
+        auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
+        evaluate_reaction=audit_reactor,evaluate_reaction_admission=audit_admission, &
+        reaction_admission_status=admission_status,godunov_interval_history=mpi_record)
+      else
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,stage_geometry, &
         dt,iterations,reactor_mode,source_transport_flags,forcing,1e-8_dp,1e-12_dp, &
         faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,good,redistribution=redistribution_method,mol_mode=mol, &
@@ -268,6 +323,7 @@ program test_mpi_eb_held_reset_ledger_3d
         internal_energy_closure_change=mpi_closure,auxiliary_source=native_mpi_auxiliary, &
         auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
         evaluate_reaction=audit_reactor,godunov_interval_history=mpi_record)
+      endif
       else
         call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,stage_geometry, &
         dt,iterations,reactor_mode,source_transport_flags,forcing,1e-8_dp,1e-12_dp, &
@@ -279,7 +335,15 @@ program test_mpi_eb_held_reset_ledger_3d
         auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
         godunov_interval_history=mpi_record)
       endif
+      if(.not.good.and.admission_mode) print *, &
+        'ADMISSION_FAILURE MPI:',rank,mol,iterations,admission_status,admission_calls,reactor_audits
       call require(good,'MPI accepted held SDC iterate')
+      if(admission_mode) then
+        call require(admission_status==reaction_admission_accepted.and.admission_packet_exact, &
+          'collective accepted status and exact actual admission packet')
+        call require((rank==1.and.admission_calls==0).or.(rank/=1.and.admission_calls>0), &
+          'admission is owner-only and idle rank receives status')
+      endif
       if(reactor_mode.and..not.builtin_reactor) then
         call require(reactor_audit_ok,'MPI actual reactor energy audited')
         call require((rank==1.and.reactor_audits==0).or.(rank/=1.and.reactor_audits>0), &
@@ -321,12 +385,19 @@ program test_mpi_eb_held_reset_ledger_3d
       call require(same,'serial/MPI state, actual UEINT, accepted ledgers and pressure work agree')
       if(material_source.and..not.mol) call check_funded_godunov_replay()
       maximum_closure=max(maximum_closure,abs(serial_closure))
+      completed_cases=completed_cases+1
       if(rank==0) print *, 'Accepted held reset ledger:',trim(redistribution_method),mol,iterations,residual,mpi_prefix-prefix
     enddo
   enddo
-  if(rank==0) print *, 'PASS: serial/MPI accepted-iterate held reset bookkeeping'
   if(reset_request=='total_closure') call require(maximum_closure>3e-12_dp*abs(before(5)), &
     'actual scalar closure reset is resolved above the unchanged independent ledger tolerance')
+  if(selected_mode<0) then
+    call require(completed_cases==4,'all four held reset cases completed')
+    if(rank==0) print *, 'PASS: serial/MPI accepted-iterate held reset bookkeeping'
+  else
+    call require(completed_cases==1,'exactly one selected held reset case completed')
+    if(rank==0) print *, 'PASS: selected held reset case ',trim(case_selection)
+  endif
   call MPI_Finalize(status)
 contains
   subroutine check_accepted_clock_prefixes()
@@ -440,6 +511,19 @@ contains
     serial=initial;serial_h=initial_h;serial_prefix=prefix;serial_work=42;serial_projection=43;serial_closure=44
     evaluations=auxiliary_evaluations;source_forbidden=.true.
     if(reactor_mode.and..not.builtin_reactor) then
+      if(admission_mode) then
+      call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,reactor_mode, &
+      source_transport_flags,forcing,1e-8_dp,1e-12_dp,serial,stage_geometry,faces, &
+      boundary,wall,chemical,external,theta,valid,redistribution=redistribution_method,mol_mode=.false., &
+      internal_energy=serial_h,internal_energy_flux=serial_faces,energy_policy=policy,energy_correction=serial_prefix, &
+      internal_energy_pressure_work_change=serial_work, &
+        internal_energy_projection_change=serial_projection, &
+        internal_energy_closure_change=serial_closure,auxiliary_source=serial_source, &
+      auxiliary_change=aux,auxiliary_has_internal_energy=.true., &
+        evaluate_reaction=audit_reactor,evaluate_reaction_admission=audit_admission, &
+        reaction_admission_status=admission_status,godunov_replay_interval=serial_record, &
+      integrated_flux=gas_faces)
+      else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,reactor_mode, &
       source_transport_flags,forcing,1e-8_dp,1e-12_dp,serial,stage_geometry,faces, &
       boundary,wall,chemical,external,theta,valid,redistribution=redistribution_method,mol_mode=.false., &
@@ -450,6 +534,7 @@ contains
       auxiliary_change=aux,auxiliary_has_internal_energy=.true., &
         evaluate_reaction=audit_reactor,godunov_replay_interval=serial_record, &
       integrated_flux=gas_faces)
+      endif
     else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,dt,iterations,reactor_mode, &
       source_transport_flags,forcing,1e-8_dp,1e-12_dp,serial,stage_geometry,faces, &
@@ -487,6 +572,19 @@ contains
     call localize(initial,initial_h,gas,temp,held)
     mpi_prefix=prefix;mpi_work=42;mpi_projection=43;mpi_closure=44;evaluations=auxiliary_evaluations;source_forbidden=.true.
     if(reactor_mode.and..not.builtin_reactor) then
+      if(admission_mode) then
+      call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,stage_geometry, &
+      dt,iterations,reactor_mode,source_transport_flags,forcing,1e-8_dp,1e-12_dp, &
+      faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,valid,redistribution=redistribution_method,mol_mode=.false., &
+      internal_energy=held,internal_energy_flux=mpi_faces,energy_policy=policy,energy_correction=mpi_prefix, &
+      internal_energy_pressure_work_change=mpi_work, &
+        internal_energy_projection_change=mpi_projection, &
+        internal_energy_closure_change=mpi_closure,auxiliary_source=native_mpi_auxiliary, &
+      auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
+        evaluate_reaction=audit_reactor,evaluate_reaction_admission=audit_admission, &
+        reaction_admission_status=admission_status,godunov_replay_interval=mpi_record, &
+      integrated_flux=gas_faces)
+      else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,stage_geometry, &
       dt,iterations,reactor_mode,source_transport_flags,forcing,1e-8_dp,1e-12_dp, &
       faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,valid,redistribution=redistribution_method,mol_mode=.false., &
@@ -497,6 +595,7 @@ contains
       auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
         evaluate_reaction=audit_reactor,godunov_replay_interval=mpi_record, &
       integrated_flux=gas_faces)
+      endif
     else
       call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,stage_geometry, &
       dt,iterations,reactor_mode,source_transport_flags,forcing,1e-8_dp,1e-12_dp, &
@@ -572,6 +671,122 @@ contains
     species%pinned_eos_extrapolation=.true.
     species%pinned_eos_temperature_min=0;species%pinned_eos_temperature_max=0
   end subroutine check_policy_refusal
+  subroutine audit_admission(table,rates,old_energy,external_species,external_energy,duration,rtol,atol, &
+      rhoy,temperature,result)
+    type(nasa7_species), intent(in) :: table(:)
+    type(elementary_reaction), intent(in) :: rates(:)
+    real(dp), intent(in) :: old_energy,external_species(:),external_energy,duration,rtol,atol,rhoy(:),temperature
+    integer, intent(out) :: result
+    admission_calls=admission_calls+1
+    select case(trim(reset_request))
+    case('unknown');result=reaction_admission_unknown
+    case('refused');result=reaction_admission_provider_refused
+    case('actual_refused');result=reaction_admission_accepted
+    case default
+      call check_forced_reactor_admission(table,rates,old_energy,external_species,external_energy,duration,rtol,atol, &
+        rhoy,temperature,result,maximum_steps=512)
+      ! Explicit fixture work policy, measured on the unchanged positive
+      ! material packet (3603 accepted steps). Extra effort is not an
+      ! admissibility certificate: every unresolved trial remains unknown.
+      if(result==reaction_admission_unknown.and.external_energy>0.and.sum(external_species)>0) &
+        call check_forced_reactor_admission(table,rates,old_energy,external_species,external_energy,duration,rtol,atol, &
+          rhoy,temperature,result,maximum_steps=8192)
+    end select
+    admitted_packet=[old_energy,external_species,external_energy,duration,rtol,atol,rhoy,temperature]
+    last_admission_status=result
+  end subroutine audit_admission
+
+  subroutine check_admission_refusal()
+    integer :: node,expected,lo,hi,d(3)
+    logical :: valid,unchanged,refused
+    type(amr_tree_state_3d) :: saved_gas,saved_temp,saved_held
+    type(eb_integrated_flux_3d), allocatable :: gas_flux(:),saved_gas_flux(:),saved_scalar_flux(:)
+    call localize(initial,initial_h,gas,temp,held)
+    saved_gas=gas;saved_temp=temp;saved_held=held
+    allocate(gas_flux(2),mpi_faces(2))
+    do node=1,2
+      if(owners(node)/=rank) cycle
+      d=topology%nodes(node)%shape
+      allocate(gas_flux(node)%x(nv,0:d(1),d(2),d(3)),gas_flux(node)%y(nv,d(1),0:d(2),d(3)), &
+        gas_flux(node)%z(nv,d(1),d(2),0:d(3)))
+      allocate(mpi_faces(node)%x(1,0:d(1),d(2),d(3)),mpi_faces(node)%y(1,d(1),0:d(2),d(3)), &
+        mpi_faces(node)%z(1,d(1),d(2),0:d(3)))
+      gas_flux(node)%x=41;gas_flux(node)%y=43;gas_flux(node)%z=47
+      mpi_faces(node)%x=53;mpi_faces(node)%y=59;mpi_faces(node)%z=61
+    enddo
+    saved_gas_flux=gas_flux;saved_scalar_flux=mpi_faces
+    mb=17;mw=19;mc=23;me=29;maux=31;mt=37
+    mpi_prefix=prefix;mpi_work=42;mpi_projection=43;mpi_closure=44
+    admission_calls=0;reactor_audits=0;refused=.true.
+    if(reset_request=='missing') then
+    call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,mol_extended, &
+      dt,1,.true.,source_transport_flags,forcing,1e-8_dp,1e-12_dp,faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,valid, &
+      redistribution='none',mol_mode=.true.,internal_energy=held,internal_energy_flux=mpi_faces, &
+      energy_policy=policy,energy_correction=mpi_prefix,internal_energy_pressure_work_change=mpi_work, &
+      internal_energy_projection_change=mpi_projection,internal_energy_closure_change=mpi_closure, &
+      auxiliary_source=native_mpi_auxiliary,auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
+      evaluate_reaction_admission=audit_admission, &
+      reaction_admission_status=admission_status,provider_refused=refused,integrated_flux=gas_flux)
+    else if(reset_request=='mismatch'.and.rank==1) then
+    call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,mol_extended, &
+      dt,1,.true.,source_transport_flags,forcing,1e-8_dp,1e-12_dp,faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,valid, &
+      redistribution='none',mol_mode=.true.,internal_energy=held,internal_energy_flux=mpi_faces, &
+      energy_policy=policy,energy_correction=mpi_prefix,internal_energy_pressure_work_change=mpi_work, &
+      internal_energy_projection_change=mpi_projection,internal_energy_closure_change=mpi_closure, &
+      auxiliary_source=native_mpi_auxiliary,auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
+      evaluate_reaction=audit_reactor, &
+      reaction_admission_status=admission_status,provider_refused=refused,integrated_flux=gas_flux)
+    else
+    call advance_mpi_eb_tree_sdc_3d(species,reactions,transport,topology,owners,geometry,gas,temp,mol_extended, &
+      dt,1,.true.,source_transport_flags,forcing,1e-8_dp,1e-12_dp,faces,mb,mw,mc,me,mt,MPI_COMM_WORLD,valid, &
+      redistribution='none',mol_mode=.true.,internal_energy=held,internal_energy_flux=mpi_faces, &
+      energy_policy=policy,energy_correction=mpi_prefix,internal_energy_pressure_work_change=mpi_work, &
+      internal_energy_projection_change=mpi_projection,internal_energy_closure_change=mpi_closure, &
+      auxiliary_source=native_mpi_auxiliary,auxiliary_change=maux,auxiliary_has_internal_energy=.true., &
+      evaluate_reaction=audit_reactor,evaluate_reaction_admission=audit_admission, &
+      reaction_admission_status=admission_status,provider_refused=refused,integrated_flux=gas_flux)
+    endif
+    expected=reaction_admission_provider_refused
+    if(reset_request=='unknown'.or.reset_request=='missing'.or.reset_request=='mismatch') &
+      expected=reaction_admission_unknown
+    call MPI_Allreduce(admission_status,lo,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,status)
+    call MPI_Allreduce(admission_status,hi,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,status)
+    call require(.not.valid.and.lo==expected.and.hi==expected,'collective explicit admission outcome including idle')
+    call require(refused.eqv.(expected==reaction_admission_provider_refused),'unknown remains distinct from refusal')
+    call require(admission_packet_exact,'failure uses the exact assembled actual packet')
+    if(reset_request=='actual_refused') then
+      call require((rank==1.and.reactor_audits==0).or.(rank/=1.and.reactor_audits==1), &
+        'explicit side-effecting provider refusal is attempted once per owner without retry')
+    else
+      call require(reactor_audits==0,'declined admission never invokes side-effecting evaluator')
+    endif
+    call require(rank/=1.or.admission_calls==0,'idle rank never invokes admission callback')
+    unchanged=allocated(mpi_faces).and.allocated(gas_flux)
+    unchanged=unchanged.and.mpi_prefix==prefix.and.mpi_work==42.and.mpi_projection==43.and.mpi_closure==44
+    unchanged=unchanged.and.all(mb==17).and.all(mw==19).and.all(mc==23).and.all(me==29).and.all(maux==31).and.mt==37
+    do node=1,2
+      unchanged=unchanged.and.(allocated(gas%fields(node)%values).eqv.allocated(saved_gas%fields(node)%values))
+      unchanged=unchanged.and.(allocated(temp%fields(node)%values).eqv.allocated(saved_temp%fields(node)%values))
+      unchanged=unchanged.and.(allocated(held%fields(node)%values).eqv.allocated(saved_held%fields(node)%values))
+      unchanged=unchanged.and.(allocated(gas_flux(node)%x).eqv.(owners(node)==rank))
+      unchanged=unchanged.and.(allocated(gas_flux(node)%y).eqv.(owners(node)==rank))
+      unchanged=unchanged.and.(allocated(gas_flux(node)%z).eqv.(owners(node)==rank))
+      unchanged=unchanged.and.(allocated(mpi_faces(node)%x).eqv.(owners(node)==rank))
+      unchanged=unchanged.and.(allocated(mpi_faces(node)%y).eqv.(owners(node)==rank))
+      unchanged=unchanged.and.(allocated(mpi_faces(node)%z).eqv.(owners(node)==rank))
+      if(owners(node)/=rank) cycle
+      unchanged=unchanged.and.all(gas_flux(node)%x==saved_gas_flux(node)%x).and. &
+        all(gas_flux(node)%y==saved_gas_flux(node)%y).and.all(gas_flux(node)%z==saved_gas_flux(node)%z)
+      unchanged=unchanged.and.all(mpi_faces(node)%x==saved_scalar_flux(node)%x).and. &
+        all(mpi_faces(node)%y==saved_scalar_flux(node)%y).and.all(mpi_faces(node)%z==saved_scalar_flux(node)%z)
+      unchanged=unchanged.and.all(gas%fields(node)%values==saved_gas%fields(node)%values)
+      unchanged=unchanged.and.all(temp%fields(node)%values==saved_temp%fields(node)%values)
+      unchanged=unchanged.and.all(held%fields(node)%values==saved_held%fields(node)%values)
+    enddo
+    call require(unchanged,'admission refusal atomically retains gas temperature held faces and all ledgers')
+    if(rank==0) print *, 'PASS: MPI admission rollback ',trim(reset_request),' status=',admission_status
+  end subroutine check_admission_refusal
+
   subroutine audit_reactor(table,rates,old_energy,external_species,external_energy,duration,rtol,atol, &
       rhoy,temperature,steps,ok,maximum_steps)
     type(nasa7_species), intent(in) :: table(:)
@@ -584,6 +799,15 @@ contains
     real(dp) :: endpoint(size(rhoy)),rho,energy,test_t,original_h
     logical :: valid
     steps=0;ok=.false.;reactor_audits=reactor_audits+1
+    if(admission_mode) then
+      admission_packet_exact=admission_packet_exact.and.allocated(admitted_packet)
+      if(allocated(admitted_packet)) admission_packet_exact=admission_packet_exact.and. &
+        all(admitted_packet==[old_energy,external_species,external_energy,duration,rtol,atol,rhoy,temperature]).and. &
+        last_admission_status==reaction_admission_accepted
+      if(reset_request=='actual_refused') then
+        rhoy=-1;temperature=-1;return
+      endif
+    endif
     if(kinetic_reactor) then
       original_h=initial_h%fields(2)%values(1,4,2,2)
       valid=abs(old_energy-original_h)<=32*epsilon(1._dp)*max(1._dp,abs(original_h))

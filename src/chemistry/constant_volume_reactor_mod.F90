@@ -25,7 +25,14 @@ module constant_volume_reactor_mod
   public :: backward_euler_trial
   public :: advance_constant_volume_implicit_adaptive
 
-  public :: forced_reactor_integrator
+  ! Admission is an opt-in, side-effect-free capability. A rejected status
+  ! requires a physical admissibility certificate; solver failure is unknown.
+  ! For fixed inputs and provider configuration within one caller invocation,
+  ! the outcome must be repeatable so private probes may memoize exact packets.
+  integer, parameter, public :: reaction_admission_not_attempted=-1, reaction_admission_accepted=0
+  integer, parameter, public :: reaction_admission_rejected=1, reaction_admission_unknown=2
+  integer, parameter, public :: reaction_admission_provider_refused=3
+  public :: forced_reactor_integrator,forced_reactor_admission,check_forced_reactor_admission
   abstract interface
     subroutine forced_reactor_integrator(species,reactions,initial_energy_density,external_species, &
         external_energy,duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps)
@@ -38,8 +45,39 @@ module constant_volume_reactor_mod
       logical, intent(out) :: ok
       integer, optional, intent(in) :: maximum_steps
     end subroutine
+    subroutine forced_reactor_admission(species,reactions,initial_energy_density,external_species, &
+        external_energy,duration,rtol,atol,species_density,temperature,status)
+      import :: dp,nasa7_species,elementary_reaction
+      type(nasa7_species), intent(in) :: species(:)
+      type(elementary_reaction), intent(in) :: reactions(:)
+      real(dp), intent(in) :: initial_energy_density,external_species(:),external_energy,duration,rtol,atol
+      real(dp), intent(in) :: species_density(:),temperature
+      integer, intent(out) :: status
+    end subroutine
   end interface
 contains
+
+  ! The caller supplies its work budget explicitly. This helper certifies only
+  ! successful completion; a failed numerical trial is never a physical proof.
+  subroutine check_forced_reactor_admission(species,reactions,initial_energy_density,external_species, &
+      external_energy,duration,rtol,atol,species_density,temperature,status,maximum_steps)
+    type(nasa7_species), intent(in) :: species(:)
+    type(elementary_reaction), intent(in) :: reactions(:)
+    real(dp), intent(in) :: initial_energy_density,external_species(:),external_energy,duration,rtol,atol
+    real(dp), intent(in) :: species_density(:),temperature
+    integer, intent(out) :: status
+    integer, intent(in) :: maximum_steps
+    real(dp) :: trial(size(species_density)),trial_t
+    integer :: steps
+    logical :: ok
+    status=reaction_admission_unknown
+    if(maximum_steps<1) return
+    trial=species_density;trial_t=temperature
+    call advance_forced_reactor_interval(species,reactions,initial_energy_density,external_species,external_energy, &
+      duration,rtol,atol,trial,trial_t,steps,ok,maximum_steps=maximum_steps)
+    if(ok) status=reaction_admission_accepted
+  end subroutine check_forced_reactor_admission
+
 
   ! PeleC React.cpp stores -sum(h_k I_R_k), using accepted-time species
   ! mass enthalpies and chemical rhoY rates (external forcing excluded).

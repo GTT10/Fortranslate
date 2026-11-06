@@ -658,6 +658,33 @@ target_link_libraries(test_conservative_reflux_budget PRIVATE pelef_core)
 add_test(NAME unit_conservative_reflux_budget COMMAND test_conservative_reflux_budget)
 set_tests_properties(unit_conservative_reflux_budget PROPERTIES TIMEOUT 30 LABELS "amr;reflux;conservation")
 
+add_executable(test_eb_native_donor_admission_3d unit/test_eb_native_donor_admission_3d.F90)
+target_link_libraries(test_eb_native_donor_admission_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_native_donor_admission_3d COMMAND test_eb_native_donor_admission_3d)
+set_tests_properties(unit_eb_native_donor_admission_3d PROPERTIES TIMEOUT 30 LABELS "eb;admission;conservation;rollback")
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(test_eb_native_donor_admission_3d PRIVATE
+    -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+endif()
+
+add_executable(test_eb_reaction_admission_contract_3d unit/test_eb_reaction_admission_contract_3d.F90)
+target_link_libraries(test_eb_reaction_admission_contract_3d PRIVATE pelef_core)
+add_test(NAME unit_eb_reaction_admission_contract_3d COMMAND test_eb_reaction_admission_contract_3d)
+set_tests_properties(unit_eb_reaction_admission_contract_3d PROPERTIES TIMEOUT 60 LABELS "eb;chemistry;admission;rollback")
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(test_eb_reaction_admission_contract_3d PRIVATE
+    -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+endif()
+
+add_executable(test_reaction_admission_contract unit/test_reaction_admission_contract.F90)
+target_link_libraries(test_reaction_admission_contract PRIVATE pelef_core)
+add_test(NAME unit_reaction_admission_contract COMMAND test_reaction_admission_contract)
+set_tests_properties(unit_reaction_admission_contract PROPERTIES TIMEOUT 60 LABELS "chemistry;forcing;admission")
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(test_reaction_admission_contract PRIVATE
+    -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+endif()
+
 add_executable(test_forced_signed_trials unit/test_forced_signed_trials.F90)
 target_link_libraries(test_forced_signed_trials PRIVATE pelef_core)
 add_test(NAME unit_forced_signed_trials COMMAND test_forced_signed_trials)

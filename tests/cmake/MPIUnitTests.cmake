@@ -1650,6 +1650,27 @@ if(TARGET test_mpi_eb_tree_hydro_3d)
     set_tests_properties(unit_mpi_eb_kinetic_${source_kind}_source_3d_3 PROPERTIES
       PROCESSORS 3 TIMEOUT 300 LABELS "mpi;eb;sdc;dual_energy;source_recovery;kinetics")
   endforeach()
+  add_test(NAME unit_mpi_eb_admit_inert_corrector_source_3d_3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_held_reset_ledger_3d> eos_source corrector_material admit_inert ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_eb_admit_inert_corrector_source_3d_3 PROPERTIES
+    PROCESSORS 3 TIMEOUT 180 LABELS "mpi;eb;sdc;dual_energy;source_recovery;reactor_admission")
+  # Each full-interval case preserves the original physics/MPI/replay checks.
+  # Separate registration lets a failed case rerun without repeating its peers.
+  foreach(admission_case IN ITEMS godunov1 godunov2 mol1 mol2)
+    add_test(NAME unit_mpi_eb_admit_kinetic_${admission_case}_source_3d_3
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_held_reset_ledger_3d> eos_source corrector_material admit_kinetic normal ${admission_case} ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_mpi_eb_admit_kinetic_${admission_case}_source_3d_3 PROPERTIES
+      PROCESSORS 3 TIMEOUT 600 LABELS "mpi;eb;sdc;dual_energy;source_recovery;reactor_admission;kinetics")
+  endforeach()
+  foreach(admission_outcome IN ITEMS unknown refused actual_refused missing mismatch)
+    add_test(NAME unit_mpi_eb_admission_${admission_outcome}_3d_3
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:test_mpi_eb_held_reset_ledger_3d> eos_source corrector_material admit_inert ${admission_outcome} ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(unit_mpi_eb_admission_${admission_outcome}_3d_3 PROPERTIES
+      PROCESSORS 3 TIMEOUT 60 LABELS "mpi;eb;rollback;reactor_admission")
+  endforeach()
   add_test(NAME unit_mpi_eb_builtin_kinetic_corrector_source_3d_3
     COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
       $<TARGET_FILE:test_mpi_eb_held_reset_ledger_3d> eos_source corrector_material builtin ${MPIEXEC_POSTFLAGS})
@@ -1659,6 +1680,17 @@ if(TARGET test_mpi_eb_tree_hydro_3d)
     target_compile_options(test_mpi_eb_held_reset_ledger_3d PRIVATE
       -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
   endif()
+  add_executable(test_mpi_eb_tree_integral_order_3d unit/test_mpi_eb_tree_integral_order_3d.F90)
+  target_link_libraries(test_mpi_eb_tree_integral_order_3d PRIVATE pelef_mpi_support)
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_mpi_eb_tree_integral_order_3d PRIVATE
+      -fcheck=all -fbacktrace -ffpe-trap=invalid,zero,overflow)
+  endif()
+  add_test(NAME unit_mpi_eb_tree_integral_order_3d_3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:test_mpi_eb_tree_integral_order_3d> ${MPIEXEC_POSTFLAGS})
+  set_tests_properties(unit_mpi_eb_tree_integral_order_3d_3 PROPERTIES
+    PROCESSORS 3 TIMEOUT 30 LABELS "mpi;eb;conservation;reproducibility")
   add_executable(test_mpi_eb_godunov_held_3d unit/test_mpi_eb_godunov_held_3d.F90)
   target_link_libraries(test_mpi_eb_godunov_held_3d PRIVATE pelef_mpi_support)
   add_test(NAME unit_mpi_eb_godunov_held_3d_3

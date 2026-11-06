@@ -7,6 +7,13 @@ opt-in spray scope and qualification boundary are in
 [the spray guide](spray.md) and [0.246.0 validation](validation/0.246.0.md).
 Older milestone prose remains historical detail, not a current global status.
 
+The opt-in EB reaction-admission library and conservative donor checks pass
+17 focused tests, including Godunov/MOL with one/two SDC iterations. A serial
+composite-inventory grouping correction aligns signed-ledger accumulation with
+MPI; this can change serial integral rounding. The legacy kinetic path and
+physical combustion validation remain outside this qualification. See the
+[dated admission evidence](validation/eb-reaction-admission-20261106.md).
+
 The validated 2026-11-06 parallel integration changes have been applied to this
 checkout after user approval. Results and remaining qualification boundaries are
 recorded in [the integration evidence](validation/parallel-integration-20261106.md).

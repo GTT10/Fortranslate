@@ -291,8 +291,10 @@ contains
   subroutine repair_mpi_eb_tree_held_interface_budget_3d(species,tree,owners,geometry,state,temperature, &
       internal_energy,flux,internal_energy_flux,comm,ok,minimum_level,boundary_faces,frame, &
       rereflux_delta,internal_energy_rereflux_delta, &
-      rereflux_first_level,reactor_energy_bias,native_projection)
+      rereflux_first_level,reactor_energy_bias,native_projection,check_native_endpoints)
     procedure(reactive_eb_funding_admission), optional :: native_projection
+    logical, optional, intent(in) :: check_native_endpoints
+    logical :: native_endpoints
     type(amr_tree_state_3d), optional, intent(in) :: reactor_energy_bias
     integer, optional, intent(in) :: rereflux_first_level
     integer :: register_first_level
@@ -314,13 +316,16 @@ contains
     integer :: first_min,first_max
     logical :: valid,ready
     ok=.false.;nv=reactive_nvar(size(species))
+    native_endpoints=.false.
+    if(present(check_native_endpoints)) native_endpoints=check_native_endpoints
     flags=merge(1,0,present(rereflux_delta))+2*merge(1,0,present(internal_energy_rereflux_delta))+ &
       4*merge(1,0,present(rereflux_first_level))+8*merge(1,0,present(reactor_energy_bias))+ &
-      16*merge(1,0,present(native_projection))
+      16*merge(1,0,present(native_projection))+32*merge(1,0,native_endpoints)
     call MPI_Allreduce(flags,flag_min,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(flags,flag_max,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.flag_min/=flag_max) return
+    if(native_endpoints.and..not.present(native_projection)) return
     if(iand(flags,3)/=0.and.iand(flags,3)/=3) return
     register_first_level=minimum_level
     if(present(rereflux_first_level)) register_first_level=rereflux_first_level
@@ -388,7 +393,8 @@ contains
     if(.not.ready) return
     temps=temperature
     call repair_mpi_eb_tree_interface_components_3d(species,tree,owners,geometry,packed,temps,packets,comm,ready, &
-      minimum_level,boundary_faces,frame,packed_delta,1,register_first_level,reactor_energy_bias,native_projection)
+      minimum_level,boundary_faces,frame,packed_delta,1,register_first_level,reactor_energy_bias,native_projection, &
+      check_native_endpoints)
     if(.not.ready) return
     gas_work=state;held_work=internal_energy;gas_faces=flux;held_faces=internal_energy_flux
     do p=1,size(owners)
@@ -431,8 +437,10 @@ contains
 
   subroutine repair_mpi_eb_tree_interface_components_3d(species,tree,owners,geometry,state,temperature,flux,comm,ok, &
       minimum_level,boundary_faces,frame,rereflux_delta, &
-      passive_components,register_first_level,reactor_energy_bias,native_projection)
+      passive_components,register_first_level,reactor_energy_bias,native_projection,check_native_endpoints)
     procedure(reactive_eb_funding_admission), optional :: native_projection
+    logical, optional, intent(in) :: check_native_endpoints
+    logical :: native_endpoints
     type(amr_tree_state_3d), optional, intent(in) :: reactor_energy_bias
     integer, intent(in) :: passive_components,register_first_level
     integer :: active_components
@@ -472,15 +480,18 @@ contains
     logical :: ready,valid,unsafe,covered,local_ok,found,connected_route,periodic(3)
     logical :: route_improved,route_complete,route_can_reroute,immediate_funding
     ok=.false.;immediate_funding=present(native_projection)
+    native_endpoints=.false.
+    if(present(check_native_endpoints)) native_endpoints=check_native_endpoints
     if(present(reactor_energy_bias).and.passive_components/=1) return
     if(passive_components<0.or.passive_components>1) return
     active_components=reactive_nvar(size(species));nv=active_components+passive_components
     register_flag=merge(1,0,present(rereflux_delta))+2*merge(1,0,present(reactor_energy_bias))+ &
-      4*merge(1,0,immediate_funding)
+      4*merge(1,0,immediate_funding)+8*merge(1,0,native_endpoints)
     call MPI_Allreduce(register_flag,register_low,1,MPI_INTEGER,MPI_MIN,comm,status)
     if(status/=MPI_SUCCESS) return
     call MPI_Allreduce(register_flag,register_high,1,MPI_INTEGER,MPI_MAX,comm,status)
     if(status/=MPI_SUCCESS.or.register_low/=register_high) return
+    if(native_endpoints.and..not.immediate_funding) return
     if(immediate_funding.and..not.present(rereflux_delta)) return
     if(present(rereflux_delta)) then
       call route_mpi_eb_tree_rereflux_3d(tree,owners,rereflux_delta,nv,register_first_level,minimum_level+1, &
@@ -939,6 +950,16 @@ contains
           endif
           call MPI_Bcast(unsafe,1,MPI_LOGICAL,coarse_owner,comm,status)
           if(status/=MPI_SUCCESS) return
+          if(native_endpoints.and..not.unsafe) then
+            ! The callback reconstructs the pending source once from the
+            ! pre-register inventory. Every rank enters its collectives.
+            if(rank==coarse_owner) endpoint=candidate%fields(parent)%values(:,i,j,k)
+            call MPI_Bcast(endpoint,nv,MPI_DOUBLE_PRECISION,coarse_owner,comm,status)
+            if(status/=MPI_SUCCESS) return
+            call native_projection(parent,coarse_cell,endpoint,.true.,valid)
+            call agree(valid,comm,ready)
+            unsafe=.not.ready
+          endif
           if(.not.unsafe) cycle
           coarse_volume=cell_volume(parent,coarse_cell)
           call fund_exposed_coarse_endpoint(valid)
@@ -980,6 +1001,23 @@ contains
           endif
           call MPI_Bcast(unsafe,1,MPI_LOGICAL,coarse_owner,comm,status)
           if(status/=MPI_SUCCESS) return
+          if(native_endpoints.and..not.unsafe) then
+            ! The callback reconstructs the pending source once from the
+            ! pre-register inventory. Every rank enters its collectives.
+            valid=.true.
+            if(rank==coarse_owner) then
+              endpoint=candidate%fields(parent)%values(:,i,j,k)
+              if(present(rereflux_delta)) call add_mpi_eb_delta_cell_3d(endpoint, &
+                -routed_register%fields(parent)%values(:,i,j,k),valid)
+            endif
+            call agree(valid,comm,ready)
+            if(.not.ready) return
+            call MPI_Bcast(endpoint,nv,MPI_DOUBLE_PRECISION,coarse_owner,comm,status)
+            if(status/=MPI_SUCCESS) return
+            call native_projection(parent,coarse_cell,endpoint,.true.,valid)
+            call agree(valid,comm,ready)
+            unsafe=.not.ready
+          endif
           if(.not.unsafe) cycle
           coarse_volume=cell_volume(parent,coarse_cell)
           call fund_exposed_fine_endpoint(valid)
@@ -1112,7 +1150,7 @@ contains
           funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
           reactor_energy_bias=[bias_view%fields(parent)%values(1,coarse_cell(1),coarse_cell(2),coarse_cell(3)), &
             bias_view%fields(donor_node)%values(1,donor_cell(1),donor_cell(2),donor_cell(3))], &
-          native_projection=native_projection,inventory_nodes=[parent,donor_node])
+          native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=native_endpoints)
         return
       endif
       inventory_required=present(native_projection)
@@ -1126,13 +1164,13 @@ contains
             call supply_reactive_eb_gas_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
               geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
               funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
-              native_projection=native_projection,inventory_nodes=[parent,donor_node])
+              native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=native_endpoints)
           else
             call supply_reactive_eb_gas_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
               geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
               funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
               reactor_energy_bias=[0._dp,0._dp], &
-              native_projection=native_projection,inventory_nodes=[parent,donor_node])
+              native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=native_endpoints)
           endif
           return
       endif
@@ -1161,7 +1199,7 @@ contains
         call supply_reactive_eb_gas_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
           geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
           funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
-              native_projection=native_projection,inventory_nodes=[parent,donor_node])
+              native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=native_endpoints)
       else
         call supply_reactive_eb_held_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
           geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &

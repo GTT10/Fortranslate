@@ -937,7 +937,8 @@ contains
   subroutine supply_reactive_eb_gas_eos_donor_3d(species,target_geometry,target_cell,target_guess, &
       donor_geometry,donor_cell,donor_guess,target,correction,target_volume,donor,donor_correction,donor_volume, &
       funded_target,funded_donor,packet,complete,ok,frame,allow_raw_target,reactor_energy_bias, &
-      native_projection,inventory_nodes)
+      native_projection,inventory_nodes,check_native_target)
+    logical, optional, intent(in) :: check_native_target
     type(nasa7_species), intent(in) :: species(:)
     type(eb_geometry_3d), intent(in) :: target_geometry,donor_geometry
     integer, intent(in) :: target_cell(3),donor_cell(3)
@@ -966,8 +967,11 @@ contains
     real(dp) :: refused_fraction,accepted_fraction,probe_fraction
     integer :: refinement
     integer :: sides
-    logical :: valid,post_valid,progress,raw_target,joint
+    logical :: valid,post_valid,progress,raw_target,joint,native_target_required
     ok=.false.;complete=.false.;gas_nv=reactive_nvar(size(species))
+    native_target_required=.false.
+    if(present(check_native_target)) native_target_required=check_native_target
+    if(native_target_required.and..not.present(native_projection)) return
     if(present(native_projection).and..not.present(inventory_nodes)) return
     if(present(inventory_nodes)) then
       if(any(inventory_nodes<1)) return
@@ -1003,7 +1007,13 @@ contains
     call recover_endpoint(baseline(:,2),2,valid)
     ! The downstream gas/species gate is strict even when caloric recovery
     ! tolerates a tiny negative mass fraction. Continue the donor search.
-    if(valid.and.baseline(1,2)>density_floor.and.all(baseline(6:gas_nv,2)>=0)) return
+    if(valid.and.baseline(1,2)>density_floor.and.all(baseline(6:gas_nv,2)>=0)) then
+      if(.not.native_target_required) return
+      ! A statically valid endpoint can still fail its actual forced reactor.
+      ! Query the pre-debt target: the caller adds the original source once.
+      call native_projection(inventory_nodes(1),target_cell,baseline(:,1),.true.,valid)
+      if(valid) return
+    endif
     do q=1,4
       if(q==2) cycle
       if(baseline(1,q)<=density_floor.or.any(baseline(6:gas_nv,q)<0)) return

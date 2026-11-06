@@ -11,7 +11,9 @@ module eb_reactive_patch_tree_3d_mod
     read_eb_held_funding_open_faces_3d,take_eb_held_funding_target_3d,take_eb_held_funding_bucket_3d, &
     read_eb_held_funding_stock_3d,queue_eb_held_funding_receipt_3d
   use precision_mod, only: dp
-  use constant_volume_reactor_mod, only: forced_reactor_integrator,advance_forced_reactor_interval
+  use constant_volume_reactor_mod, only: forced_reactor_integrator,advance_forced_reactor_interval, &
+    forced_reactor_admission,reaction_admission_not_attempted,reaction_admission_accepted, &
+    reaction_admission_rejected,reaction_admission_unknown,reaction_admission_provider_refused
   use dual_energy_mod, only: dual_energy_policy,reset_nasa7_dual_energy_patch,reset_nasa7_dual_energy_cell, &
     initialize_nasa7_internal_energy_patch
   use nasa7_thermo_mod, only: nasa7_species
@@ -3703,7 +3705,13 @@ contains
   ! until all selected cells pass the unchanged reaction/EOS gates.
   subroutine replay_reactive_eb_mol_held_interval_3d(species,reactions,tree,stored,reaction_source,prefix,history, &
       flux,scalar_flux,chemical_change,rtol,atol,ok,evaluate_reaction,frame,heat_release,provider_refused, &
-      source_funding_stock,source_funding_impulse)
+      source_funding_stock,source_funding_impulse, &
+      evaluate_reaction_admission,reaction_admission_status)
+    procedure(forced_reactor_admission), optional :: evaluate_reaction_admission
+    integer, optional, intent(out) :: reaction_admission_status
+    integer :: admission_result
+    logical :: admission_enabled
+
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_reactive_tree_3d), intent(inout) :: tree
@@ -3729,6 +3737,16 @@ contains
     real(dp) :: initial_scalar_reset
     type(amr_tree_state_3d) :: projection_delta
     logical :: good,refused
+    if(present(provider_refused)) provider_refused=.false.
+    admission_enabled=present(evaluate_reaction_admission)
+    admission_result=reaction_admission_not_attempted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
+    if(admission_enabled.and.present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
+    if(admission_enabled.and..not.present(evaluate_reaction)) then
+      ok=.false.
+      if(present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
+      return
+    endif
     ok=.false.;nv=reactive_nvar(size(species));refused=.false.;nullify(integrator)
     if(present(provider_refused)) provider_refused=.false.
     if(.not.ieee_is_finite(prefix).or.size(chemical_change)/=nv) return
@@ -3843,10 +3861,14 @@ contains
     record%held_clock_projection_before=0;record%held_clock_reset_before=0
     record%held_clock_projection_after=0;record%held_clock_reset_after=0
     record%replayed=.true.
+    if(admission_result==reaction_admission_provider_refused) return
     if(present(source_funding_impulse)) source_funding_impulse=record%source_funding_impulse
     tree=candidate;stored=held;reaction_source=ir;prefix=correction;chemical_change=amount;history=record
     if(present(heat_release)) heat_release=heat
     ok=.true.
+    if(admission_result>=0.and.admission_result/=reaction_admission_provider_refused) &
+      admission_result=reaction_admission_accepted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
   contains
     subroutine classified_reactor(species,reactions,energy,source_species,source_energy,duration,rtol,atol, &
         density,temperature,steps,ok,maximum_steps)
@@ -3861,9 +3883,26 @@ contains
       integer :: probe_steps
       logical :: native_ok
       probe=density;probe_t=temperature
+      if(admission_enabled) then
+        steps=0;ok=.false.
+        if(admission_result==reaction_admission_provider_refused) return
+        call evaluate_reaction_admission(species,reactions,energy,source_species,source_energy,duration,rtol,atol, &
+          density,temperature,probe_steps)
+        if(probe_steps<reaction_admission_accepted.or.probe_steps>reaction_admission_provider_refused) &
+          probe_steps=reaction_admission_unknown
+        admission_result=max(admission_result,probe_steps)
+        if(present(reaction_admission_status)) reaction_admission_status=admission_result
+        refused=probe_steps==reaction_admission_provider_refused
+        if(probe_steps/=reaction_admission_accepted) return
+      endif
       call evaluate_reaction(species,reactions,energy,source_species,source_energy,duration,rtol,atol, &
         density,temperature,steps,ok,maximum_steps)
       if(ok) return
+      if(admission_enabled) then
+        refused=.true.;admission_result=reaction_admission_provider_refused
+        if(present(reaction_admission_status)) reaction_admission_status=admission_result
+        return
+      endif
       call advance_forced_reactor_interval(species,reactions,energy,source_species,source_energy,duration,rtol,atol, &
         probe,probe_t,probe_steps,native_ok,maximum_steps=maximum_steps)
       refused=refused.or.native_ok
@@ -3890,7 +3929,13 @@ contains
   ! later fine old family already contaminated by the discarded parent solve.
   subroutine replay_reactive_eb_mol_held_group_3d(species,reactions,tree,stored,reaction_source,prefix,history, &
       weight,flux,scalar_flux,chemical_change,rtol,atol,ok,boundary_faces,evaluate_reaction,frame,heat_release, &
-      provider_refused)
+      provider_refused, &
+      evaluate_reaction_admission,reaction_admission_status)
+    procedure(forced_reactor_admission), optional :: evaluate_reaction_admission
+    integer, optional, intent(out) :: reaction_admission_status
+    integer :: admission_result,step_admission_status
+    logical :: admission_enabled
+
     type(nasa7_species), intent(in) :: species(:)
     type(elementary_reaction), intent(in) :: reactions(:)
     type(eb_reactive_tree_3d), intent(inout) :: tree
@@ -3922,6 +3967,16 @@ contains
     integer :: closing_record
     integer :: nv,levels,depth,r,q,p,lev,next_depth,closure,bucket,target
     logical :: good,refused
+    if(present(provider_refused)) provider_refused=.false.
+    admission_enabled=present(evaluate_reaction_admission)
+    admission_result=reaction_admission_not_attempted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
+    if(admission_enabled.and.present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
+    if(admission_enabled.and..not.present(evaluate_reaction)) then
+      ok=.false.
+      if(present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
+      return
+    endif
     ok=.false.;nv=reactive_nvar(size(species))
     if(present(provider_refused)) provider_refused=.false.
     if(size(history)<1.or.size(chemical_change)/=nv.or..not.ieee_is_finite(prefix)) return
@@ -4050,7 +4105,10 @@ contains
       endif
       call replay_reactive_eb_mol_held_interval_3d(species,reactions,work,held,ir,correction,records(r), &
         family(r)%faces,family(r)%scalar_faces,amount,rtol,atol,good, &
-        evaluate_reaction,frame,heat,refused)
+        evaluate_reaction,frame,heat,refused, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       if(present(provider_refused)) provider_refused=refused
       if(.not.good.or.refused) return
       ! The first canonical anchor already includes its accepted old entry
@@ -4134,10 +4192,14 @@ contains
         scalar_result(p)%z=scalar_result(p)%z+family(r)%scalar_faces(p)%z
       enddo
     enddo
+    if(admission_result==reaction_admission_provider_refused) return
     tree=work;stored=held;reaction_source=ir;prefix=correction;chemical_change=chemical;history=records
     call move_alloc(result,flux);call move_alloc(scalar_result,scalar_flux)
     if(present(heat_release)) heat_release=heat
     ok=.true.
+    if(admission_result>=0.and.admission_result/=reaction_admission_provider_refused) &
+      admission_result=reaction_admission_accepted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
   end subroutine replay_reactive_eb_mol_held_group_3d
 
   ! Recursive SDC with interval-owned redistribution registers. Each register
@@ -4158,7 +4220,13 @@ contains
       godunov_recovery_history,godunov_recovery_ready,source_funding_context,native_replay_history, &
       native_spatial_weight,native_common_retries,native_replay_prefix,native_replay_preserve_weights, &
       separate_momentum,consistent_velocity,paired_pressure,connected_directions,observe_mol,observe_mol_sync, &
-      observe_mol_reaction)
+      observe_mol_reaction, &
+      evaluate_reaction_admission,reaction_admission_status)
+    procedure(forced_reactor_admission), optional :: evaluate_reaction_admission
+    integer, optional, intent(out) :: reaction_admission_status
+    integer :: admission_result,step_admission_status
+    logical :: admission_enabled
+
     procedure(eb_mol_sync_observer), optional :: observe_mol_sync
     logical :: observe_sync_enabled
     procedure(eb_mol_reaction_observer), optional :: observe_mol_reaction
@@ -4336,6 +4404,16 @@ contains
     real(dp) :: external(size(source_change)),theta
     integer :: nv,node,n(3),levels,c
     logical :: valid
+    if(present(provider_refused)) provider_refused=.false.
+    admission_enabled=present(evaluate_reaction_admission)
+    admission_result=reaction_admission_not_attempted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
+    if(admission_enabled.and.present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
+    if(admission_enabled.and.(.not.present(evaluate_reaction).or..not.chemistry)) then
+      ok=.false.
+      if(present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
+      return
+    endif
     if(present(native_common_retries)) native_common_retries=0_int64
     if(present(godunov_recovery_ready)) godunov_recovery_ready=.false.
     held_auxiliary=.false.
@@ -4858,6 +4936,7 @@ contains
       call rebuild_serial_mol_held_clock_prefixes_3d(held_history,valid)
       if(.not.valid) return
     endif
+    if(admission_result==reaction_admission_provider_refused) return
     call prepare_godunov_parent_outputs(valid)
     if(.not.valid) return
     if(replaying_prepared) then
@@ -4899,6 +4978,9 @@ contains
     if(present(source_funding_context)) &
       call move_eb_held_funding_context_3d(funding_context_work,source_funding_context)
     ok=.true.
+    if(admission_result>=0.and.admission_result/=reaction_admission_provider_refused) &
+      admission_result=reaction_admission_accepted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
   contains
     subroutine apply_native_funding_receipt(receipt,good)
       type(amr_tree_state_3d), intent(in) :: receipt
@@ -5438,7 +5520,10 @@ contains
         godunov_routed_pending=result%routed_pending,provider_refused=result%refused, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,observe_mol_sync=observe_mol_sync,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,observe_mol_sync=observe_mol_sync,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
     end subroutine build_godunov_group_trial
     subroutine validate_godunov_family(good)
       logical, intent(out) :: good
@@ -5888,7 +5973,10 @@ contains
         spatial_diffusion_is_source=external_diffusion_source,auxiliary_has_internal_energy=held_auxiliary, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,observe_mol_sync=observe_mol_sync,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,observe_mol_sync=observe_mol_sync,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+        admission_result=max(admission_result,step_admission_status)
+        if(present(reaction_admission_status)) reaction_admission_status=admission_result
       else if(allocated(funding_context_work)) then
         ! Replay the actual recursive clock and pre-payment anchor. A legacy
         ! face-only group cannot migrate pending receipts or open ancestors.
@@ -5914,11 +6002,17 @@ contains
           spatial_diffusion_is_source=external_diffusion_source,auxiliary_has_internal_energy=held_auxiliary, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,observe_mol_sync=observe_mol_sync,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,observe_mol_sync=observe_mol_sync,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+        admission_result=max(admission_result,step_admission_status)
+        if(present(reaction_admission_status)) reaction_admission_status=admission_result
       else
       call replay_reactive_eb_mol_held_group_3d(species,reactions,result%tree,result%stored, &
         result%reaction_source,result%prefix,result%records,weight,result%flux,result%scalar_flux, &
-        result%chemical,rtol,atol,good,boundary_faces,evaluate_reaction,frame,result%heat,refused)
+        result%chemical,rtol,atol,good,boundary_faces,evaluate_reaction,frame,result%heat,refused, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       endif
       held_replay_provider_refused=held_replay_provider_refused.or.refused
     end subroutine build_held_parent_trial
@@ -6426,7 +6520,10 @@ contains
         source_funding_stock=funding_stock,source_funding_impulse=funding_receipt, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
@@ -6452,7 +6549,10 @@ contains
         source_funding_stock=funding_stock,source_funding_impulse=funding_receipt, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       endif
       held_replay_provider_refused=held_replay_provider_refused.or.step_refused
       else
@@ -6483,7 +6583,10 @@ contains
         native_source_replay=native_prefix_input, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
@@ -6510,7 +6613,10 @@ contains
         native_source_replay=native_prefix_input, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       endif
       endif
       else if(prepared_redist) then
@@ -6527,7 +6633,10 @@ contains
         spatial_diffusion_is_source=external_diffusion_source,auxiliary_has_internal_energy=held_auxiliary, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
@@ -6541,7 +6650,10 @@ contains
         spatial_diffusion_is_source=external_diffusion_source,auxiliary_has_internal_energy=held_auxiliary, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       end if
       else
       if(has_auxiliary) then
@@ -6557,7 +6669,10 @@ contains
         spatial_diffusion_is_source=external_diffusion_source,auxiliary_has_internal_energy=held_auxiliary, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       else
       call advance_reactive_eb_tree_sdc_3d(species,reactions,transport,interval,iterations,chemistry, &
         transport_flags,force,rtol,atol,candidate,extended_geometry,boundary_faces,b,w,ch,ext,limiter,accepted,ir, &
@@ -6571,7 +6686,10 @@ contains
         spatial_diffusion_is_source=external_diffusion_source,auxiliary_has_internal_energy=held_auxiliary, &
         separate_momentum=selected_momentum, &
         consistent_velocity=selected_velocity,paired_pressure=selected_pressure,connected_directions=selected_connected, &
-        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction)
+        observe_mol=observe_mol,diagnostic_time=time,observe_mol_reaction=observe_mol_reaction, &
+        evaluate_reaction_admission=evaluate_reaction_admission,reaction_admission_status=step_admission_status)
+      admission_result=max(admission_result,step_admission_status)
+      if(present(reaction_admission_status)) reaction_admission_status=admission_result
       end if
       endif
       if(accepted.or..not.native_retry_enabled) exit
@@ -7177,7 +7295,14 @@ contains
       godunov_source_recovery,godunov_source_recovery_ready,source_funding_stock,source_funding_impulse, &
       internal_energy_projection_change,internal_energy_closure_change,freeze_native_external_sources,native_spatial_weight, &
       native_source_prefix,native_source_prefix_ready,native_source_replay, &
-      separate_momentum,consistent_velocity,paired_pressure,connected_directions,observe_mol,diagnostic_time,observe_mol_reaction)
+      separate_momentum,consistent_velocity,paired_pressure,connected_directions,observe_mol,diagnostic_time,observe_mol_reaction, &
+      evaluate_reaction_admission,reaction_admission_status)
+    procedure(forced_reactor_admission), optional :: evaluate_reaction_admission
+    integer, optional, intent(out) :: reaction_admission_status
+    integer :: admission_result,probe_admission_result
+    integer :: admission_cache_count,admission_cache_next,admission_cache_results(16)
+    integer(int64), allocatable :: admission_cache_packets(:,:)
+    logical :: admission_enabled
     procedure(eb_mol_reaction_observer), optional :: observe_mol_reaction
     procedure(eb_mol_stage_observer), optional :: observe_mol
     real(dp), optional, intent(in) :: diagnostic_time
@@ -7338,6 +7463,12 @@ contains
     procedure(forced_reactor_integrator), pointer :: held_prepared_integrator
     real(dp) :: held_spatial_weight
     logical :: held_prepared,prepared_reacted,prepared_provider_refused,auxiliary_present
+    if(present(provider_refused)) provider_refused=.false.
+    admission_enabled=present(evaluate_reaction_admission)
+    admission_cache_count=0;admission_cache_next=1
+    admission_result=reaction_admission_not_attempted
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
+    if(admission_enabled.and.present(reaction_admission_status)) reaction_admission_status=reaction_admission_unknown
     godunov_partial=.false.
     if(present(godunov_replay_partial)) godunov_partial=godunov_replay_partial
     godunov_stage_capture=present(godunov_interval_history).or.present(godunov_source_recovery)
@@ -7349,10 +7480,21 @@ contains
     if(present(native_source_prefix_ready)) native_source_prefix_ready=.false.
     ok=.false.
     call run_common()
-    if(.not.ok.and.godunov_recovery_agreed) call publish_source_prefix()
-    if(.not.ok.and.native_prefix_agreed) call publish_native_source_prefix()
+    if(ok.and.admission_result>=0.and.admission_result/=reaction_admission_provider_refused) &
+      admission_result=reaction_admission_accepted
+    if(admission_enabled.and..not.ok.and.admission_result<0) admission_result=reaction_admission_unknown
+    if(present(reaction_admission_status)) reaction_admission_status=admission_result
+    if(admission_result/=reaction_admission_provider_refused) then
+      if(.not.ok.and.godunov_recovery_agreed) call publish_source_prefix()
+      if(.not.ok.and.native_prefix_agreed) call publish_native_source_prefix()
+    endif
   contains
     subroutine run_common()
+    if(admission_enabled) then
+      if(.not.present(evaluate_reaction).or..not.chemistry) then
+        admission_result=reaction_admission_unknown;return
+      endif
+    endif
     if(present(native_source_prefix).neqv.present(native_source_prefix_ready)) return
     native_prefix_agreed=present(native_source_prefix)
     if(present(godunov_source_recovery).neqv.present(godunov_source_recovery_ready)) return
@@ -8161,8 +8303,13 @@ contains
           evaluate_reaction=godunov_reactor_adapter,frame=frame,heat_release=heat, &
           internal_energy=held_candidate,old_internal_energy=held_old)
         else
+        if(admission_enabled) then
+          call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid,target_depth, &
+            evaluate_reaction=classified_held_prepared_reactor,frame=frame,heat_release=heat)
+        else
         call react_sdc_eb_tree_3d(species,reactions,old,rates,dt,rtol,atol,u,t,ir,valid,target_depth, &
           evaluate_reaction=evaluate_reaction,frame=frame,heat_release=heat)
+        endif
         endif
         if(.not.valid) return
         if(mol.and.present(observe_mol_reaction)) then
@@ -8644,9 +8791,11 @@ contains
     if(godunov_stage_capture) then
       call finish_godunov_history(valid)
       if(.not.valid) return
+      if(admission_result==reaction_admission_provider_refused) return
       if(present(godunov_interval_history)) &
         call move_godunov_interval_3d(godunov_history,godunov_interval_history)
     endif
+    if(admission_result==reaction_admission_provider_refused) return
     if(present(held_interval_history)) held_interval_history=held_history_work
     if(present(source_funding_impulse)) call move_alloc(funding_receipt%fields,source_funding_impulse%fields)
     if(present(reaction_source)) reaction_source=ir
@@ -9173,9 +9322,23 @@ contains
       integer :: probe_steps
       logical :: native_ok
       probe=species_density;probe_t=temperature
+      if(admission_enabled) then
+        call check_admission_packet(species,reactions,initial_energy_density,external_species,external_energy, &
+          duration,rtol,atol,species_density,temperature,probe_steps)
+        completed_steps=0;ok=.false.
+        if(probe_steps/=reaction_admission_accepted) return
+      endif
       call evaluate_reaction(species,reactions,initial_energy_density,external_species,external_energy, &
         duration,rtol,atol,species_density,temperature,completed_steps,ok,maximum_steps)
       if(ok) return
+      if(admission_enabled) then
+        ! The exact packet was certified before the one actual provider call.
+        ! A refusal must not trigger another provider call or a substitute solve.
+        admission_result=reaction_admission_provider_refused
+        prepared_provider_refused=.true.;godunov_recovery_forbidden=.true.
+        if(present(provider_refused)) provider_refused=.true.
+        return
+      endif
       ! Classification proves admissibility; it never adopts the native result
       ! or retries a supplied provider that refused that admissible input.
       call advance_forced_reactor_interval(species,reactions,initial_energy_density,external_species,external_energy, &
@@ -9738,6 +9901,8 @@ contains
               if(.not.cell_ok) call try_default_reactor_cell(p,[x,y,z],cell_ok)
             endif
           endif
+          if(cell_ok.and.chemistry.and.admission_enabled) &
+            call try_default_reactor_cell(p,[x,y,z],cell_ok)
           ! Previously funded material retains its independently conserved H.
           ! Ordinary unfunded thermal resets keep the pinned policy path.
           if(cell_ok.and.source_funded.and..not.chemistry) then
@@ -9749,6 +9914,7 @@ contains
         enddo
         enddo
       enddo
+      if(admission_result==reaction_admission_provider_refused) return
       good=.true.
       if(.not.unsafe) return
       call fund_held_native_stage(good,corrector=.true.)
@@ -9803,6 +9969,70 @@ contains
 
     ! A private built-in trial preserves chemistry's actual admission. It
     ! publishes no state/history and invokes no caller-owned reactor provider.
+    subroutine check_admission_packet(table,rates,energy,source_species,source_energy,duration,rel_tol,abs_tol, &
+        density,temperature,status,memoize)
+      type(nasa7_species), intent(in) :: table(:)
+      type(elementary_reaction), intent(in) :: rates(:)
+      real(dp), intent(in) :: energy,source_species(:),source_energy,duration,rel_tol,abs_tol,density(:),temperature
+      integer, intent(out) :: status
+      logical, optional, intent(in) :: memoize
+      integer(int64) :: packet(2*size(density)+6)
+      integer :: entry,allocation_status
+      logical :: cached,use_cache
+      status=reaction_admission_provider_refused
+      if(admission_result==reaction_admission_provider_refused) return
+      use_cache=.false.;cached=.false.
+      if(present(memoize)) use_cache=memoize
+      if(use_cache) then
+        ! Species/mechanism and provider configuration are fixed for this
+        ! invocation. Repeated private queries of the identical immutable
+        ! packet must give the same result under the opt-in capability.
+        packet=transfer([energy,source_species,source_energy,duration,rel_tol,abs_tol,density,temperature],packet)
+        if(.not.allocated(admission_cache_packets)) then
+          allocate(admission_cache_packets(size(packet),16),stat=allocation_status)
+          if(allocation_status/=0) use_cache=.false.
+        endif
+        if(use_cache) then
+          do entry=1,admission_cache_count
+            if(.not.all(packet==admission_cache_packets(:,entry))) cycle
+            status=admission_cache_results(entry);cached=.true.;exit
+          enddo
+        endif
+      endif
+      if(.not.cached) then
+        call evaluate_reaction_admission(table,rates,energy,source_species,source_energy,duration,rel_tol,abs_tol, &
+          density,temperature,status)
+        if(status<reaction_admission_accepted.or.status>reaction_admission_provider_refused) &
+          status=reaction_admission_unknown
+        if(use_cache) then
+          admission_cache_packets(:,admission_cache_next)=packet
+          admission_cache_results(admission_cache_next)=status
+          admission_cache_count=min(16,admission_cache_count+1)
+          admission_cache_next=mod(admission_cache_next,16)+1
+        endif
+      endif
+      admission_result=max(admission_result,status)
+      if(status==reaction_admission_provider_refused) then
+        prepared_provider_refused=.true.;godunov_recovery_forbidden=.true.
+        if(present(provider_refused)) provider_refused=.true.
+      endif
+    end subroutine check_admission_packet
+
+    subroutine admission_packet_adapter(table,rates,energy,source_species,source_energy,duration,rel_tol,abs_tol, &
+        density,temperature,steps,ok,maximum_steps)
+      type(nasa7_species), intent(in) :: table(:)
+      type(elementary_reaction), intent(in) :: rates(:)
+      real(dp), intent(in) :: energy,source_species(:),source_energy,duration,rel_tol,abs_tol
+      real(dp), intent(inout) :: density(:),temperature
+      integer, intent(out) :: steps
+      logical, intent(out) :: ok
+      integer, optional, intent(in) :: maximum_steps
+      call check_admission_packet(table,rates,energy,source_species,source_energy,duration,rel_tol,abs_tol, &
+        density,temperature,probe_admission_result,memoize=.true.)
+      ! End the packing-only probe before the cell kernel unpacks any state.
+      steps=0;ok=.false.
+    end subroutine admission_packet_adapter
+
     subroutine try_default_reactor_cell(node,cell,good,prospective_forcing)
       integer, intent(in) :: node,cell(3)
       logical, intent(out) :: good
@@ -9816,6 +10046,7 @@ contains
       forcing(:,1,1,1)=rates%fields(node)%values(:,cell(1),cell(2),cell(3))+ &
         hydro%fields(node)%values(:,cell(1),cell(2),cell(3))
       good=.false.
+      if(admission_result==reaction_admission_provider_refused) return
       if(present(prospective_forcing)) then
         if(size(prospective_forcing)/=nv) return
         if(.not.all(ieee_is_finite(prospective_forcing))) return
@@ -9853,8 +10084,17 @@ contains
         call rotating_potential_3d(frame,position,potential(1,1,1),good)
         if(.not.good) return
       endif
-      call react_sdc_state_3d(species,reactions,initial,initial_t,forcing,dt,rtol,atol,trial,trial_t,source,good, &
-        rotating_potential=potential,internal_energy_density=trial_h,old_internal_energy_density=old_h)
+      if(admission_enabled) then
+        probe_admission_result=reaction_admission_unknown
+        call react_sdc_state_3d(species,reactions,initial,initial_t,forcing,dt,rtol,atol,trial,trial_t,source,good, &
+          evaluate_reaction=admission_packet_adapter,rotating_potential=potential, &
+          internal_energy_density=trial_h,old_internal_energy_density=old_h)
+        admission_result=max(admission_result,probe_admission_result)
+        good=probe_admission_result==reaction_admission_accepted
+      else
+        call react_sdc_state_3d(species,reactions,initial,initial_t,forcing,dt,rtol,atol,trial,trial_t,source,good, &
+          rotating_potential=potential,internal_energy_density=trial_h,old_internal_energy_density=old_h)
+      endif
     end subroutine try_default_reactor_cell
 
     ! Native selected hydro leaves inactive scalar faces unallocated.
@@ -9944,7 +10184,8 @@ contains
             ! A predictor supplies only an unreacted spatial/source estimate.
             ! Inactive clocks carry deferred receipts; caller-owned reactors
             ! retain their ordinary single attempt and are never previewed.
-            if(cell_ok.and.funding_corrector_stage.and.active(node).and..not.present(evaluate_reaction)) &
+            if(cell_ok.and.funding_corrector_stage.and.active(node).and. &
+                (.not.present(evaluate_reaction).or.admission_enabled)) &
               call try_default_reactor_cell(node,cell,cell_ok,rates%fields(node)%values(:,x,y,z)+next_rate)
           endif
         endif
@@ -10047,8 +10288,8 @@ contains
       funding_corrector_stage=final_stage
       call repair_reactive_eb_tree_held_interface_budget_3d(species,funded,funded_h,gas_faces,scalar_faces, &
         cell_ok,0,boundary_faces,frame,gas_debt,held_debt,reactor_energy_bias=reactor_bias, &
-        native_projection=admit_native_funding_cell)
-      if(.not.cell_ok) return
+        native_projection=admit_native_funding_cell,check_native_endpoints=admission_enabled.and.final_stage)
+      if(.not.cell_ok.or.admission_result==reaction_admission_provider_refused) return
       next_hydro=hydro;next_held=held_hydro
       do p=1,size(tree%nodes)
         next_hydro%fields(p)%values=hydro%fields(p)%values+ &
@@ -10078,6 +10319,11 @@ contains
             call admit_reactive_eb_reactor_energy_3d(species,old%nodes(p)%geometry,[x,y,z],post, &
               reactor_bias%fields(p)%values(1,x,y,z),old%nodes(p)%temperature(x,y,z),cell_ok,frame)
             if(.not.cell_ok) return
+            if(final_stage.and.active(p).and.admission_enabled) then
+              call try_default_reactor_cell(p,[x,y,z],cell_ok, &
+                rates%fields(p)%values(:,x,y,z)+next_hydro%fields(p)%values(:,x,y,z))
+              if(.not.cell_ok) return
+            endif
           endif
         enddo
         enddo
@@ -13914,7 +14160,8 @@ contains
   ! treated as a nonnegative species or reconstructed from total energy.
   subroutine repair_reactive_eb_tree_held_interface_budget_3d(species,solution,internal_energy, &
       flux,internal_energy_flux,ok,minimum_level,boundary_faces,frame,rereflux_delta,internal_energy_rereflux_delta, &
-      rereflux_first_level,reactor_energy_bias,native_projection)
+      rereflux_first_level,reactor_energy_bias,native_projection,check_native_endpoints)
+    logical, optional, intent(in) :: check_native_endpoints
     procedure(reactive_eb_funding_admission), optional :: native_projection
     type(amr_tree_state_3d), optional, intent(in) :: reactor_energy_bias
     integer, optional, intent(in) :: rereflux_first_level
@@ -13991,7 +14238,7 @@ contains
       packets(p)%z(:nv,:,:,:)=flux(p)%z;packets(p)%z(nv+1:nv+1,:,:,:)=internal_energy_flux(p)%z
     enddo
     call repair_reactive_eb_tree_interface_components_3d(species,packed,packets,good,minimum_level, &
-      boundary_faces,frame,packed_delta,1,register_first_level,reactor_energy_bias,native_projection)
+      boundary_faces,frame,packed_delta,1,register_first_level,reactor_energy_bias,native_projection,check_native_endpoints)
     if(.not.good) return
     gas_work=solution;held_work=internal_energy;gas_faces=flux;held_faces=internal_energy_flux
     do p=1,size(solution%nodes)
@@ -14008,7 +14255,8 @@ contains
 
   subroutine repair_reactive_eb_tree_interface_components_3d(species,solution,flux,ok,minimum_level, &
       boundary_faces,frame,rereflux_delta, &
-      passive_components,register_first_level,reactor_energy_bias,native_projection)
+      passive_components,register_first_level,reactor_energy_bias,native_projection,check_native_endpoints)
+    logical, optional, intent(in) :: check_native_endpoints
     procedure(reactive_eb_funding_admission), optional :: native_projection
     type(amr_tree_state_3d), optional, intent(in) :: reactor_energy_bias
     integer, intent(in) :: passive_components,register_first_level
@@ -14029,7 +14277,7 @@ contains
     real(dp), allocatable :: fine_state(:,:),volumes(:),transfers(:,:),weights(:),areas(:),old(:),base(:),endpoint(:)
     real(dp), allocatable :: corrected(:,:),dc(:),df(:,:),primitive(:)
     real(dp), allocatable :: donor_state(:,:),donor_volume(:),funded_fine(:,:),funded_donor(:,:),exchange(:,:)
-    real(dp), allocatable :: packet_values(:,:),low_packet(:),high_packet(:)
+    real(dp), allocatable :: packet_values(:,:),low_packet(:),high_packet(:),admission_pre(:)
     integer, allocatable :: packet_keys(:,:)
     integer :: packet_count,packet_capacity,addition
     integer, allocatable :: used_donors(:,:),next_used_donors(:,:)
@@ -14047,9 +14295,12 @@ contains
     real(dp) :: coarse_guess
     real(dp) :: coarse_lower,coarse_limit,required_correction,composite_budget(reactive_nvar(size(species))+passive_components)
     logical :: ready,valid,unsafe,covered,local_ok,found,connected_route,periodic(3)
-    logical :: route_improved,route_complete,route_can_reroute,immediate_funding
+    logical :: route_improved,route_complete,route_can_reroute,immediate_funding,check_native
     ok=.false.
     immediate_funding=present(native_projection)
+    check_native=.false.
+    if(present(check_native_endpoints)) check_native=check_native_endpoints
+    if(check_native.and..not.immediate_funding) return
     if(immediate_funding.and..not.present(rereflux_delta)) return
     if(present(reactor_energy_bias).and.passive_components/=1) return
     if(passive_components<0.or.passive_components>1) return
@@ -14110,7 +14361,7 @@ contains
     call amr_tree_integer_layout_3d(tree,origin,domain,ratios,valid)
     if(.not.valid) return
     candidate=state;temps=temperature;working=flux
-    allocate(old(nv),base(nv),endpoint(nv),low_packet(nv),high_packet(nv), &
+    allocate(old(nv),base(nv),endpoint(nv),low_packet(nv),high_packet(nv),admission_pre(nv), &
       primitive(reactive_nprim(size(species))),changed(size(tree%nodes)),stat=ios)
     ready=(ios==0)
     if(.not.ready) return
@@ -14450,6 +14701,12 @@ contains
           repair_node=parent)
             unsafe=.not.valid
           endif
+          if(.not.unsafe.and.check_native) then
+            ! Coarse candidate is pre-register. The caller reconstructs its
+            ! actual rate from this loan inventory and adds source debt once.
+            call native_projection(parent,coarse_cell,candidate%fields(parent)%values(:,i,j,k),.true.,valid)
+            unsafe=.not.valid
+          endif
           if(.not.unsafe) cycle
           coarse_volume=cell_volume(parent,coarse_cell)
           call fund_exposed_coarse_endpoint(valid)
@@ -14483,6 +14740,17 @@ contains
             call recover_repair_cell(species,geometry(parent),coarse_cell,candidate%fields(parent)%values(:,i,j,k), &
               temps%fields(parent)%values(1,i,j,k),primitive,recovered,speed,valid,frame, &
           repair_node=parent)
+            unsafe=.not.valid
+          endif
+          if(.not.unsafe.and.check_native) then
+            ! Fine candidate already contains the routed read-only debt.
+            ! Remove it with the same checked operation as final closure so
+            ! native rate reconstruction does not charge that debt twice.
+            admission_pre=candidate%fields(parent)%values(:,i,j,k)
+            call add_eb_tree_delta_cell_3d(admission_pre, &
+              -routed_register%fields(parent)%values(:,i,j,k),valid)
+            if(.not.valid) return
+            call native_projection(parent,coarse_cell,admission_pre,.true.,valid)
             unsafe=.not.valid
           endif
           if(.not.unsafe) cycle
@@ -14620,7 +14888,7 @@ contains
           funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
           reactor_energy_bias=[reactor_energy_bias%fields(parent)%values(1,coarse_cell(1),coarse_cell(2),coarse_cell(3)), &
             reactor_energy_bias%fields(donor_node)%values(1,donor_cell(1),donor_cell(2),donor_cell(3))], &
-          native_projection=native_projection,inventory_nodes=[parent,donor_node])
+          native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=check_native)
         return
       endif
       inventory_required=present(native_projection)
@@ -14634,13 +14902,13 @@ contains
             call supply_reactive_eb_gas_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
               geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
               funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
-              native_projection=native_projection,inventory_nodes=[parent,donor_node])
+              native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=check_native)
           else
             call supply_reactive_eb_gas_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
               geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
               funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
               reactor_energy_bias=[0._dp,0._dp], &
-              native_projection=native_projection,inventory_nodes=[parent,donor_node])
+              native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=check_native)
           endif
           return
       endif
@@ -14669,7 +14937,7 @@ contains
         call supply_reactive_eb_gas_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
           geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
           funded_target,funded_donor,packet,complete,valid,frame,allow_raw_target=all(delta==0), &
-              native_projection=native_projection,inventory_nodes=[parent,donor_node])
+              native_projection=native_projection,inventory_nodes=[parent,donor_node],check_native_target=check_native)
       else
         call supply_reactive_eb_held_eos_donor_3d(species,geometry(parent),coarse_cell,target_guess, &
           geometry(donor_node),donor_cell,donor_guess,target,delta,target_volume,donor,donor_delta,donor_volume, &
@@ -18217,13 +18485,16 @@ contains
     type(eb_reactive_tree_3d), intent(in) :: tree
     real(dp), intent(inout) :: values(:)
     logical, intent(out) :: ok
-    real(dp) :: candidate(size(values)),volume
+    real(dp) :: candidate(size(values)),node_total(size(values)),volume
     logical, allocatable :: exposed(:,:,:)
     integer :: node,child,d(3),lo(3),hi(3),i,j,k
     ok=.false.
     if (.not.valid_tree(tree,size(values))) return
     candidate=0._dp
+    ! Use the same node-local then tree-ordered sum as the MPI inventory.
+    ! Grouping matters for signed source residuals near cancellation.
     do node=1,size(tree%nodes)
+      node_total=0._dp
       d=tree%topology%nodes(node)%shape
       allocate(exposed(d(1),d(2),d(3)))
       exposed=tree%nodes(node)%geometry%volume_fraction>0._dp
@@ -18238,11 +18509,13 @@ contains
       do i=1,d(1)
         if (.not.exposed(i,j,k)) cycle
         if (.not.all(ieee_is_finite(tree%nodes(node)%state(:,i,j,k)))) return
-        candidate=candidate+volume*tree%nodes(node)%geometry%volume_fraction(i,j,k)*tree%nodes(node)%state(:,i,j,k)
+        node_total=node_total+volume*tree%nodes(node)%geometry%volume_fraction(i,j,k)*tree%nodes(node)%state(:,i,j,k)
       end do
       end do
       end do
       deallocate(exposed)
+      if (.not.all(ieee_is_finite(node_total))) return
+      candidate=candidate+node_total
     end do
     if (.not.all(ieee_is_finite(candidate))) return
     values=candidate;ok=.true.
